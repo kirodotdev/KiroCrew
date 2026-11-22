@@ -120,6 +120,11 @@ def _apply_to_current_schedule(target: CronJob, record: CronJob) -> None:
     The fired one-shot's park is the old schedule's, so a ``target`` another writer
     made recurring takes the run's result and generation but not the park. The
     stored limit decides the pause a failed run causes (:func:`pause_at_current_limit`).
+
+    No notice is sent here, nor anywhere in the merge: the auto-pause notice
+    fires on the stored pause's rising edge, at the save itself
+    (``store_sync._save``), so a provisional apply, a reload swap, or the
+    flush/merge race cannot lose or double it.
     """
     enabled, user_paused = target.enabled, target.user_paused
     apply_run_record(target, record)
@@ -604,7 +609,9 @@ def _merge_terminal_state_locked(
             # A manual reap counts its failure on the synced copy under the lock, so
             # the count and any auto-pause it triggers persist with this save. Not
             # when the store's pause changed since the run started: a resume issued
-            # during the run gave the job fresh attempts.
+            # during the run gave the job fresh attempts. The pause this can
+            # land is announced by the save below (its rising edge), so a
+            # failed save's rollback (``counted``) announces nothing.
             target.record_failure()
         if (target.command or target.script) and not result_produced:
             target.last_result = terminal_record.last_result if terminal_record is not None else ""

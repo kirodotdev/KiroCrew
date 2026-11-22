@@ -615,7 +615,9 @@ function createGatewaySupervisor({
     return new Promise((resolve) => {
       // Both the silent-port and takeover branches funnel through this gate, so
       // client-only mode cannot be honored on one path and ignored on another.
-      const spawnUnlessClientOnly = () => {
+      // `foreignHolders` is what the owner probe found on a silent port that no
+      // Kiro Crew process holds; a spawn that then exits names them.
+      const spawnUnlessClientOnly = (foreignHolders = []) => {
         // Selection targets a crew's port on purpose, so that a live tunnel there
         // is found and adopted. Reaching here means nothing answered, and binding
         // it now is the shadowing this whole path exists to prevent: the conflict
@@ -642,7 +644,7 @@ function createGatewaySupervisor({
           return;
         }
         if (runLocalGateway) {
-          spawnGateway(resolve, { isStale });
+          spawnGateway(resolve, { isStale, foreignHolders });
           return;
         }
         glog(`no gateway on :${PORT} and local gateway is off — not starting one`);
@@ -741,7 +743,8 @@ function createGatewaySupervisor({
       // the answer from spawning; every other holder keeps today's path.
       const recoverOrSpawn = async () => {
         let outcome = "spawn";
-        try { outcome = await resolveUnresponsiveHolder(); }
+        const foreignHolders = [];
+        try { outcome = await resolveUnresponsiveHolder({ holders: foreignHolders }); }
         catch (error) {
           glog(`stuck gateway: holder check failed (${error && error.message}) — spawning as before`);
         }
@@ -755,7 +758,7 @@ function createGatewaySupervisor({
           failStop("the gateway that is not responding", outcome.stopFailed);
           return;
         }
-        spawnUnlessClientOnly();
+        spawnUnlessClientOnly(foreignHolders);
       };
 
       ensureManagedTunnel()
@@ -770,7 +773,7 @@ function createGatewaySupervisor({
   // backend swapped in at the same path. resourcesPath itself is a launch-time
   // snapshot and so is every other Electron path API; there is nothing newer to
   // read.
-  function spawnGateway(resolve, { isStale = () => false } = {}) {
+  function spawnGateway(resolve, { isStale = () => false, foreignHolders = [] } = {}) {
     // Every spawn passes through here: the first start, the start that follows a
     // takeover, and the stale-bundle respawn. Once the app has begun to quit, a
     // start whose port probes were still in flight must not launch a backend,
@@ -1031,7 +1034,7 @@ function createGatewaySupervisor({
         gatewayProcess = null;
         spawnedExecutablePaths = [];
         gatewayStartFailure = null;
-        spawnGateway(resolve);
+        spawnGateway(resolve, { foreignHolders });
         try { onStaleBundleRespawn(); }
         catch (error) { glog(`stale bundle: respawn hook threw: ${error && error.message}`); }
         return true;
@@ -1070,7 +1073,14 @@ function createGatewaySupervisor({
       if (!currentChild) return;
       spawnedExecutablePaths = [];
       const giveUp = () => {
-        if (!gatewayStartFailure) gatewayStartFailure = { code, signal, bundled };
+        // The gateway refuses a port held by anything but Kiro Crew and exits, so
+        // the dialog names the holder, as it does for one that answers. A signal
+        // never came from that refusal, so it keeps its own diagnosis.
+        if (!gatewayStartFailure) {
+          gatewayStartFailure = foreignHolders.length && !signal
+            ? { port: PORT, localStartBlocked: "foreign-holder", holders: foreignHolders, isWindows: IS_WIN }
+            : { code, signal, bundled };
+        }
         gatewayProcess = null;
       };
       if (recoverStaleBackend({ exitCode: code, giveUp })) return;

@@ -66,7 +66,7 @@ function props(over: Partial<Props> = {}): Props {
     messagesRef: { current: messages }, slotRunning: false, splitMode: false, crewWindow: null, slotHasMore: false, slotOldestIndex: 0,
     cursorIsForActiveSlot: true, loadingOlder: false, activeViewIsBoundedPage: false, isWelcomeState: false, activeSlotRemoteBound: false,
     scrollerRef: { current: null }, search: { isOpen: false } as never, navToDisplayIndex: vi.fn(), pinnedJumpChrome: () => 0,
-    scrollToPinnedPrompt: vi.fn(), setHighlightTs: vi.fn(), splitFeatureEnabled: false, regenerating: false, setEditLast: vi.fn(),
+    scrollToPinnedPrompt: vi.fn(), markStep: vi.fn(), markJump: vi.fn(), splitFeatureEnabled: false, regenerating: false, setEditLast: vi.fn(),
     editSeqRef: { current: 0 }, renderedDisplayItems: rows(messages), renderedTranscript: { messages, displayItems: rows(messages) },
     insertIntoComposer: vi.fn(),
     ...over,
@@ -82,15 +82,19 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 describe('jumping to a loaded message', () => {
-  it('scrolls to the row, highlights it, and clears the highlight after three seconds', () => {
-    vi.useFakeTimers()
+  it('scrolls to the row and marks it with the flash', () => {
     const p = props()
     const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
     act(() => { result.current.handleJumpToPin('t2', 'm2') })
     expect(p.navToDisplayIndex).toHaveBeenCalledWith(1, { behavior: 'smooth', align: 'center' })
-    expect(p.setHighlightTs).toHaveBeenLastCalledWith('t2')
-    act(() => { vi.advanceTimersByTime(3000) })
-    expect(p.setHighlightTs).toHaveBeenLastCalledWith(null)
+    expect(p.markJump).toHaveBeenLastCalledWith('t2', false, 'm2')
+  })
+
+  it('gives a link jump the landing highlight', () => {
+    const p = props()
+    const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
+    act(() => { result.current.handleJumpToPinnedMessage('t2', 'm2', { origin: 'link' }) })
+    expect(p.markJump).toHaveBeenLastCalledWith('t2', true, 'm2')
   })
 
   it('resolves by mid when the pin carries one, and by ts only for a legacy pin', () => {
@@ -99,6 +103,8 @@ describe('jumping to a loaded message', () => {
     const { result } = renderHook(() => useTranscriptPins(p), { wrapper: withQueryClient() })
     act(() => { result.current.handleJumpToPin('same', 'b') })
     expect(p.navToDisplayIndex).toHaveBeenLastCalledWith(1, expect.anything())
+    // The mark carries the chosen twin's mid, so only that row is highlighted.
+    expect(p.markJump).toHaveBeenLastCalledWith('same', false, 'b')
     act(() => { result.current.handleJumpToPin('same') })
     expect(p.navToDisplayIndex).toHaveBeenLastCalledWith(0, expect.anything())
   })

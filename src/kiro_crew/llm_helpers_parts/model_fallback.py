@@ -29,7 +29,10 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     walk_outcome,
 )
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.llm_helpers_parts.backend_errors import TRANSIENT_RETRIES
+from kiro_crew.llm_helpers_parts.backend_errors import (
+    TRANSIENT_RETRIES,
+    acp_error_is_capacity_or_throttle,
+)
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -500,6 +503,51 @@ async def advance_fallback_candidate(
             log_suffix,
         )
         return applied
+
+
+def attach_fallback_story(
+    exc: BaseException, fb_state: FallbackState, *, log_suffix: str = ""
+) -> None:
+    """Attach a spent walk's story to *exc* (``FALLBACK_STORY_ATTR``) and log it.
+
+    Nothing happens when no candidate was tried: the error surfaces unchanged.
+    """
+    story = fb_state.exhaustion_story()
+    if not story:
+        return
+    logger.warning(
+        "model fallback: chain exhausted (%s)%s; surfacing original error", story, log_suffix
+    )
+    try:
+        setattr(exc, FALLBACK_STORY_ATTR, story)
+    except Exception:
+        # An exception type that refuses attributes cannot carry the story.
+        pass
+
+
+async def advance_fallback_after_activity(
+    provider: Any,
+    fb_state: FallbackState,
+    exc: BaseException,
+    *,
+    surface: str,
+    log_suffix: str = "",
+) -> str | None:
+    """Move a turn that failed AFTER activity, its one continue spent, to the next candidate.
+
+    Only a capacity or throttle error (:func:`acp_error_is_capacity_or_throttle`) walks
+    the chain: another model may serve it, so the caller continues the turn on the same
+    live session there. Any other error, an empty chain, or a spent chain returns
+    ``None``; a spent walk's story is attached to *exc* first.
+    """
+    if not fb_state.chain or not acp_error_is_capacity_or_throttle(exc):
+        return None
+    candidate = await advance_fallback_candidate(
+        provider, fb_state, surface=surface, log_suffix=log_suffix
+    )
+    if candidate is None:
+        attach_fallback_story(exc, fb_state, log_suffix=log_suffix)
+    return candidate
 
 
 def pick_epoch_host(provider: Any) -> Any:

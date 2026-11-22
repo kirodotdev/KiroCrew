@@ -77,9 +77,10 @@ export interface SessionSendCall {
 }
 
 /** What the gateway says a `session_send` call did: it started a turn on the
- *  message, took it into the running turn, or queued it. */
-export type SessionSendOutcome = 'delivered' | 'steered' | 'queued'
-const SESSION_SEND_OUTCOMES: ReadonlySet<string> = new Set(['delivered', 'steered', 'queued'])
+ *  message, took it into the running turn, queued it, or holds it as a pending
+ *  steer for the turn's next tool boundary. */
+export type SessionSendOutcome = 'delivered' | 'steered' | 'queued' | 'pending-steer'
+const SESSION_SEND_OUTCOMES: ReadonlySet<string> = new Set(['delivered', 'steered', 'queued', 'pending-steer'])
 
 /** The receipt the gateway stamps on its own `session_send` row once the call
  *  delivered (`meta.sessionSend`, `dashboard/session_send_receipts.py`): typed

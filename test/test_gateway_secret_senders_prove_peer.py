@@ -2,7 +2,7 @@
 
 The value ``kirocrew`` reads from the local secret file is the gateway's
 ``X-Local-Secret`` and also its ``X-Internal-Secret``. These tests pin that the
-spawn and artifact senders hand their request to the
+spawn, artifact and ``resource-subs remove`` senders hand their request to the
 shared connection-bound proof (``cli_server_peer._owner_verified_secret_urlopen``)
 instead of a plain loopback opener, that a refusal from that proof is reported
 and sends nothing, and that the app-lifecycle client checks the connected socket
@@ -16,12 +16,12 @@ import json
 import urllib.request
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import kiro_crew.cli_commands as cc
-from kiro_crew import app_lifecycle_client
+from kiro_crew import app_lifecycle_client, cli_resource_subs
 from kiro_crew.cli_server_peer import _GatewayPeerRefused
 from kiro_crew.config.loader import KiroCrewConfig
 
@@ -135,6 +135,34 @@ class TestArtifactSendsThroughThePeerProof:
         with pytest.raises(SystemExit):
             self._run(sender)
         assert "gateway ownership not verified" in capsys.readouterr().err
+
+
+class TestResourceSubsRemoveSendsThroughThePeerProof:
+    def _remove(self, sender: _ProvenSender, store: MagicMock) -> int:
+        with (
+            patch("kiro_crew.config.loader.read_local_secret", return_value="s"),
+            patch("kiro_crew.port_resolution.resolve_client_port_ex", return_value=(_PORT, None)),
+            patch.object(cli_resource_subs, "_store", store),
+            patch("kiro_crew.cli_server._owner_verified_secret_urlopen", sender),
+        ):
+            return cli_resource_subs._remove("rsub_proven0000000")
+
+    def test_remove_goes_through_the_proof(self, capsys: Any) -> None:
+        sender = _ProvenSender([{"running": True, "ok": True}])
+        assert self._remove(sender, MagicMock()) == 0
+        [(req, port, operation)] = sender.sent
+        assert (port, operation) == (_PORT, "cli_resource_subs_remove")
+        assert req.get_header("X-internal-secret") == "s"
+        assert "Removed rsub_proven0000000." in capsys.readouterr().out
+
+    def test_a_refused_peer_is_reported_and_leaves_the_store_alone(self, capsys: Any) -> None:
+        store = MagicMock()
+        sender = _ProvenSender([_GatewayPeerRefused("peer not proven")])
+        with pytest.raises(SystemExit) as stopped:
+            self._remove(sender, store)
+        assert stopped.value.code == 1
+        assert "gateway ownership not verified" in capsys.readouterr().err
+        store.assert_not_called()
 
 
 class TestAppLifecycleChecksTheSocketPeer:

@@ -6,14 +6,14 @@ const { createRelaunch, applyArmedAtStart } = require("./armed-apply");
 const { readPolicyGovernance } = require("./policy-source");
 
 /**
- * Run an armed update at app start, before the gateway spawns and before any
- * window opens. Only an install whose EXTERNALLY-MANAGED marker names an
+ * Run an armed update at app start, before the gateway spawns and before the
+ * main window opens. Only an install whose EXTERNALLY-MANAGED marker names an
  * updateCommand can have been armed, so every other install returns at once.
  *
  * Never rejects: a throw here would strand the launch, so it is logged and the
  * installed version starts.
  */
-async function runStartupApply({ app, store, managed, managedPath, log, probeGateway = null, notifyGatewayRunning = null, readGovernance = readPolicyGovernance }) {
+async function runStartupApply({ app, store, managed, managedPath, log, probeGateway = null, notifyGatewayRunning = null, showApplying = null, readGovernance = readPolicyGovernance }) {
   try {
     if (!managed || !managed.updateCommand) return { outcome: "none" };
     const arm = createUpdateArm({ store });
@@ -42,6 +42,7 @@ async function runStartupApply({ app, store, managed, managedPath, log, probeGat
       app,
       log,
       probeGateway,
+      showApplying,
     });
     if (result.outcome === "gateway-running" && notifyGatewayRunning) {
       try { notifyGatewayRunning(result.stopCommand); } catch { /* notifications optional */ }

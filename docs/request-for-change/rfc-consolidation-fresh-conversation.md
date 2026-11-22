@@ -3,9 +3,9 @@ title: Every global history-consolidation job starts on an empty conversation
 status: implemented
 author: chenmingwei23
 created: 2026-10-19
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
-doc-pr:
+last-audited: 2026-11-20
+audited-at: fc89562d69
+doc-pr: 22206
 implementation-prs: [22207]
 tracking-issues: [20463]
 supersedes: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Every global history-consolidation job starts on an empty conversation
 
-- Status: implemented in [#22207](https://github.com/kirodotdev/KiroCrew/pull/22207): `background_turn(fresh_conversation=True)` and `_start_fresh_conversation` in `src/kiro_crew/llm_helpers_parts/background_turns.py`, called from `history_consolidation_pass.py`.
+- Status: implemented in [#22207](https://github.com/kirodotdev/KiroCrew/pull/22207): `background_turn(fresh_conversation=True)` and `_start_fresh_conversation` in `src/kiro_crew/llm_helpers_parts/background_turns.py`, called from `history_consolidation_pass.py` and `history_consolidation_skills.py`. Checked at `fc89562d69`.
 - Tracks [#20463](https://github.com/kirodotdev/KiroCrew/issues/20463).
 
 ## Problem

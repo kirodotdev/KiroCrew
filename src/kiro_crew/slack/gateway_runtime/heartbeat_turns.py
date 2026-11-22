@@ -32,7 +32,7 @@ if TYPE_CHECKING:
         _build_heartbeat_hooks,
         configured_fallback_chain,
         consume_reinjection,
-        declared_mcp_not_ready_note,
+        declared_mcp_not_ready_change,
         is_keep_response,
         logger,
         note_turn_landed,
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         read_context_tokens,
         read_effective_agent,
         rearm_reinjection,
+        record_interaction_event,
         redact_and_truncate,
         redact_credentials,
         redact_exfiltration_urls,
@@ -242,13 +243,22 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
             _turn_landed = stop_reason_landed(_turn_stop["reason"])
             if _turn_landed:
                 note_turn_landed(self.sessions, session_key)
+                # Per-interaction telemetry, as every landed-turn engine reports it.
+                record_interaction_event(client, session_key, "heartbeat")
 
             if not result_text:
                 result_text = "_No response._"
             result_text = _annotate_model_fallback(
                 result_text, client, stop_reason=_turn_stop["reason"]
             )
-            _missing = declared_mcp_not_ready_note(client)
+            # A HEARTBEAT_KEEP result is not delivered, so it does not count as printed.
+            # Keyed on the deliver target too: same-text tasks bound for
+            # different channels each warn their own channel.
+            _missing = declared_mcp_not_ready_change(
+                client,
+                f"{session_key}:{deliver}:{task_text}",
+                record=not is_keep_response(result_text),
+            )
             if _missing:
                 result_text = f"Warning: {_missing}.\n\n{result_text}"
 

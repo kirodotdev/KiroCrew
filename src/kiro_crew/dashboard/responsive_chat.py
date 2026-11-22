@@ -266,6 +266,27 @@ def row_already_written(slot: Any, item: dict) -> bool:
     return _present_row(slot, item) is not None or _restored_row(slot, item, content) is not None
 
 
+def written_queue_ids(slot: Any) -> set[str]:
+    """The ids of the waiting sends whose user row is already in the transcript
+    (:func:`row_already_written`): entries the queue's cancel and edit refuse."""
+    return {
+        item["id"]
+        for item in getattr(slot, "_queue", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and row_already_written(slot, item)
+    }
+
+
+def mark_written_on_push(slot: Any, queue_id: str, push: dict) -> None:
+    """Set ``meta.written`` on a ``queue_push`` frame whose entry already has its
+    user row (:func:`row_already_written`), the mark the slot-detail listing sets,
+    so a card drawn from the frame offers neither edit nor cancel."""
+    entry = next((i for i in getattr(slot, "_queue", []) if i.get("id") == queue_id), None)
+    if entry is not None and row_already_written(slot, entry):
+        push.setdefault("meta", {})["written"] = True
+
+
 def dequeue_waiting_run(slot: Any) -> tuple[str, list[dict]] | None:
     """Take the leading run of the person's waiting sends as one turn.
 

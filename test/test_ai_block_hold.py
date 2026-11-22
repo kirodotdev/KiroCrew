@@ -190,7 +190,7 @@ class _Harness:
         gh.write_text(
             textwrap.dedent(f"""\
                 #!/usr/bin/env bash
-                printf '%s\\n' "$*" >> {self._calls}
+                printf '%s\\n' "$*" >> "{self._calls}"
                 answer() {{
                   if [ ! -f "$1" ] || [ "$(cat "$1")" = "{_FAIL}" ]; then
                     echo "gh: simulated API failure" >&2

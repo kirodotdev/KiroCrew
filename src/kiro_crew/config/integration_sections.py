@@ -22,7 +22,13 @@ from kiro_crew.computer_use.types import (
 )
 from kiro_crew.computer_use.types import DEFAULT_SCREENSHOT_MAX_PX as _CU_DEFAULT_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import DEFAULT_TEXT_LIMIT as _CU_DEFAULT_TEXT_LIMIT
-from kiro_crew.config.fields import _meta, _safe_bool, _safe_dict, _safe_list, field_default
+from kiro_crew.config.fields import (
+    _meta,
+    _safe_bool,
+    _safe_dict,
+    _safe_list,
+    field_default,
+)
 from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _DEFAULT_PROBE_FAILS
@@ -487,6 +493,43 @@ class ComputerUseConfig:
 
 
 @dataclass
+class McpResourceSubscriptionsConfig:
+    """``mcp_gateway.resource_subscriptions``: sessions holding MCP resource subscriptions.
+
+    ``rfc-mcp-resource-subscriptions.md`` §4.6 and §4.8. ``enabled`` decides at
+    broker start whether the service runs at all, so it needs a restart; a
+    subscribe also reads it per call, so turning it off refuses the next one at
+    once. ``max_pinned_backends`` is read per call from the live snapshot.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Resource Subscriptions",
+            "Let a session keep an MCP resource subscription after its kiro-cli "
+            "exits. Kiro Crew then holds one gateway connection per session and "
+            "server for it. Off, every subscribe is refused and stored "
+            "subscriptions are not resumed. Takes effect after a restart; a "
+            "subscribe made after turning it off is refused at once. Default "
+            "False -- opt-in.",
+            restart=True,
+        ),
+    )
+    max_pinned_backends: int = field(
+        default=16,
+        metadata=_meta(
+            "Pinned Backends Cap",
+            "How many shared MCP backends resource subscriptions may keep "
+            "resident at once. A held backend is never evicted, so without a cap "
+            "holders could fill max_backends and refuse backends to sessions that "
+            "hold no subscription. Counts backends, not sessions: sessions with "
+            "one server configuration share one backend. A subscribe that would "
+            "pin one more is refused with a reason. Default 16.",
+        ),
+    )
+
+
+@dataclass
 class McpGatewayConfig:
     """Sidecar MCP broker daemon — shares MCP backends across sessions."""
 
@@ -870,6 +913,13 @@ class McpGatewayConfig:
             restart=True,
         ),
     )
+    resource_subscriptions: McpResourceSubscriptionsConfig = field(
+        default_factory=McpResourceSubscriptionsConfig,
+        metadata=_meta(
+            "Resource Subscriptions",
+            "MCP resource subscriptions a session keeps after its kiro-cli exits.",
+        ),
+    )
 
 
 # The forwarding default assumed when config omits
@@ -955,9 +1005,11 @@ class InstancesConfig:
     """Multi-instance management (the *Instances* feature).
 
     Gates and tunes the gateway's ability to manage/switch between several
-    remote Kiro Crew instances over SSH tunnels. Off by default — opt-in only,
-    since enabling it allows the gateway to open SSH ``-L`` forwards and relaxes
-    the dashboard CSP ``frame-src`` for the active loopback tunnel ports.
+    remote Kiro Crew instances over SSH tunnels. On by default, so a user can
+    connect a crew with no extra setting; ``enabled: false`` turns it off. On
+    opens no listener and no connection by itself: a tunnel (an SSH ``-L``
+    forward on loopback) opens only when the owner adds a crew and connects it.
+    On also widens the dashboard CSP ``frame-src`` to ``*.localhost`` tunnel ports.
 
     Numeric transport defaults and bounds live in
     ``kiro_crew.instances.constants`` so their canonical values cannot drift
@@ -965,12 +1017,13 @@ class InstancesConfig:
     """
 
     enabled: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Enabled",
             "Enable multi-instance management — lets this gateway open SSH tunnels "
-            "to remote Kiro Crews and embed their dashboards. Default off (opt-in). "
-            "Enabling also scopes a CSP frame-src relaxation to active tunnel ports.",
+            "to remote Kiro Crews and embed their dashboards. Default on; a tunnel "
+            "opens only when you add a crew and connect it. Enabling also scopes a "
+            "CSP frame-src relaxation to active tunnel ports.",
             restart=True,
         ),
     )
@@ -988,16 +1041,11 @@ class InstancesConfig:
         default=_DEFAULT_WARM_SET_CAP,
         metadata=_meta(
             "Warm Set Cap",
-            "Max number of remote instances kept warm (iframe mounted + tunnel live) "
-            "at once. Least-recently-used instances beyond this are evicted and "
-            "reconnected on demand. Bounds memory/socket use (each warm instance is a "
-            "full dashboard SPA). 0 (the default) is automatic: the cap follows how "
-            "many crews are configured, so up to an internal ceiling no crew you added "
-            "is evicted and the cap widens by itself when you add one -- eviction "
-            "cold-boots the pane and reads as a disconnect, so a cap below the number "
-            "of crews in use makes tab switching look like a connection flap. Past that "
-            "ceiling eviction resumes; an explicit value is honoured exactly, including "
-            "one below the number of configured crews.",
+            "Max number of remote Crews kept warm (pane loaded, connection live) at "
+            "once, SSH and relay together. The most recently opened ones stay warm; "
+            "the rest are dropped and reconnect when you open them. Bounds memory and "
+            "connections (each warm Crew is a full dashboard page). 0 (the default) is "
+            "automatic: 5. An explicit value is honoured exactly.",
         ),
     )
     default_destination: str = field(
@@ -1098,12 +1146,12 @@ class InstancesConfig:
 
     def __post_init__(self) -> None:
         if self.warm_set_cap < 0:
-            # 0 is meaningful here (automatic -- track the connected count), so
+            # 0 is meaningful here (automatic), so
             # only a negative value is a misconfiguration, and it falls back to
             # automatic rather than to 1: a caller who wrote a nonsense number
             # wanted "enough", not the tightest possible cap.
             logger.warning(
-                "instances.warm_set_cap %d < 0, using 0 (automatic: track the connected count)",
+                "instances.warm_set_cap %d < 0, using 0 (automatic)",
                 self.warm_set_cap,
             )
             object.__setattr__(self, "warm_set_cap", _WARM_SET_CAP_AUTO)
@@ -1222,12 +1270,18 @@ class TunnelConfig:
             restart=True,
         ),
     )
-    relay_enabled: bool = field(
+    relay_enabled: bool | None = field(
         default=REMOTE_CONTROL_ON_BY_DEFAULT,
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
-            "the caller named by the relay. Off by default. It holds a lease (from Relay "
+            "the caller named by the relay. Unset (the default) turns it on for a Crew "
+            "on a personal sign-in (Relay Lease Credential empty or kiro-sign-in, no "
+            "Relay Lease Token Type, no workload identity), and for a team Crew (Relay "
+            "Lease Token Type API_KEY) or a host with a workload identity whose Relay "
+            "Lease Credential names its credential; kirocrew remote-control off turns "
+            "it off. True "
+            "is on and false is off, whatever the Crew's credential. It holds a lease (from Relay "
             "Lease Service URL, or the built-in one when that is empty) on Relay Lease "
             "Credential, or on a personal Crew's own Kiro sign-in when that is empty. A "
             "team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity "
@@ -1249,10 +1303,23 @@ class TunnelConfig:
             "Relay Lease Service URL",
             "The base URL of the lease service this Crew calls RenewCrewLease on, to "
             "hold its lease and get host tokens. Empty (the default) uses the built-in "
-            "Kiro control plane URL: the one for the sign-in profile's region on the Kiro "
-            "sign-in, and us-east-1 otherwise. Must be https:// "
-            "(http:// only for a loopback port-forward).",
+            "Kiro control plane URL for the Crew's Region: the sign-in profile's on the "
+            "Kiro sign-in, and Relay Lease Region otherwise, us-east-1 when that is "
+            "empty. Must be https:// (http:// only for a loopback port-forward).",
             restart=True,
+        ),
+    )
+    relay_lease_region: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Region",
+            "The built-in lease service's Region for a Crew on a stored credential, such "
+            "as a team Crew's crew API key, which names no Region. Empty (the default) "
+            "uses us-east-1; a Crew registered in another Region must name it, with "
+            "kirocrew config set tunnel.relay_lease_region <Region>. Ignored "
+            "on the Kiro sign-in. A workload identity's JWT-SVID lease uses it too.",
+            restart=True,
+            enum=["", "eu-central-1", "eu-west-1", "us-east-1"],
         ),
     )
     relay_lease_credential: str = field(
@@ -1299,18 +1366,21 @@ class TunnelConfig:
     relay_viewer_enabled: bool = field(
         default=False,
         metadata=_meta(
-            "Relay Viewer",
-            "Let the desktop app list the remote Crews you can reach through the Kiro "
-            "relay and open them. Off by default. This is the viewer side only: a Crew "
-            "you open still needs Kiro Relay on where it runs.",
+            "Relay Viewer Dev Settings",
+            "For testing only: use the dev viewer settings below "
+            "(tunnel.relay_viewer_cps_url, tunnel.relay_viewer_credential and "
+            "tunnel.relay_viewer_relay_domain). Off (the default) ignores them. The "
+            "list of remote Crews you can open through the Kiro relay needs no setting "
+            "and shows either way.",
         ),
     )
     relay_viewer_cps_url: str = field(
         default="",
         metadata=_meta(
             "Relay Viewer Control Plane URL",
-            "The base URL of the control plane the viewer lists remote Crews from and "
-            "gets access tokens from. Empty (the default) uses the built-in Kiro control "
+            "For testing only, read only while tunnel.relay_viewer_enabled is on: the "
+            "base URL of the control plane the viewer lists remote Crews from and gets "
+            "access tokens from. Empty (the default) uses the built-in Kiro control "
             "plane for your sign-in's region. Must be "
             "https:// (http:// only for a loopback port-forward). A value that breaks "
             "that rule is ignored with a warning, and the viewer says it is not set up. "
@@ -1321,7 +1391,8 @@ class TunnelConfig:
         default="",
         metadata=_meta(
             "Relay Viewer Credential",
-            "For testing only: where the viewer reads a test credential to use instead "
+            "For testing only, read only while tunnel.relay_viewer_enabled is on: where "
+            "the viewer reads a test credential to use instead "
             "of your Kiro sign-in, as secret://NAME for a secret stored under Settings "
             "> Secrets or the absolute path of a file holding it. Never the credential "
             "itself. Empty (the default) uses your Kiro sign-in. A value that is not a "
@@ -1346,12 +1417,13 @@ class TunnelConfig:
         default="",
         metadata=_meta(
             "Relay Viewer Relay Domain",
-            "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
-            "viewer lists a remote Crew, and sends its access token, only when the Crew's "
-            "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
-            "default) lists a Crew whose address is https://<endpoint ID>.<any domain> with no "
-            "port, and the desktop app opens it at exactly that address. Any other value matches "
-            "no Crew address, so no Crew is listed.",
+            "For testing only, read only while tunnel.relay_viewer_enabled is on and "
+            "tunnel.relay_viewer_cps_url is set: a dev relay's domain, for example "
+            "us-east-1.relay.example.invalid. The viewer then lists a remote Crew, and sends "
+            "its access token, only when the Crew's address is exactly "
+            "https://<endpoint ID>.<this domain> with no port. Otherwise a Crew is listed "
+            "at the address the control plane gives, when it is https://<endpoint ID>.<host> "
+            "with no port, and opened at exactly that address.",
         ),
     )
 

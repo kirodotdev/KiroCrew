@@ -172,10 +172,9 @@ that fakes the default home (`beacon.is_default_home`), the platform or a
 privilege depends on the production check it answers. Change the fake and the
 check in the same pull request: a new check means searching `test/` for the
 tests that reach it, and removing a fake means searching for every assertion that
-still relies on it. Two parallel pull requests, one dropping the `home` fixture's
-default-home fake and one adding a default-home check to `off_offer_due()`, were
-each green alone and red together on every run of `main`. Keep the fake scoped to
-the class that needs it. Full telling:
+still relies on it. Otherwise one pull request that drops a fixture's fake and
+another that adds a check reading it are each green alone and red together on
+`main`. Keep the fake scoped to the class that needs it. Full rule:
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md#a-faked-host-condition-changes-with-the-check-that-reads-it).
 
 ### 1c. A child process inherits pytest's CWD, which is the repo root
@@ -416,6 +415,9 @@ a worker. Ship its floor entry in `test/conftest_resets.py` with the change, not
 your own test file, and find the new state with the `git diff ... | grep` line in
 [testing-conventions.md](../../../../../docs/system-specs/common/testing-conventions.md)
 § 4 Order dependence and shared state ("That rule did not stop #37659").
+A switch or allowlist snapshot (`= True`, `= frozenset()`) that a handler test publishes
+through the real write path is the same leak and needs the same floor entry; that section
+has the second grep line for those spellings (`_cold_source_link_settings`).
 
 ## Rule 3 — Cross-platform: macOS, Linux (x86_64 + arm64), Windows
 
@@ -500,8 +502,9 @@ The recurring wins, in order of leverage:
 2. **A production timeout or poll the test never asserts on** — `monkeypatch` the
    interval to `0`; the branch still executes, only the waiting goes.
 3. **An expensive immutable thing built per test** — a real `git` repo costs ~1–1.6s in
-   subprocesses. Build it once `scope="session"` and `copytree` it per test; copy *from*
-   the template rather than yielding it, so nothing one test does can reach another's.
+   subprocesses. Build it once and copy it per test with `copy_repo` from
+   `test/git_repo_templates.py`, which needs no git after the copy; copy *from* the
+   template rather than yielding it, so nothing one test does can reach another's.
 4. **A module-cached tree scan paid once per WORKER** — an `lru_cache`d `rglob` +
    `ast.parse` of `src/` (~30 s) is computed again on every xdist worker the module's
    tests land on; five full runs measured eighteen ratchet modules each re-scanning on
@@ -540,7 +543,9 @@ memory):
 
 - **A new autouse fixture is paid by every item.** Each one adds a slot to every test
   function's fixture closure and a setup and teardown to every test, ~280k times. Add
-  the guard to an existing autouse fixture of the same scope instead of a new name.
+  the guard to an existing autouse fixture of the same scope instead of a new name. A
+  per-test reset or pin in `test/conftest_resets.py` is a `@per_test_guard` function
+  (`test/conftest_guards.py`), which five existing autouse fixtures already run.
 - **A module-level memo of a whole-tree read lives for the worker.** An
   `lru_cache`d `(path, text)` corpus in a test module is never released: pytest keeps
   the module object for the session. Put the module in a `tree_scan_*` xdist group (the
@@ -571,7 +576,7 @@ memory):
 
 ## Checklist before you push a test
 
-### Determinism top 12
+### Determinism top 13
 
 One box per rule of the [Determinism contract](../../../../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first),
 naming the shape; the contract line holds the detail and its numbers. The helpers are in
@@ -622,8 +627,8 @@ naming the shape; the contract line holds the detail and its numbers. The helper
 - [ ] Every thread, task, child process, socket and connection it starts is stopped in a
       `finally` or an `addCleanup`
 - [ ] Globals mutated through `monkeypatch`, never raw assignment — including `os.environ`
-      keys a REAL production startup path is known to write (`PLAYWRIGHT_MCP_OUTPUT_DIR`,
-      `KIROCREW_TELEMETRY`, `PATH`), restored in the shared helper that drives it
+      keys a REAL production startup path is known to write (`KIROCREW_TELEMETRY`,
+      `PATH`), restored in the shared helper that drives it
 - [ ] A variable the code under test WRITES and that is absent before the test goes
       through `forget_env_at_teardown(monkeypatch, name)` — `delenv(raising=False)` on an
       absent key records no undo, and a `delenv` AFTER the write puts the written value back

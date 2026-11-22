@@ -52,6 +52,9 @@ interface TrustDropdownProps {
       `<mono/>` slot, which this component fills, and take `labelValues`. */
   trustCommandLabelKey?: string
   trustBaseLabelKey?: string
+  /** The command tier's scope is a host name: its chip moves to the next line
+      whole and breaks only when it cannot fit one, instead of mid-word. */
+  scopeIsHost?: boolean
   /** Extra interpolation values for the tier labels (e.g. `role`). */
   labelValues?: Record<string, string>
   /** Offers each command-scoped tier a second and third time with a lifetime
@@ -83,7 +86,7 @@ const BASE_TIMED_KEYS: Record<GrantDuration, string> = {
   today: 'components.trustDropdown.trust_all_base_today',
 }
 
-export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, timedGrants = false, alwaysAllowTool, alwaysAllowRefusal, onAction }: TrustDropdownProps) {
+export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, scopeIsHost = false, labelValues, timedGrants = false, alwaysAllowTool, alwaysAllowRefusal, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
@@ -126,7 +129,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       <Trans
         i18nKey={key}
         values={{ ...extra, ...labelValues }}
-        components={{ mono: <span className="bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border">{fullCommand}</span> }}
+        components={{ mono: <span className={`bg-bg-elevated px-1.5 py-0.5 rounded font-mono border border-border ${scopeIsHost ? 'break-words' : 'break-all'}`}>{fullCommand}</span> }}
       />
     </span>
   )

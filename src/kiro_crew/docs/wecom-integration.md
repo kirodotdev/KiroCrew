@@ -109,7 +109,7 @@ keeps showing its path.
 - `/compact` (or `压缩`) — free up room when the context fills
 - `/stop` (or `/cancel`, `停止`) — stop the reply that's running
 - `/link` / `/unlink` — mirror the dashboard's replies for this conversation here
-- `/help` (or `帮助`) — show the command list
+- `/help` (or `帮助`, `/?`) — show the command list
 
 While a reply is running, prefix a message to control it:
 

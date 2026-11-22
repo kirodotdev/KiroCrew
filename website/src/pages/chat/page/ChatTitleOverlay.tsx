@@ -145,7 +145,7 @@ export default function ChatTitleOverlay({
             {/* The panel's open control, which the title row carries and the
                 breadcrumb replaces: with the panel closed, one click brings the
                 Workers list back beside the worker. */}
-            {!embedMode && !popout && !activityOpen && (
+            {(!embedMode || popout) && !activityOpen && (
               <Clickable
                 className="ml-1.5 flex items-center justify-center w-11 h-11 md:w-7 md:h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
                 onClick={toggleAct}
@@ -245,12 +245,13 @@ export default function ChatTitleOverlay({
         ))}
         {/* Activity panel open toggle — relocated here from the top bar
             (item 2.4) so opening the panel no longer narrows the now
-            full-width header. Shown only while the panel is closed; the
-            panel's own header carries the close button. Never disabled:
+            full-width header. Shown only while the panel is closed, the
+            pop-out window included; the panel's own header carries the
+            close button. Never disabled:
             below the mobile breakpoint the panel opens full width, at or
             above it opens beside the chat. There is no width at which
             the button does nothing. */}
-        {!embedMode && !popout && !activityOpen && (
+        {(!embedMode || popout) && !activityOpen && (
           <TipClickable
             className="pi-morph flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
             onClick={toggleAct}

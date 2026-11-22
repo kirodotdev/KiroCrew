@@ -756,10 +756,12 @@ _AUTO_APPROVAL_OWNER_ONLY = (
 )
 
 
-#: ``cron_update`` fields (as ``update_job`` kwargs) that change what a job does or
-#: where it reports. Changing one through a tool turns the owner's auto-approve off.
+#: ``update_job`` kwargs that change what a job does or where it reports. Changing
+#: one through a tool turns the owner's auto-approve off. The second set only the
+#: Schedule page writes; it is here so the dashboard's app twin stays this set.
 _AUTO_RESETTING_FIELDS = frozenset(
     {"message", "agent_id", "model", "cron_expr", "every_secs", "channel", "thread_ts"}
+    | {"channel_type", "target_id"}
 )
 
 _AUTO_APPROVAL_RESET_NOTE = (
@@ -1027,6 +1029,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
                 hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
                 new_chat_per_run=new_chat_per_run,
+                on_tab_close=args.get("on_tab_close", "resume"),
                 folder_id=folder_id,
                 command=command or "",
                 script=script or "",
@@ -1148,6 +1151,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             mc = args["minimal_context"]
             if isinstance(mc, bool):
                 kwargs["minimal_context"] = mc
+        if "on_tab_close" in args:
+            kwargs["on_tab_close"] = args["on_tab_close"]
         if "hide_in_chat" in args:
             hic = args["hide_in_chat"]
             if isinstance(hic, bool):
@@ -1389,7 +1394,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 grant=secrets,
                 domain="pending",
                 delivery=delivery_fingerprint(
-                    sjob.session_key, sjob.silent, sjob.channel or "", sjob.thread_ts or ""
+                    sjob.session_key,
+                    sjob.silent,
+                    sjob.channel or "",
+                    sjob.thread_ts or "",
+                    sjob.channel_type,
+                    sjob.target_id,
                 ),
             )
         except (ValueError, FileNotFoundError, PermissionError, RuntimeError) as exc:
@@ -1574,6 +1584,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         compute_next_run_ts,
         load_cron_folders,
         lookup_cron_folder_id,
+    )
+    from kiro_crew.cron_history import (  # noqa: F401
+        keep_ends,
     )
     from kiro_crew.cron_service.model import (  # noqa: F401
         _ALERT_AFTER_DEFAULT,

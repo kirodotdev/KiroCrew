@@ -631,6 +631,9 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       else {
         enterActiveSlot(state, action.payload.key, 'request')
         noteRequestActivation(state, origin)
+        // A chat the user asked for is a new gesture: the last switch's
+        // failure notice is about a click they moved past.
+        state.switchSlotGone = null
       }
       state.lastCreatedActivation = { slot: action.payload.key, requestId: action.meta.requestId, seq: origin.seq, burst: origin.burst }
       // A default-folder create learns its folder only from this response, so

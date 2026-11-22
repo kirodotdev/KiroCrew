@@ -39,7 +39,10 @@ export type GatewayStatus = {
  * args as the gateway bounded them, env KEY names only.
  */
 export type LaunchRefusal = {
-  reason: 'added_outside_dashboard' | 'changed_needs_reapproval'
+  // `too_many_launches`: more launches than one approval covers, so it is never
+  // approvable; `launch_cap` is that limit.
+  reason: 'added_outside_dashboard' | 'changed_needs_reapproval' | 'too_many_launches'
+  launch_cap?: number
   commands?: string[][]
   envs?: string[][]
   approved_commands?: string[][]
@@ -71,6 +74,13 @@ export type BulkCandidate = { name: string; preview?: LaunchPreview; error?: unk
  */
 export function launchIsApprovable(launch: { complete?: boolean; expected_launch?: string }): boolean {
   return launch.complete !== false && !!launch.expected_launch
+}
+
+/** Why a refusal with no approvable identity cannot be approved here, as its key (`{{cap}}`: `launch_cap`). */
+export function notApprovableKey(refusal: LaunchRefusal): string {
+  return refusal.reason === 'too_many_launches'
+    ? 'pages.mcpManagement.approval_over_launch_cap'
+    : 'pages.mcpManagement.approval_not_approvable_here'
 }
 
 
@@ -159,6 +169,25 @@ const CHANGED_HINT_KEY = {
   newLaunch: 'pages.mcpManagement.new_launch_hint',
 } as const
 
+/**
+ * True when a refusal's approved and new launches run the same SET of command
+ * lines. A redaction tag stands for any value, so lines carrying one never
+ * prove the program is the same. The hint and the Details layout both read it.
+ */
+export function commandSetUnchanged(refusal: LaunchRefusal): boolean {
+  const lines = (commands?: string[][]) => new Set((commands ?? []).map(c => JSON.stringify(c)))
+  const before = lines(refusal.approved_commands)
+  const after = lines(refusal.commands)
+  if (commandsRedacted(refusal)) return false
+  return before.size === after.size && [...before].every(line => after.has(line))
+}
+
+/** True when any command line on either side carries a gateway redaction tag. */
+function commandsRedacted(refusal: LaunchRefusal): boolean {
+  const lines = [...(refusal.approved_commands ?? []), ...(refusal.commands ?? [])].map(c => JSON.stringify(c))
+  return lines.some(line => line.includes('[REDACTED'))
+}
+
 export function changedHintKey(refusal?: LaunchRefusal): string {
   const keys = CHANGED_HINT_KEY
   const same = (a?: string[][], b?: string[][]) => JSON.stringify(a ?? []) === JSON.stringify(b ?? [])
@@ -170,13 +199,9 @@ export function changedHintKey(refusal?: LaunchRefusal): string {
   // command. A redaction tag stands for any value, so lines carrying one never
   // prove the program is the same: a differing list keeps the command wording,
   // and an equal one gets the general line instead of the env line's claim.
-  const lines = (commands?: string[][]) => new Set((commands ?? []).map(c => JSON.stringify(c)))
-  const before = lines(refusal.approved_commands)
-  const after = lines(refusal.commands)
-  const redacted = [...before, ...after].some(line => line.includes('[REDACTED'))
+  const redacted = commandsRedacted(refusal)
   const sameList = same(refusal.commands, refusal.approved_commands)
-  const sameSet = before.size === after.size && [...before].every(line => after.has(line))
-  if (!sameList && (!sameSet || redacted)) return keys.command
+  if (!sameList && !commandSetUnchanged(refusal)) return keys.command
   if (!same(refusal.envs, refusal.approved_envs)) return redacted ? keys.any : keys.settings
   return keys.any
 }

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
@@ -37,6 +36,7 @@ from kiro_crew.hooks import (
     TOOL_DENY,
     ToolHookResult,
     hook_gate_kwargs,
+    hook_tool_input,
     identity_grant_covers_child,
     unattended_turn,
 )
@@ -694,6 +694,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     _web_ask = web_ask_rule.needs_person(event)
     turn._web_ask = _web_ask
     _card_turn = _card_turn or bool(_held) or bool(_web_ask)
+    # Read by _on_permission_prompt's timeout note: no auto-approve, YOLO included,
+    # answers this request.
+    turn._no_auto_approve = _card_turn
     # Drain the key as soon as its permission decision begins. The
     # stream handles one decision at a time, so one bounded key is
     # enough for every approval arm below and in _on_permission_prompt;
@@ -1019,10 +1022,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 # Declarative auto-approve must NOT bypass scripted
                 # PreToolUse hooks — those are the audit/policy gate
                 # and exit-2 BLOCKED takes precedence over auto-approve.
-                try:
-                    _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-                except Exception:
-                    _parsed_input = None
+                _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
                 try:
                     pre_hook_results = await _fire(
                         turn,
@@ -1109,10 +1109,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 refusal_reasons=_refusal_reasons,
             )
             return _Flow.CONTINUE
-        try:
-            _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-        except Exception:
-            _parsed_input = None
+        _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
         try:
             pre_hook_results = await _fire(
                 turn,
@@ -1265,6 +1262,8 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         else slot._trusted_patterns
     )
     if _tp_live and _child_grant_eligible and not event.tool_input_redacted and not _card_turn:
+        from kiro_crew import browser_host_trust as _browser_host_trust
+
         _tp_command = approval_command(
             event.tool_input or "",
             is_shell=event.is_shell,
@@ -1272,6 +1271,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             mcp_server_name=event.mcp_server_name,
             raw_tool_params=event.raw_tool_params,
             path_scope_trusted=event.path_scope_trusted,
+            browser_page_url=_browser_host_trust.page_url_for(event, session_key, client, state),
         )
         matched = _matches_trusted_pattern(_tp_command, _tp_live) if _tp_command else None
         _tp_path = (
@@ -1367,6 +1367,12 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             if matched and _tp_deadlines
             else None
         )
+        # A host grant: the op route checks the tab is still on that host. A note that
+        # cannot be kept leaves the call to the card instead.
+        if matched and not _browser_host_trust.note_host_approval(
+            session_key, _tp_command, event.raw_tool_params
+        ):
+            matched = None
         if matched:
             try:
                 validated_tool = _validate_tool_name(
@@ -1440,7 +1446,10 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 return _Flow.CONTINUE
     # Trust-reads: auto-approve read-only bash commands
     # Detect bash tools by tool_input content (title is human-readable)
-    cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
+    # Only a shell call has a command: ``extract_bash_command`` reads the ``command``
+    # key of ANY tool's JSON, so a delete, edit or MCP call carrying a decoy
+    # ``"command": "ls"`` would otherwise be classified read-only and approved.
+    cmd = _extract_bash_command(event.tool_input) if event.is_shell and event.tool_input else ""
     yolo_active = state.is_yolo_active() and state.yolo_reaches(
         slot, channel_origin=turn._directive_channel_origin
     )
@@ -1559,10 +1568,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             )
             return _Flow.CONTINUE
         if not turn._pre_tool_hooks_fired:
-            try:
-                _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-            except Exception:
-                _parsed_input = None
+            _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
             try:
                 pre_hook_results = await _fire(
                     turn,

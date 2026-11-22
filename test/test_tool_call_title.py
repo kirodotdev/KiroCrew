@@ -146,6 +146,40 @@ def test_rel_display_path_relative_under_cwd_basename_at_cwd_parent_elsewhere():
     assert rel_display_path("~/n/t.md") == "~/n/t.md"
 
 
+def test_native_titles_decode_percent_escaped_paths_like_the_dashboard():
+    edit = derive_tool_call_title(
+        tool_name="fs_write",
+        kind="edit",
+        raw_input={"command": "str_replace", "path": "drafts/The%20Power%20of%20Running.md"},
+    )
+    assert edit.title == "Edit drafts/The Power of Running.md"
+    read = derive_tool_call_title(
+        tool_name="fs_read", kind="read", raw_input={"path": "/w/proj/a%20b.md"}, cwd="/w/proj"
+    )
+    assert read.title == "Read a b.md"
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("plain/a b.md", "plain/a b.md"),
+        ("x/a%20b.md", "x/a b.md"),
+        ("a%2Fb%20c.md", "a%2Fb%20c.md"),  # would gain a separator
+        ("a%5Cb%20c.md", "a%5Cb%20c.md"),  # would gain a backslash
+        ("a%0Ab%20c.md", "a%0Ab%20c.md"),  # would gain a control
+        ("a%E2%80%AEb%20c.md", "a%E2%80%AEb%20c.md"),  # would gain a bidi override
+        ("50%off%20now.md", "50%off%20now.md"),  # malformed escape, decodeURIComponent throws
+        ("bad%E0%20x.md", "bad%E0%20x.md"),  # not UTF-8
+        ("ok%20dir/50%off.md", "ok dir/50%off.md"),  # segments decode on their own
+    ],
+)
+def test_read_title_decodes_each_segment_like_decodePathForDisplay(path, expected):
+    d = derive_tool_call_title(
+        tool_name="fs_read", kind="read", raw_input={"path": f"/w/{path}"}, cwd="/w"
+    )
+    assert d.title == f"Read {expected}"
+
+
 # -- MCP -------------------------------------------------------------------
 
 

@@ -152,9 +152,10 @@ async def list_crew_endpoints(
 ) -> tuple[CrewEndpoint, ...]:
     """Every Crew this person can open, in the service's order, checked entry by entry.
 
-    *crew_domain* is the relay's domain, lower case. When set, an entry is kept
+    *crew_domain* is a dev relay domain, lower case. When set, an entry is kept
     only when its host is exactly ``<endpointId>.<crew_domain>`` with no port.
-    Empty keeps the host check that has no domain. *token_type* is
+    Empty trusts the address CPS lists: any ``https://<endpointId>.<host>`` with no
+    port is kept, so a new relay Region needs no release. *token_type* is
     ``EXTERNAL_IDP`` for an external IdP sign-in, else empty. *profile_arn* is
     sent as ``profileArn`` on every page when set, which CPS needs to tell which
     account is asking; with it CPS lists the personal Crews of that profile
@@ -255,18 +256,17 @@ def _crew_endpoint(raw: Any, crew_domain: str) -> Optional[CrewEndpoint]:
     if not isinstance(url, str) or crew_url_problem(url) is not None:
         return None
     # The token goes only to this origin, so it must be this endpoint's own name,
-    # on the default port. With the relay's domain set, it must be exactly that
-    # name under the domain.
-    # shortcut: one relay domain, change to a list when the viewer must reach a second relay region.
+    # on the default port. The domain after it is the one CPS lists, trusted as is
+    # (crew_url_problem has already refused userinfo, a path and a trailing dot).
+    # A dev relay domain pins it: exactly that name under the domain.
     parts = urlsplit(url)
     if parts.port is not None:
         return None
+    host = parts.hostname or ""
     if crew_domain:
-        if parts.hostname != f"{endpoint}.{crew_domain}":
+        if host != f"{endpoint}.{crew_domain}":
             return None
-    # No relay domain: pin the window to the exact host the control plane listed for this
-    # Crew. A host with nothing after the endpoint ID fails crew_url_problem above.
-    elif not (parts.hostname or "").startswith(f"{endpoint}."):
+    elif not host.startswith(f"{endpoint}."):
         return None
     crew_type = raw.get("crewType")
     if not is_display_name(name) or not isinstance(crew_type, str) or crew_type not in CREW_TYPES:

@@ -191,6 +191,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
     # A control click is one short closed name, so 256 bytes is far above any
     # legitimate body.
+    # One app view: a short app name and three closed fields.
+    "handlers/telemetry_app_view.py::api_app_view": ("_MAX_BODY_BYTES", _BOUNDED_BY_DEFAULT),
     "handlers/telemetry_ui_control.py::api_ui_control_clicked": (
         "_MAX_BODY_BYTES",
         _BOUNDED_BY_DEFAULT,
@@ -424,6 +426,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_api/slot_create.py::api_chat_slot_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # A hub's decision on a remote work item: one string, capped by the store.
     "handlers/remote_work_item.py::api_chat_slot_work_item_patch": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
+    # A hub's batch read: at most 32 items, each a slot key, 16 event ids, a stamp
+    # and a digest, all capped by the route itself, well under the default.
+    "handlers/remote_work_items_pull.py::api_chat_work_items_pull": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),

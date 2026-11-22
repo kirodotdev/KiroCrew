@@ -7,6 +7,7 @@
  */
 import type { AppInfo } from './appDetailPageTypes'
 import { knownDesktopCapabilities } from '../components/appstore/desktopCapabilities'
+import { knownBrowserVerbs } from '../components/appstore/browserVerbs'
 
 export function stagedGrantsOf(app: AppInfo | null) {
   // Declared api/events entries outside the approved set (`approvedGrants`) are
@@ -40,11 +41,20 @@ export function stagedGrantsOf(app: AppInfo | null) {
   const stagedFrameSources = app?.frameSourcesGrant?.staged || []
   // Pages the app's own agent may browse unasked: an install never approves them.
   const stagedBrowserSites = app?.browserSitesGrant?.staged || []
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
+  // Kiro operations an install did not show, or an update added.
+  const stagedKiroOperations = app?.kiroOperationsGrant?.staged || []
+  // `permissions.browser` verbs: an install never approves them either.
+  const stagedBrowser = knownBrowserVerbs(app?.browserGrant?.staged)
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedKiroOperations.length + stagedBrowser.length > 0 || stagedFullUrl || stagedOpenFullUrl || stagedWorkerAutoApprove
+  // Only Kiro operations wait, and none was ever approved: this is the first approval
+  // (an install approves none), not an update asking for more.
+  const firstKiroApproval = stagedKiroOperations.length > 0 && !(app?.kiroOperationsGrant?.approved || []).length
+    && stagedKiroOperations.length === stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length + stagedOpenHosts.length + stagedComposerActions.length + stagedSelection.length + stagedUserSessionReach.length + stagedDesktopCapabilities.length + stagedFrameSources.length + stagedBrowserSites.length + stagedKiroOperations.length + stagedBrowser.length
+    && !stagedFullUrl && !stagedOpenFullUrl && !stagedWorkerAutoApprove
   return {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, hasStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowser, hasStagedGrants, firstKiroApproval,
   }
 }

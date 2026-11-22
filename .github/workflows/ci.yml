@@ -90,22 +90,46 @@ jobs:
     # dorny/paths-filter runs with `token: ''` (below), so it detects changes
     # with local git instead of the REST API and needs no pull-requests:read.
     # Job-level permissions REPLACE the top-level grant, so contents:read is
-    # restated.
+    # restated. issues:read is for the one read of the open main-red issue
+    # ("Read the open main-red issue" below).
     permissions:
       contents: read
+      issues: read
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
+      # 'true' only on a pull request whose diff is nothing but prose docs
+      # (.github/scripts/docs_only.py). `lint-gate` and `backend-lint` skip on
+      # it, so every test, build and E2E lane behind them skips too, and
+      # `docs-contract-tests` runs the tests that read docs instead. An absent
+      # output (this job failed) reads as "not docs-only": everything runs.
+      docs_only: ${{ steps.docs-only.outputs.docs_only }}
       linux_packaging: ${{ steps.filter.outputs.linux_packaging }}
       wheel_closure: ${{ steps.filter.outputs.wheel_closure }}
       render_bench: ${{ steps.filter.outputs.render_bench }}
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
+      # The SHA-256 of each test-file list this run's backend shards split by
+      # file, or empty when the run has no such list (see "Digest the selected
+      # backend test lists"). A shard passes its list's digest to pytest with
+      # the list, and one whose list has another digest fails.
+      leaf_gates_sha256: ${{ steps.lists.outputs.leaf_gates_sha256 }}
+      reduced_sha256: ${{ steps.lists.outputs.reduced_sha256 }}
+      reduced_windows_sha256: ${{ steps.lists.outputs.reduced_windows_sha256 }}
+      docs_readers_sha256: ${{ steps.lists.outputs.docs_readers_sha256 }}
+      # JSON {issue, nodeids} of tests red on main that a pull request's backend
+      # shards deselect, or empty for "run everything" (scripts/ci_main_red_skip.py).
+      # An absent output (this job failed) also runs everything.
+      main_red_skip: ${{ steps.main-red.outputs.main_red_skip }}
       # 'false' only on a fork pull request that touches nothing Windows-shaped
       # (see "Decide the fork Windows scope"). Every other run reads 'true', and
       # an absent output (this job failed) reads as "run", never as a skip.
       windows_tests: ${{ steps.windows-scope.outputs.windows_tests }}
+      # The raw `windows` path bucket below, for EVERY event. Backend Tests
+      # (Windows) takes the reduced or leaf scope only when this reads 'false';
+      # 'true' or an absent output keeps the full Windows suite.
+      windows_paths: ${{ steps.filter.outputs.windows }}
       # Central runner labels: eligible repository/event/actor combinations
       # use CodeBuild. Any other run EXECUTING in this repository uses the
       # `kirocrew-runners` group's own runner label, and a fork running its own
@@ -221,10 +245,14 @@ jobs:
               # Run by build_backend to make bin/ console scripts relocatable.
               - 'packaging/relocate_posix_scripts.py'
               - 'scripts/stamp-distribution.sh'
+              # The smoke install itself: a change to it must run it once.
+              - 'scripts/smoke-linux-packages.sh'
               - '.github/workflows/build-desktop.yml'
-            # Independent of the buckets above. Read only for a FORK pull
-            # request, to decide whether its Backend Tests (Windows) run: the
-            # files that are Windows code by name, the shared platform shims,
+            # Independent of the buckets above. Read for a FORK pull request, to
+            # decide whether its Backend Tests (Windows) run, and on every run to
+            # decide whether Backend Tests (Windows) may take a reduced or leaf
+            # scope (a hit forces its full suite): the files that are Windows
+            # code by name, the shared platform shims,
             # the PowerShell entry points Windows tests drive, and the inputs
             # that shape every Windows shard (dependencies, every conftest, the
             # setup action, the shard plugins, this workflow).
@@ -293,6 +321,56 @@ jobs:
           echo "only_frontend=$only_frontend" >> "$GITHUB_OUTPUT"
           echo "backend=$BACKEND frontend=$FRONTEND meta=$META full_run=$FULL_RUN -> only_backend=$only_backend only_frontend=$only_frontend"
 
+      # Docs-only is a separate question from the buckets above. Docs still
+      # count as `backend` there, so a docs file never rides along under a
+      # narrowed suite; this answers only "is EVERY changed path a prose doc?".
+      # Well over a thousand backend test files and a few hundred frontend
+      # specs can read a doc as data, so such a diff is not test-free: it
+      # skips the matrix and runs those readers in `docs-contract-tests`.
+      # Pull requests only, and never under `ci-full-run`: a push or merge
+      # group runs the full matrix, so a reader the selector misses still goes
+      # red on main. The diff is the
+      # PR's own (merge base to head), the file list the compare endpoint
+      # gives PR Readiness, which excuses the lanes that skip.
+      - name: Decide docs-only scope
+        id: docs-only
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL_RUN: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full-run') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ] || [ "$FULL_RUN" = "true" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "Docs-only scope: not a pull request, or ci-full-run is set."
+            exit 0
+          fi
+          # Any git failure leaves the list empty, which classifies as false.
+          paths="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA" 2>/dev/null || true)"
+          printf '%s\n' "$paths" | python3 .github/scripts/docs_only.py classify >> "$GITHUB_OUTPUT" \
+            || echo "docs_only=false" >> "$GITHUB_OUTPUT"
+
+      # Tests already red on main (`main-red-watch.yml` files one `Main is red:`
+      # issue) fail every pull request opened meanwhile. Read that issue ONCE
+      # per run; the backend shards deselect exactly its node ids. A push,
+      # merge_group or release/** run, a `main-red-fix` or `ci-full-run` label,
+      # a PR body that names the issue, and any read or parse failure all run
+      # everything. The issue body and the PR body reach the script only as
+      # env values. The guards and their tests: scripts/ci_main_red_skip.py.
+      - name: Read the open main-red issue
+        id: main-red
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_BRANCH: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python3 scripts/ci_main_red_skip.py decide
+
       # A diff that touches ONLY leaf test modules cannot change a production code
       # path, and cannot change another test file's outcome either -- the selector
       # escalates on conftest, shared helpers, fixture trees, and any test module
@@ -350,6 +428,69 @@ jobs:
             printf '%s\n' "$gates"
             echo "GATE_EOF"
           } >> "$GITHUB_OUTPUT"
+
+      # A list handed to pytest as --file-shard-targets is placed across the
+      # shards by measured time, so the placement depends on the whole list: if
+      # two shards of one run hold different lists, each can leave a file to
+      # the other and that file runs nowhere, on a green run. No shard sees
+      # another's list, and the reduced scope and the docs readers are worked
+      # out on each shard. So this job, which runs once per run and is not
+      # repeated when one failed shard is re-run, works each list out the same
+      # way from the same commit and publishes its digest; every shard passes
+      # that digest with its own list, and pytest stops before collecting when
+      # they differ. An empty digest means the run has no such list: a shard
+      # that then holds one fails too, and so does a shard that holds none when
+      # the run has one (the scope steps of the three jobs).
+      #
+      # The Windows shards get their own digest: their list leaves out
+      # test/windows-collect-ignore.txt. The leaf corpus gates are one list on
+      # both. The digest is `LC_ALL=C sort -u | sha256sum` over the non-blank
+      # lines, which is what the pytest plugin computes from the file.
+      - name: Digest the selected backend test lists
+        id: lists
+        env:
+          ONLY_FRONTEND: ${{ steps.decide.outputs.only_frontend }}
+          DOCS_ONLY: ${{ steps.docs-only.outputs.docs_only }}
+          LEAF_GATES: ${{ steps.leaf.outputs.leaf_gates }}
+        run: |
+          set -uo pipefail
+          # The digest of the list on stdin; nothing for an empty list, and
+          # nothing (never a failed step) when it cannot be computed.
+          digest() {
+            local lines
+            lines="$(grep '[^[:space:]]' | LC_ALL=C sort -u)" || return 0
+            printf '%s\n' "$lines" | sha256sum | cut -d ' ' -f 1 || true
+          }
+          leaf_gates="$(printf '%s\n' "$LEAF_GATES" | digest)"
+          reduced=""
+          reduced_windows=""
+          docs_readers=""
+          # A selector that fails here publishes no digest, so a shard whose
+          # own selector worked fails instead of running a list nothing vouches for.
+          if [ "$ONLY_FRONTEND" = "true" ]; then
+            if list="$(python3 scripts/ci-surface-tests.py --surface backend)"; then
+              reduced="$(printf '%s\n' "$list" | digest)"
+            fi
+            if list="$(python3 scripts/ci-surface-tests.py --surface backend --for-windows)"; then
+              reduced_windows="$(printf '%s\n' "$list" | digest)"
+            fi
+          fi
+          # The same diff and the same split as docs-contract-tests' own step.
+          if [ "$DOCS_ONLY" = "true" ]; then
+            if docs="$(git diff --no-renames --name-only HEAD^1 HEAD)"; then
+              mapfile -t docs < <(printf '%s\n' "$docs" | grep . || true)
+              if list="$(python3 .github/scripts/docs_only.py readers ${docs[@]+"${docs[@]}"})"; then
+                docs_readers="$(printf '%s\n' "$list" | { grep -v '^website/' || true; } | digest)"
+              fi
+            fi
+          fi
+          {
+            echo "leaf_gates_sha256=$leaf_gates"
+            echo "reduced_sha256=$reduced"
+            echo "reduced_windows_sha256=$reduced_windows"
+            echo "docs_readers_sha256=$docs_readers"
+          } >> "$GITHUB_OUTPUT"
+          echo "List digests: leaf gates '${leaf_gates}', reduced '${reduced}', reduced (Windows) '${reduced_windows}', docs readers '${docs_readers}'."
 
       # Same-repository push/PR/merge-group AND an actor admitted by the fleet
       # webhook. A merge_group run's actor is the person who queued the PR, so
@@ -846,9 +987,13 @@ jobs:
   lint-gate:
     name: Lint Gate
     needs: [changes, await-fast-gate, backend-lint, frontend-lint, ai-block-hold]
+    # Skipped on a docs-only pull request: every test, build and E2E lane
+    # needs this job's success, so they all skip with it, and
+    # `docs-contract-tests` runs instead.
     if: >-
       ${{ !cancelled()
       && needs.changes.result == 'success'
+      && needs.changes.outputs.docs_only != 'true'
       && needs.await-fast-gate.result == 'success'
       && contains(fromJSON('["success","skipped"]'), needs.backend-lint.result)
       && contains(fromJSON('["success","skipped"]'), needs.frontend-lint.result)
@@ -875,7 +1020,9 @@ jobs:
     # diff cannot change this verdict. Gated on only_frontend (not on a
     # positive "python changed" allowlist) so that anything the selector could
     # not classify as frontend -- docs, a new root file, meta -- still runs it.
-    if: needs.changes.outputs.only_frontend != 'true'
+    # A docs-only diff (prose Markdown only, see `changes`) has no Python to
+    # lint, so it skips too.
+    if: needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.docs_only != 'true'
     # Large alone did not fix black's process-pool failure. Bound its workers
     # below as well, on hosted and fleet alike; preserve every lint/type gate.
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
@@ -1019,11 +1166,8 @@ jobs:
         # serial run's (measured: 32s serial, ~5s at 8 jobs, same exit code).
         run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py --jobs "$(nproc)"
 
-      - name: Lint (flake8)
-        run: flake8 src/kiro_crew test conftest.py xdist_budget.py
-
-      # mypy is the longest step on the lint path (~150s cold over ~3,900
-      # files, ~5s warm). A pull request restores the cache main last saved,
+      # mypy takes ~150s cold over ~3,900 files and ~5s warm. A pull request
+      # restores the cache main last saved,
       # and mypy's own incremental check re-verifies every module whose source
       # hash (or any dependency's) differs, so the verdict is the cold run's.
       # A push to main never restores: it type-checks cold and saves the result,
@@ -1040,8 +1184,82 @@ jobs:
           restore-keys: |
             mypy-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml', 'setup.cfg') }}-
 
-      - name: Type check (mypy)
-        run: mypy src/kiro_crew/
+      # flake8 and mypy read the same checkout and neither reads the other's
+      # output, so they run side by side: in series they are the two longest
+      # steps on the path to `lint-gate` (~2.5 min each), and every heavy job
+      # waits for that gate. Both stay blocking. Each exit status is collected
+      # from its own PID, so one tool failing neither hides the other's verdict
+      # nor stops it early, and a tool that was killed (128+signal, e.g. 137
+      # for SIGKILL from the kernel's OOM killer) fails the step by name like
+      # any other non-zero exit. Output goes to one file per tool and is
+      # printed after both have finished, flake8 first, each under its own
+      # group; two writers on one log would interleave their lines. The group
+      # title carries how long after the step's start the tool finished: the
+      # step's duration is only the slower of the two. If the step is
+      # interrupted first (job timeout, cancellation), whatever each tool had
+      # written is printed before it exits, so a hang is not a blank log.
+      #
+      # flake8 keeps its default of one worker per core and mypy is one
+      # process, so the pair is one process over the core count.
+      - name: Lint and type check (flake8 and mypy, side by side)
+        run: |
+          logs="$RUNNER_TEMP/backend-lint"
+          mkdir -p "$logs"
+
+          # Runs in a background subshell, one per tool: output to the tool's
+          # own file, the second it finished beside it, and the tool's exit
+          # status as the subshell's. TERM is passed on to the tool.
+          timed() {
+            local tool=$1 status=0
+            "$@" > "$logs/$tool.log" 2>&1 &
+            local child=$!
+            trap 'kill "$child" 2>/dev/null' TERM
+            wait "$child" || status=$?
+            echo "$SECONDS" > "$logs/$tool.seconds"
+            exit "$status"
+          }
+
+          report() {
+            local tool
+            for tool in flake8 mypy; do
+              if [ -s "$logs/$tool.seconds" ]; then
+                echo "::group::$tool (finished $(cat "$logs/$tool.seconds")s into the step)"
+              else
+                echo "::group::$tool (did not finish)"
+              fi
+              cat "$logs/$tool.log"
+              echo "::endgroup::"
+            done
+          }
+
+          timed flake8 src/kiro_crew test conftest.py xdist_budget.py &
+          flake8_pid=$!
+          timed mypy src/kiro_crew/ &
+          mypy_pid=$!
+
+          # The tools are stopped last: `kill` is non-zero when one has already
+          # exited, and under `bash -e` that ends the trap, with the failure
+          # status it was about to return anyway.
+          trap 'report; echo "::error::interrupted before flake8 and mypy had both finished; the output above is partial"; kill "$flake8_pid" "$mypy_pid" 2>/dev/null; exit 1' INT TERM
+
+          flake8_status=0
+          wait "$flake8_pid" || flake8_status=$?
+          mypy_status=0
+          wait "$mypy_pid" || mypy_status=$?
+          trap - INT TERM
+
+          report
+
+          failed=0
+          if [ "$flake8_status" -ne 0 ]; then
+            echo "::error title=Lint (flake8)::flake8 exited $flake8_status; its output is in the 'flake8' group above"
+            failed=1
+          fi
+          if [ "$mypy_status" -ne 0 ]; then
+            echo "::error title=Type check (mypy)::mypy exited $mypy_status; its output is in the 'mypy' group above"
+            failed=1
+          fi
+          exit "$failed"
 
       - name: Save the mypy cache (main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -1074,7 +1292,7 @@ jobs:
   backend-ratchets:
     name: Backend Ratchets & Boundaries
     needs: [changes, await-fast-gate]
-    if: needs.changes.outputs.only_frontend != 'true'
+    if: needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.docs_only != 'true'
     # Not `linux_runner_large`: black, the one backend gate that needs the
     # large fleet for its process pool, runs in `backend-lint`. Every gate
     # below is a single-process stdlib scan.
@@ -1178,6 +1396,19 @@ jobs:
       - name: Check lockdown-before-publish (secret writers)
         run: python3 scripts/check_lockdown_before_publish.py
 
+      # The guard tier (`scripts/ci_test_map.py guard-tier`) is the floor under
+      # diff-based test selection, and a test file is in it because of its own
+      # text, so an edit can take one out unseen. This compares the tier of the
+      # merge commit with the tier of its first parent, the base: a file that
+      # joins is listed in the job summary, and a file that leaves while it
+      # still exists fails unless it carries a `# guard-tier: not a member`
+      # line. Both sides come from this pull request and its own base, so no
+      # other change can alter the verdict. Pull requests only: a push or a
+      # merge group has no single change to explain.
+      - name: Check guard-tier membership (gate)
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/ci_guard_tier_membership.py --summary "$GITHUB_STEP_SUMMARY"
+
   # The optional native credential pre-filter (native/kc_native) is used by
   # default wherever it is installed, and a wrong False from it would let a
   # credential skip redaction. Its equivalence suite skips itself when the
@@ -1242,6 +1473,181 @@ jobs:
           python -c "import kc_native"
           python -m pytest -q test/test_native_redaction_gate.py test/test_native_redaction_fallback.py test/test_credential_prefilter.py
 
+  # The test verdict of a docs-only pull request, which skips every suite
+  # behind `lint-gate` (see the docs-only step in `changes`). Docs are not
+  # test-free: well over a thousand backend test files and a few hundred
+  # frontend specs can read a doc as data and pin it to the code. This job runs
+  # every test file that names a changed doc, globs Markdown, or imports a test/
+  # helper that does (`.github/scripts/docs_only.py readers`), then the whole
+  # Electron shell suite. The selector is over-broad on purpose, and main's
+  # push CI still runs every suite. The backend half is split across three
+  # whole-file shards (scripts.ci_file_shards); shard 1 also runs the frontend
+  # specs and the Electron suite, once.
+  docs-contract-tests:
+    name: Docs Contract Tests
+    needs: [changes, await-fast-gate]
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only == 'true' && needs.await-fast-gate.result == 'success' }}
+    # Large compute, like Backend Tests: a widely read doc (README.md) selects
+    # well over a thousand backend test files for this job.
+    runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        # The full Linux backend suite (~8,300 files) takes ~20 min a shard
+        # over 8 shards; a widely read doc selects ~1,700 files, about two of
+        # those shards' worth, so three keep each leg well under the budget.
+        # To change the count, update this list and SHARD_COUNT.
+        shard: [1, 2, 3]
+    env:
+      SHARD_COUNT: 3
+      KIROCREW_TMP_RESIDUE_STRICT: "1"
+      KIROCREW_CREW_LOG_READ_BUDGET: raise
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      # Every leg computes the same list from the same merge commit; the file
+      # shards below split it.
+      - name: Select the tests that read the changed docs
+        id: scope
+        env:
+          BACKEND_FILE: ${{ runner.temp }}/docs-readers-backend.txt
+          FRONTEND_FILE: ${{ runner.temp }}/docs-readers-frontend.txt
+          DOCS_READERS_SHA256: ${{ needs.changes.outputs.docs_readers_sha256 }}
+        run: |
+          set -euo pipefail
+          # The merge commit against its first parent (the base) is the change
+          # this merge makes; depth 2 holds both.
+          mapfile -t docs < <(git diff --no-renames --name-only HEAD^1 HEAD)
+          python3 .github/scripts/docs_only.py readers ${docs[@]+"${docs[@]}"} > "$RUNNER_TEMP/readers.txt"
+          # Frontend specs live under website/; every other line is a backend
+          # test file under one of setup.cfg's testpaths roots.
+          grep -v '^website/' "$RUNNER_TEMP/readers.txt" > "$BACKEND_FILE" || true
+          sed -n 's#^website/##p' "$RUNNER_TEMP/readers.txt" > "$FRONTEND_FILE" || true
+          echo "Changed docs: ${docs[*]+"${docs[*]}"}"
+          echo "Backend test files: $(grep -c . "$BACKEND_FILE" || true); frontend specs: $(grep -c . "$FRONTEND_FILE" || true)"
+          # The run named a backend list (the `changes` job) and this leg found
+          # none: the other legs leave this leg's share of that list to it.
+          if [ ! -s "$BACKEND_FILE" ] && [ -n "$DOCS_READERS_SHA256" ]; then
+            echo "::error::this leg selected no backend test file, but the run's list of docs readers is not empty -- refusing to skip this leg's share of it."
+            exit 1
+          fi
+          echo "backend=$([ -s "$BACKEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$([ -s "$FRONTEND_FILE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.scope.outputs.backend == 'true'
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        if: steps.scope.outputs.backend == 'true'
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install Python dependencies
+        if: steps.scope.outputs.backend == 'true'
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
+
+      # As the runner identity: the tests below run unprivileged and cannot
+      # write the job summary. Lists what scripts.ci_main_red_skip deselects.
+      - uses: ./.github/actions/seed-node-tool-cache
+        if: matrix.shard == 1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.shard == 1
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            website/package-lock.json
+            website/electron/package-lock.json
+
+      - name: Run the frontend specs that read the changed docs
+        if: matrix.shard == 1 && steps.scope.outputs.frontend == 'true'
+        working-directory: website
+        env:
+          FRONTEND_FILE: ${{ runner.temp }}/docs-readers-frontend.txt
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped i18n test gates')"
+          export I18N_BASE_REF
+          mapfile -t targets < "$FRONTEND_FILE"
+          npx vitest run --passWithNoTests ${targets[@]+"${targets[@]}"}
+
+      # The whole suite, about a minute, because its specs read docs by
+      # computed paths the selector cannot see. Install and run as in
+      # `electron-test`.
+      - name: Electron shell suite (whole)
+        if: matrix.shard == 1
+        working-directory: website/electron
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      # The backend half runs last: run-as-runner hands the workspace to the
+      # unprivileged user, after which git in a root step (resolve-i18n-base.sh
+      # in the frontend step) refuses the checkout as dubious ownership.
+      - name: List the tests skipped as red on main
+        if: steps.scope.outputs.backend == 'true'
+        env:
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: python3 scripts/ci_main_red_skip.py summary
+
+      # The tests run unprivileged, as in Backend Tests.
+      - uses: ./.github/actions/run-as-runner
+        if: steps.scope.outputs.backend == 'true'
+
+      - name: Run the backend tests that read the changed docs (shard ${{ matrix.shard }}/${{ env.SHARD_COUNT }})
+        if: steps.scope.outputs.backend == 'true'
+        shell: /usr/local/bin/ci-shell {0}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          BACKEND_FILE: ${{ runner.temp }}/docs-readers-backend.txt
+          # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
+          # `changes` job). Read by the plugin from the environment only.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+          # The digest every leg's list must have (the `changes` job).
+          DOCS_READERS_SHA256: ${{ needs.changes.outputs.docs_readers_sha256 }}
+        run: |
+          set -euo pipefail
+          echo "::remove-matcher owner=python::"
+          # Worker count as in Backend Tests: one per 2 GiB after 2 GiB for the
+          # host, capped at the core count.
+          mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
+          by_mem=$(( (mem_mib - 2048) / 2048 ))
+          WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
+          [ "$WORKERS" -ge 1 ] || WORKERS=1
+          echo "pytest workers: $WORKERS"
+          # The list reaches pytest as --file-shard-targets=PATH, never as
+          # arguments: why is in scripts/ci_file_shards.py.
+          rc=0
+          python -m pytest -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" \
+            --max-worker-restart=2 -p scripts.ci_main_red_skip \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.shard }} \
+            --file-shard-targets="$BACKEND_FILE" \
+            --file-shard-targets-sha256="$DOCS_READERS_SHA256" || rc=$?
+          # 5 = nothing collected (this shard owns no selected file, or every
+          # one it owns skips on this platform). 4 = this leg's list is not
+          # the run's, and stays a failure.
+          if [ "$rc" -eq 5 ]; then exit 0; fi
+          exit "$rc"
+
+      # Shard 1 only, with the frontend specs and the Electron suite below.
+
   backend-test:
     name: Backend Tests
     needs: [changes, await-fast-gate, lint-gate]
@@ -1282,6 +1688,9 @@ jobs:
       # A temp entry a test leaves behind fails the job instead of warning
       # (test/conftest_floor_tmp.py `_TMP_RESIDUE_STRICT_ENV`). Each `Backend Tests*` job below sets it too.
       KIROCREW_TMP_RESIDUE_STRICT: "1"
+      # A gateway crew-log read over budget at a site not on the list fails its test
+      # (test/conftest_floor_read_budget.py); the gateway itself reads `raise` as `report`.
+      KIROCREW_CREW_LOG_READ_BUDGET: raise
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1320,11 +1729,16 @@ jobs:
           LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
           LEAF_TARGETS: ${{ needs.changes.outputs.leaf_targets }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # Not empty when the run has a reduced list (the `changes` job).
+          REDUCED_SHA256: ${{ needs.changes.outputs.reduced_sha256 }}
         # A frontend-only diff cannot affect a backend test that never touches
         # the frontend surface, so we run only the files the selector could NOT
         # prove single-surface (every parity guard, plus anything unclassified).
         # Every failure path here falls back to the FULL suite on purpose --
-        # never trade a missed test for a faster run.
+        # never trade a missed test for a faster run. One exception fails
+        # instead: the selector is unusable on this shard while the run has a
+        # reduced list. The other shards then run their share of that list and
+        # leave this shard its own, which the full suite's split would not run.
         run: |
           # Leaf-test verdict wins: it is the narrower and more specific reduction,
           # and it is computed once in the `changes` job. `reduced=true` rides along
@@ -1348,12 +1762,42 @@ jobs:
           rc=0
           python3 scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
           if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            if [ -n "$REDUCED_SHA256" ]; then
+              echo "::error::surface selector unusable (rc=$rc) on this shard, but the run has a reduced list -- refusing to run the full suite's share here, which would skip this shard's share of that list."
+              exit 1
+            fi
             echo "::warning::surface selector unusable (rc=$rc) -- running the FULL backend suite."
             echo "reduced=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "reduced=true" >> "$GITHUB_OUTPUT"
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
+      # As the runner identity: the tests below run unprivileged and cannot
+      # write the job summary. Lists what scripts.ci_main_red_skip deselects.
+      - name: List the tests skipped as red on main
+        env:
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: python3 scripts/ci_main_red_skip.py summary
+
+      # Experiment (#39368): each xdist worker collects the whole shard and
+      # rewrites the asserts of every test file, because a fresh runner has no
+      # cached pyc. This writes those pycs once, one process per core, without
+      # importing a test module, conftest or kiro_crew, into the cache root the
+      # rootdir conftest points pytest at. Full suite only: it is the arm that
+      # takes --file-shard-pins. Same shell as the test step, so the same user
+      # and home, which is what the cache root is derived from. Best effort:
+      # the script exits 0 whatever happens, and a file it did not cache is
+      # rewritten by pytest. It prints its own elapsed seconds.
+      - name: Prewarm assertion rewrites (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        if: ${{ steps.scope.outputs.reduced == 'false' }}
+        shell: /usr/local/bin/ci-shell {0}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          python -m scripts.ci_rewrite_prewarm \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins.txt
 
       - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         shell: /usr/local/bin/ci-shell {0}
@@ -1363,9 +1807,9 @@ jobs:
         # Hash assignment is stable, not duration-balanced. Every file's tests
         # and parameters stay together; xdist still uses loadgroup within a job.
         # The full-suite run (not the reduced or leaf ones) also reads
-        # scripts/ci_file_shard_pins.txt, which moves the heaviest files to fixed
-        # shards so the shards' test time comes out even; the slowest shard sets
-        # this job's time. scripts/ci_file_shard_pins.py regenerates it.
+        # scripts/ci_file_shard_pins.txt, which gives every measured file a fixed
+        # shard so the shards' test time comes out even; the slowest shard sets
+        # this job's time. scripts/ci_file_shard_pins.py --every-file regenerates it.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
@@ -1374,6 +1818,10 @@ jobs:
         # also measures vendored and standalone scripts outside that boundary.
         # The two explicit directories contain already-measured source whose
         # synthetic/app-local module names otherwise make tracing import-order dependent.
+        # `--cov-report=` (empty) writes the data file and prints no terminal
+        # table: the controller spent 227-326 s a shard on that table, on one
+        # core, after the last test ended (run 44434126975). coverage-combine
+        # builds the report from the shard data files.
         env:
           PYTHONPATH: ${{ github.workspace }}
           REDUCED: ${{ steps.scope.outputs.reduced }}
@@ -1381,6 +1829,12 @@ jobs:
           LEAF_REPEAT: "3"
           LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # The digests every shard's lists must have (the `changes` job).
+          LEAF_GATES_SHA256: ${{ needs.changes.outputs.leaf_gates_sha256 }}
+          REDUCED_SHA256: ${{ needs.changes.outputs.reduced_sha256 }}
+          # Node ids red on main, deselected by scripts.ci_main_red_skip (see the
+          # `changes` job). Read by the plugin from the environment only.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
         run: |
           # Reuse payload-free progress on full, reduced and repeated leaf runs.
           # A worker crash stays red; do not replace it and lose its failure report.
@@ -1390,6 +1844,8 @@ jobs:
           # fixed faulthandler_timeout: a dump of a thread still running Python
           # can segfault the worker, so it must never fire inside a test's budget.
           PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -p scripts.ci_faulthandler_budget --faulthandler-grace=30)
+          # Every invocation below also deselects the tests red on main, if any.
+          PROGRESS+=(-p scripts.ci_main_red_skip)
           # An explicit worker count, like the macOS lane's `-n 2`, instead of the
           # xdist budget: that budget reserves 5 GiB a worker for a FULL-suite
           # collection (at 3 GiB it granted a file shard 4 of the fleet runner's 8 cores).
@@ -1434,7 +1890,10 @@ jobs:
           # backend lane for this run (see coverage-gate). The reduced and
           # leaf-gate lists reach pytest as --file-shard-targets=PATH, never as
           # arguments, and a path option pointing outside the checkout keeps
-          # its `=`; why both matter is in scripts/ci_file_shards.py.
+          # its `=`; why both matter is in scripts/ci_file_shards.py. Each
+          # list goes with the digest the `changes` job computed for it once
+          # for the whole run: pytest stops before collecting when this
+          # shard's list has another, or when the run named none.
           TARGETS=()
           if [ "$REDUCED" = "true" ]; then
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
@@ -1474,8 +1933,12 @@ jobs:
               echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
               python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 --no-cov -m "not ipv6_required and not real_venv" \
                 --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
-                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt"
+                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt" \
+                --file-shard-targets-sha256="$LEAF_GATES_SHA256"
               echo "::endgroup::"
+            elif [ -n "$LEAF_GATES_SHA256" ]; then
+              echo "::error::this shard holds no leaf corpus gate, but the run's gate list is not empty -- refusing to skip this shard's share of it."
+              exit 1
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
@@ -1488,7 +1951,8 @@ jobs:
             python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
               --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
-              --file-shard-targets="$TARGETS_FILE"
+              --file-shard-targets="$TARGETS_FILE" \
+              --file-shard-targets-sha256="$REDUCED_SHA256"
             exit 0
           fi
           python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
@@ -1496,7 +1960,8 @@ jobs:
             --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
-            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
+            --cov-report=
         # The shard union plus backend-test-ipv6 retains the full test population.
         # The eleven sandbox files -- the two sandbox suites, the two ops git/gh
         # suites, and the seven auto_improvement suites --
@@ -1615,14 +2080,132 @@ jobs:
         shell: bash
         run: python .github/actions/setup-windows-tests/probe.py
 
-      # No surface selector here, unlike the POSIX backend-test job. Narrowing
-      # this job to the cross-surface subset on a frontend-only diff was
-      # measured as a PESSIMISATION: 4 shards x ~18 min = 70 job-min for the
-      # subset, against 62-67 job-min for the whole suite (runs 33412618648 vs
-      # 33406565382). The shard's worker count already saturates each runner, so a smaller
-      # file list does not shorten a shard, and the cross-surface files are not
-      # the cheap ones. Running everything is both cheaper and strictly more
-      # coverage, so there is nothing to select.
+      # Same scope rules as backend-test, plus one guard: the reduced and leaf
+      # scopes are taken only when the `changes` job's `windows` path bucket did
+      # NOT hit. The surface and leaf selectors prove a file single-surface or
+      # unaffected on any OS; that bucket names the files that shape Windows
+      # behaviour in particular, so a hit keeps the whole Windows suite. A push
+      # (main or release/**) always runs the full Windows suite, so main keeps
+      # the full Windows backstop it had. Every path that falls back to the
+      # full suite in backend-test falls back here too: selector rc != 0 or
+      # empty output, empty leaf targets, and `ci-full-run` (which leaves
+      # only_frontend and leaf_tests false).
+      #
+      # This replaces the #7337 note that measured the subset as a pessimisation
+      # (4 shards, no pins: 70 job-min vs 62-67 full, runs 33412618648 vs
+      # 33406565382). Re-measured on 8 pinned shards, CodeBuild large runners,
+      # with throwaway draft PRs that forced each scope (#39313, #39314):
+      #   full (main pushes 44376034204, 44365593626): 26.6 min wall, 183-191 job-min
+      #   reduced, 1,342 files (run 44426610212):       8.7 min wall,  60 job-min
+      #   leaf, 1 file + 909 gates (run 44427119854):  13.8 min wall,  64 job-min
+      # No `--collect-only` prewarm: a serial one costs 104-115 s per shard and
+      # saves 42-75 s of worker collection, so it loses on both OSes, with and
+      # without --cov (prewarm probe in run 44426610212). The step before
+      # "Run tests" is a different form: it only rewrites asserts, in parallel,
+      # and imports nothing.
+      - name: Select test scope
+        id: scope
+        shell: bash
+        env:
+          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          LEAF_TESTS: ${{ needs.changes.outputs.leaf_tests }}
+          LEAF_TARGETS: ${{ needs.changes.outputs.leaf_targets }}
+          LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
+          WINDOWS_PATHS: ${{ needs.changes.outputs.windows_paths }}
+          EVENT: ${{ github.event_name }}
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # The gate list goes to the test step as a FILE: as an env var it is
+          # ~45 KB, past Windows' 32,767-character limit, and every test that
+          # spawns a child with os.environ then fails (measured on #39314).
+          GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
+          # Leaf weight budget: the changed files run on EVERY shard, so their
+          # Windows weight must fit the 60-minute job. In run 44376034204 every
+          # file outside scripts/ci_file_shard_pins_windows.txt took <= 30 s on
+          # Windows (40 files <= 1,200 s, ~5 min on 4 workers); pinned files took
+          # up to 1,296 s each (4 of them ~22 min, one xdist group per worker).
+          # Past either cap the full Windows suite runs instead.
+          # shortcut: file counts stand in for per-file seconds; switch to the
+          # measured weights if a leaf run ever nears the timeout.
+          WINDOWS_LEAF_MAX_FILES: "40"
+          WINDOWS_LEAF_MAX_PINNED: "4"
+          # Not empty when the run has a reduced Windows list (the `changes`
+          # job): the selector failing here then fails this shard, as on Linux.
+          REDUCED_SHA256: ${{ needs.changes.outputs.reduced_windows_sha256 }}
+        run: |
+          if [ "$WINDOWS_PATHS" != "false" ] || [ "$EVENT" = "push" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full Windows suite: event '$EVENT', windows_paths='$WINDOWS_PATHS' (a push, or a Windows-shaped path)."
+            exit 0
+          fi
+          if [ "$LEAF_TESTS" = "true" ] && [ -n "${LEAF_TARGETS//[[:space:]]/}" ]; then
+            printf '%s\n' "$LEAF_TARGETS" | grep . > "$TARGETS_FILE" || true
+            if [ -s "$TARGETS_FILE" ]; then
+              printf '%s\n' "$LEAF_GATES" | grep . > "$GATES_FILE" || true
+              # The changed files reach pytest as explicit paths, which bypass the
+              # `pytest_ignore_collect` hook, so drop the files Windows never
+              # collects (test/windows-collect-ignore.txt), as the reduced
+              # selector does. Nothing left to run falls back to the full suite.
+              awk 'NR==FNR { sub(/\r$/, ""); sub(/#.*/, ""); gsub(/[[:space:]]/, ""); if ($0 != "") skip["test/" $0] = 1; next } { sub(/\r$/, "") } !($0 in skip)' test/windows-collect-ignore.txt "$TARGETS_FILE" > "$TARGETS_FILE.kept"
+              mv "$TARGETS_FILE.kept" "$TARGETS_FILE"
+              changed="$(grep -vxF -f "$GATES_FILE" "$TARGETS_FILE" || true)"
+              files=$(printf '%s\n' "$changed" | grep -c . || true)
+              pinned=$(printf '%s\n' "$changed" | awk 'NR==FNR { sub(/\r$/, ""); if ($0 !~ /^#/ && NF == 2) pin[$2] = 1; next } { sub(/\r$/, "") } ($0 in pin)' scripts/ci_file_shard_pins_windows.txt - | grep -c . || true)
+              if [ "$files" -ge 1 ] && [ "$files" -le "$WINDOWS_LEAF_MAX_FILES" ] && [ "$pinned" -le "$WINDOWS_LEAF_MAX_PINNED" ]; then
+                echo "reduced=true" >> "$GITHUB_OUTPUT"
+                echo "leaf=true" >> "$GITHUB_OUTPUT"
+                echo "Leaf-test scope: $files changed file(s), $pinned of them pinned heavy."
+                exit 0
+              fi
+              echo "::notice::leaf diff outside the Windows budget ($files Windows-collected changed file(s), $pinned pinned; need 1-$WINDOWS_LEAF_MAX_FILES and <= $WINDOWS_LEAF_MAX_PINNED) -- running the FULL Windows suite."
+              echo "reduced=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::leaf targets arrived empty -- running the FULL Windows suite."
+          fi
+          if [ "$ONLY_FRONTEND" != "true" ]; then
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            echo "Full Windows suite (diff is not frontend-only)."
+            exit 0
+          fi
+          rc=0
+          python scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
+          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
+            if [ -n "$REDUCED_SHA256" ]; then
+              echo "::error::surface selector unusable (rc=$rc) on this shard, but the run has a reduced list -- refusing to run the full suite's share here, which would skip this shard's share of that list."
+              exit 1
+            fi
+            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL Windows suite."
+            echo "reduced=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reduced=true" >> "$GITHUB_OUTPUT"
+          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+
+      # Lists what scripts.ci_main_red_skip deselects, in the job summary.
+      - name: List the tests skipped as red on main
+        shell: bash
+        env:
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
+        run: python scripts/ci_main_red_skip.py summary
+
+      # Same experiment and contract as backend-test's prewarm step (#39368),
+      # with the Windows pin file and the test step's shell. --compile-product
+      # also compiles every module under src/ to the import cache under the same
+      # root, which is empty on a fresh runner: each worker would otherwise
+      # compile the ~3,900 product modules one shard's collection imports, all
+      # six the same ones at once. Windows only: measured on CI it shortened a
+      # Windows worker's collection by about 16% and did not change a Linux
+      # worker's, whose collection is dominated by the coverage tracer.
+      - name: Prewarm assertion rewrites (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
+        if: ${{ steps.scope.outputs.reduced == 'false' }}
+        shell: bash
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          python -m scripts.ci_rewrite_prewarm \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --file-shard-pins scripts/ci_file_shard_pins_windows.txt \
+            --compile-product
 
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares
@@ -1655,6 +2238,20 @@ jobs:
         shell: bash
         env:
           PYTHONPATH: ${{ github.workspace }}
+          REDUCED: ${{ steps.scope.outputs.reduced }}
+          LEAF: ${{ steps.scope.outputs.leaf }}
+          # 1, not backend-test's 3: the changed files run on every shard, and
+          # Windows runs them several times slower (the budget in "Select test
+          # scope"). Eight independent shard runs still roll each file 8 times.
+          LEAF_REPEAT: "1"
+          # A file, never the leaf_gates output as env (see "Select test scope").
+          GATES_FILE: ${{ runner.temp }}/leaf-gate-list.txt
+          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+          # The digests every shard's lists must have (the `changes` job).
+          LEAF_GATES_SHA256: ${{ needs.changes.outputs.leaf_gates_sha256 }}
+          REDUCED_SHA256: ${{ needs.changes.outputs.reduced_windows_sha256 }}
+          # Node ids red on main, deselected by scripts.ci_main_red_skip.
+          CI_MAIN_RED_SKIP: ${{ needs.changes.outputs.main_red_skip }}
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
@@ -1663,11 +2260,14 @@ jobs:
           # An explicit worker count, as in backend-test, instead of the xdist
           # budget: that budget reserves 5 GiB a worker for a
           # FULL-suite collection and grants a file shard only 2 of the fleet
-          # runner's 8 cores. One worker per 3 GiB after 2 GiB for the host,
-          # capped at the core count: 4 on the 15 GiB fleet runner and on a
+          # runner's 8 cores. The shards are CPU-bound, not memory-bound: at 4
+          # workers one kept 3.6-3.7 of 8 vCPU busy and peaked at 8,603-8,901 of
+          # 16,111 MiB; at 6 it peaked at 9,858-11,234 MiB (runs 44434126975,
+          # 44440752272). So one worker per 2 GiB after 2 GiB for the host,
+          # capped at the core count: 6 on the 16 GiB fleet runner, 4 on a
           # 4-core hosted runner. The step prints its peak memory after the run.
           mem_mib=$(python -c "from kiro_crew.platform_compat import host_total_mib; print(host_total_mib(), end='')")
-          by_mem=$(( (mem_mib - 2048) / 3072 ))
+          by_mem=$(( (mem_mib - 2048) / 2048 ))
           WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))
           [ "$WORKERS" -ge 1 ] || WORKERS=1
           echo "pytest workers: $WORKERS"
@@ -1687,7 +2287,61 @@ jobs:
           ' "$RUNNER_TEMP/mem-peak-mib" > /dev/null 2>&1 &
           MEM_SAMPLER=$!
           trap 'kill "$MEM_SAMPLER" 2>/dev/null || true' EXIT
-          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
+          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir "$RUNNER_TEMP/pytest-progress")
+          # Every invocation below also deselects the tests red on main, if any.
+          PROGRESS+=(-p scripts.ci_main_red_skip)
+          # Reduced and leaf arms as in backend-test: subset lists reach pytest
+          # as --file-shard-targets=PATH, never as arguments; the changed leaf
+          # files run unsharded on every job, the corpus gates sharded once.
+          # Pins balance the FULL suite and apply to it alone.
+          TARGETS=()
+          if [ "$REDUCED" = "true" ]; then
+            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
+          fi
+          if [ "$LEAF" = "true" ]; then
+            GATES=()
+            if [ -s "$GATES_FILE" ]; then
+              while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done < "$GATES_FILE"
+            fi
+            CHANGED=()
+            for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
+              keep=1
+              for gate in ${GATES[@]+"${GATES[@]}"}; do
+                if [ "$target" = "$gate" ]; then keep=0; break; fi
+              done
+              if [ "$keep" = "1" ]; then CHANGED+=("$target"); fi
+            done
+            if [ "${#CHANGED[@]}" -eq 0 ]; then
+              echo "::error::leaf run resolved no changed files -- refusing to report green."
+              exit 1
+            fi
+            if [ "${#GATES[@]}" -gt 0 ]; then
+              printf '%s\n' ${GATES[@]+"${GATES[@]}"} > "$RUNNER_TEMP/leaf-gates.txt"
+              echo "::group::leaf corpus gates (${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT)"
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+                --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+                --file-shard-targets="$RUNNER_TEMP/leaf-gates.txt" \
+                --file-shard-targets-sha256="$LEAF_GATES_SHA256"
+              echo "::endgroup::"
+            elif [ -n "$LEAF_GATES_SHA256" ]; then
+              echo "::error::this shard holds no leaf corpus gate, but the run's gate list is not empty -- refusing to skip this shard's share of it."
+              exit 1
+            fi
+            for pass in $(seq 1 "$LEAF_REPEAT"); do
+              echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
+              python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" ${CHANGED[@]+"${CHANGED[@]}"}
+              echo "::endgroup::"
+            done
+            exit 0
+          fi
+          if [ "$REDUCED" = "true" ]; then
+            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
+              --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+              --file-shard-targets="$TARGETS_FILE" \
+              --file-shard-targets-sha256="$REDUCED_SHA256"
+            exit 0
+          fi
+          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards -p scripts.ci_main_red_skip \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
             -q -n "$WORKERS" --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
@@ -2481,8 +3135,10 @@ jobs:
             test/test_snapshot_read_only_real_view.py \
             test/test_pinned_order_real_sandbox.py \
             test/test_md_notebook_real_sandbox.py \
+            test/test_app_backend_secret_files_real_sandbox.py \
             test/test_sandbox_hidden_leaf_parent_pins.py \
             test/test_app_credential_mask_dirs.py \
+            test/test_session_record_directory_sealed.py \
             test/test_member_records_real_sandbox.py \
             test/test_seal_parent_pin_real_sandbox.py \
             test/test_stand_in_stage_real_sandbox.py \
@@ -3028,9 +3684,23 @@ jobs:
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
+      # Sparse: this job reads only setup.cfg (the [coverage:*] sections), the
+      # measured source and pyproject.toml (setup-uv hashes it with setup.cfg
+      # for its cache key). Every file the shards measure is under src/: each
+      # `--cov` target is a package or a directory there, and [coverage:paths]
+      # maps every spelling onto it. A measured file outside this list stops
+      # `coverage xml` and `coverage report` with "No source for code", so a
+      # list that falls behind turns this job red and can never shrink what
+      # is measured. test/test_ci_coverage_sparse_checkout.py holds the list
+      # against the `--cov` targets and setup.cfg.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout: |
+            /src/
+            /setup.cfg
+            /pyproject.toml
+          sparse-checkout-cone-mode: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -3071,7 +3741,12 @@ jobs:
         # apiece on the combined data, against ~4s for the combine), and both
         # only READ .coverage, so they run side by side. Each exit status is
         # waited on by PID, so either one failing still fails the step.
+        #
+        # setup.cfg is asserted because coverage runs without it too: with no
+        # `relative_files` it matches no recorded path to a source file and
+        # reports every file at 0%.
         run: |
+          test -f setup.cfg || { echo "::error::setup.cfg missing from the checkout, so coverage has no [coverage:*] configuration"; exit 1; }
           test -f .coverage.ipv6 || { echo "::error::required IPv6 coverage data missing"; exit 1; }
           test -f .coverage.kernel-lock-owner || { echo "::error::required kernel lock owner coverage data missing"; exit 1; }
           coverage combine
@@ -3206,6 +3881,7 @@ jobs:
           KERNEL_LOCK_OWNER: ${{ needs.backend-test-kernel-lock-owner.result }}
           ONLY_BACKEND: ${{ needs.changes.outputs.only_backend }}
           ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           BACKEND_LINT: ${{ needs.backend-lint.result }}
           FRONTEND_LINT: ${{ needs.frontend-lint.result }}
           AI_BLOCK_HOLD: ${{ needs.ai-block-hold.outputs.hold }}
@@ -3216,6 +3892,18 @@ jobs:
           if [ -z "$ONLY_BACKEND" ] || [ -z "$ONLY_FRONTEND" ]; then
             echo "::error::surface detection (changes) never reported -- failing closed."
             exit 1
+          fi
+          # A docs-only pull request skips `lint-gate` on purpose, and with it
+          # every suite this gate measures; `docs-contract-tests` is its test
+          # verdict. Nothing to measure is not a failure here. A test job that
+          # ran anyway is: the skip did not hold.
+          if [ "$DOCS_ONLY" = "true" ]; then
+            if [ "$BE" != "skipped" ] || [ "$FE" != "skipped" ]; then
+              echo "::error::docs-only run but backend-test=$BE frontend-test=$FE (expected exactly 'skipped') -- inconsistent."
+              exit 1
+            fi
+            echo "Docs-only run: the test suites were skipped by design; coverage not measured."
+            exit 0
           fi
           # Lint runs first: a failed or cancelled lint job skips `lint-gate`
           # and with it every test shard, so the checks below would all report
@@ -3309,9 +3997,22 @@ jobs:
       # and the two baselines from the tree. It sits BEFORE the artifact
       # downloads because actions/checkout cleans the workspace by default and
       # would otherwise delete them.
+      #
+      # Sparse: the script imports only the standard library and defusedxml,
+      # and pyproject.toml is here for setup-uv, which hashes it for its cache
+      # key and warns when its glob matches nothing. A missing script exits 2,
+      # and a missing baseline reads as an empty one, which holds every
+      # baselined file to the floor it is recorded as being under.
+      # test/test_ci_coverage_sparse_checkout.py holds the list against the
+      # paths this job runs and the script's imports.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          sparse-checkout: |
+            /scripts/check_per_file_coverage.py
+            /.github/coverage-baselines/
+            /pyproject.toml
+          sparse-checkout-cone-mode: false
 
       # The gate parses the Cobertura reports through defusedxml rather than the
       # stdlib parser, which resolves external entities -- and on a fork PR the
@@ -3339,7 +4040,7 @@ jobs:
           path: backend-cov
 
       - name: Download frontend coverage
-        if: needs.changes.outputs.only_backend != 'true'
+        if: needs.changes.outputs.only_backend != 'true' && needs.changes.outputs.docs_only != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: coverage-frontend
@@ -3363,7 +4064,7 @@ jobs:
           PY
 
       - name: Check frontend coverage (min ${{ env.FRONTEND_MIN }}%)
-        if: needs.changes.outputs.only_backend != 'true'
+        if: needs.changes.outputs.only_backend != 'true' && needs.changes.outputs.docs_only != 'true'
         run: |
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
@@ -3389,7 +4090,7 @@ jobs:
             --baseline .github/coverage-baselines/backend.txt
 
       - name: Check per-file coverage, frontend (floor ${{ env.PER_FILE_MIN }}%)
-        if: needs.changes.outputs.only_backend != 'true'
+        if: needs.changes.outputs.only_backend != 'true' && needs.changes.outputs.docs_only != 'true'
         run: |
           F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
           test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
@@ -3938,6 +4639,9 @@ jobs:
   # process launched through a junction is matched however Win32_Process spells
   # its ExecutablePath -- so those test files also run once on a real Windows
   # host. No npm ci: the two modules under test require only the Node stdlib.
+  # managed-exec-real-tree.test.js runs a real command under the pinned cmd.exe
+  # to prove a managed update timeout ends the whole tree; it also needs only
+  # the stdlib.
   electron-test-windows:
     name: Electron Shell Tests (Windows port identity)
     needs: [changes, await-fast-gate, lint-gate]
@@ -3959,7 +4663,7 @@ jobs:
 
       - name: Windows port-identity tests
         working-directory: website/electron
-        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js test/find-bin-real-ssh.test.js
+        run: node --test test/windows-port.test.js test/windows-port-junction.test.js test/windows-port-real-junction.test.js test/find-bin-real-ssh.test.js test/managed-exec-real-tree.test.js
 
   frontend-test:
     name: Frontend Tests
@@ -4563,10 +5267,27 @@ jobs:
   # to RUNNER_TEMP (written to GITHUB_ENV by the version step, since job-level
   # env cannot read the runner context) so the cache restore (root, HOME=/root)
   # and the specs (runner, HOME=/home/runner) resolve the same directory.
+  #
+  # Sharded: the Playwright suite is one worker against one gateway, which is
+  # what its specs are written for, so the way to shorten it is more gateways,
+  # not more workers. Each leg boots its own gateway and runs `--shard=<i>/<K>`
+  # of the suite. The shard count is the length of the `shard` list and nothing
+  # else names it. Before it runs, every leg lists the whole suite and all K
+  # shards and fails unless they divide the suite exactly; after, it fails unless
+  # it ran exactly its own list (test/test_playwright_e2e.py, docs/ci/e2e-gate.md).
+  # Leg 1 also carries what runs once per pull request: the asserting harness
+  # steps below and the memory UI lane of scripts/ci_e2e_parallel.py.
   e2e:
-    name: E2E (stub ACP backend, offline)
+    name: E2E (stub ACP backend, offline, ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
+    strategy:
+      fail-fast: false
+      # The pool-wide ceiling for a matrix, not a throttle: every leg starts at
+      # once, and a list of up to four legs needs no edit here.
+      max-parallel: 4
+      matrix:
+        shard: [1, 2]
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Route-aware, for the same reason backend-test is. Off the CodeBuild fleet
     # this job runs on `kirocrew-linux-4-core`, where the slowest of six
@@ -4690,6 +5411,7 @@ jobs:
           npx playwright install chromium
 
       - name: MCP-App message rows render both delivery states (asserting harness)
+        if: ${{ matrix.shard == 1 }}
         # The same self-asserting harness that produced the PR's screenshot
         # evidence: serves the built SPA over loopback with fixture-backed
         # /api/** responses and fails on any scene assertion (envelope leak,
@@ -4701,6 +5423,7 @@ jobs:
         run: node scripts/capture-mcp-app-message-rows.mjs "$RUNNER_TEMP/mcp-app-message-rows"
 
       - name: kiro-light cards carry their own edge (computed-style sweep)
+        if: ${{ matrix.shard == 1 }}
         # kiro-light paints --card and --bg the same #ffffff, so a borderless
         # card there draws nothing while every other theme shows it. Renders
         # the core dashboard routes and every built-in app page of the built
@@ -4734,6 +5457,7 @@ jobs:
       # canary idiom as the boot matrices above: pytest exits 0 on a fully skipped
       # module, so the count is what proves the corpus actually ran.
       - name: SkillForm frontmatter parity (TS mirror vs Python read path)
+        if: ${{ matrix.shard == 1 }}
         env:
           KIROCREW_SKILLFORM_PARITY_REQUIRE: "1"
         run: |
@@ -4760,6 +5484,7 @@ jobs:
           }
 
       - name: Transcript rows hold the 4px grid floor (asserting harness)
+        if: ${{ matrix.shard == 1 }}
         # Renders every transcript row kind through the real ChatMessageList and
         # fails when a frame matches ZERO rows (the selector drifted and every
         # check below it would pass vacuously), when a row's card padding is off
@@ -4824,6 +5549,11 @@ jobs:
           # from the SAME expression as this job's timeout-minutes above so the two
           # cannot drift: 30 on the CodeBuild fleet, 40 on the hosted route.
           KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
+          # This leg's part of the suite. The harness passes it to Playwright as
+          # `--shard`, and the helper starts the memory UI lane on leg 1 only.
+          KIROCREW_E2E_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          # The harness copies the run's JSON report here for the upload below.
+          KIROCREW_E2E_REPORT_DIR: ${{ runner.temp }}/e2e-playwright-report
         run: exec python scripts/ci_e2e_parallel.py
 
       # Only after a started sampler: a job that failed before run-as-runner
@@ -4840,7 +5570,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: voice-recovery-evidence
+          name: voice-recovery-evidence-${{ matrix.shard }}
           path: website/test-results/**/voice-recovery/
           if-no-files-found: ignore
           retention-days: 7
@@ -4849,7 +5579,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: member-memory-ui-evidence
+          name: member-memory-ui-evidence-${{ matrix.shard }}
           path: |
             website/test-results/**/member-memory-*.png
             website/test-results/**/legacy-member-memory-*.png
@@ -4859,6 +5589,18 @@ jobs:
             website/test-results/**/memory-v2-*.png
             ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-*.png
             ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # The run's JSON report, on every outcome: each test's id and status, which
+      # is what shows from outside the job that the legs together ran every test
+      # once. `ignore`: a leg that failed before the specs started has no report.
+      - name: Upload Playwright JSON report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-playwright-report-${{ matrix.shard }}
+          path: ${{ runner.temp }}/e2e-playwright-report/
           if-no-files-found: ignore
           retention-days: 7
 
@@ -4876,7 +5618,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-playwright-failures
+          name: e2e-playwright-failures-${{ matrix.shard }}
           path: |
             website/test-results/
             website/playwright-report/
@@ -4887,7 +5629,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-host-pressure
+          name: e2e-host-pressure-${{ matrix.shard }}
           path: ${{ runner.temp }}/e2e-host-pressure.log
           if-no-files-found: ignore
           retention-days: 7

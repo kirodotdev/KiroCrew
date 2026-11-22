@@ -92,6 +92,8 @@ export interface BannerGateContext {
   /** The thread a non-chat surface (the Members page) registered as on screen
    *  (`lib/viewedThread`); registration already implies a focused window. */
   viewedThread?: string | null
+  /** A relay Crew tab fills the page, so no local view is on screen. */
+  relayCovered?: boolean
 }
 
 /** The channel of a crewmate's message in its DM thread
@@ -113,8 +115,8 @@ export const STOPPED_CHAT_CHANNEL = 'system.turn'
  * is the Members page, which shows one thread at a time, so matching the route
  * would hide every other crewmate's message while the page is open.
  */
-export function targetsCurrentView(n: Notification, ctx: Pick<BannerGateContext, 'pathname' | 'activeSlot' | 'windowFocused' | 'viewedThread'>): boolean {
-  if (!ctx.windowFocused) return false
+export function targetsCurrentView(n: Notification, ctx: Pick<BannerGateContext, 'pathname' | 'activeSlot' | 'windowFocused' | 'viewedThread' | 'relayCovered'>): boolean {
+  if (!ctx.windowFocused || ctx.relayCovered) return false
   if (n.slot && ctx.activeSlot && n.slot === ctx.activeSlot && isChatPath(ctx.pathname)) return true
   if (n.channel === MEMBER_MESSAGE_CHANNEL) return !!n.slot && n.slot === ctx.viewedThread
   // A stopped-chat alert is view-targeted ONLY by its slot (handled above): its
@@ -140,7 +142,8 @@ export function shouldBannerNote(n: Notification, ctx: BannerGateContext): boole
   if (!ctx.enabled) return false
   if (isSilencedNote(n)) return false
   if (ctx.popoverOpen) return false
-  if (ctx.pathname === '/notifications' || ctx.pathname.startsWith('/notifications/')) return false
+  // The feed shows the note, unless a relay Crew tab covers the page.
+  if (!ctx.relayCovered && (ctx.pathname === '/notifications' || ctx.pathname.startsWith('/notifications/'))) return false
   if (targetsCurrentView(n, ctx)) return false
   return true
 }

@@ -146,7 +146,7 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
 
     The registry + SSH tunnel manager are created lazily inside the startup
     hook (which fires during ``runner.setup()``), gated on ``instances.enabled``
-    (default off). We then auto-reconnect every instance the operator left
+    (default on). We then auto-reconnect every instance the operator left
     connected (``was_connected``) via :func:`_revive_intended_instances`, which
     isolates per-instance failures so a down host's tab persists in an error
     state instead of vanishing; the user re-authenticates and retries from the

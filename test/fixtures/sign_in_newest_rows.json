@@ -1,0 +1,141 @@
+{
+  "$comment": [
+    "ONE table for 'is the newest error a sign-in error, with nothing after it opening a turn',",
+    "consumed by BOTH suites:",
+    "  - pytest  test/test_newest_error_is_sign_in.py  (newest_error_is_sign_in, the sidebar row's flag)",
+    "  - vitest  website/src/test/interruptedRowLabel.test.ts  (authRequiredIsNewest, the composer's hint)",
+    "",
+    "The composer reads the transcript in the browser; a sidebar row of a chat that is not open has",
+    "no transcript there, so the gateway answers the same question for it. Divergence on EITHER side",
+    "fails here."
+  ],
+  "cases": [
+    {
+      "name": "a sign-in error ends the turn",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } }
+      ],
+      "expected": true
+    },
+    {
+      "name": "a rebuilt row carries the kind at the top level",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "kind": "auth_required" }
+      ],
+      "expected": true
+    },
+    {
+      "name": "another error kind",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Context window full.", "meta": { "kind": "context_overflow" } }
+      ],
+      "expected": false
+    },
+    {
+      "name": "an error with no kind",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Connection dropped." }
+      ],
+      "expected": false
+    },
+    {
+      "name": "a reply after the sign-in error",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } },
+        { "role": "assistant", "content": "Hi." }
+      ],
+      "expected": false
+    },
+    {
+      "name": "a new message after the sign-in error",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } },
+        { "role": "user", "content": "hello again" }
+      ],
+      "expected": false
+    },
+    {
+      "name": "a steer opens no turn",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } },
+        { "role": "user", "content": "also this", "meta": { "steer": true } }
+      ],
+      "expected": true
+    },
+    {
+      "name": "a Resume continues the same turn",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } },
+        { "role": "inject", "content": "Continue.", "meta": { "injectKind": "recovery" } }
+      ],
+      "expected": true
+    },
+    {
+      "name": "a cron turn after the sign-in error",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } },
+        { "role": "inject", "content": "[Cron notification]", "meta": { "injectKind": "cron" } }
+      ],
+      "expected": false
+    },
+    {
+      "name": "a monitor cycle after the sign-in error",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } },
+        { "role": "nudge", "content": "[auto-nudge cycle 2]" }
+      ],
+      "expected": false
+    },
+    {
+      "name": "a sub-agent completion after the sign-in error",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } },
+        { "role": "subagent", "content": "[Subagent completion event]" }
+      ],
+      "expected": false
+    },
+    {
+      "name": "a newer plain error",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } },
+        { "role": "error", "content": "Connection dropped." }
+      ],
+      "expected": false
+    },
+    {
+      "name": "a sign-in error after an older plain error",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "error", "content": "Connection dropped." },
+        { "role": "user", "content": "hello again" },
+        { "role": "error", "content": "Not signed in to Kiro.", "meta": { "kind": "auth_required" } }
+      ],
+      "expected": true
+    },
+    {
+      "name": "no error at all",
+      "rows": [
+        { "role": "user", "content": "hello" },
+        { "role": "assistant", "content": "Hi." }
+      ],
+      "expected": false
+    },
+    {
+      "name": "an empty transcript",
+      "rows": [],
+      "expected": false
+    }
+  ]
+}

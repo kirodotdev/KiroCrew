@@ -4,8 +4,8 @@ status: partial
 revision: v1
 author: Kiro Crew
 created: 2026-09-06
-last-audited: 2026-10-05
-audited-at: e281ecaf33
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: [8403]
 tracking-issues: []

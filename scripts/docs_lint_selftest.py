@@ -553,6 +553,61 @@ def _self_test() -> int:
             "# Ok\n\nName it `MyOwnWidget` in your app.\n", encoding="utf-8"
         )
 
+    def _declaring_doc(root: Path, comment: str, body: str) -> None:
+        (root / "src" / "kiro_crew").mkdir(parents=True, exist_ok=True)
+        (root / "src" / "kiro_crew" / "real.py").write_text("live_handler = 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(f"# Ok\n\n{comment}\n\n{body}\n", encoding="utf-8")
+
+    def allow_declared_defines(root: Path) -> None:
+        _declaring_doc(
+            root,
+            "<!-- docs-lint: defines schema_own_key, otherOwnField -->",
+            "Write `schema_own_key` and `otherOwnField` into the report.",
+        )
+
+    def allow_declared_wrong_on_purpose(root: Path) -> None:
+        _declaring_doc(
+            root,
+            "<!-- docs-lint: wrong-on-purpose retired_task_type -->",
+            "Do NOT schedule `retired_task_type`.",
+        )
+
+    def plant_declared_name_the_code_defines(root: Path) -> str:
+        _declaring_doc(
+            root, "<!-- docs-lint: defines live_handler -->", "Call `live_handler` first."
+        )
+        return "live_handler"
+
+    def plant_stale_declaration(root: Path) -> str:
+        _declaring_doc(root, "<!-- docs-lint: defines gone_own_key -->", "Nothing cites it.")
+        return "gone_own_key"
+
+    def plant_declaration_seen_from_another_doc(root: Path) -> str:
+        allow_declared_defines(root)
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Other](other.md)\n", encoding="utf-8"
+        )
+        (root / "docs" / "other.md").write_text(
+            "# Other\n\nAlso reads `otherOwnField`.\n", encoding="utf-8"
+        )
+        return "otherOwnField"
+
+    def plant_fenced_declaration_example(root: Path) -> str:
+        _declaring_doc(
+            root,
+            "```md\n<!-- docs-lint: defines fenced_example_key -->\n```",
+            "Then `fenced_example_key` is named.",
+        )
+        return "fenced_example_key"
+
+    def plant_path_behind_a_declaration(root: Path) -> str:
+        _declaring_doc(
+            root,
+            "<!-- docs-lint: defines src/kiro_crew/ghost.py -->",
+            "The entry point is `src/kiro_crew/ghost.py`.",
+        )
+        return "src/kiro_crew/ghost.py"
+
     def plant_dead_self_anchor(root: Path) -> str:
         (root / "docs" / "ok.md").write_text(
             "# Ok\n\n## Real section\n\nSee [it](#gone-section).\n", encoding="utf-8"
@@ -707,6 +762,35 @@ def _self_test() -> int:
         "documentation placeholder identifier",
         CHECK_DEAD_IDENTIFIER,
         allow_placeholder_identifier,
+    )
+    fact_immunity_probe(
+        "names a doc declares it defines", CHECK_DEAD_IDENTIFIER, allow_declared_defines
+    )
+    fact_immunity_probe(
+        "name a doc declares wrong on purpose",
+        CHECK_DEAD_IDENTIFIER,
+        allow_declared_wrong_on_purpose,
+    )
+    fact_probe(
+        "declared name the code defines",
+        CHECK_DEAD_IDENTIFIER,
+        plant_declared_name_the_code_defines,
+    )
+    fact_probe(
+        "declared name the doc no longer cites", CHECK_DEAD_IDENTIFIER, plant_stale_declaration
+    )
+    fact_probe(
+        "declared name cited from another doc",
+        CHECK_DEAD_IDENTIFIER,
+        plant_declaration_seen_from_another_doc,
+    )
+    fact_probe(
+        "declaration shown inside a fence",
+        CHECK_DEAD_IDENTIFIER,
+        plant_fenced_declaration_example,
+    )
+    fact_probe(
+        "path check ignores a declaration", CHECK_PATH_EXISTS, plant_path_behind_a_declaration
     )
     fact_probe("dead in-page anchor", CHECK_ANCHOR_EXISTS, plant_dead_self_anchor)
     fact_probe("dead cross-file anchor", CHECK_ANCHOR_EXISTS, plant_dead_cross_file_anchor)

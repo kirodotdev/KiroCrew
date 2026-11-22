@@ -12,6 +12,7 @@
 import { BASE_PATH, withBase } from '../lib/basePath'
 import { APP_FRAME_TAG, tagged } from './frameProtocol'
 import { relayNonce, serveFrameRelay } from './frameRelay'
+import { apiTransport } from '../api/apiTransport'
 
 /** The only sandbox grant. Never `allow-same-origin`: with `allow-scripts` it would
  *  let the frame remove its own sandbox. */
@@ -63,7 +64,7 @@ export async function mintAppFrame(
   const qs = params.toString()
   const q = qs ? `?${qs}` : ''
   const path = `/api/apps/${encodeURIComponent(appName)}/frames/${point}/${pointId}${q}`
-  const res = await fetch(withBase(path), { method: 'POST', credentials: 'same-origin' })
+  const res = await apiTransport.request(withBase(path), { method: 'POST', credentials: 'same-origin' })
   if (!res.ok) throw new Error(`app frame mint failed: ${res.status}`)
   const data = (await res.json()) as Partial<Minted>
   if (typeof data.frame !== 'string' || !data.frame.startsWith(FRAME_PATH_PREFIX)) {

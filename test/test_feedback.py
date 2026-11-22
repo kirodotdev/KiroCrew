@@ -189,9 +189,6 @@ class TestIdentityAndConsentHelpers:
             class telemetry:
                 beacon_enabled = True
 
-            class dashboard:
-                privacy_acked = True
-
         class _Verdict:
             def __init__(self, ok: bool) -> None:
                 self.ok = ok
@@ -199,9 +196,9 @@ class TestIdentityAndConsentHelpers:
         seen_audit_tools: list[str] = []
         monkeypatch.setattr(feedback.KiroCrewConfig, "load", staticmethod(lambda: _Cfg()))
 
-        def _tp(*, enabled: bool, acked: bool, audit_tool: str = "") -> "_Verdict":
+        def _tp(*, enabled: bool, audit_tool: str = "") -> "_Verdict":
             seen_audit_tools.append(audit_tool)
-            return _Verdict(enabled and acked)
+            return _Verdict(enabled)
 
         monkeypatch.setattr(feedback.beacon, "telemetry_permitted", _tp)
         assert feedback._telemetry_permitted() is True

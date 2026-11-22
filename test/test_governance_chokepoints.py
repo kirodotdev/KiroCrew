@@ -1503,3 +1503,85 @@ class TestChokepointsFailClosed:
         monkeypatch.setattr(gp, "governance_permits", _compose_fail)
         with pytest.raises(PlatformCompositionError):
             enterprise._governance_posture_permits_workspace("E1", "T1")
+
+
+# ── a refusal of a never-permittable marker gives the marker's plain refusal ──
+_MARKER_NAMES = (
+    "_UNSPLITTABLE_COMMAND_ITEM",
+    "_TRUNCATED_SCAN_ITEM",
+    "_UNANCHORED_TARGET_ITEM",
+    "_GUEST_UNVERIFIABLE_ITEM",
+    "_NO_TARGET_ITEM",
+    "_NO_WRITE_TARGET_ITEM",
+)
+
+# An allow root no checkout sits under: a relative marker is anchored at the
+# working directory, so a root that held it would admit the marker.
+_NO_CHECKOUT_ROOT = os.path.join(os.path.abspath(os.sep), "no-such-allow-root", "**")
+
+
+@pytest.mark.parametrize("name", _MARKER_NAMES)
+def test_a_marker_refusal_says_why_in_plain_words(name: str) -> None:
+    from kiro_crew.platform.governance_parts import tool_calls
+    from kiro_crew.platform.governance_parts.archetypes import ScopedRuleset
+
+    marker = getattr(tool_calls, name)
+    # The command matcher refuses the marker for every pattern; a path marker is
+    # refused by a confinement, as a real allow list is written.
+    matcher = "command" if name == "_UNSPLITTABLE_COMMAND_ITEM" else "path"
+    allow = ["*"] if matcher == "command" else [_NO_CHECKOUT_ROOT]
+    ruleset = ScopedRuleset.from_dict({"mode": "allow", "allow": allow}, matcher=matcher)
+    decision = ruleset.permits(marker)
+    assert not decision.permitted
+    assert decision.reason == marker.refusal
+    assert "\x00" not in decision.reason
+    assert "<governance:" not in decision.reason
+    assert "\x00<governance:" in marker
+    if matcher == "path":
+        # A deny pattern that meets a marker is the operator's rule firing: the
+        # reason keeps naming that pattern.
+        deny = ScopedRuleset.from_dict({"mode": "deny", "deny": ["*"]}, matcher="path")
+        denied = deny.permits(marker)
+        assert not denied.permitted and denied.explicit_deny
+        assert denied.reason == f"{marker!r} matches deny pattern '*'"
+
+
+def test_a_malformed_patch_refusal_names_the_patch() -> None:
+    from kiro_crew.platform.governance import _TRUNCATED_SCAN_ITEM, gate_decision, parse_policy
+
+    write = {"mode": "allow", "allow": [_NO_CHECKOUT_ROOT]}
+    ceiling = parse_policy({"version": 1, "boot": {}, "filesystem": {"write": write}})
+    # Small, but its blank line is not a patch line the policy can read; it comes
+    # before the header, so no path is judged ahead of the marker on any platform.
+    patch = "*** Begin Patch\n\n*** Add File: /ws/a.txt\n+x\n*** End Patch\n"
+    decision = gate_decision(
+        ceiling, None, "Editing", tool_kind="edit", raw_params={"patchText": patch}
+    )
+    assert not decision.permitted
+    assert decision.item == _TRUNCATED_SCAN_ITEM
+    assert "a patch the policy cannot read" in decision.reason
+
+
+@pytest.mark.parametrize("diff_path", [".\\a.txt", "a\\b.txt", "C:a.txt", "./a.txt", "a/b.txt"])
+def test_an_edit_to_a_relative_path_is_refused_in_plain_words(diff_path: str) -> None:
+    from kiro_crew.platform.governance import _UNANCHORED_TARGET_ITEM, gate_decision, parse_policy
+
+    write = {"mode": "allow", "allow": [_NO_CHECKOUT_ROOT]}
+    ceiling = parse_policy({"version": 1, "boot": {}, "filesystem": {"write": write}})
+    decision = gate_decision(ceiling, None, "Editing", tool_kind="edit", diff_path=diff_path)
+    assert not decision.permitted
+    assert decision.item == _UNANCHORED_TARGET_ITEM
+    assert decision.reason == f"policy denies: {_UNANCHORED_TARGET_ITEM.refusal}"
+    assert "use a full absolute path" in decision.reason
+    assert "\x00" not in decision.reason and "<governance:" not in decision.reason
+    in_root = os.path.join(os.path.dirname(_NO_CHECKOUT_ROOT), "a.txt")
+    assert gate_decision(ceiling, None, "Editing", tool_kind="edit", diff_path=in_root).permitted
+
+
+def test_a_refusal_of_a_real_item_keeps_its_text() -> None:
+    from kiro_crew.platform.governance_parts.archetypes import ScopedRuleset
+
+    allow = ScopedRuleset.from_dict({"mode": "allow", "allow": ["git *"]}, matcher="command")
+    assert allow.permits("ls").reason == "'ls' not in allow-set"
+    deny = ScopedRuleset.from_dict({"mode": "deny", "deny": ["*.env"]}, matcher="path")
+    assert deny.permits("/p/.env").reason == "'/p/.env' matches deny pattern '*.env'"

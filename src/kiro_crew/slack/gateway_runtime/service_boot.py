@@ -1723,6 +1723,9 @@ async def run(self: GatewayOrchestrator) -> None:
         from kiro_crew.slack.reconnect import reconnect_slack
 
         self.dashboard_state.slack_reconnect = lambda: reconnect_slack(self)
+        from kiro_crew.slack.owner_claim import OwnerClaim
+
+        self.dashboard_state.slack_owner_claim = OwnerClaim(self)
 
     # Deferred tracked-channel capability probe (fire-and-forget, never
     # awaited — boot latency is unaffected). A Slack install created before

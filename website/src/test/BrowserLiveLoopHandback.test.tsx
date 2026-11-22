@@ -9,7 +9,6 @@ import { foldLoopRuns, loopLabel, loopProgress, stopSentence } from '../pages/ch
 import { BrowserLiveHandbackBar, DEFAULT_HANDBACK_CHOICES, handbackChoices } from '../pages/chat/BrowserLiveHandback'
 import { browserLiveStore, readLoop, HANDBACK_NOTE_MAX, type BrowserLiveLoop } from '../hooks/useBrowserLive'
 import { readRecording, offsetOf } from '../hooks/useBrowserLive.replay'
-import { BROWSER_HANDBACK_CHAT_EVENT } from '../api/client/browserLive'
 import type { DecodedBrowserFrame } from '../hooks/useBrowserLive.frame'
 
 /**
@@ -56,6 +55,8 @@ beforeEach(() => {
     open: vi.fn(async () => ({ ok: true })),
     reopen: vi.fn(async () => ({ ok: true })),
     close: vi.fn(async () => ({ ok: true })),
+    answer: vi.fn(async () => ({ ok: true })),
+    chat: vi.fn(async () => ({ status: 'dispatched' })),
   }
   restore = browserLiveStore.__setWritesForTests(writes)
   vi.stubGlobal('IntersectionObserver', FakeIO)
@@ -302,21 +303,16 @@ describe('the hand-back bar', () => {
 
   it('with no agent op to take it, the note becomes the person\'s next chat message', async () => {
     writes.release.mockResolvedValueOnce({ ok: true, delivered: 'chat' })
-    const sent = vi.fn()
-    window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, sent)
     live({ state: 'in_control', turn_over: true })
     await act(async () => { await browserLiveStore.release(S, { choice: 'Done', note: 'Signed in as me' }) })
-    window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, sent)
-    expect(sent).toHaveBeenCalledTimes(1)
-    expect((sent.mock.calls[0][0] as CustomEvent).detail).toEqual({ slotKey: S, text: 'Done: Signed in as me' })
+    // Sent once, by the store, to this card's slot, as the text alone.
+    expect(writes.chat).toHaveBeenCalledTimes(1)
+    expect(writes.chat).toHaveBeenCalledWith(S, 'Done: Signed in as me')
   })
 
   it('an agent op that takes the note sends no chat message', async () => {
-    const sent = vi.fn()
-    window.addEventListener(BROWSER_HANDBACK_CHAT_EVENT, sent)
     live({ state: 'in_control' })
     await act(async () => { await browserLiveStore.release(S, { note: 'done' }) })
-    window.removeEventListener(BROWSER_HANDBACK_CHAT_EVENT, sent)
-    expect(sent).not.toHaveBeenCalled()
+    expect(writes.chat).not.toHaveBeenCalled()
   })
 })

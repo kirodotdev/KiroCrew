@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../types'
+import { isHiddenReplyAt } from '../app-sdk/turnPolicyBlock'
 
 export type LinkType = 'cr' | 'issue' | 'other'
 
@@ -59,6 +60,7 @@ export function extractChatLinks(messages: ChatMessage[]): ExtractedLink[] {
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
     if (msg.role !== 'user' && msg.role !== 'assistant') continue
+    if (msg.role === 'assistant' && typeof msg.content === 'string' && isHiddenReplyAt(msg, messages, i)) continue
     const text = msg.content || ''
 
     // Pass 1: Extract markdown links [label](url) — best labels

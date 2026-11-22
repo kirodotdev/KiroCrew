@@ -33,6 +33,13 @@ describe('CrashReportNotice', () => {
     const notice = await screen.findByRole('status')
     expect(notice).toHaveTextContent(/closed unexpectedly/i)
     expect(notice).toHaveTextContent(/2/)
+    // The stock transparent Btn has no edge on the banner's warn tint until hovered.
+    for (const name of [/Show diagnostics/, /Report issue/]) {
+      const button = within(notice).getByRole('button', { name })
+      expect(button).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(button).not.toHaveClass('bg-transparent')
+      expect(button).not.toHaveClass('border-border')
+    }
   })
 
   it('never renders without the desktop bridge, and never probes for one', async () => {

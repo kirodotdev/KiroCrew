@@ -639,6 +639,18 @@ def test_text_that_did_not_land_is_kept_as_a_length(code: str) -> None:
     assert ev["args"] == {"name": "type", "chars": 7, "secret": True}
 
 
+def test_a_paste_records_as_typing_and_never_keeps_its_html() -> None:
+    def event(text: str, result: dict) -> dict:
+        args = {"text": text, "html": f"<b>{text}</b>"}
+        return rc.agent_event("paste", args, result, ts=1, label="", url="", scale=1)
+
+    landed = event("a b", {"ok": True, "handled": True})
+    assert landed["op"] == "type"
+    assert landed["args"] == {"name": "paste", "chars": 3, "text": "a b"}
+    refused = event("hunter2", {"ok": False, "code": "password_field"})
+    assert refused["args"] == {"name": "paste", "chars": 7, "secret": True}
+
+
 def test_a_refused_key_press_keeps_no_character() -> None:
     ev = rc.agent_event(
         "press_key",
@@ -669,10 +681,11 @@ def test_a_refused_key_press_keeps_no_character() -> None:
         ({"text": "hunter2-SECRET", "ref": "e2"}, {"ok": False, "code": "password_field"}),
     ],
 )
-async def test_a_secret_type_keeps_its_length_only(tmp_path: Path, args, result) -> None:
+@pytest.mark.parametrize("op", ["type", "fill"])
+async def test_a_secret_type_keeps_its_length_only(tmp_path: Path, args, result, op) -> None:
     rec, store, _clock = make_recorder(tmp_path)
     rec.turn_started(KEY, TURN)
-    rec.event(KEY, rc.agent_event("type", args, result, ts=1, label="", url="", scale=1))
+    rec.event(KEY, rc.agent_event(op, args, result, ts=1, label="", url="", scale=1))
     rec.turn_ended(KEY)
     await rec.flush()
     (event,) = store.turn_detail(KEY, TURN)["events"]

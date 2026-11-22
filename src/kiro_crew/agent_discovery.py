@@ -122,6 +122,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_internal_agent_spec,
         skill_resource_uris,
         skill_uri_for_path,
+        spec_is_toolless,
         spec_model,
         spec_str,
         spec_welcome_message,

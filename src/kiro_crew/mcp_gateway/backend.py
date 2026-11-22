@@ -974,13 +974,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ORPHANED_LEASES_MAX,
         _RELEASE_STUB_SENTINEL,
         _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
-        _RESOURCE_URI_MAX_LEN,
         _RESOURCES_SUBSCRIBE_METHOD,
         _RESOURCES_UNSUBSCRIBE_METHOD,
         _RESOURCES_UPDATED_NOTIFICATION,
+        RESOURCE_URI_MAX_LEN,
         _is_success_response,
     )
     from kiro_crew.mcp_gateway.backend_liveness import (  # noqa: F401
+        _LISTEN_METHOD,
         _RECYCLE_EXEMPT_METHODS,
         _STDERR_DRAIN_WAIT_SECS,
         HARD_WEDGE_CEILING_SECS,
@@ -1006,7 +1007,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_gateway.backend_routing import (  # noqa: F401
         _GLOBAL_BROADCAST_NOTIFICATIONS,
         _METRICS_PATH,
+        _SUBSCRIPTION_ID_META_KEY,
         _emit_call_metric,
+        _listen_stream_frame,
         _write_metric_line,
     )
     from kiro_crew.mcp_gateway.backend_stubs import (  # noqa: F401

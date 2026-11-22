@@ -284,6 +284,7 @@ def test_the_mark_is_counted_and_released():
         ("POST", "/api/monitors"),
         ("PATCH", "/api/monitors/m1"),
         ("POST", "/api/monitors/m1/restart"),
+        ("POST", "/api/resource-subscriptions"),
         # one trailing slash is the same route
         ("POST", "/api/session-control/create/"),
         ("POST", "/api/crons/"),
@@ -308,6 +309,7 @@ def test_every_delegation_route_is_named(method, path):
         ("DELETE", "/api/taskrunner/t1"),
         ("POST", "/api/workflows/runs/abc/cancel"),
         ("POST", "/api/monitors/m1/stop"),
+        ("POST", "/api/resource-subscriptions/remove"),
         ("POST", "/api/chat"),
         ("POST", "/api/taskrunner/cancel/"),
         # a shape matches whole segments only: no empty id, no extra or missing segment

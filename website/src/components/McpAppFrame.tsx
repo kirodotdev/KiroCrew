@@ -13,6 +13,7 @@ import {
 import { readMcpAppStyleVariables, themeContextKey } from '../lib/mcpAppTheme'
 import { planReveal, prefersReducedMotion, hasRevealed, markRevealed } from './mcpAppReveal'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
+import { apiTransport } from '../api/apiTransport'
 
 /** Inline height for a rendered MCP App before it reports its own size. */
 const DEFAULT_HEIGHT = 480
@@ -706,7 +707,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           inFlightRef.current += 1
           void (async () => {
             try {
-              const resp = await fetch('/api/mcp-apps/call', {
+              const resp = await apiTransport.request('/api/mcp-apps/call', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -766,7 +767,7 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           void (async () => {
             try {
               const params = (msg.params ?? {}) as { role?: unknown; content?: unknown }
-              const resp = await fetch('/api/mcp-apps/message', {
+              const resp = await apiTransport.request('/api/mcp-apps/message', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',

@@ -119,8 +119,21 @@ looking for it.
 prefix as cwd. `npm --prefix website exec -- <binary>` does **not** change cwd, so
 a tool resolving config relative to cwd (eslint looking for `eslint.config.js`)
 fails with a config-not-found error that looks nothing like a lint failure. For a
-bare binary use a subshell — `(cd website && npx eslint …)` — matching the
+bare binary use a subshell — `(cd website && node ./node_modules/eslint/bin/eslint.js …)` — matching the
 workflow's own `working-directory:`.
+
+## A bare `npx` can run a package the lockfile never installed
+
+CI runs `npx` only after `npm ci`, so it always finds the locked binary. A local
+worktree may have no `node_modules`, and there a bare `npx <name>` downloads the
+newest registry package of that name and runs it. For `tsc` that is an unrelated
+package called `tsc`, not TypeScript. `npx --no-install` stops the download but
+still runs a globally installed binary of that name first. So the profile runs
+each website tool through its package's own entry point,
+`node ./node_modules/<package>/<bin>`, as the bundle-size step already does for
+vite. A missing install then fails with `Cannot find module` naming the path.
+Run `npm ci` in `website/` before `setup[]`: the Playwright step stops there
+when the install is missing.
 
 ## A diff-scoped gate without its base ref is a no-op that always passes
 

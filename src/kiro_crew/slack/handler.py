@@ -51,7 +51,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
     read_agent_spec_strict,
 )
-from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - read by the owners
     continue_timed_out_calls,
 )
@@ -59,18 +59,26 @@ from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
     agent_switch_target,
 )
+from kiro_crew.channel_spec_hooks import (  # noqa: F401 - read by the owners
+    pre_tool_refusal as spec_pre_tool_refusal,
+)
+from kiro_crew.channel_spec_hooks import turn_spec as spec_turn  # noqa: F401 - read by the owners
+from kiro_crew.config.live import ConfigChange, ConfigDeferred  # noqa: F401 - read by the owners
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
+    ConfigWriteRefused,
     KiroCrewConfig,
     config_local_path,
     config_path,
+    overlay_pins,
     read_config_text,
     read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
+from kiro_crew.config.resolution import _deep_merge  # noqa: F401 - read by the owners
 from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
@@ -417,9 +425,11 @@ from kiro_crew.slack.handler_runtime.turn_context import (  # noqa: F401
     _thread_meta_fallback,
 )
 from kiro_crew.slack.handler_runtime.voice import (  # noqa: F401
+    _adopt_voice_reply,
     _reply_by_voice,
     _safe_voice_reply,
     _str_or_default,
+    apply_voice_reply_change,
     load_voice_reply_config,
 )
 from kiro_crew.slack.linked_thread_images import (  # noqa: F401 - read by the owners
@@ -882,7 +892,8 @@ def _iter_cc_agent_names(cc_plugins_dir: Path | None = None) -> Iterator[str]:
             raw = safe_read_file_bytes(str(md_file))
             if raw is None:
                 continue
-            content = raw.decode("utf-8")
+            # utf-8-sig: an editor that saves "UTF-8 with BOM" puts U+FEFF before the fence.
+            content = raw.decode("utf-8-sig")
             if not content.startswith("---"):
                 continue
             frontmatter = content[3 : content.index("---", 3)]
@@ -984,6 +995,7 @@ async def handle_message(
     had_voice_input: bool = False,
     spool_text: str | None = None,
     spool_attachments: int = 0,
+    spool_attachment_names: tuple[str, ...] = (),
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     user_meta: dict[str, Any] | None = None,
@@ -1015,6 +1027,8 @@ async def handle_message(
     these, never the ingested *text*, which inlines turn-owned temp paths (dead
     after a restart) and extracted file contents. ``None`` means *text* was not
     ingested (button and interaction re-dispatches), so it is spooled as is.
+    *spool_attachment_names* is Slack's name for each of those files, which the
+    restart notice lists.
 
     *_compaction_replay* is set only by this function's own turn, when it re-runs a
     message whose previous attempt was abandoned after a transient compaction
@@ -1077,6 +1091,7 @@ async def handle_message(
             thread_id=reply_ts,
             message_id=msg_ts,
             attachments_dropped=spool_attachments,
+            attachment_names=spool_attachment_names,
         ),
         restricted=_is_slack_restricted(session_key),
     ):
@@ -1113,6 +1128,7 @@ async def handle_message(
         had_voice_input=had_voice_input,
         spool_text=spool_text,
         spool_attachments=spool_attachments,
+        spool_attachment_names=spool_attachment_names,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
         user_meta=user_meta,

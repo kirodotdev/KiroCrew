@@ -631,6 +631,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
     _is_synthetic = turn._is_synthetic
     _jev_route_text = turn._jev_route_text
     _provider_has_history = turn._provider_has_history
+    turn._slim_resume_pending = _context_is_new and _provider_has_history
     _request_prefix_context = turn._request_prefix_context
     _responsive_recovery = turn._responsive_recovery
     _synthetic_recovery_turn = turn._synthetic_recovery_turn
@@ -860,6 +861,22 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     "thread_parent_text": _parent_text,
                     "include_channel_history": False,
                 }
+        # A reply typed in the linked thread names that thread on every turn, as
+        # a Slack-born turn does (``slack/handler_runtime/turn.py``), so the
+        # agent can read the thread with the Slack tools. Only for the thread the
+        # words came from; a dashboard-typed turn is not inside a Slack thread.
+        if (
+            not _thread_parent_kwargs
+            and _turn_runtime_source(turn) == "slack"
+            and slot._slack_linked
+            and slot._slack_thread_ts
+            and slot._slack_channel in turn._directive_source_channels
+        ):
+            _thread_parent_kwargs = {
+                "channel_id": slot._slack_channel,
+                "thread_ts": slot._slack_thread_ts,
+                "include_channel_history": False,
+            }
         # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
         # name (e.g. "default"), so build_message's is_custom check
         # correctly identifies kirocrew sessions and enables skills.
@@ -975,8 +992,8 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # folder tree rather than from a value cached on the slot, so a
         # folder edit or a re-file reaches the chats already inside it at
         # their next session-start context with no cache to invalidate.
-        # For a template chat only the two turns that carry session-start
-        # context read the tree (a fresh provider session, or a reinjection
+        # For a template chat only the turns that send folder steering read
+        # the tree (a new or resumed provider session, or a reinjection
         # after compaction); warm turns never touch it. A V2 MEMBER chat is
         # different: build_message rebuilds the member's essentials
         # envelope on EVERY turn, and that envelope declares itself the
@@ -994,7 +1011,6 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             slot,
             execution_context,
             context_is_new=_context_is_new,
-            provider_has_history=_provider_has_history,
             needs_reinjection=_needs_reinjection,
         ):
             _folder_snapshot = await state.read_folders(
@@ -1258,11 +1274,21 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     # Re-arming here (run from _run_chat's finally, the one block on EVERY exit
     # path) makes the next turn rebuild the member section; the rules read inside
     # stays fail-closed until the user repairs or clears the file.
+    #
+    # A slim resume rides it too: its prompt re-sent the lessons and steering a
+    # compacted restored history may have lost, and the next turn is warm, so
+    # a resume that never landed would leave the session without them.
     rearm_reinjection(
         state.sessions,
         session_key,
-        consumed=turn._needs_reinjection or turn._member_session_start_pending,
-        landed=turn._turn_landed,
+        consumed=(
+            turn._needs_reinjection
+            or turn._member_session_start_pending
+            or turn._slim_resume_pending
+        ),
+        # A slash command's prompt is its own text, so a resume that ran one
+        # delivered none of the owed blocks, landed or not.
+        landed=turn._turn_landed and not (turn._slim_resume_pending and turn.is_slash),
     )
     rollback_skill_bodies(state.context_builder, session_key, landed=turn._turn_landed)
     if (

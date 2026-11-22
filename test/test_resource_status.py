@@ -7,14 +7,17 @@ disable switch, fail-open) and the ``resource_status`` pull tool wired into
 
 from __future__ import annotations
 
+import importlib
 import re
 import shutil
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew import resource_status as rs
+from kiro_crew.testing.wait import await_until
 
 
 def _cfg(pressure: float, critical: float) -> SimpleNamespace:
@@ -1465,3 +1468,70 @@ def test_tool_says_spawning_is_blocked_on_an_ample_posture(monkeypatch) -> None:
     assert "Subagent spawn floor: 4 GB must stay free after a start" in out
     assert "Guidance: new top-level subagents cannot start now" in out
     assert "ample headroom" not in out
+
+
+# ── container limit at or under the critical threshold: start-up notice ─────
+
+
+def _container_limit_notice_module() -> Any:
+    """The start-up notice module; a build without one fails the case, since that is the bug."""
+    try:
+        return importlib.import_module("kiro_crew.resource_status_container_limit")
+    except ImportError:
+        pytest.fail("no start-up notice names a container memory limit at the critical threshold")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit_gib", "pressure_gb", "critical_gb", "expect_warning"),
+    [
+        (2, None, None, True),  # defaults: critical 2.0 GB
+        (8, None, None, False),
+        (None, None, None, False),  # no finite limit
+        (2, 1.0, 2.0, True),  # raw critical, not the value clamped to pressure
+        (2, None, 0.0, False),  # critical tier disabled
+    ],
+)
+async def test_container_limit_at_critical_logs_one_startup_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    limit_gib: int | None,
+    pressure_gb: float | None,
+    critical_gb: float | None,
+    expect_warning: bool,
+) -> None:
+    """A 2 GiB limit under the default (or raw) critical threshold logs one warning
+    naming the limit and the three settings; a larger, absent or disabled one logs none."""
+    import logging
+
+    from kiro_crew import subagent
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    notice = _container_limit_notice_module()
+    limit = None if limit_gib is None else limit_gib * 1024**3
+    monkeypatch.setattr(subagent, "_container_cgroup_reading", lambda **_: (limit, 1.5))
+    cfg = KiroCrewConfig()
+    if pressure_gb is not None:
+        cfg.agent.resource_pressure_gb = pressure_gb
+    if critical_gb is not None:
+        cfg.agent.resource_critical_gb = critical_gb
+
+    with caplog.at_level(logging.WARNING, logger=notice.__name__):
+        notice.start_container_limit_notice(cfg)  # sync: returns before the read
+        task = notice._NOTICE_TASK
+        assert task is not None
+        await await_until(task, what="the container-limit notice task")
+
+    warnings = [r.getMessage() for r in caplog.records if r.name == notice.__name__]
+    if not expect_warning:
+        assert warnings == []
+        return
+    assert len(warnings) == 1
+    message = warnings[0]
+    assert "limit (2.0 GB)" in message
+    for setting in (
+        "agent.resource_critical_gb",
+        "agent.resource_pressure_gb",
+        "agent.spawn_min_memory_gb",
+    ):
+        assert setting in message

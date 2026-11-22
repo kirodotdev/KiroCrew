@@ -161,6 +161,50 @@ def test_the_panel_flag_reads_the_same_answer(home, monkeypatch):
     assert acp_backend_status._kiro_selection_runs_on_kas() is False
 
 
+def test_a_kiro_cli_pick_would_run_on_kas_with_kas_saved(home, monkeypatch):
+    """The Kiro CLI row's switch is dead even when the saved pick is KAS."""
+    _stored(monkeypatch, False)
+    assert notice.kiro_cli_runs_on_kas() is True
+    assert notice.kiro_selection_runs_on_kas() is False
+
+
+def test_a_kiro_cli_pick_stays_on_kiro_cli_on_the_bundle_route(home, monkeypatch):
+    _stored(monkeypatch, False, bundle=True)
+    assert notice.kiro_cli_runs_on_kas() is False
+
+
+def test_a_kiro_cli_pick_stays_on_kiro_cli_without_a_positive_verdict(home, monkeypatch):
+    _stored(monkeypatch, False)
+    monkeypatch.setattr(registry, "_kiro_cli_offers_kas", False)
+    assert notice.kiro_cli_runs_on_kas() is False
+
+
+def test_a_kiro_cli_pick_stays_on_kiro_cli_when_kas_is_unservable(home, monkeypatch):
+    _stored(monkeypatch, False)
+    registry.mark_backend_unservable(KAS, "this kiro-cli has no --agent-engine flag")
+    assert notice.kiro_cli_runs_on_kas() is False
+
+
+def test_the_panel_row_flag_reads_the_same_answer(home, monkeypatch):
+    """``GET /api/acp-backends`` carries the answer the Kiro CLI row reads."""
+    import json
+
+    from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+    monkeypatch.setattr(handler, "_is_dashboard_owner", lambda _request: True)
+    monkeypatch.setattr(handler, "_snapshot", lambda: [])
+    monkeypatch.setattr(handler, "_crewmate_harness", lambda: None)
+
+    def _body() -> dict:
+        response = asyncio.run(handler.api_acp_backend_status(MagicMock()))
+        return json.loads(response.text or "{}")
+
+    _stored(monkeypatch, False)
+    assert _body().get("kiro_cli_runs_on_kas") is True
+    registry.mark_backend_unservable(KAS, "too old")
+    assert _body().get("kiro_cli_runs_on_kas") is False
+
+
 def test_no_offer_when_the_overlay_owns_the_pick(home, monkeypatch):
     """The panel writes config.json; an overlay-owned pick would not change."""
     _stored(monkeypatch, True)

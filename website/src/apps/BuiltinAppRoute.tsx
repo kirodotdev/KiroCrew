@@ -29,6 +29,7 @@ import InstalledAppSurface from '../components/InstalledAppSurface'
 import { Btn, ContentSkeleton } from '../components/ui'
 import { useInstalledAppsWhen } from '../hooks/panelTabRegistry'
 import { useAppInstalledElsewhere } from '../hooks/useAppInstalledElsewhere'
+import { useAppViewMetrics } from '../lib/appViewTelemetry'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -146,7 +147,9 @@ const APP_RELEASED_CODE = 'app_released'
  * page stays, as it does today. A lookup that still failed after its retries is
  * returned as `error`, so the route can say the page may not be backed.
  */
-function useReleasedWithNoRecord(name: string | null): { released: boolean; error: unknown } {
+function useReleasedWithNoRecord(
+  name: string | null,
+): { released: boolean; error: unknown; answered: boolean } {
   const { data, error } = useQuery({
     queryKey: ['app-released', name],
     queryFn: () => (typeof api?.getApp === 'function' ? api.getApp(name as string) : Promise.resolve(null)).then(
@@ -158,7 +161,12 @@ function useReleasedWithNoRecord(name: string | null): { released: boolean; erro
     ),
     enabled: name !== null,
   })
-  return { released: name !== null && data === true, error: name !== null ? error : null }
+  return {
+    released: name !== null && data === true,
+    error: name !== null ? error : null,
+    // Nothing was asked, or the lookup came back with an answer or a failure.
+    answered: name === null || data !== undefined || error != null,
+  }
 }
 
 export default function BuiltinAppRoute() {
@@ -196,12 +204,20 @@ export default function BuiltinAppRoute() {
   // any other answer, the compiled page renders as before.
   const recordless = !!entry && !adopted && installedApps !== undefined
     && !installedApps.some(app => app.name === entry.appId)
-  const { released, error: releasedLookupError } = useReleasedWithNoRecord(
+  const { released, error: releasedLookupError, answered: releasedAnswered } = useReleasedWithNoRecord(
     recordless && entry ? entry.appId : null,
   )
   // The not-installed state below has the shell re-read its list when the app is
   // installed again, and the record that list then names replaces this state.
   useAppInstalledElsewhere(released && entry ? entry.appId : null)
+  // The compiled page counts its own view, but only once the list and the
+  // released lookup have answered: until then the route may still swap to an
+  // adopted copy (which InstalledAppSurface counts) or to a released app (no
+  // page), and counting early would count one view twice.
+  // shortcut: a list that never loads leaves the compiled page uncounted; count
+  // it on a load error too if that undercount ever shows in the data.
+  const compiledPageSettled = installedApps !== undefined && releasedAnswered
+  useAppViewMetrics(entry && compiledPageSettled && !adopted && !released ? entry.appId : null)
   if (adopted) {
     return (
       <ErrorBoundary key={`${path}#adopted`}>

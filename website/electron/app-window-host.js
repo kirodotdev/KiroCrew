@@ -54,6 +54,7 @@
  */
 
 const { createAppWindowErrorLatch } = require("./app-window-error-latch");
+const { linkTokenIsStale } = require("./link-token-age");
 const { openLocalImage, revealLocalFile } = require("./app-local-files");
 const {
   SELF_GATEWAY,
@@ -253,6 +254,7 @@ function createAppWindowHost(deps) {
   let pageToken = "";
   let cookieAuth = false;
   let cachedAuth = { value: "", viaCookie: false };
+  let cachedAuthAt = 0;
   let emptyAuthAt = 0;
   let timer = null;
   let hitTimer = null;
@@ -281,8 +283,9 @@ function createAppWindowHost(deps) {
   // ── Credentials and the probe ──────────────────────────────────────────────
 
   async function authFor(force) {
-    if (!force && cachedAuth.value) return cachedAuth;
+    if (!force && cachedAuth.value && !linkTokenIsStale(cachedAuth, cachedAuthAt, now())) return cachedAuth;
     if (!force && emptyAuthAt && now() - emptyAuthAt < EMPTY_AUTH_RETRY_MS) return cachedAuth;
+    cachedAuthAt = now();
     let auth = null;
     try {
       auth = deps.fetchGatewayAuth ? await deps.fetchGatewayAuth() : null;

@@ -35,6 +35,15 @@ const STATUS_POLL_INTERVAL_MS = 30_000
 // Center access-portal URL, plus an optional region); other providers send none.
 export type KasLoginExtra = { start_url?: string; region?: string }
 
+// Why a loopback attempt degraded to the device code. `unreached` is a timeout,
+// a busy port or the user's own switch; the rest are the code of a failed poll,
+// which means the browser did come back.
+export type KasLoginFellBack =
+  | 'unreached'
+  | 'loopback_wrong_address'
+  | 'loopback_exchange_failed'
+  | 'loopback_failed'
+
 // `extra` keeps Company SSO's start URL and region, so Start over can begin the
 // same sign-in again without the form.
 export type ActiveSession = { provider: KasLoginProvider; extra?: KasLoginExtra } & (
@@ -103,7 +112,7 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
   const [session, setSession] = useState<ActiveSession | null>(null)
   // Set when a loopback attempt degraded to the device flow, so the code screen
   // can say why it appeared instead of the promised no-typing sign-in.
-  const [fellBack, setFellBack] = useState(false)
+  const [fellBack, setFellBack] = useState<KasLoginFellBack | false>(false)
   // True while the user is replacing a signed-in identity from the embedded
   // card: the chooser renders over a still-authenticated status, and the next
   // credential to land supersedes the stored one. Cleared when the poll answers
@@ -184,7 +193,7 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     // not a failure the user can act on: silently take the device path instead.
     onError: (err, provider) => {
       if (isLoopbackUnavailable(err) && !abandoned.current) {
-        setFellBack(true)
+        setFellBack('unreached')
         beginDevice.mutate({ provider })
       }
     },
@@ -289,7 +298,13 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
     if (pollStatus !== 'expired' && pollStatus !== 'error') return
     if (pollCode === 'token_store_failed') return
     const provider = session.provider
-    setFellBack(true)
+    setFellBack(
+      pollStatus === 'expired'
+        ? 'unreached'
+        : pollCode === 'loopback_wrong_address' || pollCode === 'loopback_exchange_failed'
+          ? pollCode
+          : 'loopback_failed',
+    )
     setSession(null)
     beginDevice.mutate({ provider })
     // beginDevice is a stable mutation handle; listing it would re-fire on every render.
@@ -387,7 +402,7 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
 
   const switchToCode = () =>
     replaceAttempt(({ provider }) => {
-      setFellBack(true)
+      setFellBack('unreached')
       beginDevice.mutate({ provider })
     })
 
@@ -471,6 +486,8 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
         ? beginLoopback.error.message
         : ''),
     beginErrorCode: apiErrorCode(beginDevice.error),
+    /** The device begin's error, for the SSO form's refusal reason and report. */
+    beginDeviceError: beginDevice.error,
     pick,
     reset,
     switchToCode,

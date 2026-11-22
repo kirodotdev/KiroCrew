@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -41,6 +42,15 @@ def _load_gate():
 @pytest.fixture(scope="module")
 def gate():
     return _load_gate()
+
+
+@pytest.fixture(autouse=True)
+def _frontend_toolchain_present(gate, _floor_monkeypatch):
+    """A plan under test must not depend on whether this host has Node or ran ``npm ci``."""
+    _floor_monkeypatch.setattr(gate, "frontend_dependencies_installed", lambda: True, raising=False)
+    _floor_monkeypatch.setattr(
+        importlib.import_module("run_scoped_tests"), "_node_launcher", lambda name: f"/usr/bin/{name}"
+    )
 
 
 def _args(**overrides):
@@ -87,25 +97,28 @@ def test_classify_evidence_does_not_flip_frontend_only(gate) -> None:
     assert frontend and not meta and not backend
 
 
+class _GitProc:
+    def __init__(self, stdout: str = "", returncode: int = 0) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = ""
+
+
+_BASE_LOOKUPS = (["git", "merge-base"], ["git", "rev-parse"])
+
+
 def test_changed_files_keeps_both_rename_endpoints(gate, monkeypatch) -> None:
     """Renaming a real file INTO temp-screenshots/ must not hide the old
     path's bucket: ``--no-renames`` splits a rename into delete + add (the
-    same contract run_scoped_tests.py and CI's dorny/paths-filter apply), and
-    the porcelain parser keeps BOTH sides of a defensive ``old -> new`` arrow.
+    same contract run_scoped_tests.py and CI's dorny/paths-filter apply).
     """
-    class _Proc:
-        def __init__(self, stdout: str = "") -> None:
-            self.returncode = 0
-            self.stdout = stdout
-
     def fake_run(argv, **_kwargs):
-        if argv[:2] == ["git", "merge-base"]:
-            return _Proc("abc123\n")
+        if argv[:2] in _BASE_LOOKUPS:
+            return _GitProc("abc123\n")
+        assert "--no-renames" in argv, "neither git read may fold renames"
         if argv[:2] == ["git", "diff"]:
-            assert "--no-renames" in argv, "committed diff must not fold renames"
-            return _Proc("src/kiro_crew/gateway.py\n")
-        assert "--no-renames" in argv, "porcelain status must not fold renames"
-        return _Proc('R  src/kiro_crew/moved.py -> temp-screenshots/f/moved.png\n')
+            return _GitProc("src/kiro_crew/gateway.py\0")
+        return _GitProc("D  src/kiro_crew/moved.py\0A  temp-screenshots/f/moved.png\0")
 
     monkeypatch.setattr(gate.subprocess, "run", fake_run)
     paths = gate.changed_files("main")
@@ -114,6 +127,54 @@ def test_changed_files_keeps_both_rename_endpoints(gate, monkeypatch) -> None:
     assert "temp-screenshots/f/moved.png" in paths
     # And the classification consequence: the old backend path still counts.
     assert gate.classify(paths) == (False, False, True)
+
+
+def test_changed_files_reads_non_ascii_frontend_paths_verbatim(gate, monkeypatch) -> None:
+    """Git C-quotes a non-ASCII path in line output (``"website/src/f\\303\\251e.tsx"``)
+    and prints it verbatim only under ``-z``. A quoted name misses the
+    ``website/`` prefix, so a frontend-only diff would classify as backend.
+    The fake answers each read the way git does, with or without ``-z``.
+    """
+    committed, untracked = "website/src/fée.tsx", "website/src/née.test.tsx"
+
+    def c_quoted(path: str) -> str:
+        escaped = "".join(
+            ch if ch.isascii() else "".join(f"\\{byte:03o}" for byte in ch.encode())
+            for ch in path
+        )
+        return f'"{escaped}"'
+
+    def fake_run(argv, **_kwargs):
+        nul = "-z" in argv
+        if argv[:2] in _BASE_LOOKUPS:
+            return _GitProc("abc123\n")
+        if argv[:2] == ["git", "diff"]:
+            return _GitProc(f"{committed}\0" if nul else f"{c_quoted(committed)}\n")
+        return _GitProc(f"?? {untracked}\0" if nul else f"?? {c_quoted(untracked)}\n")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    paths = gate.changed_files("main")
+    assert paths is not None
+    assert sorted(paths) == sorted([committed, untracked])
+    assert gate.classify(paths) == (True, False, False)
+
+
+@pytest.mark.parametrize("base", ["", "   ", "--output=evil", "no-such-ref"])
+def test_changed_files_refuses_a_base_that_is_not_a_commit(gate, monkeypatch, base: str) -> None:
+    """An empty base would diff ``...HEAD`` (HEAD against itself) and report
+    nothing changed; an option-shaped one would reach ``git diff`` as a flag.
+    Either must be "cannot tell" (exit 2), and no diff may run."""
+    diffs: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        if argv[:2] in _BASE_LOOKUPS:
+            return _GitProc("", returncode=1)
+        diffs.append(argv)
+        return _GitProc("")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    assert gate.changed_files(base) is None
+    assert not [argv for argv in diffs if argv[:2] == ["git", "diff"]]
 
 
 def test_classify_mixed_diff_sets_both_flags(gate) -> None:
@@ -524,6 +585,99 @@ def test_a_missing_runner_is_a_selection_error_everywhere_else(gate) -> None:
     """``LauncherMissing`` stays a ``SelectionUntrustworthy`` so single-surface
     callers (the profile's per-surface gates) still exit 2 on it."""
     assert issubclass(gate.LauncherMissing, gate.SelectionUntrustworthy)
+
+
+def test_installed_website_packages_keep_the_cross_surface_set_without_fetching(
+    gate, monkeypatch
+) -> None:
+    """With ``npm ci`` done, a backend diff still runs CI's cross-surface specs,
+    through node and the vitest entry point the lockfile installed, from website/."""
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/AcpAdapter.defaults.test.ts"],
+    })
+    plan = gate.build_plan(_args())
+    assert _plan_labels(plan) == ["backend (related)", "frontend (related)"]
+    _label, fe_cmd, cwd = plan.commands[1]
+    assert fe_cmd[:3] == ["/usr/bin/node", "./node_modules/vitest/vitest.mjs", "run"]
+    assert cwd == gate._REPO_ROOT / "website"
+
+
+def test_only_websites_own_vitest_counts_as_installed(gate, tmp_path, monkeypatch) -> None:
+    """A ``node_modules`` without vitest is not an install, whatever else is on PATH.
+
+    ``npx --no-install vitest`` runs a globally installed vitest when the local
+    tree lacks one, so a guard that only saw the directory would let a partial
+    install run a vitest the lockfile never pinned. The guard reads the one file
+    the runner starts.
+    """
+    real_gate = _load_gate()
+    website = tmp_path / "website"
+    (website / "node_modules").mkdir(parents=True)
+    global_bin = tmp_path / "global" / "bin"
+    global_bin.mkdir(parents=True)
+    (global_bin / "vitest").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (global_bin / "vitest").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{global_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setattr(real_gate, "_REPO_ROOT", tmp_path)
+    assert real_gate.frontend_dependencies_installed() is False
+
+    entry = website / real_gate.VITEST_ENTRY
+    entry.parent.mkdir(parents=True)
+    entry.write_text("", encoding="utf-8")
+    assert real_gate.frontend_dependencies_installed() is True
+
+
+def test_missing_website_packages_skip_the_cross_surface_set_on_a_backend_diff(
+    gate, monkeypatch, capsys
+) -> None:
+    """A fresh worktree has Node but no ``website/node_modules``. A diff that
+    touched no frontend file keeps its backend run and exits 0, naming the fix."""
+    monkeypatch.setattr(gate, "frontend_dependencies_installed", lambda: False)
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["src/kiro_crew/gateway.py"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/AcpAdapter.defaults.test.ts"],
+    })
+    plan = gate.build_plan(_args())
+    assert _plan_labels(plan) == ["backend (related)"]
+    assert plan.skipped == ["frontend"]
+    assert any(
+        "NOT RUN HERE" in note and "npm ci" in note and "CI runs them" in note
+        for note in plan.notes
+    )
+
+    monkeypatch.setattr(gate, "build_plan", lambda _args: plan)
+    monkeypatch.setattr(
+        gate.subprocess, "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0),
+    )
+    assert gate.main([]) == 0
+    assert "frontend related set NOT run here" in capsys.readouterr().err
+
+
+def test_missing_website_packages_fail_closed_on_a_frontend_diff(
+    gate, monkeypatch, capsys
+) -> None:
+    """A frontend change with nothing installed to test it runs nothing and
+    exits 2: a skip here would pass a frontend diff no spec ever ran on."""
+    monkeypatch.setattr(gate, "frontend_dependencies_installed", lambda: False)
+    monkeypatch.setattr(gate, "changed_files", lambda base: ["website/src/App.tsx"])
+    _related(monkeypatch, gate, {
+        "backend": ["test/test_gatewayd_diag.py"],
+        "frontend": ["src/test/App.deployRoute.test.tsx"],
+    })
+    ran: list[list[str]] = []
+
+    def record_run(cmd, *_a, **_k):
+        ran.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(gate.subprocess, "run", record_run)
+    assert gate.main([]) == 2
+    assert not [cmd for cmd in ran if cmd and cmd[0] != "git"]
+    assert "npm ci" in capsys.readouterr().err
 
 
 def test_backend_only_diff_runs_related_not_full(gate, monkeypatch) -> None:

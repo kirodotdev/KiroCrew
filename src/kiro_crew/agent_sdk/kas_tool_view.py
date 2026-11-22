@@ -115,6 +115,20 @@ def permissions_block_readable(raw: Any) -> bool:
     return parsed is not None
 
 
+def permissions_block_refusal(raw: Any) -> str:
+    """Why KAS's projection would refuse the ``permissions`` block *raw* whole, or ``""``.
+
+    The same question as :func:`permissions_block_readable`, for a caller that
+    names the reason to the person (Add abilities); nothing is logged or audited.
+    """
+    from kiro_crew.acp import kas_permissions
+
+    probe = kas_permissions.RefusalReason()
+    if raw is None or kas_permissions.parse_user_permissions(raw, audit_decision=probe) is not None:
+        return ""
+    return probe.why or "it cannot be read"
+
+
 def allow_exclude_limit() -> int:
     """The most ``exclude`` patterns an ``allow`` rule may list and still reach KAS.
 

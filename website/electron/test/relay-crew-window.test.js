@@ -9,6 +9,8 @@ const {
   openRelayCrewWindow,
   openRelayCrewPane,
   paneChordIndex,
+  PANE_ROOT_PROBE,
+  shownRelayPane,
 } = require("../relay-crew-window");
 
 const ENDPOINT = "abcdefghij0123456789";
@@ -74,6 +76,10 @@ function fakeDeps() {
       this.webContents.isFocused = () => this.webContents.hasFocus;
       this.webContents.focus = () => { this.webContents.hasFocus = true; };
       this.webContents.isDestroyed = () => this.webContents.closed;
+      // What the page answers the root probe: "" until its root has text and its theme is on.
+      this.webContents.rootDrawn = "";
+      this.webContents.probes = 0;
+      this.webContents.executeJavaScript = () => { this.webContents.probes += 1; return Promise.resolve(this.webContents.rootDrawn); };
       this.visible = true;
       this.setVisible = (v) => { this.visible = v; };
       this.setBounds = (b) => { this.bounds = b; };
@@ -642,7 +648,11 @@ function openPane(f, extra = {}) {
     endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN,
     parent, dashboard, bounds: PANE_RECT, platform: "linux",
   }, f.deps);
-  return { parent, dashboard, handle, view: f.views[f.views.length - 1] };
+  const view = f.views[f.views.length - 1];
+  // Past the load gate, so the pane may show (a failed load is the one synchronous way
+  // through it); `unloaded` keeps it before that.
+  if (!extra.unloaded) view.webContents.emit("did-fail-load");
+  return { parent, dashboard, handle, view };
 }
 
 test("pane: built by the window's own view factory, so its isolation is the window's", () => {
@@ -762,11 +772,34 @@ test("pane: leaving the screen while it holds the keyboard hands focus back to t
   await new Promise((r) => setImmediate(r));
   assert.strictEqual(p.dashboard.webContents.focused, 2, "focus taken while hidden goes back");
   p.handle.focus();
+  assert.strictEqual(p.view.visible, false, "focus shows nothing: the dashboard picks the tab in front");
+  assert.deepStrictEqual(p.parent.calls, [], "and raises no window");
+  p.handle.setInactive(false);
   assert.strictEqual(p.view.visible, true);
-  assert.strictEqual(wc.hasFocus, true);
-  assert.deepStrictEqual(p.parent.calls, ["show", "focus"]);
+  assert.strictEqual(wc.hasFocus, true, "a pane brought to the front takes the keyboard");
+  p.handle.showNotice(PANE_NOTICE);
+  p.handle.setInactive(true);
+  p.handle.setInactive(false);
+  assert.strictEqual(f.views[f.views.length - 1].webContents.hasFocus, true, "with a notice up, the notice takes it");
   p.handle.close();
-  assert.strictEqual(p.dashboard.webContents.focused, 3, "closing a focused pane hands focus back");
+  assert.strictEqual(p.dashboard.webContents.focused, 4, "closing a focused pane hands focus back");
+});
+
+test("pane: a notice holding the keyboard hands it back when the pane hides or closes", () => {
+  const f = fakeDeps();
+  const p = openPane(f);
+  p.handle.showNotice(PANE_NOTICE);
+  const notice = f.views[f.views.length - 1].webContents;
+  p.view.webContents.hasFocus = false;
+  notice.hasFocus = true;
+  p.handle.setInactive(true);
+  assert.strictEqual(p.dashboard.webContents.focused, 1, "hiding hands it back");
+  p.handle.setInactive(false);
+  p.view.webContents.hasFocus = false;
+  notice.hasFocus = true;
+  const before = p.dashboard.webContents.focused;
+  p.handle.close();
+  assert.strictEqual(p.dashboard.webContents.focused, before + 1, "closing hands it back");
 });
 
 test("pane: a dashboard reload or a gone renderer closes it, and a closed pane leaves no listener behind", () => {
@@ -787,6 +820,9 @@ test("pane: a dashboard reload or a gone renderer closes it, and a closed pane l
 test("pane: an overlay and an inactive tab each hide it; it shows once both are off, and focus keeps the overlay", () => {
   const f = fakeDeps();
   const p = openPane(f);
+  assert.strictEqual(p.view.visible, false, "a pane starts hidden, until the dashboard brings its tab forward");
+  p.handle.setInactive(false);
+  assert.strictEqual(p.view.visible, true);
   p.handle.setOverlay(true);
   assert.strictEqual(p.view.visible, false);
   p.handle.setInactive(true);
@@ -795,12 +831,30 @@ test("pane: an overlay and an inactive tab each hide it; it shows once both are 
   p.handle.setOverlay(true);
   p.handle.setInactive(false);
   assert.strictEqual(p.view.visible, false, "still under the overlay");
-  p.handle.setInactive(true);
-  p.handle.focus();
-  assert.strictEqual(p.view.visible, false, "focus brings its tab forward, and the overlay still hides it");
+  p.handle.setInactive(false);
+  assert.strictEqual(shownRelayPane(p.parent), p.handle, "the tab in front is Reload's target under an overlay too");
   p.handle.setOverlay(false);
   assert.strictEqual(p.view.visible, true);
+  p.handle.setInactive(true);
+  assert.strictEqual(shownRelayPane(p.parent), null, "no tab in front, no pane target");
+  assert.strictEqual(shownRelayPane(new f.deps.BaseWindow({})), null, "only panes of that window");
   p.handle.close();
+});
+
+test("pane: the menu's Reload goes to the opener's reload, which a closed pane no longer takes", () => {
+  const f = fakeDeps();
+  const asked = [];
+  const parent = new f.deps.BaseWindow({});
+  const dashboard = { webContents: Object.assign(new EventEmitter(), { focus() {}, isDestroyed: () => false }) };
+  const handle = openRelayCrewPane({
+    endpointId: ENDPOINT, crewUrl: CREW_URL, relayDomain: DOMAIN, getToken: () => TOKEN,
+    parent, dashboard, bounds: PANE_RECT, platform: "linux", menuReload: (o) => asked.push(o),
+  }, f.deps);
+  handle.menuReload({ ignoreCache: true });
+  assert.deepStrictEqual(asked, [{ ignoreCache: true }]);
+  handle.close();
+  handle.menuReload({ ignoreCache: false });
+  assert.strictEqual(asked.length, 1);
 });
 
 test("pane: main reads the Crew-switch chord before the page and reports its tab index", () => {
@@ -821,10 +875,126 @@ test("pane: main reads the Crew-switch chord before the page and reports its tab
   assert.strictEqual(press({ meta: true, code: "Digit2" }), false, "Cmd is the macOS chord");
   assert.strictEqual(press({ control: true, code: "KeyR" }), false);
   assert.deepStrictEqual(chords, [0, 5]);
+  p.handle.showNotice(PANE_NOTICE);
+  let noticePrevented = false;
+  f.views[1].webContents.emit("before-input-event", { preventDefault: () => { noticePrevented = true; } }, { type: "keyDown", control: true, code: "Digit2" });
+  assert.strictEqual(noticePrevented, true, "the notice view, which holds the keyboard, reads the chord too");
+  assert.deepStrictEqual(chords, [0, 5, 1]);
   assert.strictEqual(paneChordIndex({ type: "keyDown", meta: true, code: "Digit3" }, "darwin"), 2);
   assert.strictEqual(paneChordIndex({ type: "keyDown", control: true, code: "Digit3" }, "darwin"), -1);
   assert.strictEqual(paneChordIndex({ type: "keyUp", control: true, code: "Digit3" }, "linux"), -1);
   assert.strictEqual(paneChordIndex(null, "linux"), -1);
+  p.handle.close();
+});
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test("pane: stays hidden until its page has drawn the app with its theme on, then shows and says so (row 73)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fakeDeps();
+  const p = openPane(f, { unloaded: true });
+  const told = [];
+  const themes = [];
+  p.handle.onLoaded(() => told.push(p.view.visible));
+  p.handle.onThemeDark((dark) => themes.push(dark));
+  p.handle.setInactive(false);
+  p.view.webContents.emit("dom-ready");
+  p.view.webContents.emit("did-change-theme-color", {}, "#0d0f12");
+  p.view.webContents.emit("did-finish-load");
+  await flush();
+  assert.strictEqual(p.view.visible, false, "a loaded page whose root is empty, or whose theme is not on, stays hidden");
+  p.view.webContents.rootDrawn = "light";
+  t.mock.timers.tick(100);
+  await flush();
+  assert.strictEqual(p.view.visible, true, "the next probe shows it");
+  assert.deepStrictEqual(themes, [false], "the boot page's dark colour is dropped; the theme is the page's own mode");
+  assert.deepStrictEqual(told, [true], "and says so, once");
+  const probes = p.view.webContents.probes;
+  t.mock.timers.tick(5000);
+  await flush();
+  assert.strictEqual(p.view.webContents.probes, probes, "no probe after it showed");
+  p.view.webContents.rootDrawn = "dark";
+  p.view.webContents.emit("did-change-theme-color", {}, "#fafafa");
+  await flush();
+  assert.deepStrictEqual(themes, [false, true], "after it has drawn, a theme change passes on the page's mode");
+  p.handle.close();
+});
+
+test("pane: the probe answers the page's mode only once its root has text and its theme is on", () => {
+  const vm = require("node:vm");
+  const answer = (root, mode) => vm.runInNewContext(PANE_ROOT_PROBE, {
+    document: { getElementById: () => root, documentElement: { dataset: mode ? { mode } : {} } },
+  });
+  const filled = { childElementCount: 1, textContent: " Sessions " };
+  assert.strictEqual(answer(null, "light"), "");
+  assert.strictEqual(answer({ childElementCount: 0, textContent: "" }, "light"), "");
+  assert.strictEqual(answer({ childElementCount: 1, textContent: "  " }, "light"), "");
+  assert.strictEqual(answer(filled, undefined), "", "drawn but on the stylesheet's dark fallback");
+  assert.strictEqual(answer(filled, "light"), "light");
+  assert.strictEqual(answer(filled, "dark"), "dark");
+});
+
+test("pane: a failed load or a notice shows it at once", () => {
+  const f = fakeDeps();
+  const p = openPane(f, { unloaded: true });
+  p.handle.setInactive(false);
+  p.view.webContents.emit("did-fail-load");
+  assert.strictEqual(p.view.visible, true);
+  p.handle.close();
+  const g = fakeDeps();
+  const q = openPane(g, { unloaded: true });
+  q.handle.setInactive(false);
+  q.handle.showNotice(PANE_NOTICE);
+  assert.strictEqual(g.views[1].visible, true, "a notice in place of the page shows");
+  q.handle.close();
+});
+
+test("pane: a page that never answers shows a while after its load finished", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fakeDeps();
+  const p = openPane(f, { unloaded: true });
+  p.handle.setInactive(false);
+  p.view.webContents.emit("did-finish-load");
+  for (let i = 0; i < 29; i += 1) { t.mock.timers.tick(100); await flush(); }
+  t.mock.timers.tick(99);
+  assert.strictEqual(p.view.visible, false);
+  t.mock.timers.tick(1);
+  assert.strictEqual(p.view.visible, true);
+  p.handle.close();
+  const g = fakeDeps();
+  const q = openPane(g, { unloaded: true });
+  let told = 0;
+  q.handle.onLoaded(() => { told += 1; });
+  q.view.webContents.emit("did-finish-load");
+  q.handle.close();
+  t.mock.timers.tick(5000);
+  await flush();
+  assert.strictEqual(told, 0, "a closed pane's timers do nothing");
+});
+
+test("pane: on a theme change it passes on the page's own mode, not a guess from the colour, latest read only", async () => {
+  const f = fakeDeps();
+  const p = openPane(f);
+  const seen = [];
+  p.handle.onThemeDark((dark) => seen.push(dark));
+  const wc = p.view.webContents;
+  // A light page on a custom palette whose background is mid grey.
+  wc.rootDrawn = "light";
+  wc.emit("did-change-theme-color", {}, "#777777");
+  await flush();
+  assert.deepStrictEqual(seen, [false]);
+  wc.rootDrawn = "";
+  wc.emit("did-change-theme-color", {}, "#0d0d0d");
+  await flush();
+  assert.deepStrictEqual(seen, [false], "no applied mode, nothing passed on");
+  const answers = [];
+  wc.executeJavaScript = () => new Promise((resolve) => answers.push(resolve));
+  wc.emit("did-change-theme-color", {}, "#0d0d0d");
+  wc.emit("did-change-theme-color", {}, "#fafafa");
+  answers[1]("light");
+  answers[0]("dark");
+  await flush();
+  assert.deepStrictEqual(seen, [false, false], "the earlier read answering late is dropped");
   p.handle.close();
 });
 
@@ -856,7 +1026,7 @@ test("pane: close takes its views off the window, clears the partition, runs onc
   assert.strictEqual(again.handle.isClosed(), true);
 });
 
-test("pane: only main's IPC opens it, and from the dashboard only the key-gated pane helper calls it", () => {
+test("pane: only main's IPC opens it, and from the dashboard only the pane helper calls it", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const callers = [];
@@ -882,10 +1052,9 @@ test("pane: only main's IPC opens it, and from the dashboard only the key-gated 
     && paneCalls.test(fs.readFileSync(path.join(dashboard, f), "utf8")));
   assert.ok(callers.length > 0, "the scan finds the dashboard's relayCrewAPI users");
   assert.deepStrictEqual(users, [path.join("lib", "relayCrewPanes.ts")]);
-  // That helper hands out the bridge only while the hidden key reads "1".
+  // No hidden key gates that helper any more: a shell with the pane calls gets tabs.
   const helper = fs.readFileSync(path.join(dashboard, "lib", "relayCrewPanes.ts"), "utf8");
-  assert.ok(helper.includes("RELAY_CREW_PANE_KEY = 'mc-relay-crew-pane'"));
-  assert.ok(helper.includes("if (safeGetItem(RELAY_CREW_PANE_KEY) !== '1') return null"));
+  assert.ok(!helper.includes("mc-relay-crew-pane"));
 });
 
 test("window and pane: the handle and the attached Crew's log lines name the Crew", () => {

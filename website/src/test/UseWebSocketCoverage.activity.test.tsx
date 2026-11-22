@@ -300,6 +300,25 @@ describe('useWebSocket frame router', () => {
     }
   })
 
+  it('re-reads the app list in every tab on an app_state frame (an app turned off elsewhere)', () => {
+    const { ws } = mount()
+    let changed = 0
+    const states: unknown[] = []
+    const listener = () => { changed += 1 }
+    const onState = (e: Event) => { states.push((e as CustomEvent).detail) }
+    window.addEventListener('mc:apps-changed', listener)
+    window.addEventListener('mc:app-state', onState)
+    try {
+      act(() => { ws.simulateMessage({ type: 'app_state', data: { app: 'bvtest', enabled: false, seq: 7, boot: '42' } }) })
+      expect(changed).toBe(1)
+      // The typed event a mounted BrowserView follows (its page does not re-read the list).
+      expect(states).toEqual([{ app: 'bvtest', enabled: false, seq: 7, boot: '42' }])
+    } finally {
+      window.removeEventListener('mc:apps-changed', listener)
+      window.removeEventListener('mc:app-state', onState)
+    }
+  })
+
   it('tracks a dynamic-workflow run and a side-conversation result', () => {
     const { ws } = mount()
     act(() => {

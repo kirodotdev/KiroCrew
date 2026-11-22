@@ -119,6 +119,11 @@ export const SEARCH_TERMS: Record<string, UiSearchTerms> = {
     en: ['api key', 'api keys', 'credentials', 'tokens', 'passwords'],
     'zh-CN': ['密钥', 'api 密钥', '凭据', '凭证', '令牌'],
   },
+  // The phone's only view of the account balance: its Credits section.
+  'settings.tab.kiro-account': {
+    en: ['account balance', 'credits', 'my account', 'usage'],
+    'zh-CN': ['账户余额', '额度', '我的账户', '用量'],
+  },
   // The lasting way to silence a kind of notification (the keep-or-mute prompt
   // under a new channel's first notification is one-time).
   'setting:notifications.sources': {
@@ -176,6 +181,8 @@ export const SETTING_PREVIEW: Record<string, string> = {
 export const SETTING_CONDITION: Record<string, string> = {
   // Display > View draws Channels' switch only while Channels is turned on.
   'display.show-channels': 'page_turned_on',
+  // Display > Terminal draws the Ctrl+C / Ctrl+V switch only off macOS.
+  'display.ctrl-c-and-ctrl-v-copy-and-paste': 'not_macos',
 }
 
 /** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter).

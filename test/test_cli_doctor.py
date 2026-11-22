@@ -589,7 +589,10 @@ class TestUnresolvedMcpRefs:
         cli_doctor._doctor_unresolved_mcp_refs()
         out = " ".join(capsys.readouterr().out.split())
         assert "pi needs a live session to check: '@review'" in out
-        assert "directly from the agent spec only in crewmate DMs" in out
+        assert (
+            "directly from the agent spec only in crewmate DMs and crewmate worker sessions on Pi"
+            in out
+        )
         assert "pooled broker stubs and Crew-owned Connections" in out
         assert "A switched-off tool can withhold its entire server" in out
         assert "Pi may load the same name from its own mcp.json" in out

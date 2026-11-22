@@ -79,6 +79,14 @@ function createTokenHolder() {
   };
 }
 
+// endpointId -> the wipe of its partition still running after a close. The
+// next page for that Crew, perhaps as another account, waits for it
+// (`partitionCleared`), so it never starts on what the last one stored.
+const clearing = new Map();
+function partitionCleared(endpointId) {
+  return clearing.get(endpointId) || Promise.resolve();
+}
+
 function relayPartitionName(endpointId) {
   return `relay-crew-${endpointId}`; // no "persist:" prefix: in memory only
 }
@@ -352,9 +360,11 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     } catch {
       /* mid-teardown */
     }
-    Promise.resolve()
+    const cleared = Promise.resolve()
       .then(() => Promise.all([ses.clearStorageData(), ses.clearCache()]))
-      .catch(() => log("could not clear the partition"));
+      .catch(() => log("could not clear the partition"))
+      .then(() => { if (clearing.get(endpointId) === cleared) clearing.delete(endpointId); });
+    clearing.set(endpointId, cleared);
     log(`${what} closed`);
     notify(closedListeners);
   };
@@ -363,12 +373,16 @@ function attachRelayCrew({ endpointId, view, session: ses, origin }, host, deps)
     endpointId,
     origin,
     // With a notice up the Crew's page is blank, so this loads the Crew again
-    // rather than reloading the blank page.
-    reload: () => {
+    // rather than reloading the blank page. `ignoreCache` is Force Reload's.
+    reload: ({ ignoreCache = false } = {}) => {
       if (closed) return;
       watch.reset();
       lastMainFrameStatus = 0;
-      if (!noticeView) { view.webContents.reload(); return; }
+      if (!noticeView) {
+        if (ignoreCache) view.webContents.reloadIgnoringCache();
+        else view.webContents.reload();
+        return;
+      }
       removeNotice();
       Promise.resolve(view.webContents.loadURL(`${origin}/`)).catch(() => log("load failed"));
     },
@@ -470,6 +484,22 @@ function paneChordIndex(input, platform) {
   return digit >= 1 && digit <= PANE_CHORD_DIGITS ? digit - 1 : -1;
 }
 
+// A relay Crew's page has no preload to say it has drawn, so after its load
+// the shell asks it every PANE_ROOT_PROBE_MS: once its root holds text and its
+// theme is applied (`data-mode`, which the app sets in an effect after its first
+// render; before that the stylesheet's dark fallback shows), the probe answers
+// that mode and the pane shows. Any host answers this, an older build's too.
+// A page that never does shows PANE_PAINT_BACKSTOP_MS after its load.
+const PANE_PAINT_BACKSTOP_MS = 3000;
+const PANE_ROOT_PROBE_MS = 100;
+const PANE_ROOT_PROBE = "(() => { const r = document.getElementById(\"root\"); "
+  + "if (!r || r.childElementCount === 0 || r.textContent.trim() === \"\") return \"\"; "
+  + "return document.documentElement.dataset.mode || \"\"; })()";
+
+// The page's applied mode, read again whenever its theme colour changes: the
+// colour is the palette's background, which says nothing reliable about the mode.
+const PANE_MODE_READ = "document.documentElement.dataset.mode || \"\"";
+
 // shortcut: one pane per Crew, and none while the Crew is open in a window:
 // both would use the Crew's one partition.
 const openPanes = new Map();
@@ -477,8 +507,10 @@ const openPanes = new Map();
 // The window's Crew view, as a child of the main window instead. `parent` is
 // the main BaseWindow and `dashboard` its dashboard view, which gets the
 // keyboard back whenever the pane leaves the screen holding it. The caller owns
-// the rect, when the pane shows and how many stay warm. Not wired in yet.
-function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent, dashboard, bounds, platform = process.platform }, deps) {
+// the rect, when the pane shows and how many stay warm: a pane starts hidden,
+// and only `setInactive(false)` from the dashboard shows it, so an answer that
+// lands after the person chose something else never paints over it.
+function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent, dashboard, bounds, menuReload, platform = process.platform }, deps) {
   const existing = openPanes.get(endpointId);
   if (existing && !existing.isClosed()) return existing;
   const inWindow = openWindows.get(endpointId);
@@ -490,21 +522,40 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   // its own header. Layout only, for this page alone; not a credential.
   wc.setUserAgent(`${parts.session.getUserAgent()} ${RELAY_PANE_UA_MARKER}`);
   let rect = null;
-  let shown = true;
+  let shown = false;
   // A local menu or dialog over the pane, and another tab in front of it: either
   // one hides it, as the Preview panel's computeVisible decides.
   let overlay = false;
-  let inactive = false;
+  let inactive = true;
   let parentAway = false;
   let reportedHidden = false;
+  view.setVisible(false);
   parent.contentView.addChildView(view);
+  const chordListeners = [];
+  const themeListeners = [];
+  const loadedListeners = [];
+  // The page has drawn the app (or failed to load, or a notice took its place).
+  // Until then the pane stays hidden, so the dashboard's connecting cover shows
+  // instead of the empty view's black.
+  let loaded = false;
+  let backstop = null;
+  let probe = null;
+  // The notice view (which focuses its own button) reads the chord too, so
+  // the keyboard can leave a tab that shows one.
+  const readChord = (event, input) => {
+    const index = paneChordIndex(input, platform);
+    if (index < 0) return;
+    event.preventDefault();
+    crew.notify(chordListeners, index);
+  };
   const crew = attachRelayCrew({ endpointId, ...parts }, {
-    add: (v) => { parent.contentView.addChildView(v); v.setVisible(shown); },
+    add: (v) => { parent.contentView.addChildView(v); markLoaded(); v.setVisible(shown); v.webContents.on("before-input-event", readChord); },
     remove: (v) => parent.contentView.removeChildView(v),
     place: (v) => { if (rect) v.setBounds(rect); },
   }, deps);
   const isClosed = crew.handle.isClosed;
-  const chordListeners = [];
+  // The Crew's page or its notice, whichever is up, may hold the keyboard.
+  const holdsFocus = () => crew.views().some(viewHoldsFocus);
   const handBack = () => {
     try { if (!dashboard.webContents.isDestroyed()) dashboard.webContents.focus(); } catch { /* mid-teardown */ }
   };
@@ -517,10 +568,14 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   // As for the Preview panel (browser-view.js): decide the hand-back before
   // the hide, and make it after.
   const sync = () => {
-    shown = computeVisible({ open: true, overlayActive: overlay, inactive, bounds: rect });
-    const reclaim = !shown && viewHoldsFocus(view);
+    const was = shown;
+    shown = loaded && computeVisible({ open: true, overlayActive: overlay, inactive, bounds: rect });
+    const reclaim = !shown && holdsFocus();
     for (const v of crew.views()) v.setVisible(shown);
     if (reclaim) handBack();
+    // A pane that comes to the front takes the keyboard, as its window did, so
+    // typing cannot reach the local dashboard underneath; a notice up takes it.
+    if (shown && !was && parent.isFocused()) crew.views().at(-1).webContents.focus();
     // Renewal parks while the pane is hidden or the main window is.
     const hidden = !shown || parentAway;
     if (hidden !== reportedHidden) { reportedHidden = hidden; crew.setHidden(hidden); }
@@ -533,11 +588,13 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   const dashboardEvents = ["did-navigate", "render-process-gone"];
   const close = () => {
     if (isClosed()) return;
-    const reclaim = viewHoldsFocus(view);
+    const reclaim = holdsFocus();
     for (const [event, fn] of parentEvents) parent.removeListener(event, fn);
     parent.removeListener("closed", close);
     for (const event of dashboardEvents) dashboard.webContents.removeListener(event, close);
     openPanes.delete(endpointId);
+    for (const timer of [backstop, probe]) if (timer) clearTimeout(timer);
+    backstop = probe = null;
     try { parent.contentView.removeChildView(view); } catch { /* mid-teardown */ }
     crew.teardown("pane");
     if (reclaim) handBack();
@@ -549,31 +606,73 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   wc.on("focus", () => setImmediate(() => {
     if (!isClosed() && !shown && parent.isFocused()) handBack();
   }));
-  wc.on("before-input-event", (event, input) => {
-    const index = paneChordIndex(input, platform);
-    if (index < 0) return;
-    event.preventDefault();
-    crew.notify(chordListeners, index);
+  wc.on("before-input-event", readChord);
+  // The page's theme, so the local top bar above it can match (the page has no
+  // preload to say so itself).
+  const markLoaded = () => {
+    if (backstop) { clearTimeout(backstop); backstop = null; }
+    if (probe) { clearTimeout(probe); probe = null; }
+    if (loaded || isClosed()) return;
+    loaded = true;
+    // Only a pane the dashboard already asked to show has anything to change.
+    if (!inactive) sync();
+    // shortcut: 2-3 dark frames can still show as the cover goes; fix in #40292.
+    crew.notify(loadedListeners);
+  };
+  // A page could answer early, and all that does is show its own pane sooner;
+  // only "dark" or "light" leaves main, as the theme it paints.
+  const probeRoot = () => {
+    probe = null;
+    if (loaded || isClosed()) return;
+    Promise.resolve(wc.executeJavaScript(PANE_ROOT_PROBE)).then((mode) => {
+      if (loaded || isClosed()) return;
+      if (mode === "dark" || mode === "light") {
+        crew.notify(themeListeners, mode === "dark");
+        markLoaded();
+      } else probe = setTimeout(probeRoot, PANE_ROOT_PROBE_MS);
+    }, () => {});
+  };
+  wc.once("did-finish-load", () => {
+    if (loaded) return;
+    backstop = setTimeout(markLoaded, PANE_PAINT_BACKSTOP_MS);
+    probeRoot();
+  });
+  wc.once("did-fail-load", markLoaded);
+  // Before the page has drawn, its theme colour is the boot page's dark one.
+  // Only the latest read counts, so an earlier answer arriving late cannot win.
+  let modeRead = 0;
+  wc.on("did-change-theme-color", () => {
+    if (!loaded) return;
+    const read = ++modeRead;
+    Promise.resolve(wc.executeJavaScript(PANE_MODE_READ)).then((mode) => {
+      if (read !== modeRead || isClosed()) return;
+      if (mode === "dark" || mode === "light") crew.notify(themeListeners, mode === "dark");
+    }, () => {});
   });
   setBounds(bounds);
 
   const handle = {
     ...crew.handle,
-    focus: () => {
+    // The dashboard decides which tab is in front, and a window comes forward
+    // only in the click that asked for it, so this raises and shows nothing.
+    focus: () => {},
+    parent,
+    // The tab in front, also while a local menu or dialog hides it for a moment.
+    isFront: () => !isClosed() && !inactive,
+    // The app menu's Reload and Force Reload while this pane is on screen: the
+    // opener's, which mints first when renewal stopped. Plain reload otherwise.
+    menuReload: (opts) => {
       if (isClosed()) return;
-      if (parent.isMinimized()) parent.restore();
-      parent.show();
-      parent.focus();
-      // Brings its tab to the front; a local overlay still up keeps it hidden.
-      inactive = false;
-      sync();
-      wc.focus();
+      if (typeof menuReload === "function") menuReload(opts);
+      else crew.handle.reload(opts);
     },
     close,
     setBounds: (next) => { if (!isClosed()) setBounds(next); },
     setOverlay: (active) => { if (isClosed()) return; overlay = active === true; sync(); },
     setInactive: (value) => { if (isClosed()) return; inactive = value === true; sync(); },
     onChord: (cb) => { chordListeners.push(cb); },
+    onThemeDark: (cb) => { themeListeners.push(cb); },
+    onLoaded: (cb) => { loadedListeners.push(cb); },
   };
   openPanes.set(endpointId, handle);
   Promise.resolve(wc.loadURL(`${parts.origin}/`)).catch(() => crew.log("first load failed"));
@@ -581,13 +680,25 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
   return handle;
 }
 
+// The relay tab in front in `win`, or null: the app menu's Reload target.
+function shownRelayPane(win) {
+  if (!win) return null;
+  for (const pane of openPanes.values()) {
+    if (pane.parent === win && pane.isFront()) return pane;
+  }
+  return null;
+}
+
 module.exports = {
   isEndpointId,
+  partitionCleared,
+  shownRelayPane,
   createTokenHolder,
   relayPartitionName,
   installRelayHeaderRule,
   createRelayCrewView,
   openRelayCrewWindow,
   paneChordIndex,
+  PANE_ROOT_PROBE,
   openRelayCrewPane,
 };

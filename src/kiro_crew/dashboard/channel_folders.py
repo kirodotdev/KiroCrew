@@ -26,7 +26,11 @@ Design notes:
   write there both blocks the event loop on ``fsync`` and races a second pass.
   A configured folder that does not exist (config.json hand-edited, or the user
   deleted the folder) leaves conversations unfiled until the next settings save
-  recreates it — the pre-feature behaviour, not a broken state.
+  recreates it — the pre-feature behaviour, not a broken state. The one
+  exception is Slack's zero-config ``Slack`` folder (no ``session_folder`` set,
+  conversations listed), made on first use by
+  :func:`kiro_crew.dashboard.slack_session_list.auto_folder_id` inside one
+  locked ``mutate_folders`` transaction that fsyncs off the loop.
 * **Filing happens once, at surface time.** Only a conversation that does not
   already have a folder is filed, and only the first time its slot is created —
   a conversation with slot-side history metadata has been surfaced before, so

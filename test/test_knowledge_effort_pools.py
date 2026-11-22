@@ -39,8 +39,10 @@ class _FakePool:
         effort_key: str | None = None,
         fallback_effort: str = "",
         config_pool_size_key: str | None = None,
+        sessions=None,
     ) -> None:
         self.pool_size = pool_size
+        self.sessions = sessions
         self.effort = effort
         self.effort_key = effort_key
         self.fallback_effort = fallback_effort
@@ -97,7 +99,8 @@ class TestKnowledgePoolSetup:
         expected_extraction,
     ):
         app = web.Application()
-        app["state"] = SimpleNamespace(knowledge_store=object())
+        session_manager = object()
+        app["state"] = SimpleNamespace(knowledge_store=object(), sessions=session_manager)
         pools: list[_FakePool] = []
         extractor_calls: list[dict[str, object]] = []
         extractor = object()
@@ -138,6 +141,8 @@ class TestKnowledgePoolSetup:
         assert extraction.effort_key == "extraction_effort"
         assert extraction.fallback_effort == "high"
         assert extraction.config_pool_size_key == "extraction_pool_size"
+        # The pool reaches the gateway's session manager, so KAS can run extraction.
+        assert extraction.sessions() is session_manager
         assert extractor_calls[0]["pool"] is extraction
         assert app["knowledge_extraction_pool"] is extraction
         assert "knowledge_fetch_pool" not in app

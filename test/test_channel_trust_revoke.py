@@ -176,7 +176,7 @@ class TestModeEndpointSymmetry:
     async def test_normal_is_the_off_switch_for_a_slot_it_was_not_scoped_to(self, tmp_path):
         """``normal`` clears every slot's effective key, not just the named one.
 
-        A channel Trust reply (``TextApprovalDecider._grant_session_trust``) sets the session
+        A channel Trust reply (``messaging.approval.deliver_verdict``) sets the session
         policy with no slot flag, so only the trailing propagation loop can revoke it.
         """
         state = _make_state(tmp_path)

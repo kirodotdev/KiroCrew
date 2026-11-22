@@ -165,7 +165,7 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
-| `SessionLaneChanged` | a dashboard user moves a session between board lanes — an agent's move fires nothing | nothing |
+| `SessionLaneChanged` | a dashboard user moves a session between board lanes, or starts one in a folder whose tags include a lane — an agent's move fires nothing | nothing |
 
 A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 (with the task its parent wrote) before its prompt is sent, and their exit-0
@@ -225,8 +225,8 @@ agent to act on.
 
 ### The six Kiro Agent triggers
 
-A Kiro Agent session has eleven triggers where the gateway has five. The other
-six can be authored and saved here, and a saved one reads back unchanged.
+A Kiro Agent session has triggers the gateway has no event for. Six of them can
+be authored and saved here, and a saved one reads back unchanged.
 
 **No event fires any of them.** The gateway has no lifecycle moment for the six,
 so nothing fires one on its own, and no other reader exists. Authoring one records
@@ -391,7 +391,10 @@ A hook's fields:
 **A tool matcher and a message matcher are matched differently.** On
 `PreToolUse` and `PostToolUse` the matcher is compared against the tool name with
 a fixed glob-style vocabulary — an exact name, `prefix*`, `*suffix`,
-`*contains*`, or `*` for everything — and `matcher_mode` is not consulted at all.
+`*contains*`, or `*` for everything, with `|` between plain tool names
+(`fs_write|execute_bash` meets either tool, and the whole text is still one
+pattern too, so the shell command `ls|wc` meets `ls|wc`; a matcher holding a glob
+character or a space is not split) — and `matcher_mode` is not consulted at all.
 The form knows this and hides the mode control for those two events. On
 `UserPromptSubmit`, `AgentSpawn` and `Stop` the matcher runs against the message
 or the final assistant text, and on `SessionLaneChanged` against the lane tokens
@@ -404,6 +407,11 @@ compares the whole string: write `*added:<id>;*` to catch a session entering tha
 lane, `*removed:<id>;*` to catch it leaving, and `*:<id>;*` for either. Keep both
 the leading `:` and the trailing `;` — without them a selector also matches a lane
 whose id merely contains yours, and runs your hook on somebody else's session.
+
+The form helps with both halves. With `SessionLaneChanged` in `glob` mode it states
+the grammar under the matcher, and its **Insert a lane** menu lists the status tags
+(the lanes) by tag name and fills in `*added:<id>;*` with that tag's id, which no other
+screen shows.
 
 ### Creating, testing, enabling and deleting one
 
@@ -466,8 +474,9 @@ so a spec written for either tool loads here:
 
 Both shapes are held to the same bar: same command and matcher rules, same
 dedup, same per-event and total caps. Twelve triggers are accepted, each in
-kiro-agent's own PascalCase, its IDE camelCase spelling, or its CLI alias —
-the whole table from kiro-agent's `packages/kiro-agent/src/hooks/trigger-names.ts` at blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, matched without regard to case. Five map onto the five kiro-cli event
+kiro-agent's own PascalCase, its IDE camelCase spelling, its CLI alias, or the
+Open Plugins alias `afterFileEdit` — the whole table from kiro-agent's
+`packages/kiro-agent/src/hooks/trigger-names.ts`, matched without regard to case. Five map onto the five kiro-cli event
 names: `PreToolUse` to `preToolUse`, `PostToolUse` to `postToolUse`,
 `UserPromptSubmit` to `userPromptSubmit`, `SessionStart` to `agentSpawn`, `Stop`
 to `stop`. Only those five reach kiro-cli; a hook on `SessionEnd`, `PreTaskExec`,
@@ -574,7 +583,7 @@ with the results.
 | | Chat lifecycle hook | `register_hook` |
 |---|---|---|
 | Created by | you, on the Hooks tab | an agent, mid-turn |
-| Fires on | one of five session events | an inbound HTTP POST |
+| Fires on | one of six session events | an inbound HTTP POST |
 | Runs | a shell command you wrote | a fresh agent turn |
 | Lives in | the `hooks` list in `hooks.json` | a top-level entry in the same file |
 

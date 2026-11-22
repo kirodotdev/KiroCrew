@@ -46,6 +46,10 @@ export function launchGuardKey(body: { provider_id?: string }): string {
 const TERMINAL: LaunchJob['status'][] = ['done', 'failed', 'cancelled']
 export const isTerminal = (j: LaunchJob) => TERMINAL.includes(j.status)
 
+/** A cancelled launch whose instance is still being deleted: the gateway keeps the
+ *  rollback step active until AWS confirms the delete (or it fails). */
+export const isRemoving = (j: LaunchJob) => j.status === 'cancelled' && j.steps.some(st => st.state === 'active')
+
 /** The connect (register) step ran — the crew exists under My Crews, so a
  *  sign-in can be re-run against it rather than provisioning anything. */
 export const isRegistered = (j: LaunchJob) => j.steps.some(st => st.key === 'connect' && st.state === 'done')
@@ -54,13 +58,18 @@ export const isRegistered = (j: LaunchJob) => j.steps.some(st => st.key === 'con
  *  crew is registered (Stop / Delete work) but a chat on it fails with "not
  *  logged in", so it must not read as ready to connect. */
 export const needsSignin = (j: LaunchJob) =>
-  isTerminal(j) && !!j.instance_id && j.signin_detected !== true && isRegistered(j)
+  isTerminal(j) && !!j.instance_id && j.signin_detected !== true && isRegistered(j) && !signinSkipped(j)
+
+/** The owner chose to launch without the Kiro sign-in. A crew on another agent
+ *  harness works without one, so this is not "Needs sign-in": the crew can sign
+ *  in later from its own Settings. */
+export const signinSkipped = (j: LaunchJob) => j.signin_skipped === true && j.signin_detected !== true
 
 /** Whether the Connect step's icon should read as waiting rather than done.
  *  What it answers is "is this crew signed in", NOT "is this job over" — a
  *  registered crew waiting on a code is unsigned for the whole approval, which
  *  is most of the time a user spends looking at the card. */
-export const connectWaiting = (j: LaunchJob) => isRegistered(j) && j.signin_detected !== true
+export const connectWaiting = (j: LaunchJob) => isRegistered(j) && j.signin_detected !== true && !signinSkipped(j)
 
 /** The launch chose a company (IAM Identity Center) identity, so its code is
  *  approved through the organization's portal and not the Builder ID one.

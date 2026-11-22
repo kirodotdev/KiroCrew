@@ -133,6 +133,10 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
       const ss = ta.selectionStart ?? 0
       const se = ta.selectionEnd ?? 0
       const isCollapsed = ss === se
+      // A read-only textarea (optimizing, disabled) keeps its tokens: every
+      // delete below writes the draft itself, past `readOnly`. The caret steps
+      // still run.
+      if (ta.readOnly && (e.key === 'Backspace' || e.key === 'Delete')) return false
       const ranges = findTokenRanges(v, pasteBlocks)
 
       const removeBlockAtom = (r: { start: number; end: number; block: PasteBlock }) => {

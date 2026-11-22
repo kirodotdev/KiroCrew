@@ -225,6 +225,7 @@ def monkeypatch(_floor_monkeypatch):
 # copy of this file shares one module object per part. No bytecode is written for them, since
 # this runs before ``pytest_configure`` moves bytecode off the checkout.
 _FLOOR_PARTS = (
+    "conftest_floor_guards",
     "conftest_floor_home",
     "conftest_floor_tmp",
     "conftest_floor_configure",
@@ -234,6 +235,7 @@ _FLOOR_PARTS = (
     "conftest_floor_determinism",
     "conftest_floor_reporting",
     "conftest_floor_git",
+    "conftest_floor_read_budget",
 )
 
 
@@ -258,6 +260,8 @@ def _load_floor_part(stem: str):
     return module
 
 
+# The guard runner both conftests' guard sets are built on; not a part of either.
+_load_floor_part("per_test_guards")
 for _stem in _FLOOR_PARTS:
     _load_floor_part(_stem)
 
@@ -310,6 +314,21 @@ from conftest_floor_git import (  # noqa: E402,F401 -- bound for pytest and for 
     _git_maintenance_off_entries,
     _git_vars_to_strip,
     _load_git_maintenance_helpers,
+)
+
+# The fixtures that run the per-test floors; ``seal_floor_guards`` at the end of
+# this file sorts the floors bound here into them.
+from conftest_floor_guards import (  # noqa: E402,F401 -- bound for pytest and for tests
+    FLOOR_SEGMENT_FIXTURES,
+    FLOORS,
+    _c_floors,
+    _f_floors,
+    _isolate_b_floors,
+    _isolate_l_floors,
+    _j_floors,
+    _rest_floors,
+    floor_guard,
+    seal_floor_guards,
 )
 
 # Data home: the import-time floor and the per-test home, SEL and ~/.kiro pins.
@@ -409,6 +428,7 @@ from conftest_floor_services import (  # noqa: E402,F401 -- bound for pytest and
     _SERVICE_MANAGERS,
     _block_host_service_mutation,
     _fail_on_refused_real_reclaim_write,
+    _no_engine_install_at_gateway_start,
     _no_real_cgroup_reclaim_write,
     _no_systemd_user_session,
     _refusal_reason,
@@ -435,8 +455,19 @@ from conftest_floor_tmp import (  # noqa: E402,F401 -- bound for pytest and for 
 if _TMP_PER_TEST:
     from conftest_floor_tmp import _isolate_tempfile_base_per_test  # noqa: E402,F401
 
+# The crew-log read-budget check, and its fixture only when the switch is on.
+from conftest_floor_read_budget import (  # noqa: E402,F401 -- bound for pytest and for tests
+    _READ_BUDGET_ENV,
+    _READ_BUDGET_RAISE,
+    KNOWN_OVER_BUDGET_SITES,
+    check_read_budget,
+)
 
-@pytest.fixture(autouse=True)
+if _READ_BUDGET_RAISE:
+    from conftest_floor_read_budget import _crew_log_read_budget_check  # noqa: E402,F401
+
+
+@floor_guard
 def _scrub_inherited_preload_env(_floor_monkeypatch):
     """Hide the entries ``name_grant`` refuses as inherited preloads, then restore them.
 
@@ -1326,14 +1357,14 @@ def _check_pool_leftovers(item) -> None:
             )
 
 
-@pytest.fixture(autouse=True)
+@floor_guard
 def _kiro_crew_package_attr_floor(request):
     """Restore the ``kiro_crew`` module graph a test inherited; report the test that changed it.
 
     Compares, at teardown, every ``kiro_crew.*`` entry of ``sys.modules`` the test
     inherited and its parent package's attribute (plus the root package's own globals,
     which an in-process ``importlib.reload(kiro_crew)`` rebinds) with what they were at
-    setup, using C-level ``map`` comparisons; only a change takes the slow path. A
+    setup, read through one C-level multi-key read per dict; only a change takes the slow path. A
     module the test imported for the first time is checked too: one left in
     ``sys.modules`` without its parent attribute is bound back. Reports by default and
     fails under ``KIROCREW_PKG_ATTR_STRICT=1``; restores either way. A module- or
@@ -1952,3 +1983,6 @@ def pytest_terminal_summary(
             f"{_MAX_ANNOTATED_FAILURES} are annotated. The remaining {hidden} are in "
             "this job's short test summary."
         )
+
+
+seal_floor_guards(globals())

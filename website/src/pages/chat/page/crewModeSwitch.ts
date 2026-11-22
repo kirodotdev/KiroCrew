@@ -19,9 +19,10 @@ import type { ChatSlot } from '../../../types'
 import { dropPanelViews, panelStripOf, type ViewKind } from '../../../hooks/usePanelTabs'
 import { useAppDispatch, useAppSelector } from '../../../store'
 import { closeActivityPanel, hasSavedActivityOpen, openActivityPanel } from '../../../store/chatSlice'
-import { crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, runsCrewMode } from '../../../lib/crewMode'
+import { crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, showsAsCrewMode } from '../../../lib/crewMode'
 import { isRootSession } from '../command-center/model'
 import { useIsMobile } from '../../../hooks/useIsMobile'
+import { confirmCrewModeMidChat } from './crewModeMidChatConfirm'
 
 const EMPTY: ReadonlySet<string> = new Set()
 // The tabs conductor mode puts on a chat's strip: Crew and Dashboard.
@@ -34,7 +35,7 @@ const withoutKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> 
   return next
 }
 
-export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView }: {
+export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, switchAgent, openView, autoOpenBoard }: {
   currentSlot: ChatSlot | undefined
   /** The catalog's default template: the agent a plain chat runs on. */
   defaultAgent: string
@@ -44,6 +45,9 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<boolean>
   /** The side panel's view opener (`usePanelTabs().openView`). */
   openView: (kind: ViewKind) => void
+  /** Auto-Open Board in Side Panel (`dashboard.auto_open_conductor_board`), or
+   *  `undefined` while the dashboard config read is in flight. */
+  autoOpenBoard: boolean | undefined
 }) {
   const dispatch = useAppDispatch()
   // Offered on a plain local, non-app, Persistent chat that runs on the default
@@ -61,8 +65,11 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   // carries a conductor's name as that crewmate, not as a conductor. Whether the
   // chat IS in Crew Mode does not depend on the switch being offered: a chat
   // opened on a conductor that is itself the default agent still has the Crew
-  // Mode welcome, its task board, and no memory-mode chip.
-  const crewModeOn = plainChat && runsCrewMode(currentSlot?.agent, currentSlot?.agent_kind, currentSlot?.crew_mode_agent)
+  // Mode welcome, its task board, and no memory-mode chip. The same predicate
+  // that hides the agent picker (`showsAsCrewMode`): a chat another session
+  // opened on a conductor outside any crew is a plain chat to the gateway, so
+  // it shows no pressed chip or welcome beside the picker it keeps (#39260).
+  const crewModeOn = plainChat && showsAsCrewMode(currentSlot)
   const crewModeEligible = plainChat && !runsConductor(defaultAgent, 'template')
     && (crewModeOn || (currentSlot?.agent_kind !== 'member' && isDefaultAgentName(currentSlot?.agent ?? '', defaultAgent)))
   const taskBoardOffered = (crewModeEligible || crewModeOn) && isRootSession(currentSlot)
@@ -91,31 +98,34 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     shownKey.current = currentSlot?.key
     return () => { shownKey.current = undefined }
   }, [currentSlot?.key])
-  // The first entry to a conductor mode root opens the side panel on the Crew tab.
-  // After that the chat keeps its own saved panel state and tab: a panel the
-  // person closed stays closed, and the tab they picked stays in front. Not on a
-  // phone: there the panel is a sheet over the chat, and a phone always lands
-  // on the chat.
+  // The first entry to a conductor mode root opens the side panel on the Board
+  // tab, unless Auto-Open Board in Side Panel is off. The entry waits until that
+  // setting is read and is decided once, so a change during the visit opens
+  // nothing. After the first entry the chat keeps its own saved panel state and
+  // tab: a panel the person closed stays closed, and the tab they picked stays
+  // in front. Not on a phone: there the panel is a sheet over the chat, and a
+  // phone always lands on the chat.
   const isMobile = useIsMobile()
   const enteredKey = useRef<string | null>(null)
   const rootKey = crewModeOn && isRootSession(currentSlot) ? currentSlot!.key : null
   useEffect(() => {
     if (!rootKey || enteredKey.current === rootKey) { if (!rootKey) enteredKey.current = null; return }
+    if (autoOpenBoard === undefined) return
     enteredKey.current = rootKey
-    if (isMobile || hasSavedActivityOpen(rootKey)) return
+    if (!autoOpenBoard || isMobile || hasSavedActivityOpen(rootKey)) return
     // A chat created already in conductor mode (`dashboard.new_chat_crew_mode`) is
     // entered, not turned on: remember a closed panel the same way, so turning
     // it off before the first message closes the panel again.
     if (!activityOpen) panelWasClosed.current.add(rootKey)
     dispatch(openActivityPanel())
     openView('workers')
-  }, [rootKey, dispatch, openView, isMobile, activityOpen])
+  }, [rootKey, dispatch, openView, isMobile, activityOpen, autoOpenBoard])
   // The chats whose switch back to the default agent is in flight: their chips
   // come back the moment the mark is pressed, the same way they leave on turning on.
   const [turningOff, setTurningOff] = useState<ReadonlySet<string>>(EMPTY)
   // The template namespace is named, since a bare name would be read as a crewmate
   // whenever the slot's kind is unset. Turning it on also opens the task board.
-  const turnOnCrewMode = useCallback(() => {
+  const startTurnOn = useCallback(() => {
     if (crewModeOn || !currentSlot) return
     const key = currentSlot.key
     setTurningOn(set => withKey(set, key))
@@ -147,6 +157,20 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
       openView('workers')
     }
   }, [crewModeOn, currentSlot, switchAgent, taskBoardOffered, dispatch, openView, activityOpen, isMobile])
+  // Once the chat has a user message the gateway locks it on the conductor
+  // (`crew_mode_locked`), so turning it on then cannot be undone: ask first.
+  // Before the first message it can still be turned off, so it switches at once.
+  const turnOnCrewMode = useCallback((): void | Promise<boolean> => {
+    if (crewModeOn || !currentSlot) return
+    if (!hasUserMessage) { startTurnOn(); return }
+    const key = currentSlot.key
+    return confirmCrewModeMidChat().then(ok => {
+      // The person may have moved to another chat while the dialog was open.
+      const go = ok && shownKey.current === key
+      if (go) startTurnOn()
+      return go
+    })
+  }, [crewModeOn, currentSlot, hasUserMessage, startTurnOn])
   const crewModeLeaving = !!currentSlot && turningOff.has(currentSlot.key)
   const crewModeArriving = !!currentSlot && turningOn.has(currentSlot.key)
   /** Crew Mode is on, or being turned on, for this chat: the composer then shows

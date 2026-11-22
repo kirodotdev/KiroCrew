@@ -542,6 +542,15 @@ def resolve_loaded_callable(app_name: str, module_path: str) -> Callable[..., An
         # unloaded/reloaded. Drop it and fall through to what is loaded NOW, so a
         # v1 shutdown is never used against a v2 worker.
         _shutdown_callables.pop(app_name, None)
+    return loaded_callable(app_name, module_path)
+
+
+def loaded_callable(app_name: str, module_path: str) -> Callable[..., Any] | None:
+    """``module.path:callable`` from this app's module already in ``sys.modules``, or None.
+
+    Imports nothing, so the callable shares the module state the app's routes and
+    startup hook already built.
+    """
     if ":" not in module_path:
         return None
     dotted_path, callable_name = module_path.rsplit(":", 1)

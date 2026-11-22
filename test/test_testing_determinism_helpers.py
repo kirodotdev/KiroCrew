@@ -1676,9 +1676,14 @@ class TestTheFloorsAreOn:
         assert conftest._AUDIT.pid == os.getpid()
 
     def test_the_floor_fixtures_run_for_every_test(self, request):
-        for name in ("_kiro_crew_package_attr_floor", "_report_only_floor_summary"):
-            assert name in request.fixturenames, name
+        assert "_report_only_floor_summary" in request.fixturenames
         conftest = _root_conftest(request)
+        # The package-attribute floor is a floor guard: it runs for this test when the
+        # segment that holds it is one of this test's fixtures.
+        floor = conftest._kiro_crew_package_attr_floor
+        held = [floor in segment for segment in conftest.FLOORS.sealed_segments()]
+        assert held.count(True) == 1
+        assert conftest.FLOOR_SEGMENT_FIXTURES[held.index(True)] in request.fixturenames
         assert request.node.stash.get(conftest._TZ_STATE, None) is not None
         assert request.node.stash.get(conftest._POOL_STATE, None) is not None
 

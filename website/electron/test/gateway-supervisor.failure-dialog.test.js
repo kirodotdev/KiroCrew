@@ -346,6 +346,59 @@ test("a port holder whose command could not be read is named by pid, not called 
   assert.match(shown, /onclick="act\('reveal'\)"/, "the launch log is offered");
 });
 
+test("a gateway that exits past a silent holder names that holder, not the exit code (#36213)", async () => {
+  // Nothing answers HTTP on the port, so the launch still spawns, and the
+  // gateway refuses the other program's port and exits 1. The owner probe had
+  // already found that program, so the dialog names it the way it does for one
+  // that answers.
+  const { supervisor, documents, mainWindow, spawnCalls } = clientOnlyClickHarness({
+    actions: ["quit"],
+    store: fakeStore({ runLocalGateway: true, remoteHosts: {} }),
+    port: 5476,
+    execFileFn: ownerProbe("some-other-server --port 5476"),
+  });
+
+  assert.strictEqual(await supervisor.start(), true, "the silent port is still started into");
+  assert.strictEqual(spawnCalls.length, 1);
+  spawnCalls[0].child.exitCode = 1;
+  spawnCalls[0].child.emit("exit", 1, null);
+
+  await supervisor.connect(mainWindow);
+  for (let i = 0; i < 80 && documents.length < 1; i += 1) await flush();
+  assert.strictEqual(documents.length, 1, "the failure dialog opens");
+  const shown = documents[0];
+  assert.match(shown, /served by a program this app did not start/);
+  assert.match(shown, /It is held by process 4242 \(some-other-server --port 5476\)\./);
+  assert.match(shown, /kill -TERM 4242/);
+  assert.match(shown, /<div class="title">[^<]*port 5476 is in use by another program/);
+  assert.doesNotMatch(shown, /exited on launch/, "the bare exit code is not the message");
+  assert.match(shown, /<pre class="log">/, "the launch log is still shown");
+});
+
+test("a gateway killed by a signal past a silent holder keeps the signal diagnosis", async () => {
+  // The port refusal exits 1; a signal (macOS Gatekeeper's SIGKILL) never came
+  // from it, so the dialog keeps the signal's cause and fix, not the holder's.
+  const { supervisor, documents, mainWindow, spawnCalls } = clientOnlyClickHarness({
+    actions: ["quit"],
+    store: fakeStore({ runLocalGateway: true, remoteHosts: {} }),
+    port: 5476,
+    execFileFn: ownerProbe("some-other-server --port 5476"),
+  });
+
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(spawnCalls.length, 1);
+  spawnCalls[0].child.emit("exit", null, "SIGKILL");
+
+  await supervisor.connect(mainWindow);
+  for (let i = 0; i < 80 && documents.length < 1; i += 1) await flush();
+  assert.strictEqual(documents.length, 1, "the failure dialog opens");
+  const shown = documents[0];
+  assert.match(shown, /killed on launch \(SIGKILL\)/);
+  assert.match(shown, /xattr -cr/);
+  assert.doesNotMatch(shown, /is in use by another program/);
+  assert.doesNotMatch(shown, /kill -TERM 4242/);
+});
+
 test("the same unidentified payload IS adopted when our own gateway holds the port", async () => {
   // The control for the refusal above: identical payload, identical probe
   // mechanism, and the one fact that differs is who holds the port. A legacy

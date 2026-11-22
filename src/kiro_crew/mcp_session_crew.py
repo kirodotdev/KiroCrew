@@ -14,6 +14,7 @@ import copy
 from typing import Any
 from urllib.parse import quote
 
+from kiro_crew.conductor_patrol import reply_line
 from kiro_crew.mcp_tools.dashboard_client import DashboardError
 from kiro_crew.mcp_tools.table import ToolContext
 from kiro_crew.platform import redact_via_context as redact
@@ -153,10 +154,13 @@ def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
             f" This item was retired from another crew: seed the worker to {start}"
             "push a NEW branch name."
         )
+    # A bound worker's reports are pulled only on the conductor's work-ledger
+    # patrol tick, so its create says whether one runs, as a local bind does.
+    patrol = reply_line(resp) if resp.get("work_item_id") else ""
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}`{title} {_on(resp)}{agent}. It is empty "
         f"and waiting in that crew's sidebar group.{note} Pass crew and this key as "
-        "target to session_send, session_read_message, session_stop and session_close."
+        f"target to session_send, session_read_message, session_stop and session_close.{patrol}"
     )
 
 

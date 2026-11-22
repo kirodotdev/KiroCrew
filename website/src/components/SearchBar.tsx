@@ -94,7 +94,7 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
       data-escape-owner=""
       className={docked
       ? 'flex items-center gap-1.5 w-full text-[13px]'
-      : 'absolute top-14 right-4 z-20 flex items-center gap-1.5 bg-bg-elevated border border-border focus-within:border-accent rounded-lg shadow-md px-2.5 py-1.5 text-[13px]'}>
+      : 'absolute top-14 right-4 z-20 flex max-w-[calc(100%-2rem)] items-center gap-1.5 bg-bg-elevated border border-border focus-within:border-accent rounded-lg shadow-md px-2.5 py-1.5 text-[13px]'}>
       <input
         ref={inputRef}
         type="text"
@@ -117,11 +117,11 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
            outline since it shipped, and this change only rewired the
            composition/Enter handling, so restyling the docked header is out of
            its scope. */
-        className={`bg-transparent border-none outline-hidden text-text placeholder:text-muted text-[13px] ${docked ? 'flex-1 min-w-0' : 'w-[180px]'}`}
+        className={`bg-transparent border-none outline-hidden text-text placeholder:text-muted text-[13px] ${docked ? 'flex-1 min-w-0' : 'min-w-0 flex-1 basis-[180px] max-w-[180px]'}`}
       />
       <button
         onClick={toggleCaseSensitive}
-        className={`p-0.5 rounded cursor-pointer border-none transition-colors ${caseSensitive ? 'bg-accent/20 text-accent' : 'bg-transparent text-muted hover:text-text'}`}
+        className={`${docked ? '' : 'shrink-0 '}p-0.5 rounded cursor-pointer border-none transition-colors ${caseSensitive ? 'bg-accent/20 text-accent' : 'bg-transparent text-muted hover:text-text'}`}
         title={i18nT('components.searchBar.case_sensitive')}
         aria-label={i18nT('components.searchBar.case_sensitive')}
         aria-pressed={caseSensitive}
@@ -146,14 +146,14 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
           </>
         )
       })()}
-      <button onClick={prev} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.previous', { mod: platformShortcut('Shift+Enter') })} aria-label={i18nT('components.searchBar.previous_match')}>
+      <button onClick={prev} className={`${docked ? '' : 'shrink-0 '}p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent`} title={i18nT('components.searchBar.previous', { mod: platformShortcut('Shift+Enter') })} aria-label={i18nT('components.searchBar.previous_match')}>
         <ChevronUp size={15} />
       </button>
-      <button onClick={next} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.next', { mod: platformShortcut('Enter') })} aria-label={i18nT('components.searchBar.next_match')}>
+      <button onClick={next} className={`${docked ? '' : 'shrink-0 '}p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent`} title={i18nT('components.searchBar.next', { mod: platformShortcut('Enter') })} aria-label={i18nT('components.searchBar.next_match')}>
         <ChevronDown size={15} />
       </button>
       {!docked && (
-        <button onClick={close} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.close_esc')} aria-label={i18nT('components.searchBar.close_esc')}>
+        <button onClick={close} className="shrink-0 p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.searchBar.close_esc')} aria-label={i18nT('components.searchBar.close_esc')}>
           <X size={15} />
         </button>
       )}

@@ -49,6 +49,7 @@ import { useGuideSelection } from '../../guide/guidePredicates'
 import { appDisplayName } from '../../components/appstore/appManifest'
 import AppStoreDialog from '../../components/appstore/AppStoreDialog'
 import { appActionNotice } from '../../components/appstore/backendRefused'
+import { reportAppView } from '../../lib/appViewTelemetry'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
@@ -332,6 +333,8 @@ export default function LibraryPage() {
                 setError('')
                 api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
                   if (res?.remote) setRemoteCmd(res.command || res.message || i18nT('components.appstore.installedAppCard.app_cannot_be_opened_kirocrew_is_running_in_a_he'))
+                  // Launched here, so counted; a remote gateway only hands back a command.
+                  else reportAppView({ app: app.name, surface: 'desktop', event: 'opened' })
                 }).catch((e: unknown) => {
                   setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_open', { name: app.name }))
                 })

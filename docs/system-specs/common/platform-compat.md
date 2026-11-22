@@ -142,6 +142,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Re-enter an edition's stable gateway launcher | `reexec_launcher(launcher, args)` after `gateway_restart.resolve_restart_launcher()` validates it; keeps the dispatch pathname, original arguments and UTF-8 environment, cancels a managed-venv apply in flight (`cancel_wheel_applies_in_flight`), and puts every variable registered with `keep_for_reexec` back into `os.environ` right before `os.execv` | resolving the symlink basename away, passing Python `-m` flags to a launcher, or evaluating a shell command |
 | Re-exec the current Python module | `reexec_python_module(module, args)`; like `reexec_launcher`, it cancels a managed-venv apply in flight, then restores the UTF-8 environment and the `keep_for_reexec` variables right before `os.execv` | `os.execv(sys.executable, [sys.executable, ...])` (breaks when the Windows interpreter path contains spaces) |
 | Take a variable out of the environment for descendants while this process's own exec successor still gets it (the managed-service launch marker) | `keep_for_reexec(name, value)` after popping it; `kept_for_reexec()` reads what is held. Only the two reexec seams restore it, so a child spawned meanwhile does not inherit it, and if `execv` raises, `os.environ` keeps it until the process exits | re-setting it in `os.environ` by hand before an exec (every child spawned in between inherits it); an exec outside the two reexec seams (the successor loses it) |
+| Collect the children an exec'd predecessor left (POSIX `execv` keeps the pid, so they stay this process's children with no `Popen` left to wait on them) | the two reexec seams name this image's direct children in `KIROCREW_REEXEC_CHILD_PIDS` right before `os.execv` (`_publish_children_for_successor`, in the compatibility layer itself so nothing else must still be loadable at exec time; dropped again if the exec fails), and the gateway entrypoint calls `reexec_children.adopt_inherited_children()`, which pops the variable and `waitpid(pid, WNOHANG)`s exactly those pids until each is collected. A listed pid cannot name a stranger while it is unreaped | `waitpid(-1, ...)` in the successor (it steals the exit status of a child a `Popen` in this image owns); importing a module not yet loaded at exec time (an update may already have removed the old image's tree) |
 | End the process at once, other than the gateway's own final exit | `hard_exit(code)`: cancels a managed-venv apply in flight, then `os._exit` (the second-signal force exit, the owner's `/kirocrew restart`) | a bare `os._exit` (a managed-venv apply in flight keeps writing its tree after the process that supervised it is gone) |
 | Stop a managed-venv apply at every exec, hard exit or shutdown | `cancel_wheel_applies_in_flight(reason)`: looks `kiro_crew.platform.wheel_apply` up in `sys.modules` (never imports it) and calls its `cancel_wheel_applies(reason)` when loaded; both exec seams and `hard_exit` call it, and a shutdown that wants the apply stopped before its own teardown calls it itself. Synchronous, quick, safe to call twice; a cancel that raises never stops the exit | an `atexit` handler (an exec and `os._exit` both skip it); a general exit-hook registry (it had one registrant, so it abstracted over nothing) |
 | Launch a Kiro Crew-owned Python child | `isolated_python_argv(*args, executable=...)`; it adds `-s` for the bundle and parents whose user site is already unavailable, unless the option prefix carries `-s` or stronger `-I`. A self-launch through `-m kiro_crew...` also passes `-P` (safe path: the cwd is not on `sys.path`), pinned by `test/test_stdlib_shadow.py` | a raw `[sys.executable, ...]`, or an ad hoc `PYTHONNOUSERSITE` env that another spawn path can omit |
@@ -165,7 +166,7 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Is this host on mains or battery | `power_source()` → `POWER_AC` / `POWER_BATTERY` / `POWER_UNKNOWN`. Linux reads `/sys/class/power_supply`: external power is any `type == "Mains"` supply or any `type == "USB"` supply whose `scope` is not `Device` (the USB-C port supplies, `ucsi-source-psy-*`), and ANY online one means mains, so a USB-C PD charger counts even when only its port reports it; a tree with no external supply is `UNKNOWN`, not battery, so a desktop with a peripheral's battery never reads as a laptop. Battery needs every external supply read offline: an unreadable one may be the charger, so with none online the answer is `UNKNOWN`. Battery also needs a system battery (`type == "Battery"`, `scope` not `Device`), so a desktop whose only external supply is an idle USB-C port reads `UNKNOWN`. Windows reads `GetSystemPowerStatus`, whose `ACLineStatus` 255 stays `UNKNOWN`. macOS has no reader yet and answers `UNKNOWN`, so it never throttles. Never raises, never cached: callers read it once per unit of work. Fixture tests pass `sysfs_root=` to `_linux_power_source` and patch `_windows_ac_line_status` | treating `POWER_UNKNOWN` as battery (every consumer MUST read it as mains: deferring optional work on an unreadable probe is a silent, permanent stoppage), reading `/sys/class/power_supply` outside this layer, requiring a supply name like `AC0`, or caching the answer across units of work |
 | Directory link | `symlink_or_junction(target, link)` | `os.symlink` (`WinError 1314` without elevation) |
 | Detect/remove a dir link | `is_link_or_junction(path)` / `unlink_link_or_junction(path)` | `path.is_symlink()` (misses a Windows junction) |
-| Compare paths for identity (`==` / `!=`, `is_relative_to`, an "is this a link or redirect" guard) when either side came from `Path.resolve` / `os.path.realpath`, including two separate resolves | `strip_extended_length_prefix(path)` on BOTH sides before comparing; it folds `\\?\` and `\\?\UNC\` alike (#37114, fixed in #37211: `atomic_write._refuse_linked_parent` compared two resolves of one directory, one came back prefixed, and two concurrent first saves answered 503) | comparing the two spellings as `Path.resolve` returns them (on Windows `ntpath.realpath` keeps the extended-length prefix when its prefix-strip re-check races a concurrent swap of the same file, so a prefixed child against an unprefixed parent reads as a path escape; the fold is LEXICAL and must not re-resolve, which would bless the redirect the caller is testing for) |
+| Compare paths for identity (`==` / `!=`, `is_relative_to`, an "is this a link or redirect" guard) when either side came from `Path.resolve` / `os.path.realpath`, including two separate resolves | `strip_extended_length_prefix(path)` on BOTH sides before comparing; it folds `\\?\` and `\\?\UNC\` alike (`atomic_write._refuse_linked_parent` compares two resolves of one directory this way: unfolded, one can come back prefixed and two concurrent first saves answer 503) | comparing the two spellings as `Path.resolve` returns them (on Windows `ntpath.realpath` keeps the extended-length prefix when its prefix-strip re-check races a concurrent swap of the same file, so a prefixed child against an unprefixed parent reads as a path escape; the fold is LEXICAL and must not re-resolve, which would bless the redirect the caller is testing for) |
 | Read, write or store a path after folding its extended-length prefix | refuse it first when `names_a_verbatim_only_file(path)` is True | using the folded path as-is (a component ending in a dot or a space, or a DOS device stem such as `CON`, is reachable only through the `\\?\` spelling; ordinary Win32 lookup trims or remaps it, so the folded path names a sibling or a device instead of the file that passed the checks) |
 | Hold a directory in place while a child writes into it by path | `pin_directory(path)` (then `os.close`) | `os.open(dir, O_RDONLY)` (EACCES on Windows, and even where it opens it follows a link planted at the name) |
 | Act on the ENTRIES of a directory you inspected (screen-then-remove, screen-then-descend) | `pinned_directory(path)` yielding `PinnedDirectory` (`names` / `is_link` / `is_dir` / `unlink` / `rmdir` / `child` / `child_if_real_dir` / `read_text`); `pinned_directory(path, links_only=True)` carries `pin_directory`'s `links_only` down the whole chain, so a cloud-files or dedup directory is pinned as the directory it is while a link or junction is still refused. On Windows `unlink` opens the entry itself, compares the kernel's final path of that handle with the pinned directory's, and deletes through the same handle: a same-user process holding `FILE_WRITE_ATTRIBUTES` can turn an EMPTY pinned directory into a junction in place, and no share mode refuses that access; a parent stays pinned while its child is in use, so a chain of them pins the whole path, and `child` refuses past `PINNED_TREE_MAX_DEPTH` (64) levels with `ENAMETOOLONG` so a planted chain cannot spend another frame or descriptor. **Descend with `child_if_real_dir`**, which answers None when what is at the name is no longer a real directory and RE-RAISES for one that is: it holds the errno-agnostic dispatch (a refused `O_DIRECTORY \| O_NOFOLLOW` open is ENOTDIR on some kernels, ELOOP on others, `NotADirectoryError` on Windows) in one place, and its callers supply the differing action — two remove the entry, one deliberately leaves it. Its re-raise is also how the depth refusal reaches a caller, so an over-deep tree fails the operation instead of being unlinked as though it were a link | screening a NAME and then operating on that name -- every stdlib walker re-resolves it in between, and `os.walk`'s own descent re-check is `os.path.islink`, which is False for a junction, while `rglob` descends one unconditionally. The two platforms need OPPOSITE routes, which is why this is a helper rather than an `IS_POSIX` branch per call site: `dir_fd`-relative calls on POSIX, where the pin does NOT block a rename, and by-path calls on Windows, where there are no `dir_fd` operations at all and the pin is what holds the path still. Also: hand-spelling the refused-open fallback at a call site, where a fourth copy gets the errno dispatch subtly wrong |
@@ -527,7 +528,7 @@ transport's constructor (`_WindowsSubprocessTransport._start` ->
 `windows_utils.Popen`), before the transport's first await. A host whose
 endpoint protection holds `CreateProcess` for seconds therefore holds the
 gateway loop for seconds: every MCP probe and heartbeat on it stalls, and the
-loop-stall watchdog exits the gateway (#24968, #27800, design on #19136).
+loop-stall watchdog exits the gateway.
 
 `platform_compat_offloop_spawn` splits the transport build in two:
 
@@ -554,13 +555,46 @@ Both gateway entry points (`cli.main`'s gateway command and `gatewayd.main`) pas
 so every `create_subprocess_exec` / `create_subprocess_shell` on the gateway loop
 (ACP agent start, MCP server start, the Windows script-hook shell arm) is covered
 without a per-call-site change. The owned ACP spawn in `platform_compat_wintree`
-calls `make_subprocess_transport_off_loop` with its capturing `Popen`. Off Windows
-the factory is `None` (the default loop), so POSIX behaviour does not change. If an
+calls `make_subprocess_transport_off_loop` with its capturing `Popen`. If an
 interpreter's `_start` no longer spawns through `windows_utils.Popen`, the spawn
 refuses before creation rather than silently spawning on the loop. The guards are in
 `test/test_windows_spawn_off_loop.py`: a slow simulated build must leave a heartbeat
 on the loop ticking, on POSIX through the same helper and on the Windows CI shards
 through a real Proactor loop with `CreateProcess` delayed.
+
+## POSIX gateway spawns build their child off the event loop
+
+The Unix loop has the same shape: `_UnixSubprocessTransport._start` calls
+`subprocess.Popen`, which returns only after the child forked and exec'd. Off
+Windows, `gateway_loop_factory()` returns a factory for
+`OffLoopSpawnUnixSelectorEventLoop`, which builds each child on the same worker
+pool with `make_subprocess_transport_off_loop` and the stock Unix transport, then
+registers it with the loop's child watcher (`after_init`). The watcher comes from
+`_posix_child_watcher`: the loop's own on CPython 3.14, the policy's on 3.12 and
+3.13. A `FastChildWatcher` (it reaps with `waitpid(-1)` and drops the exit of a pid
+registered late) or an inactive watcher sends the spawn down the stock path, and
+that fallback logs one warning per process. The factory calls `set_event_loop` on
+the loop it builds, as `asyncio.run` does for its own loop; on 3.12 and 3.13 that is
+what attaches the macOS SIGCHLD watcher `_install_child_watcher` installs.
+
+The worker removes the wait for the child's exec, not the fork itself: CPython holds
+the GIL for the whole `fork()`, and on macOS (no `vfork`) a fork copies the gateway's
+memory map. So the App Store's git children, which run in bursts, start without a
+fork. Inside `sandbox_rlimit.fork_free_spawns()` -- opened per row by the manifest
+fan-out `_gather_bounded` -- `create_subprocess_limited` passes `close_fds=False` and
+no `cwd` / `start_new_session`, which lets `Popen` start the spawn shim with
+`posix_spawn`, and the shim does those three jobs itself (`--setsid`, `--chdir=`,
+`--close-fds`) before it execs the command. A spawn that needs `pass_fds`,
+`process_group`, `umask`, `user`/`group`, or a `chdir_fd` keeps the fork start, as
+does every spawn outside that scope (ACP sessions included). With a 3 GB heap and
+`vfork` off, a `git --version` spawn held the loop 144 ms on the stock loop, 62 ms
+built on the worker with a fork, and 0.5 ms with `posix_spawn`.
+
+The guards are `test/test_spawn_off_loop.py` (a held `Popen` must leave the gateway
+loop turning; cancellation reaps; the fallback logs once) and
+`test/test_fork_free_spawn.py` (no fork start inside the scope; cwd, session and
+inherited-descriptor closing match `Popen`'s; the scope is per task; the manifest
+fan-out opens it).
 
 ## Windows session-tree teardown
 

@@ -28,6 +28,7 @@ place (``test_mirrored_owner_storage``).
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from collections.abc import Callable, Mapping
 from types import ModuleType
@@ -104,7 +105,9 @@ __all__ = [
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
     "bundle_spawn_argv",
+    "crew_sign_in_moves_to_bundle",
     "engine_install_snapshot",
+    "ensure_engine_at_startup",
     "engine_spec_permissions_supported",
     "host_unsupported_reason",
     "install_pinned_engine",
@@ -115,6 +118,7 @@ __all__ = [
     "last_kas_route",
     "last_relay_takes_crew_sign_in",
     "pinned_version",
+    "relay_takes_crew_sign_in",
     "require_loadable_host",
     "sha256_bytes",
     "sha256_file",
@@ -215,7 +219,9 @@ def bundle_spawn_argv(installed: InstalledKasBundle) -> list[str]:
     """The exact argv the harness spawns for *installed*, for diagnostics."""
     from kiro_crew.acp.kas_transport import build_kas_bundle_argv
 
-    return build_kas_bundle_argv(str(installed.node_bin), str(installed.acp_server))
+    return build_kas_bundle_argv(
+        str(installed.node_bin), str(installed.acp_server), environ=os.environ
+    )
 
 
 def kas_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
@@ -309,6 +315,17 @@ def bundle_route_lacks_sign_in() -> bool:
     return lacks()
 
 
+def crew_sign_in_moves_to_bundle() -> bool:
+    """Whether signing in to Kiro Crew once would move new KAS chats onto its engine.
+
+    ``acp.kas_route.crew_sign_in_moves_to_bundle``, for the dashboard. Blocking;
+    never raises, and False when it cannot be worked out.
+    """
+    from kiro_crew.acp.kas_route import crew_sign_in_moves_to_bundle as moves
+
+    return moves()
+
+
 def crew_sign_in_starts_spawn() -> bool:
     """Whether the next KAS spawn starts on Kiro Crew's usable sign-in alone.
 
@@ -326,7 +343,6 @@ def relay_runs_on_kiro_cli_sign_in() -> bool:
     ``acp.kas_route.relay_runs_on_kiro_cli_sign_in`` on this process's environment,
     for the dashboard. Blocking (config and kiro-cli reads); never raises.
     """
-    import os
     from pathlib import Path
 
     from kiro_crew.acp.kas_route import relay_runs_on_kiro_cli_sign_in as runs
@@ -341,9 +357,16 @@ def last_relay_takes_crew_sign_in() -> bool | None:
     pinned to kiro-cli's launcher runs on kiro-cli's sign-in alone unless Crew's
     vault answers it too (``crew_auth``); any other relay takes either sign-in.
     """
-    from kiro_crew.acp.kas_route import REASON_KIRO_CLI_LAUNCHER, last_spawn_route
+    from kiro_crew.acp.kas_route import last_spawn_route
 
-    route = last_spawn_route()
+    return relay_takes_crew_sign_in(last_spawn_route())
+
+
+def relay_takes_crew_sign_in(route: Any) -> bool | None:
+    """:func:`last_relay_takes_crew_sign_in` for one *route*, such as the one a
+    failing runtime's own sign-in sentence names (``host_auth.kas_sentence_route``)."""
+    from kiro_crew.acp.kas_route import REASON_KIRO_CLI_LAUNCHER
+
     if route is None or route.bundle:
         return None
     return route.reason != REASON_KIRO_CLI_LAUNCHER or route.crew_auth
@@ -371,6 +394,13 @@ def install_pinned_engine(
     from kiro_crew.acp.kas_engine_install import install_pinned_engine as _install
 
     return _install(base_url, caller=caller, on_progress=on_progress)
+
+
+def ensure_engine_at_startup() -> None:
+    """Install this release's pinned engine at gateway start when no root has it."""
+    from kiro_crew.acp.kas_engine_startup import ensure_engine_at_startup as _ensure
+
+    _ensure()
 
 
 def installed_engine_label() -> str | None:

@@ -32,6 +32,7 @@ from kiro_crew.acp.codex_subagent_wire import (
 from kiro_crew.acp.session_handle import NATIVE_CHILD_ROSTER_CAP
 from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
+    JsonRpcMessage,
 )
 from kiro_crew.metrics.events import DROPPED_FRAMES, emit_counter
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
@@ -73,6 +74,36 @@ _DROP_NO_SESSION = "-"
 # string: an absent `method`, or a value of the wrong JSON type (see
 # _drop_key_part).
 _DROP_KEY_PLACEHOLDER = "?"
+
+#: Notifications kiro-cli sends at every ``session/new`` and ``session/load`` that
+#: Crew does not read (``classify_notification`` skips them on a registered
+#: session). Those that name the session arrive before it is registered, and those
+#: that name none arrive while a fresh runtime has no session yet (measured on
+#: kiro-cli 3.5.0). The reader drops them uncounted: counting them measured session
+#: starts and buried real routing loss in ``method_class=other``.
+KAS_UNREAD_SESSION_START_NOTICES = frozenset(
+    (
+        "_kiro/memory/syncStatus",
+        "_kiro/powers/items_changed",
+        "_kiro/sessions/changed",
+        "_kiro/steering/documents_changed",
+    )
+)
+
+
+def is_unread_session_start_notice(msg: JsonRpcMessage) -> bool:
+    """Whether *msg* is a notification named in :data:`KAS_UNREAD_SESSION_START_NOTICES`.
+
+    ``method`` is backend-controlled and unvalidated (``JsonRpcMessage.from_dict``), so a
+    non-string is refused before the set lookup: an unhashable one would raise inside
+    ``_reader_loop`` and mark the runtime dead.
+    """
+    return (
+        msg.id is None
+        and isinstance(msg.method, str)
+        and msg.method in KAS_UNREAD_SESSION_START_NOTICES
+    )
+
 
 # SEL/metric reason for a permission request auto-rejected while the last
 # subagent roster named more children than NATIVE_CHILD_ROSTER_CAP. Distinct

@@ -15,6 +15,8 @@
  * @param {unknown} pref  `data-mode-pref`: "system" | "dark" | "light" |
  *   "schedule", or "" on a dashboard build predating that attribute. Scheduled
  *   has no `themeSource` of its own, so it takes the resolved-mode fallback.
+ *   While a Remote Crew lends its mode, Scheduled arrives as the person's own
+ *   resolved mode instead.
  * @param {unknown} resolvedMode  `data-mode`: "dark" | "light". Used only as the
  *   fallback when `pref` is missing/unrecognised, which keeps an older bundle at
  *   its previous behaviour instead of forcing it to "system".

@@ -3,10 +3,10 @@ title: Fold advances push deltas, not whole values -- the work board ships chang
 status: draft
 author: kirocrew agent session
 created: 2026-10-26
-last-audited: 2026-10-26
-audited-at: 908099fc26
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [24749, 25218]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,14 @@ superseded-by: []
 
 # RFC: Fold advances push deltas, not whole values
 
-Status: draft. Nothing built. Every code reference below was read at `908099fc26`.
+Status: draft. No maintainer acceptance is recorded, but most of section 4's
+plan is on main: PR (c+d) in [#24749](https://github.com/kirodotdev/KiroCrew/pull/24749)
+(`crew_log/fold_delta.py`, `base_revision` and `delta` on `FoldAdvanced`) and
+the value-less `work` advance of PR (e) in
+[#25218](https://github.com/kirodotdev/KiroCrew/pull/25218), with the
+`fold_watch` routing in `dashboard/handlers/crew_log.py`. The change-mark delta
+base (section 2.1) is not built. Checked at `cdb601611f`. Every code reference
+below was read at `908099fc26`.
 Paths are relative to `src/kiro_crew/` unless they start with `website/`.
 
 Each time the crew log's eager folder advances a fold, it renders the WHOLE fold

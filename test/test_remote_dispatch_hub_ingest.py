@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -445,6 +446,51 @@ def test_a_remote_slot_missing_from_a_good_list_reads_closed(recorded, peer):
         assert work_ledger.remote_liveness(
             CONDUCTOR, work_ledger.read_work_item(CONDUCTOR, item_id)
         ) == (False, True)
+
+    asyncio.run(go())
+
+
+def _stale_in_an_hour(item: work_ledger.WorkItem) -> bool:
+    running, closed = work_ledger.remote_liveness(CONDUCTOR, item)
+    later = datetime.now(timezone.utc) + timedelta(hours=1)
+    return work_ledger.is_stale(item, worker_running=running, worker_closed=closed, now=later)
+
+
+def test_a_running_remote_worker_on_a_crew_gone_down_goes_stale(recorded, peer):
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        peer.slots = [{"key": PEER_SLOT, "running": True, "pending_approval": False}]
+        peer.report("progress", "building", "2026-10-29T10:00:00+00:00")
+        await _read(peer)
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        assert work_ledger.remote_liveness(CONDUCTOR, item) == (True, False)
+        assert _stale_in_an_hour(item) is False
+        peer.state = "disconnected"
+        await _read(peer)
+        # The record keeps the last answer, but a down crew's "running" counts for nothing.
+        assert work_ledger.read_remote_state(CONDUCTOR, item_id).running is True
+        assert work_ledger.remote_liveness(CONDUCTOR, item) == (False, False)
+        assert _stale_in_an_hour(item) is True
+
+    asyncio.run(go())
+
+
+def test_a_running_remote_worker_whose_last_pull_is_old_reads_not_running(recorded, peer):
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        peer.slots = [{"key": PEER_SLOT, "running": True, "pending_approval": False}]
+        peer.report("progress", "building", "2026-10-29T10:00:00+00:00")
+        await _read(peer)
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        record = work_ledger.read_remote_state(CONDUCTOR, item_id)
+        old = datetime.now(timezone.utc) - timedelta(
+            seconds=work_ledger.REMOTE_PULL_FRESH_SECS + 60
+        )
+        record.ingested_at = old.isoformat()
+        work_ledger.write_remote_state(CONDUCTOR, item_id, record)
+        # Still "connected" on record, but no pull has reached it within the bound.
+        assert work_ledger.remote_liveness(CONDUCTOR, item) == (False, False)
+        assert _stale_in_an_hour(item) is True
 
     asyncio.run(go())
 
@@ -1456,6 +1502,33 @@ def test_closing_a_remote_item_revokes_its_grant(recorded, peer):
     asyncio.run(go())
 
 
+def test_a_failed_revoke_is_resent_when_the_retire_did_not_record(recorded, peer, monkeypatch):
+    """No ``retired`` entry means no sweep retries the close, so the PATCH is resent."""
+    answers = [False, False, True]
+    sent: list[str] = []
+
+    async def _revoke(mgr: Any, instance_id: str, slot: str) -> bool:
+        sent.append(slot)
+        return answers[len(sent) - 1]
+
+    async def _no_retire(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def go() -> None:
+        item_id = await _bound_with(peer, _trust_state(peer, trust=True))
+        monkeypatch.setattr(remote_ingest, "_record_retire", _no_retire)
+        monkeypatch.setattr(remote_ingest, "revoke_peer_trust", _revoke)
+        monkeypatch.setattr(remote_ingest, "CLOSE_RETRY_SECS", 0.0)
+        status, body = await _record_via(
+            peer, {"action": "close", "item_id": item_id, "state": "abandoned"}
+        )
+        assert status == 200, body
+        await asyncio.wait_for(asyncio.gather(*remote_ingest._CLOSE_TASKS), 60)
+        assert sent == [PEER_SLOT] * 3  # the first try, a failed resend, the one taken
+
+    asyncio.run(go())
+
+
 class _OlderPeer(StubCrew):
     """A peer that predates ``trust``: it refuses the field as an unknown one."""
 
@@ -1501,5 +1574,41 @@ def test_a_stalled_peer_revoke_does_not_fail_the_committed_close(recorded, peer,
         assert stalled.is_set()
         assert status == 200, body
         assert work_ledger.read_work_item(CONDUCTOR, item_id).state == "abandoned"
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize(
+    ("outcome", "note"),
+    [
+        (("armed", "no-loop"), None),
+        (("refused", "user-stopped"), "No patrol runs on your session."),
+    ],
+)
+def test_a_bound_create_carries_the_binds_patrol_outcome(
+    recorded, peer, monkeypatch, outcome, note
+):
+    """M4: the hub bind arms the default patrol as a local bind does; the create's
+    payload carries that outcome so the crew create reply can say it."""
+    from kiro_crew import conductor_patrol
+
+    async def ensure(state, key, **_kw):
+        assert key == CONDUCTOR
+        return outcome
+
+    monkeypatch.setattr(conductor_patrol, "ensure_patrol", ensure)
+    monkeypatch.setattr(conductor_patrol, "patrol_note", lambda *a, **k: note)
+
+    async def go() -> None:
+        await _record(CONDUCTOR, {"action": "goal", "goal": "ship it", "round": 1})
+        _s, body = await _record(
+            CONDUCTOR, {"action": "create", "title": "t", "acceptance": ACCEPTANCE}
+        )
+        item_id = body["item"]["item_id"]
+        _slot, payload, _item = await remote_ingest.create_bound(
+            _state(peer), peer, CONDUCTOR, CREW, item_id, {"memory_mode": "persistent"}
+        )
+        assert payload["patrol"] == outcome[0] and payload["patrol_reason"] == outcome[1]
+        assert payload.get("patrol_note") == note
 
     asyncio.run(go())

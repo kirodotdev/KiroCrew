@@ -949,8 +949,14 @@ class SessionResumeController:
         is_owner: bool,
         query: str = "",
         native_key: str = "",
-    ) -> None:
-        """List eligible sessions and register only a picker that reached the surface."""
+        choices: tuple[SessionChoice, ...] | None = None,
+    ) -> tuple[str, str] | None:
+        """List eligible sessions and register only a picker that reached the surface.
+
+        *choices*, when given, is the list to offer instead of the history search
+        (a channel's ``!bot`` passes its Bots' threads); every other step is the
+        same. Returns ``(nonce, message_id)`` of the registered picker, else None.
+        """
         operation = f"{self.channel_type}.sessions_data_access"
         if not is_owner:
             sel().log_api_access(
@@ -960,19 +966,22 @@ class SessionResumeController:
                 source=self.channel_type,
             )
             await surface.say(surface.owner_refusal)
-            return
+            return None
         if self.conv_log is None:
             await surface.say("⚠️ Recent sessions are unavailable.")
-            return
+            return None
 
         try:
-            choices, total, coverage_note = await resolve_session_choices(
-                self.conv_log,
-                query,
-                surface.display_safe,
-                sessions=self.sessions,
-                native_key=native_key,
-            )
+            if choices is None:
+                listed, total, coverage_note = await resolve_session_choices(
+                    self.conv_log,
+                    query,
+                    surface.display_safe,
+                    sessions=self.sessions,
+                    native_key=native_key,
+                )
+            else:
+                listed, total, coverage_note = list(choices[:PICKER_LIMIT]), len(choices), ""
         except Exception as exc:
             sel().log_api_access(
                 caller=caller,
@@ -984,33 +993,35 @@ class SessionResumeController:
             )
             logger.exception("%s sessions: history listing failed", self.channel_type)
             await surface.say("⚠️ Recent sessions are unavailable.")
-            return
+            return None
 
         sel().log_api_access(
             caller=caller,
             operation=operation,
             outcome="allowed",
             source=self.channel_type,
-            resources=f"{len(choices)} sessions read",
+            resources=f"{len(listed)} sessions read",
         )
         # Plain text the surface did not write, so it passes the surface's own
         # display budget like any other shared line.
         note = f"\n{surface.display_safe(coverage_note, 200)}" if coverage_note else ""
-        if not choices:
+        if not listed:
             await surface.say(surface.no_choices(query) + note)
-            return
+            return None
 
         self.pickers.purge()
         self.pickers.drop_for(picker_owner)
         nonce = self.pickers.mint()
-        frozen = tuple(choices)
+        frozen = tuple(listed)
         message_id = await surface.post_picker(
             surface.picker_heading(query, total) + note,
             nonce,
             frozen,
         )
-        if message_id:
-            self.pickers.register(nonce, picker_owner, message_id, frozen)
+        if not message_id:
+            return None
+        self.pickers.register(nonce, picker_owner, message_id, frozen)
+        return nonce, message_id
 
     async def choose(
         self,

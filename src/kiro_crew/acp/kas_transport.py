@@ -33,8 +33,8 @@ The second route is Crew's OWN bundle (``agent.kas_bundle = true``,
 runtime that ``kirocrew kas install`` fetched from a sha256-pinned manifest and
 laid down under Crew's data home, where Crew controls the layout. The harness
 then spawns ``node --experimental-wasm-modules <acp-server.js> --transport=stdio
---auth=acp-callback`` itself -- byte-for-byte the argv kiro-cli's relay builds
-for the engine, minus kiro-cli. There is no ``--auth-method`` on this route:
+--auth=acp-callback --cloud-config-endpoint=<bff>`` itself. Crew supplies the
+validated BFF endpoint for the sign-in stage. There is no ``--auth-method`` on this route:
 the engine's ``_kiro/auth/getAccessToken`` always reaches Crew, and Crew's
 vault is the only credential (:func:`build_kas_bundle_argv`).
 
@@ -74,6 +74,11 @@ switch says, so there the relay keeps the no-backend path.
 """
 
 from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+
+from kiro_crew.acp.kas_endpoints import resolve_cloud_config_endpoint
 
 #: kiro-cli subcommand that speaks ACP on stdio.
 KAS_RELAY_SUBCMD = "acp"
@@ -161,9 +166,12 @@ KAS_BUNDLE_NODE_FLAG = "--experimental-wasm-modules"
 #: The engine's own CLI: stdio transport, and the token asked of the ACP client.
 KAS_BUNDLE_TRANSPORT_ARG = "--transport=stdio"
 KAS_BUNDLE_AUTH_ARG = "--auth=acp-callback"
+KAS_BUNDLE_CLOUD_CONFIG_FLAG = "--cloud-config-endpoint"
 
 
-def build_kas_bundle_argv(node_bin: str, acp_server: str) -> list[str]:
+def build_kas_bundle_argv(
+    node_bin: str, acp_server: str, *, environ: Mapping[str, str] | None = None
+) -> list[str]:
     """argv for a KAS stdio session served by Crew's own installed bundle.
 
     Crew is ALWAYS the auth owner on this route -- there is no kiro-cli to hand
@@ -180,10 +188,12 @@ def build_kas_bundle_argv(node_bin: str, acp_server: str) -> list[str]:
         raise ValueError("node_bin must be a non-empty path to a Node runtime")
     if not acp_server:
         raise ValueError("acp_server must be a non-empty path to the engine's acp-server.js")
+    endpoint = resolve_cloud_config_endpoint(os.environ if environ is None else environ)
     return [
         node_bin,
         KAS_BUNDLE_NODE_FLAG,
         acp_server,
         KAS_BUNDLE_TRANSPORT_ARG,
         KAS_BUNDLE_AUTH_ARG,
+        f"{KAS_BUNDLE_CLOUD_CONFIG_FLAG}={endpoint}",
     ]

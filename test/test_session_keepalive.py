@@ -63,22 +63,14 @@ def test_wait_tool_posts_keepalive_periodically():
     from kiro_crew import mcp_core
     from kiro_crew.mcp_core import _call_tool
 
-    # A fake clock that only `sleep` advances. Reads never move it, so the
-    # number of `monotonic()` calls between entering the tool and its first
-    # loop iteration does not matter: identity resolution, the SEL logger, or
-    # a refactor may read the clock as often as they like and the sleep still
-    # starts at t=0 with its first ping due. A fake keyed on the call count
-    # instead (so many zeros, then a jump past the deadline) depends on every
-    # platform reading the clock exactly that many times on the way in; one
-    # extra read spends a zero and the loop exits before it ever pings. The
-    # loop still terminates: every iteration sleeps a positive amount toward a
-    # fixed deadline.
+    # A fake clock that only `sleep` advances, so extra `monotonic()` reads on
+    # the way in (identity, SEL logging) cannot spend the deadline before the
+    # first ping. A call-count fake breaks on one extra read. Each sleep moves
+    # toward a fixed deadline, so the loop still ends.
     #
-    # The wait tool reads its clock through ``mcp_core.time``, so ONLY that
-    # attribute is replaced: patching ``time.monotonic`` itself hands the fake
-    # to every other thread in the worker (the subprocess-pool reaper polls it
-    # every 0.5 s), which would then spin on a clock only this test's sleeps
-    # can move.
+    # Only ``mcp_core.time`` is replaced: patching ``time.monotonic`` hands the
+    # fake to every thread in the worker (the pool reaper polls it every 0.5 s),
+    # which would then spin on a clock only this test moves.
     clock = [0.0]
 
     def _fake_monotonic() -> float:

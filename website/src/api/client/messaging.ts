@@ -9,19 +9,23 @@ import type { ClientTransport } from './transport'
 
 /** A registered Slack Code switch: its `slack.<key>` config key, the
  *  manifest feature it renders and the key the GET reports it under. The union
- *  mirrors the server's `slack_manifest.FEATURE_SCOPES`; a new switch is
+ *  mirrors the server's `slack_manifest.FEATURES`; a new switch is
  *  registered by adding its key here (and to `SLACK_CODE_SWITCHES`), and the
  *  config, save and capability fields below follow from it. */
-export type SlackCodeSwitchKey = 'agent_sessions' | 'code_channels'
+export type SlackCodeSwitchKey = 'agent_sessions' | 'code_channels' | 'slack_mcp'
 
 /** Per registered switch, the toggle as saved (`<key>`) and whether the
- *  installed app can run it (`<key>_capability`). */
+ *  installed app can run it (`<key>_capability`; absent for a manifest-only
+ *  switch such as `slack_mcp`, which the gateway runs nothing for). */
 export type SlackCodeSwitchFields =
   & { [K in SlackCodeSwitchKey]?: boolean }
   & { [K in SlackCodeSwitchKey as `${K}_capability`]?: SlackCapability }
 
 /** Slack config as returned by GET /api/slack/config (secrets masked). */
 export interface SlackConfigData extends SlackCodeSwitchFields {
+  /** Connections offers the Slack card, the only way to use what the Slack MCP
+   *  switch adds; without it the page hides that switch unless it is on. */
+  slack_mcp_card?: boolean
   connected: boolean
   connect_error: string
   configured: boolean
@@ -39,7 +43,7 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
-  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (on by default). */
+  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (off by default). */
   show_in_session_list?: boolean
   /** `slack.code_channel_dispatch`: let a code channel's conductor hand work to
    *  worker sessions. The sub-toggle under Code channels; off when unset. */
@@ -134,6 +138,12 @@ export interface SlackManifestChange {
   removed_events: string[]
   added_features: string[]
   removed_features: string[]
+  /** `oauth_config.scopes.user`: a bot token cannot confirm these. */
+  added_user_scopes: string[]
+  /** User scopes the switch drops from the manifest (Slack tools drops `search:read`). */
+  removed_user_scopes: string[]
+  /** `<path>: <value>` lines (`settings.is_mcp_enabled: true`); unconfirmable too. */
+  added_settings: string[]
 }
 
 /** GET /api/slack/manifest/status: the installed app vs the manifest the switches need. */
@@ -156,6 +166,10 @@ export interface SlackManifestStatus {
   }
   /** The app's App Manifest page on api.slack.com, when Slack named the app. */
   app_manifest_url: string | null
+  /** The app's Basic Information page (App-Level Tokens); absent on an older gateway. */
+  app_basic_info_url?: string | null
+  /** A link that opens the bot's DM in Slack; absent on an older gateway. */
+  app_dm_url?: string | null
 }
 
 /** One person on `slack.shared_access.user_ids`, as Slack answered for them. */
@@ -194,7 +208,7 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
-  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (on by default). */
+  /** `slack.show_in_session_list`: list conversations that start in Slack in the session list (off by default). */
   show_in_session_list?: boolean
   /** Sent only when changed; turning Code channels on never sends it. */
   code_channel_dispatch?: boolean
@@ -349,6 +363,8 @@ export interface FeishuConfigData {
   sdk_install_supported?: boolean
   /** Install command naming the gateway's OWN interpreter; "" when not useful. */
   sdk_install_command?: string
+  /** True on the desktop app while the SDK is missing: the panel installs it itself. */
+  sdk_install_in_app?: boolean
 }
 
 /** Writable Feishu config fields sent to PUT /api/feishu/config. */
@@ -585,7 +601,9 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
   const channelConfigs = {
     // Slack integration config
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
-    getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string; features?: string[] }>,
+    /** With *alias*, the manifest and create link for a NEW app named after it;
+     *  without, the ones for this install (alias read back from `slack.command`). */
+    getSlackManifest: (alias?: string) => get(`/api/slack/manifest${alias ? `?alias=${encodeURIComponent(alias)}` : ''}`).then(j) as Promise<{ alias: string; manifest: string; create_url: string; command?: string; features?: string[]; org_guide_url?: string | null }>,
     getSlackManifestStatus: (refresh = false) => get(`/api/slack/manifest/status${refresh ? '?refresh=1' : ''}`).then(j) as Promise<SlackManifestStatus>,
     /** The agents a defaults save accepts with default folder *folder* ('' = the auto folder). */
     getSlackCodeChannelAgents: (folder: string) => get(`/api/slack/code-channel-agents?folder=${encodeURIComponent(folder)}`).then(j) as Promise<{ agents: string[] | null }>,
@@ -605,6 +623,7 @@ export function createMessagingEndpoints({ get, post, put, del, j }: ClientTrans
     getWeComConfig: () => get('/api/wecom/config').then(j) as Promise<WeComConfigData>,
     getFeishuConfig: () => get('/api/feishu/config').then(j) as Promise<FeishuConfigData>,
     saveFeishuConfig: (body: Partial<FeishuConfigSave>) => put('/api/feishu/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
+    installFeishuSdk: () => post('/api/feishu/sdk/install', {}).then(j) as Promise<{ ok: boolean; restart_required: boolean }>,
     saveWeComConfig: (body: Partial<WeComConfigSave>) => put('/api/wecom/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
     // Webex integration config
     getWebexConfig: () => get('/api/webex/config').then(j) as Promise<WebexConfigData>,

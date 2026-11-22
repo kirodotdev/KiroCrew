@@ -1129,7 +1129,7 @@ export function usePanelTabs(
     })
   }, [update, leadingIds])
 
-  const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; binary?: boolean; partial?: PartialCause | false; placeholder?: boolean }) => {
+  const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; binary?: boolean; partial?: PartialCause | false; placeholder?: boolean; hold?: boolean }) => {
     // `revealLine` is always present in the object, `undefined` when absent:
     // `upsert` merges onto an existing tab with a spread, which only overwrites
     // keys the incoming object HAS. Omitting it would leave a previous chip's
@@ -1181,6 +1181,9 @@ export function usePanelTabs(
         ...(opts?.diffMode != null ? { diffMode: opts.diffMode } : {}),
       }, opts?.replaceId)
     }, target === key ? defaultLeadingId : null, { choice: true })
+    // `hold`: as in `openFolder` — a split pane opens this in its own chat's
+    // strip while the panel switches to that chat, whose history loads after.
+    if (opts?.hold) heldViews.set(target, `file:${path}`)
   }, [key, defaultLeadingId])
 
   /** Open (and focus) a file's WORKING-TREE DIFF as its own tab, keyed

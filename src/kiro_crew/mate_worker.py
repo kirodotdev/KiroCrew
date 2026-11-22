@@ -10,7 +10,8 @@ those servers and for a non-managed server the base declares
 (:func:`base_server_selections`). Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
 switch-offs, :func:`globally_disabled_refs`) narrow whoever declared them;
 its ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
-(:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored. Nothing from the file
+(:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored, and a file that
+names one is logged once (``crewmate_harness.note_unread_file_model``). Nothing from the file
 reaches the conductor. The merged spec is governed
 and the projection re-applies the ceiling, so an addition never lifts the worker
 above POLICY ∩ PROFILE. Stateless.
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import crewmate_prompts
+from kiro_crew.agent_capabilities_resources import resource_row_key
 from kiro_crew.agent_files import (
     MATE_CONDUCTOR_AGENT_FILENAME,
     MATE_WORKER_AGENT_FILENAME,
@@ -348,6 +350,21 @@ def _strings(value: Any) -> list[str]:
     return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
 
+def resource_entries(value: Any) -> dict[str, Any]:
+    """*value*'s ``resources`` entries by row key, first one of each key kept.
+
+    A string is its own key and an object (a knowledge base) is keyed
+    ``<type>:<name>`` (``agent_capabilities_resources.resource_row_key``), so an
+    object is carried as written and a list never gains two entries sharing a key.
+    """
+    out: dict[str, Any] = {}
+    for entry in value if isinstance(value, list) else []:
+        key = resource_row_key(entry)
+        if key is not None and key not in out:
+            out[key] = copy_json_document(entry)
+    return out
+
+
 def _servers(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -419,9 +436,16 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
         *server_selectors(mate_spec, added_servers),
         *base_server_selections(base, mate_spec, "tools"),
     ]
-    for key in ("resources", "skills"):
-        have = set(_strings(base.get(key)))
-        additions[key] = [s for s in dict.fromkeys(_strings(mate_spec.get(key))) if s not in have]
+    have = set(_strings(base.get("skills")))
+    additions["skills"] = [
+        s for s in dict.fromkeys(_strings(mate_spec.get("skills"))) if s not in have
+    ]
+    held = resource_entries(base.get("resources"))
+    additions["resources"] = [
+        entry
+        for key, entry in resource_entries(mate_spec.get("resources")).items()
+        if key not in held
+    ]
     additions["allowedTools"] = [
         *(
             ref
@@ -519,10 +543,15 @@ def merge_worker_spec(base: dict[str, Any], additions: dict[str, Any]) -> dict[s
     for name in muted:
         servers[name] = {**servers[name], "disabled": True}
     spec["mcpServers"] = servers
-    for key in ("resources", "skills"):
-        extra_items = _strings(additions.get(key))
-        if extra_items:
-            spec[key] = list(dict.fromkeys([*_strings(spec.get(key)), *extra_items]))
+    extra_skills = _strings(additions.get("skills"))
+    if extra_skills:
+        spec["skills"] = list(dict.fromkeys([*_strings(spec.get("skills")), *extra_skills]))
+    extra_resources = resource_entries(additions.get("resources"))
+    if extra_resources:
+        merged = resource_entries(spec.get("resources"))
+        for key, entry in extra_resources.items():
+            merged.setdefault(key, entry)
+        spec["resources"] = list(merged.values())
     # Selectors reach a server the file adds, and one the base declares
     # (``base_server_selections`` already chose which of those count).
     selectable = set(servers) - set(muted)
@@ -712,6 +741,13 @@ def resolve_worker_spec(
             f"Bot {member_id!r}: its worker file {name!r} cannot be read, so its "
             f"worker would run without the Bot's own limits; fix or re-save the file"
         ) from exc
+    from kiro_crew.agent_discovery import spec_model
+
+    file_model = spec_model(mate_spec).strip()
+    if file_model and file_model != "auto":
+        from kiro_crew.crewmate_harness import note_unread_file_model
+
+        note_unread_file_model(member_id, name, file_model)
     if mcp_tool_limits_carried:
         limits = uncarried_tool_limits_of(
             mate_spec, native_tool_limits_carried=native_tool_limits_carried
@@ -728,6 +764,7 @@ def resolve_worker_spec(
         carried = policy_of(mate_spec)
         if carried:
             raise uncarried(sorted(carried), "this backend does not apply them; run the Bot on kas")
+    _use_registered_app_launch_lines(base, mate_spec)
     additions = worker_additions(base, mate_spec)
     from kiro_crew.mate_held_rules import strip_held_approvals
 
@@ -741,6 +778,40 @@ def resolve_worker_spec(
         member_id,
         name,
     )
+
+
+def _use_registered_app_launch_lines(base: dict[str, Any], mate_spec: dict[str, Any]) -> None:
+    """Launch each enabled app's server *mate_spec* adds as the gateway registers it now.
+
+    The file says WHICH of an app's servers the Bot has; how to start one is the
+    app's current install, re-read from the agent config the add copied it from,
+    so an upgrade that replaces the install leaves no worker on a deleted path.
+    The file keeps the keys an add never copies (``autoApprove``, ``disabled``,
+    ``disabledTools``). Every other server, an app server that config does not
+    list now, and one whose declared name has a ``/`` keep the file's entry: only
+    an unaliased ``app:server`` key carries a ``:``, and an alias can be another
+    server's. Blocking.
+    """
+    servers = mate_spec.get("mcpServers")
+    base_servers = _servers(base.get("mcpServers"))
+    if not isinstance(servers, dict) or not set(servers) - set(base_servers):
+        return
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.apps import bridges
+    from kiro_crew.mate_capability_catalog import _TRANSPORT_DROP
+    from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY
+
+    enabled = agent_mod._app_owned_mcp_keys()
+    registered = bridges.registered_app_mcp_servers()
+    not_launch = _TRANSPORT_DROP | {DERIVED_KEY, WITHHELD_KEY}
+    for name, entry in servers.items():
+        live = registered.get(name)
+        if name in base_servers or ":" not in name or enabled.get(name) is not True:
+            continue
+        if not isinstance(entry, dict) or not isinstance(live, dict):
+            continue
+        own = {k: v for k, v in entry.items() if k in _TRANSPORT_DROP}
+        servers[name] = {**{k: v for k, v in live.items() if k not in not_launch}, **own}
 
 
 def _binding_alias(member_id: str) -> str:

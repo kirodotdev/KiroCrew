@@ -12,23 +12,15 @@ Injection requires:
 
 from __future__ import annotations
 
-import sys
-import types
 from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-if "kiro_crew.slack.handler" not in sys.modules:
-    _stub = types.ModuleType("kiro_crew.slack.handler")
-    _stub.is_allowed_user = lambda uid: False  # type: ignore[attr-defined]
-    _stub.is_tracked_channel = lambda cid: False  # type: ignore[attr-defined]
-    sys.modules["kiro_crew.slack.handler"] = _stub
-
-from kiro_crew.cron import CronJob  # noqa: E402
-from kiro_crew.cron_script import ScriptContext  # noqa: E402
-from kiro_crew.dashboard.handlers import api_send_message  # noqa: E402
+from kiro_crew.cron import CronJob
+from kiro_crew.cron_script import ScriptContext
+from kiro_crew.dashboard.handlers import api_send_message
 
 JOB_ID = "job12345"
 

@@ -3,9 +3,9 @@ title: Goal loop approval hold -- an unanswered approval pauses a loop, and a wo
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-05
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
-doc-pr: null
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 17033
 implementation-prs: [16993, 35016]
 tracking-issues: [16976]
 supersedes: []

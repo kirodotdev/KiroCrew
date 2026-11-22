@@ -361,14 +361,20 @@ Tags are free-form, ≤ 16 per artifact. Useful tag conventions:
 - Data source: `slack`, `web`, `upload`
 - State: `wip`, `archived`
 
-Kind on the agent tools is one of `widget` (default), `html`, `markdown`, `svg`,
-`json`, `text`, or `webapp` — that is the enum `artifact_save` and
-`artifact_list` accept. Use `widget` for `<mcwidget>` bodies; the others for raw
-content the dashboard renders differently. `svg` stores vector source, versioned
-and revertible like any other kind. `webapp` is a deployed web application,
-rendered as an infra control card and carrying `webapp_metadata`.
+Kind on the agent tools is one of `widget`, `html`, `markdown`, `svg`, `json`,
+`text`, `webapp`, `dashboard` or `canvas` — that is the enum `artifact_save` and
+`artifact_list` accept. Omitted, it is inferred from the content (an HTML-ish
+body is `widget`, markdown text is `markdown`). Use `widget` for `<mcwidget>`
+bodies; the others for raw content the dashboard renders differently. `svg`
+stores vector source, versioned and revertible like any other kind. `webapp` is a
+deployed web application, rendered as an infra control card and carrying
+`webapp_metadata`. `dashboard` is a dynamic dashboard's layout package (a JSON
+object with exactly `kind`, `bound_to`, `model`, `view` and `theme`, and no
+values); to put a page live use the `dashboard_save` tool, which writes it for
+you. `canvas` is a whiteboard: a [JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)
+document of `nodes` and `edges`.
 
-There is an eighth store-level kind, `image`, and you cannot create it with
+There is one more store-level kind, `image`, and you cannot create it with
 these tools: raster artifacts are registered by the backend when your finalized
 message embeds `![alt](/absolute/path.png)`. So to keep a generated diagram,
 chart or screenshot, embed it that way rather than passing `kind="image"` —

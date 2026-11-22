@@ -22,8 +22,8 @@ import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { RadioChipGroup, radioChip } from './RadioChipGroup'
 /**
  * First-run onboarding flow (5 steps) — the Customize chapter plus the feature
- * tour. It is the LAST of the three first-run chapters: Import setup runs first,
- * then the mandatory Privacy chapter (`PrivacyChapter`), then this.
+ * tour. It is the LAST of the two first-run chapters: Import setup runs first,
+ * then this.
  *   1. Pick your look   — centered modal, reuses the real theme picker.
  *   2. About you        — centered modal: role + technical comfort. Persisted
  *                         to dashboard.user_role / dashboard.user_technical_level
@@ -225,9 +225,7 @@ export default function OnboardingFlow({
   initialOpen: boolean
   onComplete: () => void
   // Abandoning the tour early — "Skip all", a popover's "Skip", or Escape. Kept
-  // SEPARATE from onComplete because a skip must still pass through the mandatory
-  // Privacy chapter if that has not happened yet, while finishing the tour with
-  // "Done" cannot possibly need to (Privacy precedes this chapter). Falls back to
+  // apart from onComplete so a host can tell the two exits apart. Falls back to
   // onComplete when the host does not distinguish the two.
   onSkipAll?: () => void
 }) {
@@ -381,8 +379,8 @@ export default function OnboardingFlow({
     }
   }, [initialOpen])
 
-  // Once the user is onboarded by any path (this flow's finish, the Privacy
-  // chapter's "Skip all", or the server saying so on this or another machine),
+  // Once the user is onboarded by any path (this flow's finish, Import setup's
+  // "Skip all", or the server saying so on this or another machine),
   // the first run is over: a saved step must not resume a later first run.
   useEffect(() => {
     if (onboarded) safeRemoveItem(TOUR_STEP_KEY)
@@ -415,8 +413,8 @@ export default function OnboardingFlow({
   // informed dismissal, never a trap. Succeeding or no-op saves close in one
   // press (the await is a local loopback call, imperceptible).
   //
-  // `skipped` routes the exit: an abandoned tour goes to onSkipAll (which may
-  // still owe the user the Privacy chapter), a finished one to onComplete.
+  // `skipped` routes the exit: an abandoned tour goes to onSkipAll, a finished
+  // one to onComplete.
   const finish = useCallback(async (skipped: boolean) => {
     if (!skipDiscardArmed.current) {
       // Freeze inputs for this await too (same race as Next's save): the
@@ -549,8 +547,8 @@ export default function OnboardingFlow({
     // `savingProfile` IS part of the key: every step-2 control is disabled
     // during the save, so `getFocusable()` is empty and the browser drops focus
     // to <body>. Without re-seating focus when the freeze lifts, the failed-save
-    // path (modal stays open with an error) would leave the Tab trap's
-    // first/last comparisons unmatched and Tab would escape the dialog.
+    // path (modal stays open with an error) would leave focus on <body>,
+    // outside the dialog with no visible ring, until the next Tab re-enters it.
     const focusKey = `${step}:${shellHost?.sectionSlot ? 1 : 0}:${savingProfile ? 1 : 0}`
     if (initialFocusKeyRef.current !== focusKey) {
       initialFocusKeyRef.current = focusKey
@@ -569,8 +567,14 @@ export default function OnboardingFlow({
       if (items.length === 0) return
       const first = items[0]
       const last = items[items.length - 1]
-      const wrapsBackward = e.shiftKey && document.activeElement === first
-      const wrapsForward = !e.shiftKey && document.activeElement === last
+      // Focus outside the dialog (the chat composer behind the scrim) re-enters
+      // it on Tab, unless it sits in another modal, such as a theme pack's
+      // consent dialog, whose own trap owns the key.
+      const active = document.activeElement
+      const outside = !node.contains(active)
+      if (outside && active?.closest('[aria-modal="true"]')) return
+      const wrapsBackward = e.shiftKey && (outside || active === first)
+      const wrapsForward = !e.shiftKey && (outside || active === last)
       // A mid-dialog Tab is the browser's to move, so it is also not the
       // trap's to claim — claiming it would consume legitimate navigation
       // inside the post-composition latch window.

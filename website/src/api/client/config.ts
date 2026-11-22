@@ -65,6 +65,13 @@ export interface AcpBackendProbe {
    */
   restart_required: boolean
   /**
+   * Set when every session start refuses this harness on this host: it is
+   * enforced and its credential mask cannot apply here. `'host'` = the host has
+   * no OS sandbox backend (native Windows); `'setting'` = `agent.sandbox` leaves
+   * the one it has off. OPTIONAL: a gateway that predates it sends none.
+   */
+  sandbox_refusal?: '' | 'host' | 'setting'
+  /**
    * How this harness gets its credential, and what to tell an operator who has
    * not given it one. OPTIONAL because a gateway that predates this field sends
    * no `auth` at all, and the panel already treats absent probe information as
@@ -221,10 +228,12 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
     // to be treated as fail-open rather than as a verdict.
     // `kiro_selection_runs_on_kas`: `agent.acp_backend` is stored as Kiro CLI and
     // sessions run it on KAS, so the Agent Harness panel offers to save KAS.
+    // `kiro_cli_runs_on_kas`: a Kiro CLI pick would run on KAS here, whatever is saved.
     acpBackends: () =>
       fetch('/api/acp-backends').then(j) as Promise<{
         backends: AcpBackendProbe[]
         kiro_selection_runs_on_kas?: boolean
+        kiro_cli_runs_on_kas?: boolean
         crewmate_harness?: CrewmateHarnessReadout
       }>,
     // Re-take ONE backend's verdict with this gateway's cached absence dropped first,

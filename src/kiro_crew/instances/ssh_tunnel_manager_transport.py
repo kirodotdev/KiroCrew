@@ -25,7 +25,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import aiohttp
@@ -835,5 +835,18 @@ async def _mint_for(self: SshTunnelManager, inst: Instance, params: _TransportPa
             remote_port=inst.remote_port,
             embed_parent_port=self._parent_port,
             timeout_secs=self._mint_timeout_for(params.method),
+            **_forward_port_kwarg(self._tunnels, inst.id),
         )
     )
+
+
+def _forward_port_kwarg(tunnels: dict[str, Any], instance_id: str) -> dict[str, int]:
+    """``embed_forward_port`` for an SSH mint: the local port our pane loads on.
+
+    The crew binds its app web origin record to this port (``apps/pane_ports.py``).
+    Empty when the forward is not open yet, and then left out of the call, so an
+    injected minter that predates the keyword keeps its signature.
+    """
+    tunnel = tunnels.get(instance_id)
+    port = int(getattr(getattr(tunnel, "status", None), "local_port", 0) or 0)
+    return {"embed_forward_port": port} if port > 0 else {}

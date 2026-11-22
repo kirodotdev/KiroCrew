@@ -310,6 +310,7 @@ from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _content_matches_ext,
     _content_mismatch_message,
     _fit_stored_name,
+    _inside_upload_dir,
     _log_upload_diagnostic,
     _name_max,
     _resolve_raster_ext,

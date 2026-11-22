@@ -121,6 +121,15 @@ def grants_write_lock(app_name: str) -> contextlib.AbstractContextManager[None]:
     return _exclusive_lock(_record_path(APP_GRANTS_KIND, app_name, ".lock"))
 
 
+def memory_consent_lock() -> contextlib.AbstractContextManager[None]:
+    """Serialize every rewrite of the memory egress consent record, in any process.
+
+    The record itself sits in the config directory and is rewritten in place, so the
+    lock is a sidecar here, where no sandboxed process can hold it.
+    """
+    return _exclusive_lock(member_records.records_dir(APP_GRANTS_KIND) / ".memory-consent.lock")
+
+
 def write_grants_text(app_name: str, text: str | None) -> None:
     """Store *app_name*'s set as *text*; ``None`` removes it.
 

@@ -167,6 +167,15 @@ echo "gh stub: unhandled: $*" >&2
 exit 90
 """
 
+# ``sleep`` stub on the same PATH as the ``gh`` stub. The retry helper's backoff
+# is a real shell ``sleep``, so each retry-exhausting read would cost 2+4 s of
+# wall clock. Recording the requested seconds instead keeps the backoff
+# schedule assertable (``Result.backoff``) without waiting it out.
+SLEEP_STUB = r"""#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$FIXTURES/sleeps"
+exit 0
+"""
+
 
 def _step(name: str) -> str:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
@@ -229,6 +238,12 @@ class Result:
         path = self._fixtures / "calls.txt"
         return path.read_text().splitlines() if path.exists() else []
 
+    @property
+    def backoff(self) -> list[int]:
+        """Seconds the retry helper asked to sleep, in order."""
+        path = self._fixtures / "sleeps"
+        return [int(line) for line in path.read_text().split()] if path.exists() else []
+
 
 class Runner:
     """Executes one readiness step against one fixture repository state."""
@@ -241,9 +256,10 @@ class Runner:
         bindir = root / "bin"
         for d in (self.fixtures, self.work, self.tmp, bindir):
             d.mkdir(parents=True)
-        stub = bindir / "gh"
-        stub.write_text(GH_STUB)
-        stub.chmod(0o755)
+        for name, body in (("gh", GH_STUB), ("sleep", SLEEP_STUB)):
+            stub = bindir / name
+            stub.write_text(body)
+            stub.chmod(0o755)
         (self.tmp / "pr-readiness-summary.md").write_text("## summary\n")
         self.summary = root / "step-summary.md"
         self.summary.write_text("")
@@ -303,7 +319,7 @@ class Runner:
             if on:
                 flag.write_text("1")
         (self.fixtures / "status_post_attempts.txt").unlink(missing_ok=True)
-        for stale in ("calls.txt", "deleted.txt", "added.txt", "published_status.json"):
+        for stale in ("calls.txt", "deleted.txt", "added.txt", "published_status.json", "sleeps"):
             (self.fixtures / stale).unlink(missing_ok=True)
 
         proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
@@ -375,6 +391,7 @@ def test_an_unreadable_base_publishes_a_stamped_pending(runner: Runner) -> None:
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith(READ_FAILURE_TOKEN)
     assert "readiness: checking" in result.added
+    assert result.backoff == [2, 4]
 
 
 # ── Losing a label race must not withhold the verdict ────────────────────────
@@ -779,6 +796,7 @@ def test_a_named_run_that_cannot_be_read_does_not_publish_success(runner: Runner
     result = runner.run()
     assert result.published is not None
     assert result.published["state"] == "pending"
+    assert result.backoff == [2, 4]
 
 
 # ── The fork re-check ────────────────────────────────────────────────────────
@@ -896,6 +914,7 @@ def test_an_unreadable_fork_check_list_publishes_a_stamped_pending(runner: Runne
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith(READ_FAILURE_TOKEN)
+    assert result.backoff == [2, 4]
 
 
 def test_a_same_repo_success_never_reads_the_fork_check_list(runner: Runner) -> None:
@@ -1027,6 +1046,7 @@ def test_an_unreadable_lane_run_holds_anyway_and_stamps_the_read_failure(
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith(READ_FAILURE_TOKEN + " ")
     assert _held(runner)
+    assert result.backoff == [2, 4]
 
 
 def test_a_failed_hold_fails_the_run_loud_and_does_not_retry(
@@ -1077,6 +1097,7 @@ def test_an_unreadable_re_check_publishes_a_stamped_pending(runner: Runner) -> N
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith("[read-failed]")
+    assert result.backoff == [2, 4]
 
 
 def test_a_codeql_rerun_in_flight_holds_the_success(runner: Runner) -> None:
@@ -1260,6 +1281,7 @@ def test_an_unreadable_codeql_page_publishes_a_stamped_pending(runner: Runner) -
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith("[read-failed]")
+    assert result.backoff == [2, 4]
 
 
 def test_an_unreadable_codeql_check_publishes_a_stamped_pending(runner: Runner) -> None:
@@ -1267,6 +1289,7 @@ def test_an_unreadable_codeql_check_publishes_a_stamped_pending(runner: Runner) 
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith("[read-failed]")
+    assert result.backoff == [2, 4]
 
 
 def test_the_codeql_re_check_is_skipped_once_a_lane_already_downgraded(runner: Runner) -> None:

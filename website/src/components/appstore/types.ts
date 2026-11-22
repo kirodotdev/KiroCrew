@@ -102,6 +102,12 @@ export type RegistryApp = {
   verified?: boolean
   installed: boolean
   installedVersion?: string
+  /**
+   * `"market"` when the installed app of this name came from a Kiro Space store
+   * (its source is `market:<ref>@<n>`). The row then offers no Update: that would
+   * reinstall it from this git row.
+   */
+  installedFrom?: 'market'
   enabled?: boolean
   updateAvailable?: boolean
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -112,7 +118,7 @@ export type RegistryApp = {
     // global shortcuts, tray). A UX gate only — the marker is client-side.
     requiresDesktopApp?: boolean }
   manifest?: {
-    permissions?: { api?: string[]; sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; chatSlots?: boolean; hiddenSessions?: boolean; chatLaunch?: unknown; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; webhookSource?: boolean }
+    permissions?: { api?: string[]; sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; chatSlots?: boolean; hiddenSessions?: boolean; chatLaunch?: unknown; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; browser?: string[]; webhookSource?: boolean }
     mcpServers?: Record<string, McpServerView>
     platform?: { requiresDesktopApp?: boolean }
   }
@@ -177,6 +183,10 @@ export type InstalledApp = {
   frameSourcesGrant?: { approved: string[]; staged: string[] }
   /** `permissions.browserSites` pages the owner approved, and the ones waiting; absent when undeclared. */
   browserSitesGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.kiroOperations` the owner approved, and the ones waiting; absent when undeclared. */
+  kiroOperationsGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.browser` verbs the owner approved, the ones waiting, and whether the `app_browser_sdk` preview is on; absent when undeclared. */
+  browserGrant?: { approved: string[]; staged: string[]; preview: boolean }
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -263,6 +273,8 @@ export type InstalledApp = {
       chatLaunch?: unknown
       reachableByUserSessions?: string[]
       desktopCapabilities?: string[]
+      /** `permissions.browser` verbs (apps/browser_sdk.py). */
+      browser?: string[]
       webhookSource?: boolean
       /** Bot scopes, `"read"` and `"wake"` (apps/bot_grants.py). */
       bots?: string[]
@@ -390,6 +402,112 @@ export function isRegistrySourced(app: Pick<InstalledApp, 'source' | 'origin'>):
   const source = app.source
   if (typeof source === 'string' && source) return source.startsWith(REGISTRY_SOURCE_PREFIX)
   return app.origin === 'registry'
+}
+
+/**
+ * Whether an installed app came from a Kiro Space store (`market:<ref>@<n>`).
+ *
+ * Such an app has no Sync and no Update yet: its recorded source is not a folder,
+ * and the gateway refuses both (`app_update_market_source`). Same untrusted-shape
+ * guard as {@link isRegistrySourced}.
+ */
+export function isMarketSourced(app: Pick<InstalledApp, 'source'>): boolean {
+  return typeof app.source === 'string' && app.source.startsWith('market:')
+}
+
+/** One Kiro Space store the build offers (`GET /api/apps/market/registries`). */
+export type MarketRegistryOffer = { id: string; label: string; web: string }
+
+/** A store's sign-in state; `detail` says why it is `unknown`, when known. */
+export type MarketRegistryStatus = {
+  state: 'signed_in' | 'needs_sign_in' | 'no_access' | 'unknown'
+  account: string
+  detail?: 'cli_missing' | 'cli_outdated'
+}
+
+export type MarketRegistriesResponse = {
+  offers: MarketRegistryOffer[]
+  added: string[]
+  status: Record<string, MarketRegistryStatus>
+}
+
+/** A number the store gave (`ok`), did not give (`absent`) or could not read. */
+export type MarketCount = { status: 'ok'; value: number } | { status: 'absent' | 'unavailable' }
+
+/** One app listing in a Kiro Space store, as the gateway shapes it. */
+export type MarketListingRow = {
+  registry: string
+  ref: string
+  name: string
+  displayName: string
+  summary: string
+  category: string
+  tags: string[]
+  publisher: string
+  latestVersion: number | null
+  latestSemver: string
+  trust: string
+  official: boolean
+  canPublish: boolean
+  rating: MarketCount
+  ratingCount: MarketCount
+  downloads: MarketCount
+  installed: boolean
+  installedVersion: number | null
+  /** An app of this name is installed from another source. */
+  nameTaken: boolean
+  lastPublishedAt?: string
+}
+
+/** A failed store read: the code, and the status read again after it. */
+export type MarketReadError = { code: string }
+
+export type MarketListingsResponse = {
+  ok: boolean
+  registry: string
+  status: MarketRegistryStatus
+  /** The account the rows were read for; `''` with no rows. */
+  account: string
+  rows: MarketListingRow[]
+  truncated: boolean
+  error?: MarketReadError
+}
+
+export type MarketListingResponse = {
+  ok: boolean
+  registry: string
+  status: MarketRegistryStatus
+  /** The account the listing was read for; `''` without one. */
+  account: string
+  listing: MarketListingRow | null
+  error?: MarketReadError
+}
+
+/** A store sign-in view: a device code and the page to approve it on. */
+export type MarketSignInView = {
+  ok: boolean
+  registry: string
+  state?: string
+  reason?: string
+  code?: string
+  approvalPage?: string
+}
+
+/** The confirm data `POST /api/apps/market/install` answers (`build_confirm`). */
+export type MarketInstallConfirm = {
+  app: { ref: string; version: number; appVersion: string; publisher: string; sha256Prefix: string }
+  components: { kind: string; name: string; sha256Prefix: string }[]
+  permissions: {
+    notice: string
+    commands: string[]
+    network: string[]
+    files: string[]
+    background: string[]
+    mcpServers: string[]
+    agents: string[]
+  }
+  size: number
+  trustLabel: string
 }
 
 /**

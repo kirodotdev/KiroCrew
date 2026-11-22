@@ -99,6 +99,11 @@ describe('UserMessage edit textarea — rule 1 textarea: claimEnter', () => {
 })
 
 describe('TagManagerList create input — rule 1 single-line input: isComposing only', () => {
+  // The file-level api mock is shared and never cleared, so drop the calls an earlier test recorded.
+  beforeEach(() => {
+    vi.mocked(api.createChatTag).mockClear()
+  })
+
   function renderList() {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(

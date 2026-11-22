@@ -1570,6 +1570,11 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         "dashboard/handlers/work_ledger.py",
         "dashboard/handlers/work_ledger_caller.py",
         "dashboard/handlers/work_ledger_conductor.py",
+        # The host memory guard's ``question`` report (rfc-host-memory-guard.md
+        # §4.4). The gateway is the writer and no request reaches it: the worker
+        # is the session whose tree the guard stopped, and its item comes from that
+        # worker's own binding, read here.
+        "dashboard/memory_guard_report.py",
         "dashboard/handlers/work_ledger_handback.py",
         "dashboard/handlers/work_ledger_read.py",
         "dashboard/handlers/work_ledger_recording.py",
@@ -1599,6 +1604,12 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # supplied. It is also not model-reachable: no MCP tool routes to it,
         # because the deletion it performs is irreversible.
         "ledger_sweep.py",
+        # ``resource_status``'s per-worker rows (rfc-host-memory-guard.md §5.3). The
+        # caller is the session ``member_request_scope`` ATTESTED on the agent route,
+        # the board read is that session's own (``ledger_key`` of the attested key,
+        # never a supplied one), a worker is listed only when its binding names that
+        # board, and the reply carries item ids, sizes and flags, no session key.
+        "dashboard/handlers/session_memory_scope.py",
         # Remote dispatch's peer mailbox (rfc-conductor-remote-dispatch §2, §3),
         # behind the ``work_ledger.remote_dispatch`` Feature Preview. The same
         # principal argument as the Crew page below: its only callers are the
@@ -1687,6 +1698,14 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # own board holds an open crew-bound item (``board_has_open_remote``) and
         # hands it to ``remote_ingest.ingest_board``, which files exactly as on a read.
         "dashboard/handlers/remote_puller.py",
+        # Its batch pull: the same per-item read for every item one crew holds, in
+        # one call. It reads the conductor's own board's fold and remote records to
+        # build the cursor, takes no identity and writes nothing itself.
+        "dashboard/handlers/remote_batch_pull.py",
+        # The peer's batch read for one hub conductor, the owner-gated sibling of
+        # ``remote_work_item.py``: it reads that conductor's ``hub:`` mailbox board
+        # only, and writes nothing.
+        "dashboard/handlers/remote_work_items_pull.py",
         # ``conductor_wake.py`` was listed here while it resolved a worker slot to its
         # conductor's binding for the close and turn-end triggers. Both triggers are
         # gone and the one that remains is a crew-log bus subscription whose event

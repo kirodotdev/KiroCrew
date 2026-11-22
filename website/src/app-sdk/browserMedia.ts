@@ -59,8 +59,24 @@ interface MediaAnswer {
   media?: BrowserMediaState
 }
 
+/** The fastest the hook re-reads the state: every read takes the browser lock every
+ *  agent op waits on, so a faster `pollMs` is raised to this. */
+const MIN_POLL_MS = 500
+/** A larger timer delay overflows to ~1 ms in browsers. */
+const MAX_TIMER_MS = 2 ** 31 - 1
+
+/** The poll interval for a `pollMs` option: 0 (read once) for anything that is not a
+ *  finite number above 0, else the value held between `MIN_POLL_MS` and the timer
+ *  maximum. `Number()` keeps a plain-JS page's `"1000"` working as `setInterval` did. */
+function pollInterval(raw: unknown): number {
+  const ms = Number(raw ?? 0)
+  if (!Number.isFinite(ms) || ms <= 0) return 0
+  return Math.min(Math.max(ms, MIN_POLL_MS), MAX_TIMER_MS)
+}
+
 /** The media controls of *sessionKey*'s tab. With `pollMs` > 0 the state is re-read
- *  on that interval while the page is mounted (a progress bar); 0 reads it once.
+ *  on that interval while the page is mounted (a progress bar), at most every 500 ms;
+ *  0 reads it once.
  *  `onEnded` is called once each time the element turns `ended` in an answer (a
  *  poll's or a button's): the page's cue to pick the next song, for example by
  *  sending the app's own agent a message or posting to the app's own backend. It is
@@ -130,16 +146,26 @@ export function useBrowserMedia(
     }
   }, [api, sessionKey])
 
-  const pollMs = options.pollMs ?? 0
+  const pollMs = pollInterval(options.pollMs)
   useEffect(() => {
     setMedia(null)
     setError(null)
     // A song that already ended when the page mounts counts once: the page then
     // picks the next one, which is what continuous play wants.
     wasEnded.current = false
-    void send('state')
+    // Only one poll read is ever in flight: a tick that falls while one is still
+    // out sends nothing, so a slow read (the browser lock is held by an agent op)
+    // never queues a read per tick. The flag lives in the effect, so a new session
+    // or interval starts fresh and is not held up by the old read. `send` never
+    // rejects (it catches every error), so `.finally` always clears the flag.
+    let reading = true
+    void send('state').finally(() => { reading = false })
     if (pollMs <= 0) return
-    const timer = setInterval(() => { void send('state') }, pollMs)
+    const timer = setInterval(() => {
+      if (reading) return
+      reading = true
+      void send('state').finally(() => { reading = false })
+    }, pollMs)
     return () => clearInterval(timer)
   }, [send, pollMs])
 

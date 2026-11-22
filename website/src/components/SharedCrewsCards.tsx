@@ -6,9 +6,10 @@
  * The list is the one behind the Crew switcher's Team Crews group
  * (`useRelayViewerCrews`, one cached read of `GET /api/relay-viewer/crews`), so
  * the two surfaces cannot disagree. Both cards render nothing while that hook
- * is hidden: no desktop bridge, or the route 404s because
- * `tunnel.relay_viewer_enabled` is off. Rows open a Crew the same way the
- * switcher does (`openRelayCrew`, the endpoint ID only).
+ * is hidden: no list is loaded, or the read was refused (signed out, remote
+ * access off). Rows
+ * open a Crew the same way the switcher does (`openRelayCrewTab`, the endpoint ID
+ * only): a tab in the desktop app's main window, a new tab in a browser.
  *
  * shortcut: no role chip and no member count. The crews answer carries neither
  * (`_entry` in `src/kiro_crew/dashboard/handlers/relay_viewer.py`); add them
@@ -21,23 +22,21 @@ import { useInRouterContext } from 'react-router-dom'
 import { ArrowRight, ExternalLink, Users } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
-  clearRelayCrewsUnseen, isRelayCrewOnline, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
+  clearRelayCrewsUnseen, isRelayCrewOnline, isSignedOutRefusal, openRelayCrewTab, recordRelayCrewsSeen, relayCrewStatusText, relayRefusalText, useRelayViewerCrews,
 } from '../hooks/useRelayViewerCrews'
 import { useAppDispatch } from '../store'
-import { Btn, Card, PanelSectionHeader } from './ui'
+import { relayPaneBridge } from '../lib/relayCrewPanes'
+import { Card, PanelSectionHeader } from './ui'
 import ErrorNotice from './ErrorNotice'
+import StatusNotice from './StatusNotice'
 import { i18nT } from '../i18n/t'
 import { KIRO_SIGN_IN_TARGET } from '../pages/developer/kiroSignInLink'
 import { SettingsLink } from './SettingsLink'
+import { accountProviderLabel } from './kasProviderLabel'
 
 /** The AWS Management Console home. A reviewer call: no Kiro or Amazon Q
  *  Developer console link exists in the codebase to reuse. */
 const AWS_CONSOLE_URL = 'https://console.aws.amazon.com/'
-
-/** A refusal that says the person is signed out: the way to sign in. */
-function signedOut(code: string | undefined): boolean {
-  return (code || '').toUpperCase() === 'SIGNED_OUT'
-}
 
 /** The way from a signed-out refusal to the Kiro account tab, where the sign-in is. */
 function KiroAccountLink() {
@@ -66,6 +65,7 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
 }) {
   const { t } = useTranslation()
   const online = isRelayCrewOnline(crew)
+  const inWindow = relayPaneBridge() !== null
   const kind = crew.crewType.toUpperCase()
   const type = kind === 'TEAM'
     ? t('components.relayCrews.type_team')
@@ -79,7 +79,8 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
         // Focusable while offline, so its tooltip still says why it won't open.
         aria-disabled={online ? undefined : true}
         aria-label={t('components.relayCrews.open_crew', { name: crew.name })}
-        title={online ? t('components.relayCrews.opens_own_window') : t('components.relayCrews.refusal_offline')}
+        // With the pane calls the Crew opens in this window, so no own-window title or mark.
+        title={online ? (inWindow ? undefined : t('components.relayCrews.opens_own_window')) : t('components.relayCrews.refusal_offline')}
         onClick={() => { if (online) onOpen(crew.endpointId) }}
         className={`w-full flex items-center gap-3 px-2 py-2 rounded-md text-left ${online ? 'hover:bg-bg-hover' : 'opacity-70 cursor-default'}`}
       >
@@ -98,33 +99,28 @@ function SharedCrewRow({ crew, refusal, onOpen }: {
         {/* The whole row is the Open button; this is its visible label. */}
         {online && (
           <span className="shrink-0 inline-flex items-center gap-1 rounded-md bg-accent text-accent-fg text-[12px] font-medium px-2.5 py-1" aria-hidden>
-            {t('components.sharedCrews.open')} <ExternalLink size={12} />
+            {t('components.sharedCrews.open')} {!inWindow && <ExternalLink size={12} />}
           </span>
         )}
       </button>
-      {refusal && (
+      {refusal && (isSignedOutRefusal(refusal.code) ? (
+        <StatusNotice tone="info" message={refusal.text} className="mx-2 mb-1" testId="shared-crew-refusal" footer={<div className="mt-1"><KiroAccountLink /></div>} />
+      ) : (
         // askAgent on: this tab's only unsaved inputs (the add-crew and edit-crew
         // forms) live in the store, so the hand-off's navigation loses nothing.
         <ErrorNotice variant="inline" message={refusal.text} className="px-2 pb-1" testId="shared-crew-refusal" askAgent />
-      )}
-      {signedOut(refusal?.code) && <div className="px-2 pb-1"><KiroAccountLink /></div>}
+      ))}
     </li>
   )
 }
 
-/** The list refusal in this card's own words: the codes whose shared text names
- *  Team Crews get Shared Crews wording, every other code keeps its shared text. */
-function sharedListRefusalText(code: string | undefined): string {
-  switch ((code || '').toUpperCase()) {
-    case 'SIGNED_OUT': return i18nT('components.sharedCrews.refusal_signed_out')
-    case 'NOT_SET_UP': return i18nT('components.sharedCrews.refusal_not_configured')
-    default: return relayRefusalText(code, i18nT('components.sharedCrews.refusal_list_generic'))
-  }
-}
-
 export default function SharedCrewsCards() {
   const { t } = useTranslation()
-  const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
+  const { hidden, crews, account, failed } = useRelayViewerCrews()
+  // Which account the list was read for: said here, not in the Crew switcher,
+  // whose Remote Crews group lists every remote Crew. Left out for an account
+  // with no label; no e-mail, the gateway sends none.
+  const provider = account ? accountProviderLabel(account.accountType, account.startUrl) : ''
   const [refusals, setRefusals] = useState<Record<string, RowRefusal>>({})
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
@@ -150,24 +146,14 @@ export default function SharedCrewsCards() {
   return (
     <>
       <section aria-label={t('components.sharedCrews.section_title')} className="space-y-2">
-        <PanelSectionHeader label={t('components.sharedCrews.section_title')} count={refusal ? undefined : crews.length} />
+        <PanelSectionHeader label={t('components.sharedCrews.section_title')} count={crews.length} />
         <Card data-testid="shared-crews-card">
           <p className="text-[12px] text-muted mb-2">{t('components.sharedCrews.managed_by_admin')}</p>
-          {refusal ? (
-            // shortcut: Try again is not held back for a throttle's Retry-After as the
-            // switcher's notice is; an early press just reads the same refusal again.
-            <div className="py-1 flex flex-wrap items-center gap-3">
-              {/* askAgent on: a list read failed, and this tab's drafts live in the store. */}
-              <ErrorNotice variant="inline" impact="partial" message={sharedListRefusalText(refusal.code)} testId="shared-crews-refusal" askAgent />
-              {signedOut(refusal.code) && <KiroAccountLink />}
-              {relayRetryable(refusal.code) && (
-                <Btn onClick={retry} disabled={retrying} data-testid="shared-crews-retry">
-                  {t('components.relayCrews.try_again')}
-                </Btn>
-              )}
-            </div>
-          ) : crews.length === 0 ? (
-            <div className="text-[13px] text-muted py-1" data-testid="shared-crews-empty">{t('components.sharedCrews.empty')}</div>
+          {provider && <p className="text-[12px] text-muted mb-2 break-words" data-testid="shared-crews-account">{t('app.signed_in_with', { provider })}</p>}
+          {/* askAgent on: this tab's drafts live in the store. The rows below are the last list loaded. */}
+          {failed && <ErrorNotice variant="inline" impact={crews.length > 0 ? 'partial' : 'blocking'} message={t(crews.length > 0 ? 'components.relayCrews.refresh_failed' : 'components.relayCrews.refusal_list_generic')} className="pb-2" testId="shared-crews-refresh-failed" askAgent />}
+          {crews.length === 0 ? (
+            !failed && <div className="text-[13px] text-muted py-1" data-testid="shared-crews-empty">{t('components.sharedCrews.empty')}</div>
           ) : (
             <ul aria-label={t('components.sharedCrews.section_title')} className="divide-y divide-border">
               {crews.map(c => (

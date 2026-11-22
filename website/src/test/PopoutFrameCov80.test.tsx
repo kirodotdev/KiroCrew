@@ -77,6 +77,14 @@ describe('PopoutFrame', () => {
     expect(document.title).toBe('Session — Kiro Crew')
   })
 
+  it('falls back to a generic label when the slot still carries the backend placeholder', () => {
+    renderWithProviders(<PopoutFrame />, {
+      route: '/popout/chat/x?sid=slot-1',
+      store: storeWithSlot('slot-1', 'New Session…'),
+    })
+    expect(document.title).toBe('Session — Kiro Crew')
+  })
+
   it('falls back to a generic label when the slot is unknown', () => {
     renderWithProviders(<PopoutFrame />, { route: '/popout/chat/x?sid=ghost' })
     expect(document.title).toBe('Session — Kiro Crew')

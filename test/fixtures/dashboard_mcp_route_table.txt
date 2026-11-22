@@ -32,6 +32,11 @@ GET /api/lessons api_lessons
 POST /api/lessons api_lessons_create
 DELETE /api/lessons api_lessons_delete
 PATCH /api/lessons api_lessons_update
+HEAD /api/resource-subscriptions api_resource_subscriptions_list
+GET /api/resource-subscriptions api_resource_subscriptions_list
+POST /api/resource-subscriptions api_resource_subscribe
+POST /api/resource-subscriptions/remove api_resource_unsubscribe
+POST /api/resource-subscriptions/operator api_resource_subscriptions_operator
 HEAD /api/session-ledger api_session_ledger_get
 GET /api/session-ledger api_session_ledger_get
 POST /api/session-ledger/record api_session_ledger_record
@@ -148,6 +153,8 @@ DELETE /api/crons api_cron_batch_delete
 HEAD /api/crons/history api_cron_history_all
 GET /api/crons/history api_cron_history_all
 POST /api/crons/tools api_cron_tools
+HEAD /api/crons/{job_id} api_cron_get
+GET /api/crons/{job_id} api_cron_get
 DELETE /api/crons/{job_id} api_cron_delete
 PATCH /api/crons/{job_id} api_cron_update
 PUT /api/crons/{job_id}/secrets api_cron_secret_grant

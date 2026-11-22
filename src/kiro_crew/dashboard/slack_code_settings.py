@@ -317,6 +317,26 @@ async def code_channel_agents(state: Any, folder_ref: str | None) -> list[str] |
         return None
 
 
+#: The Connections registry slug of the card the Slack MCP switch is for.
+SLACK_CONNECTIONS_SLUG = "slack"
+
+
+def _slack_card_offered(cfg: Any) -> bool:
+    """Connections shows a Slack card, by the Connections page's own two rules.
+
+    The gallery is on (``connections_ui``, a real ``True`` as the page reads it;
+    off, it offers no provider at all) and the registry shows the entry
+    (``is_visible``). Whether that card can already *connect* (its OAuth app
+    saved, the Crew-owned sign-in preview on) is the card's to say, not ours.
+    """
+    from kiro_crew.connections import registry
+
+    if getattr(cfg, "connections_ui", False) is not True:
+        return False
+    provider = registry.get_provider(SLACK_CONNECTIONS_SLUG)
+    return provider is not None and registry.is_visible(provider)
+
+
 async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
     """The GET body fragment: switches, defaults, effective resolution, warnings."""
     from kiro_crew import crew_mode
@@ -369,13 +389,16 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
             "scope": slack_features.REQUIRED_SCOPE[feature],
         }
 
-    # Per registered switch: the toggle as saved (``<name>``) and whether the
-    # install can run it (``<name>_capability``); toggle AND available is what
-    # the runtime checks.
+    # Per registered switch: the toggle as saved (``<name>``) and, for a switch
+    # the gateway runs, whether the install can run it (``<name>_capability``);
+    # toggle AND available is what the runtime checks. The Slack MCP switch has
+    # no capability: nothing runs for it, and a bot token cannot read the user
+    # scopes or app settings it adds.
     switches: dict[str, Any] = {}
     for feature in slack_manifest.FEATURES:
         switches[feature] = slack_features.toggle(cfg, feature)
-        switches[f"{feature}_capability"] = _capability(feature)
+        if feature not in slack_manifest.MANIFEST_ONLY_FEATURES:
+            switches[f"{feature}_capability"] = _capability(feature)
     return {
         **switches,
         # The code-channel dispatch sub-toggle under Code channels, with no
@@ -392,6 +415,10 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
         f"{DISPATCH_KEY}_overlay_state": await asyncio.to_thread(_dispatch_overlay_state),
         # Where that file is, home shown as ``~``, so the card can name it.
         f"{DISPATCH_KEY}_overlay_path": _overlay_display_path(),
+        # Whether Connections offers the Slack card, which is the only way to
+        # use what the Slack MCP switch adds; the page hides that switch
+        # without it (unless it is already on, so it can be turned off).
+        "slack_mcp_card": _slack_card_offered(cfg),
         "code_channel_defaults": {
             "folder": defaults.folder,
             "agent": defaults.agent,
@@ -723,7 +750,7 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
     }
     if not bot_token:
         body["install"] = scope_probe.ManifestStatus(scope_probe.STATUS_NOT_CONFIGURED).as_dict()
-        body["app_manifest_url"] = None
+        body["app_manifest_url"] = body["app_basic_info_url"] = body["app_dm_url"] = None
         return body
 
     key = hashlib.sha256((bot_token + "\0" + ",".join(sorted(enabled))).encode("utf-8")).hexdigest()
@@ -756,7 +783,12 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
         _status_cache.clear()  # one install per gateway: keep only the newest answer
         _status_cache[key] = (now, install)
     body["install"] = install
-    body["app_manifest_url"] = slack_manifest.app_manifest_url(str(install.get("app_id") or ""))
+    app_id = str(install.get("app_id") or "")
+    body["app_manifest_url"] = slack_manifest.app_manifest_url(app_id)
+    # The setup wizard's two links: where to generate the app-level token, and
+    # the bot's DM for the first message.
+    body["app_basic_info_url"] = slack_manifest.app_basic_info_url(app_id)
+    body["app_dm_url"] = slack_manifest.app_dm_url(app_id, str(install.get("team_id") or ""))
     return body
 
 

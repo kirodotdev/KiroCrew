@@ -315,9 +315,15 @@ class TestRendering:
         assert "3 application(s)" in text
         assert "dev.kirocrew.fake.files" in text
         assert "pid 4101" in text
+        # Refused apps are dropped before the renderer sees the list, so the
+        # listing must not read as the complete set of open apps.
+        assert text.splitlines()[-1].endswith("are never listed.")
 
-    def test_empty_app_list_says_so(self):
-        assert "No applications" in render.render_apps(())
+    def test_empty_app_list_does_not_claim_nothing_is_open(self):
+        text = render.render_apps(())
+        assert text.startswith("No application computer use may drive")
+        assert "blocked in Computer Use settings are never listed." in text
+        assert text.endswith("Other apps can still be open.")
 
     def test_fingerprint_is_stable_across_an_unchanged_rewalk(self, fake):
         first = _snap(fake, FAKE_FILES_APP, want_image=False)

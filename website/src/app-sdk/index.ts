@@ -549,6 +549,8 @@ export function AppApiProvider({
   sessionKey,
   slotPush,
   origin = 'external',
+  approvedBrowserVerbs,
+  appEnabled,
   children,
 }: {
   appName: string
@@ -586,6 +588,11 @@ export function AppApiProvider({
   /** The host's per-slot change signal; forwarded to the scoped layer. */
   slotPush?: SlotPush
   origin?: AppOrigin
+  /** The `permissions.browser` verbs the owner approved; forwarded to the scoped
+   *  layer, which publishes them as `info.permissions.browser`. */
+  approvedBrowserVerbs?: string[]
+  /** Whether the app is turned on; forwarded to the scoped layer (`info.enabled`). */
+  appEnabled?: boolean
   children: ReactNode
 }) {
   const existing = useAppIdentity()
@@ -602,6 +609,8 @@ export function AppApiProvider({
     notifyFn,
     sessionKey,
     slotPush,
+    approvedBrowserVerbs,
+    appEnabled,
     children,
   })
   if (existing) return scoped
@@ -635,6 +644,13 @@ export { default as ChatMessageList } from './ChatMessageList'
 export { default as PullRequestPanel } from './PullRequestPanel'
 export type { AppPullRequestPanelProps } from './PullRequestPanel'
 export type { PullRequestLink } from '../utils/pullRequestLinks'
+// The dashboard's diff viewer, which takes two texts and sends nothing, and the
+// chat's list of the files a session changed with each change's diff, behind the
+// app's declared session-file paths (level 12, see ./SessionChanges).
+export { default as DiffView } from './DiffView'
+export type { AppDiffViewProps } from './DiffView'
+export { default as SessionChanges } from './SessionChanges'
+export type { AppSessionChangesProps } from './SessionChanges'
 // Issue lists from GitHub, GitLab, Jira and Linear behind the app's declared
 // `/api/source/issues` (see ./issues/useIssues).
 export { useIssues, IssueList, IssueCard } from './issues'
@@ -652,6 +668,12 @@ export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecisio
 // app's declared `/api/browser/media` (level 10, see ./browserMedia).
 export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
 export type { BrowserMedia, BrowserMediaState } from './browserMedia'
+// The live view of an app's own slot, with take over and hand back, behind the
+// `app_browser_sdk` preview (RFC app-sdk-browser, section 5).
+export { default as BrowserView } from './BrowserView'
+export type { BrowserViewProps, BrowserViewMark } from './BrowserView'
+export { useBrowserView, useBrowserCoords } from './browserViewHooks'
+export type { BrowserViewAccess, BrowserViewState, BrowserViewInfo, BrowserCoords } from './browserViewHooks'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {
@@ -675,6 +697,7 @@ export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export { activeLocale, fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'
 // An app's own origin on the dashboard's port, for a backend that frames its own pages (level 8).
-export { appWebOrigin } from './webOrigin'
+export { appWebOrigin, appWebOriginStatus } from './webOrigin'
+export type { AppWebOriginReason, AppWebOriginStatus } from './webOrigin'
 // The App Kit seam level; an app feature-detects the seams above by it.
 export { APP_SDK_LEVEL } from './sdkLevel'

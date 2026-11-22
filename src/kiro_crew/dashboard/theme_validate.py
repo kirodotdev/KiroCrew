@@ -102,6 +102,9 @@ _THEME_CSS_VARS = (
     "--term-fg",
     "--term-cursor",
     "--term-selection",
+    # The lit top/bottom band of the Liquid Glass panes. Optional: omitted keeps
+    # the polarity default from liquid-glass.css.
+    "--glass-band-plain",
 )
 
 

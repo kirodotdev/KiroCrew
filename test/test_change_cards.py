@@ -303,6 +303,26 @@ def test_crewmate_create_binds_its_schedule_to_the_created_identity():
     assert [s["path"] for s in undo] == ["/api/crons/j1", "/api/agents/scout"]
 
 
+def test_crewmate_create_carries_an_optional_model_pin_as_a_read_only_row():
+    def preview(**extra):
+        p = catalog.validate_params("crewmate.create", {"name": "Scout", "goal": "g", **extra})
+        return catalog.build_preview("crewmate.create", p, {"exists": False}, {})
+
+    pinned = preview(model=" some-model ")
+    assert pinned["apply"][0]["body"]["model"] == "some-model"
+    assert {"field": "model", "label": "Model", "after": "some-model"} in pinned["changes"]
+    assert "model" not in catalog.KINDS["crewmate.create"].editable
+    # Omitted, empty and "auto" all inherit: no row and no pin in the create body.
+    for extra in ({}, {"model": ""}, {"model": "auto"}):
+        plain = preview(**extra)
+        assert "model" not in plain["apply"][0]["body"]
+        assert all(c.get("field") != "model" for c in plain["changes"])
+    for bad in (123, "x" * 65, "a\x01b"):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            catalog.validate_params("crewmate.create", {"name": "Scout", "goal": "g", "model": bad})
+        assert exc.value.code == "invalid_param"
+
+
 def test_crewmate_create_shows_inherited_auto_approvals_and_asks_to_widen():
     p = catalog.validate_params("crewmate.create", {"name": "Scout", "goal": "watch PRs"})
     plain = catalog.build_preview("crewmate.create", p, {"exists": False}, {})

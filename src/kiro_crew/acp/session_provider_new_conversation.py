@@ -90,18 +90,22 @@ async def new_conversation(
     # A member DM's dispatch mount and a channel session's channel ride every
     # session start (``AcpProvider._member_session_key`` / ``_owning_channel_id``),
     # so a chat's fresh conversation carries the ones its cold start passed.
-    new_handle = await self._runtime.create_session(
-        cwd=self._runtime._work_dir,
-        agent=getattr(self, "_session_agent", "") or self._runtime._agent or None,
-        crew_agent=getattr(self, "_session_crew_agent", None),
-        member_context=getattr(self, "_session_member_context", None),
-        harness_options=self._harness_options,
-        memory_mode=self.memory_mode,
-        kas_memory_mode=self.kas_memory_mode,
-        session_key=self._session_key,
-        member_session_key=member_session_key,
-        channel_id=channel_id,
-    )
+    # The fresh session keeps the batch kind the old one was projected for.
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_claim
+
+    with person_turn_claim(getattr(old, "kas_folder_hooks_projected", False) is True):
+        new_handle = await self._runtime.create_session(
+            cwd=self._runtime._work_dir,
+            agent=getattr(self, "_session_agent", "") or self._runtime._agent or None,
+            crew_agent=getattr(self, "_session_crew_agent", None),
+            member_context=getattr(self, "_session_member_context", None),
+            harness_options=self._harness_options,
+            memory_mode=self.memory_mode,
+            kas_memory_mode=self.kas_memory_mode,
+            session_key=self._session_key,
+            member_session_key=member_session_key,
+            channel_id=channel_id,
+        )
     # Re-apply the configured non-default model to the fresh session. A new
     # session/new reverts to the agent-config default model, so a warm worker
     # configured with a non-default model (via the cold-start set_model in

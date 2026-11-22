@@ -162,19 +162,13 @@ async def _deliver_cron_agent_result(
         # paths above only re-inject into an already-existing slot via has_slot(), so
         # they self-no-op when hide_in_chat is True.
         if job.persistent_session and not job.hide_in_chat:
-            history = (
-                await asyncio.to_thread(
-                    self.dashboard_state.conversation_log.read_messages,
-                    f"cron:{job.id}",
-                )
-                if self.dashboard_state.conversation_log
-                else []
-            )
             inject_cron_result_to_dashboard(
                 self.dashboard_state,
                 job,
                 result_text,
-                history=history,
+                history=await prefetch_cron_history(
+                    self.dashboard_state, job.id, fresh=job.on_tab_close == "fresh"
+                ),
                 context_reading=_ctx_reading,
                 turn_stats=_turn_stats,
                 stored_folder=await stored_cron_folder(self.dashboard_state, job.id),
@@ -264,6 +258,7 @@ async def _deliver_cron_agent_result(
                 job.session_key,
                 f"Cron: {job.name}\n\n{result_text}",
                 actor_key=session_key,
+                pin=(job.channel_type, job.target_id),
             )
         except Exception:
             # The job SUCCEEDED. Letting a delivery error reach the

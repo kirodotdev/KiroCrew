@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { readdirSync, readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import type { ReactElement } from 'react'
+import type { ChatMessage } from '../types'
+import { mergeRenderers, resolveRenderer, type MessageRenderContext, type MessageRenderer } from '../app-sdk/messageRenderers'
 import RecoveryCard, { INJECT_KIND_OPENS_TURN, injectOpensTurn, parseRecoveryMessage, resolveInjectCard } from '../pages/chat/RecoveryCard'
 
 // Verbatim prefixes from src/kiro_crew/dashboard/state.py. The separator is an
@@ -161,8 +161,6 @@ describe('parseRecoveryMessage', () => {
       `${HOOK}\nYour previous turn ended by offering a trivial read-only option. Perform it now.`,
     )
     expect(hook?.kind).toBe('hook')
-    expect(hook?.title).toBe('Continued by a hook')
-    expect(hook?.detail).toBe('requested by a hook · continuing')
     expect(hook?.chip).toBe('')
     expect(hook?.body.startsWith('[')).toBe(false)
     expect(hook?.body).toContain('trivial read-only option')
@@ -172,6 +170,16 @@ describe('parseRecoveryMessage', () => {
       expect(text?.toLowerCase()).not.toContain('recover')
       expect(text?.toLowerCase()).not.toContain('stall')
     }
+  })
+
+  it('names the hook once and never says the finished turn is still running', () => {
+    // The card stays in the transcript after the continued turn is over, so a
+    // present-tense "continuing" reads as live work that is not happening.
+    const hook = parseRecoveryMessage(`${HOOK}\nKeep going.`)
+    const line = `${hook?.title} · ${hook?.detail}`.toLowerCase()
+    expect(line).not.toContain('recoverycard.')
+    expect(line.match(/hook/g)).toHaveLength(1)
+    expect(line).not.toMatch(/continuing|\bin progress\b|running/)
   })
 
   it('does not attribute a hook continuation to the user', () => {
@@ -351,58 +359,60 @@ describe('RecoveryCard', () => {
     render(<RecoveryCard parsed={parsed} />)
     expect(screen.getByTestId('recovery-card')).toHaveAttribute('data-severity', 'attention')
   })
+
+  it('gives a hook continuation its own glyph, not the retry arrow', () => {
+    // Nothing was retried: the turn ended and a hook asked for another, so the
+    // recovery kinds' circular arrow would read as retry or refresh.
+    const { container, unmount } = render(<RecoveryCard parsed={parseRecoveryMessage(`${CONNECTION}\nContinue.`)!} />)
+    const retryGlyph = container.querySelector('[data-testid="recovery-card-toggle"] svg:nth-of-type(2)')?.getAttribute('class')
+    unmount()
+
+    render(<RecoveryCard parsed={parseRecoveryMessage(`${HOOK}\nKeep going.`)!} />)
+    const card = screen.getByTestId('recovery-card')
+    expect(card).toHaveAttribute('data-severity', 'routine')
+    const hookGlyph = card.querySelector('[data-testid="recovery-card-toggle"] svg:nth-of-type(2)')?.getAttribute('class')
+    expect(retryGlyph).toContain('lucide-rotate-ccw')
+    expect(hookGlyph).toContain('lucide-anchor')
+  })
 })
 
-/**
- * ChatPage's transcript is driven by the custom virtualizer, which mounts an
- * empty window under jsdom (no layout engine), so a full-page render produces no
- * message DOM. These are source-contract assertions in the same style as
- * ChatPage.mcpOAuth.test.tsx: they lock in the wiring, while the card's own
- * behaviour is covered above.
- */
-describe('ChatPage – recovery card wiring', () => {
-  // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
-  // so the pins read the page and those owners.
-  const pagesDir = resolve(dirname(fileURLToPath(import.meta.url)), '../pages')
-  const ownerDir = resolve(pagesDir, 'chat/page')
-  const src = [
-    readFileSync(resolve(pagesDir, 'ChatPage.tsx'), 'utf8'),
-    ...readdirSync(ownerDir).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
-      .map(f => readFileSync(resolve(ownerDir, f), 'utf8')),
-    ...readdirSync(pagesDir).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
-      .map(f => readFileSync(resolve(pagesDir, f), 'utf8')),
-  ].join('\n')
+describe('recovery card in the shared row registry', () => {
+  const HOOK = '[Hook continuation — automatic]\nSTOP-HOOK BLOCK — fix the options line.'
+  const row = (content: string, meta: Record<string, unknown> = {}): ChatMessage =>
+    ({ role: 'inject', content, ts: 't1', meta } as ChatMessage)
+  const ctx = {
+    index: 0, messages: [], running: false, key: 'k1', autoDeniedIds: new Set<string>(),
+    row: (c: unknown) => c, wrapper: (c: unknown) => c,
+  } as unknown as MessageRenderContext
+  // Claims `inject` by role, as ChatPage's own bubble does.
+  const hostBubble: MessageRenderer = { id: 'host_bubble', roles: ['user', 'assistant', 'inject'], render: () => 'bubble' }
 
-  it('imports the card and its shared resolver', () => {
-    // Since chat-core P5-b the recovery row is a shared dashboard entry
-    // (pages/chat/transcriptRenderers.tsx) that ChatPage spreads into its host
-    // list, so the imports live in the factory and the page imports the factory.
-    const factory = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
-    expect(factory).toMatch(/import\s+RecoveryCard\s*,\s*\{[^}]*\bresolveInjectCard\b[^}]*\}\s*from\s*['"]\.\/RecoveryCard['"]/)
-    expect(src).toMatch(/import \{ createTranscriptRenderers \} from '\.\.\/transcriptRenderers'/)
+  it('folds a hook continuation with no host renderers, as ChatEmbed mounts it', () => {
+    const m = row(HOOK, { injectKind: 'recovery' })
+    const entry = resolveRenderer(m, mergeRenderers(undefined))
+    expect(entry?.id).toBe('recovery_inject')
+    const el = entry!.render(m, ctx) as ReactElement
+    expect(el.type).toBe(RecoveryCard)
+    expect((el.props as { parsed: { kind: string } }).parsed.kind).toBe('hook')
   })
 
-  it('routes inject rows through the shared resolver to the card', () => {
-    const factory = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
-    expect(factory).toMatch(/resolveInjectCard\s*\(\s*m\s*\)/)
-    expect(factory).toMatch(/<RecoveryCard\s/)
+  it('folds it ahead of a host entry that claims the inject role', () => {
+    expect(resolveRenderer(row(HOOK), mergeRenderers([hostBubble]))?.id).toBe('recovery_inject')
   })
 
-  it('checks for a card BEFORE the generic inject bubble renders', () => {
-    // Since chat-core P5-b the page spreads the dashboard's shared row set
-    // (pages/chat/transcriptRenderers.tsx) into its host list, and precedence
-    // is list order. The generic bubble entry (which paints any injected text
-    // as a full-width warning bubble) is the LAST entry; the shared set --
-    // which carries the `recovery_inject` shape entry -- must be spread before
-    // it, or the card is dead code and the raw prompt reappears.
-    const list = src.indexOf('const renderers = mergeRenderers([')
-    const shared = src.indexOf('...shared,', list)
-    const generic = src.indexOf('\n      bubble,\n    ])', list)
-    expect(list).toBeGreaterThanOrEqual(0)
-    expect(shared).toBeGreaterThan(list)
-    expect(generic).toBeGreaterThan(shared)
-    const factory = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
-    expect(factory).toMatch(/id: 'recovery_inject',\s*\n\s*roles: \['inject'\],\s*\n\s*match: m => resolveInjectCard\(m\) !== null/)
+  it('draws nothing for a re-routed automation refusal on either mount', () => {
+    const m = row('[Automation notice] loop NOT updated.', { injectKind: 'automation_notice' })
+    for (const list of [mergeRenderers(undefined), mergeRenderers([hostBubble])]) {
+      const entry = resolveRenderer(m, list)
+      expect(entry?.id).toBe('automation_notice_inject')
+      expect(entry!.render(m, ctx)).toBeNull()
+    }
+  })
+
+  it('leaves a cron delivery to the inject bubble on either mount', () => {
+    const m = row('nightly report', { injectKind: 'cron', cronLabel: 'nightly' })
+    expect(resolveRenderer(m, mergeRenderers(undefined))?.id).toBe('inject')
+    expect(resolveRenderer(m, mergeRenderers([hostBubble]))?.id).toBe('host_bubble')
   })
 })
 
@@ -500,14 +510,19 @@ describe('resolveInjectCard – which inject rows become notes', () => {
     expect(card?.kind).toBe('generic')
   })
 
+  it("folds an MCP resource-subscription wake into a note, never a bubble", () => {
+    const card = resolveInjectCard(row('[Webhook wake]\nSubscription "reviews" (rsub_1): 1 event, 1 subject.\n[End of webhook wake]', { injectKind: 'resource' }))
+    expect(card?.kind).toBe('generic')
+  })
+
   it('folds a stamped row whose marker this build does not know', () => {
     const card = resolveInjectCard(row('[Some future marker] machine prose', { injectKind: 'recovery' }))
     expect(card?.kind).toBe('generic')
   })
 
   it('does not fold a re-routed automation refusal — it is suppressed by the renderer, not carded', () => {
-    // `automation_notice` is hidden on the Sessions page by the
-    // `automation_notice_inject` renderer (and in the crewmate DM by
+    // `automation_notice` is hidden by the registry's
+    // `automation_notice_inject` row (and in the crewmate DM by
     // MACHINERY_ROLES), because the refusal's notice bar already shows it. So
     // resolveInjectCard returns null for it — it never becomes a note card.
     const card = resolveInjectCard(row('[Automation notice] ⚠️ Automation loop NOT updated.', { injectKind: 'automation_notice' }))
@@ -551,7 +566,7 @@ describe('injectOpensTurn – which inject rows begin a turn of their own', () =
 
   it('classifies every stamped kind, and the table is the union', () => {
     // A kind missing here fails to compile, so this pins the VALUES only.
-    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, synthesis: true, recovery: false, user_replay: false, automation_notice: true, workflow: true, heartbeat: true })
+    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, resource: true, synthesis: true, recovery: false, user_replay: false, automation_notice: true, workflow: true, heartbeat: true })
     for (const [kind, opens] of Object.entries(INJECT_KIND_OPENS_TURN)) expect(injectOpensTurn(row({ injectKind: kind })), kind).toBe(opens)
   })
 

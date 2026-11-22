@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew import platform_compat
-from kiro_crew.eval.arms import ARMS, Arm, ArmOutcome, Caps
+from kiro_crew.eval.arms import ARMS, Arm, ArmOutcome, Caps, NotBuiltArm, operator_kiro_cli
 
 #: Per-tier limits and weekly runs per case (§3.1): timeout, credit and USD caps, k.
 TIERS: dict[str, dict[str, float]] = {
@@ -92,6 +92,14 @@ def _holds_credentials(home: str, name: str) -> bool:
     return True
 
 
+#: What a run record says under ``--use-operator-credentials`` (§4.3), and the line
+#: the CLI prints before such a batch starts.
+OPERATOR_CREDENTIALS = "operator's own (--use-operator-credentials)"
+OPERATOR_RISK_LINE = (
+    "--use-operator-credentials: every arm runs as you, with your own environment, "
+    "HOME, kiro-cli and Claude Code sign-ins; the agents can reach your credentials "
+    "(the eval-user fence, RFC §4.1, is off). Each run record says so."
+)
 #: Env variables every run process keeps; everything else is dropped.
 _BASE_ENV_KEYS = ("PATH", "LANG", "LC_ALL", "TZ", "PYTHONPATH")
 _DEFAULT_TOOLS = ["Read", "Edit", "Write", "Bash", "Glob", "Grep"]
@@ -267,18 +275,64 @@ def _run_check(case: Case, origin: Path, pyc: str) -> dict[str, Any]:
     return {"pass": False, "parts": {}, "notes": [f"no verdict: {stderr.strip()[-300:]}"]}
 
 
-def apply_reference(case: Case, repo: Path) -> None:
-    """Copy the case's ``ref/`` over *repo*, commit, and push the task branch."""
+def apply_reference(case: Case, repo: Path, origin: Path) -> None:
+    """Copy the case's ``ref/`` over *repo*, commit, and sync the task branch to *origin*."""
     shutil.copytree(case.path / "ref", repo, dirs_exist_ok=True)
     env = _base_env()
     for cmd in (
         ["git", "add", "-A"],
         ["git", "commit", "-q", "--allow-empty", "-m", "reference"],
-        ["git", "push", "-q", "origin", TASK_BRANCH],
     ):
         subprocess.run(
             cmd, cwd=repo, check=True, capture_output=True, env=env, timeout=BUILD_TIMEOUT_SECS
         )
+    if not sync_task_branch(repo, origin):
+        raise RuntimeError("could not sync the reference commit to the local origin")
+
+
+def sync_task_branch(repo: Path, origin: Path) -> bool:
+    """Copy *repo*'s task branch into *origin*, as it stands now; False when it cannot.
+
+    No arm pushes: the agent only commits, and the runner brings that branch to the
+    local origin the hidden check judges. The fetch runs in *origin*, so nothing the
+    agent set in *repo* (a remote, a push URL, a hook) decides where it goes, and
+    hooks are off in *origin* too. A missing or broken branch leaves *origin* as it
+    was, and the check then judges that.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "--git-dir",
+                str(origin),
+                "fetch",
+                "-q",
+                "--no-tags",
+                "--force",
+                str(repo),
+                f"refs/heads/{TASK_BRANCH}:refs/heads/{TASK_BRANCH}",
+            ],
+            capture_output=True,
+            env=_base_env(),
+            timeout=BUILD_TIMEOUT_SECS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def _synced_check(case: Case, dirs: RunDirs) -> dict[str, Any]:
+    """The hidden check on the run's origin, once the agent's task branch is synced to it.
+
+    A sync that fails (the agent removed or broke ``trunk``) fails the check: the
+    origin may still hold an earlier sample's commit, which is not what the run left.
+    """
+    if not sync_task_branch(dirs.repo, dirs.origin):
+        note = f"the repo's {TASK_BRANCH} could not be synced to the local origin"
+        return {"pass": False, "parts": {}, "counters": {}, "notes": [note]}
+    return run_check(case, dirs.origin)
 
 
 def check_cases(cases: list[Case]) -> list[str]:
@@ -295,7 +349,7 @@ def check_cases(cases: list[Case]) -> list[str]:
                 build_repo(case, repo, origin)
                 if run_check(case, origin)["pass"]:
                     problems.append(f"{case.id}: the hidden check passes on the untouched base")
-                apply_reference(case, repo)
+                apply_reference(case, repo, origin)
                 after = run_check(case, origin)
                 if not after["pass"]:
                     problems.append(
@@ -311,6 +365,8 @@ def preflight(arms: list[Arm], env: dict[str, str]) -> list[str]:
     """Every reason the batch must not start (§4.1, §10); empty when it may."""
     if os.name != "posix":
         return ["kirocrew eval run --suite tasks runs on Linux and macOS only"]
+    if any(arm.operator_credentials for arm in arms):
+        return _operator_refusals(arms, env)
     reasons = list(_home_refusals())
     if any(arm.needs_gateway for arm in arms):
         from kiro_crew import sandbox
@@ -322,6 +378,34 @@ def preflight(arms: list[Arm], env: dict[str, str]) -> list[str]:
             missing = arm.missing_credential(env)
             if missing:
                 reasons.append(f"{arm.name}: {missing}")
+    return reasons
+
+
+def _operator_refusals(arms: list[Arm], env: dict[str, str]) -> list[str]:
+    """Preflight for ``--use-operator-credentials`` (§4.3): the operator's own sign-ins.
+
+    The eval-user checks do not apply (the operator's credentials are the point);
+    each arm's own sign-in must answer instead (``kiro-cli whoami``,
+    ``claude -p "say ok"``), and a Crew arm still needs the strict sandbox tier.
+    """
+    reasons: list[str] = []
+    if any(arm.needs_gateway for arm in arms):
+        from kiro_crew import sandbox
+
+        if sandbox.detect_backend("strict") == "none":
+            reasons.append("no sandbox backend: a Crew arm needs the strict sandbox tier")
+    checked: dict[str, str] = {}
+    for arm in arms:
+        if isinstance(arm, NotBuiltArm):
+            continue  # not built yet: each of its runs is VOID, as without the flag
+        why = arm.unavailable()
+        if not why:
+            key = type(arm).operator_check.__qualname__
+            if key not in checked:  # both Crew arms share one `kiro-cli whoami`
+                checked[key] = arm.operator_check(env)
+            why = checked[key]
+        if why:
+            reasons.append(f"{arm.name}: {why}")
     return reasons
 
 
@@ -384,26 +468,48 @@ class RunDirs:
 
 
 def run_env(dirs: RunDirs, arm: Arm, source: dict[str, str]) -> dict[str, str]:
-    """The whole env of a run's processes: base keys, the run's homes, the arm's sign-in."""
-    env = {k: source[k] for k in _BASE_ENV_KEYS if source.get(k)}
+    """The whole env of a run's processes: base keys, the run's homes, the arm's sign-in.
+
+    With ``--use-operator-credentials`` it is the operator's own env and real ``HOME``
+    (so their kiro-cli and Claude Code sign-ins work), minus any ``KIROCREW_*`` value
+    of theirs; the run still gets its own Crew data home, ``KIRO_HOME`` and ``TMPDIR``.
+    """
+    if arm.operator_credentials:
+        env = {k: v for k, v in source.items() if not k.startswith("KIROCREW_")}
+        # The kiro-cli preflight's `whoami` checked (resolved from the same source env,
+        # KIROCREW_KIRO_BIN and the bundled directory included), pinned for the run's
+        # gateway, so preflight and the runs use one binary.
+        kiro_bin = operator_kiro_cli(source)
+        if kiro_bin:
+            env["KIROCREW_KIRO_BIN"] = kiro_bin
+    else:
+        env = {k: source[k] for k in _BASE_ENV_KEYS if source.get(k)}
+        env["HOME"] = str(dirs.home)
     if env.get("PYTHONPATH"):
         # Children start in other directories, so a relative entry (a source checkout's
         # `src`) is resolved against the runner's own working directory first.
         parts = env["PYTHONPATH"].split(os.pathsep)
         env["PYTHONPATH"] = os.pathsep.join(os.path.abspath(p) for p in parts if p)
-    env.update(
-        HOME=str(dirs.home),
-        KIROCREW_HOME=str(dirs.crew),
-        KIRO_HOME=str(dirs.kiro),
-        TMPDIR=str(dirs.tmp),
-    )
-    env.update({k: source[k] for k in arm.env_keys if source.get(k)})
+    env.update(KIROCREW_HOME=str(dirs.crew), KIRO_HOME=str(dirs.kiro), TMPDIR=str(dirs.tmp))
+    if not arm.operator_credentials:
+        env.update({k: source[k] for k in arm.env_keys if source.get(k)})
     return env
 
 
 def write_crew_config(dirs: RunDirs) -> None:
-    """The eval home's Crew config: the strict sandbox tier, no unsandboxed fallback."""
-    config = {"agent": {"sandbox": "strict", "sandbox_allow_unsandboxed_exec": False}}
+    """The eval home's Crew config: the strict sandbox tier, no unsandboxed fallback.
+
+    Auto-import of ``~/.kiro/hooks/*.sh`` scripts is off. Under
+    ``--use-operator-credentials`` (the real ``HOME``) the operator's standalone
+    ``~/.kiro/hooks/*.json`` hook files still run on a KAS turn (RFC §4.3).
+    """
+    config = {
+        "agent": {
+            "sandbox": "strict",
+            "sandbox_allow_unsandboxed_exec": False,
+            "kiro_hooks_autoimport": False,
+        }
+    }
     (dirs.crew / "config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
@@ -590,7 +696,9 @@ def score(
     if outcome.status == "timeout" or wall_s > caps.timeout_s:
         return "FAILED", "timeout"
     cost_cap = {"credits": caps.credits, "usd": caps.usd}.get(outcome.cost_unit)
-    over = outcome.cost is not None and cost_cap is not None and outcome.cost > cost_cap
+    # An unknown cost still has its known floor: spend past the cap fails either way.
+    spent = outcome.cost if outcome.cost is not None else outcome.cost_floor
+    over = spent is not None and cost_cap is not None and spent > cost_cap
     if outcome.status == "budget" or over:
         return "FAILED", "spend_cap"
     if outcome.status != "done":
@@ -635,6 +743,7 @@ def run_one(
         "repeat": index,
         "run_id": run_id,
         "model": model,
+        "credentials": OPERATOR_CREDENTIALS if arm.operator_credentials else "eval-only",
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     reason = arm.unavailable()
@@ -658,10 +767,10 @@ def run_one(
         seed = case.seed.replace("{repo}", str(dirs.repo))
         argv = arm.argv(seed, str(dirs.repo), caps, model, case.tools)
         ran = drive_arm(
-            argv, dirs, env, caps.timeout_s, lambda: bool(run_check(case, dirs.origin)["pass"])
+            argv, dirs, env, caps.timeout_s, lambda: bool(_synced_check(case, dirs)["pass"])
         )
         # Judged while the gateway (and any server the agent started) is still up.
-        check = run_check(case, dirs.origin)
+        check = _synced_check(case, dirs)
         outcome = arm.parse(ran.returncode, ran.stdout)
         if ran.killed:
             outcome.status = "timeout"
@@ -682,8 +791,10 @@ def run_one(
             exit_code=ran.returncode,
             asks=outcome.asks,
             ask_events=outcome.ask_events,
+            denials=outcome.denials,
             wall_s=round(ran.wall_s, 1),
             cost=outcome.cost,
+            cost_floor=outcome.cost_floor,
             cost_unit=outcome.cost_unit,
             idle_after_done_s=(
                 None if first_pass is None else round(max(0.0, ran.wall_s - first_pass), 1)
@@ -711,8 +822,18 @@ def run_one(
     return _write_record(out_dir, record)
 
 
+#: The parts of a Crew run's data home that hold its process: every chat's transcript
+#: (the root chat and each worker a conductor dispatched) and every background agent.
+_CREW_LOG_DIRS = ("sessions", "subagents")
+
+
 def _copy_transcript(stdout: str, dirs: RunDirs) -> None:
-    """Copy a Crew run's transcript (inside the run's data home) next to its output."""
+    """Copy a Crew run's transcripts (inside the run's data home) next to its output.
+
+    The root chat's transcript lands as ``transcript.jsonl``; the whole ``sessions/``
+    and ``subagents/`` trees land under ``crew/``, so a run's steps, tool calls and
+    timings can be read after its data home is deleted.
+    """
     from kiro_crew.eval.arms import _last_json_object
 
     payload = _last_json_object(stdout) or {}
@@ -723,6 +844,27 @@ def _copy_transcript(stdout: str, dirs: RunDirs) -> None:
         tmp = dirs.out / f".transcript.{uuid.uuid4().hex}"
         shutil.copyfile(path, tmp)
         os.replace(tmp, dirs.out / "transcript.jsonl")
+    if dirs.out.is_symlink():
+        return
+    # Copied into a directory made here and then renamed into place, never merged into
+    # what is already at ``crew/``: the agent can write into the output directory, and
+    # a link it left there must be replaced, not followed (a rename onto a link fails).
+    staged = dirs.out / f".crew.{uuid.uuid4().hex}"
+    try:
+        staged.mkdir()
+        for name in _CREW_LOG_DIRS:
+            src = dirs.crew / name
+            if src.is_dir() and not src.is_symlink():
+                # Links are copied as links, never followed, as in the run's copy-out.
+                shutil.copytree(src, staged / name, symlinks=True)
+        dest = dirs.out / "crew"
+        if dest.is_symlink() or dest.is_file():
+            dest.unlink()
+        elif dest.is_dir():
+            shutil.rmtree(dest)
+        os.replace(staged, dest)
+    except (shutil.Error, OSError):
+        shutil.rmtree(staged, ignore_errors=True)  # no partial copy is left behind
 
 
 def _copy_out(dirs: RunDirs, dest: Path) -> None:
@@ -760,7 +902,18 @@ def _write_record(out_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _base_env() -> dict[str, str]:
-    return {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TZ") if os.environ.get(k)}
+    """The environment for the suite's own build, check and reference git work.
+
+    Git's auto-maintenance is off: after a commit or push, git starts a DETACHED
+    ``git maintenance run --auto``, which holds ``objects/maintenance.lock`` while a
+    local clone of that repository copies ``objects/``; the lock is removed mid-copy
+    and the clone dies with ENOENT. These repositories are throwaway, so nothing is lost.
+    """
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TZ") if os.environ.get(k)}
+    env.update(
+        GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="maintenance.auto", GIT_CONFIG_VALUE_0="false"
+    )
+    return env
 
 
 # ---------- the batch ----------
@@ -809,7 +962,7 @@ def _median(values: list[Any]) -> float | None:
 
 def format_summary(rows: list[dict[str, Any]]) -> str:
     """The summary rows as a Markdown table."""
-    head = "| arm | tier | runs | passed | failed | void | asked | pass^k cases | wall s | cost | idle s |"
+    head = "| arm | tier | runs | passed | failed | void | asked | pass^k cases | median wall s | median cost | median idle s |"
     lines = ["# kirocrew eval run: tasks", "", head, "|" + "---|" * 11]
     for r in rows:
         cost = "" if r["median_cost"] is None else f"{r['median_cost']} {r['cost_unit']}"

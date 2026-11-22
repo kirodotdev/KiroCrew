@@ -63,6 +63,7 @@ from kiro_crew.sandbox_staging import (
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
     _materialize_refresh_chains_mask_target,
+    _materialize_signing_key_mask_target,
     _md_notebook_degraded_mask_dirs,
     _member_records_move,
     _migrate_md_notebook_legacy_state,
@@ -581,6 +582,26 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         readonly_ancestor_guards = tuple(
             g for g in readonly_ancestor_guards if g not in after_masks
         )
+    # A caller mask is guarded like a built-in hidden leaf on both backends: each directory
+    # above it that exists is guarded against rename (a missing one is skipped, see
+    # ``hidden_leaf_parents``); the namespace backend keeps only those this uid could rename.
+    caller_parents = tuple(
+        parent
+        for entry in request.extra_hidden_dirs
+        for parent in (os.path.dirname(os.path.abspath(entry)),)
+        if os.path.lexists(parent)
+    )
+    caller_ancestor_guards = (
+        _renameable_ancestor_guards(caller_parents, uid)
+        if namespace
+        else _literal_ancestor_guards(caller_parents)
+    )
+    # An app's folder is pinned AFTER the masks whichever list it came from (see above).
+    caller_after_masks = {g for g in caller_ancestor_guards if app_dir_ids and _is_app_dir_pin(g)}
+    for guard in caller_ancestor_guards:
+        if guard in caller_after_masks:
+            app_dir_pins.setdefault(os.path.realpath(guard), guard)
+    caller_ancestor_guards = tuple(g for g in caller_ancestor_guards if g not in caller_after_masks)
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     operator_paths, operator_exceptions = configured_readonly_layer()
     operator_readonly_probes = _operator_layer_probes(operator_paths, keep_unprobeable=True)
@@ -660,6 +681,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         kiro_agents_targets=kiro_agents_targets,
         install_root_targets=install_root_targets,
         readonly_ancestor_guards=readonly_ancestor_guards,
+        caller_ancestor_guards=caller_ancestor_guards,
         mask_parent_pins=mask_parent_pins,
         carveout_probes=carveout_probes,
         operator_readonly_probes=operator_readonly_probes,
@@ -887,10 +909,11 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
-    # The channel-credential file and the refresh-chain store have the same gap: an
-    # absent name gets no mask.
+    # The channel-credential file, the refresh-chain store and the signing key have the
+    # same gap: an absent name gets no mask.
     _materialize_env_mask_target(_required_targets)
     _materialize_refresh_chains_mask_target(_required_targets)
+    _materialize_signing_key_mask_target(_required_targets)
     # The directories apps declare read-only to agents: a linked one refuses the spawn, and
     # an absent one is created so its seal is never vacuous.
     _establish_app_readonly_dirs(_required_targets)

@@ -217,6 +217,11 @@ CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
 #: gate can judge (:func:`kiro_crew.acp.kas_spec_denies.with_unjudged_denies`).
 CREW_UNJUDGED_DENIES_KEY = "_crewShellUnjudgedDenies"
 
+#: Set on the session agent's entry of a batch that kept the folder PreToolUse hooks of its
+#: agent or left out a folder sub-agent target for them (maybe one a scheduled batch leaves
+#: out for another reason too): ``kas_project_hooks.scheduled_turn_reprojects`` reads it.
+CREW_FOLDER_PRE_TOOL_KEY = "_crewFolderPreToolHooks"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
@@ -226,6 +231,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_ANSWERED_WRITES_KEY,
         CREW_SPEC_DENIES_KEY,
         CREW_UNJUDGED_DENIES_KEY,
+        CREW_FOLDER_PRE_TOOL_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
         CREW_ANSWERED_PATHS_KEY,
@@ -1023,6 +1029,15 @@ def _asking_only(refs: str, outcome: str, reason: str) -> None:
     """The ``audit_decision`` of :func:`projection_accepts`: a question, not a refusal."""
 
 
+class RefusalReason:
+    """An ``audit_decision`` that keeps why a block is refused and reports nothing."""
+
+    why = ""
+
+    def __call__(self, refs: str, outcome: str, reason: str) -> None:
+        """A left-out allow is not a refusal of the block: nothing to keep."""
+
+
 def projection_accepts(raw: Any) -> bool:
     """Whether :func:`parse_user_permissions` would relay *raw* rather than refuse it whole.
 
@@ -1057,6 +1072,9 @@ def _refuse_block(
     every grant in it."""
     if audit_decision is _asking_only:
         return
+    if isinstance(audit_decision, RefusalReason):
+        audit_decision.why = audit_decision.why or why
+        return
     audit_decision("the authored `permissions` block", "withheld", f"refused: {why}")
     logger.warning(
         "agent %r: refusing its whole `permissions` block -- %s. None of it travels; "
@@ -1073,7 +1091,7 @@ _DROPPED: dict[str, Any] = {}
 
 def _drop_rule(agent_id: str, where: str, count: int, audit_decision: _AuditDecision) -> None:
     """Report one authored ``allow`` left out for an ``exclude`` list too long to send."""
-    if audit_decision is _asking_only:
+    if audit_decision is _asking_only or isinstance(audit_decision, RefusalReason):
         return
     audit_decision(
         f"the authored `permissions` {where}",

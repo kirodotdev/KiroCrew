@@ -359,6 +359,11 @@ class TestCIProgress(unittest.TestCase):
         # and logs both the count and the host's peak memory.
         self.assertNotIn("-n auto", command)
         self.assertIn('echo "pytest workers: $WORKERS"', command)
+        # One worker per 2 GiB after 2 GiB for the host: 6 on the 16,111 MiB
+        # fleet runner. Still capped by the core count and never below 1.
+        self.assertIn("by_mem=$(( (mem_mib - 2048) / 2048 ))", command)
+        self.assertIn("WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))", command)
+        self.assertIn('[ "$WORKERS" -ge 1 ] || WORKERS=1', command)
         peak = next(s for s in job["steps"] if s.get("name") == "Report peak memory")
         self.assertEqual(peak["if"], "${{ always() }}")
         self.assertIn('"$RUNNER_TEMP/mem-peak-mib"', command)
@@ -409,6 +414,11 @@ class TestCIProgress(unittest.TestCase):
         self.assertIn("--cov=kiro_crew --cov=sage_lib", command)
         self.assertIn("--cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging", command)
         self.assertIn("--cov=src/kiro_crew/apps/builtins/code_review_sage/tests", command)
+        # The full-suite run writes its data file and prints no terminal table;
+        # the reduced and leaf runs carry --no-cov, so the flag appears once.
+        full = command.rsplit("exit 0", 1)[1]
+        self.assertIn("--cov-report=", full.split())
+        self.assertEqual(command.count("--cov-report"), 1)
         upload = next(s for s in job["steps"] if s.get("name") == "Upload Linux pytest progress")
         self.assertEqual(upload["if"], "${{ always() }}")
         self.assertEqual(upload["with"]["name"], "linux-pytest-progress-${{ matrix.group }}")

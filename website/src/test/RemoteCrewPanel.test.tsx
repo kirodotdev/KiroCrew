@@ -209,8 +209,10 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
-    expect(await screen.findByText(/WXYZ-1234/)).toBeInTheDocument()
-    expect(document.querySelector('a[href="https://device.sso/verify"]')).not.toBeNull()
+    // Scoped to the setup card: the My Crews row behind the modal shows it too.
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText(/WXYZ-1234/)).toBeInTheDocument()
+    expect(dialog.querySelector('a[href="https://device.sso/verify"]')).not.toBeNull()
     await waitFor(() => expect(api.cloudLaunchStatus).toHaveBeenCalledWith('j-signin'))
   })
 
@@ -796,7 +798,7 @@ describe('RemoteCrewPanel', () => {
     renderWithProviders(<RemoteCrewPanel />)
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
-    const card = (await screen.findByText(/WXYZ-1234/)).closest('div')?.parentElement
+    const card = (await within(await screen.findByRole('dialog')).findByText(/WXYZ-1234/)).closest('div')?.parentElement
     expect(card).toBeTruthy()
     const page = document.body.textContent ?? ''
     expect(page).toMatch(/leave the page or switch crews and it keeps going/i)
@@ -873,7 +875,7 @@ describe('RemoteCrewPanel', () => {
     vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
     renderWithProviders(<RemoteCrewPanel />)
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(await screen.findByText('Remote Crew is off')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Enable remote crew management/i })).toBeInTheDocument()
   })
 
@@ -896,7 +898,7 @@ describe('RemoteCrewPanel', () => {
 
     // After the 403 resolves: transitions directly to the disabled card.
     rejectInstances(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
+    expect(await screen.findByText('Remote Crew is off')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'My Crews' })).not.toBeInTheDocument()
   })
 
@@ -1448,6 +1450,28 @@ describe('RemoteCrewPanel', () => {
       expect(prompt).toContain('remote_down')
       expect(prompt).toContain('ssh=ok -> remote_dashboard=FAILED')
       expect(prompt).toContain('Nimbus')
+    })
+
+    it('drops the diagnosis note and the remove warning once the crew is removed (Bug Bash row 53)', async () => {
+      sessionStorage.clear()
+      ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [BROKEN] } as never)
+      ;vi.mocked(api.instanceStatus).mockResolvedValue(DIAGNOSED as never)
+      ;vi.mocked(api.disconnectInstance).mockResolvedValue({} as never)
+      ;vi.mocked(api.removeInstance).mockResolvedValue({} as never)
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+      await screen.findByText('Nimbus')
+      await openRowMenu(u)
+      await u.click(await screen.findByRole('button', { name: /Diagnose Nimbus/i }))
+      await screen.findByText(/c1: Remote dashboard down/i)
+      ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] } as never)
+      // The row's Remove asks first; the confirm button carries the same name.
+      await u.click(await screen.findByRole('button', { name: /Remove Nimbus/ }))
+      await screen.findByText(/Remove only takes it off this list/)
+      await u.click(await screen.findByRole('button', { name: /Remove Nimbus/ }))
+      await waitFor(() => expect(api.removeInstance).toHaveBeenCalled())
+      await waitFor(() => expect(screen.queryByText(/c1: Remote dashboard down/i)).toBeNull())
+      expect(screen.queryByText(/Remove only takes it off this list/)).toBeNull()
     })
 
     it('keeps the typed add-form values across that hand-off', async () => {

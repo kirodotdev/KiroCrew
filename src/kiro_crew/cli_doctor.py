@@ -89,6 +89,7 @@ from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.agent import AGENT_FILENAME, agent_spec_path
 from kiro_crew.agent_discovery import (
     _read_agent_spec,
+    plain_markdown_document,
     project_agent_files,
     project_agent_name,
 )
@@ -100,6 +101,8 @@ from kiro_crew.agent_spec_format import (  # noqa: F401
     SKILL_VIEW_PROJECTION_CEILING,
     count_authored_agent_files,
     is_agent_spec_name,
+    is_markdown_spec,
+    iter_agent_spec_files_strict,
     shadowed_markdown_specs,
     skill_view_ceiling,
 )
@@ -628,8 +631,9 @@ def _doctor(
     The order of the sections below IS the report: each section prints as it runs
     and appends to one ``issues`` list, and the closing line and exit status are
     decided from that list alone. The families are imported here, once the
-    ``--bundle`` mode has had its turn, so the ``kiro_crew.cli`` import every command
-    pays never loads them.
+    ``--bundle`` mode has had its turn (it loads ``services``, with the ``render``
+    helpers it imports, for the gateway version its ``versions.txt`` records), so
+    the ``kiro_crew.cli`` import every command pays never loads them.
     """
     print("Kiro Crew Doctor 👻\n")
     issues: list[str] = []
@@ -647,13 +651,16 @@ def _doctor(
     # scans printed output.
     if bundle:
         print("Collecting diagnostics bundle (secrets are redacted)...\n")
+        from kiro_crew.doctor_checks import services  # the one family a bundle reads
+
+        alignment = services._bundle_version_alignment()
         # The collector touches the filesystem in several places that can fail for
         # ordinary reasons — an unwritable data home, a plain FILE sitting where
         # `diagnostics/` should be, a full disk. Letting OSError escape prints a
         # traceback at the one moment the user is already trying to report a
         # failure, so fail with a readable message and a nonzero status instead.
         try:
-            result = diagnostics.collect_bundle()
+            result = diagnostics.collect_bundle(version_alignment=alignment)
         except OSError as exc:
             print(f"  ❌ could not write the diagnostics bundle: {exc}")
             print("     Check that ~/.kiro/crew is writable and has free space.")

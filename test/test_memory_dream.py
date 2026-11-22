@@ -346,11 +346,100 @@ def test_a_chat_turn_stops_the_run_at_the_next_batch_and_the_next_run_resumes(st
 
 
 def test_a_run_reads_at_most_its_row_cap_and_the_backlog_resumes(store) -> None:
+    assert md.ROWS_PER_RUN == 2_500
     for n in range(md.ROWS_PER_RUN + 60):
         _put(store, f"project.topic_{chr(97 + n % 26)}{n // 26}x.note", f"value {n}")
     assert _run(store).rows == md.ROWS_PER_RUN
     assert _run(store).rows == 60
     assert _run(store).rows == 0
+
+
+def test_a_full_list_keeps_the_watermark_so_no_candidate_is_lost(store, monkeypatch) -> None:
+    monkeypatch.setattr(md, "PROPOSALS_CAP", 2)
+    monkeypatch.setattr(md, "BATCH_ROWS", 2)
+    names = ["alpha", "beta", "gamma", "delta", "omega"]
+    for name in names:
+        _put(store, f"project.{name}.status", "open")
+    before = _dump(store)
+    first = _run(store)
+    # Every row was read; the watermark goes back to the batch that did not fit.
+    assert (first.rows, first.stopped, first.list_full) == (5, "list_full", 3)
+    assert _kinds(store)[md.KIND_STATE] == [["project.alpha.status"], ["project.beta.status"]]
+    with store._db_lock:
+        state = md.read_state(store.db)
+    assert state["cursor"][1] == "project.beta.status"
+    assert "last_completed_at" not in state
+    # A run that starts with a full list reads nothing and keeps the watermark.
+    second = _run(store)
+    assert (second.rows, second.stopped) == (0, "list_full")
+    with store._db_lock:
+        assert md.read_state(store.db)["cursor"] == state["cursor"]
+        # A person works through the list.
+        store.db.execute("DELETE FROM memory_meta WHERE key = ?", (md.PROPOSALS_KEY,))
+        store.db.commit()
+    monkeypatch.setattr(md, "PROPOSALS_CAP", 10)
+    third = _run(store)
+    assert third.stopped == "done"
+    assert sorted(k for (k,) in _kinds(store)[md.KIND_STATE]) == [
+        f"project.{n}.status" for n in sorted(names[2:])
+    ]
+    assert _dump(store) == before
+
+
+def test_a_proposal_too_large_for_an_empty_list_is_refused_not_waited_on(
+    store, monkeypatch
+) -> None:
+    monkeypatch.setattr(md._kind_log, "SAMPLE_BYTES_CAP", 400)
+    for n in range(20):
+        _put(store, f"project.kirocrew.r{n}_rule", "a")
+    _put(store, "project.later.status", "open")
+    receipt = _run(store)
+    assert receipt.stopped == "done" and receipt.list_full == 0
+    assert receipt.refused == {md.REFUSE_TOO_LARGE: 1}
+    assert _kinds(store) == {md.KIND_STATE: [["project.later.status"]]}
+    with store._db_lock:
+        assert md.read_state(store.db)["cursor"][1] == "project.later.status"
+
+
+def test_a_spent_token_budget_stops_before_the_batch_and_the_next_run_asks(
+    store, monkeypatch
+) -> None:
+    monkeypatch.setattr(md, "BATCH_ROWS", 2)
+    _uncertain_pair(store)
+    _lesson(store, "c", "Squash the branch before review", vec=[1.0, 0.0, 0.0, 0.0])
+    _lesson(
+        store,
+        "d",
+        "Squash your branch before the review",
+        vec=[0.92, 0.0, math.sqrt(1 - 0.92**2), 0.0],
+    )
+    costs = [
+        md.prompt_tokens(md.merge_prompt(a, b))
+        for a, b in (
+            ("Prefer ripgrep when searching code", "Use ripgrep for searching the code"),
+            ("Squash the branch before review", "Squash your branch before the review"),
+        )
+    ]
+    # Room for either pair alone, never both.
+    monkeypatch.setattr(md, "MODEL_INPUT_TOKENS", max(costs) + 1)
+    prompts: list[str] = []
+
+    async def merge(prompt: str) -> object:
+        prompts.append(prompt)
+        return {"same": False}
+
+    first = _run(store, merge=merge)
+    assert (first.rows, first.stopped, first.model_calls, first.budget_skipped) == (
+        2,
+        "budget",
+        1,
+        0,
+    )
+    assert "ripgrep" in prompts[-1]
+    second = _run(store, merge=merge)
+    assert (second.rows, second.stopped, second.model_calls) == (2, "done", 1)
+    assert "Squash" in prompts[-1]
+    assert second.model_tokens <= md.MODEL_INPUT_TOKENS
 
 
 def test_the_wall_clock_cap_stops_the_run(store) -> None:
@@ -449,6 +538,38 @@ def test_work_state_keys_are_proposed(store) -> None:
     _run(store)
     keys = sorted(k for ks in _kinds(store).get(md.KIND_STATE, []) for k in ks)
     assert keys == ["project.kirocrew.memory_rfc_next_action", "project.kirocrew.pr_35231_status"]
+
+
+@pytest.mark.parametrize(
+    ("key", "want"),
+    [
+        # Owner spot-check: durable decisions and contracts wrongly proposed.
+        ("project.kirocrew.prepare_pr.rule_files_decision", False),
+        ("project.kirocrew.ci.error_code_contract_gate", False),
+        ("project.kirocrew.ci.fork_pr_workflow_approval", False),
+        # Nearby durable decisions about a PR, CI, issue or branch topic.
+        ("project.kirocrew.ci.merge_queue_policy", False),
+        ("project.kirocrew.pr_review.override_rule", False),
+        ("project.kirocrew.issue_triage_convention", False),
+        ("project.kirocrew.branch_naming_pattern", False),
+        # Real status: still proposed.
+        ("project.kirocrew.ci.flaky_windows_test", True),
+        ("project.kirocrew.ci.preexisting_failures_20260823", True),
+        ("project.kirocrew.pr40085.status", True),
+        ("project.kirocrew.apply_patch_gate_issue_number", True),
+        ("project.kirocrew.security_a_owner_gate_branch", True),
+        ("project.kirocrew.pr5387_auto_update_gate.split_recommendation", True),
+        # A status word or a number outranks a durable last word.
+        ("project.kirocrew.ci_gate_status", True),
+        ("project.kirocrew.pr_approval_pending", True),
+        ("project.kirocrew.review_round3_decision", True),
+        ("project.kirocrew.release.next_step_decision", True),
+        # No topic word: never work state, durable last word or not.
+        ("project.kirocrew.frontend_build_rule", False),
+    ],
+)
+def test_work_state_key_spares_durable_decisions(key, want) -> None:
+    assert md.is_work_state_key(key) is want
 
 
 def test_numbered_key_families_are_grouped_for_review(store) -> None:

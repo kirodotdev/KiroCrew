@@ -1306,6 +1306,111 @@ class TestAcquireBackendOrder:
         assert admission.gate.snapshot()["outcomes"]["success"] == 1
         await admission.close()
 
+    @pytest.mark.asyncio
+    async def test_a_key_reaped_at_the_initialize_deadline_gets_a_longer_one_next(
+        self, monkeypatch
+    ) -> None:
+        """A respawn after a deadline reap is not reaped at the same point again.
+
+        The reaped backend is killed, so its respawn starts cold. With the same
+        deadline every attempt on a host whose cold start runs a little past it
+        fails the same way, and the server never starts. Each reap in a row
+        doubles the next deadline up to the cap; a completed handshake resets it.
+        """
+        from kiro_crew.mcp_gateway.backend_handshake import (
+            _INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS as floor,
+        )
+        from kiro_crew.mcp_gateway.pool import BackendPool
+
+        pool = BackendPool(max_backends=4)
+        admission = _admission(
+            capacity=4,
+            max_procs=8,
+            initialize_timeout_secs=10.0,  # flake-ok: only compared, never waited on
+        )
+        deadlines: list[float] = []
+        spawned: list[tuple[Backend, asyncio.Event]] = []
+
+        async def fake_spawn(**kwargs: Any) -> Backend:
+            deadlines.append(kwargs["initialize_timeout_secs"])
+            backend = _fake_backend()
+            exited = asyncio.Event()
+            backend.process.wait = exited.wait
+            spawned.append((backend, exited))
+            return backend
+
+        monkeypatch.setattr(gw, "spawn_backend", fake_spawn)
+        monkeypatch.setattr(gw, "_declared_env_to_forward", lambda k: {})
+        monkeypatch.setattr(gw, "resolve_secret_uris", lambda env, home: (env, []))
+        key = PoolKey.from_register(_register_frame())
+
+        async def spawn_once() -> tuple[Backend, asyncio.Event]:
+            await gw._acquire_backend(pool, key, _resolver, admission=admission)
+            return spawned[-1]
+
+        async def reap_at_deadline(backend: Backend, exited: asyncio.Event) -> None:
+            # The backend's own deadline timer, on a live process still in the handshake.
+            backend._init_state = "in_flight"
+            backend.shutdown = AsyncMock()  # type: ignore[method-assign]
+            await backend._init_deadline(0)
+            backend.process.returncode = -9
+            exited.set()
+            await _settle()
+
+        for _ in range(3):
+            await reap_at_deadline(*await spawn_once())
+        # The first spawn keeps the configured value (the backend lifts it to the
+        # floor); each reap doubles the floor, capped.
+        assert deadlines == [10.0, 2 * floor, adm.INIT_DEADLINE_STRETCH_CAP_SECS]
+
+        backend, exited = await spawn_once()
+        assert deadlines[-1] == adm.INIT_DEADLINE_STRETCH_CAP_SECS, "never past the cap"
+        backend._init_state = "ready"
+        backend._init_done_event.set()
+        await _settle()
+        backend.process.returncode = 0
+        exited.set()
+        await _settle()
+        await spawn_once()
+        assert deadlines[-1] == 10.0, "a completed handshake resets the key"
+
+        # A backend that died for any other reason does not stretch the deadline.
+        other = PoolKey.from_register(_register_frame(server_name="other"))
+        assert admission.initialize_timeout_for(other) == 10.0
+        await admission.close()
+
+    @pytest.mark.asyncio
+    async def test_reaped_keys_that_never_come_back_ready_are_capped(self) -> None:
+        """Keys that are reaped and never ready again do not pile up forever.
+
+        Each one is stored as a fixed-size digest, and past the cap the key
+        reaped longest ago is forgotten first.
+        """
+        from kiro_crew.mcp_gateway.backend_handshake import INITIALIZE_DEADLINE_REASON
+
+        admission = _admission(initialize_timeout_secs=10.0)  # flake-ok: only compared
+        cap = adm.INIT_DEADLINE_REAP_KEYS_MAX
+        never = asyncio.Event()
+        keys = [("server-" + "x" * 4096, i) for i in range(cap + 5)]
+        for key in keys:
+            done = asyncio.Event()
+            done.set()
+            admission.track_initialize(
+                key,
+                init_done=done,
+                outcome=lambda: ("failed", INITIALIZE_DEADLINE_REASON),
+                process_exited=never.wait,
+            )
+            await _settle()
+
+        assert len(admission._deadline_reaps) == cap
+        assert all(len(slot) == 64 for slot in admission._deadline_reaps)
+        assert admission.initialize_timeout_for(keys[0]) == 10.0, "oldest forgotten"
+        assert admission.initialize_timeout_for(keys[4]) == 10.0
+        assert admission.initialize_timeout_for(keys[5]) > 10.0, "newer kept"
+        assert admission.initialize_timeout_for(keys[-1]) > 10.0
+        await admission.close()
+
 
 class TestSetSpawnCapacityFrame:
     """The gate's capacity seam over the wire: every value earns an ANSWER."""

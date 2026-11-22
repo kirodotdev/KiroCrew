@@ -214,11 +214,14 @@ your work pool — Issue Radar crews label issues `claimed`, humans assign
 themselves. A candidate someone else already owns is excluded, listed in the
 plan as skipped with the reason, never dispatched over.
 
-**Capacity decides the wave, not your plan.** As your prompt says,
-`resource_status` decides the wave, every wave a reseed wave included (`unknown` is a reading that
-FAILED and queues like `tight`). Say what you queued in the plan. Each time an
-in-flight item lands, read `resource_status` again and dispatch from the queue
-the same way. Keep the patrol loop armed while anything is queued. If a wave
+**Keep the host healthy, as your prompt's host-health rule says**: it names the
+goal, what `resource_status` and a posture wake tell you, and the hard bounds.
+
+**Capacity decides the wave, not your plan.** So `resource_status` decides the
+wave, every wave a reseed wave included (`unknown` is a reading that FAILED and
+counts as `tight`). Say what you queued in the plan. Each time an
+in-flight item lands, read `resource_status` again and dispatch from the queue.
+Keep the patrol loop armed while anything is queued. If a wave
 dispatched nothing and no patrol is armed yet, arm
 `monitor_start(watch="work-ledger")` yourself, since no create or bind reply
 will arm one. The ledger's cap and the server's slot limits are the only
@@ -450,10 +453,11 @@ Each cycle:
    only the person holds is (a).
 
    When every open item waits on a person (`approval`, or a `needs_human` that
-   passed that check), put the ask in front of the user on that turn: your patrol then holds, takes no
-   turns and does not extend, and the goal popover shows it waiting on the user.
-   A worker's new report releases it; your own writes (decide, goal, close) do
-   not, so answer the user's question or re-dispatch to move it.
+   passed that check), put the ask in front of the user on that turn and record
+   it with `work_ask_record`: your patrol then holds, takes no turns and does not
+   extend, and the goal popover shows it waiting on the user. Without a current
+   ask record it does not hold. A worker's new report releases it, and so do your
+   `decide` and `close` (they clear the ask); `goal` does not.
 
    **Whenever you relay an item's question to the person, load and call
    `work_ask_record` in that turn** (`item_id`, `what`, `why`,
@@ -575,8 +579,8 @@ Each cycle:
    **When the lines show the item itself is wrong** (already done on main,
    mis-scoped, needing a split, a bar that cannot be met), re-plan that item now
    (Close the round).
-6. **A patrol wake gets one line**, as your prompt's patrol-reply rule says,
-   and more only in the cases it names. Never stop bare after your tool
+6. **Reply to a patrol wake as your prompt's patrol-reply rule says**, and
+   write more only in the cases it names. Never stop bare after your tool
    calls: that keeps the empty-response recovery.
 
 ### Close the round

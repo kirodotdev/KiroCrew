@@ -153,6 +153,18 @@ class TestSwitches:
         _, body = _call(env, "GET")
         assert body["agent_sessions"] is on
 
+    @pytest.mark.parametrize("on", [True, False])
+    def test_the_slack_mcp_switch_saves_and_reads_back(self, env: dict, on: bool) -> None:
+        status, res = _call(env, "PUT", {"slack_mcp": on})
+        assert status == 200
+        assert res["restart_required"] is False
+        if on:  # off is the default, so an off save writes nothing
+            assert _stored(env)["slack_mcp"] is True
+        _, body = _call(env, "GET")
+        assert body["slack_mcp"] is on
+        # Nothing runs for it, so there is no capability to report.
+        assert "slack_mcp_capability" not in body
+
     def test_unchanged_switch_is_not_staged(self, env: dict) -> None:
         _call(env, "PUT", {"code_channels": True})
         status, _ = _call(env, "PUT", {"code_channels": True})
@@ -1351,6 +1363,7 @@ class TestDrift:
         body = asyncio.run(scs.manifest_status(loader.KiroCrewConfig(), ""))
         assert body["install"]["status"] == scope_probe.STATUS_NOT_CONFIGURED
         assert body["features"] == [] and body["app_manifest_url"] is None
+        assert body["app_basic_info_url"] is None and body["app_dm_url"] is None
         assert set(body["feature_changes"]) == set(slack_manifest.FEATURES)
 
     def test_check_again_lifts_a_stale_workspace_refusal(
@@ -1404,6 +1417,8 @@ class TestDrift:
         assert len(clients) == 2
         assert first["install"]["status"] == scope_probe.STATUS_UP_TO_DATE
         assert first["app_manifest_url"] == "https://api.slack.com/apps/A0123ABCD/app-manifest"
+        assert first["app_basic_info_url"] == "https://api.slack.com/apps/A0123ABCD/general"
+        assert first["app_dm_url"].startswith("https://slack.com/app_redirect?app=A0123ABCD")
         assert "xoxb-test" not in json.dumps(first)
 
 
@@ -1458,3 +1473,25 @@ def test_the_switch_description_counts_the_scopes_it_adds(catalog: Path) -> None
     assert re.findall(r"\d+", desc) == [
         str(count)
     ], f"{catalog.name}: {desc!r} should say {count} and no other number"
+
+
+@pytest.mark.parametrize("catalog", _HAND_WRITTEN, ids=lambda p: p.name)
+def test_the_slack_mcp_details_count_the_user_scopes_it_asks_for(catalog: Path) -> None:
+    # Same rule as Code channels: the number in the copy follows the manifest.
+    # It is the user scopes the manifest lists with the switch on (they replace
+    # the older list), and it lives in the row's "What this adds" disclosure;
+    # the description itself stays in plain words and states no number. The
+    # second number is how many of them are new to an app without the switch,
+    # the same count the update panel's Slack tools box titles itself with.
+    on = slack_manifest.requirements(frozenset({slack_manifest.SLACK_MCP})).user_scopes
+    off = slack_manifest.requirements(frozenset()).user_scopes
+    count, new = len(on), len(on - off)
+    copy = json.loads(catalog.read_text(encoding="utf-8"))["pages"]["settings"]["slackPanel"][
+        "slackCode"
+    ]
+    details = copy["slack_mcp_details"]
+    assert re.findall(r"\d+", details) == [
+        str(count),
+        str(new),
+    ], f"{catalog.name}: {details!r} should say {count} ({new} new) and no other number"
+    assert re.findall(r"\d+", copy["slack_mcp_desc"]) == [], catalog.name

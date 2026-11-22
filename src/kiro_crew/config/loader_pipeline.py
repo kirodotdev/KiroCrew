@@ -38,6 +38,7 @@ from kiro_crew.config.loader_builders import (
     _build_telemetry_config,
     _clamp_security_bounds,
     _default_memory_mode_from,
+    _market_registry_ids,
     _read_backend_choice,
     _registry_entry,
     mark_member_backend_inherited,
@@ -55,7 +56,6 @@ from kiro_crew.config.loader_document import (
     _invalidate_config_cache,
     _shadowed_base_sections,
     _store_validated_data,
-    kas_bundle_build_default,
 )
 from kiro_crew.config.loader_locations import (
     config_local_path,
@@ -872,8 +872,6 @@ def build_config(
             agent_defaults, {}, "member_acp_backend", inherit=cfg.agent.acp_backend
         )
         mark_member_backend_inherited(cfg.agent, True)
-        # An absent key, so a nightly build's default applies to a fresh home too.
-        cfg.agent.kas_bundle = kas_bundle_build_default()
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (
@@ -1178,6 +1176,7 @@ def build_config(
                 description=store.get("description"),
                 embedding_provider=store.get("embedding_provider"),
                 owner_member=store.get("owner_member"),
+                former_owner=store.get("former_owner"),
                 memory_version=store.get("memory_version"),
                 provider_mode=(
                     mode
@@ -1312,6 +1311,7 @@ def build_config(
             for r in (data.get("registries") or [])
             if isinstance(r, dict) and r.get("repo")
         ],
+        market_registries=_market_registry_ids(data.get("market_registries")),
         mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
         mcp=_build_mcp_config(mcp_data),
         instances=_build_instances_config(connect_timeout_raw, instances_data, mint_timeout_raw),

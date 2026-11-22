@@ -1,10 +1,10 @@
 ---
 title: Worker context cap -- the gateway trims a dispatched worker's KAS chat only on an expired cache
-status: accepted
+status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-22
-last-audited: 2026-11-03
-audited-at: e5353f39bb
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: null
 implementation-prs: [29388]
 tracking-issues: [23037]
@@ -14,9 +14,13 @@ superseded-by: []
 
 # RFC: Worker context cap
 
-- Status: accepted 2026-11-03 by the user (iamwhatever), the maintainer who
+- Status: partial. Accepted 2026-11-03 by the user (iamwhatever), the maintainer who
   owns the crew's conductor and workers, as amended below (section 10). The
-  implementation is [#29388](https://github.com/kirodotdev/KiroCrew/pull/29388).
+  implementation, [#29388](https://github.com/kirodotdev/KiroCrew/pull/29388),
+  merged on 2026-11-17: `session.worker_context_cap` (default off) in
+  `config/sections_session.py`, read by `dashboard/chat_turn/context_cap.py`.
+  Not built: the worker seed of section 5.3 and the off-hot-path build of
+  section 5.5 (checked at `cdb601611f`).
 - Phase 2 of [rfc-conductor-context-cap.md](rfc-conductor-context-cap.md),
   whose phase 1 shipped in
   [#22718](https://github.com/kirodotdev/KiroCrew/pull/22718). That document's

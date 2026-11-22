@@ -132,6 +132,12 @@ MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 #: it is consumed, by the first cold start that honours it.
 SUPPRESS_REPLAY_FLAG = "suppress_replay"
 
+#: The on-disk copy of a session's post-compaction re-injection flag: a restart
+#: drops the in-memory flag, and the resume that follows still owes the context
+#: the compaction took. Cleared once the turn that consumed it lands, and when a
+#: claim starts fresh.
+COMPACTED_FLAG = "compacted_since_reinjection"
+
 #: The sid of a fresh native session that still owes its Kiro Crew history: the
 #: session was mapped at creation, but no turn has delivered the history to it yet
 #: (``SessionManager.mark_first_turn_history_owed`` writes it, the settle in

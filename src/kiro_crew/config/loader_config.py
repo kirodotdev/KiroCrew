@@ -601,6 +601,14 @@ class KiroCrewConfig:
             "External app registries (org-owned repos). " "Each entry: {name, repo, branch}.",
         ),
     )
+    market_registries: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Kiro Space Stores",
+            "Ids of the Kiro Space stores added as App Store sources. Only an id a "
+            "store provider offers is used; the address lives in the provider's code.",
+        ),
+    )
     # Unknown top-level config.json sections captured verbatim at load() and
     # re-emitted by to_dict() so a section this core does not model (e.g. an
     # edition-contributed section written by a companion) is NOT silently
@@ -805,6 +813,7 @@ class KiroCrewConfig:
         }
         # External registries (always serialized so save() round-trips the field)
         d["registries"] = [asdict(r) for r in self.registries]
+        d["market_registries"] = list(self.market_registries)
         # ``mcp_gateway.stub_servers`` is the ROSTER in the file but the EFFECTIVE
         # set on the dataclass, so a straight ``asdict`` round-trip would rewrite
         # the file without the servers the operator opted out of -- turning a
@@ -920,7 +929,8 @@ class KiroCrewConfig:
         # as undeclared and is exactly right: the document this call creates should
         # not contain the key at all.
         # ``agent.kas_bundle`` is stripped the same way: undeclared, it resolves
-        # through ``kas_bundle_build_default()`` (on in a nightly build only).
+        # to ``False`` and a packaged build prefers the engine per spawn
+        # (``acp.kas_build_default``); writing the ``False`` would turn that off.
         strip_undeclared_resolved_defaults(d)
         # Same rule for ``telemetry.enabled``: its absence is load-bearing too.
         # The default is on, and ``metrics.provider.outbound_consented`` reads a

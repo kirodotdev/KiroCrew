@@ -14,7 +14,8 @@ There are **two independent paths** to create a Slack app. Pick one, and do not 
 
 | Path | Steps | Best for |
 |------|-------|----------|
-| **[Path A: Manifest](#path-a-create-via-manifest-recommended)** (recommended) | 6 steps | Most users; auto-configures all scopes, events, and permissions in one shot |
+| **[Setup wizard](#the-setup-wizard-in-settings)** in the dashboard | 6 screens | Most users; the same manifest as Path A, one screen per step, no restart |
+| **[Path A: Manifest](#path-a-create-via-manifest-recommended)** (recommended for the CLI) | 6 steps | CLI users; auto-configures all scopes, events, and permissions in one shot |
 | **[Path B: Manual](#path-b-manual-setup)** | 11 steps | If you need to customize scopes or understand each setting individually |
 
 Both paths require a Slack workspace where you can install apps (see [Prerequisites](#prerequisites)).
@@ -27,6 +28,29 @@ Both paths require a Slack workspace where you can install apps (see [Prerequisi
 - Python and Kiro Crew installed through a [supported install path](install.md#install-paths), so you can run the `kirocrew` CLI.
 
 > **Tip**: Use a personal or test workspace for your first run. You can always export the app manifest and recreate the app in another workspace later (see [Reusing the App in Another Workspace](#reusing-the-app-in-another-workspace)).
+
+---
+
+## The Setup Wizard in Settings
+
+Open the dashboard → **Settings → Messaging Channels → Slack**. Click **Setup wizard** at the top of the panel to open the setup wizard; it never opens by itself, and **Close** hides it on any step. The panel's own **Copy manifest YAML** and setup-guide link stay available below it. It runs Path A one screen at a time, each with a picture of where to click in Slack:
+
+1. **Workspace**: confirm you have a workspace you may install apps in.
+2. **Create**: type a short name (usually your username), click **Create Slack app**, pick the workspace in Slack and click **Create**, then **I created the app**. The app is named `KiroCrew-<name>` and its slash command `/kirocrew-<name>`, so it does not clash with anyone else's; the wizard saves that command as `slack.command`.
+3. **Bot token**: install the app (**OAuth & Permissions → Install to Workspace**) and paste the `xoxb-` token. In a company workspace the button may read **Request to Install**: an admin approves the app first.
+4. **App-level token**: the wizard links the app's **Basic Information** page; generate a token with `connections:write` and paste the `xapp-` token.
+5. **Owner**: paste your Slack member ID. The wizard saves it and runs **Reconnect**; no gateway restart.
+6. **Test**: open the bot's DM from the wizard, send any message, and confirm you got a reply.
+
+The settings are written only from the machine running the gateway; a remote dashboard sees the steps as text.
+
+**Organization guide link.** An organization can link its own setup guide (for example, how to get a workspace you may install apps in) on the wizard's first step:
+
+```bash
+kirocrew config set slack.setup_guide_url https://wiki.example.com/slack-setup
+```
+
+Only an `https://` URL is shown; any other value is ignored.
 
 ---
 
@@ -77,11 +101,11 @@ Then:
 
 ### Step 3. Generate App Token
 
-1. **Settings → Socket Mode** → Toggle **OFF** then back **ON**, which triggers the token generation dialog
+1. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes**
 2. Add scope `connections:write` → **Generate**
 3. Copy the `xapp-...` token. This is your **App Token**
 
-> **Why toggle off/on?** Slack manifests can declare `socket_mode_enabled: true`, but the App Token (`xapp-...`) must still be generated manually through the UI. There is no API or manifest field for token generation. Toggling forces the generation dialog to appear.
+> **Why by hand?** Slack manifests can declare `socket_mode_enabled: true`, but the App Token (`xapp-...`) must still be generated in Slack's UI. There is no API or manifest field for token generation.
 
 ### Step 4. Install to Workspace
 
@@ -181,6 +205,13 @@ These scopes belong to the installing user's `xoxp-...` token. The Kiro Crew
 gateway itself uses the bot token; the user token is for a separately configured
 Slack MCP/search integration that lets an agent search Slack as that user. Store
 and configure that token only in the integration that consumes it.
+
+Turning on **Slack tools for your agents** (see
+[Slack Code](#slack-code-agent-sessions-code-channels-and-slack-tools) below)
+replaces this list in the generated manifest with the 18 read-only user scopes
+Slack's MCP server needs: `search:read` goes, and the granular `search:read.*`
+scopes, `files:read`, `canvases:read` and `lists:read` come in. Scopes an
+installed app was already granted stay on it until the app is reinstalled.
 
 ### Step 5. Subscribe to Events
 
@@ -318,13 +349,14 @@ Set `reactions_enabled` to `false` to disable both. Valid keys: `queued` (the ac
 
 ---
 
-## Slack Code: Agent Sessions and Code Channels
+## Slack Code: Agent Sessions, Code Channels and Slack Tools
 
-Settings → Messaging Channels → Slack → **Slack Code** has two opt-in switches, **Agent
-sessions** and **Code channels**. Turning either on needs a few more permissions for your
-Slack app, so an app you already installed needs an update and a reinstall. Until the app
-has the new permissions, a switch changes nothing even when it is on, and the **Update
-your Slack app** panel says what is missing.
+Settings → Messaging Channels → Slack → **Slack Code** has three opt-in switches, **Agent
+sessions**, **Code channels** and **Slack tools for your agents**. Turning one on needs a few
+more permissions or settings for your Slack app, so an app you already installed needs an
+update and a reinstall. Until the app has the new permissions, Agent sessions and Code
+channels change nothing even when on, and the **Update your Slack app** panel says what is
+missing.
 
 **Code channels** is marked **Preview**. You can turn it off again, render the manifest
 without those lines and save that in Slack.
@@ -349,15 +381,43 @@ enabled** in the panel, and Slack keeps working as before.
 | Switch | Manifest additions |
 |---|---|
 | Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `agent_session_stopped`, `agent_session_title_changed` |
-| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); event `agent_session_stopped`. Slack's manifest editor refuses `code_channel_action` as a bot event, so the manifest does not list it; whether a click on the context bar's Create PR or Stop reaches the app is not yet confirmed in a live workspace. `/create-pr`, `!stop` and Slack's own Stop button do not depend on it |
+| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`, `pins:write` (the work board pins itself); event `agent_session_stopped`, plus `channel_archive`, `channel_unarchive`, `channel_rename`, `group_archive`, `group_unarchive` and `group_rename`, which keep a code channel's archived state and `#name` in step on its session badge. Slack's manifest editor refuses `code_channel_action` as a bot event, so the manifest does not list it; whether a click on the context bar's Create PR or Stop reaches the app is not yet confirmed in a live workspace. `/create-pr`, `!stop` and Slack's own Stop button do not depend on it |
+| Slack tools for your agents (`slack.slack_mcp`) | `settings.is_mcp_enabled: true`; `oauth_config.pkce_enabled: true`; redirect URL `http://localhost:48106/callback`; the user scopes become exactly these read-only ones, replacing the list from Step 4 (`search:read` goes): `search:read.public`, `search:read.private`, `search:read.mpim`, `search:read.im`, `search:read.files`, `search:read.users`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `users:read`, `files:read`, `canvases:read`, `lists:read`. No bot scope or event |
 
 > **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
 > `assistant_view` once the manifest is saved in Slack.
 
+> **Before you save a manifest with Slack tools for your agents on.** The switch lets this
+> one Slack app also serve Slack's MCP server (`https://mcp.slack.com/mcp`), so each person
+> can connect their agents to Slack as themselves. The switch itself only changes the
+> generated manifest, and you can turn it off again. Saving that manifest in Slack is the
+> step that cannot be undone:
+> - Saving the manifest in Slack turns **PKCE** on, and only Slack support can turn it off.
+> - Keep the app **internal**: do not turn on public distribution. Slack blocks MCP for a
+>   publicly distributed app that is not listed in the Slack Marketplace.
+> - Each person still connects on their own: on the Slack card under **Settings →
+>   Connections** they save this app's **Client ID** and **Client Secret**, then select
+>   **Connect** ([oauth-app-registration/slack.md](oauth-app-registration/slack.md),
+>   sections 5 and 6). The card offers **Connect** once the Crew-owned sign-in preview
+>   is on and chats run on Kiro Agent; until then it links to that setting.
+> - On a PKCE app Slack expires refresh tokens 30 days after sign-in, so each person
+>   reconnects about once a month.
+>
+> **One app for both.** The Slack card's sign-in asks only for user scopes, which is all a
+> PKCE `localhost` sign-in may ask for, so this app keeps its bot scopes and **Install to
+> Workspace** still issues the bot token. The guide above also registers a separate app
+> for the MCP side only, which can leave its Bot Token Scopes empty. Never remove them
+> from an app the bot uses: the bot stops working.
+>
+> Settings shows this switch only while Connections offers a Slack card (the Connections
+> gallery is on), or while the switch is on (with a note, so you can turn it off). The
+> gateway runs nothing for it, and Slack does not report an app's user scopes or settings
+> to the bot token, so the panel lists these lines without checking them.
+
 To update an existing app:
 
 1. Turn the switch on in Settings and **Save**.
-2. In the **Update your Slack app** panel, select **Copy manifest YAML**, then **Open App
+2. In the **Update your Slack app** panel, select **Copy manifest**, then **Open App
    Manifest** (or **App Config → App Manifest** on <https://api.slack.com/apps>).
 3. Replace the YAML with the copied manifest and select **Save Changes**. The copied
    manifest keeps your app's slash command. Only if you edited the app in Slack by hand:
@@ -373,7 +433,7 @@ If the panel reads **Workspace not enabled**, the app has the scopes but Slack h
 turned code channels on for your workspace; a workspace admin has to enable it.
 
 For code channels you can also set a default folder, agent, model, reasoning effort and
-approval mode for new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions-and-code-channels).
+approval mode for new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions-code-channels-and-slack-tools).
 With nothing set, code channels go into a **Code channels** sidebar folder, created the first
 time one is needed with no agent of its own, so a new code channel runs your default agent.
 A **Code channels** folder an earlier release created with `kirocrew-conductor`, and left as

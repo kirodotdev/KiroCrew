@@ -37,6 +37,7 @@ import asyncio
 import json
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from remote_crew_chaining_helpers import (
     VIA_ID,
     _FakeMintSession,
@@ -54,6 +55,8 @@ from kiro_crew.instances.registry import (
     descendant_ids,
 )
 from kiro_crew.testing.wait import finished
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 # ── the data model ───────────────────────────────────────────────────────
 

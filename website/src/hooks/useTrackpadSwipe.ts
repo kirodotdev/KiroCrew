@@ -55,7 +55,10 @@
  * and with it off a negative one. Every sample is turned into finger travel
  * where it enters the reader (lib/trackpadGesture `fingerSign`), so the reader,
  * `onDragMove`'s sum and the pages only ever see the fingers. Whether content
- * under the pointer can still scroll is asked with the raw `deltaX`.
+ * under the pointer can still scroll is asked with the raw `deltaX`. A wheel
+ * that does not carry WebKit's flag falls back to lib/scrollTouch
+ * `naturalScrolling`: the desktop shell, else the "Reverse trackpad swipe"
+ * switch, the only source in Chrome and Firefox.
  *
  * A frame inside the root swallows the wheel while the pointer is over it.
  * A frame built with `relayWheel` (lib/widgetSrcdoc) posts its unowned
@@ -66,7 +69,8 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { WHEEL_LINE_PX } from './useWheelToHorizontal'
 import { fingerSign, hasScrollRoomX, SWIPE_GESTURE_IDLE_MS } from '../lib/trackpadGesture'
-import { shellNaturalScrolling, subscribeScrollTouch } from '../lib/scrollTouch'
+import { naturalScrolling, REVERSE_TRACKPAD_SWIPE_KEY, subscribeScrollTouch } from '../lib/scrollTouch'
+import { SYNC_EVENT } from './usePersistedBool'
 import { isModalLayer } from './modalLayer'
 
 export type TrackpadSwipeDir = 'left' | 'right'
@@ -676,7 +680,7 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // as a gap in the fingers and end the drag under them.
       const when = e.timeStamp > 0 ? e.timeStamp : performance.now()
       // The reader reads the fingers: undo Natural scrolling's sign here.
-      const sign = fingerSign((e as WheelEvent & { webkitDirectionInvertedFromDevice?: unknown }).webkitDirectionInvertedFromDevice, shellNaturalScrolling())
+      const sign = fingerSign((e as WheelEvent & { webkitDirectionInvertedFromDevice?: unknown }).webkitDirectionInvertedFromDevice, naturalScrolling())
       const sample = { dx: sign * e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey, owned, at: when }
       if (run(sample)) e.preventDefault()
     }
@@ -687,10 +691,11 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       try {
         // '*' because the frame is a sandboxed srcdoc document we built, with an
         // opaque origin no target string can name; the payload is two booleans.
-        // `natural`: the shell's Natural scrolling, so the frame can tell which
+        // `natural`: Natural scrolling as this page knows it (the shell, else
+        // the "Reverse trackpad swipe" switch), so the frame can tell which
         // way the fingers moved when its own wheel does not say.
         // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-        frame.contentWindow?.postMessage({ type: FRAME_WHEEL_ARMED, on, natural: shellNaturalScrolling() }, '*')
+        frame.contentWindow?.postMessage({ type: FRAME_WHEEL_ARMED, on, natural: naturalScrolling() }, '*')
       } catch { /* gone */ }
     }
     /** Only frames whose document carries the relay (`data-wheel-relay`, set
@@ -719,7 +724,7 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
       // The frame posts only wheels its own content does not own. The wheel's
       // own time, not the message's: it decides run gaps and the release speed.
       // `inv` is the frame's own wheel's webkitDirectionInvertedFromDevice.
-      const sign = fingerSign(d.inv, shellNaturalScrolling())
+      const sign = fingerSign(d.inv, naturalScrolling())
       run({ dx: sign * d.dx, dy: d.dy, mode, ctrl: false, owned: false, at: relayedWheelTime(d.t, event.timeStamp), fromFrame: true })
     }
     let liftFrame: number | undefined
@@ -757,11 +762,23 @@ export function useTrackpadSwipe(rootRef: RefObject<HTMLElement | null>, opts: T
     })
     root.addEventListener('wheel', onWheel, { passive: false })
     window.addEventListener('message', onMessage)
+    // A frame keeps the `natural` it was armed with: when the "Reverse trackpad
+    // swipe" switch changes, in this tab (usePersistedBool's broadcast) or in
+    // another (`storage`), re-arm every frame with the value it now reads.
+    const onSwitch = (e: Event) => {
+      const key = e.type === 'storage' ? (e as StorageEvent).key : (e as CustomEvent<{ key?: unknown }>).detail?.key
+      if (key !== REVERSE_TRACKPAD_SWIPE_KEY || !optsRef.current.acceptFrame) return
+      for (const f of frames()) arm(f, true)
+    }
+    window.addEventListener('storage', onSwitch)
+    window.addEventListener(SYNC_EVENT, onSwitch)
     return () => {
       stopTouch?.()
       if (liftFrame !== undefined) cancelAnimationFrame(liftFrame)
       root.removeEventListener('wheel', onWheel)
       window.removeEventListener('message', onMessage)
+      window.removeEventListener('storage', onSwitch)
+      window.removeEventListener(SYNC_EVENT, onSwitch)
       window.clearTimeout(quiet)
       if (quietFrame !== undefined) cancelAnimationFrame(quietFrame)
       // No longer listening: frames stop relaying and cancelling.

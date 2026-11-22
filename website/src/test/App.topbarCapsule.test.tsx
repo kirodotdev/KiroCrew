@@ -189,7 +189,7 @@ describe('App shell — Kiro sign-in notice', () => {
     const el = await screen.findByTestId('kiro-sign-in-notice', {}, namedCeiling('KIRO_SIGN_IN_NOTICE_IN_APP', 10000))
     expect(container.querySelector('main#main-content')?.contains(el)).toBe(true)
     expect(container.querySelector('header')?.contains(el)).toBe(false)
-    expect(el).toHaveTextContent('Kiro sign-in expired')
+    expect(el).toHaveTextContent('Sign-in expired.')
   })
 })
 

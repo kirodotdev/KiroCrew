@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearMountedMemberThreadSlot, setMountedMemberThreadSlot } from '../../lib/mountedMemberThread'
 import { store } from '../../store'
 import { setActiveSlot } from '../../store/chatSlice'
-import { sseSlots } from '../../store/dashboardSlice'
+import { markSlotUnread, sseSlots } from '../../store/dashboardSlice'
+import { relayPaneOpened, setActiveId } from '../../store/instancesSlice'
 import type { ChatSlot } from '../../types'
 import { emitComposeIntent } from '../../lib/composeIntent'
-import { attachFocusRelay, COMPOSE_INTENT_THROTTLE_MS, emitSlotFocused, endSplitPaneFocus, focusedSlotForCurrentSurface } from './attention'
+import { _resetSlotReadRelayForTest, emitSlotRead } from '../../lib/slotReadRelay'
+import { attachFocusRelay, attendArrival, isSlotOnScreen, COMPOSE_INTENT_THROTTLE_MS, emitSlotFocused, endSplitPaneFocus, focusedSlotForCurrentSurface } from './attention'
 import { noteRouteChange } from '../../lib/routeChange'
 import type { SocketConnection } from './connection'
 
@@ -382,5 +384,110 @@ describe('compose intent re-arms the resume prefetch', () => {
     const hiddenBefore = sendIfOpen.mock.calls.length
     act(() => emitComposeIntent('chat-a'))
     expect(sendIfOpen).toHaveBeenCalledTimes(hiddenBefore)
+  })
+})
+
+describe('a relay Crew tab covering the local Crew', () => {
+  it('a read still waiting to be sent goes out when the tab covers the chat, never later under it', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const oldPath = window.location.pathname
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const sendIfOpen = vi.fn()
+    const detach = attachFocusRelay({
+      socket: { sendIfOpen, reconnectingRef: { current: false } } as unknown as SocketConnection,
+      flushSlotActivity: vi.fn(),
+      onActiveSlotChange: vi.fn(),
+    })
+    const reads = () => sendIfOpen.mock.calls.filter(([m]) => (m as { type: string }).type === 'slot_read')
+    try {
+      window.history.pushState({}, '', '/chat')
+      store.dispatch(setActiveSlot('slot-c'))
+      emitSlotRead('slot-c', '2026-11-18T10:00:00Z')
+      emitSlotRead('slot-c', '2026-11-18T10:00:05Z') // waits for the trailing send
+      sendIfOpen.mockClear()
+      act(() => { store.dispatch(relayPaneOpened({ id: 'r1', name: 'R1' })) })
+      expect(reads()).toHaveLength(1)
+      sendIfOpen.mockClear()
+      vi.advanceTimersByTime(60_000)
+      expect(reads()).toHaveLength(0)
+    } finally {
+      detach()
+      hidden.mockRestore()
+      focus.mockRestore()
+      _resetSlotReadRelayForTest()
+      vi.useRealTimers()
+      window.history.pushState({}, '', oldPath || '/')
+      store.dispatch(setActiveId(null))
+      store.dispatch(setActiveSlot(null))
+    }
+  })
+
+  it('leaving the relay tab for an SSH Crew keeps a reply under it unread', () => {
+    const oldPath = window.location.pathname
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const sendIfOpen = vi.fn()
+    const detach = attachFocusRelay({
+      socket: { sendIfOpen, reconnectingRef: { current: false } } as unknown as SocketConnection,
+      flushSlotActivity: vi.fn(),
+      onActiveSlotChange: vi.fn(),
+    })
+    try {
+      window.history.pushState({}, '', '/chat')
+      store.dispatch(sseSlots([{ key: 'slot-b', last_ts: '2026-11-18T10:00:00Z' } as unknown as ChatSlot]))
+      store.dispatch(setActiveSlot('slot-b'))
+      store.dispatch(relayPaneOpened({ id: 'r1', name: 'R1' }))
+      attendArrival('slot-b', '2026-11-18T10:01:00Z', false, slot => { store.dispatch(markSlotUnread({ slot })) })
+      sendIfOpen.mockClear()
+      act(() => { store.dispatch(setActiveId('ssh-1')) })
+      expect(store.getState().dashboard.unreadSlots).toContain('slot-b')
+      expect(sendIfOpen.mock.calls.some(([m]) => (m as { type: string }).type === 'slot_read')).toBe(false)
+    } finally {
+      detach()
+      hidden.mockRestore()
+      focus.mockRestore()
+      window.history.pushState({}, '', oldPath || '/')
+      store.dispatch(setActiveId(null))
+      store.dispatch(setActiveSlot(null))
+    }
+  })
+
+  it('badges a local reply under it and relays no read; closing the tab reads the chat', () => {
+    const oldPath = window.location.pathname
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const sendIfOpen = vi.fn()
+    const detach = attachFocusRelay({
+      socket: { sendIfOpen, reconnectingRef: { current: false } } as unknown as SocketConnection,
+      flushSlotActivity: vi.fn(),
+      onActiveSlotChange: vi.fn(),
+    })
+    try {
+      window.history.pushState({}, '', '/chat')
+      store.dispatch(sseSlots([{ key: 'slot-a', last_ts: '2026-11-18T10:00:00Z' } as unknown as ChatSlot]))
+      store.dispatch(setActiveSlot('slot-a'))
+      expect(isSlotOnScreen('slot-a')).toBe(true)
+      store.dispatch(relayPaneOpened({ id: 'r1', name: 'R1' }))
+      expect(isSlotOnScreen('slot-a')).toBe(false)
+      const offScreen = vi.fn((slot: string) => { store.dispatch(markSlotUnread({ slot })) })
+      sendIfOpen.mockClear()
+      attendArrival('slot-a', '2026-11-18T10:01:00Z', false, offScreen)
+      expect(offScreen).toHaveBeenCalledWith('slot-a')
+      expect(store.getState().dashboard.unreadSlots).toContain('slot-a')
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      expect(sendIfOpen.mock.calls.some(([m]) => (m as { type: string }).type === 'slot_read')).toBe(false)
+      act(() => { store.dispatch(setActiveId(null)) })
+      expect(store.getState().dashboard.unreadSlots).not.toContain('slot-a')
+      expect(sendIfOpen.mock.calls.some(([m]) => (m as { type: string; slot?: string }).type === 'slot_read'
+        && (m as { slot?: string }).slot === 'slot-a')).toBe(true)
+    } finally {
+      detach()
+      hidden.mockRestore()
+      focus.mockRestore()
+      window.history.pushState({}, '', oldPath || '/')
+      store.dispatch(setActiveId(null))
+      store.dispatch(setActiveSlot(null))
+    }
   })
 })

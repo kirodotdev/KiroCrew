@@ -80,6 +80,7 @@ ALLOWLIST: dict[str, str] = {
     "prompt:sealed_crew_paths": "a crewmate's conductor runs on the default contract, config/prompt.md, which states the same sealed-path rule",
     "prompt:tool_inventory": "lists the root conductor's narrowed tool set; a crewmate has the default tools and its member pieces name the crewmate-only ones",
     "prompt:goal_changes": "round-boundary goal changes; a crewmate's goal is set through set_goal (member pieces)",
+    "prompt:patrol_reply": "a person watches a conductor-mode chat live, so a patrol wake there gets one line; a Bot's thread is read once or twice a day, so conductor.patrol carries its own rule: a wake with no news says nothing",
     "prompt:tracker": "a tracker is for a fleet one compact read cannot hold; a crewmate's ledger is one level on one machine and its [Worker report] turns carry each worker's state",
 }
 
@@ -499,27 +500,32 @@ def test_the_long_task_and_team_rules_are_shared() -> None:
     assert set(_NEW_SHARED) <= crewmate_prompts.placeholders(_MATE_PIECE)
 
 
-def test_a_patrol_wake_gets_one_line_on_both_conductors(specs) -> None:
-    """The one-line patrol reply is a shared rule both installed conductors carry, and
-    no quiet-end wording tells a patrol wake to stay silent, so neither side is told
-    two things."""
+def test_a_patrol_wake_gets_one_line_in_conductor_mode_and_none_on_a_bot(specs) -> None:
+    """Each conductor replies to a patrol wake its own way: conductor mode, watched
+    live, gets one line; a Bot, whose thread is read once or twice a day, says
+    nothing unless there is news. Neither carries the other's rule."""
     root_spec, _mate = specs
-    rule = agent._LEDGER_CONDUCTOR_RULES["patrol_reply"].strip()
-    assert "patrol_reply" in crewmate_prompts.placeholders(_MATE_PIECE)
-    for side, text in (
-        (_ROOT, root_spec["prompt"]),
-        ("kirocrew-mate-conductor", _mate_ledger_text()),
-    ):
-        assert rule in text, f"{side} lacks the patrol_reply rule"
-    assert "nothing_to_do" not in agent._LEDGER_CONDUCTOR_RULES["wake_check"]
-    assert "its wakes are the one exception" in _words(
+    root_rule = agent._CONDUCTOR_PATROL_REPLY.strip()
+    assert "patrol_reply" not in agent._LEDGER_CONDUCTOR_RULES
+    assert "patrol_reply" not in crewmate_prompts.placeholders(_MATE_PIECE)
+    assert root_rule in root_spec["prompt"]
+    assert root_rule in agent._SHARED_CONDUCTOR_RULES_BLOCK
+    mate_text = _mate_ledger_text()
+    assert root_rule not in mate_text
+    mate_words = _words(mate_text)
+    assert "on a patrol wake, speak only for news." in mate_words
+    assert "a finished task is always reported in full" in mate_words
+    assert "then write no text at all and end with nothing_to_do." in mate_words
+    assert "its wakes are the one exception" not in _words(
         crewmate_prompts.text("conductor.how_you_work")
     )
-    assert 'never post "nothing changed"' not in _skill_text("goal-conductor")
-    # The one line is for a wake with no news only: milestones keep their full
-    # report (and the root's in-chat board), and the Bot's Heartbeat and
-    # [Worker report] turns keep their own quiet end.
-    words = _words(rule)
+    # Both rule sets point at "your patrol-reply rule", so one shared wake check
+    # and one skill step serve both.
+    assert "reply as your patrol-reply rule says" in _words(
+        agent._LEDGER_CONDUCTOR_RULES["wake_check"]
+    )
+    assert "as your prompt's patrol-reply rule says" in _skill_text("goal-conductor")
+    words = _words(root_rule)
     assert "a task starting, finishing or getting stuck is reported in full" in words
     assert "a heartbeat or [worker report] turn keeps its own quiet end" in words
     talking = dict(agent._CONDUCTOR_PROMPT_SECTIONS)["talking_to_the_person"]
@@ -647,7 +653,6 @@ def test_the_team_lead_check_sees_a_lost_rule(
 SKILL_POINTERS: dict[str, str] = {
     "dependent_calls": "your prompt's rule on dependent calls",
     "goal_plan": "the five parts your prompt's goal-plan rule names",
-    "resource_wave": "as your prompt says, resource_status decides the wave",
     "own_files": "your prompt's rules on one owner per shared file",
     "item_budget": "your prompt's item-budget rule",
     "bind_before_seed": "bind before you seed, as your prompt's rule says",
@@ -659,11 +664,37 @@ SKILL_POINTERS: dict[str, str] = {
     "bar_pr_merged": "as your prompt's rule on landed code says",
     "plan_reviewer": "as your prompt's plan-reviewer rule says",
     "wake_check": "a wake with no news is a check, as your prompt's rule says",
-    "patrol_reply": "as your prompt's patrol-reply rule says",
+    "host_health": "keep the host healthy, as your prompt's host-health rule says",
     "reuse_worker": "your prompt's worker-reuse rule",
     "read_message_detail": "as your prompt's read-message rule says",
     "patrol_final_report": "end the patrol as your prompt's patrol rules say",
 }
+
+
+def test_the_host_health_rule_has_one_source_and_the_skill_points_at_it() -> None:
+    """rfc-host-memory-guard.md §8 test 14, with one deviation: the §5.4 rule is the
+    same text in ``spec_prompts.py`` and the crewmate piece (its ``{host_health}``
+    placeholder), and the goal-conductor skill POINTS at it instead of restating it,
+    so the rule has one source and the anti-copy check stays universal."""
+    rule = _words(agent._LEDGER_CONDUCTOR_RULES["host_health"])
+    assert "host_health" in crewmate_prompts.placeholders(_MATE_PIECE)
+    assert rule in _words(_mate_ledger_text())
+    assert SKILL_POINTERS["host_health"] in _skill_text("goal-conductor")
+    assert rule not in _skill_text("goal-conductor")
+
+
+def test_the_host_health_rule_keeps_its_bounds_and_stays_task_agnostic() -> None:
+    """The owner's ruling: a goal, the facts, hard bounds; actions only as examples."""
+    rule = _words(agent._LEDGER_CONDUCTOR_RULES["host_health"])
+    for phrase in (
+        "never stop or slow the gateway",
+        "without asking the owner",
+        "tell the affected worker",
+        "examples only, not a rulebook",
+    ):
+        assert phrase in rule
+    for recipe in ("pytest", "-n ", "xdist", "browser tab"):
+        assert recipe not in rule
 
 
 def test_every_reference_the_goal_conductor_skill_names_exists() -> None:

@@ -233,12 +233,12 @@ Kiro Crew accepts no new built-in app. Never add an app under
 `src/kiro_crew/apps/builtins/`, an `app.json` outside `docs/app-kit/examples/` and
 test fixtures, a per-app page under `website/src/apps/<app>/`, a per-app row in a
 core built-in table (`BUILTIN_NAMES`, `apps/manager_builtins.py`, the
-`website/src/apps/` registries), or an app-specific MCP tool (`mcp_tools/apps.py`)
+`website/src/apps/` registries), or an app-specific MCP tool (`mcp_tools/app_tools.py`)
 or internal-secret path row (`dashboard/server_internal_paths.py`) in core. A new
 app, first-party included, ships from a dedicated GitHub repository listed in the
 official registry ([kirodotdev/KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps)).
 The built-ins that still ship are being moved out under #26967; fixing one in place
-until it leaves is fine, but once `apps/adoption-pins.json` pins it the fix lands in its
+until it leaves is fine, but once `src/kiro_crew/apps/adoption-pins.json` pins it the fix lands in its
 app repository first and the PR names it (`App repo: <owner>/<repo>@<sha>`, PR Hygiene). An app moves out COMPLETELY: no part of it (backend, UI,
 scripts, CI, specs) stays in core, and core never imports or hard-codes a specific
 app (`kiro_crew.apps.builtins.<app>`, an app id) outside the built-in tables being

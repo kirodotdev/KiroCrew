@@ -11,7 +11,7 @@ on an instance reaches every caller.
 
 Instance fields written: ``_allocation``.
 
-Instance fields read: ``identity_check_before_acquire``, ``parent_turns``.
+Instance fields read: ``_compaction``, ``identity_check_before_acquire``, ``parent_turns``.
 """
 
 from __future__ import annotations
@@ -793,11 +793,15 @@ def note_turn_landed(self: SessionManager, key: str) -> None:
 
     Called where each engine already decides it (its stop reason succeeded), so
     the end of this attempt confirms the inline marks it received. An attempt
-    that ends with no note revokes them.
+    that ends with no note revokes them. A landed turn also settles the
+    persisted post-compaction mark the turn consumed.
     """
     ledger = getattr(self, "parent_turns", None)
     if ledger is not None:
         ledger.note_landed(ledger.open_attempt(canonical_key(key), _holding_task(self, key)))
+    compaction = getattr(self, "_compaction", None)
+    if compaction is not None:
+        compaction.note_reinjection_landed(key)
 
 
 async def _safe_cleanup(self: SessionManager, provider: LLMProvider, session_id: str) -> None:

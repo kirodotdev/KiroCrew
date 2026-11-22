@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * The words a relay Crew window shows once it stops waiting for its Crew.
+ * The words a relay Crew tab (or window) shows once it stops waiting for its Crew.
  *
  * Main-process copy, so English only: the dashboard's catalogs and i18n gates
  * cover the dashboard renderer, not Electron main (website/docs/i18n-catalog.md,
@@ -27,10 +27,15 @@ function noticeText(kind, name) {
       title: `You no longer have access to ${crew}.`,
       body: "To get access back, ask your admin.",
       check: "",
-      close: "Close window",
+      close: "Close",
     };
   }
-  return { title: `${crew} is currently unavailable`, body: "", check: "Check again", close: "Close window" };
+  return {
+    title: `${crew} is currently unavailable`,
+    body: "The machine running it is offline, or Kiro Crew is not running there. Once it is back, press Check again.",
+    check: "Check again",
+    close: "Close",
+  };
 }
 
 module.exports = { NOTICE, NOTICE_FOR_CODE, noticeText };

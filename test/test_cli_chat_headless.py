@@ -676,6 +676,48 @@ def test_client_without_cookie_uses_the_token_and_resigns_on_401(monkeypatch):
     assert "?x=1&token=t1" in seen[2][1] and "token=t2" in seen[5][1]
 
 
+def test_a_run_longer_than_the_sign_in_token_keeps_polling(monkeypatch):
+    """The cookie dies with its one-minute token; the gateway then answers 403 with
+    ``X-Auth-Required: true``, and each lapse is met with a fresh sign-in."""
+    import io
+    import urllib.error
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.read_local_secret", lambda port, dial_host=None: "s3cret"
+    )
+    c = h.GatewayClient(4321)
+    state = {"session": "", "minted": 0, "calls": 0}
+
+    def fake_open(req, timeout, operation):
+        url = req.full_url
+        if "/api/token/local" in url:
+            state["minted"] += 1
+            return _Resp(json.dumps({"token": f"t{state['minted']}"}).encode())
+        if "/api/status?token=" in url:
+            state["session"], state["calls"] = f"sess{state['minted']}", 0
+            return _Resp(cookies=[f"mc_token_4321={state['session']}; Path=/"])
+        # A session serves three polls, then lapses the way the gateway's auth layer
+        # refuses an expired cookie on an /api/ path.
+        state["calls"] += 1
+        if dict(req.header_items()).get("Cookie") != f"mc_token_4321={state['session']}" or (
+            state["calls"] > 3
+        ):
+            raise urllib.error.HTTPError(
+                url,
+                403,
+                "Forbidden",
+                {"X-Auth-Required": "true"},
+                io.BytesIO(b'{"code":"forbidden"}'),
+            )
+        return _Resp(b'{"slots":[]}')
+
+    c._open = fake_open
+    c.sign_in()
+    for _ in range(10):  # past three lapses
+        assert c.call("GET", "/api/chat/slots?crew=all") == {"slots": []}
+    assert state["minted"] == 4
+
+
 def test_client_errors(monkeypatch):
     c, _ = _client(monkeypatch, [403])
     with pytest.raises(RuntimeError, match="refused sign-in: HTTP 403"):
@@ -989,3 +1031,18 @@ def test_a_choice_list_asks_even_while_a_background_agent_runs(monkeypatch):
     gw = FakeGateway([dict(BUSY, worker=child)])
     r = _run(_opts(caps={"timeout": 5}), gw, monkeypatch)
     assert r.status == "asked" and r.ask_events[0]["slot"] == WORKER
+
+
+def test_ledger_asks_stops_on_a_wait_or_a_current_record_only():
+    """The board sends ``ask`` only while it is current and ``awaits_person`` only for
+    a relayed person wait, so a record on a ``done`` item (a ``human_approval`` ask)
+    stops the run, and an item the main chat is still checking does not."""
+    asked = {"item_id": "it_1", "state": "open", "awaits_person": True, "ask": {"what": "Pick one"}}
+    approval = {
+        "item_id": "it_2",
+        "state": "open",
+        "awaits_person": False,
+        "ask": {"what": "Ship?"},
+    }
+    checking = {"item_id": "it_3", "state": "open", "awaits_person": False}
+    assert [a["text"] for a in h.ledger_asks([asked, approval, checking])] == ["Pick one", "Ship?"]

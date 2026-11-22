@@ -3,8 +3,8 @@ title: Bounded-time restore for large sessions - tail window for fully read tabs
 status: implemented
 author: kirocrew agent session, directed by chenmingwei23
 created: 2026-11-12
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 35916
 implementation-prs: [35960, 36141, 36259, 36035]
 tracking-issues: [35875]

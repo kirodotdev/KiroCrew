@@ -41,6 +41,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_AGENT_STARTED_TURNS,
 )
+from kiro_crew.session_directive import QUIET_END_TOKEN
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 _ACP_DIR = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp"
@@ -440,6 +441,23 @@ async def test_frames_no_snapshot_supersedes_are_kept_in_arrival_order() -> None
         future,
         _chunk("reply"),
     )
+
+
+@pytest.mark.asyncio
+async def test_an_agent_started_turn_that_is_only_the_end_token_yields_no_text() -> None:
+    """``stream_unsolicited`` reads its turn through the quiet-end token drop
+    (``test_acp_end_token.py``), as a prompt turn does."""
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    await _handed_off(client, reader, _chunk(QUIET_END_TOKEN))
+    _feed(reader, _AUTONOMOUS_END)
+
+    async with contextlib.aclosing(
+        client.stream_unsolicited(timeout=FALLBACK_TIMEOUT_SECS)
+    ) as stream:
+        kinds = [e.kind async for e in stream]
+
+    assert kinds == [EVENT_COMPLETE]
+    await _stop_restarted_reader(client)
 
 
 @pytest.mark.asyncio

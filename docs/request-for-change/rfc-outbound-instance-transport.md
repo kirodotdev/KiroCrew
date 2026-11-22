@@ -4,8 +4,8 @@ status: draft
 kind: framework
 author: Koen Vincent (koenvincent)
 created: 2026-09-23
-last-audited: 2026-09-23
-audited-at: 18f9984b0
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: []
 tracking-issues: []

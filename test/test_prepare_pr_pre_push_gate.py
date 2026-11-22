@@ -770,11 +770,44 @@ def _hostile(repo: Path, tmp_path: Path, only: str | None = None) -> None:
             _git(repo, "config", key, value)
 
 
+@pytest.fixture(scope="module")
+def _branch_repo_template(
+    tmp_path_factory: pytest.TempPathFactory, _repo_template: Path
+) -> tuple[Path, str]:
+    """``branch_repo``'s commit made once per module, with its merge base.
+
+    Each test copies it; the base sha is the same object in every copy.
+    """
+    template = _copy_repo(_repo_template, tmp_path_factory.mktemp("pre-push-gate-branch"), "repo")
+    _commit_files(template, ["src/kiro_crew/x.py", "website/y.ts", "docs/guide.md"])
+    return template, _git(template, "merge-base", "HEAD", "origin/main")
+
+
 @pytest.fixture
-def branch_repo(repo: Path) -> Path:
+def branch_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _branch_repo_template: tuple[Path, str]
+) -> Path:
     """Root, ``src/`` and ``website/`` files changed past ``origin/main``, one commit."""
-    _commit_files(repo, ["src/kiro_crew/x.py", "website/y.ts", "docs/guide.md"])
-    return repo
+    return _enter(_copy_repo(_branch_repo_template[0], tmp_path, "repo"), monkeypatch)
+
+
+@pytest.fixture
+def branch_base(_branch_repo_template: tuple[Path, str]) -> str:
+    """``git merge-base HEAD origin/main`` of ``branch_repo``."""
+    return _branch_repo_template[1]
+
+
+@pytest.fixture(scope="module")
+def branch_expected_gates(_branch_repo_template: tuple[Path, str]) -> list[str]:
+    """The gates the real runner selects for ``branch_repo`` under clean config.
+
+    Asked once per module from the template (the same commit every copy holds),
+    the way ``_enter`` sets up a test: cwd in the repo, host config off.
+    """
+    template, base = _branch_repo_template
+    with pytest.MonkeyPatch.context() as mp:
+        _enter(template, mp)
+        return _selected_ids(base)
 
 
 EXPECTED_CHANGED = sorted(["mine.py", "src/kiro_crew/x.py", "website/y.ts", "docs/guide.md"])
@@ -787,24 +820,27 @@ def _selected_ids(base: str) -> list[str]:
 
 @pytest.mark.parametrize("key", [*HOSTILE_GIT_CONFIG, "core.excludesFile"])
 def test_one_hostile_config_key_changes_nothing_from_a_subdirectory(
-    branch_repo, tmp_path, monkeypatch, key
+    branch_repo, branch_base, tmp_path, monkeypatch, key
 ) -> None:
-    base = _git(branch_repo, "merge-base", "HEAD", "origin/main")
-    expected_gates = _selected_ids(base)
+    """Each key alone, from the root and from a subdirectory two levels down.
+
+    Every runner call but ``toplevel()`` runs ``git -C <toplevel>``, so a shallower
+    subdirectory is no new case. The gates are a pure function of ``_changed``; the
+    selection under hostile config is pinned by the all-keys test below.
+    """
+    base = branch_base
     _hostile(branch_repo, tmp_path, only=key)
-    for where in (branch_repo, branch_repo / "website", branch_repo / "src" / "kiro_crew"):
+    for where in (branch_repo, branch_repo / "src" / "kiro_crew"):
         monkeypatch.chdir(where)
         assert gate._changed(base) == EXPECTED_CHANGED, (key, where)
-        assert _selected_ids(base) == expected_gates, (key, where)
         assert gate._worktree_state()[2] == [], (key, where)
         assert Path(gate.toplevel()) == branch_repo
 
 
 def test_every_hostile_key_at_once_changes_nothing_from_a_subdirectory(
-    branch_repo, tmp_path, monkeypatch
+    branch_repo, branch_base, branch_expected_gates, tmp_path, monkeypatch
 ) -> None:
-    base = _git(branch_repo, "merge-base", "HEAD", "origin/main")
-    expected_gates = _selected_ids(base)
+    base, expected_gates = branch_base, branch_expected_gates
     assert {"mypy", "flake8", "isort", "agent-sdk-boundary", "sync-io-in-async"} <= set(
         expected_gates
     )

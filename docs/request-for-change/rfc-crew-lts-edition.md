@@ -3,8 +3,8 @@ title: Crew LTS Edition -- a build-time edition that requires login, fetches gov
 status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-22
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: [23213, 23697, 23703, 23968, 24661, 26818, 32970]
 tracking-issues: [23206, 28751, 30178, 30821]

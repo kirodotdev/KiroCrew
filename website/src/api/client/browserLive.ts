@@ -16,12 +16,6 @@ export type { BrowserInputEvent }
 
 export interface BrowserLiveOk { ok: boolean }
 
-/**
- * The window event a hand-back note becomes when no agent op is waiting to read
- * it: `{ slotKey, text }`. The chat page sends `text` as the person's message.
- */
-export const BROWSER_HANDBACK_CHAT_EVENT = 'mc:browser-handback-chat'
-
 /** What the person says as they hand back; either part may be left out. */
 export interface BrowserHandbackSaid { note?: string; choice?: string }
 export interface BrowserLiveRelease extends BrowserLiveOk { delivered?: '' | 'agent' | 'chat' }

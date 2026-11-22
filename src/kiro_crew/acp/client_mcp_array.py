@@ -69,6 +69,7 @@ from kiro_crew.acp.types import (
     overlay_project_scope,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.agent_discovery import spec_is_toolless as spec_is_toolless
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
@@ -90,43 +91,6 @@ logger = logging.getLogger("kiro_crew.acp.client")
 #: The allowlist of a member spec that was not read: it references nothing, so a
 #: pooled stub is never mounted on the strength of a spec nobody read.
 _GRANTS_NOTHING = ToolsAllowlist(applies=True, grant_all=False, refs=frozenset())
-
-
-def spec_is_toolless(spec: object) -> bool:
-    """True when *spec* mounts nothing: no tool, no grant, no MCP server, no hook.
-
-    All must hold: ``tools`` is an empty list; ``allowedTools`` is absent or an
-    empty list; ``mcpServers`` is absent or an empty object; ``hooks``,
-    ``permissions`` and ``toolsSettings`` are absent or empty; ``includePowers``
-    is absent or ``False`` (KAS reads an absent one as False); and
-    ``includeMcpJson`` is exactly ``False`` (kiro-cli defaults it to True and would
-    then start every server in the user-level ``mcp.json``). An empty ``tools``
-    alone is not enough: a server listed under ``mcpServers`` is still started, a
-    hook still runs a command, and either include flag widens what the turn can
-    reach (``acp.kas_agents`` forwards ``includePowers``, and the ``includeMcpJson``
-    opt-in decides which ``mcp.json`` servers KAS starts), in a turn that must run none.
-
-    Fails closed: a non-dict and any key of the wrong type answer False.
-    """
-    if not isinstance(spec, dict):
-        return False
-    tools = spec.get("tools")
-    if not (isinstance(tools, list) and not tools):
-        return False
-    if "allowedTools" in spec and not (
-        isinstance(spec["allowedTools"], list) and not spec["allowedTools"]
-    ):
-        return False
-    if "mcpServers" in spec and not (
-        isinstance(spec["mcpServers"], dict) and not spec["mcpServers"]
-    ):
-        return False
-    for key in ("hooks", "permissions", "toolsSettings"):
-        if key in spec and not (isinstance(spec[key], (dict, list)) and not spec[key]):
-            return False
-    if "includePowers" in spec and spec["includePowers"] is not False:
-        return False
-    return spec.get("includeMcpJson") is False
 
 
 def authored_agent_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
@@ -536,8 +500,24 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     applies it to the stubs it places itself, and without it a stub the spec never
     references would reach pi beside a spec confirmed as consumed. A non-member
     session records none, so its stubs are unchanged.
+
+    A crewmate's WORKER session on pi (``members.is_crewmate_worker_session``) is
+    held the same way to the spec built for that session (the worker base plus its
+    crewmate's file, ``session_mcp._crewmate_worker_spec``): its servers are mounted
+    and, as a member session, its stubs pass that spec's allowlist. A worker whose
+    kit cannot be read, or whose crewmate's file sets single-tool limits or
+    ``hooks``, ``permissions`` or ``toolsSettings`` pi cannot carry, raises here
+    rather than running as plain chat, as a mirrored host's projection does.
     """
     records_zero_tools = projection_for(self.backend).kind is ProjectionKind.BROKER_ONLY
+    # A crewmate's WORKER session (see the docstring): positive identity, asked only
+    # on the BROKER_ONLY host (pi), so every other backend's path is unchanged (H13).
+    worker = False
+    if records_zero_tools:
+        # circular import: members' module graph is heavy; resolved at call time.
+        from kiro_crew.members import is_crewmate_worker_session
+
+        worker = is_crewmate_worker_session(self._session_key)
     if (
         not records_zero_tools
         and self.backend not in ACP_BACKENDS_MEMBER_DISPATCH
@@ -565,6 +545,10 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
             spec_policy_honoured=applies_spec_policy(self.backend),
         )
     except Exception:
+        if worker:
+            # A worker never runs without its kit: an unreadable kit, or single-tool
+            # limits this host cannot carry, refuse the session as on a mirrored host.
+            raise
         logger.warning(
             "member session %s: agent spec unreadable, so no member tools are "
             "mounted -- the DM thread runs as plain chat this session",
@@ -613,13 +597,15 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
     # mounts. The spec servers lead, so the member mounts keep last-wins on a name
     # clash, as they do over a pooled stub. Scoped to the crewmate DM session the
     # gap is about -- the same ``is_member_session_key`` gate the member mounts
-    # above ride -- so an ordinary non-member pi session is unchanged, as it is on
-    # every other mirror-less path (the member mounts are already empty for it).
+    # above ride -- and to a crewmate's worker, whose projection above is its own
+    # per-session spec (``session_mcp._crewmate_worker_spec``), so an ordinary pi
+    # session is unchanged, as it is on every other mirror-less path (the member
+    # mounts are already empty for it).
     # circular import: members' module graph is heavy; resolved at call time.
     from kiro_crew.members import is_member_session_key
 
     out = members
-    if records_zero_tools and is_member_session_key(self._session_key):
+    if records_zero_tools and (worker or is_member_session_key(self._session_key)):
         out = self._broker_only_spec_mounts(projection) + members
     if records_zero_tools and self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
         out = _with_crew_connections(self, projection, out)

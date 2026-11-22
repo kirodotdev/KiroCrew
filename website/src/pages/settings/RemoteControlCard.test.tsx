@@ -11,6 +11,8 @@ vi.mock('../../utils/clipboard', () => ({ copyCode: vi.fn(async () => true) }))
 import { api, type RemoteControlState } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { RemoteControlCard } from './RemoteControlCard'
+import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
+import { scoreSettingEntry } from '../../components/commandPalette/settingsSearchCore'
 
 const state = (over: Partial<RemoteControlState>): RemoteControlState => ({
   requested: false,
@@ -27,6 +29,15 @@ describe('RemoteControlCard', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.resetAllMocks()
+  })
+
+  it('is found by Settings search and its entry lands on this card (Bug Bash row 60)', async () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.id === 'instances.remote-control')
+    expect(entry?.tab).toBe('instances')
+    expect(scoreSettingEntry('Remote Control', entry!)).not.toBeNull()
+    get.mockResolvedValue(state({ requested: true, running: true }))
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByTestId('remote-control-card')).toHaveAttribute('data-setting-id', entry!.settingId)
   })
 
   it('renders nothing when Remote Control was never turned on', async () => {
@@ -69,6 +80,25 @@ describe('RemoteControlCard', () => {
     expect(screen.getByRole('button', { name: 'Turn off' })).toBeInTheDocument()
     // The card reports only the setting and the connection, never the sign-in.
     expect(screen.getByTestId('remote-control-card')).not.toHaveTextContent(/sign/i)
+  })
+
+  it("says why config keeps the relay from starting, not restart-to-connect", async () => {
+    const problem = 'A stand-in reason: set tunnel.relay_lease_region.'
+    get.mockResolvedValue(state({ requested: true, running: false, problem }))
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByText(problem)).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(problem)
+    expect(screen.queryByText(/Restart/)).toBeNull()
+    expect(screen.queryByText(/Remote Control is on\./)).toBeNull()
+  })
+
+  it('says it is connecting, not restart-to-connect, while the relay connects on its own (Bug Bash row 51)', async () => {
+    get.mockResolvedValue(state({ requested: true, running: false, connecting: true }))
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      "Remote Control is on and connecting. It connects on its own, so you don't need to restart.",
+    )
+    expect(screen.queryByText(/Restart Kiro Crew to connect/)).toBeNull()
   })
 
   it('shows a later read failure even while an earlier read is cached', async () => {
@@ -222,6 +252,19 @@ describe('RemoteControlCard', () => {
       "Only the Crew's owner can turn Remote Control off.",
     )
     expect(screen.getByText('Remote Control is on. People with access can reach this Crew through the Kiro relay.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Turn off' })).toBeNull()
+    expect(screen.queryByTestId('remote-control-off-effect')).toBeNull()
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('shows the owner the status read-only over the relay, with no Turn off', async () => {
+    get.mockResolvedValue(state({ requested: true, running: true, relayed: true }))
+    ownerOk.mockResolvedValue(true)
+    renderWithProviders(<RemoteControlCard />)
+    expect(await screen.findByTestId('remote-control-local-only')).toHaveTextContent(
+      "It can't be turned off through the relay.",
+    )
+    expect(screen.getByText(/Remote Control is on\./)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Turn off' })).toBeNull()
     expect(screen.queryByTestId('remote-control-off-effect')).toBeNull()
     expect(put).not.toHaveBeenCalled()

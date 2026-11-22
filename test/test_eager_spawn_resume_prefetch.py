@@ -105,6 +105,24 @@ class TestResumePrefetchWiring:
         assert kwargs["speculative_resume"] is True
 
     @pytest.mark.asyncio
+    async def test_the_prefetch_claims_as_its_persons_turn(self):
+        """The tab's next turn is its person's, so a ``cron:`` batch it starts is one."""
+        from kiro_crew.agent_sdk.kas_project_hooks import PERSON_TURN
+
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        seen: list[bool] = []
+
+        async def get_or_create(*_a, **_kw):
+            seen.append(PERSON_TURN.get())
+            return MagicMock(), True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=get_or_create)
+        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+            await chat_runner._eager_spawn(state, slot)
+        assert seen == [True]
+
+    @pytest.mark.asyncio
     async def test_default_path_does_not_opt_in(self):
         slot = _ChatSlot("t1")
         state = _mock_state(slot)

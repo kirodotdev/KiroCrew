@@ -88,6 +88,11 @@ CREATE_PR_LABEL = "Create PR"
 STOP_LABEL = "Stop"
 DASHBOARD_LABEL = "Open in dashboard"
 
+#: Icons of the pull-request slot (the PR, or Create PR) and the Workers item.
+PR_ICON = "link"
+CREATE_PR_ICON = "link"
+WORKERS_ICON = "life-ring"
+
 _PR_LABEL = {
     "open": "PR #{n} is open",
     "draft": "Draft PR #{n}",
@@ -167,7 +172,7 @@ WORKERS_KEY = "workers"
 
 def _pr_item(pr: PullRequest) -> dict[str, str]:
     label = pr_label(pr) if pr.state in _PR_LABEL else f"PR #{pr.number}"
-    return _item("pr", label, "hierarchy", pr.url)
+    return _item("pr", label, PR_ICON, pr.url)
 
 
 def _pr_slot(state: BarState) -> dict[str, str] | None:
@@ -179,7 +184,7 @@ def _pr_slot(state: BarState) -> dict[str, str] | None:
     if pr is not None and pr.state in _PR_LABEL:
         return _pr_item(pr)
     if state.can_open_pr and state.branch and state.branch_has_commits:
-        return _action(ACTION_CREATE_PR, CREATE_PR_LABEL, "hierarchy")
+        return _action(ACTION_CREATE_PR, CREATE_PR_LABEL, CREATE_PR_ICON)
     return None
 
 
@@ -193,7 +198,7 @@ def build_items(state: BarState) -> list[dict[str, str]]:
 
     items: list[dict[str, str]] = []
     if state.board is not None and state.board.rows:
-        items.append(_item(WORKERS_KEY, bar_label(state.board), "hierarchy", state.board_url))
+        items.append(_item(WORKERS_KEY, bar_label(state.board), WORKERS_ICON, state.board_url))
     if state.repo is not None:
         items.append(_item("repo", state.repo.slug, "folder", state.repo.web_url))
     elif state.repo_name:

@@ -25,7 +25,7 @@ test.describe('Builtin App Route resolution', () => {
     // Settings page renders — confirm we are NOT redirected to /chat
     await expect(page).toHaveURL(/\/settings/)
     // Settings page heading (inside #main-content, not the nav label)
-    await expect(page.locator('#main-content').getByText('Settings', { exact: true })).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('#main-content').getByText('Account & Settings', { exact: true })).toBeVisible({ timeout: 10000 })
   })
 
   test('static route /artifacts is NOT caught by the catch-all', async ({ page }) => {

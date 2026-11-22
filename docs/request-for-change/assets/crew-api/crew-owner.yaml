@@ -48,8 +48,12 @@ tags:
   description: Capability bundles
 - name: bots
   description: Bot roster (Owner view)
+- name: approvals
+  description: Tool approvals without a dashboard (proposed amendment, 2026-11-20)
 - name: connectors
   description: connector
+- name: consent
+  description: Consent to local authorization requests (amendment, 2026-11-19)
 - name: grants
   description: Grants
 paths:
@@ -250,7 +254,10 @@ paths:
       - None; new work.
       x-crew-coverage: done
       description: Takes effect locally first (status=revoked), then the issuer of the grant is told over the control
-        channel. Open streams receive grant.revoked and are closed.
+        channel. Open streams receive grant.revoked and are closed. For a grant made through local authorization
+        (amendment, proposed), the host owner's credential is required and Shared Crew teammates and app tokens receive
+        403 owner_only; every access and refresh token under the grant is refused from the next request; a second call
+        answers the same 200 until the grant's own expiry, then 404. Such a grant has no outside issuer to tell.
   /v1/crew/owner/grants/{grant_id}/resume:
     post:
       operationId: post_v1_crew_owner_grants_grant_id_resume
@@ -356,6 +363,374 @@ paths:
         decider is used: decided_by says whether a rule or a model decided, and decider gives its version. Retention:
         monitor decisions are kept 30 days by default; the owner can set `crew_api.retention_days` in the crew settings
         to 1 to 365 days.'
+  /v1/crew/owner/grant-requests:
+    get:
+      operationId: get_v1_crew_owner_grant_requests
+      summary: List grant requests waiting for consent
+      tags:
+      - consent
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '200':
+          description: The grant requests
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantRequestList'
+        '401':
+          $ref: ./components.yaml#/components/responses/OwnerUnauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/OwnerForbidden
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: 1a
+      x-crew-status: planned
+      x-crew-reuses:
+      - none, new
+      x-crew-coverage: done
+      description: Lists the requests apps made through local authorization (GET /oauth/authorize) that wait for the host
+        owner's consent, oldest first. The host owner's credential is required; authenticated remote access is allowed.
+        Shared Crew teammates (relay, SSM guests and tailnet collaborators) and app tokens receive 403 owner_only.
+        Host-owner-only listing protects which local apps requested access; the RFC's rule that the Owner tier is for the
+        owner only requires it.
+        No consent page is required.
+  /v1/crew/owner/grant-requests/{request_id}:
+    get:
+      operationId: get_v1_crew_owner_grant_requests_request_id
+      summary: Read one grant request
+      tags:
+      - consent
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: request_id
+        in: path
+        required: true
+        description: greq_ id
+        schema:
+          type: string
+          pattern: ^greq_
+      responses:
+        '200':
+          description: The request
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantRequest'
+        '401':
+          $ref: ./components.yaml#/components/responses/OwnerUnauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/OwnerForbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: 1a
+      x-crew-reuses:
+      - none, new
+      x-crew-coverage: done
+      description: Returns one grant request by its id, answered or not, so the owner can see how it was answered and
+        which grant it led to (amendment, proposed). The request stays readable until it and its authorization code
+        have expired, or for as long as the grant it led to exists; after that it is 404. The host owner's credential
+        is required; Shared Crew teammates and app tokens receive 403 owner_only.
+  /v1/crew/owner/grant-requests/{request_id}/decision:
+    post:
+      operationId: post_v1_crew_owner_grant_requests_request_id_decision
+      summary: Approve or deny a grant request
+      tags:
+      - consent
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: request_id
+        in: path
+        required: true
+        description: greq_ id
+        schema:
+          type: string
+          pattern: ^greq_
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantRequestDecision'
+      responses:
+        '200':
+          description: The grant request after the decision
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantRequest'
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+        '401':
+          $ref: ./components.yaml#/components/responses/OwnerUnauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/OwnerForbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '409':
+          description: 'grant_request_already_resolved: the request was already answered'
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Error
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-phase: 1a
+      x-crew-status: planned
+      x-crew-reuses:
+      - none, new
+      x-crew-coverage: done
+      description: The host owner's answer to one grant request. An approval may narrow the requested scopes and never widens
+        them. Only after an approval does the app's next GET /oauth/authorize redirect with a code. The host owner's credential
+        is required; authenticated remote access is allowed. Shared Crew teammates (relay, SSM guests and tailnet collaborators)
+        and app tokens receive 403 owner_only. Host-owner-only consent prevents issuing a local credential that outlives a
+        teammate's access; the RFC's rule that the Owner tier is for the owner only requires it.
+  /v1/crew/owner/approvals:
+    get:
+      operationId: get_v1_crew_owner_approvals
+      summary: List tool approvals
+      tags:
+      - approvals
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: state
+        in: query
+        required: false
+        description: 'pending, allowed, denied or expired. Default: pending.'
+        schema:
+          $ref: '#/components/schemas/OwnerApprovalState'
+      - name: conversation
+        in: query
+        required: false
+        description: Only approvals raised in this session.
+        schema:
+          type: string
+      - name: client_id
+        in: query
+        required: false
+        description: Only approvals raised in sessions this app owns.
+        schema:
+          type: string
+      - name: after
+        in: query
+        required: false
+        description: Start after this apr_ id. It must be in the list the other parameters select.
+        schema:
+          type: string
+          pattern: ^apr_
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: The approvals
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnerApprovalList'
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+        '401':
+          $ref: ./components.yaml#/components/responses/OwnerUnauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/OwnerForbidden
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+      x-crew-tier: owner
+      x-crew-scope: approvals:answer
+      x-crew-phase: 1a
+      x-crew-status: planned
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/sessions_parts/live_turn.py (GET /api/approvals), state only
+      x-crew-coverage: done
+      description: Proposed amendment, waiting for a maintainer's sign-off. Lists tool approvals in one state, oldest first,
+        across every session on this Kiro Crew. It covers both places the gateway keeps an approval, a background
+        request (a cron job's, a subagent's) and a chat turn's own tool prompt. The gateway gives a request its apr_ id
+        the first time one of these routes sees it and keeps the id in memory for the life of the gateway process.
+        Ids do not survive a gateway restart; an old id is 404. Keeping ids across a restart is left to a later change.
+        Requests that open and end between calls get no id; this list is not an audit trail. The security event log is.
+        The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates,
+        app tokens and loopback internal callers receive 403 owner_only.
+  /v1/crew/owner/approvals/{approval_id}:
+    get:
+      operationId: get_v1_crew_owner_approvals_approval_id
+      summary: Read one tool approval
+      tags:
+      - approvals
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: approval_id
+        in: path
+        required: true
+        description: apr_ id
+        schema:
+          type: string
+          pattern: ^apr_
+      responses:
+        '200':
+          description: The approval
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnerApproval'
+        '401':
+          $ref: ./components.yaml#/components/responses/OwnerUnauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/OwnerForbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+      x-crew-tier: owner
+      x-crew-scope: approvals:answer
+      x-crew-phase: 1a
+      x-crew-status: planned
+      x-crew-reuses:
+      - none, new
+      x-crew-coverage: done
+      description: Proposed amendment, waiting for a maintainer's sign-off. Returns one approval by its apr_ id, in whatever
+        state it is, during this gateway process. Ids do not survive a gateway restart; an old id is 404.
+        Keeping ids across a restart is left to a later change.
+        The host owner's credential is required; authenticated remote access is allowed. Shared Crew teammates,
+        app tokens and loopback internal callers receive 403 owner_only.
+  /v1/crew/owner/approvals/{approval_id}/decision:
+    post:
+      operationId: post_v1_crew_owner_approvals_approval_id_decision
+      summary: Answer a tool approval
+      tags:
+      - approvals
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: approval_id
+        in: path
+        required: true
+        description: apr_ id
+        schema:
+          type: string
+          pattern: ^apr_
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OwnerApprovalDecision'
+      responses:
+        '200':
+          description: The approval after the decision
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnerApproval'
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+        '401':
+          $ref: ./components.yaml#/components/responses/OwnerUnauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/OwnerForbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '409':
+          description: 'approval_already_resolved: the approval was already answered, has expired, or its request is gone'
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Error
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+      x-crew-tier: owner
+      x-crew-scope: approvals:answer
+      x-crew-phase: 1a
+      x-crew-status: planned
+      x-crew-reuses:
+      - the resolvers behind POST /api/approvals/{id}/{action} and POST /api/chat/slots/{slot}/approve
+      x-crew-coverage: done
+      description: 'Proposed amendment, waiting for a maintainer''s sign-off. Answers one pending approval with allow or deny.
+        The answer goes to the request the id was given to and never to a later request under the same caller id. The
+        first answer wins: any later one, and an answer to an approval that has expired, gets 409
+        approval_already_resolved. deny refuses that one call and the turn goes on. A security-rule override card takes
+        deny here; allow is 403 approval_requires_dashboard, because only the dashboard shows the rule being overridden.
+        Ids do not survive a gateway restart; an old id is 404. Keeping ids across a restart is left to a later change.
+        The route writes an SEL row for each answer and for its 403 approval_requires_dashboard and 409
+        approval_already_resolved refusals. An audit failure does not change the response.
+        Not in this amendment: allow_always, and an answer from a Shared Crew teammate. The host owner''s credential is required; authenticated remote access is allowed. Shared Crew teammates,
+        app tokens and loopback internal callers receive 403 owner_only.'
   /v1/crew/owner/connectors:
     get:
       operationId: get_v1_crew_owner_connectors
@@ -666,6 +1041,230 @@ components:
       bearerFormat: JWT
       description: The user's own first-party sign-in (owner, official app, control panel, CLI). Holds every scope.
   schemas:
+    GrantRequestStatus:
+      enum:
+      - pending
+      - approved
+      - denied
+      - expired
+    GrantRequest:
+      type: object
+      required:
+      - id
+      - object
+      - namespace
+      - status
+      - client_id
+      - requested_scopes
+      - created_at
+      - expires_at
+      properties:
+        id:
+          type: string
+          pattern: ^greq_
+        object:
+          const: grant_request
+        namespace:
+          type: string
+          const: default
+          description: The group this record belongs to. Stored on every record; today it has one fixed value.
+        status:
+          $ref: '#/components/schemas/GrantRequestStatus'
+        client_id:
+          type: string
+          maxLength: 128
+          description: As the app reported it
+        client_name:
+          type: string
+          maxLength: 80
+          description: As the app reported it; the first 80 characters of client_id when the app sent none
+        verified:
+          const: false
+          description: 'Always false: a program on this machine reported the name and client_id, and nothing verified them'
+        redirect_uri:
+          type: string
+          format: uri
+          maxLength: 512
+          description: The loopback address the authorization code goes to
+        user_code:
+          type: string
+          description: Short code the app shows, so the owner can tell which request is which
+        requested_scopes:
+          type: array
+          items:
+            type: string
+        created_at:
+          $ref: ./components.yaml#/components/schemas/Timestamp
+        expires_at:
+          $ref: ./components.yaml#/components/schemas/Timestamp
+        decided_at:
+          type:
+          - integer
+          - 'null'
+          description: When the owner answered (amendment, proposed)
+        decided_by:
+          type:
+          - object
+          - 'null'
+          description: 'Who answered: the kind of caller, never a token (amendment, proposed)'
+          properties:
+            kind:
+              type: string
+              description: owner today. Open set.
+            via:
+              type: string
+              description: api today. Open set.
+        granted_scopes:
+          type: array
+          items:
+            type: string
+          description: Only when approved; what the owner gave, which may be fewer than requested (amendment, proposed)
+        grant_id:
+          type:
+          - string
+          - 'null'
+          pattern: ^grt_
+          description: The grant this request led to, set once the app redeemed its code (amendment, proposed)
+    GrantRequestList:
+      allOf:
+      - $ref: ./components.yaml#/components/schemas/ListEnvelope
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/GrantRequest'
+    GrantRequestDecision:
+      type: object
+      required:
+      - decision
+      additionalProperties: false
+      properties:
+        decision:
+          enum:
+          - approve
+          - deny
+        scopes:
+          type: array
+          items:
+            type: string
+          description: 'Only with approve: the scopes to give. Must be a subset of requested_scopes. Left out: all requested
+            scopes.'
+    OwnerApprovalState:
+      enum:
+      - pending
+      - allowed
+      - denied
+      - expired
+    OwnerApproval:
+      type: object
+      required:
+      - id
+      - object
+      - namespace
+      - conversation
+      - state
+      - created_at
+      properties:
+        id:
+          type: string
+          pattern: ^apr_[0-9a-f]{32}$
+          description: apr_ and 128 random bits, held in memory for this gateway process. After a restart an old id is 404.
+        object:
+          const: approval
+        namespace:
+          type: string
+          const: default
+          description: Stored on every record; one fixed value today.
+        conversation:
+          type:
+          - string
+          - 'null'
+          description: The session the request was raised in. Null for a request with no session, such as a cron job's. It
+            becomes a conv_ id when the conversation operations exist.
+        client_id:
+          type:
+          - string
+          - 'null'
+          description: The app that owns that session; null for the owner's own.
+        tool:
+          type: string
+          maxLength: 200
+        reason:
+          type: string
+          maxLength: 500
+          description: Redacted and cut short.
+        arguments:
+          type: object
+          required:
+          - input
+          properties:
+            input:
+              type: string
+              maxLength: 2000
+              description: The tool call's input as the approval card shows it, redacted and cut short.
+        state:
+          $ref: '#/components/schemas/OwnerApprovalState'
+        created_at:
+          type: integer
+          description: When the gateway gave the id.
+        decided_at:
+          type:
+          - integer
+          - 'null'
+        expired_reason:
+          enum:
+          - timeout
+          - null
+          description: 'Only with state expired. Nobody answered, the turn was cancelled, or the request stopped waiting.'
+        decided_by:
+          type:
+          - object
+          - 'null'
+          description: Who answered through this API, never a token. Null while pending and for an ending made elsewhere
+            (the dashboard, a Stop); state still says whether the tool ran.
+          properties:
+            kind:
+              type: string
+              description: owner. Open set.
+            principal:
+              type: string
+            via:
+              type: string
+              description: api. Open set.
+    OwnerApprovalList:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      properties:
+        object:
+          const: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OwnerApproval'
+        first_id:
+          type:
+          - string
+          - 'null'
+        last_id:
+          type:
+          - string
+          - 'null'
+        has_more:
+          type: boolean
+    OwnerApprovalDecision:
+      type: object
+      required:
+      - decision
+      additionalProperties: false
+      properties:
+        decision:
+          enum:
+          - allow
+          - deny
     GrantStatus:
       enum:
       - active

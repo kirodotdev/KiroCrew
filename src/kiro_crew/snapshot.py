@@ -76,6 +76,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     MANIFEST_VERSION,
     MAX_ARCHIVE_GIB_CEILING,
     SKIP_DB_UNPINNED_SOURCE,
+    SKIP_LINKED_TREE_ROOT,
     DatabaseCopyFailed,
     ManifestUnreadable,
     _ArchiveTooLarge,
@@ -113,6 +114,7 @@ from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _build_snapshot,
     _estimate_selected_bytes,
     _fsize,
+    _report_named_workspaces_left_out,
 )
 from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _CONFIG_SETTINGS_DOCUMENTS,
@@ -121,6 +123,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _FLAT_DOCUMENT_VALIDATORS,
     _HOST_LOCAL_PATHS,
     _JSON_OBJECT_LISTS,
+    _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
     _REPLACE_ONLY_COMPONENTS,
     _TREE_DOCUMENT_VALIDATORS,
@@ -142,6 +145,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     UnsafeComponentRoot,
     _facade,
     _is_host_local,
+    _may_hold_host_local,
     _mc_dir,
     _never_ships,
     _tree_roots_replace_clears,
@@ -213,6 +217,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _rmtree_or_raise,
     _save_locked_document_to,
     _trees_absent_from_bundle,
+    host_local_installable,
 )
 
 if TYPE_CHECKING:
@@ -848,6 +853,7 @@ def snapshot_main(
     # The bundle on local disk is not redacted either, so it gets the same notice as
     # the copy that leaves the host: which components carry credential material.
     _report_unresolved_payload(selected, uploading=False)
+    _report_named_workspaces_left_out(mc, selected)
 
     _audit("snapshot_created", f"{outfile} ({human})")
 
@@ -1541,6 +1547,12 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
             return 0
 
         mc.mkdir(parents=True, exist_ok=True)
+        # Before either mode installs anything. Extraction screened entry NAMES; this reads
+        # what they became on disk, which no spelling of a name gets past. Read here, not at
+        # module level: the import side owns the walker and imports this facade.
+        from kiro_crew.portability import _strip_host_local_store_state
+
+        _strip_host_local_store_state(snap)
         try:
             # Replace installs everything it carries; merge installs only what the
             # destination is missing. Both are validated for exactly what they will put in
