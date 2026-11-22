@@ -481,6 +481,15 @@
       "tab_gone": "L'onglet du Bot est fermé, il n'y a donc aucune page en direct à afficher.",
       "app_off": "Cette app est désactivée, elle ne peut donc pas afficher le navigateur. Active-la dans Apps pour revoir la page.",
       "actions": "Ce que le Bot a fait"
+    },
+    "browserSites": {
+      "add_title": "Autoriser un nouveau site ?",
+      "add_asked_by": "{{app}} demande à ajouter le site ci-dessous aux pages sur lesquelles son propre agent peut naviguer.",
+      "add_app_details": "Par {{author}} · identifiant de l'application {{id}}",
+      "add_app_id": "Identifiant de l'application {{id}}",
+      "add_star": "Chaque * correspond à n'importe quel texte, donc toutes les pages dont l'adresse correspond sont incluses.",
+      "add_risk": "Une fois autorisé, l'agent de l'application peut ouvrir, lire, saisir du texte et cliquer sur ces pages dans ton navigateur, connecté avec ton compte, sans demander à chaque fois. N'autorise qu'un site de confiance. Tu peux le retirer plus tard.",
+      "add_allow": "Autoriser le site"
     }
   },
   "apps": {
@@ -12649,7 +12658,23 @@
         "installed_needs_newer_host": "La version installée de {{name}} nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} ; tes données restent inchangées."
       },
       "grants_reconsent_composer_actions": "Boutons de l'éditeur : permet à l'app d'ajouter ces boutons au menu + de l'éditeur. Un clic insère le texte de l'app dans ton brouillon ; l'app ne peut ni voir le brouillon ni l'envoyer.",
-      "grants_reconsent_selection_actions": "Actions sur le texte sélectionné : permet aux éléments de l’app de recevoir le texte que tu sélectionnes dans les réponses du chat et de proposer un résultat à Copier ou Ouvrir."
+      "grants_reconsent_selection_actions": "Actions sur le texte sélectionné : permet aux éléments de l’app de recevoir le texte que tu sélectionnes dans les réponses du chat et de proposer un résultat à Copier ou Ouvrir.",
+      "browser_sites_list_title": "Sites de navigation",
+      "browser_sites_list_hint": "Les pages sur lesquelles l'agent de cette application peut naviguer. Un site retiré cesse de valoir à la prochaine étape de l'agent.",
+      "browser_sites_source_app": "De l'application",
+      "browser_sites_source_owner": "Ajouté par toi",
+      "browser_sites_status_approved": "Autorisé",
+      "browser_sites_status_pending": "En attente d'approbation",
+      "browser_sites_status_disabled": "Désactivé",
+      "browser_sites_status_removed": "Retiré",
+      "browser_sites_remove": "Retirer",
+      "browser_sites_turn_on": "Activer",
+      "browser_sites_add_back": "Rajouter",
+      "browser_sites_remove_failed": "Impossible de retirer le site : {{error}}",
+      "browser_sites_add_failed": "Impossible de rajouter le site : {{error}}",
+      "browser_sites_turn_on_title": "Réactiver ce site ?",
+      "browser_sites_add_back_title": "Rajouter ce site ?",
+      "browser_sites_restore_risk": "L'agent de l'application pourra alors ouvrir, lire, saisir du texte et cliquer sur ces pages dans ton navigateur, connecté avec ton compte, sans demander à chaque fois. N'autorise qu'un site de confiance."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",

@@ -153,6 +153,15 @@
       "tab_gone": "The Bot's tab is closed, so there is no live page to show.",
       "app_off": "This app is turned off, so it can't show the browser. Turn it on in Apps to see the page again.",
       "actions": "What the Bot did"
+    },
+    "browserSites": {
+      "add_title": "Allow a new browsing site?",
+      "add_asked_by": "{{app}} asks to add the site below to the pages its own agent may browse.",
+      "add_app_details": "By {{author}} · app id {{id}}",
+      "add_app_id": "App id {{id}}",
+      "add_star": "Each * in it matches any text, so it covers every page whose address fits.",
+      "add_risk": "Once allowed, the app's own agent can open, read, type and click on these pages in your browser, signed in as you, without asking each time. Allow only a site you trust. You can remove it later.",
+      "add_allow": "Allow site"
     }
   },
   "apps": {
@@ -7053,7 +7062,23 @@
       "v_2": "· v",
       "websocket_events": "WebSocket Events",
       "webhook_source_desc": "Accepts requests from outside services, and a request can start work.",
-      "webhook_source_id": "Policy name"
+      "webhook_source_id": "Policy name",
+      "browser_sites_list_title": "Browsing sites",
+      "browser_sites_list_hint": "The pages this app's own agent may browse. A removed site ends at the agent's next step.",
+      "browser_sites_source_app": "From the app",
+      "browser_sites_source_owner": "Added by you",
+      "browser_sites_status_approved": "Allowed",
+      "browser_sites_status_pending": "Waiting for approval",
+      "browser_sites_status_disabled": "Turned off",
+      "browser_sites_status_removed": "Removed",
+      "browser_sites_remove": "Remove",
+      "browser_sites_turn_on": "Turn on",
+      "browser_sites_add_back": "Add back",
+      "browser_sites_remove_failed": "Could not remove the site: {{error}}",
+      "browser_sites_add_failed": "Could not add the site back: {{error}}",
+      "browser_sites_turn_on_title": "Turn this browsing site back on?",
+      "browser_sites_add_back_title": "Add this browsing site back?",
+      "browser_sites_restore_risk": "The app's own agent can then open, read, type and click on these pages in your browser, signed in as you, without asking each time. Allow only a site you trust."
     },
     "appPage": {
       "loading_app": "Loading app…"

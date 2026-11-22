@@ -464,6 +464,15 @@ def register_external_app(
                 name=name,
                 error=f"could not clear earlier memory consent for {name!r}: {exc}",
             )
+        # Browsing sites the owner added for an earlier install go too.
+        try:
+            protected_app_state.forget_owner_browser_sites(name)
+        except (OSError, ValueError) as exc:
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"could not clear earlier browsing sites for {name!r}: {exc}",
+            )
         dest.mkdir(parents=True, exist_ok=True)
         meta = InstalledApp(
             name=name,

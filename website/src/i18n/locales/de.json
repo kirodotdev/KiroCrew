@@ -461,6 +461,15 @@
       "tab_gone": "Der Tab vom Bot ist geschlossen, daher gibt es keine Live-Seite zum Anzeigen.",
       "app_off": "Diese App ist ausgeschaltet und kann den Browser nicht zeigen. Schalte sie unter Apps ein, um die Seite wieder zu sehen.",
       "actions": "Was der Bot getan hat"
+    },
+    "browserSites": {
+      "add_title": "Neue Website erlauben?",
+      "add_asked_by": "{{app}} möchte die Website unten zu den Seiten hinzufügen, die sein eigener Agent besuchen darf.",
+      "add_app_details": "Von {{author}} · App-ID {{id}}",
+      "add_app_id": "App-ID {{id}}",
+      "add_star": "Jedes * darin passt auf beliebigen Text, also gilt es für jede Seite, deren Adresse passt.",
+      "add_risk": "Danach kann der eigene Agent der App diese Seiten in deinem Browser, mit deiner Anmeldung, öffnen, lesen, darauf tippen und klicken, ohne jedes Mal zu fragen. Erlaube nur eine Website, der du vertraust. Du kannst sie später wieder entfernen.",
+      "add_allow": "Website erlauben"
     }
   },
   "apps": {
@@ -12371,7 +12380,23 @@
         "installed_needs_newer_host": "Die installierte Version von {{name}} braucht ein neueres {{productName}}. Aktualisiere {{productName}}; deine Daten bleiben unverändert."
       },
       "grants_reconsent_composer_actions": "Eingabefeld-Schaltflächen: Die App darf diese Schaltflächen zum +-Menü des Eingabefelds hinzufügen. Ein Klick fügt den Text der App in deinen Entwurf ein; die App kann den Entwurf weder sehen noch senden.",
-      "grants_reconsent_selection_actions": "Aktionen für ausgewählten Text: Die Einträge der App erhalten Text, den du in Chat-Antworten auswählst, und können ein Ergebnis zum Kopieren oder Öffnen anbieten."
+      "grants_reconsent_selection_actions": "Aktionen für ausgewählten Text: Die Einträge der App erhalten Text, den du in Chat-Antworten auswählst, und können ein Ergebnis zum Kopieren oder Öffnen anbieten.",
+      "browser_sites_list_title": "Besuchte Websites",
+      "browser_sites_list_hint": "Die Seiten, die der eigene Agent dieser App besuchen darf. Eine entfernte Website endet beim nächsten Schritt des Agents.",
+      "browser_sites_source_app": "Von der App",
+      "browser_sites_source_owner": "Von dir hinzugefügt",
+      "browser_sites_status_approved": "Erlaubt",
+      "browser_sites_status_pending": "Wartet auf Freigabe",
+      "browser_sites_status_disabled": "Ausgeschaltet",
+      "browser_sites_status_removed": "Entfernt",
+      "browser_sites_remove": "Entfernen",
+      "browser_sites_turn_on": "Einschalten",
+      "browser_sites_add_back": "Wieder hinzufügen",
+      "browser_sites_remove_failed": "Die Website konnte nicht entfernt werden: {{error}}",
+      "browser_sites_add_failed": "Die Website konnte nicht wieder hinzugefügt werden: {{error}}",
+      "browser_sites_turn_on_title": "Diese Website wieder einschalten?",
+      "browser_sites_add_back_title": "Diese Website wieder hinzufügen?",
+      "browser_sites_restore_risk": "Danach kann der eigene Agent der App diese Seiten in deinem Browser, mit deiner Anmeldung, öffnen, lesen, darauf tippen und klicken, ohne jedes Mal zu fragen. Erlaube nur eine Website, der du vertraust."
     },
     "appPage": {
       "loading_app": "App wird geladen…",

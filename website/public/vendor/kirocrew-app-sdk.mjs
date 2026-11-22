@@ -28,6 +28,8 @@ export const {
   useHostSessions,
   // Media buttons on the tab the app's own agent browses (level 10).
   useBrowserMedia, BROWSER_MEDIA_PATH,
+  // The app's browsing list; adding a site asks the owner in the dashboard's dialog (level 13).
+  useBrowserSites,
   // The live view of the app's own slot, take over and hand back, coordinates (level 11).
   BrowserView, useBrowserView, useBrowserCoords,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,

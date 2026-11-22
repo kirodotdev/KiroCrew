@@ -25,6 +25,8 @@ const untrustApp = vi.fn()
 vi.mock('../api/client', () => ({
   api: {
     getApp: (...a: unknown[]) => getApp(...a),
+    // The browsing sites card reads its own list; an empty one draws nothing.
+    getAppBrowserSites: () => Promise.resolve({ sites: [], active: [] }),
     listRegistry: (...a: unknown[]) => listRegistry(...a),
     system: (...a: unknown[]) => system(...a),
     installFromRegistryStream: (...a: unknown[]) => installFromRegistryStream(...a),

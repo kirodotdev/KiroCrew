@@ -23,6 +23,7 @@ export const CORE_APP_ROUTE_SEGMENTS = new Set([
   '_jobs',
   '_sel',
   'bot-grants',
+  'browser-sites',
   'config',
   'dev',
   'disable',

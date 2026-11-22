@@ -62,6 +62,7 @@ import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
 import AppDetailPageMcpServers from './AppDetailPageMcpServers'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
 import AppDetailBotGrants, { StagedBotScopes, stagedBotScopes } from './AppDetailBotGrants'
+import AppDetailBrowserSites from './AppDetailBrowserSites'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
@@ -1284,6 +1285,7 @@ export default function AppDetailPage() {
                   await load({ keepView: true })
                   // The Bot card's own query: `mc:apps-changed` marks it stale without a refetch.
                   if (stagedBots.length) void queryClient.invalidateQueries({ queryKey: ['apps', app.name, 'bot-grants'] })
+                  if (stagedBrowserSites.length) void queryClient.invalidateQueries({ queryKey: ['apps', app.name, 'browser-sites'] })
                   window.dispatchEvent(new Event('mc:apps-changed'))
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e))
@@ -1842,7 +1844,7 @@ export default function AppDetailPage() {
             </Card>
           )}
 
-          {app.installed && <AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} />}
+          {app.installed && <><AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} /><AppDetailBrowserSites appName={app.name} onChanged={() => void load({ keepView: true })} /></>}
 
           <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 
