@@ -670,6 +670,82 @@ class TestReviewRound2Fix:
         assert rt.read_env_file(c, "y")["CHECKOUT"] == "/a/b"
 
 
+class TestEnvFileWriteReadsItsBaseStrictly:
+    """A merge-write never publishes only its update over a file it could not read.
+
+    Merging onto ``{}`` would drop ``CHECKOUT``, ``PORT``, ``SEED`` and ``APPROVAL``,
+    and a dropped ``APPROVAL`` boots the pod on auto-approve. A file that cannot be
+    read is simulated by failing ``Path.read_bytes`` for the env file only, which
+    is the call every read attempt makes. Riding out a brief Windows sharing hold
+    is ``atomic_write.read_bytes_with_retry``'s own contract; these pin that the
+    write's base read goes through it and refuses when the read still fails.
+    """
+
+    BEFORE = "CHECKOUT='/checkout'\nPORT='4100'\nAPPROVAL='reads'\nSEED='s1'\n"
+
+    @staticmethod
+    def _fail_reads(mp: pytest.MonkeyPatch, target: Path) -> None:
+        real = Path.read_bytes
+
+        def read_bytes(self: Path) -> bytes:
+            if self == target:
+                raise PermissionError(13, "The process cannot access the file", str(self))
+            return real(self)
+
+        mp.setattr(Path, "read_bytes", read_bytes)
+
+    def test_the_base_read_rides_out_a_sharing_hold_and_keeps_every_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path))
+        c = PodConfig.load()
+        env = c.env_file("p1")
+        env.parent.mkdir(parents=True, exist_ok=True)
+        env.write_text(self.BEFORE, encoding="utf-8", newline="")
+        seen: list[Path] = []
+        real = rt.read_bytes_with_retry
+
+        def recording(path, **kwargs):
+            seen.append(Path(path))
+            return real(path, **kwargs)
+
+        monkeypatch.setattr(rt, "read_bytes_with_retry", recording, raising=False)
+        rt.write_env_file(c, "p1", {"LIMIT": "1"})
+        assert seen == [env]
+        assert rt.read_env_file(c, "p1") == {
+            "CHECKOUT": "/checkout",
+            "PORT": "4100",
+            "APPROVAL": "reads",
+            "SEED": "s1",
+            "LIMIT": "1",
+        }
+
+    def test_a_lasting_hold_raises_and_leaves_the_file_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path))
+        c = PodConfig.load()
+        env = c.env_file("p1")
+        env.parent.mkdir(parents=True, exist_ok=True)
+        env.write_text(self.BEFORE, encoding="utf-8", newline="")
+        before = env.read_bytes()
+        with monkeypatch.context() as mp:
+            self._fail_reads(mp, env)
+            with pytest.raises(rt.PodError, match="cannot be read"):
+                rt.write_env_file(c, "p1", {"LIMIT": "1"})
+            with pytest.raises(rt.PodError):
+                rt.pin_checkout(c, "p1", Path("/elsewhere"))
+        assert env.read_bytes() == before
+
+    def test_a_missing_file_is_still_created(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path))
+        c = PodConfig.load()
+        rt.write_env_file(c, "fresh", {"PORT": "4200"})
+        assert rt.read_env_file(c, "fresh") == {"PORT": "4200"}
+
+
 class TestEnvFileConcurrentWrite:
     """``write_env_file`` merges, so it must serialize per pod name.
 
