@@ -393,13 +393,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    # A delegated (``via_app``) token sends a plain message: no command, agent, mode or
-    # other setting rides along.
-    from kiro_crew.dashboard.delegated_scope import body_refusal
-
-    delegated_refusal = body_refusal(request, body)
-    if delegated_refusal is not None:
-        return delegated_refusal
     # Whether a PERSON typed this send: not an app token, nor a hub conductor's send
     # marked agent-origin (`agent_origin`, the `crew` actor's turn). Every person-only
     # grant below reads `_person_send`; app-scope checks read `request_app`.

@@ -11,6 +11,7 @@ here are described in words, not spelled out.
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,12 @@ from kiro_crew.dashboard.handlers import core as core_mod
 _REAL = "the-real-local-secret-in-words"
 _PEER = 4242
 _APP = "tunnel-like"
+
+#: Leg two is refused on win32 (``unverified-platform``, ``test_win32_never_takes_leg_two``),
+#: so a test of what leg two admits or refuses by reason runs where it can be taken.
+_LEG_TWO_HOST = pytest.mark.skipif(
+    sys.platform == "win32", reason="leg two is never taken on win32"
+)
 
 
 @pytest.fixture
@@ -80,6 +87,7 @@ async def test_the_real_secret_from_a_host_process_still_mints(world, minted, fa
     assert "via_app" not in (minted["extra"] or {})
 
 
+@_LEG_TWO_HOST
 @pytest.mark.asyncio
 async def test_leg_two_mints_for_the_apps_own_backend(world, minted, fake_sel):
     resp = await _mint(dashboard_proxy.stand_in_value(_APP))
@@ -105,12 +113,14 @@ async def _assert_refused(value: str, fake_sel, reason: str, app: str = _APP):
     assert "via=delegated" in row["resources"]
 
 
+@_LEG_TWO_HOST
 @pytest.mark.asyncio
 async def test_a_value_derived_for_another_app_is_refused(world, minted, fake_sel):
     other = dashboard_proxy.stand_in_value("another-app")
     await _assert_refused(other, fake_sel, "wrong-value")
 
 
+@_LEG_TWO_HOST
 @pytest.mark.asyncio
 async def test_a_host_process_with_the_derived_value_is_refused(world, minted, fake_sel):
     value = dashboard_proxy.stand_in_value(_APP)
@@ -118,6 +128,7 @@ async def test_a_host_process_with_the_derived_value_is_refused(world, minted, f
     await _assert_refused(value, fake_sel, "not-spawned-app", app="none")
 
 
+@_LEG_TWO_HOST
 @pytest.mark.asyncio
 async def test_a_value_from_another_boot_is_refused(world, minted, fake_sel, monkeypatch):
     value = dashboard_proxy.stand_in_value(_APP)
@@ -125,6 +136,7 @@ async def test_a_value_from_another_boot_is_refused(world, minted, fake_sel, mon
     await _assert_refused(value, fake_sel, "wrong-value")
 
 
+@_LEG_TWO_HOST
 @pytest.mark.asyncio
 async def test_a_value_from_before_a_reinstall_is_refused(world, minted, fake_sel):
     value = dashboard_proxy.stand_in_value(_APP)
@@ -132,6 +144,7 @@ async def test_a_value_from_before_a_reinstall_is_refused(world, minted, fake_se
     await _assert_refused(value, fake_sel, "not-granted")
 
 
+@_LEG_TWO_HOST
 @pytest.mark.asyncio
 async def test_a_value_after_the_owner_disables_the_app_is_refused(world, minted, fake_sel):
     value = dashboard_proxy.stand_in_value(_APP)

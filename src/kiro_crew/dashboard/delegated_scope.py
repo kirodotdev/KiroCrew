@@ -24,6 +24,7 @@ authenticated the request.
 from __future__ import annotations
 
 import asyncio
+import json
 
 from aiohttp import web
 
@@ -125,7 +126,7 @@ BODY_FIELDS: dict[str, frozenset[str]] = {
 def body_refusal(request: web.Request, body: dict) -> web.Response | None:
     """A 403 when a delegated token's body on a chat route sets more than it may.
 
-    Called by the two chat handlers after they parse the body. No-op for any request that
+    Called by ``enforce_delegated`` for a send and by the slot-create handler for a create. No-op for any request that
     is not delegated (no ``via_app`` mark). A send whose message opens with ``/`` is a
     chat command, not a plain message, and is refused.
     """
@@ -192,4 +193,13 @@ async def enforce_delegated(request: web.Request, path: str) -> web.Response | N
     if canonical in _OWN_APP_ONLY and request.match_info.get("name") != via_app:
         return _refuse(request, via_app, path, "other-app")
     request["via_app"] = via_app
+    if canonical == "/api/chat" and request.can_read_body:
+        # The send handler reads its body whole, so reading it here (cached by aiohttp, read
+        # again by the handler) holds the body to BODY_FIELDS without touching that handler.
+        try:
+            body = json.loads(await request.read())
+        except ValueError:
+            return None
+        if isinstance(body, dict):
+            return body_refusal(request, body)
     return None

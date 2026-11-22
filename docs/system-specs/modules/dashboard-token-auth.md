@@ -480,7 +480,8 @@ Request flow:
    are deny by default). On `POST /api/chat/slots` and `POST /api/chat` the body may
    set only the fields in `delegated_scope.BODY_FIELDS`, and a send whose message
    opens with `/` is refused, so no mode, agent, model, project or chat command rides
-   along (`delegated_scope.body_refusal`, called by both handlers). A GET that returns a stored credential (`/api/mcp/custom/<name>`,
+   along (`delegated_scope.body_refusal`: `enforce_delegated` reads a send's body,
+   the slot-create handler checks a create's). A GET that returns a stored credential (`/api/mcp/custom/<name>`,
    `/api/connections/mint`, `/api/config/kirocrew`, `/api/webhooks`, the channel
    `/config` reads) is `deny`. The credential set
    (`/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`,
