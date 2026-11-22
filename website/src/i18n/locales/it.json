@@ -24063,6 +24063,8 @@
       "restart": "Si applica dopo il riavvio del gateway",
       "default_label": "Predefinito: {{value}}",
       "current_label": "Attuale: {{value}}",
+      "show_all_values": "Mostra tutti ({{count}})",
+      "show_fewer_values": "Mostra meno",
       "status_idle_draft": "Si salva quando esci dal campo",
       "status_idle_instant": "Si salva appena lo cambi",
       "status_saving": "Salvataggio…",

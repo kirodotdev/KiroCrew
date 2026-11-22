@@ -11415,6 +11415,8 @@
       "restart": "Applies after gateway restart",
       "default_label": "Default: {{value}}",
       "current_label": "Current: {{value}}",
+      "show_all_values": "Show all ({{count}})",
+      "show_fewer_values": "Show less",
       "status_idle_draft": "Saves when you leave the field",
       "status_idle_instant": "Saves as soon as you change it",
       "status_saving": "Saving…",
