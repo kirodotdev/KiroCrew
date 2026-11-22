@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         ACTIVATION_REVIEW,
         DELIVERY_DEBT_NOTICE,
         LINE_BREAKS,
+        MARKER_WRAPPERS,
         OPTIONS_RE_LINE,
         SLACK_MSG_LIMIT,
         TRUNCATION_NOTICE,
@@ -44,7 +45,6 @@ if TYPE_CHECKING:
         ends_plain_sentence,
         is_control_tag_tail,
         is_wait_identity,
-        line_start,
         logger,
         redact,
         redact_credentials,
@@ -88,13 +88,17 @@ def _comment_hold_is_protocol(hold: str) -> bool:
     return len(hold) <= _COMMENT_HOLD_MAX and is_control_tag_tail(hold)
 
 
-def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -> tuple[str, str]:
+def _filter_options_brackets(
+    text: str, bracket_hold: str, stream_buffer: str, line_start: bool = True
+) -> tuple[str, str]:
     """Filter ``[OPTIONS: ...]`` tags and control-tag comments from streaming
     text character-by-character.
 
     Returns the updated *(bracket_hold, stream_buffer)* tuple. The hold is one
-    string and its first character says what it holds: ``[`` opens the OPTIONS
-    bracket-hold, a line-leading ``<`` opens the comment hold.
+    string and its first character says what it holds: a line-leading ``<``
+    opens the comment hold, anything else the OPTIONS hold. *line_start* says
+    whether the text already sent ends a line, which an empty buffer cannot
+    show; it is read only while the buffer is empty.
 
     Slack streams by APPENDING and appended text is final (``chat.stopStream``
     does not replace it), so a control tag can only be kept off the stream by
@@ -113,7 +117,9 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
     as the diverging byte arrives -- and that byte is then processed on its
     own, so a ``[`` that ends a hold still opens the bracket-hold.
     """
-    # A ``[`` is held only while it can still spell an OPTIONS head; once it
+    # A hold that opens at its line's start keeps the whole line, so the line
+    # grammar sees it as delivery does (``_settle_marker_line``). Mid-line, a
+    # ``[`` is held only while it can still spell an OPTIONS head; once it
     # cannot, it is ordinary text and is released at once. A head ends at the
     # closer that balances it; one still open at its line's end, or at the end of
     # the turn, is decided by the line grammar (``OPTIONS_RE_LINE``).
@@ -127,7 +133,17 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
             # that proved it falls through to be judged on its own.
             stream_buffer += bracket_hold
             bracket_hold = ""
-        if bracket_hold:
+        at_line_start = stream_buffer[-1] in LINE_BREAKS if stream_buffer else line_start
+        if bracket_hold and at_line_start:
+            released = _settle_marker_line(bracket_hold, ch)
+            if released is None:
+                bracket_hold += ch
+                continue
+            # Decided: send what the line grammar leaves, and judge the byte that
+            # decided it on its own.
+            stream_buffer += released
+            bracket_hold = ""
+        elif bracket_hold:
             bracket_hold += ch
             if not bracket_hold.startswith(head):
                 if head.startswith(bracket_hold):
@@ -148,11 +164,12 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
                 # A head still open at its line's end: the line grammar decides it,
                 # dropping a marker it accepts (a lookalike closer) and releasing
                 # every other byte; then the break is judged on its own.
-                stream_buffer += _settle_options_head(stream_buffer, bracket_hold[:-1])
+                stream_buffer += OPTIONS_RE_LINE.sub("", bracket_hold[:-1])
                 bracket_hold = ""
             else:
                 continue
-        if ch == "[":
+        at_line_start = stream_buffer[-1] in LINE_BREAKS if stream_buffer else line_start
+        if ch == "[" or (at_line_start and _could_open_marker_line(ch)):
             bracket_hold = ch
         elif ch == "<" and _at_tag_line_start(stream_buffer):
             bracket_hold = ch
@@ -161,38 +178,59 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
     return bracket_hold, stream_buffer
 
 
-def _settle_options_head(stream_buffer: str, head: str) -> str:
-    """What to send for *head*, an OPTIONS head that ended its line unbalanced.
+def _could_open_marker_line(line: str) -> bool:
+    """Whether *line*, read from its start, can still open a marker line:
+    indentation, at most three wrapper characters, then a prefix of the head."""
+    body = line.lstrip(" \t")
+    rest = body.lstrip(MARKER_WRAPPERS)
+    return len(body) - len(rest) <= 3 and "[OPTIONS:".startswith(rest)
 
-    The line grammar decides, as delivery does: a marker it accepts is dropped
-    and every other byte is released. The head is judged first on its own, then
-    with the part of its line already in *stream_buffer*, because a leading
-    wrapper (``**[OPTIONS: …】**``) is only accepted together with that wrapper.
 
-    shortcut: the line's start is gone when the buffer was flushed mid-line (the
-    same limit as :func:`_at_tag_line_start`), and the wrapper itself has already
-    gone out; upgrade to a stream that keeps its current line to close both.
+def _settle_marker_line(hold: str, ch: str) -> str | None:
+    """Feed *ch* to *hold*, a hold that opened at its line's start.
+
+    Returns ``None`` while the line is undecided (the caller adds *ch* to the
+    hold), else the text to send for *hold*; *ch* is then judged on its own.
+
+    Once the line holds the head it is held to its end, where an accepted
+    marker is dropped with its wrapper. A glued line (prose right after the
+    closer) is a marker only when it ends the reply (``relocate_glued_tail_marker``),
+    so it stays held while only whitespace and a control-tag tail, which delivery
+    strips first, follow it; the end of the turn or a ``wait`` settles it
+    (``_resolve_options_hold``).
     """
-    cleaned = OPTIONS_RE_LINE.sub("", head)
-    if cleaned != head:
+    if ch.isspace() and (hold[-1] in LINE_BREAKS or (ch not in LINE_BREAKS and hold[-1].isspace())):
+        # A whitespace run decides nothing inside a line; past a glued line, no whitespace does.
+        return None
+    if "[OPTIONS:" not in hold:
+        return None if _could_open_marker_line(hold + ch) else hold
+    end = min((i for i in map(hold.find, LINE_BREAKS) if i >= 0), default=-1)
+    if end >= 0:
+        # Past the end of a glued line: only whitespace and a control-tag tail may follow it.
+        tail = (hold[end + 1 :] + ch).lstrip()
+        return None if not tail or _comment_hold_is_protocol(tail) else hold
+    if ch not in LINE_BREAKS:
+        return None
+    cleaned = OPTIONS_RE_LINE.sub("", hold)
+    if cleaned != hold:
         return cleaned
-    line = stream_buffer[line_start(stream_buffer, len(stream_buffer)) :]
-    if line and OPTIONS_RE_LINE.search(line + head) is not None:
-        return ""
-    return head
+    return None if relocate_glued_tail_marker(hold) != hold else hold
 
 
-def _resolve_options_hold(bracket_hold: str, stream_buffer: str = "") -> tuple[str, str]:
-    """Settle a ``[`` hold when the stream ENDS; returns *(hold, release)*.
+def _resolve_options_hold(bracket_hold: str) -> tuple[str, str]:
+    """Settle an OPTIONS hold when the message ENDS; returns *(hold, release)*.
 
-    A ``[`` hold left at the end is a head that never balanced, or a bare head
-    prefix. It is the reply's last line, so the shared grammar decides it the way
-    delivery does (:func:`_settle_options_head`, with a glued tail moved above
-    the marker first). A comment hold is not this function's.
+    The hold is the reply's last line (or that line's tail) with any control-tag
+    tail after it, a head that never balanced, or a bare head prefix, so the
+    shared grammar decides it the way delivery does: a control-tag tail is
+    dropped and a glued tail is moved above its marker first, then an accepted
+    marker is dropped and every other byte is sent. A comment hold is not this
+    function's.
     """
-    if not bracket_hold or bracket_hold[0] != "[":
+    if not bracket_hold or bracket_hold[0] == "<":
         return bracket_hold, ""
-    return "", _settle_options_head(stream_buffer, relocate_glued_tail_marker(bracket_hold))
+    line = strip_control_comments(bracket_hold)
+    return "", OPTIONS_RE_LINE.sub("", relocate_glued_tail_marker(line))
 
 
 def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str]:
@@ -204,8 +242,8 @@ def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str
     the held tail IS the control tag and is dropped; when it removes nothing
     (an unterminated fence swallows the tail, a tag prefix that never
     completed, a body over the bound) the span is content and is released for
-    one last append. A ``[`` hold is not this function's: it keeps the
-    bracket-hold's own end-of-turn outcome.
+    one last append. An OPTIONS hold is not this function's: it keeps the
+    OPTIONS hold's own end-of-turn outcome.
     """
     if not bracket_hold or bracket_hold[0] != "<":
         return bracket_hold, ""
@@ -407,7 +445,10 @@ class _AnswerStream:
         self.stream_buffer = (
             ""  # unsent chunks for streaming API (buffered between rate-limited appends)
         )
-        self.bracket_hold = ""  # text held back from '[' until ']' to filter [OPTIONS: ...]
+        self.bracket_hold = ""  # held back while it may be an [OPTIONS:] marker or a control tag
+        # Whether the text already sent ends a line, so the hold knows where the
+        # next byte lands once the buffer is empty (see ``_filter_options_brackets``).
+        self.line_start = True
         self.last_edit = 0.0
         self.task_counter = 0  # incrementing task ID for task cards
         self.active_task_id = ""  # current in-progress task
@@ -823,6 +864,8 @@ class _AnswerStream:
         if self.stream_buffer:
             self.stream_buffer, _ = strip_thinking_tags(self.stream_buffer, strip_whitespace=False)
             await self.append(self.stream_buffer)
+            if self.stream_buffer:
+                self.line_start = self.stream_buffer[-1] in LINE_BREAKS
             self.stream_buffer = ""
 
     async def on_text(self, event: LLMEvent) -> None:
@@ -871,12 +914,11 @@ class _AnswerStream:
                 )
             self.status_dirty = False
 
-        # ── Bracket hold-back: filter [OPTIONS: ...] from stream ──
-        # When inside a bracket, accumulate into bracket_hold.
-        # On ']', release if not OPTIONS, suppress if it is.
+        # ── Hold-back: filter [OPTIONS: ...] and control tags from the stream ──
+        # See ``_filter_options_brackets`` for what is held and when it is decided.
         if self.use_slack_stream:
             self.bracket_hold, self.stream_buffer = _filter_options_brackets(
-                text, self.bracket_hold, self.stream_buffer
+                text, self.bracket_hold, self.stream_buffer, self.line_start
             )
         else:
             self.stream_buffer += text
@@ -929,6 +971,10 @@ class _AnswerStream:
         tool_kind = event.tool_kind or ""
         tool_detail = event.tool_purpose or tool_kind
         tool_status = f"\n🫆 `{tool_name}`\n"
+        # Keyed on the tool's programmatic identity when the transport
+        # sent one (same rule as SlackRenderer); the title compare is the
+        # fallback for a frame without ``_meta.kiro``.
+        _is_wait = is_wait_identity(event.tool_name) if event.tool_name else tool_name == "wait"
         await self.ensure_started()
         if self.use_slack_stream:
             # Best-effort: MUST NOT raise. Decoration
@@ -945,6 +991,14 @@ class _AnswerStream:
                 )
             self.status_dirty = True
         if self.use_slack_stream:
+            if _is_wait:
+                # A wait ends this message, so an open OPTIONS hold is its tail:
+                # settle it by the grammar the end of the turn uses, before the
+                # card, instead of carrying it to the next message. A marker
+                # dropped here makes no buttons: delivery reads only the text
+                # after the last wait.
+                self.bracket_hold, _released = _resolve_options_hold(self.bracket_hold)
+                self.stream_buffer += _released
             # Flush any buffered text before the tool status
             await self.flush()
             await self.release_at_boundary()
@@ -986,10 +1040,6 @@ class _AnswerStream:
         # streaming message now so Slack doesn't show an error.
         # ensure_started() will open a new message when
         # the next text chunk arrives after wait returns.
-        # Keyed on the tool's programmatic identity when the transport
-        # sent one (same rule as SlackRenderer); the title compare is the
-        # fallback for a frame without ``_meta.kiro``.
-        _is_wait = is_wait_identity(event.tool_name) if event.tool_name else tool_name == "wait"
         if _is_wait and self.use_slack_stream and self.stream_ts:
             if self.active_task_id:
                 _elapsed = self.tool_elapsed_str()
@@ -1036,6 +1086,7 @@ class _AnswerStream:
                     exc_info=True,
                 )
             self.stream_ts = None
+            self.line_start = True  # the text after the wait opens a new message
             # The text after the wait is a new answer, so it owns no earlier message.
             self.rotated_ts = []
             self.given_back = ""
@@ -1111,9 +1162,10 @@ class _AnswerStream:
     async def finish(self, untrimmed: str) -> None:
         """Complete the last task card and send what the stream still holds.
 
-        A ``[`` hold is settled by the marker grammar: an accepted marker is
-        dropped and anything else is sent; a comment hold is settled against the
-        whole reply and released when it is content.
+        An OPTIONS hold is settled by the marker grammar: an accepted marker and a
+        control-tag tail held after it are dropped and anything else is sent; a
+        comment hold is settled against the whole reply and released when it is
+        content.
         """
         # Mark last task complete
         self.finishing = True
@@ -1125,7 +1177,7 @@ class _AnswerStream:
             await self.append_task(self.active_task_id, _ct, "complete")
         self.bracket_hold, _released = _resolve_comment_hold(self.bracket_hold, untrimmed)
         self.stream_buffer += _released
-        self.bracket_hold, _released = _resolve_options_hold(self.bracket_hold, self.stream_buffer)
+        self.bracket_hold, _released = _resolve_options_hold(self.bracket_hold)
         self.stream_buffer += _released
         if self.stream_buffer:
             self.stream_buffer, _ = strip_thinking_tags(self.stream_buffer, strip_whitespace=False)
