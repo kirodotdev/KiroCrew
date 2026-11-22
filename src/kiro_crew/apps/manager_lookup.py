@@ -139,18 +139,23 @@ def _app_display_name(app_name: str) -> str:
     return label if isinstance(label, str) and label.strip() else app_name
 
 
-def _screened_spec_path(path: Path) -> Path | None:
+def _screened_spec_path(path: Path, *, canonical_gate: bool = False) -> Path | None:
     """*path* as the screened canonical path to read, or None when the screen refuses.
 
     :func:`kiro_crew.hooks.validate_file_path` reads a link's own target before
     anything resolves it, so a link into a protected location or an untrusted share
-    is refused without being followed; the hardened reader then reads the canonical
-    path the screen returned.
+    is refused without being followed; the caller then reads the canonical path
+    the screen returned. *canonical_gate* answers inline off the event loop,
+    with no resolver-pool submission.
     """
     from kiro_crew import hooks
 
     try:
-        screened = hooks.validate_file_path(str(path))
+        # Passed only when set: a default call keeps the one-argument shape stand-ins take.
+        if canonical_gate:
+            screened = hooks.validate_file_path(str(path), canonical_gate=True)
+        else:
+            screened = hooks.validate_file_path(str(path))
     except (OSError, ValueError):
         return None
     return None if screened is None else Path(screened)
@@ -686,11 +691,25 @@ def app_enabled_state(name: str) -> bool | None:
     healthy app's routes and modules on the next tick. That reader has 24 callers and
     ``get_app``/``list_apps`` 63, so it is not made tri-state here; the reconciler
     confirms absence through THIS function instead and defers on unknown.
+
+    A record that is itself a link is screened as :func:`_owner_json` screens it before
+    anything follows it, and a refused link reads as None. A regular record is read
+    unscreened, so the gate's fence over the whole apps folder (one entry there that
+    cannot be stat'd) cannot make every installed app unknown.
     """
     meta_path = app_dir(name) / INSTALLED_META_FILENAME
     try:
+        record = meta_path
+        if meta_path.is_symlink() or is_link_or_junction(meta_path):
+            screened = _screened_spec_path(meta_path, canonical_gate=True)
+            if screened is None:
+                logger.warning(
+                    "Metadata path %s is refused by the sensitive-path screen", meta_path
+                )
+                return None
+            record = screened
         try:
-            st = meta_path.stat()
+            st = record.stat()
         except FileNotFoundError:
             # A dangling link is a path that EXISTS and whose target cannot be
             # seen, which is not the same as nothing being there. Both predicates
@@ -711,7 +730,7 @@ def app_enabled_state(name: str) -> bool | None:
         if not stat.S_ISREG(st.st_mode):
             logger.warning("Metadata path %s is not a regular file", meta_path)
             return None
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        data = json.loads(record.read_text(encoding="utf-8"))
         # The owner's disable, kept outside the app's tree, outranks this file.
         return bool(InstalledApp.from_dict(data).enabled) and not owner_disabled(name)
     # No `json.JSONDecodeError` member: it subclasses ValueError, so pairing the two is
