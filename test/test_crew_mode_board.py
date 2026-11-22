@@ -85,6 +85,17 @@ def test_the_crew_mode_board_is_goal_board_and_the_block_names_it():
     assert "Your Dashboard tab shows template goal-board v" in block
 
 
+def test_a_root_crew_mode_block_names_the_page_but_no_page_tool():
+    # A root session mounts no kirocrew-panel, so it is never told to call
+    # dashboard_fields or dashboard_write.
+    dashboard_agentic.adopt_crew_mode_board(ROOT)
+    block = dashboard_agentic.session_turn_block(ROOT)
+    assert "Your Dashboard tab shows template goal-board v" in block
+    assert dashboard_agentic.BOARD_IN_PANEL_LINE in block
+    for line in ("dashboard_write", "dashboard_fields", "Fields you write", "Upkeep:"):
+        assert line not in block, (line, block)
+
+
 def test_a_board_page_tells_the_conductor_not_to_draw_a_board():
     dashboard_agentic.adopt_crew_mode_board(ROOT)
     block = dashboard_agentic.session_turn_block(ROOT)

@@ -103,9 +103,12 @@ Bot's own. An `empty` root session is shown `DEFAULT_TEMPLATE_ID`. Only shipped 
 match by name; an operator's page never does. The read route and the `[DASHBOARD]` turn
 block both resolve through it, and nothing is written. No shipped page may be named
 `default`.
-A ROOT session running the conductor template of conductor mode (`crew_mode.runs_crew_mode`) gets the same
-`[DASHBOARD]` block on every dashboard turn, keyed by its own store key
-(`session_turn_block`), but only once a page is ADOPTED: the default page it is shown
+A ROOT session running the conductor template of conductor mode (`crew_mode.runs_crew_mode`) gets a
+`[DASHBOARD]` block on every dashboard turn naming its page (and, on a board page, the
+board lines), keyed by its own store key (`session_turn_block`), but no field-write
+line, out-of-date line or upkeep pointer, because a root session has no
+`kirocrew-panel` to call `dashboard_fields` or `dashboard_write` with. It gets the block
+only once a page is ADOPTED: the default page it is shown
 while `empty` asks nothing of it, so it gets no block. A root session on any other agent
 (not in conductor mode) or on a Bot (`agent_kind == "member"`), a dispatched or adopted
 session, and a Bot DM get no session block; the page itself is left as it is.
@@ -412,9 +415,10 @@ directory keeps the scripts out of the skills index, and it holds nothing else.
 `_commit` calls `dashboard_upkeep.sync` with the record it just wrote, so adopt, apply,
 rollback and edit each copy the helpers the new page names and drop one it does not.
 `turn_block` calls it too -- a Bot on the page named for it never commits, and a gateway
-upgrade can change a shipped helper -- and, when the page has fields to write, adds the
-one pointer line saying `dashboard_fields` carries the upkeep text, which rides the
-member section through every compaction. `sync` writes only what differs, so it also
+upgrade can change a shipped helper -- and, only when the page has fields to write and
+the session has the page tools (a Bot with `agent.crew_panel` on, or the reply to its
+own `dashboard_apply`), adds the one pointer line saying `dashboard_fields` carries the
+upkeep text, which rides the member section through every compaction. `sync` writes only what differs, so it also
 puts back a hand edit. A root session's own dashboard (`is_session_key`) has no
 Bot shell and gets no scripts and no helper path.
 

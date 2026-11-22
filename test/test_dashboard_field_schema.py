@@ -320,6 +320,17 @@ class TestTheTurnBlock:
         assert "mistake" not in block.lower(), "the mistake book stays behind dashboard_fields"
         assert len(block.splitlines()) <= 4
 
+    def test_with_the_crew_panel_off_the_block_names_the_page_and_no_field(self) -> None:
+        from kiro_crew.dashboard_templates import instance
+
+        # No Bot chat mounts kirocrew-panel then, so there is no dashboard_write to call.
+        instance.adopt("code-reviewer", "project-report")
+        with patch("kiro_crew.members.crew_panel_enabled", return_value=False):
+            block = dashboard_agentic.turn_block("code-reviewer", "code-reviewer")
+        assert "Your Dashboard tab shows template project-report" in block, block
+        assert "Fields you write" not in block
+        assert "Upkeep:" not in block
+
     def test_an_unadopted_crewmate_is_told_its_tab_shows_the_suggestions_page(self) -> None:
         # The website draws the suggestions page, not the generic default, for a
         # crewmate that adopted nothing; the block must not describe a page nobody sees.

@@ -1548,7 +1548,7 @@ def _member_slot(member: str, slug: str) -> str:
         return ""
 
 
-def turn_block(slug: str, member: str = "", *, slot: str = "") -> str:
+def turn_block(slug: str, member: str = "", *, page_tools: bool = True) -> str:
     """The ``[DASHBOARD]`` lines for a crewmate's turn, or ``""`` when it has none.
 
     A few lines on purpose: which page is in force, which fields are the crewmate's
@@ -1567,8 +1567,12 @@ def turn_block(slug: str, member: str = "", *, slot: str = "") -> str:
     crew panel off, because the fix is a tool call neither can make.
 
     With the ``dashboard_stale_fields`` preview on, the block also names each agentic
-    field that is out of date (:func:`stale_line`), read from the crewmate's DM slot,
-    or from *slot* for a root session's page, which has no crewmate.
+    field that is out of date (:func:`stale_line`), read from the crewmate's DM slot.
+
+    The fields/write line, the out-of-date line and the upkeep pointer are given only
+    to a session that can call the page tools (*page_tools* and the crew panel switch
+    on), because they are instructions to call ``dashboard_fields`` and
+    ``dashboard_write``. Any other session is told only which page is in force.
     TOTAL: a dashboard that cannot be read costs the turn this block, nothing else.
     """
     record, manifest = _read_page(slug)
@@ -1591,33 +1595,33 @@ def turn_block(slug: str, member: str = "", *, slot: str = "") -> str:
     from kiro_crew import dashboard_upkeep  # the upkeep module reads this one
 
     names = sorted(agentic_fields(manifest))
-    writes = ", ".join(names) if names else "none (every field is folded)"
+    fields = ", ".join(names) if names else "none (every field is folded)"
     shows = (
         f"the page you saved with dashboard_save (package version {manifest.version})"
         if manifest.id == _package_manifest_id()
         else f"template {manifest.id} v{manifest.version}"
     )
-    block = (
-        "[DASHBOARD]\n"
-        f"Your Dashboard tab shows {shows}.\n"
-        + f"Fields you write: {writes}. Call dashboard_fields for their shapes and "
-        "current values before dashboard_write."
-    )
-    if member and _crew_panel_on():
+    writes = page_tools and _crew_panel_on()
+    block = "[DASHBOARD]\n" + f"Your Dashboard tab shows {shows}."
+    if writes:
+        block += (
+            f"\nFields you write: {fields}. Call dashboard_fields for their shapes and "
+            "current values before dashboard_write."
+        )
+    if member and writes:
         # Only when the crewmate can act: with the crew panel off there is no
         # dashboard_save to call.
         unresolved = unresolved_line(manifest, _unresolved_fold_fields(slug, member, manifest))
         if unresolved:
             block += "\n" + unresolved
-    # The out-of-date line, preview on only. With the crew panel off a crewmate has
-    # no dashboard_write to call, so that silences it.
-    if names and stale_fields_enabled():
-        page_slot = slot or (_member_slot(member, slug) if member and _crew_panel_on() else "")
+    # The out-of-date line, preview on only, read from the crewmate's DM slot.
+    if writes and member and names and stale_fields_enabled():
+        page_slot = _member_slot(member, slug)
         stale = stale_notice(manifest, page_slot) if page_slot else ""
         if stale:
             block += "\n" + stale
     dashboard_upkeep.sync(slug, page=(record, manifest))
-    return block + ("\n" + dashboard_upkeep.pointer() if names else "")
+    return block + ("\n" + dashboard_upkeep.pointer() if writes and names else "")
 
 
 def unresolved_notice(slug: str, member: str) -> str:
@@ -1661,8 +1665,9 @@ def session_turn_block(slot_key: str) -> str:
 
     :func:`turn_block`, keyed by the session's own store key
     (``instance.session_instance_key``), so a session that has ADOPTED a page is told
-    which page its side panel Overview shows and which fields are its to write, the
-    same lines a crewmate gets for its Dashboard tab.
+    which page its side panel Overview shows. A root session has no page tools (no
+    ``kirocrew-panel``), so it gets no field-write line, out-of-date line or upkeep
+    pointer.
 
     Only an adopted page counts. A session that never adopted one reads the default
     page in force (``project-report``) and gets no block: that page is drawn without
@@ -1681,7 +1686,7 @@ def session_turn_block(slot_key: str) -> str:
     except Exception:
         logger.debug("no session dashboard block for %r", slot_key, exc_info=True)
         return ""
-    block = turn_block(key, slot=slot_key)
+    block = turn_block(key, page_tools=False)
     if block and _shows_board(key):
         # Said beside the page name, every turn: the prompt's rule alone was not
         # kept (a conductor still wrote its "Task board" into the reply). The goal
