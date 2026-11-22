@@ -131,7 +131,9 @@ async def api_browser_live_views_open(request: web.Request) -> web.Response:
             )
         browser_live.refresh_live_config(hub)
         try:
-            stream = await live_hub_views.start_view(hub, key, view_key, tab_id)
+            stream = await live_hub_views.start_view(
+                hub, key, view_key, tab_id, app=_slot_app(request, key)
+            )
         except LookupError as exc:
             return _error(str(exc) or "not_agent_tab", "that tab cannot be shown in a view", 404)
         if stream is None:

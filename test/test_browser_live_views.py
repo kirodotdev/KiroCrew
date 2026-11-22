@@ -14,7 +14,13 @@ Each guarantee and the one-line change that turns its test red:
 - look only: pass ``views=True`` on the claim route;
 - ends with the chat: drop the ``stop_view`` loop in ``browser_ops._close_tabs_of``;
 - ends with the app: drop ``_end_views`` in ``end_app_browser_views``;
-- preview and verb: drop ``_view_refusal`` in the open route.
+- preview and verb: drop ``_view_refusal`` in the open route;
+- revocation on keepalive (verb revoked): drop the ``revoked = True`` branch under
+  ``"view" not in ...`` in ``live_hub.py::LiveHub.set_visible``;
+- revocation on keepalive (preview off): drop the ``revoked = True`` branch under
+  ``not preview_on()`` in ``live_hub.py::LiveHub.set_visible``;
+- revocation on keepalive (app disabled): drop the ``app_disabled`` check in
+  ``browser_live.py::_run`` for view keys.
 """
 
 from __future__ import annotations
@@ -734,3 +740,134 @@ async def test_superseded_attach_does_not_delete_replacement_view() -> None:
     assert (
         hub._sessions.get(second_key) is second_sess
     ), "replacement session must not be forgotten by the superseded start_view"
+
+
+# --- revocation on keepalive ---
+# One-line change that turns each test red:
+# - revoke verb: remove the ``revoked = True`` branch under ``"view" not in ...`` in
+#   ``live_hub.py`` ``set_visible``.
+# - revoke preview: remove the ``revoked = True`` branch under ``not preview_on()`` in
+#   ``live_hub.py`` ``set_visible``.
+# - app disabled: remove the ``revoked = True`` branch under ``not preview_on()`` in
+#   ``live_hub.py`` ``set_visible`` (app_disabled also clears preview_on).
+
+
+async def _open_view_and_send_keepalive(client: TestClient, tab: str, grant: dict) -> str:
+    """Open a view, then send one keepalive heartbeat; return the view key."""
+    _, body = await _open(client, tab)
+    view_key = body["view_key"]
+    # Send a positive visibility heartbeat (the keepalive path in set_visible).
+    status, _ = await _post(
+        client,
+        "/api/browser/live/visibility",
+        {"session_key": view_key, "visible": True},
+    )
+    assert status == 200, f"keepalive failed: {status}"
+    return view_key
+
+
+async def test_a_running_view_is_ended_when_the_view_verb_is_revoked(grant) -> None:
+    """Revoking the app's ``view`` verb on a live view ends it on the next keepalive.
+
+    One-line change that turns this test red: remove the ``revoked = True`` branch
+    under ``"view" not in await asyncio.to_thread(app_browser_verbs, ...)`` in
+    ``live_hub.py::LiveHub.set_visible``.
+    """
+    await _browsing()
+    hub = lh.get_live_hub()
+    async with TestClient(TestServer(_app())) as client:
+        view_key = await _open_view_and_send_keepalive(client, "a", grant)
+        # View is open and alive.
+        assert hub.get(view_key) is not None, "view must be open before revocation"
+
+        # Revoke the ``view`` verb.
+        grant["verbs"] = ()
+
+        # One keepalive: set_visible detects the missing verb and stops the view.
+        status, _ = await _post(
+            client,
+            "/api/browser/live/visibility",
+            {"session_key": view_key, "visible": True},
+        )
+        assert status == 200, "keepalive should still return 200 after stop"
+        assert hub.get(view_key) is None, "view must be ended after verb is revoked"
+
+
+async def test_a_running_view_is_ended_when_the_preview_is_turned_off(grant) -> None:
+    """Turning off the preview on a live view ends it on the next keepalive.
+
+    One-line change that turns this test red: remove the ``revoked = True`` branch
+    under ``not await asyncio.to_thread(preview_on)`` in
+    ``live_hub.py::LiveHub.set_visible``.
+    """
+    await _browsing()
+    hub = lh.get_live_hub()
+    async with TestClient(TestServer(_app())) as client:
+        view_key = await _open_view_and_send_keepalive(client, "a", grant)
+        assert hub.get(view_key) is not None
+
+        # Turn the preview off.
+        grant["preview"] = False
+
+        status, _ = await _post(
+            client,
+            "/api/browser/live/visibility",
+            {"session_key": view_key, "visible": True},
+        )
+        assert status == 200
+        assert hub.get(view_key) is None, "view must be ended after preview is turned off"
+
+
+async def test_a_running_view_is_ended_when_the_app_is_disabled(grant) -> None:
+    """Disabling the app on a live view: the keepalive route already returns 403
+    and ends the view via the HTTP-layer ``app_disabled`` check in ``_run``.
+
+    One-line change that turns this test red: remove the ``app_disabled`` check
+    (line ~238 in ``browser_live.py``) from the ``_run`` wrapper for view keys.
+    """
+    await _browsing()
+    hub = lh.get_live_hub()
+    async with TestClient(TestServer(_app())) as client:
+        view_key = await _open_view_and_send_keepalive(client, "a", grant)
+        assert hub.get(view_key) is not None
+
+        # Disable the app (is_app_enabled returns False).
+        grant["on"]["bvtest"] = False
+
+        # The keepalive HTTP layer returns 403 app_disabled and the _run wrapper
+        # calls stop_view on the view key.
+        status, body = await _post(
+            client,
+            "/api/browser/live/visibility",
+            {"session_key": view_key, "visible": True},
+        )
+        assert status == 403
+        assert body.get("code") == "app_disabled"
+        assert hub.get(view_key) is None, "view must be ended after app is disabled"
+
+
+async def test_a_running_view_is_ended_via_ack_when_the_app_is_disabled(grant) -> None:
+    """Disabling the app on a live view ends it on the next frame ack (not only keepalive).
+
+    One-line change that turns this test red: remove the ``_end_views`` call from the
+    ``if off_app:`` branch in ``browser_live.py::_run``.
+    """
+    await _browsing()
+    hub = lh.get_live_hub()
+    async with TestClient(TestServer(_app())) as client:
+        view_key = await _open_view_and_send_keepalive(client, "a", grant)
+        assert hub.get(view_key) is not None, "view must be open before app is disabled"
+
+        # Disable the app.
+        grant["on"]["bvtest"] = False
+
+        # A frame ack (not a keepalive) hits the same _run wrapper, which calls
+        # _end_views on the view key before returning 403 app_disabled.
+        status, body = await _post(
+            client,
+            "/api/browser/live/ack",
+            {"session_key": view_key, "seq": 1},
+        )
+        assert status == 403
+        assert body.get("code") == "app_disabled"
+        assert hub.get(view_key) is None, "view must be ended after app is disabled (ack path)"

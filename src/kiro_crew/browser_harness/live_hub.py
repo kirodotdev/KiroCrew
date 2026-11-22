@@ -267,6 +267,10 @@ class LiveSession:
     #: (``live_hub_views.start_view``): that session's key. A view owns no tab and
     #: no turn, and is for looking only.
     view_of: str = ""
+    #: The app whose ``view`` verb was approved when this view opened. Set by
+    #: ``live_hub_views.start_view``; used by ``set_visible`` to revoke the view
+    #: when the grant is later withdrawn.
+    view_app: str = ""
 
     @property
     def relay(self) -> Relay | None:
@@ -1220,6 +1224,12 @@ class LiveHub:
                 from kiro_crew.browser_harness import live_hub_views as _lhv  # noqa: PLC0415
 
                 _lhv.reap_idle_views(self, sess.view_of)
+                # Revoke the view if the app has since lost its grant.
+                if sess.view_app:
+                    from kiro_crew.apps.browser_sdk import verb_refusal  # noqa: PLC0415
+
+                    if await asyncio.to_thread(verb_refusal, sess.view_app, "view"):
+                        await _lhv.stop_view(self, session_key)
         if sess.stream is not None:
             await sess.stream.set_visible(sess.visible)
 

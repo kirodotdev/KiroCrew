@@ -92,6 +92,7 @@ async def start_view(
     view_key: str,
     target_id: str,
     *,
+    app: str = "",
     stream_factory: Callable[..., LiveStream] | None = None,
 ) -> LiveStream | None:
     """Show one of *parent_key*'s own tabs in a second live picture, keyed *view_key*.
@@ -115,6 +116,7 @@ async def start_view(
     # Reserved before the first await: from here ``views_of`` lists the key, so a
     # second open that runs while this stream attaches is given another one.
     sess.view_of = parent_key
+    sess.view_app = app
     sess.turn_id = uuid4().hex
     sess.started_ms = int(time.time() * 1000)
     sess.ended = False
