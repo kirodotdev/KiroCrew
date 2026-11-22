@@ -101,7 +101,8 @@ def test_an_archive_config_with_the_data_home_as_workspace_folder_is_refused(cre
 def test_an_archive_config_with_an_unresolvable_workspace_folder_does_not_raise(crews):
     from kiro_crew.archive_config_vetting import config_document_refusal
 
-    assert config_document_refusal({"workspaces": {"bad": {"dir": "workspace\0"}}}) is None
+    # main's root check refuses an embedded NUL first; the point is a refusal, not a raise.
+    assert config_document_refusal({"workspaces": {"bad": {"dir": "workspace\0"}}}) is not None
 
 
 def test_an_archive_config_with_a_folder_below_the_data_home_is_kept(crews):
