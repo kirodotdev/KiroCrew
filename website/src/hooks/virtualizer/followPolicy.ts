@@ -1219,10 +1219,13 @@ export function useFollowPlacementPins<T>(ctx: {
   itemsRef: Ref<T[]>
   getKeyRef: Ref<(item: T, index: number) => string>
   setWindowRange: SetWindowRange
+  /** Moves a host's retained range (a native selection's rows) with the
+   *  bulk-prepend re-base below; see WindowState. */
+  shiftRetainedRange: (delta: number) => void
   follow: Pick<FollowState, 'stickRef' | 'lastHardInputAtRef' | 'pinCascadeUntilRef' | 'writeScrollTop'>
   pinning: Pick<Pinning, 'pinAuto' | 'forcePin'>
 }): void {
-  const { itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, setWindowRange } = ctx
+  const { itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, setWindowRange, shiftRetainedRange } = ctx
   const { stickRef, lastHardInputAtRef, pinCascadeUntilRef, writeScrollTop } = ctx.follow
   const { pinAuto, forcePin } = ctx.pinning
 
@@ -1318,6 +1321,8 @@ export function useFollowPlacementPins<T>(ctx: {
       // NOT-STICK is owned by the part-1/part-2 anchor machinery -- doing
       // it here too double-shifted the window (anti-loop test pins this).
       if (stickRef.current) {
+        // A retained range names rows, so it moves with them (see WindowState).
+        shiftRetainedRange(growth)
         setWindowRange((r) => ({
           start: Math.min(itemCount, r.start + growth),
           end: Math.min(itemCount, r.end + growth),

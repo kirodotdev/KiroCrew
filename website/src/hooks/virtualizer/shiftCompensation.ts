@@ -812,6 +812,9 @@ export function useShiftCompensation<T>(ctx: {
   itemsRef: Ref<T[]>
   anchorIdOf: (item: T, index: number) => string
   setWindowRange: SetWindowRange
+  /** Moves a host's retained range (a native selection's rows) by the
+   *  displacement part 1 re-based the window with; see WindowState. */
+  shiftRetainedRange: (delta: number) => void
   shift: ShiftCapture
   follow: Pick<FollowState, 'stickRef' | 'writeScrollTop'>
   pinning: Pick<Pinning, 'prePaintRepin'>
@@ -820,6 +823,7 @@ export function useShiftCompensation<T>(ctx: {
 }): ShiftCompensation {
   const {
     itemCount, windowRange, heightCommit, offsetIndex, scrollerRef, elIndexRef, itemsRef, anchorIdOf, setWindowRange,
+    shiftRetainedRange,
   } = ctx
   const {
     shiftAnchorRef, shiftStageRef, prependCountRef, shiftInsertedRef, prependPreScrollTopRef, prependNetRef,
@@ -891,6 +895,11 @@ export function useShiftCompensation<T>(ctx: {
     prependCountRef.current = 0
     const rebasedInRender = rebasedInRenderRef.current
     rebasedInRenderRef.current = false
+    // The retained range names rows, so it moves by whatever this landing moved
+    // the window by: the capture render's displacement here, the arithmetic
+    // fallback's net below. Moved at COMMIT, like the mirrors: a render React
+    // discards has not renumbered anything.
+    if (rebasedInRender) shiftRetainedRange(shift)
     const el = scrollerRef.current
     // Every exit from 'awaiting-rebase' clears the slot: an anchor left in that
     // stage is one part 2 never consumes.
@@ -908,10 +917,13 @@ export function useShiftCompensation<T>(ctx: {
         // lurch). Same-commit pre-paint: rebase the window so mounted rows
         // keep their identity, then advance scrollTop by the block just
         // inserted above the reader.
-        if (!rebasedInRender) setWindowRange((r) => ({
-          start: Math.min(itemCount, r.start + net),
-          end: Math.min(itemCount, r.end + net),
-        }))
+        if (!rebasedInRender) {
+          shiftRetainedRange(net)
+          setWindowRange((r) => ({
+            start: Math.min(itemCount, r.start + net),
+            end: Math.min(itemCount, r.end + net),
+          }))
+        }
         let insertedPx = 0
         for (let i = 0; i < net; i++) insertedPx += offsetIndex.getHeight(i)
         // Reading scrollTop forces layout, which is also when native scroll
