@@ -385,6 +385,11 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Same session-title egress as the iMessage entry.",
     ),
     (
+        "Signal session title",
+        "signal_cli/transport_dispatch.py",
+        "Same session-title egress as the iMessage entry.",
+    ),
+    (
         "Telegram live dashboard projection",
         "telegram/dispatch/turn_engine.py",
         "Both halves of a turn, scrubbed before `project_channel_turn_live` broadcasts "
@@ -422,6 +427,20 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "only form that actually ships. Elsewhere in this package "
         "`redact_handle` appears solely in log lines, which is why the sibling "
         "modules are listed as non-egress and this one is not.",
+    ),
+    (
+        "Signal delivery",
+        "signal_cli/renderer.py",
+        "The Signal DELIVERY boundary. Like iMessage, this channel collapses markdown "
+        "itself (`to_plaintext`) because Signal renders no markup, so the driver's "
+        "literal-byte scan runs BEFORE the transformation that can reassemble a "
+        "credential it could not match; `delivery_text` re-scans the flattened form "
+        "through redact_for_display (messaging/display_safety.py) with the redactor "
+        "pair TurnDriver streams through. Every other text it builds -- the approval "
+        "prompt, a caption, the file-refusal note quoting the model's image "
+        "destination, `transport.send_document`'s caption -- passes the same screen "
+        "(`display_safe_text`). Elsewhere `redact_identifier` appears only in log lines "
+        "and SEL caller fields, so the sibling modules are non-egress and this is not.",
     ),
     (
         "WeCom reasoning blocks",
