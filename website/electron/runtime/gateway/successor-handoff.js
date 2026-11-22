@@ -112,9 +112,10 @@ function createSuccessorHandoff({
    * successor's gateway is bound and only still restoring sessions.
    *
    * What remains is a bind between the check and the successor's own bind. That
-   * window is the spawn itself, and losing it costs a killed successor and a
-   * surfaced failure rather than an app that exits into nothing, because the
-   * check is what stands between a foreign gateway and `app.exit`.
+   * window is the spawn itself, plus the loader repaint before it mid-session,
+   * and losing it costs a killed successor and a surfaced failure rather than an
+   * app that exits into nothing, because the check is what stands between a
+   * foreign gateway and `app.exit`.
    *
    * Which port carries that handshake belongs to the caller. A bundle upgrade
    * re-execs the same configuration, so the successor binds this process's own
@@ -184,7 +185,7 @@ function createSuccessorHandoff({
       const window = mainWindow();
       if (window && !window.isDestroyed()) {
         try {
-          window.webContents.loadFile(path.join(dirname, "loading.html"), {
+          await window.webContents.loadFile(path.join(dirname, "loading.html"), {
             query: splashQuery(window, { accent: currentThemeAccent() }),
           });
         } catch { /* window may be tearing down */ }
