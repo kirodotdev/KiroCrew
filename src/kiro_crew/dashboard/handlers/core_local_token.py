@@ -101,6 +101,7 @@ async def api_token_local(request: web.Request) -> web.Response:
         # Leg 2 is for a value shaped like a derived one (64 hex digits; the local secret
         # is 32). Anything else is the refusal it has always been.
         if not _DERIVED_SHAPE.fullmatch(provided):
+            await _note_refused_mint(request)
             _sel().log_api_access(
                 caller=request.remote or "unknown",
                 operation="token.local",
@@ -213,6 +214,25 @@ async def api_token_local(request: web.Request) -> web.Response:
 _DERIVED_SHAPE = re.compile(r"[0-9a-f]{64}")
 
 
+async def _note_refused_mint(request: web.Request) -> None:
+    """Record that a spawned app backend asked for a token and was refused, for the UI.
+
+    An app without the grant holds no usable value (its masks are empty), so the refusal
+    arrives before leg 2; the peer, not the value, says which app asked. Never raises.
+    """
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.member_memory_auth import delegated_app_provenance
+
+    try:
+        provenance, _reason = await asyncio.get_running_loop().run_in_executor(
+            local_auth_executor(), delegated_app_provenance, request
+        )
+        if provenance is not None and provenance.app:
+            await asyncio.to_thread(dashboard_proxy.note_refused_mint, provenance.app)
+    except Exception:
+        return
+
+
 async def _delegated_leg(
     request: web.Request, provided: str
 ) -> LocalOwnerProvenance | web.Response:
@@ -233,6 +253,8 @@ async def _delegated_leg(
         reason = await asyncio.to_thread(dashboard_proxy.verify_leg_two, provenance.app, provided)
         if not reason:
             return provenance
+        if reason == "not-granted":
+            await asyncio.to_thread(dashboard_proxy.note_refused_mint, provenance.app)
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="token.local",

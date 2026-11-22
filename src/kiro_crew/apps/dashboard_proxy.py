@@ -30,7 +30,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -53,6 +52,28 @@ _STAND_IN_SUFFIX = ".stand-in"
 
 _secret_lock = threading.Lock()
 _gateway_secret = ""
+
+
+#: Apps whose last dashboard-token mint was refused; ignored once the app holds the grant.
+#: shortcut: in memory, so a gateway restart forgets it until the app asks again; the
+#: backend asks on every start, so the owner sees the state again within one retry.
+_refused_mints: set[str] = set()
+_refused_lock = threading.Lock()
+
+
+def note_refused_mint(app_name: str) -> None:
+    """Remember that *app_name* asked for a dashboard token and holds no grant."""
+    if not APP_NAME_RE.fullmatch(app_name) or granted(app_name):
+        return
+    with _refused_lock:
+        _refused_mints.add(app_name)
+
+
+def needs_access(app_name: str) -> bool:
+    """Whether the app's last mint was refused for want of a grant that is still absent."""
+    with _refused_lock:
+        asked = app_name in _refused_mints
+    return asked and not granted(app_name)
 
 
 def set_gateway_secret(secret: str) -> None:
@@ -265,8 +286,7 @@ def stand_in_pairs(app_name: str, masked_paths: tuple[str, ...]) -> tuple[tuple[
     try:
         source = _path(app_name, _STAND_IN_SUFFIX)
         source.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(source, value, fsync=True)
-        os.chmod(source, 0o600)
+        atomic_write(source, value, fsync=True, restrict_to_owner=True)
     except (OSError, ValueError):
         logger.warning("could not stage the dashboard_proxy stand-in for %r", app_name)
         return ()
@@ -277,6 +297,11 @@ def _namespace_backend() -> bool:
     from kiro_crew.sandbox_wrap import detect_backend
 
     return detect_backend(config_mode="standard") == "namespace"
+
+
+def platform_supported() -> bool:
+    """Whether this host can bind a stand-in, so a grant can be offered at all."""
+    return _namespace_backend()
 
 
 def backend_masks(

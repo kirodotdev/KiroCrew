@@ -105,9 +105,7 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
         extra_hidden_dirs=hidden,
         extra_stand_ins=stand_ins,
     )
-    proc = subprocess.Popen(
-        argv, stdout=subprocess.PIPE, text=True, encoding="utf-8", cwd=home
-    )
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, encoding="utf-8", cwd=home)
     bmod._processes[_APP] = bmod.AppProcess(
         app_name=_APP,
         pid=proc.pid,

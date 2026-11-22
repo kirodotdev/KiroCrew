@@ -843,8 +843,9 @@ def restore_stand_in_files(launch):
             continue
         fd = os.open(masked, os.O_WRONLY | os.O_NOFOLLOW)
         try:
-            os.write(fd, data)
+            # Owner-read-only BEFORE the payload; the open descriptor stays writable.
             os.fchmod(fd, 0o400)
+            os.write(fd, data)
         finally:
             os.close(fd)
 

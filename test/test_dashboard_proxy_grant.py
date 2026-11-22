@@ -158,3 +158,54 @@ async def test_a_grant_without_confirm_is_refused(records, installed, monkeypatc
     resp = await routes.handle_dashboard_proxy(_request("PUT", {"confirm": True}))
     assert resp.status == 200
     assert dashboard_proxy.granted(_APP) is True
+
+
+def test_a_refused_mint_marks_the_app_until_it_holds_the_grant(records, installed):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.needs_access(_APP) is False
+    dashboard_proxy.note_refused_mint(_APP)
+    assert dashboard_proxy.needs_access(_APP) is True
+    assert routes._view(_APP)["needs_access"] is True
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.needs_access(_APP) is False
+    assert routes._view(_APP)["needs_access"] is False
+
+
+def test_the_view_says_when_the_platform_cannot_bind_a_stand_in(records, installed, monkeypatch):
+    assert routes._view(_APP)["platform_supported"] is True
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: False)
+    view = routes._view(_APP)
+    assert view["platform_supported"] is False
+    assert view["offer"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_restart_needs_the_owner_and_a_grant_then_restarts_the_backend(
+    records, installed, monkeypatch
+):
+    calls: list[str] = []
+
+    async def _owner(_request, _operation):
+        return None
+
+    def _stop(_name):
+        calls.append("stop")
+        return True
+
+    def _start(_name):
+        calls.append("start")
+        return object()
+
+    monkeypatch.setattr(routes, "_owner_denial", _owner)
+    monkeypatch.setattr("kiro_crew.apps.manager.get_app", lambda _name: object())
+    monkeypatch.setattr("kiro_crew.apps.backend.stop_app_backend", _stop)
+    monkeypatch.setattr("kiro_crew.apps.backend.start_app_backend", _start)
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    resp = await routes.handle_dashboard_proxy_restart(_request("POST", None))
+    assert resp.status == 409
+    assert calls == []
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    resp = await routes.handle_dashboard_proxy_restart(_request("POST", None))
+    assert resp.status == 200
+    assert json.loads(resp.text or "{}")["restarted"] is True
+    assert calls == ["stop", "start"]

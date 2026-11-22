@@ -37,6 +37,8 @@ def _view(name: str) -> dict[str, object]:
     return {
         "granted": dashboard_proxy.granted(name),
         "offer": dashboard_proxy.prompt_text(name),
+        "platform_supported": dashboard_proxy.platform_supported(),
+        "needs_access": dashboard_proxy.needs_access(name),
     }
 
 
@@ -92,4 +94,41 @@ async def handle_dashboard_proxy(request: web.Request) -> web.Response:
     return web.json_response({**view, "restart_required": True})
 
 
-__all__ = ["handle_dashboard_proxy"]
+async def handle_dashboard_proxy_restart(request: web.Request) -> web.Response:
+    """POST: restart a granted app's backend so it starts with its derived value.
+
+    Owner only, and only for an app that holds the grant now: the value is bound into
+    the sandbox at spawn, so a grant reaches a backend at its next start.
+    """
+    name = request.match_info["name"]
+    denied = await _owner_denial(request, "apps.dashboard_proxy.restart")
+    if denied is not None:
+        return denied
+    from kiro_crew.apps.backend import start_app_backend, stop_app_backend
+    from kiro_crew.apps.manager import app_lifecycle_lock, get_app
+    from kiro_crew.executors import subprocess_executor
+
+    if not await asyncio.to_thread(get_app, name):
+        return web.json_response(
+            {"error": f"app {name!r} not installed", "code": "app_not_installed"}, status=404
+        )
+    if not await asyncio.to_thread(dashboard_proxy.granted, name):
+        return web.json_response(
+            {"error": "the app holds no dashboard grant", "code": "not_granted"}, status=409
+        )
+    loop = asyncio.get_running_loop()
+    async with app_lifecycle_lock(name):
+        await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        backend = await loop.run_in_executor(subprocess_executor(), start_app_backend, name)
+    sel().log_api_access(
+        caller=str(request.get("user", "") or "dashboard"),
+        operation="apps.dashboard_proxy.restart",
+        outcome="success" if backend is not None else "failed",
+        resources=f"name={name!r}",
+    )
+    return web.json_response(
+        {**await asyncio.to_thread(_view, name), "restarted": backend is not None}
+    )
+
+
+__all__ = ["handle_dashboard_proxy", "handle_dashboard_proxy_restart"]

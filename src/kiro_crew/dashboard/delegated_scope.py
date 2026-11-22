@@ -34,7 +34,7 @@ def route_tag(method: str, canonical: str) -> str | None:
     if entry is None:
         return None
     verb = "GET" if method.upper() == "HEAD" else method.upper()
-    return entry.get(verb)
+    return entry.get(verb) or entry.get("*")
 
 
 def _refuse(request: web.Request, via_app: str, path: str, reason: str) -> web.Response:

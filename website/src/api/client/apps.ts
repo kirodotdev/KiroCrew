@@ -62,6 +62,21 @@ export type ExternalRegistryRow = {
   review?: string
 }
 
+/** `GET/PUT /api/apps/{name}/dashboard-proxy`: the owner's dashboard-access grant. */
+export interface AppDashboardAccess {
+  granted: boolean
+  /** The words to show the owner before granting; `null` when no grant may be offered. */
+  offer: { app: string; registry: string; source: string; version: string; text: string } | null
+  /** `false` where the sandbox cannot bind the access (every host but the Linux namespace one). */
+  platform_supported: boolean
+  /** The app's last token request was refused for want of this grant. */
+  needs_access: boolean
+  /** Set by the grant: the running backend starts with the access only after a restart. */
+  restart_required?: boolean
+  /** Set by the restart: whether the backend came back up. */
+  restarted?: boolean
+}
+
 /** `GET/PUT /api/apps/{name}/bot-grants`: the ticked Bot slugs and the Bot scopes. */
 export interface AppBotGrants {
   bots: string[]
@@ -108,6 +123,9 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     // The Bots the owner ticked for an app (`permissions.bots`), and its approved scopes.
     getAppBotGrants: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/bot-grants').then(j) as Promise<AppBotGrants>,
     setAppBotGrants: (name: string, bots: string[]) => put('/api/apps/' + encodeURIComponent(name) + '/bot-grants', { bots }).then(j) as Promise<AppBotGrants>,
+    getAppDashboardAccess: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/dashboard-proxy').then(j) as Promise<AppDashboardAccess>,
+    grantAppDashboardAccess: (name: string) => put('/api/apps/' + encodeURIComponent(name) + '/dashboard-proxy', { confirm: true }).then(j) as Promise<AppDashboardAccess>,
+    restartAppForDashboardAccess: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/dashboard-proxy/restart').then(j) as Promise<AppDashboardAccess>,
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
     enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; bots?: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[]; reachableByUserSessions?: string[]; desktopCapabilities?: string[]; frameSources?: string[]; browserSites?: string[]; kiroOperations?: string[]; browser?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {

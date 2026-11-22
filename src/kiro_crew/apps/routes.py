@@ -55,7 +55,10 @@ from kiro_crew.apps.bridges import (
 from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
 from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
 from kiro_crew.apps.builtins import BUILTIN_NAMES
-from kiro_crew.apps.dashboard_proxy_routes import handle_dashboard_proxy
+from kiro_crew.apps.dashboard_proxy_routes import (
+    handle_dashboard_proxy,
+    handle_dashboard_proxy_restart,
+)
 from kiro_crew.apps.dependencies import clean_dependencies
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
 from kiro_crew.apps.dependency_ledger import (
@@ -296,6 +299,7 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_get("/api/apps/{name}/dashboard-proxy", handle_dashboard_proxy)
     app.router.add_put("/api/apps/{name}/dashboard-proxy", handle_dashboard_proxy)
     app.router.add_delete("/api/apps/{name}/dashboard-proxy", handle_dashboard_proxy)
+    app.router.add_post("/api/apps/{name}/dashboard-proxy/restart", handle_dashboard_proxy_restart)
     # An app's calls to its approved Kiro operations (`permissions.kiroOperations`).
     register_kiro_call_routes(app)
     app.router.add_delete("/api/apps/{name}/migrate-cleanup", handle_migrate_cleanup)

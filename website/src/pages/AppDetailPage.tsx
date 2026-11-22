@@ -62,6 +62,7 @@ import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
 import AppDetailPageMcpServers from './AppDetailPageMcpServers'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
 import AppDetailBotGrants, { StagedBotScopes, stagedBotScopes } from './AppDetailBotGrants'
+import AppDetailDashboardAccess from './AppDetailDashboardAccess'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
@@ -1843,6 +1844,7 @@ export default function AppDetailPage() {
           )}
 
           {app.installed && <AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} />}
+          {app.installed && <AppDetailDashboardAccess appName={app.name} />}
 
           <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 
