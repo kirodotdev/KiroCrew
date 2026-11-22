@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -226,6 +227,7 @@ class TestServiceEnvironment:
 
     def test_propagates_crew_home_only_when_set(self, monkeypatch):
         """Without KIROCREW_HOME the service starts a new, empty crew in ~/.kiro/crew."""
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
         assert "KIROCREW_HOME" not in service_environment("/home/tester")
         monkeypatch.setenv("KIROCREW_HOME", "")
@@ -239,11 +241,32 @@ class TestServiceEnvironment:
     def test_relative_crew_home_is_absolutized_and_tilde_kept(self, monkeypatch):
         # The service runs from another cwd, so a relative home is made absolute.
         # A "~" is left for config_dir() to expand against the baked HOME.
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
         monkeypatch.setenv("KIROCREW_HOME", "crew-data")
         baked = service_environment("/home/tester")["KIROCREW_HOME"]
-        assert baked == os.path.abspath("crew-data") and os.path.isabs(baked)
+        assert baked == os.path.join(os.getcwd(), "crew-data") and os.path.isabs(baked)
         monkeypatch.setenv("KIROCREW_HOME", "~/crew-data")
         assert service_environment("/home/tester")["KIROCREW_HOME"] == "~/crew-data"
+
+    def test_crew_home_dotdot_is_not_collapsed_before_symlinks(self, monkeypatch, tmp_path):
+        # config_dir() resolves symlinks before "..", so the service must get the
+        # raw path, or it would select a different crew than the installer.
+        real = tmp_path / "releases" / "v1"
+        real.mkdir(parents=True)
+        (tmp_path / "srv").mkdir()
+        (tmp_path / "srv" / "current").symlink_to(real)
+        raw = str(tmp_path / "srv" / "current" / ".." / "data")
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
+        monkeypatch.setenv("KIROCREW_HOME", raw)
+        baked = service_environment("/home/tester")["KIROCREW_HOME"]
+        assert baked == raw
+        assert Path(baked).resolve() == (tmp_path / "releases" / "data").resolve()
+
+    def test_pod_home_is_never_baked(self, monkeypatch):
+        # `pod down` deletes a pod's home, so a host service must not start there.
+        monkeypatch.setenv("KIROCREW_HOME", "/srv/pods/p1/home")
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        assert "KIROCREW_HOME" not in service_environment("/home/tester")
 
     def test_crew_home_reaches_both_rendered_service_definitions(self, monkeypatch, tmp_path):
         """End-to-end through both renderers, with a space that needs quoting."""
@@ -251,6 +274,7 @@ class TestServiceEnvironment:
         from kiro_crew.service import macos as svc_macos
 
         home = str(tmp_path / "crew data")
+        monkeypatch.delenv("KIROCREW_POD", raising=False)
         monkeypatch.setenv("KIROCREW_HOME", home)
         monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "live-gateway")
         with patch(

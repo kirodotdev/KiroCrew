@@ -2826,9 +2826,11 @@ pins the contract.
     would be readable by every local user on the host. `service_environment()`
     therefore carries no credential — its only installer-derived values are
     `PATH`, `KIROCREW_KIRO_BIN`, `KIROCREW_NODE_BIN_DIR`, `KIROCREW_PORT` and
-    `KIROCREW_HOME` (made absolute; a leading `~` is kept for the service to
-    expand against the baked `HOME`, so the service runs the installer's crew
-    rather than a fresh one in `~/.kiro/crew`) (it also returns `HOME`,
+    `KIROCREW_HOME` (a relative value is joined to the cwd without collapsing
+    `..`; a leading `~` is kept for the service to expand against the baked
+    `HOME`; never baked when `KIROCREW_POD` is set, since `pod down` deletes a
+    pod's home; so the service runs the installer's crew rather than a fresh
+    one in `~/.kiro/crew`) (it also returns `HOME`,
     `LANG` and `LC_ALL`) — and a test pins the absence so a future "just
     propagate it" change fails.
     Consequence: a `KIRO_API_KEY` exported in the installing shell does not

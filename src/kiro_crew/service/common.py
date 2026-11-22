@@ -226,11 +226,16 @@ def service_environment(home: str) -> "dict[str, str]":
     # "~" stays as typed: config_dir() expands it against the baked HOME, and
     # expanding it here would name root's home under `sudo -H`.
     # Unstripped, because config_dir() resolves the raw value: a trimmed copy
-    # would name a different directory from the installer's own.
+    # would name a different directory from the installer's own. Not
+    # normalized either: abspath() collapses ".." before symlinks resolve, so
+    # it could name another directory than config_dir()'s resolve().
+    # A pod's home is throwaway (`pod down` deletes it), so it is never baked.
     crew_home = os.environ.get("KIROCREW_HOME", "")
-    if crew_home:
+    if crew_home and not os.environ.get("KIROCREW_POD"):
         env["KIROCREW_HOME"] = (
-            crew_home if crew_home.startswith("~") else os.path.abspath(crew_home)
+            crew_home
+            if crew_home.startswith("~") or os.path.isabs(crew_home)
+            else os.path.join(os.getcwd(), crew_home)
         )
     return env
 
