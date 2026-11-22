@@ -480,10 +480,8 @@ async def test_a_delegated_token_cannot_open_the_status_stream(state, granted):
 
 
 @pytest.mark.asyncio
-async def test_an_open_stream_ends_when_the_grant_ends(state, granted, monkeypatch):
+async def test_an_open_stream_ends_when_the_grant_ends(state, granted):
     from kiro_crew.dashboard import delegated_scope
-
-    monkeypatch.setattr(delegated_scope, "STREAM_RECHECK_SECS", 0.05, raising=False)
 
     async def stream(request):
         out = web.StreamResponse()
@@ -500,13 +498,15 @@ async def test_an_open_stream_ends_when_the_grant_ends(state, granted, monkeypat
         assert resp.status == 200
         assert await resp.content.readline() == b"frame\n"
         granted["on"] = False
+        # The sweep itself is the periodic loop around this call; the test drives one pass.
+        await delegated_scope.end_stale_streams()
 
         async def drain() -> None:
             with contextlib.suppress(aiohttp.ClientError):
                 while await resp.content.readline():
                     pass
 
-        await asyncio.wait_for(drain(), 3)  # the stream never ends unless the grant ends it
+        await asyncio.wait_for(drain(), 30)  # hang guard: the stream ends only with the grant
     assert delegated_scope._STREAMS == {}
 
 

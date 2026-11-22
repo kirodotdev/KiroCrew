@@ -80,7 +80,7 @@ READ_ALLOW: dict[tuple[str, str], Row] = {
     ),
     ("GET", "/api/auth/me"): Row(
         "src/kiro_crew/dashboard/handlers/auth_refresh.py:343",
-        "Says whether the caller's own token was accepted (useRefreshScheduler.ts); never returns it.",
+        "Says only whether the caller's own token was accepted: no user id, principal id, display name or expiry; never returns the token.",
     ),
     ("GET", "/api/kiro-prerequisite"): Row(
         "src/kiro_crew/dashboard/handlers/kiro_prerequisite.py:190",
@@ -100,11 +100,11 @@ READ_ALLOW: dict[tuple[str, str], Row] = {
         "The list of chats as key, title, running and last activity only (api/client/chat.ts chatSlots).",
     ),
     ("POST", "/api/auth/refresh"): Row(
-        "src/kiro_crew/dashboard/handlers/auth_refresh.py:460",
+        "src/kiro_crew/dashboard/handlers/auth_refresh.py:465",
         "Rotates this session's own refresh chain; the new pair keeps the same via_app and grant.",
     ),
     ("POST", "/api/auth/logout"): Row(
-        "src/kiro_crew/dashboard/handlers/auth_refresh.py:914",
+        "src/kiro_crew/dashboard/handlers/auth_refresh.py:919",
         "Ends this delegated session only.",
     ),
     ("POST", "/api/chat/slots/{slot}/stop"): Row(

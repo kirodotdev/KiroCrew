@@ -20,7 +20,15 @@ import { useConfirm } from '../components/ConfirmDialog'
 import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
 
-export default function AppDetailDashboardAccess({ appName }: { appName: string }) {
+interface Props {
+  appName: string
+  /** The name the owner knows the app by; the restart text names it. */
+  displayName?: string
+  /** Set for a registry install: the owner may run the App Store update from this card. */
+  onUpdate?: () => Promise<void>
+}
+
+export default function AppDetailDashboardAccess({ appName, displayName, onUpdate }: Props) {
   const queryClient = useQueryClient()
   const queryKey = ['apps', appName, 'dashboard-proxy']
   const access = useQuery<AppDashboardAccess>({ queryKey, queryFn: () => api.getAppDashboardAccess(appName) })
@@ -45,7 +53,8 @@ export default function AppDetailDashboardAccess({ appName }: { appName: string 
       </Card>
     )
   }
-  if (!data || (!data.granted && !data.offer && !data.needs_access)) return null
+  const canUpdate = !!onUpdate && !!data?.update_to_enable
+  if (!data || (!data.granted && !data.offer && !data.needs_access && !canUpdate)) return null
 
   const scope = i18nT('pages.appDetailPage.dashboard_access_scope')
   const store = (next: AppDashboardAccess) => queryClient.setQueryData(queryKey, next)
@@ -64,6 +73,21 @@ export default function AppDetailDashboardAccess({ appName }: { appName: string 
     try {
       store(await api.grantAppDashboardAccess(appName))
       setRestartAsked(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  // The same update path as the App Store: it re-verifies the registry entry and seals the
+  // install record, after which this card reads the offer. It grants nothing by itself.
+  const update = async () => {
+    if (!onUpdate) return
+    setBusy(true)
+    setError('')
+    try {
+      await onUpdate()
+      await queryClient.invalidateQueries({ queryKey })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -107,13 +131,19 @@ export default function AppDetailDashboardAccess({ appName }: { appName: string 
             </div>
           )}
           <div className="mt-3">
-            <Btn onClick={allow} disabled={busy || !data.offer}>{i18nT('pages.appDetailPage.dashboard_access_allow')}</Btn>
+            {canUpdate ? (
+              <Btn onClick={update} disabled={busy} data-testid="dashboard-access-update">
+                {i18nT('pages.appDetailPage.dashboard_access_update')}
+              </Btn>
+            ) : (
+              <Btn onClick={allow} disabled={busy || !data.offer}>{i18nT('pages.appDetailPage.dashboard_access_allow')}</Btn>
+            )}
           </div>
         </>
       )}
       {restartAsked && data.granted && (
         <div className="mt-3 flex items-center gap-2" data-testid="dashboard-access-restart">
-          <span className="text-[13px] text-text">{i18nT('pages.appDetailPage.dashboard_access_restart_hint')}</span>
+          <span className="text-[13px] text-text">{i18nT('pages.appDetailPage.dashboard_access_restart_hint', { name: displayName || appName })}</span>
           <Btn onClick={restart} disabled={busy}>{i18nT('pages.appDetailPage.dashboard_access_restart')}</Btn>
         </div>
       )}

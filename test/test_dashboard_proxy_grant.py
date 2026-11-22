@@ -313,3 +313,34 @@ async def test_the_restart_needs_the_owner_and_a_grant_then_restarts_the_backend
     assert resp.status == 200
     assert json.loads(resp.text or "{}")["restarted"] is True
     assert calls == ["stop", "start"]
+
+
+def test_a_pre_upgrade_app_mints_nothing_and_gets_no_offer_until_one_owner_update(forged_apps):
+    """An app installed before the sealed record existed keeps every mask and is offered nothing.
+
+    ``installed.json`` (forged here) is app-writable, so it never backfills the record. The
+    one way to a record is the install path the App Store update runs (``record_install``).
+    """
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    view = routes._view(_APP)
+    assert view["offer"] is None and view["granted"] is False
+    assert view["update_to_enable"] is True, "the card must offer the owner the update"
+    assert dashboard_proxy.grant(_APP) == (False, "not-registry-verified")
+    assert dashboard_proxy.stand_in_value(_APP) is None
+    assert dashboard_proxy.verify_leg_two(_APP, "any-value") == "not-granted"
+    masks = ("/gateway/.local_secret",)
+    assert dashboard_proxy.backend_masks(_APP, masks) == (masks, ())
+    # One owner update: the same path the App Store runs seals the record.
+    dashboard_proxy.record_install(
+        _APP, version="0.9.5", registry="crew-tunnels", url="https://example.invalid/tunnel.git"
+    )
+    view = routes._view(_APP)
+    assert view["offer"] is not None
+    assert view["update_to_enable"] is False
+    assert view["granted"] is False, "an update alone grants nothing"
+    assert dashboard_proxy.stand_in_value(_APP) is None
+
+
+def test_the_update_action_is_not_shown_where_no_grant_could_follow(forged_apps, monkeypatch):
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: False)
+    assert routes._view(_APP)["update_to_enable"] is False

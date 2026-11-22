@@ -124,4 +124,32 @@ describe('AppDetailDashboardAccess', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Restart app' }))
     expect(await screen.findByText(/did not start again/)).toBeInTheDocument()
   })
+
+  it('names the app and what a restart stops', async () => {
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" displayName="Crew Tunnels" />))
+    fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
+    const hint = await screen.findByTestId('dashboard-access-restart')
+    expect(hint).toHaveTextContent('Restart Crew Tunnels to apply this access.')
+    expect(hint).toHaveTextContent('stops its running backend and any open tunnel connections')
+  })
+
+  it('offers the owner the update for an app with no install record, and the grant only after it', async () => {
+    const NO_RECORD = { granted: false, offer: null, platform_supported: true, needs_access: true, update_to_enable: true }
+    api.getAppDashboardAccess.mockResolvedValueOnce(NO_RECORD).mockResolvedValue(OFFERED)
+    const onUpdate = vi.fn().mockResolvedValue(undefined)
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" displayName="Crew Tunnels" onUpdate={onUpdate} />))
+    expect(screen.queryByRole('button', { name: 'Allow dashboard access' })).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: 'Update to enable dashboard access' }))
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1))
+    expect(api.grantAppDashboardAccess).not.toHaveBeenCalled()
+    expect(await screen.findByRole('button', { name: 'Allow dashboard access' })).toBeEnabled()
+    expect(screen.queryByTestId('dashboard-access-update')).toBeNull()
+  })
+
+  it('shows no update action where the page cannot run an update (not a registry install)', async () => {
+    api.getAppDashboardAccess.mockResolvedValue({ granted: false, offer: null, platform_supported: true, needs_access: false, update_to_enable: true })
+    const { container } = render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    await waitFor(() => expect(api.getAppDashboardAccess).toHaveBeenCalled())
+    expect(container.textContent).toBe('')
+  })
 })

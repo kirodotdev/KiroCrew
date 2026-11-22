@@ -363,6 +363,11 @@ async def api_auth_me(request: web.Request) -> web.Response:
     user_id = request.get("user", "")
     if not user_id:
         return web.json_response({"error": "unauthenticated"}, status=401)
+    if request.get("via_app"):
+        # A delegated (app) token learns only whether it was accepted: no user id, no
+        # principal id or display name, no expiry (``dashboard.delegated_scope``).
+        accepted = bool(request.get("auth_from_query_token", False))
+        return web.json_response({"token_accepted": accepted})
 
     # Read the credential the MIDDLEWARE VALIDATED, published as
     # ``request["auth_token"]`` — the same contract ``_caller_bounds`` and the

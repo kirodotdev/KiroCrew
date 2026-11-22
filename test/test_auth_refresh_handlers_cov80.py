@@ -368,6 +368,18 @@ async def test_me_reports_whether_the_requests_own_query_token_authenticated() -
 
 
 @pytest.mark.asyncio
+async def test_me_tells_a_delegated_token_only_whether_it_was_accepted() -> None:
+    """A ``via_app`` token gets one bit: no user id, principal id or display name."""
+    delegated = _mk("GET", "/api/auth/me", user="alice")
+    delegated["via_app"] = "tunnel-like"
+    delegated["auth_from_query_token"] = True
+    assert _body(await h.api_auth_me(delegated)) == {"token_accepted": True}
+    unaccepted = _mk("GET", "/api/auth/me", user="alice")
+    unaccepted["via_app"] = "tunnel-like"
+    assert _body(await h.api_auth_me(unaccepted)) == {"token_accepted": False}
+
+
+@pytest.mark.asyncio
 async def test_me_reports_owner_authorization_separately_from_token_acceptance() -> None:
     """A VALID token can be accepted and still be denied by the owner gate.
 

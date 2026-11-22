@@ -416,10 +416,12 @@ Request flow:
    helper an install leaves behind cannot read them once the gateway writes them.
    An app WITHOUT the grant finds the empty stand-in and `/api/token/local` answers
    it `403 invalid_secret`. The external Crew Tunnel app (registry `Crew Tunnels`,
-   package `PdebieKiroCrewTunnelDist`, unchanged) reads
+   unchanged) reads
    `run/gateway-<port>.secret`, falls back to `.local_secret` and sends what it
    read as `X-Local-Secret`; it keeps working once the owner grants it
-   `dashboard_proxy` (`apps.dashboard_proxy`). History: #38113 refused the mint to
+   `dashboard_proxy` (`apps.dashboard_proxy`). An install made before the gateway
+   sealed install records has no record, so no offer is made and the masks stay on
+   until one owner update from the App Store seals it. History: #38113 refused the mint to
    app backends (reverted by #40360), and #38182 masked the files with no
    replacement, so the tunnel failed with `token mint failed: 403 Forbidden`
    (reverted by #40690). This is the replacement path.

@@ -71,6 +71,8 @@ export interface AppDashboardAccess {
   platform_supported: boolean
   /** The app's last token request was refused for want of this grant. */
   needs_access: boolean
+  /** The gateway holds no install record of this app, so no grant can be offered until one owner update. */
+  update_to_enable?: boolean
   /** Set by the grant: the running backend starts with the access only after a restart. */
   restart_required?: boolean
   /** Set by the restart: whether the backend came back up. */
