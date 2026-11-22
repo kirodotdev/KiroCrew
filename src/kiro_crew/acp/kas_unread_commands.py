@@ -283,7 +283,8 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
     applies), in the spec's order, so the notice names the entry and not only the
     key. kiro-cli refuses every URL such an entry matches; on KAS it refuses
     nothing unless :func:`fails_closed_on_uncarried_blocked` is on, when the
-    translation denies every fetch."""
+    translation denies every fetch. An entry Crew's gate refuses itself
+    (``kas_spec_denies.gate_refused_blocked``) is not named."""
     from kiro_crew.acp.kas_permissions import (
         _MAX_PATTERN_LENGTH,
         _patterns,
@@ -291,13 +292,17 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
         _url_glob,
     )
 
+    # circular import: kas_spec_denies imports kas_permissions, which imports this.
+    from kiro_crew.acp.kas_spec_denies import gate_refused_blocked
+
     settings = tools_settings.get("web_fetch") if isinstance(tools_settings, dict) else None
     if not isinstance(settings, dict):
         return []
+    refused = {raw.strip() for raw in gate_refused_blocked(tools_settings)}
     out = []
     for raw in _patterns(settings.get("blocked")):
         glob = _url_glob(raw)
-        if glob is not None and len(glob) <= _MAX_PATTERN_LENGTH:
+        if (glob is not None and len(glob) <= _MAX_PATTERN_LENGTH) or raw in refused:
             continue
         if _regex_to_glob(raw) is None:
             reason = "regex syntax KAS cannot express"
