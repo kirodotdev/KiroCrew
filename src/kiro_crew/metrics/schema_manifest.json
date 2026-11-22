@@ -370,6 +370,7 @@
         },
         "reason": {
           "values": [
+            "agent_stop",
             "agent_turn_budget",
             "approval_stall",
             "autonudge_stop",
