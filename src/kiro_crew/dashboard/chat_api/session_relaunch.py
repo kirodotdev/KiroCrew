@@ -40,7 +40,7 @@ if TYPE_CHECKING:
         default_project_dir,
         deny_app_slot_access,
         effective_session_key,
-        is_sensitive_path,
+        is_sensitive_canonical_path,
         is_system_notice,
         logger,
         owner_start_priority,
@@ -731,10 +731,20 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "Not a directory", "code": "not_a_directory"}, status=400
             )
-        project = os.path.realpath(os.path.expanduser(project))
-        if not os.path.isdir(project):
+
+        def probe(raw: str) -> tuple[str, bool, bool]:
+            resolved = os.path.realpath(os.path.expanduser(raw))
+            is_dir = os.path.isdir(resolved)
+            # *resolved* is canonical, so the canonical gate judges it: it answers
+            # inline off the loop, where a resolver stall cannot read as a match.
+            return resolved, is_dir, is_dir and is_sensitive_canonical_path(resolved)
+
+        project, is_dir, sensitive = await asyncio.to_thread(probe, project)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            return _slot_not_found()
+        if not is_dir:
             return web.json_response({"error": "Not a directory"}, status=400)
-        if is_sensitive_path(project):
+        if sensitive:
             sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="chat_slot_project",

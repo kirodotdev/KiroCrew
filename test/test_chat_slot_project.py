@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import api_chat_slot_project
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.security import paths
 
 
 def _make_app(state: DashboardState) -> web.Application:
@@ -149,16 +151,36 @@ class TestChatSlotProject:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_sensitive_path_returns_403(self, tmp_path):
+    async def test_sensitive_path_returns_403(self):
+        # The crew home is a per-test tmp dir here; ``diag`` is on its fence.
+        fenced = os.path.join(os.environ["KIROCREW_HOME"], "diag")
+        os.makedirs(fenced, exist_ok=True)
         slot = _ChatSlot("test")
         state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_handlers.is_sensitive_path", return_value=True):
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/project",
+                json={"project": fenced},
+            )
+            assert resp.status == 403
+            assert slot.project != os.path.realpath(fenced)
+
+    @pytest.mark.asyncio
+    async def test_a_stall_cooldown_does_not_refuse_a_healthy_folder(self, tmp_path):
+        """A resolver stall over the folder's prefix is not a sensitive match."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        paths._mark_stalled(paths._stall_prefix(str(project)), 2.0)
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_handlers._save_recent_project"):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post(
                     "/api/chat/slots/test/project",
-                    json={"project": str(tmp_path)},
+                    json={"project": str(project)},
                 )
-                assert resp.status == 403
+                assert resp.status == 200
+                assert slot.project == os.path.realpath(project)
 
     @pytest.mark.asyncio
     async def test_data_home_overlap_returns_actionable_400(self, tmp_path, monkeypatch):
