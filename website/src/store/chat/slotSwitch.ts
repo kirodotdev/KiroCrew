@@ -652,6 +652,23 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         existing.slice(liveFrom).filter(m => m.role === 'user' && typeof m.meta?.sendId === 'string' && m.meta.sendId),
         preserved,
       )
+      // A page streaming row at or past the replay floor already folds every
+      // chunk this tab applied. The tab's own trailing streaming row can hold
+      // less: an open with no cached copy starts it at the first chunk after
+      // the open, and a cached copy stops growing while its chat is off screen.
+      // That row keeps its place (reasoning sits above it) and takes the page
+      // row's text, as in `hydrateSlotMessages` (#38617).
+      if (lastLocal?.role === 'streaming') {
+        const pageSeq = snapshotChunkSeq(messages)
+        const floor = floorForGen(state.lastChunkSeq, state.lastChunkGen, snapshotChunkGen(messages))
+        const pageRow = pageSeq !== undefined && (floor === undefined || pageSeq >= floor)
+          ? messages.findLast(m => m.role === 'streaming')
+          : undefined
+        if (pageRow) {
+          lastLocal.content = pageRow.content
+          lastLocal.rawText = pageRow.content
+        }
+      }
       let next: ChatMessage[]
       if (
         state._wsChunkedDuringFetch
