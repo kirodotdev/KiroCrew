@@ -27,8 +27,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 
 import kiro_crew._facade_mirror as _facade_mirror
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, released_sessions, sandbox_launch_mark
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.claude_transcripts import (
     delete_claude_session_files,
     is_claude_provider_label,
@@ -631,9 +632,34 @@ def _provider_cleanup_has_route(provider: str) -> bool:
     """
     return (
         provider == PROVIDER_LABEL_DEFAULT
+        or provider == ACP_BACKEND_KAS
         or is_claude_provider_label(provider)
         or is_codex_provider_label(provider)
     )
+
+
+def _schedule_kas_session_delete(session_id: str) -> bool:
+    """Hand a KAS session's record to the engine's own delete. Blocking.
+
+    The record belongs to the KAS engine, under a folder Crew does not record, so
+    it is queued in ``released_sessions`` for the next cleanup tick, which sends
+    ``_kiro/session/delete`` while KAS is the chat backend. True once the entry is
+    written; False when it cannot be (a bad id, a write error, or a sandboxed
+    process, where ``released-sessions/`` is masked), so the run is kept and
+    tried again.
+    """
+    if sandbox_launch_mark.launched_in_sandbox():
+        return False
+    try:
+        released_sessions.schedule(session_id, backend=ACP_BACKEND_KAS, delay_secs=0.0)
+    except (OSError, ValueError):
+        logger.warning(
+            "_cleanup_session_files_sync: could not schedule the delete of KAS session %s",
+            session_id,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def _identity_cleanup_has_route(provider: str, codex_home: str = "") -> bool:
@@ -935,9 +961,10 @@ def _cleanup_session_files_sync(
     retry instead of making the leaked transcript permanently unreachable.
 
     The kiro-cli backend's replay log, Claude Code's own store (spelled from the
-    recorded *cwd*, ``agent_sdk.claude_transcripts``) and Codex's rollout under
-    the recorded *codex_home* (``agent_sdk.codex_transcripts``) are the
-    transcripts this function can reach. A Codex record without *codex_home*
+    recorded *cwd*, ``agent_sdk.claude_transcripts``), Codex's rollout under
+    the recorded *codex_home* (``agent_sdk.codex_transcripts``) and a KAS
+    session record (:func:`_schedule_kas_session_delete`) are the transcripts
+    this function can reach. A Codex record without *codex_home*
     cannot say which store its child wrote, so its cleanup is not done. Any
     other *provider* is logged and its files are left in place, since reporting
     success without deleting anything hides the leak.
@@ -987,6 +1014,8 @@ def _cleanup_session_files_sync(
                         exc_info=True,
                     )
             return succeeded
+        if provider == ACP_BACKEND_KAS:
+            return _schedule_kas_session_delete(session_id)
         if is_claude_provider_label(provider):
             return delete_claude_session_files(session_id, cwd)
         if is_codex_provider_label(provider):
