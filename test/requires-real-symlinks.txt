@@ -9,6 +9,7 @@ src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pollute.py::TestExcludesAreNarrow::test_a_relative_or_symlinked_exclude_still_matches
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py::TestCloneIsolation::test_symlinked_destination_is_refused
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_reconcile_and_publish.py::TestOrphanCloneSweep::test_a_symlink_is_not_followed
+src/kiro_crew/apps/builtins/ops_mission_control/tests/test_masked_leaf_staged_publish.py::test_symlinked_staging_is_refused
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_aliases.py::test_a_claim_through_an_aliased_spelling_is_refused
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_aliases.py::test_a_symlinked_spelling_cannot_record_a_second_answer
 src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_decision_ledger.py::test_an_unresolvable_directory_keeps_its_normalized_literal_key
