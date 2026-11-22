@@ -888,6 +888,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _served_by_gateway,
         _stderr_text,
         _temp_refusal_records,
+        _with_post_scrub_markers,
         secret_reference_refusal,
     )
     from kiro_crew.mcp_discovery_probe_state import (  # noqa: F401
