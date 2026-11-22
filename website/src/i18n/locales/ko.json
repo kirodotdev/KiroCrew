@@ -17903,6 +17903,7 @@
         "oauth_connect_button": "WakaTime 연결",
         "oauth_connect_lead": "2026년 11월 1일부터 WakaTime API 키로는 활동을 보낼 수만 있고 읽을 수는 없습니다. 통계를 계속 보려면 WakaTime 계정을 연결하세요.",
         "oauth_connecting": "WakaTime 여는 중…",
+        "oauth_desktop_handoff": "브라우저에서 WakaTime 연결을 마치세요. 먼저 로그인하라는 요청이 나올 수 있습니다. 돌아오면 이 패널이 업데이트됩니다.",
         "oauth_desktop_notice": "WakaTime을 연결하려면 웹 브라우저에서 이 대시보드를 여세요. 거기서 연결하면 데스크톱 앱에서도 같은 계정을 사용합니다.",
         "oauth_disconnect_button": "연결 해제",
         "oauth_disconnecting": "연결 해제 중…",

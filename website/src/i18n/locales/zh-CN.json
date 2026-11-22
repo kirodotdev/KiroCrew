@@ -17903,6 +17903,7 @@
         "oauth_connect_button": "连接 WakaTime",
         "oauth_connect_lead": "自 2026 年 11 月 1 日起，WakaTime API 密钥只能发送活动，不能读取。连接你的 WakaTime 账户即可继续读取统计。",
         "oauth_connecting": "正在打开 WakaTime…",
+        "oauth_desktop_handoff": "请在浏览器中完成 WakaTime 连接。浏览器可能会先要求你登录。回到这里后，此面板会更新。",
         "oauth_desktop_notice": "请在网页浏览器中打开此仪表板，连接 WakaTime。连接后，桌面应用会使用同一个账户。",
         "oauth_disconnect_button": "断开连接",
         "oauth_disconnecting": "正在断开…",

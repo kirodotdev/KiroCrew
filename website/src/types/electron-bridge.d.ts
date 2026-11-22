@@ -225,6 +225,11 @@ declare global {
     pick: () => Promise<string | null>
   }
 
+  interface WakaTimeConnectAPI {
+    /** Opens this dashboard's WakaTime panel in the system browser; false when the OS hand-off failed. */
+    openInBrowser: () => Promise<boolean>
+  }
+
   interface ZoomAPI {
     get: () => Promise<number>
     set: (factor: number) => Promise<number>
@@ -423,6 +428,7 @@ declare global {
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI
+    wakatimeConnectAPI?: WakaTimeConnectAPI
     zoomAPI?: ZoomAPI
     browserAPI?: BrowserAPI
     updateAPI?: UpdateAPI
