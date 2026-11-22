@@ -18652,6 +18652,8 @@
     },
     "overviewPage": {
       "all_systems_running": "সব সিস্টেম চলছে",
+      "kiro_sign_in_needed": "Kiro-তে সাইন ইন দরকার: এজেন্টরা উত্তর দিতে পারছে না",
+      "open_kiro_sign_in": "সাইন-ইন সেটিংস খোলো",
       "back_to_overview": "ওভারভিউতে ফিরুন",
       "connecting": "কানেক্ট হচ্ছে…",
       "memory_summary_kept_one": "{{hours}} ঘণ্টা নিষ্ক্রিয় থাকার পর চ্যাট মেমরিতে সারসংক্ষেপ হয় · {{days}} দিনের ইতিহাস রাখে",

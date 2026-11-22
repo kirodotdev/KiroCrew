@@ -19142,6 +19142,8 @@
     },
     "overviewPage": {
       "all_systems_running": "Todos los sistemas en ejecución",
+      "kiro_sign_in_needed": "Hay que iniciar sesión en Kiro: los agentes no pueden responder",
+      "open_kiro_sign_in": "Abrir la configuración de inicio de sesión",
       "back_to_overview": "Volver al resumen",
       "connecting": "Conectando…",
       "memory_summary_kept_one": "Resume los chats en la memoria después de {{hours}} h de inactividad · conserva {{days}} día de historial",

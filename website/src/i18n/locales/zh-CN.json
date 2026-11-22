@@ -18162,6 +18162,8 @@
     },
     "overviewPage": {
       "all_systems_running": "所有系统运行中",
+      "kiro_sign_in_needed": "需要登录 Kiro：代理无法回复",
+      "open_kiro_sign_in": "打开登录设置",
       "back_to_overview": "返回概览",
       "connecting": "正在连接…",
       "memory_summary_kept_other": "闲置 {{hours}} 小时后将聊天总结进记忆 · 保留 {{days}} 天历史",

@@ -8860,6 +8860,8 @@
     },
     "overviewPage": {
       "all_systems_running": "All systems running",
+      "kiro_sign_in_needed": "Kiro sign-in needed: agents can't reply",
+      "open_kiro_sign_in": "Open sign-in settings",
       "connecting": "Connecting…",
       "memory_developer_link": "Memory graph and internals",
       "reconnecting": "Reconnecting…",
