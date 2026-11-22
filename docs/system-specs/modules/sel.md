@@ -242,11 +242,20 @@ Every process that writes the log can rotate and trim it, each at its own moment
 
 ```text
 kirocrew security events [-n LIMIT] [--since AGE_OR_TIME] [--until AGE_OR_TIME]
+                         [--operation V] [--outcome V] [--source V] [--caller V]
 kirocrew security verify
 ```
 
 `events` defaults to 20 rows. `--since` and `--until` accept relative ages such
 as `30m`, `2h`, and `7d`, or ISO 8601 dates/timestamps.
+
+`--operation`, `--outcome`, `--source` and `--caller` each keep a row only when its
+`operation`, `outcome`, `source` or `caller_identity` equals the value exactly (no
+pattern); several flags must all match. The time window applies first, then the field
+filters over at most 50,000 of the newest rows in that window (`sel_filter.CLI_SCAN_LIMIT`),
+then `-n` cuts the result. A scan that used the whole budget without filling `-n` prints a
+note on stderr: set an earlier `--until` to reach older rows. With no field flag, the
+log's own `recent` answers as before.
 
 ## Thread Safety
 
