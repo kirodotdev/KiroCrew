@@ -325,3 +325,55 @@ class TestAgentsAndSkillsSurviveDiscovery:
             "no shipped builtin declares agents or skills, so this guard proved "
             "nothing — if that is now genuinely true, delete it"
         )
+
+
+# ---------------------------------------------------------------------------
+# The package's own builtins/ is scanned once per process
+# ---------------------------------------------------------------------------
+
+
+def _as_package_builtins(monkeypatch, builtins_dir: Path) -> list[str]:
+    """Serve *builtins_dir* as the package's ``builtins/``.
+
+    Returns the directory name of each ``app.json`` read from then on.
+    """
+    from kiro_crew.apps import discovery
+    from kiro_crew.apps.manifest import AppManifest
+
+    monkeypatch.setattr(discovery, "_get_builtins_dir", lambda: builtins_dir)
+    reads: list[str] = []
+    real = AppManifest.from_json_file.__func__
+
+    def counting(cls, path):
+        reads.append(Path(path).parent.name)
+        return real(cls, path)
+
+    monkeypatch.setattr(AppManifest, "from_json_file", classmethod(counting))
+    return reads
+
+
+def test_the_package_builtins_are_read_once_for_every_caller(tmp_path, monkeypatch):
+    """Gateway boot asks three times (registration, orphan check, public ids); each
+    manifest is read once, and a caller's edits to its list never reach the next one."""
+    for name in ("app-one", "app-two"):
+        _write_manifest(tmp_path / name, _valid_manifest(name))
+    reads = _as_package_builtins(monkeypatch, tmp_path)
+
+    for _ in range(2):
+        apps = discover_builtin_apps()
+        apps[0]["name"] = "changed"
+        apps.append({"name": "added"})
+
+    assert [a["name"] for a in discover_builtin_apps()] == ["app-one", "app-two"]
+    assert sorted(reads) == ["app-one", "app-two"]
+
+
+def test_a_scan_that_skipped_a_manifest_is_scanned_again(tmp_path, monkeypatch):
+    """A skipped manifest may be a passing failure, so the next caller reads it again."""
+    _write_manifest(tmp_path / "good-app", _valid_manifest("good-app"))
+    _write_manifest(tmp_path / "bad-app", {"name": "bad-app"})
+    reads = _as_package_builtins(monkeypatch, tmp_path)
+
+    for _ in range(2):
+        assert [a["name"] for a in discover_builtin_apps()] == ["good-app"]
+    assert sorted(reads) == ["bad-app", "bad-app", "good-app", "good-app"]

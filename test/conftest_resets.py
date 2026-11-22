@@ -1163,6 +1163,28 @@ def _reset_subagent_memory_price_holders():
 
 
 @per_test_guard
+def _reset_builtin_discovery_scan():
+    """Start each test with no kept scan of the package's builtin apps.
+
+    ``apps.discovery._package_scan`` keeps the last whole scan of the package's
+    ``builtins/`` for the process, keyed on that directory's inode and mtime only. A
+    test that patches the manifest reader or the path screen would otherwise read the
+    scan an earlier test on the worker left.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.apps.discovery")
+        if module is not None:
+            module._package_scan = None
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_subagent_not_due_memo():
     """Start each test with no remembered not-yet-due runs from the tombstone sweep.
 
