@@ -319,6 +319,20 @@ def template_declares(template: str, server: str) -> bool:
     return False
 
 
+def _users_own_server(name: str) -> bool:
+    """Whether a user's own MCP config file declares *name* and no app mints it. Blocking.
+
+    An app's ``<app>:<server>`` key lives only in the rendered spec the gateway
+    lookup reads first, and a template's copy would not follow the app's install.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.mcp_discovery import _load_mcp_json_by_source
+
+    specs = [scope.get(name) for scope in _load_mcp_json_by_source().values()]
+    declared = any(isinstance(s, dict) and agent_mod._declares_server(s) for s in specs)
+    return declared and name not in agent_mod._app_owned_mcp_keys()
+
+
 # ── the default agent and the worker: a mount-only card ──
 
 #: Templates whose servers are the MCP page's: the default agent carries every
@@ -382,6 +396,14 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
     except CatalogAdditionError as exc:
         _audit(sk, OP_REQUEST_SERVER, "denied", exc.code)
         return _deny(400, exc.code, exc.message)
+    if ":" in name and not await asyncio.to_thread(_users_own_server, name):
+        _audit(sk, OP_REQUEST_SERVER, "denied", "app_server")
+        return _deny(
+            400,
+            "app_server",
+            f"{name} can't be added to an agent template: a name with ':' must be a server "
+            "the user's own MCP config declares, and an installed app's server is not",
+        )
     try:
         if transport is None:
             raise additions.AdditionError("entry_not_object")

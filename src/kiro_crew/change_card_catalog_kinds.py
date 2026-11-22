@@ -1615,9 +1615,18 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         _only(p, {"template", "server", "entry", "origin", "mount_only"})
         out_srv: dict[str, Any] = {
             "template": _clean_str(p, "template", pattern=_TEMPLATE_NAME_RE),
-            # One path segment of plain characters: the Undo names it in its path.
-            "server": _clean_str(p, "server", pattern=_TEMPLATE_NAME_RE),
+            "server": _clean_str(p, "server") or "",
         }
+        try:
+            # The record's own rule, so a card never names a server the record
+            # would refuse. One path segment, so no "/": the Undo names it in its path.
+            _additions._check_server(out_srv["server"])
+        except _additions.AdditionError:
+            raise _fail(
+                "invalid_param",
+                "'server' can't be added to an agent template: use up to 64 letters, digits,"
+                " '.', '_', '-' or ':', starting and ending with a letter or digit",
+            ) from None
         if "mount_only" in p:
             if not isinstance(p["mount_only"], bool):
                 raise _fail("invalid_param", "'mount_only' must be a boolean")
