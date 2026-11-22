@@ -516,8 +516,7 @@ async def apply_monitor_probe(
         assert staged_state is not None
         if state.config_generation != config_generation:
             self._set_monitor_deadline(staged, now + staged_state.cadence_secs)
-            decision = MonitorDecision.NO_CHANGE
-            verdict = MonitorVerdict(decision=decision)
+            verdict = MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
         elif state.wake_in_flight:
             return MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
         else:
@@ -1170,15 +1169,13 @@ async def _record_monitor_turn_completion_admitted(
                 reason,
                 stopped_at=completion.completed_ts,
             )
-        elif (
-            disposition is MonitorActionDisposition.APPROVAL_STALL and staged_state.outcome is None
-        ):
+        elif disposition is MonitorActionDisposition.APPROVAL_STALL:
             staged.active = False
             self._set_monitor_deadline(staged, 0.0)
             staged_state.outcome = MonitorOutcome.BLOCKED
             staged_state.stopped_reason = MONITOR_STOP_APPROVAL_STALL
             staged_state.stopped_at = completion.completed_ts
-        elif staged.active and staged_state.outcome is None:
+        elif staged.active:
             self._set_monitor_deadline(
                 staged,
                 completion.completed_ts + staged_state.cadence_secs,
