@@ -32,7 +32,7 @@ import {
 } from 'lucide-react'
 import type { McpServer } from '../../types'
 import type { ConnectionStatus } from '../../api/client/connections'
-import { fmtDate, fmtList } from '../../i18n/format'
+import { fmtDate, fmtList, joinSentences } from '../../i18n/format'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import ProviderLogo, { PROVIDER_LOGO_SLUGS } from './ProviderLogo'
@@ -666,21 +666,22 @@ function ConnectionCard({
     ? t('pages.connectionsPage.stored_sign_in_no_server', { provider: provider.name })
     : ''
   // Caveats first: they are the part a user can read without the provider's setup terms.
-  const prerequisiteText = [storedSignIn, backendCaveat, providerPrerequisite].filter(Boolean).join(' ')
+  const prerequisiteText = joinSentences([storedSignIn, backendCaveat, providerPrerequisite])
   const sharedGrant = (grantSharedWith && grantSharedWith.length > 0) || grantSharedUnconfirmed
   const sharedText = sharedGrant
-    ? `${
+    ? joinSentences([
         grantSharedWith && grantSharedWith.length > 0
           ? t('pages.connectionsPage.grant_shared_fact', { names: fmtList(grantSharedWith) })
-          : t('pages.connectionsPage.grant_shared_fact_unconfirmed')
-      } ${t('pages.connectionsPage.grant_shared_caveat')}`
+          : t('pages.connectionsPage.grant_shared_fact_unconfirmed'),
+        t('pages.connectionsPage.grant_shared_caveat'),
+      ])
     : ''
   // A shared row already has a Disconnect tip, so the caveat joins it. A row
   // that is not shared has no tip to join, and the card rule allows one tip per
   // row and no new heading key, so there the caveat is a fact about the
   // current state and rides the status list instead (chatUseNote below).
   const kasSignInNote = signInInChat ? t('pages.connectionsPage.chat_use_kas_sign_in', { word: provider.slug }) : ''
-  const connectedTipText = sharedGrant ? [sharedText, backendCaveat, kasSignInNote].filter(Boolean).join(' ') : ''
+  const connectedTipText = sharedGrant ? joinSentences([sharedText, backendCaveat, kasSignInNote]) : ''
   const chatUseNote = (backendLacksOauth || signInInChat) && !sharedGrant
   // The address the sign-in returns to, for an org admin's redirect allowlist:
   // one exact URI when Crew registers it, else the loopback origins on any port.
