@@ -3598,15 +3598,18 @@ slots to learn which thread it is, and a retired question looks its slot up by k
 that expires writes nothing to that log, so each record arms one timer per thread
 for its soonest open card's `expires_at` that reads the list again as a retired
 question does (after 60 s instead when a card is past its expiry but still open, or
-the append that emptied the list has not committed); the timer does not survive a
-gateway restart. The list
+the append that emptied the list has not committed). A timer does not survive a
+gateway restart, so once the restore has put the tabs back each thread idle since
+learns the session it last logged into (its newest crew-log unit, read off the
+loop) and has its list read again as a retired question does, which drops a card
+that expired while the gateway was down and arms the timer for the next one. The list
 reads the change-card store, and the settle runs on the serving loop, so each
 settle first awaits `CardStore.warm()` (the file and vault-key read in a worker
 thread); when warming fails nothing is recorded, so the last complete list stands
 rather than one missing the store's pending cards, and the cold store is never read on the loop (`test/test_crewmate_feed_cold_store.py`).
 A goal
-write while the thread has no live session (a milestones press between turns, a
-write after a restart) is held in `crewmate_feed._held_goals`, newest wins, and
+write before the feed knows the thread's session (no turn logged yet, or a
+restart still restoring the tabs) is held in `crewmate_feed._held_goals`, newest wins, and
 recorded on the thread's next growth, when its session is known. An
 entry is appended only when its snapshot differs from the last one this
 process recorded for that thread, so the check's own append records nothing.
