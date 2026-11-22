@@ -457,7 +457,17 @@ Request flow:
    that exposure by name. It is stored in `member-records/app-dashboard-proxy/` (masked in every
    sandbox mode), never pre-granted, counts only while the owner-enable marker
    stands and the owner has not disabled the app, and is removed on a disable and
-   an uninstall. It reaches a backend at its next start.
+   an uninstall. It reaches a backend at its next start. A revoke is durable across
+   restarts: it first writes a tombstone naming the ended grant id in the gateway's own
+   `app-dashboard-revoked/` leaf (outside `member-records/`, masked in every sandbox
+   mode; the file and its directory are fsynced), then removes the records. A
+   tombstone wins over any record on disk, in `granted()` and in the install-record
+   read; one that cannot be read or parsed counts as ended, never as absent. Only a
+   new grant, after its new record is written, clears it, and it keeps the ended ids,
+   so an old record with one of them never stands again. When the tombstone cannot be
+   written, the grant is ended in memory, the delete is still tried, and the route
+   answers `500 revoke_incomplete`: if the record stayed too, the access returns after
+   a gateway restart until a revoke succeeds.
 
    **The delegated leg of `/api/token/local`.** A value of 64 hex digits that is
    not the local secret takes leg 2, which admits ONLY a process that descends

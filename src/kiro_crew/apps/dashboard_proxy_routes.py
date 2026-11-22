@@ -27,6 +27,15 @@ logger = logging.getLogger("kiro_crew.apps.routes")
 _REFUSED_REASONS = frozenset({"not-registry-verified", "not-enabled", "platform-unsupported"})
 
 
+#: The answer when a revoke could not write its restart guard. True in both cases: when the
+#: stored record is gone too, nothing comes back. A test pins each claim in it.
+REVOKE_INCOMPLETE_TEXT = (
+    "Access is ended now. The revoke could not be saved. If the stored grant could not be "
+    "removed either, the access comes back after a gateway restart until a revoke succeeds. "
+    "Fix the disk error, then revoke again."
+)
+
+
 async def _owner_denial(request: web.Request, operation: str) -> web.Response | None:
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
@@ -73,12 +82,10 @@ async def handle_dashboard_proxy(request: web.Request) -> web.Response:
                 resources=f"name={name!r}",
             )
             if not removed:
-                # Access is over (the gateway ended the grant in memory), but a record stays.
+                # Access is over now (ended in memory); the restart guard was not written, so
+                # a record that stays would bring it back after a gateway restart.
                 return web.json_response(
-                    {
-                        "error": "access ended, but a stored record could not be removed",
-                        "code": "revoke_incomplete",
-                    },
+                    {"error": REVOKE_INCOMPLETE_TEXT, "code": "revoke_incomplete"},
                     status=500,
                 )
             return web.json_response(await asyncio.to_thread(_view, name))

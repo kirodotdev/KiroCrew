@@ -231,6 +231,24 @@ def _write_refused(monkeypatch) -> None:
     monkeypatch.setattr(dashboard_proxy, "atomic_write", _boom)
 
 
+def _tombstone_write_refused(monkeypatch) -> None:
+    """Only a write into the tombstone leaf fails; a grant record still lands."""
+    real = dashboard_proxy.atomic_write
+
+    def _selective(path, *args, **kwargs):
+        if Path(path).parent.name == dashboard_proxy._TOMBSTONE_LEAF:
+            raise OSError("tombstone write refused")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(dashboard_proxy, "atomic_write", _selective)
+
+
+def _nothing_lands(monkeypatch, error: type[OSError] = PermissionError) -> None:
+    """The records directory and the tombstone leaf both refuse: neither a delete nor a write lands."""
+    _unlink_refused(monkeypatch, error)
+    _write_refused(monkeypatch)
+
+
 @pytest.mark.parametrize("error", [PermissionError, OSError])
 def test_a_revoke_that_cannot_remove_the_record_still_ends_the_grant(
     records, installed, monkeypatch, error
@@ -239,8 +257,8 @@ def test_a_revoke_that_cannot_remove_the_record_still_ends_the_grant(
     assert dashboard_proxy.grant(_APP) == (True, "")
     claim = dashboard_proxy.grant_claim(_APP)
     assert claim and dashboard_proxy.stand_in_value(_APP)
-    _unlink_refused(monkeypatch, error)
-    assert dashboard_proxy.revoke(_APP) is False, "the caller must hear the record stayed"
+    _nothing_lands(monkeypatch, error)
+    assert dashboard_proxy.revoke(_APP) is False, "the caller must hear nothing landed"
     assert dashboard_proxy.granted(_APP) is False
     assert dashboard_proxy.grant_claim(_APP) == ""
     assert not dashboard_proxy.grant_current(_APP, claim)
@@ -256,7 +274,7 @@ def test_a_new_grant_follows_a_revoke_that_could_not_remove_the_record(
     assert dashboard_proxy.grant(_APP) == (True, "")
     first = dashboard_proxy.grant_claim(_APP)
     with monkeypatch.context() as refused:
-        _unlink_refused(refused)
+        _nothing_lands(refused)
         assert dashboard_proxy.revoke(_APP) is False
     assert dashboard_proxy.grant(_APP) == (True, "")
     assert dashboard_proxy.granted(_APP) is True
@@ -275,11 +293,202 @@ async def test_the_revoke_route_answers_an_error_when_the_record_stays(
     monkeypatch.setattr("kiro_crew.apps.manager.get_app", lambda _name: object())
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
     assert dashboard_proxy.grant(_APP) == (True, "")
-    _unlink_refused(monkeypatch)
+    _tombstone_write_refused(monkeypatch)  # K1: the tombstone cannot be written
     resp = await routes.handle_dashboard_proxy(_request("DELETE"))
     assert resp.status == 500
-    assert json.loads(resp.text or "{}")["code"] == "revoke_incomplete"
-    assert dashboard_proxy.granted(_APP) is False, "access ended although the record stayed"
+    body = json.loads(resp.text or "{}")
+    assert body["code"] == "revoke_incomplete"
+    assert dashboard_proxy.granted(_APP) is False, "access is ended in-process"
+    # The text says what is true: over now; back after a restart only if the record stayed.
+    text = body["error"]
+    assert text == routes.REVOKE_INCOMPLETE_TEXT
+    for claim in (
+        "Access is ended now",
+        "comes back after a gateway restart",
+        "until a revoke succeeds",
+        "Fix the disk error, then revoke again",
+    ):
+        assert claim in text
+    assert "a stored record could not be removed" not in text, "the old text named only the record"
+
+
+def _tombstone_dir(records: Path) -> Path:
+    return records / "app-dashboard-revoked"
+
+
+def test_a_revoke_that_cannot_delete_stays_revoked_after_a_restart(records, installed, monkeypatch):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    claim = dashboard_proxy.grant_claim(_APP)
+    stored_id = json.loads(
+        (records / "member-records/app-dashboard-proxy" / f"{_APP}.json").read_text()
+    )["grant_id"]
+    _unlink_refused(monkeypatch)  # the delete fails; the tombstone write lands
+    assert dashboard_proxy.revoke(_APP) is True, "the tombstone landed, so access is over for good"
+    tomb = json.loads((_tombstone_dir(records) / f"{_APP}.grant").read_text())
+    assert tomb["active"] is True and stored_id in tomb["ended_ids"], "it names the ended grant"
+    dashboard_proxy.reset_marks()  # the gateway restarts: no in-memory mark survives
+    assert (records / "member-records/app-dashboard-proxy" / f"{_APP}.json").exists()
+    assert dashboard_proxy.granted(_APP) is False
+    assert dashboard_proxy.grant_claim(_APP) == ""
+    assert not dashboard_proxy.grant_current(_APP, claim)
+    assert dashboard_proxy.stand_in_value(_APP) is None
+    assert dashboard_proxy.verify_leg_two(_APP, "any-value") == "not-granted"
+
+
+def test_a_revoke_whose_tombstone_cannot_be_written_refuses_the_grant_in_process(
+    records, installed, monkeypatch
+):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    _tombstone_write_refused(monkeypatch)
+    assert dashboard_proxy.revoke(_APP) is False, "K1: no tombstone, so the caller hears 500"
+    assert not list(_tombstone_dir(records).glob("*"))
+    assert dashboard_proxy.granted(_APP) is False, "the in-memory mark still holds"
+    assert dashboard_proxy.grant_claim(_APP) == ""
+
+
+def test_the_tombstone_and_its_directory_are_fsynced_before_any_record_is_unlinked(
+    records, installed, monkeypatch
+):
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    events: list[str] = []
+    real_unlink = Path.unlink
+    real_write = dashboard_proxy.atomic_write
+
+    def _write(path, *args, **kwargs):
+        if Path(path).parent.name == dashboard_proxy._TOMBSTONE_LEAF:
+            assert kwargs.get("fsync") is True
+            events.append("tombstone-write")
+        return real_write(path, *args, **kwargs)
+
+    def _fsync_dir(path, *args, **kwargs):
+        events.append(f"fsync-dir:{Path(path).name}")
+
+    def _unlink(self, *args, **kwargs):
+        events.append("unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(dashboard_proxy, "atomic_write", _write)
+    monkeypatch.setattr(dashboard_proxy, "fsync_dir", _fsync_dir)
+    monkeypatch.setattr(Path, "unlink", _unlink)
+    assert dashboard_proxy.revoke(_APP) is True
+    first_unlink = events.index("unlink")
+    assert events[:first_unlink] == [
+        "tombstone-write",
+        f"fsync-dir:{dashboard_proxy._TOMBSTONE_LEAF}",
+        f"fsync-dir:{records.name}",
+    ]
+
+
+def test_a_directory_fsync_failure_counts_as_no_tombstone(records, installed, monkeypatch):
+    assert dashboard_proxy.grant(_APP) == (True, "")
+
+    def _boom(*args, **kwargs):
+        raise OSError("fsync refused")
+
+    monkeypatch.setattr(dashboard_proxy, "fsync_dir", _boom)
+    assert dashboard_proxy.revoke(_APP) is False
+    assert dashboard_proxy.granted(_APP) is False
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["", "{not json", "[]", '{"app": "someone-else", "active": false}', "\xff\xfe"],
+    ids=["empty", "not-json", "not-an-object", "other-app", "not-utf8"],
+)
+def test_a_corrupt_tombstone_counts_as_ended_never_as_absent(records, installed, content):
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.granted(_APP) is True
+    leaf = _tombstone_dir(records)
+    leaf.mkdir()
+    (leaf / f"{_APP}.grant").write_bytes(content.encode("latin-1"))
+    assert dashboard_proxy.granted(_APP) is False
+    dashboard_proxy.reset_marks()
+    assert dashboard_proxy.granted(_APP) is False
+    assert dashboard_proxy.verify_leg_two(_APP, "any-value") == "not-granted"
+
+
+def test_an_unreadable_tombstone_counts_as_ended(records, installed):
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    (_tombstone_dir(records) / f"{_APP}.grant").mkdir(parents=True)  # a directory: unreadable
+    assert dashboard_proxy.granted(_APP) is False
+
+
+def test_a_fresh_grant_clears_the_tombstone(records, installed, monkeypatch):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.revoke(_APP) is True
+    tombstone = _tombstone_dir(records) / f"{_APP}.grant"
+    assert json.loads(tombstone.read_text())["active"] is True
+    dashboard_proxy.reset_marks()
+    assert dashboard_proxy.granted(_APP) is False
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert json.loads(tombstone.read_text())["active"] is False, "cleared by the new grant"
+    assert dashboard_proxy.granted(_APP) is True
+    dashboard_proxy.reset_marks()
+    assert dashboard_proxy.granted(_APP) is True, "nothing stands against the new grant"
+
+
+def test_an_old_record_with_an_ended_grant_id_never_stands_again(records, installed, monkeypatch):
+    record = records / "member-records/app-dashboard-proxy" / f"{_APP}.json"
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    old_bytes = record.read_bytes()
+    with monkeypatch.context() as refused:
+        _unlink_refused(refused)  # the record stays on disk
+        assert dashboard_proxy.revoke(_APP) is True
+    assert dashboard_proxy.grant(_APP) == (True, "")  # a new grant id, tombstone cleared
+    new_bytes = record.read_bytes()
+    assert new_bytes != old_bytes
+    record.write_bytes(old_bytes)  # the old record comes back (a restore, a copy)
+    dashboard_proxy.reset_marks()
+    assert dashboard_proxy.granted(_APP) is False, "its grant id was ended"
+    assert dashboard_proxy.grant_claim(_APP) == ""
+    record.write_bytes(new_bytes)
+    assert dashboard_proxy.granted(_APP) is True
+
+
+def test_a_grant_whose_tombstone_cannot_be_cleared_is_refused_and_stays_off(
+    records, installed, monkeypatch
+):
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.revoke(_APP) is True
+    _tombstone_write_refused(monkeypatch)
+    assert dashboard_proxy.grant(_APP) == (False, "write-failed")
+    assert dashboard_proxy.granted(_APP) is False
+
+
+def test_the_tombstone_is_in_a_leaf_the_sandbox_hides_and_no_app_can_write(records, installed):
+    from kiro_crew import member_records, sandbox_leaves, sandbox_precreate
+    from kiro_crew.security import paths_lists
+
+    leaf = dashboard_proxy._TOMBSTONE_LEAF
+    path = dashboard_proxy._tombstone_path(_APP, ".grant")
+    home = records.resolve()
+    assert path.parent == home / leaf and path.parent.parent == home
+    # Not in member-records/, and not in the agent-writable app tree.
+    assert member_records.records_root() not in path.parents
+    assert home / "apps" not in path.parents
+    # The leaf is masked in every sandbox mode, pre-created, and refused to the agent tools.
+    assert leaf in sandbox_leaves._CREW_HIDDEN_LEAVES
+    assert leaf in sandbox_precreate._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+    assert leaf in paths_lists._CREW_SECRET_LEAVES
+
+
+def test_an_uninstall_tombstone_outlives_a_restart_and_a_new_sealed_record_clears_it(
+    forged_apps, monkeypatch
+):
+    dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
+    with monkeypatch.context() as refused:
+        _unlink_refused(refused)
+        dashboard_proxy.forget_install(_APP)
+    dashboard_proxy.reset_marks()
+    assert dashboard_proxy.registry_verified(_APP) is False, "the install tombstone stands"
+    assert dashboard_proxy.record_install(
+        _APP, version="2", registry="r", url="https://x.invalid/a.git"
+    )
+    assert dashboard_proxy.registry_verified(_APP) is True
 
 
 def test_an_uninstall_that_cannot_remove_the_install_record_leaves_no_grant_or_offer(

@@ -442,6 +442,7 @@ class TestLeafOnlyNamesHaveNoBetterHold:
         "<crew>/update_next_start.json": "standard",
         "<crew>/vouched-executions": "standard",
         "<crew>/web-push": "standard",
+        "<crew>/app-dashboard-revoked": "standard",
         "<crew>/webhooks": "standard",
         "<crew>/whatsapp": "standard",
         "<crew>/work": "standard",

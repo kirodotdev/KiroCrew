@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import threading
 from datetime import datetime, timezone
@@ -39,7 +40,8 @@ from typing import Any
 
 from kiro_crew import member_records
 from kiro_crew.apps.execution import APP_NAME_RE
-from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
+from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +82,10 @@ _refused_lock = threading.Lock()
 #: removed or replaced (read-only or locked records directory) still ends the access it backs:
 #: ``_ended_grants`` ends the grant, ``_unsealed_installs`` makes the install record untrusted,
 #: so no offer and no grant stands until a new grant or a new sealed record clears the mark.
-#: shortcut: in memory, so a gateway restart forgets them; the new gateway secret ends every
-#: derived value and token then, and the owner sees the grant state again.
+#: Each mark is also written first as a tombstone file in the gateway's own state leaf
+#: (:data:`_TOMBSTONE_LEAF`), which outlives a restart and wins over any record on disk.
+#: shortcut: when the tombstone cannot be written either, the mark is in memory only, so a
+#: gateway restart forgets it until a revoke succeeds; the route says so (``revoke_incomplete``).
 _ended_grants: set[str] = set()
 _unsealed_installs: set[str] = set()
 _marks_lock = threading.Lock()
@@ -102,6 +106,111 @@ def _mark(marks: set[str], app_name: str, on: bool) -> None:
 def _marked(marks: set[str], app_name: str) -> bool:
     with _marks_lock:
         return app_name in marks
+
+
+#: The gateway's own state leaf for the tombstones, a direct child of the data home. It is
+#: NOT under ``member-records/`` (the directory whose failure it guards against) and the OS
+#: sandbox masks it in every mode (``sandbox_leaves._CREW_HIDDEN_LEAVES``), so an app reads
+#: and writes none of it. Byte-identical to the entries in ``sandbox_leaves``,
+#: ``sandbox_precreate`` and ``security.paths_lists``; a test pins them.
+_TOMBSTONE_LEAF = "app-dashboard-revoked"
+_GRANT_TOMBSTONE = ".grant"
+_INSTALL_TOMBSTONE = ".install"
+
+
+def _tombstone_path(app_name: str, kind: str) -> Path:
+    """``<data home>/app-dashboard-revoked/<app><kind>``. Raises ``ValueError``."""
+    if not isinstance(app_name, str) or not APP_NAME_RE.fullmatch(app_name):
+        raise ValueError(f"unsafe app name: {app_name!r}")
+    return data_home().resolve() / _TOMBSTONE_LEAF / f"{app_name}{kind}"
+
+
+def _tombstoned(app_name: str, kind: str) -> bool:
+    """Whether a tombstone stands. Anything but a clean "absent" counts as standing."""
+    try:
+        os.lstat(_tombstone_path(app_name, kind))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    return True
+
+
+def _write_tombstone(app_name: str, kind: str, body: dict[str, Any] | None = None) -> bool:
+    """Write the tombstone file, then fsync it and its directory. ``False`` when any step fails."""
+    try:
+        path = _tombstone_path(app_name, kind)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, json.dumps(body or {"app": app_name}) + "\n", fsync=True)
+        fsync_dir(path.parent)
+        fsync_dir(path.parent.parent)  # the leaf's own entry, when this call created it
+    except (OSError, ValueError):
+        logger.warning("could not write the dashboard_proxy tombstone for %r", app_name)
+        return False
+    return True
+
+
+#: How many ended grant ids one tombstone keeps; older ones are long gone from every record.
+_MAX_ENDED_IDS = 16
+
+
+def _grant_tombstone(app_name: str) -> dict[str, Any] | None:
+    """The grant tombstone, ``None`` only when it is cleanly absent.
+
+    One that cannot be read, parsed or that names another app counts as ended (fail closed),
+    never as absent.
+    """
+    ended: dict[str, Any] = {"active": True, "ended_ids": []}
+    try:
+        raw = read_bytes_with_retry(
+            _tombstone_path(app_name, _GRANT_TOMBSTONE), max_bytes=_RECORD_MAX_BYTES
+        )
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return ended
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return ended
+    if not isinstance(data, dict) or data.get("app") != app_name:
+        return ended
+    ids = data.get("ended_ids")
+    return {
+        "active": data.get("active") is not False,
+        "ended_ids": [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else [],
+    }
+
+
+def _grant_ended(app_name: str) -> bool:
+    """Whether a tombstone ends the grant record on disk: it stands, or names that record's id."""
+    tomb = _grant_tombstone(app_name)
+    if tomb is None:
+        return False
+    if tomb["active"]:
+        return True
+    grant_id = _stored_grant_id(app_name)
+    return bool(grant_id) and grant_id in tomb["ended_ids"]
+
+
+def _put_grant_tombstone(app_name: str, *, active: bool, ended_id: str = "") -> bool:
+    """Write the grant tombstone, keeping the ids it already names and adding *ended_id*."""
+    tomb = _grant_tombstone(app_name)
+    ids = list(tomb["ended_ids"]) if tomb else []
+    if ended_id and ended_id not in ids:
+        ids.append(ended_id)
+    body = {"app": app_name, "active": active, "ended_ids": ids[-_MAX_ENDED_IDS:]}
+    return _write_tombstone(app_name, _GRANT_TOMBSTONE, body)
+
+
+def _clear_tombstone(app_name: str, kind: str) -> bool:
+    try:
+        _tombstone_path(app_name, kind).unlink()
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def note_refused_mint(app_name: str) -> None:
@@ -197,7 +306,11 @@ def record_install(
         # The record on disk (if any) is the OLD install's: it must not keep backing a
         # grant or an offer for the new one.
         _mark(_unsealed_installs, app_name, True)
+        _write_tombstone(app_name, _INSTALL_TOMBSTONE)
         logger.warning("could not seal the install record for %r", app_name)
+        return False
+    if not _clear_tombstone(app_name, _INSTALL_TOMBSTONE):
+        _mark(_unsealed_installs, app_name, True)  # the tombstone still wins
         return False
     _mark(_unsealed_installs, app_name, False)
     return True
@@ -214,12 +327,13 @@ def forget_install(app_name: str) -> None:
         pass
     except (OSError, ValueError):
         _mark(_unsealed_installs, app_name, True)
+        _write_tombstone(app_name, _INSTALL_TOMBSTONE)
         logger.warning("could not remove the install record for %r", app_name)
 
 
 def _installed(app_name: str) -> Any:
     """The sealed install record as an object with the install fields, or ``None``."""
-    if _marked(_unsealed_installs, app_name):
+    if _marked(_unsealed_installs, app_name) or _tombstoned(app_name, _INSTALL_TOMBSTONE):
         return None
     try:
         raw = read_bytes_with_retry(_path(app_name, _INSTALL_SUFFIX), max_bytes=_RECORD_MAX_BYTES)
@@ -357,7 +471,7 @@ def granted(app_name: str) -> bool:
     The stored grant names this install, the owner-enable marker stands and the owner has
     not disabled the app. Read on every use, so a disable or an uninstall ends it at once.
     """
-    if _marked(_ended_grants, app_name):
+    if _marked(_ended_grants, app_name) or _grant_ended(app_name):
         return False
     stored = _stored_identity(app_name)
     current = install_identity(app_name)
@@ -391,27 +505,38 @@ def grant(app_name: str) -> tuple[bool, str]:
     except (OSError, ValueError):
         logger.warning("could not record the dashboard_proxy grant for %r", app_name)
         return False, "write-failed"
+    # Only after the new record is down. The tombstone is cleared to inactive and keeps the
+    # grant ids it ended, so an old record with one of them never stands again; one that
+    # cannot be cleared keeps winning.
+    if _grant_tombstone(app_name) is not None and not _put_grant_tombstone(app_name, active=False):
+        logger.warning("could not clear the dashboard_proxy tombstone for %r", app_name)
+        return False, "write-failed"
     _mark(_ended_grants, app_name, False)  # a new grant id: no earlier token matches it
     return True, ""
 
 
 def revoke(app_name: str) -> bool:
-    """End the grant and remove its records. ``False`` when a record could not be removed.
+    """End the grant. ``False`` when the tombstone could not be written.
 
-    The grant is ended first, in memory, so it is over even when a record stays on disk
-    (fail closed); the owner route answers an error then. A no-op when none exists.
+    The grant is ended first, in memory, so it is over even when nothing lands on disk
+    (fail closed). Then a tombstone naming the grant id is written and fsynced, with its
+    directory, to the gateway's own state leaf, so the grant stays over after a restart
+    whatever happens to the record, and only then are the records removed (also when the
+    tombstone failed, so the record at least goes). The owner route answers an error on
+    ``False``. A no-op when none exists.
     """
     _mark(_ended_grants, app_name, True)
-    removed = True
+    tombstoned = _put_grant_tombstone(
+        app_name, active=True, ended_id=_stored_grant_id(app_name) or ""
+    )
     for suffix in (".json", _STAND_IN_SUFFIX):
         try:
             _path(app_name, suffix).unlink()
         except FileNotFoundError:
             pass
         except (OSError, ValueError):
-            removed = False
             logger.warning("could not remove the dashboard_proxy record for %r", app_name)
-    return removed
+    return tombstoned
 
 
 def stand_in_value(app_name: str) -> str | None:

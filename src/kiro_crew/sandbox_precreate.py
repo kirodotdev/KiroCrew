@@ -640,6 +640,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # write (or by its one-time move from ``trust/``), so it is materialised empty
     # at 0700 for the same reason: an absent name gets no mask.
     "member-records",
+    # The dashboard-access revoke tombstones, created by the first revoke; see its entry in
+    # ``_CREW_HIDDEN_LEAVES``.
+    "app-dashboard-revoked",
     # The cross-process work root, and it needs this entry MORE than the stores
     # above rather than less: it is created lazily by the first ``allocate_work``
     # call, so on a fresh home the leaf is absent at every spawn until some job

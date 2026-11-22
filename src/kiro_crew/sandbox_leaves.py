@@ -416,6 +416,12 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # the gateway and the operator's own CLI open it. Whole directory: every
     # writer publishes through a sibling temp.
     "member-records",
+    # The dashboard-access revoke tombstones (``apps/dashboard_proxy.py``): one file per app
+    # whose grant or install record could not be removed, which keeps that access ended after
+    # a gateway restart. Whole directory (``atomic_write`` temp sibling); only the gateway
+    # opens it, and it is in ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` because the first revoke
+    # creates it lazily.
+    "app-dashboard-revoked",
     # Auth stores and signing keys owned by the gateway web server alone.
     "token_signing.key",
     "refresh_chains.json",

@@ -85,6 +85,7 @@ def real_grant(tmp_path, monkeypatch):
 
     home = tmp_path / "kirocrew-home"
     home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))  # the revoke tombstone leaf lives here
     monkeypatch.setattr(
         "kiro_crew.member_records.records_dir", lambda kind: home / "member-records" / kind
     )
@@ -357,6 +358,40 @@ def _unlink_refused(monkeypatch) -> None:
     monkeypatch.setattr(Path, "unlink", _boom)
 
 
+def _nothing_lands(monkeypatch) -> None:
+    """Neither a record delete nor a tombstone write lands."""
+    from kiro_crew.apps import dashboard_proxy
+
+    def _no_write(*args, **kwargs):
+        raise OSError("write refused")
+
+    _unlink_refused(monkeypatch)
+    monkeypatch.setattr(dashboard_proxy, "atomic_write", _no_write)
+
+
+@pytest.mark.asyncio
+async def test_access_stays_refused_after_a_restart_when_the_revoke_could_not_delete(
+    state, real_grant, monkeypatch
+):
+    """The record stays on disk and the in-memory mark is gone: the tombstone still ends it."""
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard.delegated_scope import enforce_delegated
+
+    async with _serve(state) as client:
+        old = _delegated()
+        assert (await client.get(_READ, params=old)).status == 200
+        _unlink_refused(monkeypatch)
+        assert dashboard_proxy.revoke(_APP) is True
+        dashboard_proxy.reset_marks()  # the gateway restarts
+        resp = await client.get(_READ, params=old)
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+        assert (await client.get(_READ)).status == 403, "the session cookie"
+    assert dashboard_proxy.verify_leg_two(_APP, "any-value") == "not-granted"
+    refused = await enforce_delegated(_FakeReq("/apps/{name}/api/{path}", _APP), "/x")
+    assert refused is not None and refused.status == 403
+
+
 @pytest.mark.asyncio
 async def test_access_ends_at_once_when_the_revoke_cannot_remove_the_record(
     state, real_grant, monkeypatch
@@ -366,7 +401,7 @@ async def test_access_ends_at_once_when_the_revoke_cannot_remove_the_record(
     async with _serve(state) as client:
         old = _delegated()
         assert (await client.get(_READ, params=old)).status == 200
-        _unlink_refused(monkeypatch)
+        _nothing_lands(monkeypatch)
         assert dashboard_proxy.revoke(_APP) is False
         resp = await client.get(_READ, params=old)
         assert resp.status == 403, await resp.text()
@@ -397,7 +432,7 @@ async def test_an_open_stream_ends_when_the_revoke_cannot_remove_the_record(
             resp = await client.get(f"/apps/{_APP}/api/s", params=_delegated())
             assert resp.status == 200
             assert await resp.content.readline() == b"frame\n"
-            _unlink_refused(monkeypatch)
+            _nothing_lands(monkeypatch)
             assert dashboard_proxy.revoke(_APP) is False
             await delegated_scope.end_stale_streams()
 

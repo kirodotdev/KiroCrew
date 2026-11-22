@@ -1,0 +1,2 @@
++1
+PR #40783: the `app-dashboard-revoked` leaf on `_CREW_SECRET_LEAVES` in `paths_lists`, the gateway-only dashboard-access revoke tombstones. Data, no rule changed.
