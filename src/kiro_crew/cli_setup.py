@@ -1744,6 +1744,11 @@ def _maybe_setup_dashboard_url() -> None:
         or ""
     )
 
+    # A Windows console returns Ctrl+D as U+0004, which strip() keeps.
+    if any(c < " " or c == "\x7f" for c in answer):
+        print("  ❌ Not saved: the URL contains a control character.")
+        answer = ""
+
     if answer == "" and current:
         print(f"  ✅ Keeping: {current}\n")
         return

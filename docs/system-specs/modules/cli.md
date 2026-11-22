@@ -873,6 +873,11 @@ workspace, sandbox, slash-command, WhatsApp, timezone, dashboard URL and macOS
 desktop-app prompts all go through it; the AWS launch offer takes its default on
 EOF instead, and the `--slack` token prompts still read `input()` directly.
 
+On a Windows console Ctrl+D then Enter is not EOF: `input()` returns U+0004,
+which `strip()` keeps. The dashboard URL prompt refuses an answer holding a
+control character (below U+0020, or U+007F), prints that it was not saved, and
+then keeps the current URL or skips, as for a blank answer.
+
 `_setup_impl` records the run's planned steps in order, in a
 `cli_setup_progress.SetupProgress`, and marks each one as it starts. On
 `_SetupAborted`, `_setup` prints the reason, `Not finished:` with the running
