@@ -425,7 +425,11 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     ``_config_dir_memo``, which is keyed on that global by identity.
 
     ``KIROCREW_PROJECT_DIR`` is cleared for a different reason -- to match CI on a dev
-    box. It is auto-set to the repo root when running from a checkout, so
+    box -- and ``update_capability._source_checkout_root`` is pinned to ``None`` with
+    it, since ``default_install_root()`` falls back to the checkout the suite runs
+    from and every update surface would judge this repository a git install (a test
+    of a source install patches its own root). The variable is auto-set to the repo
+    root when running from a checkout, so
     ``skills._project_skills_dir()`` resolves the repo's real ``skills/`` and a test
     driving ``_ensure_builtin_skills`` against a tmp dir sees live skills as a
     "source", flipping relocation behaviour: green in CI, red locally.
@@ -509,6 +513,9 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
         else:
             monkeypatch.setenv(_name, "")  # the undo for this entry is "was absent"
             monkeypatch.delenv(_name)
+    from kiro_crew.platform import update_capability
+
+    monkeypatch.setattr(update_capability, "_source_checkout_root", lambda: None)
     _reset_path_resolver_degradation(monkeypatch)
     paths = sys.modules.get("kiro_crew.config.paths")
     if paths is not None:

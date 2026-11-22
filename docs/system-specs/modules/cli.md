@@ -3363,6 +3363,14 @@ underlying `journalctl`/`tail` process.
 
 ## Dashboard Self-Update
 
+The check, the dashboard's Update, the release-channel layout, the auto-update
+effect and `kirocrew doctor`'s `git:` row all judge one install root,
+`update_capability.default_install_root()`: `KIROCREW_PROJECT_DIR`, or, when it is
+unset, the checkout the running package loads from
+(`_bootstrap._source_checkout_root()`). It is the same root `kirocrew update` uses
+(see "Update Command"), so a gateway started outside its clone still compares the
+clone with its upstream, and the badge never offers an update the button refuses.
+
 On gateway startup and every 12 hours, a background task runs `git fetch` and
 reports an update when EITHER the checkout can be FAST-FORWARDED
 (`git rev-list --count --left-right HEAD...@{u}` shows commits behind and none

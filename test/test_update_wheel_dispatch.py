@@ -108,6 +108,24 @@ class TestDetectInstallLayout:
         assert layout.is_externally_managed is False
         assert layout.proj == str(proj)
 
+    def test_the_running_checkout_is_the_layout_without_a_project_dir(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        proj = tmp_path / "project"
+        proj.mkdir()
+        _init_repo(proj)
+        _pin_probe_git(monkeypatch, tmp_path)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability._source_checkout_root", lambda: proj
+        )
+
+        from kiro_crew.platform.update_layout import detect_install_layout
+
+        layout = detect_install_layout()
+        assert layout.kind == "git"
+        assert layout.proj == str(proj)
+
     def test_an_externally_managed_stamp_beats_a_mounted_checkout(
         self, monkeypatch, tmp_path
     ) -> None:
