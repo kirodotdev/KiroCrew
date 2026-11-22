@@ -35,6 +35,7 @@ import {
   UPDATE_RESTART_LATCH_KEY,
   UPDATE_RESTART_LATCH_TTL_MS,
 } from '../hooks/useWebSocket'
+import { clearGatewayRestart, noteGatewayRestart } from '../lib/gatewayRestart'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -119,6 +120,7 @@ describe('useWebSocket update-restart reload', () => {
     vi.clearAllMocks()
     WS_INSTANCES.length = 0
     sessionStorage.clear()
+    clearGatewayRestart()
     testStore = createTestStore({})
     vi.stubGlobal('WebSocket', MockWebSocket)
     originalReload = window.location.reload
@@ -174,6 +176,33 @@ describe('useWebSocket update-restart reload', () => {
     act(() => { ws2.simulateOpen() })
     expect(reloadSpy).toHaveBeenCalledTimes(1)
     expect(sessionStorage.getItem(UPDATE_RESTART_LATCH_KEY)).toBeNull()
+  })
+
+  it('does not reload across a restart this tab asked to stay loaded through', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    const { ws } = mount()
+    noteGatewayRestart(Date.now(), { keepTab: true })
+    act(() => { ws.simulateMessage({ type: 'update_progress', data: { step: 'restarting', detail: '' } }) })
+    expect(sessionStorage.getItem(UPDATE_RESTART_LATCH_KEY)).toBeNull()
+
+    act(() => { ws.simulateClose() })
+    act(() => { vi.advanceTimersByTime(1500) })
+    act(() => { WS_INSTANCES[1].simulateOpen() })
+    expect(reloadSpy).not.toHaveBeenCalled()
+
+    // One-shot: the next restart latches as before.
+    act(() => { WS_INSTANCES[1].simulateMessage({ type: 'update_progress', data: { step: 'restarting', detail: '' } }) })
+    expect(sessionStorage.getItem(UPDATE_RESTART_LATCH_KEY)).not.toBeNull()
+  })
+
+  it('latches anyway when the stay-loaded request is no longer pending', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    const { ws } = mount()
+    noteGatewayRestart(Date.now() - UPDATE_RESTART_LATCH_TTL_MS - 1, { keepTab: true })
+    act(() => { ws.simulateMessage({ type: 'update_progress', data: { step: 'restarting', detail: '' } }) })
+    expect(sessionStorage.getItem(UPDATE_RESTART_LATCH_KEY)).not.toBeNull()
   })
 
   it('does not reload on a reconnect with no latch', () => {

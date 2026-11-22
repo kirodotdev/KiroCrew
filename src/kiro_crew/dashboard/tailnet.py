@@ -480,7 +480,7 @@ class DaemonProbe:
     #: field. It must not be treated as ``False``: older clients may still be
     #: able to publish, and the authoritative ``tailscale serve`` write will
     #: report any unmet requirement. ``False`` is reserved for an explicit
-    #: ``CertDomains`` list that does not contain this host.
+    #: ``CertDomains`` (``null`` or a list) that does not contain this host.
     https_enabled: bool | None = None
 
 
@@ -578,13 +578,15 @@ def probe_daemon() -> DaemonProbe:
         )
     # Tailscale's public ``ipnstate.Status`` contract defines CertDomains as the
     # DNS names for which the control plane will help provision TLS certificates.
-    # An explicit empty/mismatching list is therefore a reliable first-use HTTPS
-    # prerequisite; an absent or malformed field stays unknown so an older CLI is
-    # allowed to reach the authoritative Serve attempt instead of being blocked
-    # forever by a field it never emitted.
+    # It is a Go slice without ``omitempty``, so a tailnet without HTTPS sends
+    # ``"CertDomains": null``: a present null or a list without this host means
+    # HTTPS is off. An ABSENT or malformed field stays unknown, so an older CLI
+    # that never emitted it still reaches the authoritative Serve write.
     raw_cert_domains = status.get("CertDomains")
     https_enabled: bool | None = None
-    if isinstance(raw_cert_domains, list):
+    if "CertDomains" in status and raw_cert_domains is None:
+        https_enabled = False
+    elif isinstance(raw_cert_domains, list):
         cert_domains = {
             value.strip().rstrip(".").lower()
             for value in raw_cert_domains
