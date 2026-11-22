@@ -1597,7 +1597,11 @@ provision step is rolled back through `teardown` whether or not a stack was
 created. The engine's optional `resource_exists` (`ec2.find_stack` for the EC2
 lane; for the Fargate lane its `startedBy` task lookup, the one teardown uses) is
 read first, so a confirmed delete of a stack that never existed reads
-"was never created, so it is not billing" instead of "was removed".
+"was never created, so it is not billing" instead of "was removed", and the job
+saves `never_created: true`. The built-in `aws_ec2` Set up form treats that job
+like a failure before provisioning: its line says how to retry and Launch itself
+is the retry. Any other failure from provisioning on keeps its same-settings
+guard, so repeating the settings takes "Launch another crew".
 
 **A skip during sign-in startup is honored when startup returns**, even if it
 returns no device-code URL. An unconfirmed login is stopped and marked skipped;

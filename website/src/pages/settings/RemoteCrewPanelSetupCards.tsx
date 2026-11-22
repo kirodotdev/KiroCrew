@@ -247,7 +247,7 @@ export function LaunchFormCard({
   identityQuery, identityChosen, identityUnknownCause, identityRadioShown, identityMode,
   identityStartUrl, identityStartUrlOk, identityRegion, identityRegionOk, onIdentity,
   launchBuiltin, launchReady, alreadyLaunched, launching, setupRunning, launchFailed,
-  launchFailedBeforeProvision, launchFailedCrewListed, identityResolving, identityUnknown,
+  launchFailedNothingCreated, launchFailedCrewListed, identityResolving, identityUnknown,
   identityOk, regionOk, blockingOk, blockingCheck, signinOnLaunch, setSigninOnLaunch,
 }: {
   profile: string
@@ -282,7 +282,7 @@ export function LaunchFormCard({
   launching: boolean
   setupRunning: boolean
   launchFailed: boolean
-  launchFailedBeforeProvision: boolean
+  launchFailedNothingCreated: boolean
   launchFailedCrewListed: boolean
   identityResolving: boolean
   identityUnknown: boolean
@@ -524,7 +524,7 @@ export function LaunchFormCard({
              the gateway accepted the launch), so navigating away loses them. */
           <ErrorNotice
             variant="inline"
-            message={launchFailedBeforeProvision
+            message={launchFailedNothingCreated
               ? i18nT('pages.settings.remoteCrewPanel.launch_failed_retry')
               : launchFailedCrewListed
                 ? i18nT('pages.settings.remoteCrewPanel.launch_failed_crew_listed')
