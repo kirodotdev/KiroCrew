@@ -23,6 +23,7 @@ try:
         redact_and_truncate,
         redact_credentials,
         redact_exfiltration_urls,
+        scan_exfiltration_urls,
     )
 
     _HAS_SECURITY = True
@@ -82,6 +83,16 @@ def _redact(text: str) -> str:
     return text
 
 
+def _refuses(text: str) -> bool:
+    """Whether a gate refuses *text*: ``_redact`` changes it, or the exfil scan flags
+    a URL in it. ``_redact`` masks only credential values inside a URL, so a URL that
+    carries other data out survives it unchanged and only the scan decides it. Fails
+    closed, like ``_redact``, when the security module is unavailable."""
+    if _redact(text) != text or not _HAS_SECURITY:
+        return True
+    return bool(scan_exfiltration_urls(text))
+
+
 def _redact_and_truncate(text: str, max_chars: int) -> str:
     """Scrub like ``_redact``, then truncate — never ``_redact(x[:n])``.
 
@@ -102,12 +113,12 @@ def _usable_name(name: str) -> bool:
 
     Two reasons an entry is dropped rather than repaired. The key must satisfy the
     same grammar `create` enforces, because it becomes a slot key and a session
-    filename downstream. And it must survive `_redact` unchanged: index.json is
+    filename downstream. And `_refuses` must pass it: index.json is
     agent-writable, so a credential can be parked in the KEY, and `GET /specs`
     returns the key as `"name"`. Scrubbing it would produce a name that does not
     match the directory the entry points at, so the entry goes instead.
     """
-    return _valid_name(name) and _redact(name) == name
+    return _valid_name(name) and not _refuses(name)
 
 
 def _entry_is_usable(meta: dict) -> bool:
