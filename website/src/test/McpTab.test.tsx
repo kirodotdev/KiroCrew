@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { McpServer } from '../types'
 
@@ -750,6 +750,26 @@ describe('probe-failure count', () => {
     mockApi.mcpProbe.mockResolvedValue([server('airbnb')])
     fireEvent.click(screen.getByRole('button', { name: 'Probe MCP servers' }))
     await waitFor(() => expect(screen.queryByTestId('mcp-retry-server-failed')).not.toBeInTheDocument())
+  })
+
+  it('a refresh that lands while Retry server is still running does not hide its failure', async () => {
+    // Only a FAILED Retry is reset by a fresh check. A Retry still in flight
+    // must keep its pending state and, when it fails, still say so on the row.
+    let failClear!: (e: Error) => void
+    mockApi.mcpServers.mockResolvedValue([failing()])
+    mockApi.mcpResetProbeFailures.mockReturnValue(new Promise((_, reject) => { failClear = reject }))
+    mockApi.mcpProbe.mockResolvedValue([failing()])
+    renderTab()
+    const retry = await screen.findByRole('button', { name: /Retry server/ })
+    fireEvent.click(retry)
+    await waitFor(() => expect(mockApi.mcpResetProbeFailures).toHaveBeenCalledWith('airbnb'))
+    fireEvent.click(screen.getByRole('button', { name: 'Probe MCP servers' }))
+    await waitFor(() => expect(mockApi.mcpProbe).toHaveBeenCalled())
+    // The refresh has settled; the Retry is still running, so its button stays disabled.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Probe MCP servers' })).not.toBeDisabled())
+    expect(screen.getByRole('button', { name: /Retry server|Testing/ })).toBeDisabled()
+    act(() => { failClear(new Error('MCP config is busy; retry')) })
+    expect(await screen.findByTestId('mcp-retry-server-failed')).toHaveTextContent(/last check/)
   })
 
   it('a later passing Test of that row clears the Retry server failure notice', async () => {
