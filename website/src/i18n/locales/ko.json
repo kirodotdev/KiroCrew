@@ -8027,7 +8027,7 @@
       "your_crew_is_almost_ready": "크루가 거의 준비되었습니다.",
       "your_kiro_cli_is_out_of_date": "Kiro CLI가 오래되었습니다",
       "attempt_failed_remedy": "위에 표시된 원인(대개 권한 또는 설치 문제)을 해결한 뒤 ‘{{action}}’을(를) 눌러 다시 시도하세요. 계속 실패하면 Kiro CLI를 다시 설치하세요.",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI는 기본 에이전트이며 이 호스트에 아직 설치되지 않았습니다.",
+      "kiro_cli_is_not_installed_yet": "Kiro CLI가 이 호스트에 아직 설치되지 않았습니다.",
       "install_kiro_cli_run_on_host": "설치하려면 {{platform}} 게이트웨이 호스트에서 다음을 실행하세요.",
       "install_kiro_cli_run_for_platform": "설치하려면 게이트웨이 호스트의 플랫폼에 맞는 명령을 실행하세요.",
       "install_command_macos_linux": "macOS 및 Linux(및 기타 Unix 계열 시스템)",

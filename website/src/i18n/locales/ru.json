@@ -8657,7 +8657,7 @@
       "your_crew_is_almost_ready": "Ваш экипаж почти готов.",
       "your_kiro_cli_is_out_of_date": "Ваш Kiro CLI устарел",
       "attempt_failed_remedy": "Устраните указанную выше причину (обычно это проблема с правами доступа или установкой), затем нажмите «{{action}}», чтобы повторить попытку. Если ошибка повторяется, переустановите Kiro CLI.",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI — агент по умолчанию, и он ещё не установлен на этом хосте.",
+      "kiro_cli_is_not_installed_yet": "Kiro CLI ещё не установлен на этом хосте.",
       "install_kiro_cli_run_on_host": "Выполни эту команду на хосте шлюза {{platform}}, чтобы установить его.",
       "install_kiro_cli_run_for_platform": "Выполни команду для платформы хоста шлюза, чтобы установить его.",
       "install_command_macos_linux": "macOS и Linux (и другие Unix-подобные системы)",

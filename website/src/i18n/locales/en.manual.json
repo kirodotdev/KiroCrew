@@ -3082,7 +3082,7 @@
       "updating_kiro_cli": "Updating Kiro CLI…",
       "your_kiro_cli_is_out_of_date": "Your Kiro CLI is out of date",
       "attempt_failed_remedy": "Fix the cause named above (often a permissions or install problem), then press {{action}} to try again. If it keeps failing, reinstall Kiro CLI.",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI is the default agent and isn't installed on this host yet.",
+      "kiro_cli_is_not_installed_yet": "Kiro CLI isn't installed on this host yet.",
       "install_kiro_cli_run_on_host": "Run this on the {{platform}} gateway host to install it.",
       "install_kiro_cli_run_for_platform": "Run the command for the gateway host's platform to install it.",
       "install_command_macos_linux": "macOS and Linux (and other Unix-like systems)",

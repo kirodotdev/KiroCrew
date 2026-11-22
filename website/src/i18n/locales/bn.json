@@ -8237,7 +8237,7 @@
       "your_crew_is_almost_ready": "আপনার ক্রু প্রায় প্রস্তুত।",
       "your_kiro_cli_is_out_of_date": "আপনার Kiro CLI পুরনো হয়ে গেছে",
       "attempt_failed_remedy": "উপরে উল্লেখিত কারণটি ঠিক করুন (সাধারণত অনুমতি বা ইনস্টলের সমস্যা), তারপর “{{action}}” চাপুন আবার চেষ্টা করতে। তবুও ব্যর্থ হলে Kiro CLI পুনরায় ইনস্টল করুন।",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI হলো ডিফল্ট এজেন্ট, আর এটি এই হোস্টে এখনো ইনস্টল করা হয়নি।",
+      "kiro_cli_is_not_installed_yet": "Kiro CLI এই হোস্টে এখনো ইনস্টল করা হয়নি।",
       "install_kiro_cli_run_on_host": "ইনস্টল করতে {{platform}} গেটওয়ে হোস্টে এই কমান্ডটি চালাও।",
       "install_kiro_cli_run_for_platform": "ইনস্টল করতে গেটওয়ে হোস্টের প্ল্যাটফর্মের জন্য কমান্ডটি চালাও।",
       "install_command_macos_linux": "macOS ও Linux (এবং অন্য Unix-সদৃশ সিস্টেম)",

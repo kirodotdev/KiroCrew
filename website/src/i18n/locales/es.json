@@ -8447,7 +8447,7 @@
       "your_crew_is_almost_ready": "Tu crew está casi listo.",
       "your_kiro_cli_is_out_of_date": "Tu Kiro CLI está desactualizado",
       "attempt_failed_remedy": "Corrige la causa indicada arriba (a menudo un problema de permisos o de instalación) y pulsa «{{action}}» para volver a intentarlo. Si sigue fallando, reinstala Kiro CLI.",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI es el agente predeterminado y todavía no está instalado en este host.",
+      "kiro_cli_is_not_installed_yet": "Kiro CLI todavía no está instalado en este host.",
       "install_kiro_cli_run_on_host": "Ejecuta esto en el host del gateway {{platform}} para instalarlo.",
       "install_kiro_cli_run_for_platform": "Ejecuta el comando correspondiente a la plataforma del host del gateway para instalarlo.",
       "install_command_macos_linux": "macOS y Linux (y otros sistemas tipo Unix)",

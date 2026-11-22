@@ -8027,7 +8027,7 @@
       "your_crew_is_almost_ready": "你的团队即将就绪。",
       "your_kiro_cli_is_out_of_date": "你的 Kiro CLI 已过期",
       "attempt_failed_remedy": "先解决上面提到的原因（通常是权限或安装问题），然后点击“{{action}}”重试。如果仍然失败，请重新安装 Kiro CLI。",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI 是默认代理，但此主机上尚未安装。",
+      "kiro_cli_is_not_installed_yet": "此主机上尚未安装 Kiro CLI。",
       "install_kiro_cli_run_on_host": "在 {{platform}} 网关主机上运行以下命令来安装。",
       "install_kiro_cli_run_for_platform": "运行与网关主机平台对应的命令来安装。",
       "install_command_macos_linux": "macOS 和 Linux（以及其他类 Unix 系统）",
