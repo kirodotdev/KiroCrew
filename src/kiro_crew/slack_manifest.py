@@ -358,9 +358,10 @@ def _setting_lines(prefix: str, value: object, skip: frozenset[str]) -> Iterable
     elif isinstance(value, list):
         for item in value:
             yield from _setting_lines(prefix, item, skip)
+    elif isinstance(value, bool):
+        yield f"{prefix}: {'true' if value else 'false'}"
     else:
-        text = ("true" if value else "false") if isinstance(value, bool) else str(value)
-        yield f"{prefix}: {text}"
+        yield f"{prefix}: {value!s}"
 
 
 #: Covered by their own kinds (scopes, events), so not repeated as settings.

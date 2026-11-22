@@ -289,8 +289,8 @@ def _report_installed(installed: kas_bundle.InstalledKasBundle, *, already: bool
     # Decide the closing advice from the route the next spawn actually takes --
     # the same predicate `kirocrew doctor` reads (kas_bundle.kas_route) -- not from
     # agent.kas_bundle alone. With the flag off but no kiro-cli (or a signed-out
-    # one), the route resolves to the bundle automatically, so telling the user to
-    # "turn it on" contradicted doctor's "in use".
+    # one), the route resolves to the bundle automatically, and telling the user to
+    # "turn it on" would contradict doctor's "route: bundle" row.
     route = kas_bundle.kas_route()
     if not route.bundle:
         print(
@@ -339,11 +339,12 @@ def _status(_args: argparse.Namespace) -> int:
         # Engine guarantee: a missing engine is a failure on any host that
         # can run one, whatever agent.kas_bundle says.
         return 0 if _host_unsupported_reason() else 1
-    where = (
-        "  (built into the wheel)"
-        if installed.packaged
-        else "  (built into the app)" if installed.bundled else ""
-    )
+    if installed.packaged:
+        where = "  (built into the wheel)"
+    elif installed.bundled:
+        where = "  (built into the app)"
+    else:
+        where = ""
     print(f"installed:     KAS {installed.version}, Node {installed.node_version or '?'}{where}")
     print(f"  engine: {installed.acp_server}")
     print(f"  node:   {installed.node_bin}")
