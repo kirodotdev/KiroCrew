@@ -34,7 +34,7 @@ from __future__ import annotations
 from .charsets import ALNUM, B64STD, DIGITS, ascii_lower, cached, run_end, run_start
 from .checks import is_placeholder, reads_as_example_words
 from .model import PLAN_TAGS, TAIL_B64RUN, Hit
-from .table import KnownKeyRow
+from .table import TABLE, KnownKeyRow
 
 KEY_CHARS = ALNUM + "_-."
 KEY_MAX = 64
@@ -49,12 +49,13 @@ LITERAL_MIN = 6
 # An elided value (``sk-...``) is documentation only when its head is empty or is a known
 # vendor stub, with at most one trailing separator (``sk-``, ``ghp_``).
 _ELIDED_STUB_SEPARATORS = "-_.:/=~"
+_STUB_SEPARATOR_CHARS = tuple(_ELIDED_STUB_SEPARATORS)
 _ELIDED_VENDOR_PREFIXES = frozenset(
-    {
-        "akia", "asia", "aiza", "aroa", "aida", "ghp", "gho", "ghs", "ghu", "ghr",
-        "xoxb", "xoxp", "xoxa", "glpat", "github_pat", "sk", "sk-ant",
-    }
-)  # fmt: skip
+    (p[:-1] if p.endswith(_STUB_SEPARATOR_CHARS) else p).lower()
+    for row in TABLE.formats
+    for p in row.prefixes
+    if len(p) >= 3  # a one- or two-character prefix (``M``, ``AC``, a digit) names no vendor
+)
 LITERAL_MAX = 512
 # An unquoted literal ends at a blank, a separator another field starts after, or a quote.
 _LITERAL_STOPS = frozenset(" \t\r\n;&,\"'")

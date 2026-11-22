@@ -372,10 +372,31 @@ def test_an_empty_head_before_an_ellipsis_stays(name: str, ellipsis: str) -> Non
 
 
 @pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
-@pytest.mark.parametrize("stub", ["sk-", "sk-ant-", "ghp_", "AKIA", "github_pat_", "AROA"])
+@pytest.mark.parametrize(
+    "stub",
+    ["sk-", "sk-ant-", "sk-proj-", "ghp_", "hf_", "npm_", "AKIA", "github_pat_", "AROA"],
+)
 def test_a_vendor_prefix_stub_stays(stub: str, ellipsis: str) -> None:
     text = f"password={stub}{ellipsis}"
     assert redact(text)[0] == text
+
+
+def test_the_elided_stub_set_is_read_from_the_prefix_table() -> None:
+    from kiro_crew.security.redaction_structured.known_key import (
+        _ELIDED_STUB_SEPARATORS,
+        _ELIDED_VENDOR_PREFIXES,
+    )
+
+    expected = set()
+    for row in ROWS:
+        for prefix in row.get("prefixes", ()):
+            if len(prefix) < 3:
+                continue
+            if prefix.endswith(tuple(_ELIDED_STUB_SEPARATORS)):
+                prefix = prefix[:-1]
+            expected.add(prefix.lower())
+    assert expected
+    assert _ELIDED_VENDOR_PREFIXES == expected
 
 
 @pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
