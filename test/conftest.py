@@ -323,6 +323,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_runtime_ownership_tables,
     _reset_safety_override_between_tests,
     _reset_session_switch_locks,
+    _reset_subagent_memory_price_holders,
     _restore_autonudge_singleton,
     _restore_default_child_watcher,
     _session_memory_scope_sample_unshared,

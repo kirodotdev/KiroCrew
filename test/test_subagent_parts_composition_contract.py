@@ -989,6 +989,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, info: 'SubagentInfo', members: 'Iterable[str]' = ()) -> 'bool'",
     ),
     "task_memory_rows": ("method", "(self) -> 'list[dict[str, object]]'"),
+    "settled_runtime_hold_gb": ("method", "(self, cost_gb: 'float') -> 'float'"),
     "update_completion_keep": ("method", "(self, mode: 'str', max_chars: 'int') -> 'None'"),
     "user_max_concurrent": ("property", ""),
     "wait_taskq_ready": ("async method", "(self) -> 'None'"),
