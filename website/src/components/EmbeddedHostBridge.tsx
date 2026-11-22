@@ -124,6 +124,8 @@ export function parseHostModel(data: unknown): HostModel | null {
       ? d.pinnedCrews.filter((id): id is string => typeof id === 'string')
       : [],
     relayCrews: parsePaneRelayCrews(d.relayCrews),
+    // Absence -> false: an older host sends no failure, and the group shows as before.
+    relayCrewsFailed: d.relayCrewsFailed === true,
     // Tri-state, mirroring `focusMode` above: a non-boolean (typically absent)
     // means the host predates this relay, so it has no `mc-set-stable-order`
     // handler either. `null` records "no opinion" so the bar can order by the

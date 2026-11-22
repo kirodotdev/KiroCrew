@@ -7863,7 +7863,8 @@
       "connect_crew": "{{name}}-এ সংযোগ করো",
       "connected": "সংযুক্ত",
       "not_connected": "সংযুক্ত নয়",
-      "connecting": "সংযোগ হচ্ছে…"
+      "connecting": "সংযোগ হচ্ছে…",
+      "off_domain": "{{setting}} সেই শেয়ার্ড Crew-গুলো লুকায় যাদের ঠিকানা ওই relay ডোমেনের অধীনে নেই। সেটিংটি ঠিক করো বা খালি করো।"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",
@@ -22371,7 +22372,9 @@
         "sign_in": "সাইন ইন করো",
         "sign_in_crew": "{{name}}-এ সাইন ইন করো",
         "setting_up_progress": "সেট আপ হচ্ছে · {{total}}-এর মধ্যে {{current}}",
-        "launching_crew": "{{name}} চালু হচ্ছে"
+        "launching_crew": "{{name}} চালু হচ্ছে",
+        "ssm_start_session_denied": "এই AWS রোলের এই ইনস্ট্যান্সে SSM সেশন শুরু করার অনুমতি নেই। একে ssm:StartSession দাও, অথবা এমন একটি AWS প্রোফাইল বেছে নাও যার এটি আছে।",
+        "show_aws_error": "AWS ত্রুটি দেখাও"
       },
       "webhooksPanel": {
         "inbound_webhooks": "ইনবাউন্ড webhook",

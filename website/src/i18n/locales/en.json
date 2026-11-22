@@ -5168,7 +5168,8 @@
       "connect_crew": "Connect {{name}}",
       "connected": "Connected",
       "not_connected": "Not connected",
-      "connecting": "Connecting…"
+      "connecting": "Connecting…",
+      "off_domain": "{{setting}} hides the Shared Crews whose addresses aren't under that relay domain. Correct or clear the setting."
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
@@ -12102,7 +12103,9 @@
         "sign_in": "Sign in",
         "sign_in_crew": "Sign in on {{name}}",
         "setting_up_progress": "Setting up · {{current}} of {{total}}",
-        "launching_crew": "Launching {{name}}"
+        "launching_crew": "Launching {{name}}",
+        "ssm_start_session_denied": "This AWS role isn't allowed to start an SSM session on this instance. Give it ssm:StartSession, or choose an AWS profile that has it.",
+        "show_aws_error": "Show the AWS error"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Inbound webhooks",

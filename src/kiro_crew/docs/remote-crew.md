@@ -300,7 +300,9 @@ kirocrew config set tunnel.relay_viewer_relay_domain <relay domain>
 ```
 
 With the relay domain set, a Crew is listed only at exactly
-`https://<endpoint ID>.<relay domain>`. A test setup that uses
+`https://<endpoint ID>.<relay domain>`. When that leaves out Crews the control
+plane listed, the top bar's Crew switcher and Settings → Remote Crew say the setting hid
+them, so a domain one character off does not read as "no Shared Crews". A test setup that uses
 `tunnel.relay_viewer_credential` must also set the URL.
 
 `kirocrew config set` saves through the gateway's own writer, and the gateway reads

@@ -7863,7 +7863,8 @@
       "connect_crew": "{{name}} से कनेक्ट करो",
       "connected": "कनेक्टेड",
       "not_connected": "कनेक्ट नहीं है",
-      "connecting": "कनेक्ट हो रहा है…"
+      "connecting": "कनेक्ट हो रहा है…",
+      "off_domain": "{{setting}} उन साझा Crew को छिपाता है जिनके पते उस relay डोमेन के अंतर्गत नहीं हैं। सेटिंग ठीक करो या खाली करो।"
     },
     "instancesViewport": {
       "connecting": "कनेक्ट हो रहा है…",
@@ -22371,7 +22372,9 @@
         "sign_in": "साइन इन करो",
         "sign_in_crew": "{{name}} पर साइन इन करो",
         "setting_up_progress": "सेट अप हो रहा है · {{total}} में से {{current}}",
-        "launching_crew": "{{name}} लॉन्च हो रहा है"
+        "launching_crew": "{{name}} लॉन्च हो रहा है",
+        "ssm_start_session_denied": "इस AWS भूमिका को इस इंस्टेंस पर SSM सत्र शुरू करने की अनुमति नहीं है। इसे ssm:StartSession दो, या ऐसी AWS प्रोफ़ाइल चुनो जिसके पास यह हो।",
+        "show_aws_error": "AWS त्रुटि दिखाओ"
       },
       "webhooksPanel": {
         "inbound_webhooks": "इनबाउंड webhooks",

@@ -7654,7 +7654,8 @@
       "connect_crew": "连接 {{name}}",
       "connected": "已连接",
       "not_connected": "未连接",
-      "connecting": "正在连接…"
+      "connecting": "正在连接…",
+      "off_domain": "{{setting}} 藏起了地址不在这个 relay 域名下的共享 Crew。请改正或清空这个设置。"
     },
     "instancesViewport": {
       "connecting": "正在连接…",
@@ -21821,7 +21822,9 @@
         "sign_in": "登录",
         "sign_in_crew": "在 {{name}} 上登录",
         "setting_up_progress": "正在设置 · 第 {{current}}/{{total}} 步",
-        "launching_crew": "正在启动 {{name}}"
+        "launching_crew": "正在启动 {{name}}",
+        "ssm_start_session_denied": "这个 AWS 角色无权在这台实例上启动 SSM 会话。给它 ssm:StartSession 权限，或选一个有这个权限的 AWS 配置文件。",
+        "show_aws_error": "显示 AWS 原始报错"
       },
       "webhooksPanel": {
         "inbound_webhooks": "入站 webhook",

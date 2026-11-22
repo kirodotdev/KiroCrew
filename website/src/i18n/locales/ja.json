@@ -7654,7 +7654,8 @@
       "connect_crew": "{{name}} に接続",
       "connected": "接続済み",
       "not_connected": "未接続",
-      "connecting": "接続中…"
+      "connecting": "接続中…",
+      "off_domain": "{{setting}} により、アドレスがその relay ドメインの下にない共有 Crew が非表示になっています。設定を直すか、空にしてください。"
     },
     "instancesViewport": {
       "connecting": "接続中…",
@@ -21821,7 +21822,9 @@
         "sign_in": "サインイン",
         "sign_in_crew": "{{name}} でサインイン",
         "setting_up_progress": "セットアップ中 · {{current}}/{{total}}",
-        "launching_crew": "{{name}} を起動中"
+        "launching_crew": "{{name}} を起動中",
+        "ssm_start_session_denied": "この AWS ロールには、このインスタンスで SSM セッションを開始する権限がありません。ssm:StartSession を付与するか、その権限を持つ AWS プロファイルを選んでください。",
+        "show_aws_error": "AWS のエラーを表示"
       },
       "webhooksPanel": {
         "inbound_webhooks": "受信 Webhooks",

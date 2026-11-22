@@ -467,7 +467,7 @@ async def test_with_no_setting_the_browser_opens_only_a_crew_at_its_own_name(
 
     async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         crew = cps._crew_endpoint(raw, crew_domain)
-        return () if crew is None else (crew,)
+        return cps.CrewList(() if crew is None else (crew,))
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     async with _route_client() as client:

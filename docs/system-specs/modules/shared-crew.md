@@ -2048,7 +2048,11 @@ window that relays none shows the host alone. Each relay row's second line reads
 a `PERSONAL` Crew is "Private" with a lock icon (lucide `Lock`), and any other type
 shows its raw value with no icon. The "Shared with me" section on Remote Crew reads the
 same two type strings. The signed-in account line ("Signed in with ...") sits
-under the heading. Each online row's one visible action is a small
+under the heading. When the dev relay domain setting
+(`tunnel.relay_viewer_relay_domain`) alone left listed Crews out
+(`relay_viewer.cps.CrewList.off_domain`), `GET /api/relay-viewer/crews` sends
+`offDomain`, their count, and the group and the "Shared with me" section show a
+notice naming that setting in place of the empty line. Each online row's one visible action is a small
 Connect (accessible name "Connect <name>"); an offline row shows none. Connect
 hands only the endpoint ID on. In the desktop app the shell (`relayCrewAPI.openPane`)
 shows the Crew as a tab in the main window, under the local top bar; another

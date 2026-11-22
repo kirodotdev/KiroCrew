@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createWindowChrome } = require("../runtime/window/chrome");
+const { SYMBOL_DARK, SYMBOL_LIGHT } = require("../windows-titlebar");
 
 // themeSource is process-wide: a dashboard window in the background must not
 // re-pin the appearance of the dashboard window that has focus.
@@ -38,41 +39,83 @@ test("a background dashboard window's theme push is dropped while another dashbo
   assert.equal(nativeTheme.themeSource, "light", "with no focused window the push applies");
 });
 
-// data-mode can carry a Remote Crew's lent mode; on focus the Windows caption
-// buttons still take the person's own mode, which the preference pins.
-test("a focus re-sync paints the caption buttons in the own mode, not a lent data-mode", async () => {
-  const nativeTheme = {
-    themeSource: "system",
-    get shouldUseDarkColors() { return this.themeSource === "dark"; },
-  };
-  const symbols = [];
-  const view = {
-    webContents: {
-      isDestroyed: () => false,
-      getZoomFactor: () => 1,
-      executeJavaScript: (code) => Promise.resolve(
-        code.startsWith("JSON.stringify") ? JSON.stringify({ pref: "light", mode: "dark" }) : undefined,
-      ),
-    },
-  };
-  const win = {
-    _mcView: view,
-    isDestroyed: () => false,
-    setTitleBarOverlay: (opts) => symbols.push(opts.symbolColor),
-  };
-  const chrome = createWindowChrome({
-    BaseWindow: { getAllWindows: () => [win], getFocusedWindow: () => win },
+// The glyph colour titleBarOverlayOptions paints: light glyphs on a dark strip.
+const LIGHT_GLYPHS = SYMBOL_DARK;
+const DARK_GLYPHS = SYMBOL_LIGHT;
+
+function windowsChrome({ windows, nativeTheme, owner }) {
+  return createWindowChrome({
+    BaseWindow: { getAllWindows: () => windows, getFocusedWindow: () => windows[0] },
     nativeTheme,
     screen: {},
     store: { get: () => null, set: () => {} },
     log: () => {},
     isMac: false,
     isWindows: true,
-    windowForWebContents: () => win,
+    windowForWebContents: owner,
+  });
+}
+
+function captionWindow(dataset) {
+  const symbols = [];
+  const webContents = {
+    isDestroyed: () => false,
+    getZoomFactor: () => 1,
+    executeJavaScript: (code) => Promise.resolve(
+      code.startsWith("JSON.stringify") ? JSON.stringify(dataset) : undefined,
+    ),
+  };
+  return {
+    symbols,
+    view: { webContents },
+    win: {
+      _mcView: { webContents },
+      isDestroyed: () => false,
+      setTitleBarOverlay: (opts) => symbols.push(opts.symbolColor),
+    },
+  };
+}
+
+// A dashboard painting a Remote Crew's lent mode pushes it; its own window keeps
+// it through a focus re-sync and a zoom step, and no other window takes it.
+test("the caption buttons keep the mode their own window's dashboard pushed (#40254)", async () => {
+  const nativeTheme = {
+    themeSource: "light",
+    get shouldUseDarkColors() { return this.themeSource === "dark"; },
+  };
+  const a = captionWindow({ pref: "light", mode: "dark" });
+  const b = captionWindow({ pref: "light", mode: "light" });
+  const chrome = windowsChrome({
+    windows: [a.win, b.win],
+    nativeTheme,
+    owner: (wc) => [a.win, b.win].find((w) => w._mcView.webContents === wc) || null,
   });
 
-  chrome.syncNativeTheme(view, win);
+  chrome.setTitlebarMode("dark", a.view.webContents);
+  assert.equal(a.symbols.at(-1), LIGHT_GLYPHS, "the sender's window paints the pushed mode");
+  assert.deepEqual(b.symbols, [], "another window is not painted with it");
+
+  chrome.syncNativeTheme(a.view, a.win);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(nativeTheme.themeSource, "light");
-  assert.deepEqual(symbols, ["#211d28"], "light own mode: dark glyphs, not the lent dark mode's light ones");
+  assert.equal(nativeTheme.themeSource, "light", "the native theme keeps the own mode");
+  assert.equal(a.symbols.at(-1), LIGHT_GLYPHS, "a focus re-sync keeps the pushed mode");
+
+  chrome.reconcileZoomChrome(a.win);
+  assert.equal(a.symbols.at(-1), LIGHT_GLYPHS, "a zoom step keeps the pushed mode");
+  chrome.reconcileZoomChrome(b.win);
+  assert.equal(b.symbols.at(-1), DARK_GLYPHS, "a window with no push follows the native theme");
+
+  chrome.setTitlebarMode("light", a.view.webContents);
+  assert.equal(a.symbols.at(-1), DARK_GLYPHS, "the own mode comes back with the next push");
+});
+
+// A push no window owns (no sender) repaints every window, as before.
+test("a push without a known sender repaints every window", () => {
+  const nativeTheme = { themeSource: "system", shouldUseDarkColors: false };
+  const a = captionWindow({});
+  const b = captionWindow({});
+  const chrome = windowsChrome({ windows: [a.win, b.win], nativeTheme, owner: () => null });
+  chrome.setTitlebarMode("dark");
+  assert.equal(a.symbols.at(-1), LIGHT_GLYPHS);
+  assert.equal(b.symbols.at(-1), LIGHT_GLYPHS);
 });

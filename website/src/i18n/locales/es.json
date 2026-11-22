@@ -8072,7 +8072,8 @@
       "connect_crew": "Conectar {{name}}",
       "connected": "Conectado",
       "not_connected": "No conectado",
-      "connecting": "Conectando…"
+      "connecting": "Conectando…",
+      "off_domain": "{{setting}} oculta las Crews compartidas cuyas direcciones no están bajo ese dominio de relay. Corrige o vacía el ajuste."
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -22921,7 +22922,9 @@
         "sign_in": "Iniciar sesión",
         "sign_in_crew": "Iniciar sesión en {{name}}",
         "setting_up_progress": "Configurando · {{current}} de {{total}}",
-        "launching_crew": "Lanzando {{name}}"
+        "launching_crew": "Lanzando {{name}}",
+        "ssm_start_session_denied": "Este rol de AWS no puede iniciar una sesión de SSM en esta instancia. Dale ssm:StartSession o elige un perfil de AWS que lo tenga.",
+        "show_aws_error": "Mostrar el error de AWS"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrantes",
