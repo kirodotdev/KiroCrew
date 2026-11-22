@@ -320,6 +320,10 @@ class ExecutionContext:
     app: str = ""
     selection_name: str = ""
     selection_revision: str = ""
+    #: The agent template a Bot's worker runs as when the Bot delegated to one of
+    #: its ``worker_agents`` (``mate_worker_delegates``); equal to ``template_id``
+    #: then, ``""`` on every other record. Set only by ``session_create``.
+    worker_agent: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.store, MemoryStoreRef) or self.store.member_id != self.member_id:
@@ -334,8 +338,15 @@ class ExecutionContext:
             not isinstance(self.app, str)
             or not isinstance(self.selection_name, str)
             or not isinstance(self.selection_revision, str)
+            or not isinstance(self.worker_agent, str)
         ):
             raise _unavailable("invalid execution attribution")
+        if self.worker_agent and (
+            self.member_id is None
+            or self.selection_kind != "template"
+            or self.worker_agent != self.template_id
+        ):
+            raise _unavailable("a delegate worker names its Bot and its own template")
         stricter_memory_mode(self.memory_mode)
 
     def to_record(self) -> dict[str, Any]:
@@ -367,6 +378,7 @@ class ExecutionContext:
             selection_kind="template",
             template_id=template_id,
             selection_name=selection_name,
+            worker_agent="",
         )
 
 
@@ -412,6 +424,7 @@ def execution_from_record(
             app=payload["app"],
             selection_name=payload.get("selection_name", ""),
             selection_revision=payload.get("selection_revision", ""),
+            worker_agent=payload.get("worker_agent", ""),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _unavailable("malformed execution context") from exc

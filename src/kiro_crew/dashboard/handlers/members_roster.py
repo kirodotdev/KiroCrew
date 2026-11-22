@@ -456,6 +456,7 @@ async def _build_roster(state: DashboardState | None) -> BoardAnswer:
                 # How many workers this Bot may have open at once; the owner's
                 # limit, enforced by `session_create`.
                 "max_workers": agent_cfg.max_workers,
+                "worker_agents": list(agent_cfg.worker_agents),
                 # The profile card's "Auto-compact at": 0 inherits the global
                 # session.autocompact_pct; load-time held to its range.
                 "autocompact_pct": float(getattr(agent_cfg, "autocompact_pct", 0.0) or 0.0),

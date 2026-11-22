@@ -234,6 +234,15 @@ preview says **Replaces current**), and **Remove** clears them. Later edits to t
 Bot. Nothing added can lift the worker past your security policy and
 profile. **Add abilities** appears for a Bot that owns its own config.
 
+A Bot can also run a worker **as one of your agents, unmodified**. List the
+agent names in `agents.<bot>.worker_agents` (owner only; empty by default).
+When the Bot's chat opens a worker with `session_create(agent="<name>")` and the
+name is listed, that worker runs on the agent's own prompt, tools and
+auto-approvals, on the Bot's memory and workspace, under the stricter of the
+agent's limits and the Bot's Permissions. An unlisted name is refused rather
+than run as the plain worker. The details are in
+[session-control](session-control.md#a-bots-worker-agents).
+
 ### Goals
 
 A Bot's **Goals** tab (Profile card) holds what it works toward:

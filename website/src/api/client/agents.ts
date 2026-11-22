@@ -101,6 +101,8 @@ export interface MemberRosterRow {
   /** How many worker sessions this Bot may have open at once: 1-32, or 0 (the
    *  default) for no limit. Only the owner sets it; the session verbs refuse past it. */
   max_workers?: number
+  /** Agent templates this Bot may open its workers as (owner only); empty = its own worker only. */
+  worker_agents?: string[]
   /** The crewmate's "Auto-compact at", in percent; 0 inherits the global
    *  `session.autocompact_pct`. A thread's own override still wins. */
   autocompact_pct?: number

@@ -13405,6 +13405,34 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.worker_agents",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Worker agents",
+      "help": "Agent templates this Bot may open its worker sessions as, by name. A session_create from the Bot's own chat naming one of them runs that template unmodified (its prompt, tools, allowedTools and toolsSettings) on the Bot's workspace and memory, under the stricter of its own limits and the Bot's Permissions. Empty (the default): every session the Bot opens is its own worker. Set by the owner; the Bot cannot change it.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "agents.*.worker_agents.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "agents.*.max_workers",
       "kind": "core",
       "type": "integer",

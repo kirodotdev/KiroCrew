@@ -455,6 +455,7 @@ async def create_session(
     # one exception (see `_hands_off_to_own_worker`); it keeps its own
     # resolution, which refuses a peer bound elsewhere.
     from kiro_crew.mate_worker import MATE_WORKER_AGENT
+    from kiro_crew.mate_worker_delegates import delegate_for_caller
 
     # Never for a code channel's session: its workers take the channel's own
     # approval mode, not a crewmate Profile's.
@@ -465,8 +466,16 @@ async def create_session(
             _hands_off_to_own_worker, caller_execution, agent.strip(), agent_kind
         )
     )
+    # An owner-listed template opens the worker AS that template, refused if unlisted.
+    delegate, delegate_refusal = (
+        await asyncio.to_thread(delegate_for_caller, caller_execution, agent)
+        if own_worker
+        else ("", "")
+    )
+    if delegate_refusal:
+        raise SessionControlError(delegate_refusal, status=403, code="worker_agent_not_allowed")
     if own_worker:
-        agent, agent_kind = MATE_WORKER_AGENT, "template"
+        agent, agent_kind = delegate or MATE_WORKER_AGENT, "template"
     agent_name = sanitize_outbound(agent.strip() or (getattr(caller_slot, "agent", "") or ""))
     # The selection namespace, validated HERE and not left to the HTTP route or
     # the MCP schema: `create_session` is also reached in-process, and a kind
@@ -835,6 +844,9 @@ async def create_session(
         raise SessionControlError(
             "selected execution context is unavailable", code="memory_unavailable"
         ) from None
+    if delegate:  # attested on the record: who this worker runs as (`worker_agent`)
+        child_execution = replace(child_execution, worker_agent=child_execution.template_id)
+        bindings = replace(bindings, execution_context=child_execution)
     if own_worker_member(child_execution):
         await count_restored_workers(state)
 
