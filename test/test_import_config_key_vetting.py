@@ -83,10 +83,7 @@ def test_a_workspace_folder_that_escapes_through_a_symlink_skips_the_config(tmp_
     workspace.mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.mkdir()
-    try:
-        (workspace / "link").symlink_to(outside, target_is_directory=True)
-    except (NotImplementedError, OSError) as exc:
-        pytest.skip(f"symlinks are unavailable: {exc}")
+    (workspace / "link").symlink_to(outside, target_is_directory=True)
 
     snap = _stage(tmp_path, {"workspaces": {"evil": {"dir": "workspace/link/../target"}}})
     vetted, summary = _vet(snap)
