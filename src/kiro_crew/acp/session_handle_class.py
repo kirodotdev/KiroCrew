@@ -164,6 +164,7 @@ class AcpSessionHandle:
     _sync_mcp_reattempting = _sh_mcp._sync_mcp_reattempting
     _runtime_reattempts_mcp = _sh_mcp._runtime_reattempts_mcp
     _reattempt_failed_mcp_servers = _sh_mcp._reattempt_failed_mcp_servers
+    _note_mcp_call_disconnected = _sh_mcp._note_mcp_call_disconnected
     _apply_init_notification = _sh_mcp._apply_init_notification
     drain_init = _sh_mcp.drain_init
     # What KAS speaks beyond ACP on a session: ``kiro_crew.acp.session_handle_kas``.
@@ -806,11 +807,15 @@ class AcpSessionHandle:
         self._mcp_sign_in_dropped = 0
         # Servers whose last status entry for this session was ``failed`` with
         # an error that reads as a missing or refused credential (not an OAuth
-        # authorization failure, which the sign-in above handles), and how many
-        # times each was re-attempted. Both bounded by ``BUCKET_CAP`` names.
+        # authorization failure, which the sign-in above handles), or whose
+        # call found the connection gone, and how many times each was
+        # re-attempted. Both bounded by ``BUCKET_CAP`` names.
         # See kiro_crew.acp.mcp_reattempt.
         self._mcp_reattempt_waiting: set[str] = set()
         self._mcp_reattempt_counts: dict[str, int] = {}
+        # Waiting servers a call found disconnected, until their reset starts:
+        # KAS still lists them ``connected``, which must not end the wait.
+        self._mcp_reattempt_dropped: set[str] = set()
         # Failed servers whose error is the SSE fallback's non-200 answer, each
         # probed once for whether it wants a sign-in (``_probe_mcp_sign_in``), at most
         # ``BUCKET_CAP`` names; those whose probe said so and that have not

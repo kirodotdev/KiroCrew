@@ -1155,6 +1155,17 @@ async def _revoke(slug: str, tokens: Tokens) -> bool:
         return False
 
 
+def _revoke_needs_live_access(slug: str, tokens: Tokens) -> bool:
+    """Whether *slug* revokes by access token and the held one is expiring but renewable."""
+    endpoint = _ENDPOINTS.get(slug)
+    return (
+        endpoint is not None
+        and endpoint.get("revoke_token") == "access"
+        and bool(tokens.refresh)
+        and tokens.expiring(time.time())
+    )
+
+
 async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bool]:
     """Revoke upstream (best effort) and delete the stored pair.
 
@@ -1168,6 +1179,7 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
     removed = False
     revoked = True
     seen = False
+    refreshed = False
     # Slugs sharing a grant group disconnect one at a time, so two overlapping
     # Disconnects can never both see the other as the sharer and skip the revoke.
     async with (
@@ -1190,6 +1202,16 @@ async def disconnect(slug: str, store: TokenStore | None = None) -> dict[str, bo
                     removed = True
                 break
             seen = True
+            if not refreshed and _revoke_needs_live_access(slug, held[0]):
+                # The vendor revokes only a live access token (Slack's expire in
+                # 12 hours): renew it once, then revoke the fresh pair.
+                refreshed = True
+                try:
+                    await _refresh(slug, store, held)
+                except CrewOAuthError:
+                    pass
+                else:
+                    continue
             revoked = await _revoke(slug, held[0]) and revoked
             if await store.delete_if(slug, held[1]):
                 removed = True

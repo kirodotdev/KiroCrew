@@ -5,6 +5,7 @@ import { usePinnedPrompt } from './usePinnedPrompt'
 import { jumpAnchorIdx } from '../../utils/pinnedPrompt'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { useNavToDisplayIndex } from './useNavToDisplayIndex'
+import { leadMessage } from '../../chat-core/transcript/rowKeys'
 import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
 import { releaseReadingPosition } from '../../utils/panelSlide'
 
@@ -149,20 +150,6 @@ export function useChatPageTranscriptEarlyController({
     composerBandObserverRef.current = ro
   }, [scrollBottom, autoFollowAllowed])
 
-  // The jump to a (possibly off-window) display index lives in the shared
-  // useNavToDisplayIndex, which a Bot chat's Find in chat also uses. The
-  // pinned-prompt glide below shares its in-flight handles, so either jump
-  // cancels the other.
-  const mountIndex = useCallback(
-    (index: number, opts?: { unionOnly?: boolean }) => mountIndexRef.current(index, opts),
-    [mountIndexRef],
-  )
-  const { navToDisplayIndex, cancelNavScroll, navScrollRafRef, navPollCancelRef } = useNavToDisplayIndex({
-    scrollerRef,
-    mountIndex,
-    scrollToDisplayIndex,
-  })
-
   // Pinned-prompt banner: geometry, expanded state and the fold/card refs live
   // in the shared usePinnedPrompt hook (also worn by ChatPane). Only the JUMP is
   // page-specific — a virtualized transcript must mount the target row before
@@ -182,6 +169,24 @@ export function useChatPageTranscriptEarlyController({
     onScrollPin,
     pinnedJumpChrome,
   } = usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true })
+
+  // The jump to a (possibly off-window) row lives in the shared
+  // useNavToDisplayIndex, which a Bot chat's Find in chat also uses. It aims at
+  // a message and finds its row in the rows on screen (`displayItemsRef`, the
+  // deferred list the virtualizer draws) on every frame. The pinned-prompt
+  // glide below shares its in-flight handles, so either jump cancels the other.
+  const mountIndex = useCallback(
+    (index: number, opts?: { unionOnly?: boolean }) => mountIndexRef.current(index, opts),
+    [mountIndexRef],
+  )
+  const {
+    navToMessage, navToDisplayIndex, rowOfMessage, cancelNavScroll, navScrollRafRef, navPollCancelRef,
+  } = useNavToDisplayIndex({
+    scrollerRef,
+    displayItemsRef,
+    mountIndex,
+    scrollToDisplayIndex,
+  })
   /** Jump the transcript back to the pinned prompt, landing it just below the
    *  banner so the prompt is read in context — which also un-pins the banner,
    *  since its prompt is no longer above the fold.
@@ -201,6 +206,11 @@ export function useChatPageTranscriptEarlyController({
     // Rationale and near/far interaction: see jumpAnchorIdx's docblock
     // (utils/pinnedPrompt.ts).
     const anchor = jumpAnchorIdx(displayItemsRef.current, target)
+    // The glide aims at the prompt itself, and finds its row again each frame
+    // (a page that lands mid-glide renumbers the rows).
+    const anchorItem = displayItemsRef.current[anchor]
+    const prompt = anchorItem ? leadMessage(anchorItem) : null
+    if (!prompt) return
     // NEAR: the window is unioned up to the target, so every row on the path
     // mounts and measures before the glide starts and the destination is exact
     // from the first frame. FAR: nothing is mounted — replacing the window at
@@ -213,18 +223,24 @@ export function useChatPageTranscriptEarlyController({
     // shifted was never corrected.
     const far = mountIndexRef.current(anchor, { unionOnly: true })
     window.dispatchEvent(new Event('mc-chat-scroll-jump'))
-    const rowEl = (): HTMLElement | null =>
-      (scrollerRef.current?.querySelector(`[data-display-index="${anchor}"]`) as HTMLElement | null)
+    const rowElAt = (at: number): HTMLElement | null =>
+      (scrollerRef.current?.querySelector(`[data-display-index="${at}"]`) as HTMLElement | null)
+    const rowEl = (): HTMLElement | null => {
+      const at = rowOfMessage(prompt)
+      return at < 0 ? null : rowElAt(at)
+    }
     // Live destination: the row's top from the DOM once it is mounted, the
     // height index's estimate until then, less the chrome the previous turn's
     // banner needs to pin completely at the landing.
     const goal = (): number | null => {
       const sc = scrollerRef.current
       if (!sc) return null
-      const row = rowEl()
+      const at = rowOfMessage(prompt)
+      if (at < 0) return null
+      const row = rowElAt(at)
       const rowTop = row
         ? sc.scrollTop + (row.getBoundingClientRect().top - sc.getBoundingClientRect().top)
-        : estimateRowTopRef.current(anchor)
+        : estimateRowTopRef.current(at)
       if (rowTop == null) return null
       return Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, rowTop - pinnedJumpChrome()))
     }
@@ -282,14 +298,16 @@ export function useChatPageTranscriptEarlyController({
       navScrollRafRef.current = requestAnimationFrame(tick)
     }
     navScrollRafRef.current = requestAnimationFrame(tick)
-  }, [pinnedJumpChrome, scrollerRef, mountIndexRef, estimateRowTopRef, displayItemsRef, navScrollRafRef, navPollCancelRef])
+  }, [pinnedJumpChrome, scrollerRef, mountIndexRef, estimateRowTopRef, displayItemsRef, navScrollRafRef, navPollCancelRef, rowOfMessage])
 
   return {
     scrollBottom,
     autoFollowAllowed,
     handleSurveyLayoutChange,
     composerBandRef,
+    navToMessage,
     navToDisplayIndex,
+    rowOfMessage,
     cancelNavScroll,
     displayItemsRef,
     pinFoldRef,

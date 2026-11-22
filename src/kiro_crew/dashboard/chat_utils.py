@@ -66,6 +66,14 @@ TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
 #: The terminal row of a throttle ladder that ends without a re-send.
 TRANSIENT_NOTICE_THROTTLE_GIVE_UP = "transient_throttle_give_up"
 
+#: ``meta[...]`` on the row that tells the person the host declined a tool
+#: approval on their behalf; the value is that decline's ``DENY_CAUSE_APPROVAL_*``.
+#: The host's notice to the agent about the decline is folded into the turn the
+#: way a person's steer is, so the dashboard reads this key to keep the reply's
+#: "Steered" chip off a turn the person did not steer
+#: (``website/src/app-sdk/turnPolicyBlock.ts`` mirrors the literal).
+HOST_DECLINE_CAUSE_META_KEY = "host_decline_cause"
+
 #: English fallback text for the rows above. Plain language on purpose: the
 #: failure is an upstream model-backend 5xx the gateway is already retrying
 #: against, and neither "backend" nor "hiccup" tells a reader that.

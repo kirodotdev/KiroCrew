@@ -268,6 +268,30 @@ def test_modelling_the_default_servers_records_no_permission_decision(monkeypatc
     assert recorded == []
 
 
+def test_a_custom_conductor_is_judged_as_the_gateway_spawns_it(monkeypatch, capsys) -> None:
+    """A spawn gives the configured Crew Mode conductor no app server, so its app ref
+    is reported; doctor learns that conductor from the config it was handed."""
+    from kiro_crew import crew_mode
+
+    installed = {"mcpServers": {"pinger:ping": {"command": "python3", "args": ["server.py"]}}}
+    monkeypatch.setattr(
+        "kiro_crew.agent_materialization.worker_agent._installed_default_spec", lambda: installed
+    )
+    monkeypatch.setattr(
+        "kiro_crew.agent_materialization.mcp_sources._app_owned_mcp_keys",
+        lambda: {"pinger:ping": True},
+    )
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+    # ``remember`` writes this module global: restored when the test ends.
+    monkeypatch.setattr(crew_mode, "_configured", crew_mode._configured)
+    _write("mine", {"mcpServers": {}, "tools": ["tool_search", "@pinger:ping"]})
+    cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend="kas", crew_mode_agent="mine"))
+
+    mcp._doctor_authored_agent_mcp_refs(cfg)
+
+    assert "@pinger:ping" in capsys.readouterr().out
+
+
 #: An agent that relies on Crew's default servers whole (``@kirocrew-core``) and
 #: per tool (``@kirocrew-cron/...``), beside one server nothing defines.
 _RELIES_ON_DEFAULTS = {

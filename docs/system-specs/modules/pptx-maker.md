@@ -514,8 +514,11 @@ sensitive-path check and the governance ceiling — would never be reached.
   `default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox`.
 - **Agent-authored IDENTIFIERS are refused, not redacted.** These fields name a
   filesystem path AND a URL segment the browser sends back, so scrubbing them would
-  hand out a handle that resolves to nothing. Refusal is scoped as narrowly as the
-  identifier allows:
+  hand out a handle that resolves to nothing. Each refuses through
+  `security.refuses(value, redact)`: the redaction changes it, or the exfil scan
+  flags a URL in it. Redaction masks only credential values inside a URL, so a URL
+  carrying other data out passes the comparison alone. Refusal is scoped as narrowly
+  as the identifier allows:
   - the **deck id** (`paths.resolve_deck_dir`) — refuses the whole deck;
   - a **slide slug** (`decks.deck_detail`) — skips that slide, the rest still renders.
     Screened at the slide level *as well as* in the URL builder because the slug is
@@ -579,8 +582,10 @@ sensitive-path check and the governance ceiling — would never be reached.
     WebP `XMP `) has a metadata chunk that holds arbitrary text — so a blob beginning
     `\x89PNG…` and continuing `tEXtComment\0AKIA…` would pass a header-only check,
     skip the scan, and reach the browser verbatim. `routes._scanned_bitmap_bytes`
-    therefore decodes the WHOLE body and exempts it only if the redactor finds
-    nothing in it (and the encoded text passes the encoded-credential screen below); a
+    therefore decodes the WHOLE body and exempts it only if `security.refuses` passes
+    it (the redactor finds nothing and the exfil scan flags no URL; pinned by
+    `::test_a_url_carrying_data_out_in_bitmap_metadata_is_not_exempted`), and the
+    encoded text passes the encoded-credential screen below; a
     credential-bearing "image" stays in the redaction path and loses the picture,
     which is the right trade. Pinned by
     `::test_a_credential_in_bitmap_metadata_is_not_exempted` and

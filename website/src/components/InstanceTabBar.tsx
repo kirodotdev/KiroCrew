@@ -1394,7 +1394,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         stableOrder={hostStableOrder}
         onToggleStableOrder={onToggleStableOrder}
         embedded
-        extraGroups={embeddedTeamCrewsGroups(host.relayCrews)}
+        extraGroups={embeddedTeamCrewsGroups(host.relayCrews, host.relayCrewsFailed)}
       />
     </div>
   )

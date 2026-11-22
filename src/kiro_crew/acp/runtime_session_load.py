@@ -65,6 +65,7 @@ from kiro_crew.acp.session_handle import (
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS, KasGovernanceOffError
+from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.transport_errors import AcpAuthRequired
 from kiro_crew.acp.types import (
@@ -238,6 +239,7 @@ async def load_session(
     session_work_dir = str(await self._session_work_dir(cwd))
     denied_tools: frozenset[tuple[str, str]] = frozenset()
     zero_tools = False
+    builtin_tools: tuple[str, ...] | None = None
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
@@ -275,6 +277,7 @@ async def load_session(
         stub_token = mirrored.stub_token
         denied_tools = mirrored.denied_tools
         zero_tools = mirrored.zero_tools
+        builtin_tools = mirrored.builtin_tools
         mirrored_snapshot = mirrored.derived_spec_snapshot
         consumed_spec = mirrored.agent_spec
         ref_spec = mirrored.ref_spec
@@ -521,7 +524,11 @@ async def load_session(
         # state, built after the final array it travels with: a resume carries
         # the same settings exclusion its session/new did.
         meta = self._harness.session_meta(
-            harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+            harness_state,
+            wire_servers,
+            zero_tools=zero_tools,
+            builtin_tools=builtin_tools,
+            stub_token=stub_token,
         )
         if meta is not None:
             load_params["_meta"] = {**(load_params.get("_meta") or {}), **meta}
@@ -579,7 +586,7 @@ async def load_session(
         # teardown verb deletes the record, and a refusal that was wrong would
         # then lose a real conversation. The caller starts a fresh session.
         await self.evict_session(resume_sid)
-        raise AcpRuntimeError(
+        raise AcpResumeNotRestored(
             f"session/load of {resume_sid} replayed no earlier turn: "
             "the stored conversation was not restored"
         )

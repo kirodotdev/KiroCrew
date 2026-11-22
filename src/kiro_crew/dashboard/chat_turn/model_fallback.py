@@ -91,10 +91,11 @@ def _slot_backend_allocation_kwargs(slot: "_ChatSlot") -> dict[str, str]:
 def _live_session_off_slot_backend(state: Any, slot: "_ChatSlot") -> bool:
     """Whether *slot* was created on a harness and its live session runs another.
 
-    A hard Stop's respawn starts the key with no identity, so on the default
-    harness; the turn then resets it onto the pick. Compared with what the
-    selection gate resolves the pick to, so a pick governance has since degraded
-    does not reset on every turn. A live provider naming no backend is left alone.
+    A live session that runs another harness than the pick takes the slot
+    reset onto the pick: an idle one before the claim, a busy one at its next
+    idle point. Compared with what the selection gate resolves the pick to, so
+    a pick governance has since degraded does not reset on every turn. A live
+    provider naming no backend is left alone.
     """
     from kiro_crew.agent_sdk.backends import resolve_selected_backend
     from kiro_crew.agent_sdk.capabilities import SessionCapabilities
@@ -113,6 +114,44 @@ def _live_session_off_slot_backend(state: Any, slot: "_ChatSlot") -> bool:
         slot.key,
         picked,
         caps.backend,
+    )
+    return True
+
+
+def _live_session_off_slot_agent(state: Any, slot: "_ChatSlot", agent: str | None) -> bool:
+    """Whether *slot*'s live session runs another agent than the one this turn resolved.
+
+    The agent twin of :func:`_live_session_off_slot_backend`, so a chat runs on
+    the agent it is set to. *agent* is what the turn hands ``get_or_create``
+    (``kiro_agent or slot.agent``). A turn that resolved no agent, a live
+    provider naming none, and a crew member's session are left alone: for the
+    last, ``prepare_runtime`` picks the template, so its provider names the
+    template, not the member the conversation records.
+    """
+    from kiro_crew.dashboard.handlers.usage import read_effective_agent
+
+    if not agent:
+        return False
+    key = effective_session_key(slot)
+    provider = state.sessions.get_provider(key)
+    if provider is None:
+        return False
+    live = read_effective_agent(provider)
+    if not live:
+        return False
+    try:
+        kind, _ = state.sessions.get_agent_selection(key)
+    except ValueError:
+        return False
+    if kind == "member":
+        return False
+    if live == agent:
+        return False
+    logger.info(
+        "Slot %s resolved agent %r but its live session runs %r; resetting it",
+        slot.key,
+        agent,
+        live,
     )
     return True
 

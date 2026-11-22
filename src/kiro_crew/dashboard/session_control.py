@@ -299,6 +299,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.dashboard.session_control_parts.session_handoff import (  # noqa: F401
         _HANDOFF_LOCK,
+        _check_bind_move,
         _manages_up_the_line,
         _move_tree_edge,
         hand_back_on_close,

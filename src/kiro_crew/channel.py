@@ -1933,10 +1933,11 @@ async def _stream_task(
         )
         return _STREAM_OK
 
-    # kiro-cli's [STEERING steer-…] ack is protocol, not the reply.
+    # kiro-cli's [STEERING steer-…] ack and a quoted directive marker line are protocol.
     from kiro_crew.messaging.driver import strip_steering_markers
+    from kiro_crew.session_directive import strip_quoted_markers
 
-    full_text = strip_steering_markers("".join(chunks)).strip()
+    full_text = strip_quoted_markers(strip_steering_markers("".join(chunks))).strip()
     if not full_text:
         return _STREAM_OK
     # Sanitize LLM output before posting

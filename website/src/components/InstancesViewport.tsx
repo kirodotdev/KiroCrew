@@ -260,6 +260,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // had, as the top bar's group does: a pick still opens from the top bar, whose
   // refusal notice says when the Crew cannot be reached.
   const relayCrews = relayViewer.hidden || relayViewer.crews.length === 0 ? NO_RELAY_CREWS : relayViewer.crews
+  const relayCrewsFailed = !relayViewer.hidden && relayViewer.failed
   const relayTabs = useAppSelector(s => s.instances.relayTabs ?? NO_RELAY_TABS)
   const relayActive = useAppSelector(s => s.instances.relayActive ?? null)
   // A Remote Crew the SSH pane in front picks opens as the top bar's note Open does:
@@ -1437,6 +1438,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // message from the pane is not allowed to start.
         // Only to the pane in front, the one whose switcher is on screen.
         relayCrews: relayPaneBridge() && id === activeId ? paneRelayCrews(relayCrews, relayTabs, relayActive) : [],
+        // Its switcher says so too: the top bar's notice is hidden behind the pane.
+        relayCrewsFailed: !!relayPaneBridge() && id === activeId && relayCrewsFailed,
         stableOrder,
         chatCompleteNotify,
         // This host performs image copies for the pane (mc-clipboard-image).
@@ -1444,7 +1447,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         clipboardRelay: PANE_CLIPBOARD_VERSION,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, relayCrews, relayTabs, relayActive, stableOrder, chatCompleteNotify],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, linuxInset, winCaptionReserve, focusMode, pinnedCrews, relayCrews, relayCrewsFailed, relayTabs, relayActive, stableOrder, chatCompleteNotify],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback

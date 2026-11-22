@@ -1223,9 +1223,7 @@ async def _route_message(
             if orch.slack:
                 await _post_stop_notice(orch, channel, "Nothing running.", thread_ts or msg_ts)
             return
-        _flat_stop_key = flat_dm_session_key(
-            channel, thread_ts, enabled=_dm_single_session_enabled(orch, channel)
-        )
+        _flat_stop_key = _dm_stop_flat_key(orch, channel, thread_ts)
         # A dashboard-linked thread wins over the flat key. When !stop is typed
         # inside a DM thread that a dashboard send-to-Slack owns, the running
         # turn lives under THAT owner (keyed by thread_ts in the thread index),
@@ -1893,6 +1891,7 @@ from kiro_crew.slack.events_home_tab import _publish_home_tab  # noqa: E402
 from kiro_crew.slack.events_inbound import SeenCache  # noqa: E402
 from kiro_crew.slack.events_inbound import _background_tasks  # noqa: E402
 from kiro_crew.slack.events_inbound import _dm_single_session_enabled  # noqa: E402
+from kiro_crew.slack.events_inbound import _dm_stop_flat_key  # noqa: E402
 from kiro_crew.slack.events_inbound import _handle_message_deleted  # noqa: E402
 from kiro_crew.slack.events_inbound import _maybe_prompt_owner  # noqa: E402
 from kiro_crew.slack.events_inbound import _thread_follow_admits  # noqa: E402

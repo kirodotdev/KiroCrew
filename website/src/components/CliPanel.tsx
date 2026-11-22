@@ -6,7 +6,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -423,6 +423,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   const connStatus = useTerminalConnStatus(sessionId)
   const invalidCwd = useTerminalInvalidCwd(sessionId)
   const wrongMachine = useTerminalWrongMachine(sessionId)
+  const atLimit = useTerminalAtLimit(sessionId)
   const manualRetry = useTerminalManualRetry(sessionId)
   // The manual "Reconnecting…" state: the user clicked Reconnect and the dial
   // has not yet resolved. On failure the status flips back to 'disconnected'
@@ -858,7 +859,9 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
                   ? i18nT('components.cliPanel.invalid_cwd_message', { cwd })
                   : wrongMachine
                     ? i18nT('components.cliPanel.wrong_machine_message')
-                    : i18nT('components.cliPanel.disconnected_message')}
+                    : atLimit
+                      ? i18nT('components.cliPanel.at_limit_message')
+                      : i18nT('components.cliPanel.disconnected_message')}
               />
             )}
             <div className="flex shrink-0 flex-wrap items-center gap-2">

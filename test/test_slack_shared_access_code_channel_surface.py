@@ -370,7 +370,7 @@ def test_a_shared_users_stop_in_a_thread_resolving_to_a_code_channel_session_is_
         patch.object(
             session_events,
             "resolve_session",
-            lambda *_a: ("555.000001", f"dashboard:{SLOT}", False),
+            lambda *_a, **_kw: ("555.000001", f"dashboard:{SLOT}", False),
         ),
         patch.object(session_events, "_is_ours", lambda *_a: True),
     ):

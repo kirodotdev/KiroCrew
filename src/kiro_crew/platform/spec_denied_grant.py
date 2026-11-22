@@ -32,9 +32,11 @@ class SpecDeniedGrant:
     anchored to absolute globs at the session's directory *cwd*.
 
     *web_fetch_blocked* are the spec's ``web_fetch.blocked`` entries that are plain
-    URLs (``spec_denied_gate.url_literal``), read only to withhold the grant,
-    *web_fetch_blocked_complete* whether that is every entry, and
-    *web_fetch_trusted* the plain-URL ``web_fetch.trusted`` entries it grants by.
+    URLs (``spec_denied_gate.url_literal``): a definite match refuses the fetch, any
+    other hit withholds the grant. *web_fetch_blocked_complete* says whether that is
+    every entry, and *web_fetch_trusted* holds the plain-URL ``web_fetch.trusted``
+    entries it grants by. ``web_fetch`` in *builtins* grants a fetch no blocked
+    entry reaches.
     """
 
     builtins: frozenset[str] = frozenset()

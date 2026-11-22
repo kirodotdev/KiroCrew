@@ -289,6 +289,15 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    show_timing_footer: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Timing Footer",
+            'Post the "Finished in … · ctx …%" line after each reply. Turn it off for a '
+            "cleaner chat; choice buttons and the Link to Dashboard button still post.",
+            tags=["slack"],
+        ),
+    )
     dm_single_session: bool = field(
         default=False,
         metadata=_meta(

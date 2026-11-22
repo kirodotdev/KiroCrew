@@ -150,7 +150,9 @@ ends the shell and every process it started, logs a warning, records a
 When a new terminal would exceed `dashboard.terminal.max_sessions`, the shell
 that has had no browser attached the longest (at least a minute) is ended the
 same way to make room, so shells left behind on another device cannot block new
-terminals. A gateway restart also ends every shell. Run work that must outlive either inside
+terminals. With no such shell the new one is refused with an `error` frame
+(`code: "terminal_max_sessions"`); its tab says the server is at its limit,
+and offers Reconnect for after you close another terminal. The dashboard sets no tab count of its own. A gateway restart also ends every shell. Run work that must outlive either inside
 `tmux` or `screen`.
 
 **Selection toolbar.** Highlighting text in a terminal shows a floating toolbar with **Send to chat** and **Copy**. Send to chat appends the selection to the chat composer draft (never overwrites the draft, never auto-sends), annotated with a `Terminal output (path):` header — using the live `cwd` value when the backend has reported one, else the terminal's spawn directory — and wrapped in a code fence so the agent reads it as literal output. Copy places the raw selection on the clipboard.

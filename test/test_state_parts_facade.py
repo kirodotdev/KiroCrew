@@ -747,6 +747,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "color_theme": ("value", "''"),
     "created_at": ("type", "builtins.str"),
     "credential_evidence": ("type", "kiro_crew.security.credential_sources.CredentialEvidence"),
+    "cron_run_read_only": ("value", "False"),
     "event": ("type", "asyncio.locks.Event"),
     "executor": ("value", "'local'"),
     "folder_id": ("value", "''"),

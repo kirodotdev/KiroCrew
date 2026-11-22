@@ -983,6 +983,10 @@ async def _run_chat(
     # the mirror does not quote it there again. Stamped by ``api_chat`` and carried
     # through the queue by the entry's ``promptOnChannel`` meta.
     _prompt_on_channel: bool = False,
+    # A Bot's Heartbeat wake (``mate_welcome.dispatch_hidden_turn``): a linked thread
+    # or channel gets only the final reply -- no "Thinking…" placeholder, no task
+    # stream, and no outcome line for a quiet end.
+    _mirror_reply_only: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -1031,6 +1035,7 @@ async def _run_chat(
         _recovery_echo_owed=_recovery_echo_owed,
         _card_origin=_card_origin,
         _prompt_on_channel=_prompt_on_channel,
+        _mirror_reply_only=_mirror_reply_only,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,

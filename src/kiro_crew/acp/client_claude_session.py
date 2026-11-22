@@ -450,7 +450,8 @@ def _claude_session_needs_options(self: ClaudeAcpClient) -> bool:
     """Whether this session is only safe on an adapter that honours the session options.
 
     Its project tier is left out, it is a Side Chat, its spec declares
-    ``"tools": []``, or its worker's built-in tools are narrowed: each of those
+    ``"tools": []``, or its built-in tools are narrowed (a worker's excludes or a
+    named agent's ``tools`` list): each of those
     rides ``_meta.claudeCode.options``, which an adapter below the floor may ignore.
     """
     return bool(
@@ -594,8 +595,9 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
 
     A Bot's worker session (``members.is_crewmate_worker_session``) gets
     ``strictMcpConfig`` too, so a worker runs only the servers its spec grants.
-    One whose crewmate file excludes a native tool gets ``tools`` limited to the
-    built-ins of the native tools it keeps (``SessionProjection.builtin_tools``).
+    One whose crewmate file excludes a native tool, and a named agent whose spec
+    ``tools`` list leaves out a built-in, gets ``tools`` limited to the built-ins
+    of the native tools it keeps (``SessionProjection.builtin_tools``).
 
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
@@ -708,9 +710,10 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
         options["allowDangerouslySkipPermissions"] = False
     worker_tools = getattr(self, "_claude_worker_builtin_tools", None)
     if worker_tools is not None:
-        # A worker whose crewmate file excludes a native tool keeps only the
-        # built-ins of the native tools it keeps; a narrower list already set
-        # (``"tools": []``) stays as narrow.
+        # A worker whose crewmate file excludes a native tool, or a named agent
+        # whose spec ``tools`` list leaves one out, keeps only the built-ins of the
+        # native tools it keeps; a narrower list already set (``"tools": []``)
+        # stays as narrow.
         options["tools"] = [t for t in options.get("tools", worker_tools) if t in worker_tools]
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
@@ -894,9 +897,10 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     A session whose spec declares ``"tools": []`` is stopped below the same
     floor, since its empty ``tools`` option is what removes the built-ins, but
     is not pinned: it mounts no tool, so its mode approves nothing. A crewmate
-    worker whose native-tool excludes narrow ``tools``
-    (``_claude_worker_builtin_tools``) is stopped below the floor for the same
-    reason; above it, its mode is handled as any other session's.
+    worker whose native-tool excludes narrow ``tools``, or a named agent whose
+    spec ``tools`` list does (``_claude_worker_builtin_tools``), is stopped below
+    the floor for the same reason; above it, its mode is handled as any other
+    session's.
 
     Observed on claude-agent-acp 0.84.0
     (``test/fixtures/claude_mode_pin/``): ``session/new`` and
@@ -1173,7 +1177,8 @@ def _local_settings_exclusion(self: ClaudeAcpClient) -> tuple[bool, dict[str, An
 def _note_worker_builtin_tools(
     self: ClaudeAcpClient, builtin_tools: tuple[str, ...] | None
 ) -> None:
-    """Keep the built-ins a crewmate worker's projection allows, carried as claude's ``tools`` option."""
+    """Keep the built-ins a worker's or a named agent's projection allows, carried as
+    claude's ``tools`` option."""
     self._claude_worker_builtin_tools = builtin_tools
 
 

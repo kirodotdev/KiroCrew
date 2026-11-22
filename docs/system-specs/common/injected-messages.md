@@ -389,7 +389,11 @@ could not be delivered to the operator's channel — the agent is told the call
 was never judged and to state the permission it needs). All three are steered
 once, at the shared reject branch, gated on the host-recorded provenance; a
 genuine user refusal records no cause, so kiro-cli's generic denial stays the
-true attribution there and no notice is sent.
+true attribution there and no notice is sent. The row that tells the person
+about the decline (the timeout or no-budget card, the undeliverable notice)
+carries the cause in `meta.host_decline_cause`
+(`chat_utils.HOST_DECLINE_CAUSE_META_KEY`), so the dashboard withholds the
+reply's "Steered" chip for that turn, as it does for a tool-blocked row.
 
 **The headless funnel steers the same notice.** `llm_helpers._resolve_permission`
 answers permissions for every surface without a dashboard slot — cron, Slack and

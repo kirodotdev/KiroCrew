@@ -7,6 +7,7 @@ import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect } from '../../utils/u
 import { autoUpdatePinNote, useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
 import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -23,14 +24,15 @@ function SwitchNotices({ state, unreadable, testIdPrefix, onHandoff }: {
   testIdPrefix: string
   onHandoff?: () => void
 }) {
+  const readReport = state.readError ? reportForError(state.readError) : undefined
   return (
     <>
       {unreadable && state.readFailed && (
-        <ErrorNotice variant="inline" message={unreadable} askAgent onHandoff={onHandoff}
+        <ErrorNotice variant="inline" message={unreadable} report={readReport} askAgent onHandoff={onHandoff}
           testId={`${testIdPrefix}-read-error`} />
       )}
       {state.refreshFailed && (
-        <ErrorNotice variant="inline" message={state.refreshFailed}
+        <ErrorNotice variant="inline" message={state.refreshFailed} report={readReport}
           askAgent onHandoff={onHandoff} testId={`${testIdPrefix}-refresh-error`} />
       )}
       {state.saveError && (

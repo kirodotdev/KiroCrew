@@ -99,8 +99,8 @@ _STOP_DIRECTIVES = frozenset({"monitor_stop", "autonudge_stop"})
 # Transcript row prefix for a refused arm. Fixed text so the frontend and tests
 # can match on it; the authorizer's reason follows the colon.
 ARM_REFUSAL_NOTICE_PREFIX = "⚠️ Automation loop NOT armed: "
-# ``meta.kind`` stamped on every arm/revision/stop refusal notice. The crewmate
-# chat's notice allowlist (``crewmateBubbles.CREWMATE_HIDDEN_NOTICE_KINDS``)
+# ``meta.kind`` stamped on every arm/revision/stop/person-only refusal notice.
+# The crewmate chat's notice allowlist (``crewmateBubbles.CREWMATE_HIDDEN_NOTICE_KINDS``)
 # hides a notice ONLY by its kind, so a refusal must carry one to be dropped
 # there; every other notice (a dropped queued message, a model-fallback hint)
 # keeps drawing. Fixed string, mirrored by that allowlist and the tests.
@@ -116,6 +116,10 @@ REVISION_REFUSAL_NOTICE_PREFIX = (
 # Same contract for a refused stop. Neither of the two above fits: nothing was
 # armed and nothing was revised, and the loop the refusal names is untouched.
 STOP_REFUSAL_NOTICE_PREFIX = "⚠️ Automation loop NOT stopped: "
+# Same contract for a person-only directive (``_USER_ORIGIN_DIRECTIVES``) the
+# user-origin gate refused: its tool answered "requested" too, so without a row
+# the agent reports a tag, title or project change that never landed.
+USER_ORIGIN_REFUSAL_NOTICE_PREFIX = "⚠️ NOT applied: "
 # Leads the applied outcome of a stop that was NOT refused, queued for the agent of a
 # session that cannot read notices: the stop tool only says "requested", so without it
 # that agent cannot tell a stopped loop from one that is still running.
@@ -170,7 +174,8 @@ def _surface_arm_refusal(
 
     ``prefix`` selects the wording for the class of directive that was refused
     (an arm by default, a revision for ``monitor_update``, a stop for
-    ``monitor_stop`` / ``autonudge_stop``). Only the leading
+    ``monitor_stop`` / ``autonudge_stop``, a person-only directive refused by
+    the user-origin gate). Only the leading
     text differs: the redaction, the row role and the best-effort contract are
     the same guarantees either way, which is why this is one helper.
 

@@ -43,7 +43,8 @@ surface, and nothing else needs a call site.
 The start times live in ONE process-global registry keyed by ``toolCallId``, and
 a finish POPS its entry: a call with no recorded start emits nothing. So if a
 frame is ever seen by both layers, the first finish records it and the second is
-a no-op -- the layering cannot double-count.
+a no-op -- the layering cannot double-count. The same pop feeds the
+``tool_calls`` count in ``Stats``, which ``kirocrew status`` prints.
 
 **Why not reuse the watchdog's existing dispatch clock.**
 ``acp/liveness_tool_state.py::ToolCallState`` already stamps ``dispatch_ts`` on a tool call,
@@ -66,6 +67,7 @@ import logging
 import threading
 import time
 
+from kiro_crew.stats import Stats
 from kiro_crew.tracing import turns as _trace_turns
 
 logger = logging.getLogger(__name__)
@@ -218,6 +220,7 @@ def record_tool_call_finished(
             started = _open_calls.pop(_registry_key(tool_call_id, scope), None)
         if started is None:
             return
+        Stats().inc_tool_call()
         started_at, resolved_kind = started
         # ``perf_counter``, not ``monotonic``: on Windows the latter advances in
         # ~15.6ms ticks, so a call that completes inside one tick measures exactly

@@ -186,6 +186,11 @@ async def _restart_gateway(
                 ),
                 timeout=5.0,
             )
+        except asyncio.TimeoutError:
+            # An abandoned save must not read like a finished one.
+            logger.warning(
+                "History save before restart did not finish within 5.0s; restarting without it"
+            )
         except Exception:
             logger.debug("History save before restart failed", exc_info=True)
         # Past the last refusal: the restart commits here, so a deferred restart

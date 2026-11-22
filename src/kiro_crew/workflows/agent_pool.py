@@ -70,11 +70,11 @@ from kiro_crew.workflows.agent_exec import (
 
 logger = logging.getLogger(__name__)
 
-#: Whether the step ``agent_fn`` is running has a ``schema=``. Set by ``agent_fn``
-#: around each call and read by ``_run_step``: a pooled worker's
+#: The ``opts`` of the step ``agent_fn`` is running. Set by ``agent_fn`` around
+#: each call and read by ``_run_step``: a pooled worker's
 #: ``send_message(prompt, timeout)`` carries no step options, and
 #: ``WorkerPool.send`` awaits it in the caller's own task, so the value reaches it.
-_STEP_HAS_SCHEMA: ContextVar[bool] = ContextVar("workflow_step_has_schema", default=False)
+_STEP_OPTS: ContextVar[Optional[dict]] = ContextVar("workflow_step_opts", default=None)
 
 # A warm sub-pool's identity: (agent, model, cwd, effort).
 _PoolKey = tuple[Optional[str], Optional[str], Optional[str], Optional[str]]
@@ -114,7 +114,7 @@ async def _run_step(
     history / injected into parent chat). A person-only directive the step
     calls is refused and audited on *key*, the step's session, and the refusal
     leads the text (``person_only_directive_refuser``) unless the step has a
-    ``schema=`` (``_STEP_HAS_SCHEMA``), whose text is validated as JSON.
+    ``schema=`` (``_STEP_OPTS``), whose text is validated as JSON.
 
     A caller that writes the turn's usage row passes its own ``stop`` and calls
     ``stop.raise_if_interrupted()`` after that write, so a turn cut off from outside
@@ -137,7 +137,7 @@ async def _run_step(
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
     if stop is None:
         watch.raise_if_interrupted()
-    return redact(step_text(refusals, text, has_schema=_STEP_HAS_SCHEMA.get()))
+    return redact(step_text(refusals, text, _STEP_OPTS.get() or {}))
 
 
 class _WorkflowSessionWorker:
@@ -583,7 +583,7 @@ def build_pooled_agent_fn(
             # Launch in the RESOLVED directory and key the warm sub-pool on it, so
             # a worker is never built for an unresolved spelling of a path.
             opts = {**opts, "cwd": step_cwd}
-        has_schema = _STEP_HAS_SCHEMA.set(opts.get("schema") is not None)
+        opts_token = _STEP_OPTS.set(opts)
         try:
             # Warm workers run the default harness.
             if opts.get("session") is not None or backend_kwargs:
@@ -595,7 +595,7 @@ def build_pooled_agent_fn(
                 return await _run_unpooled(prompt, opts, backend_kwargs)
             return await target.send(prompt)
         finally:
-            _STEP_HAS_SCHEMA.reset(has_schema)
+            _STEP_OPTS.reset(opts_token)
 
     pool = _AggregatePool(default_pool, subpools)
     return agent_fn, pool

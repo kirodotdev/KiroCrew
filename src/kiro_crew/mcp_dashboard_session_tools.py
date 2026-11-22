@@ -1012,7 +1012,10 @@ def _session_tools() -> tuple[Tool, ...]:
                 "session_handoff still needs it to manage the target and the "
                 "recipient, or it is refused `not_manager`. Who CREATED the session "
                 "stays on the record, so the new manager cannot fork it or open "
-                "sessions against your memory."
+                "sessions against your memory. With `bind` true it also moves the "
+                "right to bind the session to work-ledger items; only the session "
+                "that holds that right may pass it, and your own open item for that "
+                "session is closed as abandoned unless it waits on a person."
             ),
             schema={
                 "type": "object",
@@ -1024,6 +1027,10 @@ def _session_tools() -> tuple[Tool, ...]:
                     "to": {
                         "type": "string",
                         "description": "The session that will manage the target: its key or exact title.",
+                    },
+                    "bind": {
+                        "type": "boolean",
+                        "description": "Also give the recipient the right to bind the target to its work-ledger items. Default false.",
                     },
                 },
                 "required": ["target", "to"],

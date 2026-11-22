@@ -700,6 +700,12 @@ class ChannelTurns:
         # session is acquired.
         if Drift.NO_GOVERNANCE_BACKSTOP not in drift and not await inbound_permitted(channel):
             return self._outcome(Verdict.DENIED, monitor)
+        from kiro_crew.start_priority import StartPriority  # noqa: F811
+        from kiro_crew.stats import Stats  # in-function: keeps them off the facade
+
+        # Only a message a person sent counts; a loop or monitor wake starts BACKGROUND.
+        if asker.start_priority is StartPriority.FOREGROUND:
+            Stats().inc_message_admitted()
         agent = asker.agent or self._agent()
         if asker.resumed:
             # A resumed session must run as ITSELF: on a cold start ``get_or_create``

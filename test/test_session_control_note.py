@@ -366,7 +366,6 @@ async def test_an_app_note_under_the_set_note_label_is_plain_context(tmp_path):
 
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-2")
-    state.sessions.set_mirror_link(slot_history_key(slot), ChannelLink("discord", channel_id="123"))
     app = web.Application()
     app["state"] = state
     app.router.add_post("/api/chat/slots/{slot}/note", api_chat_slot_note)
@@ -379,6 +378,8 @@ async def test_an_app_note_under_the_set_note_label_is_plain_context(tmp_path):
         assert resp.status == 200, await resp.text()
 
     assert [("admission" in entry) for entry in slot._pending_context] == [False]
+    # Linked after the POST: a note to an already-linked session seats no context half.
+    state.sessions.set_mirror_link(slot_history_key(slot), ChannelLink("discord", channel_id="123"))
     chat_runner.drop_session_notes_out_of_reach(state, slot)
 
     assert "Nightly build passed." in chat_runner.drain_pending_context(slot)

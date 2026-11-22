@@ -429,7 +429,12 @@ carrying `instance_id` or `adopt_remote_slot` is refused with
 crew and opened here through its window. A slot already on disk with
 `executor: "remote"` still loads, as a read-only relay archive: a send, regenerate, rewind,
 continue or checklist write, and a change of agent, model, effort or workspace, answer
-`409 relay_archive_read_only` (`dashboard/relay_archive.py`).
+`409 relay_archive_read_only` (`dashboard/relay_archive.py`). A cron run's transcript
+(a sequence agent's `cron_<job id>_<agent>` or a stateless run's `cron_<job id>_<run id>`)
+that the dashboard user reopens from History with no `linked_session_key` is read-only the
+same way: the resume marks the slot `cron_run_read_only` (in memory, on the wire beside
+`executor`), the same actions answer `409 cron_run_read_only`, the turn chokepoint refuses
+any other start with its own notice row, and Resume all skips it.
 
 A create body carrying `app_launch: <app>` is an app's page opening a person's chat
 under that app's `permissions.chatLaunch`: right after the title check it is held to the
@@ -1717,7 +1722,8 @@ against sweep completeness, and are torn down at `close_all`.
   model's optional `note`) is the low-key, inspectable record that the turn
   ended on purpose; nothing is rendered as an assistant bubble. A linked Slack
   thread has no tool card, so the reply leg posts that outcome line there as the
-  turn's reply (see [slack-gateway](slack-gateway.md), "Linked Thread Sync"). A refused
+  turn's reply, except on a Bot's Heartbeat wake, which mirrors only a real reply
+  (see [slack-gateway](slack-gateway.md), "Linked Thread Sync"). A refused
   directive leaves the flag unset so the model
   falls back to a plain-text reply. The turn-end contract the base prompt states
   — a closing text, or `nothing_to_do`, never a bare stop after an ordinary tool
@@ -1802,7 +1808,7 @@ against sweep completeness, and are torn down at `close_all`.
   by role: the ladder's own cards — the continue and give-up rungs and the
   post-compaction resume — carry `meta.kind = "empty_turn"`
   (`chat_utils.EMPTY_TURN_NOTICE_KIND`), and the automation arm/revision/stop
-  refusal carries `meta.kind = "arm_refusal"`
+  refusal (and a person-only directive's refusal) carries `meta.kind = "arm_refusal"`
   (`session_directive_apply.ARM_REFUSAL_NOTICE_KIND`); both are the runtime
   talking about its own machinery, so a person reading a Bot has nothing to
   do with them. Every notice OUTSIDE that allowlist still draws, because it
@@ -2666,7 +2672,14 @@ against sweep completeness, and are torn down at `close_all`.
   session gets one `leftover_memory` notice per turn (re-armed when the turn releases the session)
   (`SessionManager.on_leftover_memory`, wired by the dashboard). With
   `session.watchdog_end_leftovers_mid_turn` (default off) they are also ended
-  then. Ending is Linux only, as the pinned terminator is; macOS reports.
+  then. `AcpRuntime.kill` and `AcpClient.shutdown` also read their root's
+  leftovers before they signal and end them the same way once the root is gone
+  (`runtime_tree_kill.kill_ending_session_leftovers`), so a job a closed chat's
+  shell already left does not outlive it, and a recycle through either leaves
+  `end_after_recycle` nothing to end. A job whose shell is still running at that
+  read is in the live tree, so this step does not read or end it. Ending is
+  Linux only, as the pinned terminator is; macOS reports and its teardown leaves
+  them running.
   Resident pages are summed across the
   tree and converted to MiB once at the end. The tree RSS is measured once per
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,
@@ -3065,7 +3078,7 @@ idle sweep expires it. `test_sandbox_tier_recycle.py` pins each case.
      that ended on the session handle's own synthesized unacked-cancel terminal
      (`STOP_REASON_CANCEL_UNACKED`, `cancel_went_unacked`) is a `"timeout"`, not
      an ack: the agent never answered the cancel and may still be running it.
-5. Hard kill: `reset(key, stop_shared_children=True)` (stops the sub-agent runs that share the parent's process first) → fire-and-forget `_eager_respawn(key)` task → call `on_hard` callback → return `"hard"`.
+5. Hard kill: `reset(key, stop_shared_children=True)` (stops the sub-agent runs that share the parent's process first) → fire-and-forget `_respawn_as(key, allocation_identity(...))` task, the stopped session's own identity → call `on_hard` callback → return `"hard"`.
 
 ### Session-scoped Stop record
 
@@ -3549,7 +3562,7 @@ each one `rewind` does not carry, so nobody reads it as already shared:
 
 ### Eager Respawn
 
-After a hard kill, `_eager_respawn(key)` calls `get_or_create(key)` in a background task so the next user message finds a warm session. On failure, logs at debug and does nothing — the next message triggers `get_or_create` again via the normal path.
+After a hard kill, `stop_turn` starts the successor in a background task so the next user message finds a warm session: `_respawn_as(key, allocation_identity(owner, key, session))`, the same call the reset successor makes, so the successor keeps the stopped session's agent, crew member, approval policy, cwd, channel, model and harness, and the chat runs on the agent it is set to. Like the reset successor, it re-arms its first-turn observation from the flags the start returned (FRESH or RESUMED), so a failed native resume after a hard Stop replays the history as after a reset. On failure, logs at debug and does nothing — the next message triggers `get_or_create` again via the normal path. `_eager_respawn(key)` (an agentless `get_or_create(key)` and its release) is no longer on the Stop path.
 
 ## Session Resume (SessionMap)
 
@@ -4355,6 +4368,25 @@ a marker that names a different sid. This covers every discard-based recovery (t
 poisoned-conversation canary, image-history replay), because each one ends in a
 fresh first turn that arms the debt. On kiro-cli its own `.jsonl` check answers
 instead.
+
+A refused speculative resume is remembered apart from that marker. A KAS
+`session/load` that replays no earlier turn raises `AcpResumeNotRestored`, and the
+provider records the refused id (`AcpProvider._resume_refused_sid`). When a resume
+prefetch (`speculative_resume=True`) then comes back not resumed, `get_or_create`
+keeps that id per key in memory (`SessionRegistryState.refused_resume_sids`)
+before it raises `SpeculativeResumeRefused`, and a later prefetch of the same id
+is refused before any process starts. The session map is left alone: the marker
+would make `get` refuse the id for every caller, and the next turn would then
+start without the chat's recorded scratch tree and stored folder, which only a
+resume rejoins. So the next turn still resumes the id, has its load refused once,
+and starts fresh with the conversation replayed in the same tree. Registering a
+session for the key drops the entry, and a restart forgets it, which costs one
+more refused prefetch
+(`test_eager_spawn_resume_prefetch.py::TestRefusedKasResumeIsNotRetried`). A lock
+that never cleared and every other failed load record nothing, so the next
+prefetch loads the id again
+(`test_acp_provider.py::TestLoadSessionWithRetry::test_persistent_lock_exhausts_and_falls_back`,
+`TestStartKiroRuntimeResume::test_failed_load_falls_back_to_create_session`).
 
 **The session-head record.** Every claim runs `SessionManager.note_session_head`
 (`session_parts/claims.get_or_create`), so every surface that starts or resumes a
@@ -6236,7 +6268,10 @@ a trust root on its own; publication therefore also writes a
   a token hash with no process to probe. It runs from `cleanup_orphaned_sessions`
   at startup and shutdown and from the same periodic tick that retracts
   session-pid mappings, on the maintenance executor for the same
-  `no-blocking-call-on-event-loop` reason. Without the tick, a gateway that
+  `no-blocking-call-on-event-loop` reason. The tick runs it at most once per
+  `SESSION_TOKEN_PRUNE_INTERVAL_SECS` (an hour), because the pass stats every
+  mapping and removal is age-based over a multi-day TTL, so an expired mapping
+  outlives the TTL by at most an hour. Without the tick, a gateway that
   keeps running, or is only ever stopped by a kill, would hold one mapping per
   session it has started. The TTL is unchanged and cannot cost a live session its
   identity: the mapping is republished at the start of every turn, before

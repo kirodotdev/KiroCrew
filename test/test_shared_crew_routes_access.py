@@ -98,7 +98,7 @@ async def test_counts_read_unknown_when_their_sources_fail(monkeypatch: pytest.M
     from kiro_crew.dashboard.handlers import memory
     from kiro_crew.shared_crew import routes_identity
 
-    async def broken_rows(_r: web.Request) -> list[dict[str, Any]]:
+    async def broken_rows(_state: Any) -> list[dict[str, Any]]:
         raise RuntimeError("catalog unreadable")
 
     async def broken_store(_state: Any) -> Any:
@@ -115,7 +115,7 @@ async def test_counts_add_semantic_and_episodic_memory(monkeypatch: pytest.Monke
     from kiro_crew.dashboard.handlers import memory
     from kiro_crew.shared_crew import routes_identity
 
-    async def rows(_r: web.Request) -> list[dict[str, Any]]:
+    async def rows(_state: Any) -> list[dict[str, Any]]:
         return [{"key": "chat-1"}, {"key": "chat-2"}]
 
     store = SimpleNamespace(memory_stats=lambda: {"semantic_active": 3, "episodic_active": 4})

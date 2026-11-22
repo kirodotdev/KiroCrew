@@ -439,6 +439,11 @@ floor, the reserve and the host reading together (no read is taken, so an
 unanswered one cannot hold a start back). When enabled, the per-spawn guard adds
 `_startup_memory_reserve_gb` to it, so a start is admitted only if
 `available − Σ outstanding start prices − price(this start) ≥ spawn_min_memory_gb`.
+`available` counts at two decimals: `check_memory_available` rounds its reading
+before it compares, and the gate's inline path takes that verdict while its
+off-loop path, the dedicated top-up, the memory wake and the `resource_status`
+floor line compare the rounded figure it returns, so they all decide alike; a
+reading within 0.005 GB of the bar counts as the figure it rounds to.
 Below that a spawn waits in the queue (`low_memory`), durable or not; a capacity
 verdict never fails it, but the wait is bounded by `agent.subagent_queue_max_wait_secs`
 (§ Durable task queue, "A memory deferral has a max wait"). The governance, cwd and memory-identity checks that run
@@ -2737,7 +2742,7 @@ streamed turn with its nested `_stream_with_transient_retry`; the pre-stream ste
 calls -- the inherited approval policy, the shared or dedicated session acquisition,
 the cleanup identity, the child's memory and folder steering, the spawn records,
 the `AgentSpawn`/`UserPromptSubmit` hooks, and on a new claude session the line
-naming what of a named agent's `tools` and `model` it does not apply, prepended to
+naming a named agent's `model` pin it does not apply, prepended to
 the prompt and logged as a warning (`spec_builtin_tools_notice`) -- are plain functions in `turn_session.py`,
 which read the names tests patch on `kiro_crew.subagent` through a call-time
 `sys.modules` lookup, and which is not an owner: every `run_*.py` sibling is one),
@@ -4485,8 +4490,8 @@ when the parent's own call already returned every member it carries:
   parked completion of the run to the bell. What is told apart is a session
   that is gone or new, not whose it is: a live session on the key is continued,
   so a later run of a persistent job (same `cron:<job>` key) takes an earlier
-  run's completion, and so does the session a hard Stop's eager respawn
-  (`_eager_respawn`) started.
+  run's completion, and so does the session a hard Stop's respawn
+  (`_respawn_as`) started.
 - **The cron route's cleanup never resets under a live turn.** The route's "last
   subagent done" cleanup (`_reset_cron_parent_when_idle`) runs
   `reset(parent_key, skip_if_busy=True, skip_if_injecting=True)`, which declines
@@ -4921,7 +4926,16 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   variable, so the generation records the resolved root as `codex_home` at spawn and
   the prune and `spawn_release` delete under it. A Codex generation without
   `codex_home`, a refused delete or a failed delete answers not done, and a release
-  then answers `not_disposed`. Unsupported providers and transient deletion
+  then answers `not_disposed`. A KAS run's session record belongs to the KAS
+  engine, so its cleanup queues the id in `released_sessions` (delay 0) and is
+  done once that entry is written; the next cleanup tick sends
+  `_kiro/session/delete` while KAS is the chat backend. An id the entry refuses
+  (`..`, a `/`), a write error, or a sandboxed process answers not done.
+  Only the prune queues it, in the same pass that removes the run folder a
+  continue resumes from; a `spawn_release` of a KAS conversation queues
+  nothing and answers `not_disposed`, because a continue may still resume the
+  session until the run is pruned.
+  Unsupported providers and transient deletion
   failures preserve
   both retry surfaces for later sweeps, capped at 90 days so a permanently missing
   cleanup route cannot accumulate private run folders forever. A sweep does not

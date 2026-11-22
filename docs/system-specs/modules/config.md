@@ -927,6 +927,7 @@ names that test; every other report-only row gives its plain reason:
 | `memory.embedding_idle_evict_secs` | 3600 -> "auto", #36969 | reports | an hour is a deliberate idle release; a stored number is always kept, so `"auto"` (600 s on a machine with 16 GiB or less, 3600 elsewhere) reaches a fresh install and an install that adopts it. Only on a small machine (`applies`): elsewhere `"auto"` is 3600 (carries a `note`) |
 | `telemetry.retention_days` | 0 -> 30, #22397 | reports | 0 is the documented "no age limit"; adopting prunes metric shards older than 30 days, which cannot be undone (carries a `note`) |
 | `telemetry.max_total_mb` | 0 -> 100, #22397 | reports | 0 is the documented "no size limit"; adopting prunes the oldest metric shards past 100 MB, which cannot be undone (carries a `note`) |
+| `instances.enabled` | false -> true, #39300 | reports | false is the owner's way to keep this gateway from opening SSH or SSM tunnels to remote crews; adopting would open them without consent. Its `note` says what the setting does and how to turn it on |
 
 A row whose old value is a supported configuration is not stale noise, whatever
 its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins both sets by
@@ -1934,7 +1935,7 @@ an underscore, or appears in one of two explicit maps in `resolution.py`:
 | map | why the key is excluded |
 | --- | --- |
 | `_SECTION_KEYS_EMITTED_ELSEWHERE` | `to_dict()` writes it from outside the section dataclass, either conditionally (`slack.channels`, `dm_activation`, `trusted_bot_ids` — absence is a deliberate deletion) or from the top-level object (`slack.observe_max_messages`, `observe_ttl_hours`). |
-| `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it. The union of `_SECTION_KEYS_RENAMED` (`knowledge.auto_ingest_doc_links`: still read, so only `save()` drops it, writing the canonical spelling) and `_SECTION_KEYS_RETIRED` (the removed local-STT install paths, the retired `knowledge` folder-discovery keys — re-persisting them would keep offering a setting with nothing behind it). The Settings PATCH and PUT and `kirocrew config set` also drop the RETIRED keys (`drop_retired_section_keys`), and with them the retired entries of a map-valued key in `_MAP_ENTRIES_RETIRED` (`dashboard.feature_previews.layout_harness`); other raw writers leave them in place. |
+| `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it. The union of `_SECTION_KEYS_RENAMED` (`knowledge.auto_ingest_doc_links`: still read, so only `save()` drops it, writing the canonical spelling) and `_SECTION_KEYS_RETIRED` (the removed local-STT install paths, the retired `knowledge` folder-discovery keys — re-persisting them would keep offering a setting with nothing behind it). Every `update_config_locked` write to `config.json` also drops the RETIRED keys (`drop_retired_section_keys`), and with them the retired entries of a map-valued key in `_MAP_ENTRIES_RETIRED` (`dashboard.feature_previews.layout_harness`), so a raw edit such as `kirocrew config defaults --adopt` keeps the load-time warning's promise. Where a spec or the code says a writer touches only its own keys or installs a file whole (`config set --file`), a retired key, which nothing reads, is the exception. Only `update_config_locked` writes (and `save()`) drop them: `config.local.json`, and a `config.json` written any other way (for example a restore or settings import that copies the file in as it is, or the load-time write-back of a `config.json` outside the data home), keep them until the next such write. |
 
 A key the schema DOES model but validation rejected also stays dropped, because
 re-emitting it would make the bad value permanent and re-warn on every load.
@@ -1959,9 +1960,11 @@ is tested to ensure the validator is required without the `dev` extra.
 
 **Hot-path cache.** `load()` is called per message / per request on several hot
 paths. The expensive work — reading `config.json` (+ `config.local.json`),
-`json.loads`, `_deep_merge`, and the full `jsonschema.validate` — is cached as
+`json.loads`, `_deep_merge`, and the full JSON Schema validation — is cached as
 the validated, merged `data` dict, keyed on a fingerprint of both files
-(`st_mtime_ns`, `st_size`, `st_mode`). On a cache hit, `load()` still builds
+(`st_mtime_ns`, `st_size`, `st_mode`). On a cache miss, validation reuses one
+validator per schema object (`validation._schema_validator`), so the fixed
+schema is checked against its meta-schema once, not on every load. On a cache hit, `load()` still builds
 **fresh dataclasses from a deep copy**, so the many callers that mutate the
 returned config in place (settings handlers, the write-back migration) never
 corrupt the shared cache. The cache is mtime-keyed (not a blind TTL), so a
@@ -2956,7 +2959,12 @@ name:
 ```
 
 - Read/written via `kiro_crew/agent_state.py` (atomic, lock-guarded near-leaf
-  module: stdlib + `config.paths` + `atomic_write` only).
+  module: stdlib + `config.paths` + `atomic_write` + `unchanged_file` only). A write whose bytes
+  already sit in the file (owner-only, one link) is skipped, and
+  `begin_managed_write` records no pending digest for bytes that reproduce the
+  finalized one, so a rebuild that changes nothing keeps the file's inode. The
+  sandbox pins this file for every spawn and refuses one whose pinned file was
+  replaced (security.md, the recreation table).
 - `build_agent_config()` is pure (writes no spec key); `rebuild_agent_config()`
   seeds managed-state on a fresh/clean install (never clobbering a frozen pick).
 - `_refresh_dynamic_fields()` sources managed-state from the sidecar and strips

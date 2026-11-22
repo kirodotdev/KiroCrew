@@ -221,8 +221,9 @@ class OpContext:
     in_control: Callable[[], Any] = lambda: False
     agent_targets: Callable[[], list[str]] = list
     #: The navigate gate, applied to the URL a navigation COMMITTED on (after every
-    #: redirect), not only to the one the agent asked for. The route wires the same
-    #: predicate the shim applies before the op (``browser_harness.url_gate``).
+    #: redirect), not only to the one the agent asked for. The route wires the
+    #: predicate the shim applies before the op (``browser_harness.url_gate``), plus
+    #: the origins only the gateway knows it serves under.
     url_allowed: Callable[[str], bool] = lambda _url: True
     screenshot_dir: Path = field(default_factory=lambda: Path(os.getcwd()))
     sleep: _SleepFn = _no_sleep
@@ -721,9 +722,10 @@ async def _refuse_committed_url(ctx: OpContext, url: str) -> dict[str, Any] | No
         logger.debug("navigate: could not leave the refused page", exc_info=True)
     return refusal(
         "redirect_refused",
-        f"the page redirected to {url[:120]}, which is not a public http(s) URL or a "
-        "loopback origin the user listed (or, for an app's own session, not one of the "
-        "pages the app may browse); the tab was moved to about:blank",
+        f"the page redirected to {url[:120]}, which is not a public http(s) URL other "
+        "than this dashboard or a loopback origin the user listed (or, for an app's own "
+        "session, not one of the pages the app may browse); the tab was moved to "
+        "about:blank",
     )
 
 

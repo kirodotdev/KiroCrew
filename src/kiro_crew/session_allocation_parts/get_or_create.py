@@ -865,6 +865,9 @@ async def _get_or_create_impl(
     # joined it does not wait out a start it cannot use.
     if speculative and speculative_resume and not (resume_sid or native_fork):
         raise SpeculativeResumeRefused(key)
+    # So would a prefetch of a sid whose load already replayed no turn (recorded below).
+    if speculative and resume_sid and self.state.refused_resume_sids.get(key) == resume_sid:
+        raise SpeculativeResumeRefused(key)
 
     from kiro_crew.session_capabilities import prepare_runtime
 
@@ -1596,6 +1599,8 @@ async def _get_or_create_impl(
         if self._deps.is_acp_provider(provider):
             resumed = cast(Any, provider).client.resumed
         if speculative and speculative_resume and not resumed:
+            if refused_sid := getattr(provider, "_resume_refused_sid", ""):
+                self.state.refused_resume_sids[key] = refused_sid
             raise SpeculativeResumeRefused(key)
 
         async with self._lock:
@@ -1676,6 +1681,7 @@ async def _get_or_create_impl(
                 session.aws_project_profile = bound_profile
                 session.loaded_capabilities = stamp
                 self.state.capability_failures.pop(key, None)
+                self.state.refused_resume_sids.pop(key, None)
                 replay_needed = getattr(provider, "_history_replay_needed", False) is True
                 provider_label = self._deps.provider_label(provider)
                 defer_sid_promotion = (

@@ -202,6 +202,50 @@ describe('BrowserView on the app\'s own slot', () => {
     expect(view().dataset.state).toBe('live')
   })
 
+  it('tells the gateway "on screen" once for a new turn, never "off" in between', () => {
+    // Two writes (off, then on) race: the gateway may take them in either order,
+    // and an "off" taken last stops the screencast under a view that is on screen.
+    act(() => { browserLiveStore.applyEvent(ev(OWN)); browserLiveStore.applyFrame(frame(OWN)) })
+    mount(OWN)
+    writes.visibility.mockClear()
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { turn_id: 't2' })) })
+    expect(writes.visibility.mock.calls).toEqual([[OWN, true]])
+    // Unmounted, it says off.
+    writes.visibility.mockClear()
+    cleanup()
+    expect(writes.visibility.mock.calls).toEqual([[OWN, false]])
+  })
+
+  it('shows the Bot\'s latest actions, newest last, and folds them away', () => {
+    const steps = ['Open youtube.com', 'Search song', 'Click result', 'Play', 'Read state', 'Click next', 'Open queue']
+      .map((label, i, all) => ({ label, status: i === all.length - 1 ? 'active' : 'done' }))
+    act(() => { browserLiveStore.applyEvent(ev(OWN, { steps, step: { index: 6, label: 'Open queue' } })) })
+    mount(OWN)
+    const list = screen.getByTestId('app-browser-view-actions-list')
+    const items = [...list.querySelectorAll('li')].map(li => li.textContent)
+    expect(items).toEqual(['Search song', 'Click result', 'Play', 'Read state', 'Click next', 'Open queue'].slice(-5))
+    expect(list.querySelector('[aria-current="step"]')?.textContent).toBe('Open queue')
+    const toggle = screen.getByTestId('app-browser-view-actions-toggle')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle.textContent).toContain('7')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByTestId('app-browser-view-actions-list')).toBeNull()
+  })
+
+  it('shows no action list before the Bot has acted, and none for another app\'s slot', () => {
+    act(() => {
+      browserLiveStore.applyEvent(ev(OWN))
+      browserLiveStore.applyEvent(ev(FOREIGN, { steps: [{ label: 'Secret step', status: 'done' }] }))
+    })
+    mount(OWN)
+    expect(screen.queryByTestId('app-browser-view-actions-toggle')).toBeNull()
+    cleanup()
+    mount(FOREIGN)
+    expect(view().dataset.state).toBe('denied')
+    expect(document.body.textContent).not.toContain('Secret step')
+  })
+
   it('shows a failed browser as an error, in the gateway\'s words', () => {
     act(() => { browserLiveStore.applyEvent(ev(OWN, { state: 'error', detail: 'Browsing is turned off for this chat.' })) })
     mount(OWN)

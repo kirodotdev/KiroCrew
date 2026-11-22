@@ -13,6 +13,7 @@ going red. These pins hold every consumer to refusing, not narrowing.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -190,5 +191,11 @@ def test_loader_marks_a_non_object_workspaces_table_as_degraded(tmp_path, monkey
     assert DEGRADED_WORKSPACES in cfg.degraded_sections
     # The malformed table contributes nothing; only the synthesized default remains.
     assert set(cfg.workspaces) <= {"default"}
+    first_mtime_ns = cfgp.stat().st_mtime_ns
     cfgp.write_text(json.dumps({"workspaces": {}}), encoding="utf-8")
+    # Both documents are the same size, and two writes can land in one
+    # filesystem clock tick; the load cache keys on the file's stat times and
+    # size, so give the edit a later mtime the way a real edit has one.
+    later_ns = first_mtime_ns + 1_000_000_000
+    os.utime(cfgp, ns=(later_ns, later_ns))
     assert DEGRADED_WORKSPACES not in KiroCrewConfig.load().degraded_sections

@@ -266,6 +266,22 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(within(pill).getByTestId('kiro-usage-sign-in-type-mark')).toBeInTheDocument()
   })
 
+  it('shows the no-limit mark, and its notice behind it, for a plan that reports no credit limit', async () => {
+    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'plan_without_limit' } })
+    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
+
+    const pill = await screen.findByLabelText(i18nT('app.kiro_credit_usage_no_limit'))
+    expect(pill.textContent).toContain('—')
+    expect(within(pill).getByTestId('kiro-usage-no-limit-mark')).toBeInTheDocument()
+    expect(pill).toHaveAccessibleDescription(i18nT('app.kiro_credit_usage_no_limit'))
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_no_reading'))).toBeNull()
+    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
+
+    fireEvent.click(pill)
+    await screen.findByText(i18nT('components.kiroAccountModal.credit_usage_no_limit'))
+    expect(screen.queryByText(i18nT('components.kiroAccountModal.credit_usage_unavailable'))).toBeNull()
+  })
+
   it('keeps the account modal open with Refresh when usage resolves to no reading', async () => {
     // Opened while the cache was warming, then the reading resolves to `none`.
     // The modal is where the user refreshes, so it must stay open with the

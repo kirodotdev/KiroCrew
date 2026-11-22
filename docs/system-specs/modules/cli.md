@@ -1454,7 +1454,8 @@ represent. This is an authorization surface: OSC 52 writes the clipboard, and
 CSI can move the cursor and erase what is drawn, so a model-authored title could
 otherwise repaint the question a human is answering and hide what is being approved.
 Scope is the permission prompt only — ordinary streamed model output is printed
-raw by `_send_and_print` and is unchanged, which is a surface-wide rendering
+raw by `_send_and_print` (it drops only a line that quotes a session-directive
+marker, `QuotedDirectiveFilter`) and is unchanged, which is a surface-wide rendering
 question rather than part of answering a permission request.
 
 **An authorization-boundary failure is itself a refusal.** If the shared gate
@@ -1974,7 +1975,11 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    flag lets a real update discard diverged work, it does not delete commits
    when there is nothing to update to). An unreadable comparison refuses
    (fail closed). Uncommitted tracked changes still prompt before being
-   discarded — and because that prompt makes the gap to the reset unbounded,
+   discarded: the prompt counts the changed files, lists the first ten, says
+   that answering N keeps them, and names the way to keep them and still
+   update (`git stash`, the same `kirocrew update` command, `git stash pop`,
+   run in the checkout, whose folder it prints on a line of its own);
+   only an explicit `y` resets them away — and because that prompt makes the gap to the reset unbounded,
    the divergence count is re-taken immediately before the reset and refuses
    commits that appeared while the update was waiting (committing the listed
    edits in another terminal to rescue them is the natural response to the
@@ -2036,8 +2041,15 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    step is skipped and the printed line says so. The engine is Kiro Crew's own
    install, which step 3 lays down for the new release's pin, and the
    gateway's boot-time "kiro-cli is outdated" warning (`_warn_if_kiro_cli_outdated`) is skipped on
-   that route for the same reason. The relay route and every other harness
-   keep the step as it was.
+   that route for the same reason. The step is also skipped, the printed line
+   saying so, when no configured harness choice runs kiro-cli
+   (`crewmate_harness.kiro_cli_runs_anywhere`: `agent.acp_backend`,
+   `agent.member_acp_backend`, a Bot's `agents.<name>.acp_backend` pin and the
+   members of an enabled `agent.acp_failover` chain; each is Kiro CLI, or KAS
+   on the relay), so a Claude or Codex install does not wait up to 120 s on a
+   self-update with the gateway down; an unreadable config keeps the
+   step. The relay route and a selection that runs kiro-cli keep the step as it
+   was.
 3. Installs the release through `platform/release_apply.apply_release`: the
    backend via `pip install -e .` (`dep_sync.sync_or_reinstall`), then the KAS
    engine the new revision pins (see [The release is the unit of
@@ -3613,7 +3625,20 @@ git config that names a command git would run, each with the checkout untouched
 
 `kirocrew status` queries the running gateway's `/api/status` endpoint
 and prints uptime, sessions, messages, tool calls, subagents, crons, lessons,
-and a memory line: the gateway's own resident set (`gateway_rss_mb`) and the
+and a memory line. Messages and tool calls are the process-wide `Stats` counts
+since the gateway started (`messages` and `tool_calls` in the status payload). A
+message is a turn a person starts from the dashboard, or an inbound message a
+channel receives: Slack and Telegram count at their transports, every other
+channel once the shared turn pipeline's governance backstop admits a message a
+person sent (before the session claim). The dashboard and the pipeline channels
+count under `messages_admitted`, so `messages` is `messages_received` plus
+`messages_admitted`. Not counted: a card or app-token send, a Continue or retry
+the runner queues, a script cron's send, a Discord or Teams message that reaches
+a resumed dashboard session mid-turn, and, on the dashboard and the pipeline
+channels, a message folded into a turn already running. Queued messages that
+`merge_queued_messages` joins into one turn count once, or not at all when a
+channel message is in the batch. A tool call is counted once, when it finishes.
+The memory line is the gateway's own resident set (`gateway_rss_mb`) and the
 per-session tree ceiling the cleanup watchdog recycles at
 (`watchdog_rss_max_mb`, spelled out as disabled when `0`). Both fields are
 published by `/api/status` for this line; `kirocrew doctor` prints the same two

@@ -64,7 +64,7 @@ import re
 import time
 from typing import Any, Iterable, Mapping
 
-from kiro_crew import security
+from kiro_crew import platform_compat, security
 from kiro_crew.platform import context as platform_context
 from kiro_crew.platform.capability_bound import bind_capability_manager
 from kiro_crew.platform.defaults import DefaultCapabilityManager
@@ -686,6 +686,26 @@ REMEDIATION: dict[str, str] = {
     ),
 }
 
+#: :data:`DENY_CLASS_S3_UNREAD_DOWNLOAD` prose on Windows, where the direction
+#: reader narrows no line (``s3_direction._s3_download_only``: it reads POSIX shell
+#: only, and cmd.exe splits the same text differently). A download passes there only
+#: when the upload row's text match (``cp .* s3://`` and its siblings) does not fire,
+#: so the POSIX prose's "a call that holds only downloads" would send the agent into
+#: the same refusal again. Every runnable command this names is pinned allowed on
+#: Windows by ``test_deny_guidance.py``. Display text only: it allows nothing.
+_S3_UNREAD_DOWNLOAD_WINDOWS = (
+    "This looks like an `aws s3` download, but on Windows the safety checker does "
+    "not read download lines, so it treated the line as a possible upload and "
+    "blocked it. The block is on a SHAPE, not on downloading. On Windows a download "
+    "passes when it is the only command in its call, its `s3://` source comes right "
+    "after `cp`, `mv` or `sync`, and every flag comes after the two paths, for "
+    "example `aws s3 cp s3://bucket/prefix ./dir --recursive`. So run each download "
+    "alone in its own call with its flags last, and do everything else in a "
+    "separate call after it. If a download cannot be written that way, run `aws "
+    "s3api get-object --bucket <bucket> --key <key> <local-path>` instead. If no "
+    "local file is leaving the host at all, say so and report it as an over-block."
+)
+
 #: class → commands the prose above tells the caller to run. Pinned so
 #: ``test_deny_guidance.py`` can prove each one is actually ALLOWED. Guidance
 #: that walks the agent into a second wall is worse than none: it spends a turn
@@ -882,6 +902,13 @@ def _file_body_refinement(reason: str, deny_class: str) -> str:
     return deny_class
 
 
+def _class_prose(deny_class: str) -> str:
+    """The :data:`REMEDIATION` text for *deny_class*, in its Windows form where one exists."""
+    if deny_class == DENY_CLASS_S3_UNREAD_DOWNLOAD and platform_compat.IS_WINDOWS:
+        return _S3_UNREAD_DOWNLOAD_WINDOWS
+    return REMEDIATION.get(deny_class, "")
+
+
 def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str = "") -> str:
     """Guidance for *reason*, with the host's credential-vendor hint folded in.
 
@@ -898,7 +925,7 @@ def remediation_for(reason: str, subject: str = "", *, credential_tool_hint: str
     refusal would suggest a credential tool could reach the security ceiling.
     """
     deny_class = classify_deny(reason, subject)
-    text = _rule_note(reason) or REMEDIATION.get(deny_class, "")
+    text = _rule_note(reason) or _class_prose(deny_class)
     if not text:
         return ""
     hint = (credential_tool_hint or "").strip()

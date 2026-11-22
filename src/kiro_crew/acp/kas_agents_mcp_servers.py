@@ -58,8 +58,9 @@ _CREDENTIAL_BEARING_FIELDS = ("env", "headers")
 
 #: Per server: the withheld ``env`` key names, the fields anything went from, and
 #: whether it is a stdio server (one with a ``command``, the kind the gateway routes).
-#: Two field values say the server does not run at all rather than run without a
-#: setting: :data:`NOT_RUN_REGISTRY` and :data:`NOT_RUN_INSECURE_URL`.
+#: Three field values say the server does not run at all rather than run without a
+#: setting: :data:`NOT_RUN_REGISTRY`, :data:`NOT_RUN_INSECURE_URL` and
+#: :data:`NOT_RUN_SCOPE_MUTED`.
 WithheldOut = dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]]
 
 #: Registry mode is on, so Crew withholds a server it did not author.
@@ -69,6 +70,8 @@ NOT_RUN_REGISTRY = "registry"
 NOT_RUN_REGISTRY_IF_GOVERNED = "registry-if-governed"
 #: A plain ``http`` url to a non-loopback host, which KAS refuses.
 NOT_RUN_INSECURE_URL = "insecure-url"
+#: A declared server its ``tools`` asks for that an MCP config scope switches off.
+NOT_RUN_SCOPE_MUTED = "scope-muted"
 
 
 #: Crew-internal bookkeeping on a rewritten entry. Never belongs on the wire: an
@@ -98,7 +101,9 @@ def _project_mcp_servers(
 
     *withheld_out*, when given, maps each declared server Crew did not author that
     lost something to the credential filter onto ``(env key names, fields, stdio)``. Names
-    only, never a value, for :mod:`kiro_crew.acp.kas_withheld_notice`.
+    only, never a value, for :mod:`kiro_crew.acp.kas_withheld_notice`. A server the agent's
+    ``tools`` names that only a config scope mutes goes there too, as
+    :data:`NOT_RUN_SCOPE_MUTED`: the agent asks for tools it will not get.
 
     Six subtractions, each load-bearing:
 
@@ -234,6 +239,10 @@ def _project_mcp_servers(
                 )
             else:
                 why = "an MCP config scope disables it, so the user switched it off"
+                from kiro_crew.mcp_gateway.rewriter_spec import _named_in_tools
+
+                if withheld_out is not None and _named_in_tools({name: entry}, spec.get("tools")):
+                    withheld_out[name] = ((), (NOT_RUN_SCOPE_MUTED,), bool(entry.get("command")))
             logger.info("agent %r: not declaring MCP server %r — %s", agent_id, name, why)
             continue
         if name in gated_off:

@@ -561,6 +561,23 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         note="a stored number, 3600 included, is kept as your choice; auto picks by memory size",
         applies=_small_memory_host_applies,
     ),
+    # Remote Crew went from off to on by default. Old full saves wrote false on
+    # every install, so most upgraded installs still store it without having chosen it.
+    #
+    # REPORT-ONLY: false is also the owner's way to keep this gateway from opening
+    # SSH or SSM tunnels to other hosts, and adopting would start doing that without
+    # consent. The report says how to turn it on; the owner decides.
+    SupersededDefault(
+        dotted_key="instances.enabled",
+        old_default=False,
+        new_default=True,
+        changed_in="#39300",
+        note=(
+            "this setting lets this gateway connect to remote crews over SSH or SSM; "
+            "to turn it on, run `kirocrew config set instances.enabled true`, then "
+            "restart the gateway"
+        ),
+    ),
 )
 
 

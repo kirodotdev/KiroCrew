@@ -62,6 +62,7 @@ import {
 } from './InstanceFormFields'
 import type { SigninNotice } from './remoteCrewPanelModel'
 import { SigninPromptBlock } from './RemoteCrewPanelLaunch'
+import { TunnelErrorWhy } from './remoteCrewTunnelError'
 
 // The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
 // not know; the hover title spells out what each one means.
@@ -576,11 +577,8 @@ export function CrewRow({
           {(failing || cloudStopped || awaitingSignin) && detailRow(
             i18nT('pages.settings.remoteCrewPanel.detail_why'),
             failing
-              // The tunnel's own error. `askAgent` is safe: every draft this
-              // page holds lives in the store, so the hand-off loses nothing.
-              // `flex-wrap`: a long error pushes the hand-off onto its own line
-              // instead of past the card's edge.
-              ? <ErrorNotice variant="inline" message={inst.status.error} askAgent className="flex-wrap" />
+              // The tunnel's own error.
+              ? <TunnelErrorWhy error={inst.status.error || ''} code={inst.status.error_code} />
               : cloudStopped
                 ? i18nT('pages.settings.remoteCrewPanel.cloud_stopped_note')
                 : i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint'),

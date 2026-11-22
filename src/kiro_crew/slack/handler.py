@@ -163,6 +163,9 @@ from kiro_crew.messaging.dispatch import (
 )
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.driver import _SteeringMarkerFilter  # noqa: F401 - read by the owners
+from kiro_crew.messaging.driver_quoted_markers import (  # noqa: F401 - read by the owners
+    QuotedDirectiveFilter,
+)
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key

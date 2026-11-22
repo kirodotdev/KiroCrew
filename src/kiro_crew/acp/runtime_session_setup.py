@@ -264,6 +264,9 @@ class _MirroredSessionMcp(NamedTuple):
     """Whether the spec declares ``"tools": []``, from the same parse as the array.
     The handle refuses every permission request of such a session
     (``AcpSessionHandle._deny_zero_tools``)."""
+    builtin_tools: tuple[str, ...] | None = None
+    """The harness built-ins this session keeps (``SessionProjection.builtin_tools``),
+    from the same parse as the array; ``None`` keeps all of them."""
 
 
 async def _session_work_dir(self: AcpRuntime, cwd: str | Path | None = None) -> str | Path:
@@ -811,6 +814,7 @@ async def _mirrored_session_mcp(
         agent_spec=projection.agent_spec,
         crew_bridged=crew_bridged,
         zero_tools=projection.zero_tools,
+        builtin_tools=projection.builtin_tools,
     )
 
 

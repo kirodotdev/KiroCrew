@@ -11,12 +11,11 @@ import { Pencil, Send, Copy, Check, Link2, MessageSquare, Target, Pin, PinOff, X
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
-import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
+import { useSearchHighlight, useCurrentOcc, useRevealMatch } from '../../hooks/SearchHighlightContext'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { useReturnInsertsNewline } from '../../hooks/useComposerSendMode'
 import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
-import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { containedSelectionRange } from '../../utils/selectionContainment'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
 
@@ -423,6 +422,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   const userRef = useRef<HTMLDivElement>(null)
   const { term, caseSensitive } = useSearchHighlight()
   const currentOcc = useCurrentOcc()
+  const revealMatch = useRevealMatch()
 
   // Search matches the full message, so a banner row opens its body for the
   // active match; the label and toggle are skipped when counting occurrences.
@@ -434,14 +434,15 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
     const el = userRef.current
     if (!el) return
     applySearchHighlights(el, term, caseSensitive, currentOcc)
-    // Converge-center the exact occurrence (see scrollCurrentMatchIntoView).
+    // Converge-center the exact occurrence when a find action asked for it,
+    // once per action (see useRevealMatch and scrollCurrentMatchIntoView).
     // Cancel on re-run/unmount so rapid navigation doesn't accumulate loops.
-    const cancelScroll = currentOcc >= 0 ? scrollCurrentMatchIntoView(el) : undefined
+    const cancelScroll = revealMatch(el)
     // The ranges live on a page-wide CSS.highlights entry (see domHighlight):
     // withdraw this bubble's on unmount so a virtualized row that scrolls away
     // is not kept alive through them.
     return () => { cancelScroll?.(); clearSearchHighlights(el) }
-  }, [term, caseSensitive, currentOcc, content, rowBanner, bannerExpanded])
+  }, [term, caseSensitive, currentOcc, content, rowBanner, bannerExpanded, revealMatch])
 
   /** Native select+copy from a sent bubble gives the literal chip label
    *  ("Paste #1 · 5 lines") — worthless on the other end. Intercept the

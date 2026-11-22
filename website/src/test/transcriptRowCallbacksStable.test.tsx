@@ -151,7 +151,7 @@ describe('row callbacks keep their identity across streamed frames', () => {
   })
 
   it('useTranscriptPins: handleJumpToQuote is stable and finds a row only the newest frame holds', () => {
-    const navToDisplayIndex = vi.fn()
+    const navToMessage = vi.fn(() => true)
     const ref = { current: first }
     // Every non-row prop keeps one identity across renders, as ChatPage's do:
     // only `messages` moves between the two renders.
@@ -159,7 +159,7 @@ describe('row callbacks keep their identity across streamed frames', () => {
       embedded: false, dispatch: vi.fn() as never, isMobile: false, activeSlot: 'slot-a',
       slotRunning: false, splitMode: false, crewWindow: null, slotHasMore: false, slotOldestIndex: 0,
       cursorIsForActiveSlot: true, loadingOlder: false, activeViewIsBoundedPage: false, isWelcomeState: false, activeSlotRemoteBound: false,
-      scrollerRef: { current: null }, search: { isOpen: false } as never, navToDisplayIndex, pinnedJumpChrome: () => 0,
+      scrollerRef: { current: null }, search: { isOpen: false } as never, navToDisplayIndex: vi.fn(), navToMessage, pinnedJumpChrome: () => 0,
       scrollToPinnedPrompt: vi.fn(), markStep: vi.fn(), markJump: vi.fn(), splitFeatureEnabled: false, regenerating: false, setEditLast: vi.fn(),
       editSeqRef: { current: 0 },
     }
@@ -174,7 +174,7 @@ describe('row callbacks keep their identity across streamed frames', () => {
     rerender({ messages: next })
     expect(result.current.handleJumpToQuote).toBe(before)
     act(() => { result.current.handleJumpToQuote({ ts: 't4', mid: 'm4' } as never) })
-    expect(navToDisplayIndex).toHaveBeenCalledWith(3, expect.anything())
+    expect(navToMessage).toHaveBeenCalledWith(next[3], expect.anything())
   })
 
   it('useMessageActions: handleEditResend is stable and snapshots the newest rows', () => {

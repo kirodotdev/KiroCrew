@@ -984,9 +984,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 await answer.on_thinking(event)
 
             elif event.kind == EVENT_TOOL_CALL:
+                await answer.release_quoted_hold()
                 await _screen_tool_call(turn, event)
 
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                await answer.release_quoted_hold()
                 if await _answer_permission_request(turn, client, event):
                     break
 
@@ -1016,6 +1018,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                         session_key,
                     )
                 break
+        # The turn's text ends here, with or without a complete event.
+        await answer.release_quoted_hold()
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for %s", session_key)

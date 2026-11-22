@@ -938,10 +938,12 @@ async def _holds_for_person_wait(self: AutoNudgeService, loop: NudgeLoop) -> boo
                 "until the ledger moves",
                 loop.id,
             )
-            self._emit("updated", loop)
         loop.next_due_ts = time.time() + loop.idle_secs
         self._persist_soon()
         self._arm_from_deadline(loop)
+        # Every held tick moves the deadline, so every one announces it: a dashboard
+        # left on an old deadline reads the held loop as due and disables Nudge now.
+        self._emit("updated", loop)
         return True
     if loop.waiting_on_person:
         if not await _commit_person_wait(self, loop, held=False):
@@ -949,6 +951,7 @@ async def _holds_for_person_wait(self: AutoNudgeService, loop: NudgeLoop) -> boo
             # interval rather than acting on a release nothing recorded.
             loop.next_due_ts = time.time() + loop.idle_secs
             self._arm_from_deadline(loop)
+            self._emit("updated", loop)
             return True
         logger.warning(
             "AutoNudge: loop %s released from its person-wait hold -- the ledger moved",

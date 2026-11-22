@@ -186,8 +186,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # the empty string internally, which no identifier matcher can carry.
     #
     # Consulted by ``kiro_crew.agent_backend_governance`` at exactly ONE place: it
-    # recomputes the ``acp_backends`` registry, from ``bootstrap_context`` at boot and
-    # from ``policy_distribution.apply_ceiling`` on every runtime ceiling install.
+    # recomputes the ``acp_backends`` registry from ``bootstrap_context`` at each
+    # process boot (a runtime ceiling install deliberately does not re-run it).
     # Deliberately NOT consulted at provider construction — harness-parity H13 forbids
     # the Kiro construction path gaining a conditional in service of an adapter, and a
     # test asserts ``create_provider_factory`` contains no governance call. The

@@ -1,4 +1,4 @@
-"""The claude built-ins a crewmate worker keeps when its file excludes a native tool.
+"""The claude built-ins a crewmate worker or a named agent keeps.
 
 A worker whose crewmate file excludes a kiro-cli built-in (``shell``, ``fs_write``,
 ``@builtin/<tool>``, a tag such as ``write``) runs on claude with the session's
@@ -8,6 +8,10 @@ runs is the user's own Claude Code, whose built-ins change between releases.
 :func:`excluded_builtin_rows` is also what decides, before spawn, whether such an
 entry is carried at all (``mate_worker.uncarried_tool_limits_of``).
 
+A named agent whose spec ``tools`` lists kiro-cli tools runs the same way from the
+other side: the session's ``tools`` option lists only the built-ins of the tools
+that list grants (:func:`claude_agent_builtin_tools`).
+
 Importing it loads no ACP module; the one ACP-layer read (KAS's tool tags)
 happens when :func:`excluded_builtin_rows` is called.
 """
@@ -16,11 +20,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from kiro_crew.platform.tool_names import canonical_kiro_cli_tool_name
+from kiro_crew.platform.tool_names import _ALL_BUILTINS_REFS, canonical_kiro_cli_tool_name
 
 __all__ = [
     "CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL",
     "CLAUDE_WORKER_KEPT_BUILTINS",
+    "claude_agent_builtin_tools",
     "claude_mcp_server_rule",
     "claude_worker_builtin_tools",
     "excluded_builtin_rows",
@@ -56,7 +61,8 @@ CLAUDE_WORKER_KEPT_BUILTINS: tuple[str, ...] = ("ToolSearch",)
 
 
 def excluded_builtin_rows(ref: str) -> tuple[str, ...]:
-    """The :data:`CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL` rows an ``excludedTools`` *ref* takes out.
+    """The :data:`CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL` rows an ``excludedTools`` *ref* takes out,
+    or a ``tools`` *ref* grants.
 
     A tag KAS reads (``read``, ``write``, ``shell``, ``web``, ``subagent``) takes
     out every tool it selects; any other entry is read under Crew's name for it
@@ -86,5 +92,35 @@ def claude_worker_builtin_tools(excluded: Iterable[str]) -> tuple[str, ...] | No
         for row, tools in CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL.items()
         if row not in out
         for tool in tools
+    )
+    return tuple(dict.fromkeys((*kept, *CLAUDE_WORKER_KEPT_BUILTINS)))
+
+
+#: Built-ins a named agent's granted row keeps beyond its worker row: kiro-cli's
+#: ``fs_read`` also lists a directory, which claude's ``Read`` cannot.
+_AGENT_GRANT_EXTRAS: dict[str, tuple[str, ...]] = {"fs_read": ("Glob",)}
+
+
+def claude_agent_builtin_tools(tools: object) -> tuple[str, ...] | None:
+    """The claude built-ins a named agent whose spec ``tools`` is *tools* keeps, or ``None``.
+
+    ``None`` when the value limits no built-in: a missing or non-list value, ``[]``
+    (the zero-tool session, which keeps none), a list with no string entry, one
+    with an entry that grants every built-in (``*``, ``@builtin``, ``@builtin/``,
+    ``@builtin/*``), or one that grants every row. Otherwise every listed built-in
+    of the rows the list grants, then :data:`CLAUDE_WORKER_KEPT_BUILTINS`. An entry
+    no row covers (``@server``, ``use_aws``) grants no built-in.
+    """
+    entries = [t.strip() for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
+    if not entries or any(t == "*" or t in _ALL_BUILTINS_REFS for t in entries):
+        return None
+    granted = {row for entry in entries for row in excluded_builtin_rows(entry)}
+    if granted >= CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL.keys():
+        return None
+    kept = (
+        tool
+        for row, row_tools in CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL.items()
+        if row in granted
+        for tool in (*row_tools, *_AGENT_GRANT_EXTRAS.get(row, ()))
     )
     return tuple(dict.fromkeys((*kept, *CLAUDE_WORKER_KEPT_BUILTINS)))

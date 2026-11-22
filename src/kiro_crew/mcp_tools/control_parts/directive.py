@@ -172,10 +172,15 @@ def reset_conversation(name: str, args: dict[str, Any]) -> str:
     return _emit_directive(
         "reset_conversation",
         {},
-        "Conversation reset requested for this session; if this turn is "
-        "user-facing it takes effect at a turn boundary, and the next message "
-        "starts with no memory of this conversation. The transcript is not "
-        "deleted — write down anything that must carry forward.",
+        "Conversation reset requested for this session. It takes effect at a "
+        "turn boundary on a turn a person sent from a dashboard chat, or on a "
+        "goal or ledger conductor's own patrol wake as the tool description "
+        "allows; the next message then starts with no memory of this "
+        "conversation. A message from a messaging channel may be refused as "
+        "well, and any other turn (a heartbeat, a goal check-in, a worker "
+        "report, a monitor wake, a cron job, a sub-agent) is refused and "
+        "clears nothing. The transcript is not deleted — write down anything "
+        "that must carry forward.",
     )
 
 

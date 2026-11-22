@@ -43,6 +43,10 @@ import { renderResumeAllRow } from './resumeAll'
 import type { SidebarScope } from './scope'
 import RemoveMergedCrChips from './RemoveMergedCrChips'
 
+/** The unread-first toggle's note, which the toggle names as its description. One
+ *  sort menu is open at a time and its content mounts only while open, so one id. */
+const UNREAD_FIRST_NOTE_ID = 'folder-order-unread-first-note'
+
 /**
  * The menu's Folders section, its separator included. Opened for it (`reveal`, the board
  * notice's Show), it takes focus on its heading and stays in view while the menu settles:
@@ -651,25 +655,6 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
-                {/* A view over the mode, kept in this browser: folders with an
-                    unread chat are drawn first. Only where folder rows are drawn,
-                    since the flat and conductor lanes show no folder to move. */}
-                {folderRowsDrawn && (
-                  <DropdownMenuItem
-                    role="menuitemcheckbox"
-                    aria-checked={foldersUnreadFirst}
-                    data-testid="folder-order-unread-first"
-                    onSelect={e => { e.preventDefault(); toggleFoldersUnreadFirst() }}
-                  >
-                    <span className="flex-1">{i18nT('pages.chatSidebar.folder_order_unread_first')}</span>
-                    {foldersUnreadFirst && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
-                  </DropdownMenuItem>
-                )}
-                {foldersUnreadFirst && folderRowsDrawn && (
-                  <div className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal max-w-[300px]" data-testid="folder-order-unread-first-note">
-                    {i18nT('pages.chatSidebar.folder_order_unread_first_note')}
-                  </div>
-                )}
                 {/* Outside Custom a folder drag can re-parent but not reorder
                     (the rows' droppable side is off). Said here, where the mode
                     is chosen, the same caption grammar as the stale control's
@@ -703,11 +688,37 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     {i18nT('pages.chatSidebar.folder_order_unstamped_note')}
                   </div>
                 )}
+                {/* A view over the mode, kept in this browser: folders with an
+                    unread chat are drawn first. Only where folder rows are drawn,
+                    since the flat and conductor lanes show no folder to move.
+                    Below the mode notes and behind a separator, so it does not
+                    read as a fourth mode; its note is its description, so a
+                    screen reader hears why folder drag stopped. */}
+                {folderRowsDrawn && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      role="menuitemcheckbox"
+                      aria-checked={foldersUnreadFirst}
+                      aria-describedby={foldersUnreadFirst ? UNREAD_FIRST_NOTE_ID : undefined}
+                      data-testid="folder-order-unread-first"
+                      onSelect={e => { e.preventDefault(); toggleFoldersUnreadFirst() }}
+                    >
+                      <span className="flex-1">{i18nT('pages.chatSidebar.folder_order_unread_first')}</span>
+                      {foldersUnreadFirst && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
+                    </DropdownMenuItem>
+                    {foldersUnreadFirst && (
+                      <div id={UNREAD_FIRST_NOTE_ID} className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal max-w-[300px]" data-testid="folder-order-unread-first-note">
+                        {i18nT('pages.chatSidebar.folder_order_unread_first_note')}
+                      </div>
+                    )}
+                  </>
+                )}
                 {/* Where the sessions filed in no folder sit relative to the folder
                     list (dashboard.unfiled_sessions_above_folders). Under Folder order
                     because it is one more fact about how the folder list reads.
                     The separator above the row sets this layout toggle apart from
-                    the order choices. It renders only with the row. A lane that
+                    the rows above. It renders only with the row. A lane that
                     hides the row then shows no doubled separator.
                     Offered in the lanes that draw a folder row (`folderRowsDrawn`,
                     a lane-mode gate). A tree with no folders yet, or a board whose

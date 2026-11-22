@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.metrics import tool_calls as tc
+from kiro_crew.stats import Stats
 
 
 class _CapturingRecorder:
@@ -100,6 +101,15 @@ class TestRoundTrip:
         tc.record_tool_call_finished("t1", status="completed")
         tc.record_tool_call_finished("t1", status="completed")
         assert len(_calls(rec)) == 1
+
+    def test_a_finish_seen_twice_counts_one_tool_call(self, rec):
+        before = Stats().snapshot().get("tool_calls", 0)
+        tc.note_tool_call_started("t1", kind="read", scope="s")
+        tc.record_tool_call_finished("t1", status="in_progress", scope="s")
+        assert Stats().snapshot().get("tool_calls", 0) == before, "not finished yet"
+        tc.record_tool_call_finished("t1", status="completed", scope="s")
+        tc.record_tool_call_finished("t1", status="completed", scope="s")
+        assert Stats().snapshot().get("tool_calls", 0) - before == 1
 
     def test_a_repeated_start_does_not_restart_the_clock(self, rec):
         tc.note_tool_call_started("t1", kind="execute")

@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, Literal
 
+from kiro_crew.skill_runtime import authoring as _authoring
+
 if TYPE_CHECKING:
     from kiro_crew.skills import AutoSkillProvenance, ClaimRefusal, SkillsLoader
 
@@ -181,7 +183,7 @@ def create_auto_skill(
             # the safe side: overwriting destroys their content.
             logger.info("Auto skill %s claimed concurrently, skipping", name)
             return None
-    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+    _authoring._write_new_skill_md(skill_dir, content)
     loader._invalidate_iter_cache()  # new skill visible to trigger matching now
     logger.info("Created auto skill: %s", name)
     return name

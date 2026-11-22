@@ -1522,7 +1522,10 @@ plain-http `localhost` redirect from a PKCE app alone. Slack answers errors as a
 200 with `{"ok": false, "error": ...}`; `invalid_refresh_token` asks the user to
 reconnect. Its refresh tokens rotate and are single-use, which the
 commit-before-use refresh already handles. Disconnect revokes the access token
-with `auth.revoke` and reads `revoked` from the body; Slack has no endpoint that
+with `auth.revoke` and reads `revoked` from the body. Slack revokes only a live
+access token (its access tokens last 12 hours), so a held one that is expiring is
+renewed once first and the fresh pair is revoked; a failed renewal still revokes
+the held token. Slack has no endpoint that
 revokes a refresh token, so that token lives on upstream until Slack's 30-day
 expiry, and the card's revoke page ends the whole grant. Crew's own sign-in takes
 Slack's client from Settings → Connections only, and reads it from the vault.
@@ -1568,7 +1571,12 @@ own sign-in path. A url that differs only by a trailing slash or letter case
 Connect, which writes the registry url onto the entry before minting.
 Both wordings drop away once a grant is held, but the mint refuses either way, so
 the status row also carries `crewMintRefused` (`"sign_in_off"` or `"not_owned"`)
-whether or not a grant is held. While it is set the card offers no Connect or
+whether or not a grant is held. `"not_owned"` also rides the row of the owner's
+own recorded entry at the registry url exactly, which the card yields to
+(`status._owner_yielded_slugs`, through `crew_oauth._left_to_owner`): Connect
+would leave it the owner's, so the mint refuses it too. That row keeps its
+setup steps, because saving an OAuth app takes the slug back for the card.
+While it is set the card offers no Connect or
 Reconnect, and shows the matching setup line in their place; a held grant keeps
 Connected and Disconnect. The MCP Servers row offers no Sign in for a `slack`
 row that sends headers of its own, because the mint refuses that entry too; it
@@ -1728,7 +1736,10 @@ a client exists the card is an instruction, not an offer: `/api/connections/stat
 marks the row `needsClientConfig` (only while no grant is held), and the card
 renders the sixth state `needs-configuration` — a lock badge, the Documentation
 link, and a **Set up <provider>** button that opens the card's OAuth app in place
-of Connect. What the setup involves (a guided settings page, nothing changes
+of Connect. A Connect that still reaches the mint route (a stale tab, the agent's
+connect card) gets 409 `client_not_configured`, whose text names each half still
+missing (`Client ID`, `Client secret`).
+What the setup involves (a guided settings page, nothing changes
 until saved, removable later, registers an app and enters its client ID and
 secret) is the row's pre-action caveat, so it sits behind the amber triangle
 beside that route, never as a band — see [What a card shows

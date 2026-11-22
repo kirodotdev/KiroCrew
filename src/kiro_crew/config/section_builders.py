@@ -834,6 +834,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         reactions_enabled=bool(section.get("reactions_enabled")),
         use_tunnel_url=bool(section.get("use_tunnel_url")),
         show_thinking=bool(section.get("show_thinking")),
+        show_timing_footer=bool(section.get("show_timing_footer")),
         dm_single_session=bool(section.get("dm_single_session")),
         # Default True: a missing or non-boolean value keeps the built-in page.
         home_tab_builtin=section.read("home_tab_builtin", _safe_bool),

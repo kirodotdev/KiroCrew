@@ -399,7 +399,7 @@ function collectCrashReports({
 
   // `kind=unparsed` counts here even though it is not a crash: it is still a
   // line in the log the user hands over, so it counts as something recorded.
-  // Logged rather than surfaced — the renderer gets `newCount` and nothing else.
+  // Logged rather than surfaced — the renderer gets `newCount` and `lastCrashAt`.
   summary.recorded = readCrashLogLines(logPath, { fs }).filter(
     (l) => l.includes("kind=minidump") || l.includes("kind=ips") || l.includes("kind=unparsed")
   ).length;

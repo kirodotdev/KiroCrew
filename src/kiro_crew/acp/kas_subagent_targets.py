@@ -105,7 +105,9 @@ _SHARED = (
 )
 
 #: The :data:`CREW_SPEC_DENIES_KEY` fields the gate refuses a call by
-#: (``spec_denied_gate.spec_denies_refusal``). Its ``web_fetch`` fields only grant.
+#: (``spec_denied_gate.spec_denies_refusal``) that only the gate applies. Its
+#: ``web_fetch`` fields are not among them: the projection's KAS ``ask`` on each
+#: blocked host keeps a target's fetch there at the prompt.
 _DENY_RECORD_LIMITS = ("deniedCommands", "deniedPaths")
 
 #: Server-entry keys that never change which process a server launches or which

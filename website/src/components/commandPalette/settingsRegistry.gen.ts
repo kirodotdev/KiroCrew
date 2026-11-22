@@ -3539,7 +3539,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Authenticates coding-activity sync when WakaTime is enabled."
   },
   {
-    "id": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+    "id": "security.ask-me-before-running-tools-set-to-auto-approve-in-a-tool-server-s-settings",
     "labelKey": "pages.settings.securityPanel.safetySwitches.ask_label",
     "tab": "security",
     "type": "toggle",
@@ -3548,8 +3548,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "section": "safety"
     },
     "configKey": "mcp.honour_auto_approve",
-    "label": "Ask me before running tools an MCP server pre-approves",
-    "description": "Tools you set to Always allow still run without asking."
+    "label": "Ask me before running tools set to auto-approve in a tool server's settings",
+    "description": "Tools you set to Always allow, on an approval card or in MCP Servers, still run without asking."
   },
   {
     "id": "security.denied-commands",
@@ -3632,7 +3632,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "configKey": "mcp.protect_kiro_permission_rules",
     "label": "Stop the agent from editing its own permission rules",
-    "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can. Commands the agent runs in a terminal can change these rules either way."
+    "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can."
   },
   {
     "id": "security.trust-every-third-party-app",

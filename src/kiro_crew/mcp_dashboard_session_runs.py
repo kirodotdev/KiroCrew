@@ -1158,23 +1158,27 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _run_session_handoff(args: dict[str, Any], ctx: ToolContext) -> str:
+    body: dict[str, Any] = {"target": args["target"], "to": args["to"]}
+    if args.get("bind") is True:
+        body["bind"] = True
     try:
-        resp = ctx.client.post(
-            "/api/session-control/handoff",
-            {"target": args["target"], "to": args["to"]},
-            session_key=ctx.caller_key,
-        )
+        resp = ctx.client.post("/api/session-control/handoff", body, session_key=ctx.caller_key)
     except DashboardError as refused:
         return f"Error: could not hand that session over: {refused.error}"
     target = resp.get("target", args["target"])
     manager = resp.get("manager", args["to"])
-    return (
+    text = (
         f"\U0001f91d Handed `{target}` to `{manager}`. That session manages it now: it "
         "can send to, read, stop and close it. If you are a fenced session you lose "
         "that reach, unless agent.session_manager_chain is on and you still manage "
         "that session. It cannot hand the session back to you. Who created it is "
         "unchanged."
     )
+    if resp.get("bind") is True:
+        text += f" It may also bind `{target}` to its work-ledger items now; you may not."
+        if resp.get("release_note"):
+            text += f" {resp['release_note']}"
+    return redact(text)
 
 
 def _run_session_adopt(args: dict[str, Any], ctx: ToolContext) -> str:

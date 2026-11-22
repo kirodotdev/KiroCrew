@@ -636,12 +636,12 @@ quarantine exclusion, and the discover-and-sync step (`sync_discovered_servers`,
 
 | Owner | Owns |
 |---|---|
-| `mcp_discovery_server_info.py` | `McpServerInfo`, the scope names and config-source tables, and `redact_mcp_headers` / `redact_mcp_error` |
+| `mcp_discovery_server_info.py` | `McpServerInfo`, the scope names and config-source tables, and `redact_mcp_headers` / `redact_mcp_error` (the configured header values are masked first, then the generic credential scanners) |
 | `mcp_discovery_probe_state.py` | the protocol revision every client handshake offers and steps down to, the probe timeouts and error cap, the once-only warning ledgers, and the probe-result cache |
 | `mcp_discovery_managed.py` | the managed servers' subcommand and tool-module tables, `managed_server_is_session_bound`, the in-process tool read, and stale-command repair |
 | `mcp_discovery_config.py` | loading the agent config and the `mcp.json` sources per scope, and `list_servers` |
 | `mcp_discovery_remote.py` | `_probe_remote`: the SSRF vet and pinned connection, the HTTP handshake, header expansion, and the authorization checks |
-| `mcp_discovery_probe.py` | `probe_server`: refusing a disabled server, and the stdio handshake of a local server spawned in the sandbox on a private loop, with its temp refusals |
+| `mcp_discovery_probe.py` | `probe_server`: refusing a disabled server, and the stdio handshake of a local server spawned in the sandbox on a private loop, with its temp refusals; on a centrally governed host it runs Kiro Crew's own managed server through a trusted absolute `env` that sets the scrub-listed cache-only policy markers as assignments (`_with_post_scrub_markers`), so a `sandbox.min_level` floor that raises the probe to the cc or strict tier, whose launcher scrubs them, still starts the child in the central policy tier |
 
 `list_servers()` reads `~/.kiro/agents/kirocrew.json`, then each scope file with
 provenance, re-resolves stale managed commands, and overlays cached probe
@@ -1472,6 +1472,26 @@ the encoding is accepted. Two installs sharing one data home (the desktop app an
 dev venv, say) therefore admit each other's approvals of a `python3`-pinned
 launch, since each reads the alias as its own interpreter; that widens nothing,
 because each gateway already runs as the user on that interpreter.
+The env half also folds the gateway's own part of a declared `PATH`: the part
+`env.spec_env_path` appends after the spec's own entries
+(`env.gateway_spec_path`). A `PATH` value that is exactly that composition hashes
+as its own entries plus a `gateway-path` alias (`hashing.hash_launch_env`), so a
+re-rendered service unit or a package installer that changes the gateway's own
+`PATH` pauses no share. The spec's own entries still count, any other `PATH`
+hashes as written, and the pool key keeps the real `PATH`. The broker pins the
+part when it starts (`launch_approval.pin_gateway_part`), so a live `PATH`
+change in the gateway reaches a declared spec `PATH` at the next start, and the
+manager hands gatewayd the same part (`KIROCREW_MCP_GATEWAY_PATH`), because the
+daemon's own `PATH` is rewritten at spawn. Only that current part folds: a value
+saved already expanded (App Kit register writes `emit_env` output into
+`mcp.json`) asks for approval once after the part moves, because an earlier part
+read as entries after the spec's own would be a search path nobody approved. An
+approval stored before the fold holds the literal digest, which matches no folded
+identity, so that launch is refused once as `changed_needs_reapproval` and
+approved again. A daemon's pong reports the part it was handed, and a gateway
+pinned to another part treats it as drift and replaces it rather than adopting
+it. Security detail:
+[security.md](../system-specs/modules/security.md#mcp-launch-authorization-leaves).
 An absent or empty store approves nothing. A stub
 without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same
@@ -1605,17 +1625,28 @@ only a **Remove** button that takes the mark off. A row's **Details** shows
 the launch in the gateway's display-safe form (argv, env key names), each
 distinct command line once, with the approved launch beside the new one for a
 changed command. The changed arguments are marked in each column and repeated
-in no line above them; each column lists only the env keys that were added,
-removed or changed, and those keys are said once above the columns. A launch
-whose command is new on its side also lists and marks its own keys
-(`unmatchedKeys`), unless a launch the other side alone runs had the same
-value, so a key it gained is shown even when another launch already set it.
-When a launch of a command both sides run changed as well
-(`wholeLaunchChanges`), per-key sets cannot prove which keys moved between
-those launches (two of them swapping a loader preload), so the columns hide no
-key and the changed launches are drawn whole behind **Show full command**. A key the
-same on both sides, such as a PATH that did not change, is not listed. An env
-key set on both sides with a new value is said there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
+in no line above them. The gateway orders each side by its own hash, so
+launches are never paired by list position. A column draws one merged key list
+only where that cannot hide a change (`mergedEnvRule`): with one launch per
+side it lists that launch's added, removed and changed keys (a plain version
+bump lists none), unless a value is redacted or cut, since equal displays
+could then hide a change; when both sides run the same number of launches and every
+launch sets the same env, compared as sets, it lists none. A value the gateway
+hid, redacted or cut stands for many values, so a launch carrying one never
+counts as the same env. A change in launch
+count never counts as the same env; a replaced command with the same count and
+env does, as in the one-launch case, because no env key changed. In every other case each column draws every launch
+with its own env keys under its command, so a key that moved from one launch
+to another shows under a different command. Added and removed key names are
+marked, and said once above the columns. In the per-launch view a launch also
+marks a key (`markedKeysPerLaunch`): a pair on a launch the other side does
+not run whole, when the pair is not set on every launch of both sides. That
+marks a key a launch gained and a key that may have moved to another launch,
+and leaves a PATH that every launch sets unmarked. It is counted, never
+paired, so list order cannot change it. When a launch of a command both sides run changed as well
+(`wholeLaunchChanges`), the changed launches are also drawn whole behind
+**Show full command**. An env key set on both sides with a new value is said
+there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
 reference) the list entries added and removed, and otherwise only its key
 (`envValueChanges`). When both sides run the same commands, the summary is per
 launch (`mcpLaunchDiff.launchChanges`): each new launch is paired with the
@@ -6267,7 +6298,9 @@ no walk to get wrong. The model still reads the marker, so a reply that repeats 
 result carries the marker line too; the dashboard's segment flush drops each line
 that is only such a marker from the saved reply
 (`session_directive.strip_quoted_markers`) and keeps the reply's other lines, and
-the channel `TurnDriver` drops the same lines from the streamed reply.
+the channel `TurnDriver` drops the same lines from the streamed reply, as do the native
+Slack thread turn, the plain monitor-loop wake, a team-channel agent's post and
+`kirocrew chat`.
 
 A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and

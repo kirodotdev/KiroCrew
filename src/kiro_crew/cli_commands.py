@@ -992,6 +992,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _gateway_send,
         _internal_secret,
         _peer_refusal,
+        _refusal_text,
         _spawn,
         _spawn_done_status,
         _spawn_row_text,

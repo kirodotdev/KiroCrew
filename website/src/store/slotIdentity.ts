@@ -12,13 +12,15 @@ export function slotSurfaceKey(slot: { mode?: string; surface?: string }): strin
 }
 
 /**
- * True for a relay archive: a chat an older build ran on a connected crew,
- * read-only now. Two client surfaces must agree with each other and with the
+ * True for a read-only chat: a relay archive (a chat an older build ran on a
+ * connected crew) or a cron run's transcript reopened from History with no
+ * session to save a reply to (`cron_run_read_only`). Two client surfaces must agree with each other and with the
  * server on it: `selectContinuable` (which must not OFFER Continue on one) and
  * ChatPage's regenerate / edit-resend gates (which must not offer those
  * either). Mirrors `relay_archive_refusal` in
  * `src/kiro_crew/dashboard/relay_archive.py`, which REFUSES the same actions
- * with 409 `relay_archive_read_only`.
+ * with 409 `relay_archive_read_only` (or `cron_run_read_only`). The sidebar's
+ * Resume-all count and the broadcast targets read it too.
  *
  * Keyed on `executor` (the binding INTENT), never `instance_id`:
  * the server refuses a half-open binding (marker set, triple incomplete) too, so
@@ -27,6 +29,8 @@ export function slotSurfaceKey(slot: { mode?: string; surface?: string }): strin
  * only a genuinely missing lookup lands here, and a missing slot has no local
  * action to gate.
  */
-export function slotIsRemoteBound(slot: { executor?: string } | null | undefined): boolean {
-  return slot?.executor === 'remote'
+export function slotIsRemoteBound(
+  slot: { executor?: string; cron_run_read_only?: boolean } | null | undefined,
+): boolean {
+  return slot?.executor === 'remote' || slot?.cron_run_read_only === true
 }

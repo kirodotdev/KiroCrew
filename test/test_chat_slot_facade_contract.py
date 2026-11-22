@@ -42,6 +42,8 @@ _TO_DICT_KEYS = (
     # "runs locally" from "the field is missing on an older gateway".
     "executor",
     "instance_id",
+    # A cron run's transcript reopened read-only, also on every slot.
+    "cron_run_read_only",
     # The row's identity, resolved server-side. `<instance_id>:<peer_key>` for a
     # remote-bound session, the slot key otherwise. The peer's own slot key is NOT
     # projected; this is what the sidebar needs from it.

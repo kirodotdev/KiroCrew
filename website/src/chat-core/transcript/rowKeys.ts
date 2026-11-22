@@ -3,10 +3,11 @@
  * host that runs `useVirtualChat` over `DisplayItem`s needs — the virtualizer
  * / HeightCache key per row (`virtualKeyFor`, list-unique via `uniqueRowKeys`)
  * and the two scroll-anchor identities (`stableAnchorIdFor` on the tail,
- * `anchorAltIdFor` on the lead). Extracted from the main chat page
- * (chat-core P5-e) so ChatPane, SideChat and ChatEmbed key their rows exactly
- * as ChatPage does; ChatPage's own module re-exports these names, so its
- * imports and the tests that pin them are unchanged.
+ * `anchorAltIdFor` on the lead) — and the row that draws a given message
+ * (`rowOfMessage`), which a jump re-finds as rows arrive. Extracted from the
+ * main chat page (chat-core P5-e) so ChatPane, SideChat and ChatEmbed key
+ * their rows exactly as ChatPage does; ChatPage's own module re-exports these
+ * names, so its imports and the tests that pin them are unchanged.
  *
  * Pure functions with the per-message identity injected (`msgKey`: clientTs →
  * ts → minted id, never the array index — see `useStableMessageKey`), so the
@@ -43,6 +44,42 @@ export function turnLeadKey(it: TurnItem, msgKey: (m: ChatMessage) => string): s
   return lead ? `grp-${msgIdentityKey(lead, msgKey)}` : `grp-idx-${it.startIdx}`
 }
 
+/** The first message display row `it` draws, or null for an empty row. */
+export function leadMessage(it: DisplayItem): ChatMessage | null {
+  const leadOf = (t: TurnItem): ChatMessage | null =>
+    t.kind === 'single' ? t.msg : (t.msgs[0] ?? null)
+  if (it.kind !== 'turn') return leadOf(it)
+  const first = it.items[0]
+  return first ? leadOf(first) : null
+}
+
+/** Does display row `it` draw a message that passes `test`? */
+function rowDraws(it: DisplayItem, test: (m: ChatMessage) => boolean): boolean {
+  const draws = (t: TurnItem): boolean => (t.kind === 'single' ? test(t.msg) : t.msgs.some(test))
+  return it.kind === 'turn' ? it.items.some(draws) : draws(it)
+}
+
+/**
+ * The display row that draws `msg` now, or -1: the row holding that message
+ * object, else the first row holding a message with its key (`msgKey`). A scroll
+ * that runs over several frames re-finds its row by this rule on each one, since
+ * a page landing renumbers the rows and the store copies a message object when
+ * it updates it.
+ * shortcut: messages that share a key (a coarse clock) resolve to the first
+ * one's row once the target's object is replaced; tell them apart by
+ * `meta.mid` too once every row carries one from the start.
+ */
+export function rowOfMessage(
+  items: readonly DisplayItem[],
+  msg: ChatMessage,
+  msgKey: (m: ChatMessage) => string,
+): number {
+  const byObject = items.findIndex((it) => rowDraws(it, (m) => m === msg))
+  if (byObject >= 0) return byObject
+  const key = msgKey(msg)
+  return items.findIndex((it) => rowDraws(it, (m) => msgKey(m) === key))
+}
+
 /** Virtualizer / HeightCache key for a display row. Pure (identity injected)
  *  so the steer-reconcile-stability and regroup-stability guarantees are
  *  unit-testable. A `turn` inherits the key of its leading item so promoting a
@@ -69,15 +106,7 @@ export function anchorAltIdFor(
   index: number,
   msgKey: (m: ChatMessage) => string,
 ): string {
-  const leadOf = (t: TurnItem): ChatMessage | null =>
-    t.kind === 'single' ? t.msg : (t.msgs[0] ?? null)
-  let lead: ChatMessage | null = null
-  if (it.kind === 'turn') {
-    const first = it.items[0]
-    lead = first ? leadOf(first) : null
-  } else {
-    lead = leadOf(it)
-  }
+  const lead = leadMessage(it)
   if (!lead) return `alt-empty-${index}`
   return `l-${msgIdentityKey(lead, msgKey)}`
 }
