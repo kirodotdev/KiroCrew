@@ -646,13 +646,6 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
         _mcp_probe_in_progress = True
         _arm_reprobe(request)
         _mcp_reprobe_armed_for.update(edited)
-    if request.get("via_app"):
-        # A delegated (``via_app``) token reads the list like the owner but not the launch
-        # arguments, which can carry a credential (``--token <value>``): masked like headers.
-        from kiro_crew.mcp_discovery_server_info import MCP_REDACTED_HEADER_VALUE
-
-        for d in result:
-            d["args"] = [MCP_REDACTED_HEADER_VALUE for _ in d.get("args") or []]
     return web.json_response(result)
 
 

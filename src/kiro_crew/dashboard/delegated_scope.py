@@ -67,6 +67,8 @@ class Row(NamedTuple):
 #: Adding a row is a security decision: the handler of a GET row must answer a plain
 #: response (never a stream, a socket or a file), and the prompt and card text must grow with
 #: it (``test_read_allow_is_exactly_the_reviewed_set`` pins this set).
+#: A row that lists MCP servers must mask each server's launch arguments, which can carry
+#: ``--token`` values.
 #:
 #: The GETs are the calls the dashboard page makes to boot (``website/src``): the shell, the
 #: refresh scheduler, the first-run gate, the branding, the theme and language and the

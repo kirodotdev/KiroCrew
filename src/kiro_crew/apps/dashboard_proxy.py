@@ -140,7 +140,10 @@ def _write_tombstone(app_name: str, kind: str, body: dict[str, Any] | None = Non
     """Write the tombstone file, then fsync it and its directory. ``False`` when any step fails."""
     try:
         path = _tombstone_path(app_name, kind)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        if path.parent.stat().st_mode & 0o077:
+            path.parent.chmod(0o700)  # the same mode ``sandbox_precreate`` gives the leaf
         atomic_write(path, json.dumps(body or {"app": app_name}) + "\n", fsync=True)
         fsync_dir(path.parent)
         fsync_dir(path.parent.parent)  # the leaf's own entry, when this call created it
@@ -268,7 +271,11 @@ _INSTALL_FIELDS = (
     "sourceUrl",
     "sourceCommit",
     "sourceSigner",
+    "catalog",
 )
+#: The ``catalog`` value ``record_install`` seals for an install from the bundled catalog.
+#: That install has an empty ``sourceRegistry`` and, unsigned, an empty ``sourceSigner``.
+_OFFICIAL_CATALOG = "official-catalog"
 
 
 def record_install(
@@ -279,6 +286,7 @@ def record_install(
     url: str,
     commit: str = "",
     signer: str = "",
+    official_catalog: bool = False,
 ) -> bool:
     """Seal the gateway's own record of a registry install of *app_name*.
 
@@ -286,6 +294,7 @@ def record_install(
     ``apps/<app>/installed.json`` is writable from the sandbox, so provenance, the offer
     and the grant identity are read from this record only. Every call is a new install:
     it carries a fresh ``installedAt`` stamp, which a grant given for another install lacks.
+    *official_catalog* seals the bundled-catalog marker; nothing else ever writes it.
     """
     stamp = f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}#{secrets.token_hex(8)}"
     body = {
@@ -297,6 +306,7 @@ def record_install(
         "sourceUrl": url,
         "sourceCommit": commit,
         "sourceSigner": signer,
+        "catalog": _OFFICIAL_CATALOG if official_catalog else "",
     }
     try:
         path = _path(app_name, _INSTALL_SUFFIX)
@@ -377,8 +387,9 @@ def registry_verified(app_name: str) -> bool:
 
     The record is sealed under ``member-records/`` by the gateway's own install path
     (:func:`record_install`, from ``set_app_provenance``): the install came from a registry,
-    with the source it resolved to and the registry or signer that admitted it. Never the
-    app's manifest or its ``installed.json``, which the app can write.
+    with the source it resolved to and the registry, the signer or the official-catalog
+    marker that admitted it. Never the app's manifest or its ``installed.json``, which the
+    app can write.
     """
     try:
         rec = _installed(app_name)
@@ -388,7 +399,11 @@ def registry_verified(app_name: str) -> bool:
         rec is not None
         and getattr(rec, "origin", "") == "registry"
         and getattr(rec, "sourceUrl", "")
-        and (getattr(rec, "sourceRegistry", "") or getattr(rec, "sourceSigner", ""))
+        and (
+            getattr(rec, "sourceRegistry", "")
+            or getattr(rec, "sourceSigner", "")
+            or getattr(rec, "catalog", "") == _OFFICIAL_CATALOG
+        )
     )
 
 

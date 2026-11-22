@@ -63,12 +63,17 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
     const ok = await confirm({
       title: i18nT('pages.appDetailPage.dashboard_access_confirm_title'),
       // Worded from the locale catalog; the server's English `offer.text` is for the API only.
-      body: `${i18nT('pages.appDetailPage.dashboard_access_confirm_body', {
-        app: data.offer.app,
-        version: data.offer.version,
-        registry: data.offer.registry || i18nT('pages.appDetailPage.dashboard_access_registry_bundled'),
-        source: data.offer.source,
-      })} ${scope}`,
+      body: `${i18nT(
+        data.offer.registry
+          ? 'pages.appDetailPage.dashboard_access_confirm_body'
+          : 'pages.appDetailPage.dashboard_access_confirm_body_bundled',
+        {
+          app: data.offer.app,
+          version: data.offer.version,
+          registry: data.offer.registry,
+          source: data.offer.source,
+        },
+      )} ${scope}`,
       confirmLabel: i18nT('pages.appDetailPage.dashboard_access_allow'),
       danger: false,
       primary: true,
@@ -133,7 +138,7 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
           <div className="mt-1 text-[12px] text-muted" data-testid="dashboard-access-scope">{scope}</div>
           {data.needs_access && (
             <div className="mt-2 text-[13px] text-warn" role="status" data-testid="dashboard-access-needed">
-              {i18nT('pages.appDetailPage.dashboard_access_needed')}
+              {i18nT('pages.appDetailPage.dashboard_access_needed', { name: displayName || appName })}
             </div>
           )}
           <div className="mt-3">

@@ -459,6 +459,23 @@ def test_a_grant_whose_tombstone_cannot_be_cleared_is_refused_and_stays_off(
     assert dashboard_proxy.granted(_APP) is False
 
 
+def test_the_tombstone_leaf_is_private_to_the_owner_user(records, installed):
+    """A first revoke on a fresh home makes the leaf 0o700, as ``sandbox_precreate`` does."""
+    import os
+    import stat
+
+    leaf = records.resolve() / dashboard_proxy._TOMBSTONE_LEAF
+    old = os.umask(0o022)  # the gateway may run with a looser umask than a worker shell
+    try:
+        assert dashboard_proxy.revoke(_APP) is True
+        assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
+        leaf.chmod(0o755)  # a leaf an older gateway made wider
+        assert dashboard_proxy.revoke(_APP) is True
+        assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
+    finally:
+        os.umask(old)
+
+
 def test_the_tombstone_is_in_a_leaf_the_sandbox_hides_and_no_app_can_write(records, installed):
     from kiro_crew import member_records, sandbox_leaves, sandbox_precreate
     from kiro_crew.security import paths_lists
@@ -678,3 +695,75 @@ def test_a_pre_upgrade_app_mints_nothing_and_gets_no_offer_until_one_owner_updat
 def test_the_update_action_is_not_shown_where_no_grant_could_follow(forged_apps, monkeypatch):
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: False)
     assert routes._view(_APP)["update_to_enable"] is False
+
+
+def _provenance(monkeypatch, **kwargs):
+    """Run the gateway's own install bookkeeping (``set_app_provenance``) for the app."""
+    from dataclasses import dataclass
+
+    from kiro_crew.apps import manager_lookup
+
+    @dataclass
+    class _Meta:
+        version: str = "0.9.4"
+        source: str = ""
+        sourceUrl: str = ""
+        sourceRegistry: str = ""
+        sourceCommit: str = ""
+        sourceSigner: str = ""
+
+    monkeypatch.setattr(manager_lookup, "hold_app_record_lock", lambda _name: None)
+    monkeypatch.setattr(manager_lookup, "_read_installed", lambda _name: _Meta())
+    monkeypatch.setattr(manager_lookup, "_write_installed", lambda _name, _meta: None)
+    return manager_lookup.set_app_provenance(_APP, source=f"registry:{_APP}", **kwargs)
+
+
+def test_an_unsigned_official_catalog_install_is_offered_and_grantable(forged_apps, monkeypatch):
+    """The bundled catalog seals an empty registry and no signer; that is still a registry."""
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert routes._view(_APP)["update_to_enable"] is True
+    assert _provenance(monkeypatch, url="https://example.invalid/official.git", registry="")
+    view = routes._view(_APP)
+    assert view["update_to_enable"] is False, "the update hint clears once the record is sealed"
+    assert view["offer"] is not None
+    assert "the bundled catalog" in view["offer"]["text"]  # type: ignore[index]
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.granted(_APP) is True
+
+
+def test_the_official_catalog_marker_is_sealed_only_by_the_install_path(forged_apps, monkeypatch):
+    """A marker from the manifest, ``installed.json`` or a bare record is never read."""
+    forged = json.loads((forged_apps / _APP / "installed.json").read_text(encoding="utf-8"))
+    forged.update(sourceRegistry="", sourceSigner="", catalog="official-catalog")
+    (forged_apps / _APP / "installed.json").write_text(json.dumps(forged), encoding="utf-8")
+    (forged_apps / _APP / "manifest.json").write_text(
+        json.dumps({"name": _APP, "catalog": "official-catalog", "officialCatalog": True}),
+        encoding="utf-8",
+    )
+    assert dashboard_proxy.registry_verified(_APP) is False
+    assert routes._view(_APP)["update_to_enable"] is True
+    assert dashboard_proxy.grant(_APP) == (False, "not-registry-verified")
+    # A sealed record made without the install path's marker stays unverified too.
+    dashboard_proxy.record_install(_APP, version="1", registry="", url="https://x.invalid/a.git")
+    assert dashboard_proxy.registry_verified(_APP) is False
+    assert dashboard_proxy.prompt_text(_APP) is None
+
+
+@pytest.mark.parametrize("tag", ["crew-tunnels", "owner-designated-index", "https://idx.invalid/r"])
+def test_an_entry_with_a_registry_tag_never_gets_the_official_marker(forged_apps, monkeypatch, tag):
+    """Any external index (``_registry``), the owner-designated one included, seals no marker."""
+    assert _provenance(monkeypatch, url="https://example.invalid/t.git", registry=tag)
+    sealed = json.loads(dashboard_proxy._path(_APP, ".install.json").read_text(encoding="utf-8"))
+    assert sealed["sourceRegistry"] == tag
+    assert sealed["catalog"] == ""
+    assert dashboard_proxy.registry_verified(_APP) is True  # admitted by the registry id alone
+
+
+def test_a_third_party_registry_row_is_unchanged_by_the_official_marker(forged_apps, monkeypatch):
+    assert _provenance(monkeypatch, url="https://example.invalid/t.git", registry="crew-tunnels")
+    assert dashboard_proxy.registry_verified(_APP) is True
+    assert dashboard_proxy.prompt_text(_APP)["registry"] == "crew-tunnels"  # type: ignore[index]
+    assert getattr(dashboard_proxy._installed(_APP), "catalog", "") == ""
+    # No source url: not a registry install at all, marker or not.
+    assert _provenance(monkeypatch, url="", registry="") is True
+    assert dashboard_proxy.registry_verified(_APP) is False
