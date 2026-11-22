@@ -1601,6 +1601,7 @@ async def test_a_refused_ledger_hold_write_keeps_its_requested_state_unpublished
     loop.ledger_seen_fp = "seen"
     monkeypatch.setattr(svc, "_observes_work_ledger", lambda lp: True)
     monkeypatch.setattr(firing, "_ledger_person_wait_fp", lambda *_a: "seen" if held else "moved")
+    monkeypatch.setattr(firing, "_ledger_person_wait_asked", lambda _key: True)
     writer = AsyncMock(side_effect=OSError("write refused"))
     monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", writer)
     arm = MagicMock()
@@ -1611,7 +1612,9 @@ async def test_a_refused_ledger_hold_write_keeps_its_requested_state_unpublished
     try:
         assert await svc._holds_for_person_wait(loop) is (not held)
         writer.assert_awaited_once()
-        assert events == []
+        # A refused release still re-arms, and announces that new deadline (#40523);
+        # the hold itself stays as the store has it.
+        assert events == ([] if held else ["updated"])
         assert (loop.waiting_on_person, loop.waiting_on_person_at, loop.created_ts) == before
         if held:
             arm.assert_not_called()
