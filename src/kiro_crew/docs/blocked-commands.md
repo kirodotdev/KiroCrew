@@ -102,7 +102,11 @@ kirocrew doctor
 
 The **Credentials** section reports:
 
-- whether an AWS config or credentials file exists, and which profiles it names
+- whether an AWS config or credentials file exists, and which profiles it names.
+  When the host refuses to check `~/.aws` (an agent sandbox that hides it, or a
+  `~/.aws` you lack permission on), it says it could not check and why, tells you
+  to run `kirocrew doctor` from your own terminal or check the folder's
+  permissions, and the rest of the report still runs
 - whether a `credential_process` entry is configured (short-lived, auto-refreshing
   credentials — the recommended setup)
 - whether this host mounts an MCP server that vends credentials directly, which

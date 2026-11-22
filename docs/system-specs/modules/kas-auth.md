@@ -389,6 +389,19 @@ The poll ends as `error`, with nothing stored, when every host refused or none l
 a profile (`no available Kiro profiles`); a connection failure is not skipped and
 raises out of the poll, since this leg has no transport budget (above).
 
+**Edition sign-in profiles (`crew_client` preview, default off, off on LTS).** While the
+preview is on, `auth/login/endpoints.edition_idc_profiles` asks the edition's
+`DashboardContributor.idc_sign_in_profiles()` for `{start_url: {scopes, grant_types,
+issuer_url, profile_arn}}` (the public default returns `{}`; an entry missing scopes,
+grant types or an issuer is dropped, and a contributor that raises reads as `{}`).
+An Identity Center sign-in on one of those start URLs always registers its own
+SSO-OIDC client with that form, reusing no stored registration, and takes the pinned
+`profile_arn` instead of calling `ListAvailableProfiles`. While the stored sign-in is on
+such a start URL (`stored_sign_in_registered`), no local agent runs: the KAS spawn
+raises `LOCAL_AGENT_UNAVAILABLE` before any route is chosen, the turn gate refuses the
+turn (`kiro_readiness.kas_turn_verdict`), and the usage poll makes no call. The sign-in
+form warns before sign-in when the portal is one of these.
+
 ### External IdP (enterprise SSO) — independent
 
 Portal returns IdP metadata (`issuer_url`, `client_id`, `scopes`, `login_hint`,
