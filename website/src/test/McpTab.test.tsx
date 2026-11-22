@@ -732,6 +732,24 @@ describe('probe-failure count', () => {
     await waitFor(() => expect(mockApi.mcpProbe).toHaveBeenCalled())
     expect(await screen.findByTestId('mcp-retry-server-failed')).toHaveTextContent(/last check/)
   })
+
+  // The clear succeeded but the probe after it failed, so the row lost its badge
+  // and the notice says the status is old. A later fresh check makes that untrue.
+  async function failedRetry() {
+    mockApi.mcpServers.mockResolvedValue([failing()])
+    mockApi.mcpResetProbeFailures.mockResolvedValue({ ok: true, name: 'airbnb', released: true })
+    mockApi.mcpProbe.mockRejectedValueOnce(new Error('MCP config is busy; retry'))
+    renderTab()
+    fireEvent.click(await screen.findByRole('button', { name: /Retry server/ }))
+    await screen.findByTestId('mcp-retry-server-failed')
+  }
+
+  it('a later refresh clears the Retry server failure notice', async () => {
+    await failedRetry()
+    mockApi.mcpProbe.mockResolvedValue([server('airbnb')])
+    fireEvent.click(screen.getByRole('button', { name: 'Probe MCP servers' }))
+    await waitFor(() => expect(screen.queryByTestId('mcp-retry-server-failed')).not.toBeInTheDocument())
+  })
 })
 
 /**
