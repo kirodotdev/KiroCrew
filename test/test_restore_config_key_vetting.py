@@ -46,9 +46,12 @@ def _bundle(tmp_path: Path, config: dict, name: str = "b", file_name: str = "con
     return bundle
 
 
-def _restore(bundle: Path, extra=(), *, mode: str = "replace"):
+def _restore(bundle: Path, extra=(), *, mode: str = "replace", include_config: bool = False):
+    # A Replace keeps the live config.json unless the settings box is ticked
+    # (--include-config); the tests that read the INSTALLED config tick it.
+    flag = ["--include-config"] if include_config else []
     return snap.restore_main(
-        [str(bundle), "--mode", mode, "--force", "--components", "config", *extra]
+        [str(bundle), "--mode", mode, "--force", "--components", "config", *flag, *extra]
     )
 
 
@@ -89,7 +92,7 @@ def test_the_refusal_names_the_key_and_nothing_else_of_the_archive(home, tmp_pat
 def test_a_key_with_dots_spaces_or_cjk_still_restores(home, tmp_path, capsys):
     cfg = {"agents": {"my.pkg": {"member_id": "m.1"}, "my crew": {}, "小明": {}}}
     bundle = _bundle(tmp_path, cfg)
-    assert _restore(bundle, unpinnable_argv()) == 0, capsys.readouterr().out
+    assert _restore(bundle, unpinnable_argv(), include_config=True) == 0, capsys.readouterr().out
     assert set(json.loads((home / "config.json").read_text())["agents"]) == set(cfg["agents"])
 
 
@@ -187,10 +190,22 @@ def test_an_absolute_workspace_folder_does_not_refuse_the_restore(
     """An absolute folder is a supported placement; where it is used is judged there."""
     cfg = {"agents": {"keep": {}}, "workspaces": {"proj": {"dir": workspace_dir}}}
     bundle = _bundle(tmp_path, cfg)
-    assert _restore(bundle, unpinnable_argv()) == 0, capsys.readouterr().out
+    assert _restore(bundle, unpinnable_argv(), include_config=True) == 0, capsys.readouterr().out
     assert json.loads((home / "config.json").read_text())["workspaces"]["proj"]["dir"] == (
         workspace_dir
     )
+
+
+def test_a_default_replace_keeps_the_live_config_and_still_vets_the_archive(
+    home, tmp_path, capsys
+):
+    """Unticked, the archive's config.json is not installed, but an unsafe one still refuses."""
+    safe = _bundle(tmp_path, {"agents": {"my.pkg": {}}}, name="safe")
+    assert _restore(safe, unpinnable_argv()) == 0, capsys.readouterr().out
+    assert (home / "config.json").read_text(encoding="utf-8") == LIVE
+    unsafe = _bundle(tmp_path, {"agents": {"../x": {}}}, name="unsafe")
+    assert _restore(unsafe) == 1, capsys.readouterr().out
+    assert (home / "config.json").read_text(encoding="utf-8") == LIVE
 
 
 def test_merge_does_not_vet_or_install_an_unsafe_overlay_when_live_overlay_is_absent(
