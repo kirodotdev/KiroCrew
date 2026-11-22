@@ -937,6 +937,7 @@ export default function LexicalComposerInput({
               data-composer-input=""
               data-lexical-composer=""
               data-composer-typo=""
+              tabIndex={readOnly && !disabled ? 0 : undefined}
               className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-hidden whitespace-pre-wrap break-words ${INPUT_TYPO}`}
               style={maxHeight === null ? undefined : { maxHeight: `min(${maxHeight}px, 50vh)` }}
             />

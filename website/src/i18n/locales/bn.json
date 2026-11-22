@@ -10032,6 +10032,7 @@
       "esc_to_cancel_click_mic_to_finish": "বাতিল করতে Esc, শেষ করতে মাইকে ক্লিক করুন",
       "esc_to_cancel_click_mic_to_send": "বাতিল করতে Esc, খসড়া রাখতে Shift-ক্লিক, পাঠাতে মাইকে ক্লিক করো",
       "esc_to_cancel_enter_to_send": "বাতিল করতে Esc, পাঠাতে Enter",
+      "editing_resumes_when_you_stop": "থামালে আবার সম্পাদনা করা যাবে",
       "listening": "শোনা হচ্ছে",
       "muted": "মিউট করা"
     },
@@ -21739,7 +21740,7 @@
         "provider_off": "বন্ধ (কোনো বাক্‌ শনাক্তকরণ নেই)",
         "ready": "প্রস্তুত",
         "run_these_commands_in_your_terminal_first": "প্রথমে আপনার টার্মিনালে এই কমান্ডগুলো চালান:",
-        "show_an_animated_panel_while_recording_instead_of": "রেকর্ডিংয়ের সময় সরু স্ট্যাটাস বারের বদলে একটি অ্যানিমেটেড প্যানেল দেখান। ব্রাউজারে WebGL2 না থাকলে বা আপনার সিস্টেম রিডিউসড-মোশন চাইলে বারেই ফিরে যায়।",
+        "show_an_animated_panel_while_recording_instead_of": "রেকর্ডিংয়ের সময় সরু স্ট্যাটাস বারের বদলে একটি অ্যানিমেটেড প্যানেল দেখাও। তোমার সিস্টেম রিডিউসড-মোশন চাইলে বারেই ফিরে যায়।",
         "status": "স্ট্যাটাস",
         "streaming": "স্ট্রিমিং",
         "system_default": "সিস্টেম ডিফল্ট",

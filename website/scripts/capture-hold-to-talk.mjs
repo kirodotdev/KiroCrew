@@ -98,8 +98,6 @@ const browser = await chromium.launch({
     // getUserMedia and MediaRecorder run for real without a human or a device.
     '--use-fake-device-for-media-stream',
     '--use-fake-ui-for-media-stream',
-    // The dictation panel's shader needs WebGL2; headless has no GPU.
-    '--enable-unsafe-swiftshader',
   ],
 })
 

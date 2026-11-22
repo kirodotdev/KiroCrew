@@ -10032,6 +10032,7 @@
       "esc_to_cancel_click_mic_to_finish": "रद्द करने के लिए Esc, समाप्त करने के लिए माइक पर क्लिक करें",
       "esc_to_cancel_click_mic_to_send": "रद्द करने के लिए Esc, ड्राफ़्ट रखने के लिए Shift-क्लिक, भेजने के लिए माइक पर क्लिक करो",
       "esc_to_cancel_enter_to_send": "रद्द करने के लिए Esc, भेजने के लिए Enter",
+      "editing_resumes_when_you_stop": "रोकने पर संपादन फिर से शुरू होगा",
       "listening": "सुन रहा है",
       "muted": "म्यूट है"
     },
@@ -21739,7 +21740,7 @@
         "provider_off": "बंद (कोई वाक् पहचान नहीं)",
         "ready": "तैयार",
         "run_these_commands_in_your_terminal_first": "पहले अपने टर्मिनल में ये कमांड चलाएँ:",
-        "show_an_animated_panel_while_recording_instead_of": "रिकॉर्डिंग के दौरान पतले स्टेटस बार के बजाय एनिमेटेड पैनल दिखाएँ। जब ब्राउज़र में WebGL2 न हो या सिस्टम कम-मोशन का अनुरोध करे, तो यह बार पर लौट आता है।",
+        "show_an_animated_panel_while_recording_instead_of": "रिकॉर्डिंग के दौरान पतले स्टेटस बार के बजाय एनिमेटेड पैनल दिखाएँ। जब सिस्टम कम-मोशन का अनुरोध करे, तो यह बार पर लौट आता है।",
         "status": "स्थिति",
         "streaming": "स्ट्रीमिंग",
         "system_default": "सिस्टम डिफ़ॉल्ट",

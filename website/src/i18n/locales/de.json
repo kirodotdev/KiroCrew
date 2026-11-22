@@ -10032,6 +10032,7 @@
       "esc_to_cancel_click_mic_to_finish": "Esc zum Abbrechen, Mikrofon klicken zum Beenden",
       "esc_to_cancel_click_mic_to_send": "Esc zum Abbrechen, Shift-Klick behält Entwurf, Mikrofon klicken zum Senden",
       "esc_to_cancel_enter_to_send": "Esc zum Abbrechen, Enter zum Senden",
+      "editing_resumes_when_you_stop": "Bearbeiten ist nach dem Stoppen wieder möglich",
       "listening": "Hört zu",
       "muted": "Stumm"
     },
@@ -21739,7 +21740,7 @@
         "provider_off": "Aus (keine Spracherkennung)",
         "ready": "bereit",
         "run_these_commands_in_your_terminal_first": "Führen Sie zuerst diese Befehle in Ihrem Terminal aus:",
-        "show_an_animated_panel_while_recording_instead_of": "Während der Aufnahme ein animiertes Panel anstelle der schmalen Statusleiste anzeigen. Fällt auf die Leiste zurück, wenn der Browser kein WebGL2 unterstützt oder Ihr System reduzierte Bewegung anfordert.",
+        "show_an_animated_panel_while_recording_instead_of": "Während der Aufnahme ein animiertes Panel anstelle der schmalen Statusleiste anzeigen. Fällt auf die Leiste zurück, wenn dein System reduzierte Bewegung anfordert.",
         "status": "Status",
         "streaming": "Streaming",
         "system_default": "System-Standard",

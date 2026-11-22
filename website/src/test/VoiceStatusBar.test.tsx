@@ -1,11 +1,69 @@
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import VoiceStatusBar from '../components/VoiceStatusBar'
 
 describe('VoiceStatusBar', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('renders nothing when idle and error-free', () => {
     const { container } = render(<VoiceStatusBar recording={false} level={0} />)
     expect(container).toBeEmptyDOMElement()
+  })
+
+  it('does not mount or expose the silent drain until its visual delay ends', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+    try {
+      render(
+        <VoiceStatusBar
+          recording={false}
+          level={0}
+          draining
+          onCancelDrain={vi.fn()}
+          onSelectDevice={vi.fn()}
+        />,
+      )
+      expect(screen.queryByTestId('voice-status-draining')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Discard dictation' })).toBeNull()
+      act(() => { vi.advanceTimersByTime(799) })
+      expect(screen.queryByTestId('voice-status-draining')).toBeNull()
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(screen.getByTestId('voice-status-draining')).toBeVisible()
+      expect(screen.getByRole('button', { name: 'Discard dictation' })).toBeVisible()
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('shows the drain immediately without motion when reduced motion is requested', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+    try {
+      render(
+        <VoiceStatusBar
+          recording={false}
+          level={0}
+          draining
+          onCancelDrain={vi.fn()}
+          onSelectDevice={vi.fn()}
+        />,
+      )
+      expect(screen.getByTestId('voice-status-draining')).toBeVisible()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('keeps explaining the model load after capture ends', () => {

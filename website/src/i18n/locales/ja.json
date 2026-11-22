@@ -9794,6 +9794,7 @@
       "esc_to_cancel_click_mic_to_finish": "Escキーでキャンセル、マイクをクリックして終了",
       "esc_to_cancel_click_mic_to_send": "Escキーでキャンセル、Shift+クリックで下書きを保持、マイクをクリックして送信",
       "esc_to_cancel_enter_to_send": "Escキーでキャンセル、Enterキーで送信",
+      "editing_resumes_when_you_stop": "停止すると編集を再開できます",
       "listening": "リッスン中",
       "muted": "ミュート中"
     },
@@ -21181,7 +21182,7 @@
         "provider_off": "オフ（音声認識なし）",
         "ready": "準備完了",
         "run_these_commands_in_your_terminal_first": "まずターミナルでこれらのコマンドを実行してください:",
-        "show_an_animated_panel_while_recording_instead_of": "記録中に細いステータスバーの代わりにアニメーションパネルを表示。ブラウザーにWebGL2がない場合、またはシステムが低減動作をリクエストする場合はバーにフォールバック。",
+        "show_an_animated_panel_while_recording_instead_of": "記録中に細いステータスバーの代わりにアニメーションパネルを表示。システムが低減動作をリクエストする場合はバーにフォールバック。",
         "status": "ステータス",
         "streaming": "ストリーミング",
         "system_default": "システムのデフォルト",

@@ -4,7 +4,7 @@ import { createLevelMeter, createAudioSample } from '../hooks/mic'
 /**
  * The additive half of `createLevelMeter`: one analyser feeding TWO consumers
  * with different needs — a throttled/quantized callback for the React bar, and
- * an unthrottled in-place struct for the shader's render loop.
+ * an unthrottled in-place struct for the waveform's frame loop.
  *
  * These tests drive the RAF loop by hand so the envelope's time behaviour is
  * deterministic (real rAF timing would make attack/release untestable).
@@ -14,7 +14,6 @@ type RafCb = (t: number) => void
 
 let frames: RafCb[]
 let analyserTimeData: number[]
-let analyserFreqData: number[]
 let closed: boolean
 
 /** Fill the time-domain buffer with a constant deviation from the 128 midpoint,
@@ -27,7 +26,6 @@ beforeEach(() => {
   frames = []
   closed = false
   setLoudness(0)
-  analyserFreqData = new Array(256).fill(0)
 
   vi.stubGlobal('requestAnimationFrame', (cb: RafCb) => { frames.push(cb); return frames.length })
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
@@ -39,7 +37,6 @@ beforeEach(() => {
         frequencyBinCount: 256,
         connect: vi.fn(),
         getByteTimeDomainData: (b: Uint8Array) => { b.set(analyserTimeData.slice(0, b.length)) },
-        getByteFrequencyData: (b: Uint8Array) => { b.set(analyserFreqData.slice(0, b.length)) },
       }
     }
     close() { closed = true }
@@ -77,7 +74,7 @@ describe('createLevelMeter — throttled bar signal (pre-existing contract)', ()
   })
 })
 
-describe('createLevelMeter — per-frame AudioSample for the shader', () => {
+describe('createLevelMeter — per-frame AudioSample for the waveform', () => {
   it('writes into the caller-owned ref IN PLACE (identity is stable)', () => {
     const ref = { current: createAudioSample() }
     const original = ref.current
@@ -141,20 +138,6 @@ describe('createLevelMeter — per-frame AudioSample for the shader', () => {
     expect(ref.current.level).toBeLessThan(1)
   })
 
-  it('reports a spectral centroid that rises with high-frequency energy', () => {
-    const ref = { current: createAudioSample() }
-    createLevelMeter(stream, vi.fn(), ref)
-    setLoudness(20)
-    // Energy concentrated in the low bins.
-    analyserFreqData = new Array(256).fill(0).map((_, i) => (i < 20 ? 200 : 0))
-    for (const t of [16, 32, 48, 64, 80, 96]) step(t)
-    const low = ref.current.centroid
-    // Now concentrated high.
-    analyserFreqData = new Array(256).fill(0).map((_, i) => (i > 200 ? 200 : 0))
-    for (const t of [112, 128, 144, 160, 176, 192, 208, 224]) step(t)
-    expect(ref.current.centroid).toBeGreaterThan(low)
-  })
-
   it('produces an onset spike on a transient and decays it', () => {
     const ref = { current: createAudioSample() }
     createLevelMeter(stream, vi.fn(), ref)
@@ -180,7 +163,7 @@ describe('createLevelMeter — per-frame AudioSample for the shader', () => {
     step(32)
     expect(ref.current.level).toBeGreaterThan(0)
     stop()
-    // A stale non-zero level would leave the shader lit after recording ended.
+    // A stale non-zero level would leave the waveform lit after recording ended.
     expect(ref.current.level).toBe(0)
     expect(ref.current.onset).toBe(0)
     expect(onLevel).toHaveBeenLastCalledWith(0)
