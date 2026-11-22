@@ -4307,10 +4307,30 @@ The client accepts interaction types `APPLICATION_COMMAND` and
 `MESSAGE_COMPONENT` (`_HANDLED_INTERACTIONS`); PING, autocomplete and modal
 submit are dropped at the dispatch boundary, since each needs its own callback
 shape inside Discord's ~3s deadline and a handler that received one without
-knowing how to answer would leave the client spinning. Command replies use
-callback type 4 with the EPHEMERAL flag (`1 << 6`), because a slash command is invocable
-from an approved thread every member can read, and these replies carry runtime
-state or a login link. A command is **never** pre-acked as a component:
+knowing how to answer would leave the client spinning. Every command reply is
+private, because a slash command is invocable from an approved thread every member
+can read, and these replies carry runtime state or a model list. The first response
+is `DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE` (5) with the EPHEMERAL flag (`1 << 6`), so a
+command slower than the callback window still answers. The first reply then edits
+that loading message (`PATCH /webhooks/{app}/{token}/messages/@original`) and every
+later one is a follow-up carrying its own EPHEMERAL flag, since a follow-up does not
+inherit it (`!compact` replies twice). Before each reply the dispatcher reads the
+outbound `channels` ceiling and then the caller and thread rosters again, because the
+deferral and the command are awaits in which either can be withdrawn; a refused reply
+is withheld. `/stop` skips only the ceiling read: its pure-cancel exemption admits it
+on a denied channel, and its reply goes to the caller alone. Like `!stop`, it still
+rewrites the caller's own existing queue receipt in the channel to its cancelled
+state. Apart from the DM session pickers, that edit is the only write a slash
+command makes outside its private replies. A command whose loading message no reply filled (a DM session picker, a
+withheld or failed reply) deletes it. Each of these writes passes the interaction's
+channel as its `destination` and the caller's roster check as `caller_permitted`, so
+the mid-send re-check reads the ceiling, the caller and the thread roster after any
+wait: an allowed thread does not vouch for a caller taken off the user roster. The token lasts 15 minutes: a reply after that fails
+with 401 or 404 and is logged and dropped, with no retry and no fallback to a
+channel message, which would publish what was promised private. A slash command the restart gate refuses is
+never spooled, because the restart notice quotes spooled text into the
+conversation; it answers privately instead. The `!` text forms
+still reply in the channel. A command is **never** pre-acked as a component:
 `DEFERRED_UPDATE_MESSAGE` is component-only, and the one permitted first response
 is the command's only route. It also runs the `channels` governance gate BEFORE
 responding rather than after, unlike the button path; a governance check slower
@@ -4332,8 +4352,13 @@ credential-issuance audit path -- there is nothing to gate. Do not add them for
 parity's sake: parity is measured against what a channel should be able to do,
 not against the widest channel's command list.
 
-`model` is button-only and does NOT take a sink: its buttons must live
-on an editable channel message, which an ephemeral response is not. Its
+`model` is button-only and takes the same sink, so `/model` posts a picker only
+its caller can see and press, in a thread as in a DM; `!model` posts it in the
+channel. A press is acked with `DEFERRED_UPDATE_MESSAGE` as every press is, and its
+result edits the picker through the PRESS's own token
+(`PATCH /webhooks/{app}/{press token}/messages/@original`, whose original is the
+message the button sits on): the one route that reaches an ephemeral message, so
+private and channel pickers share it. Its
 `custom_id` is the INDEX (`m:<i>`), never a model id: a custom_id caps at 100
 characters and Discord replays old ones indefinitely, so the dispatcher's
 TTL-bounded picker registry resolves the index against the exact list it posted

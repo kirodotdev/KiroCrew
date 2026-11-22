@@ -62,6 +62,8 @@ async def _handle_link(
     channel_id: str,
     thread_id: str,
     resumed_key: str | None,
+    *,
+    reply: "ReplyFn | None" = None,
 ) -> None:
     """Re-enable mirroring of this conversation's dashboard tab back here.
 
@@ -71,20 +73,17 @@ async def _handle_link(
     supplies Discord's spelling of "this conversation" plus the two refusals
     only a resume-capable channel can hit.
     """
-    assert self.client is not None
+    say = reply or self._channel_reply(channel_id)
     # Refuse while a resumed session owns this conversation: linking would
     # rebind the same location and silently strand the resumed session. The
     # owner comes from the turn's routing decision, not a fresh resolve — a
     # second resolve is a second answer, and the gap between them is where a
     # concurrent rebind slips through.
     if resumed_key is not None:
-        await self.client.send_message(
-            channel_id,
-            "⚠️ A resumed session is active here. Send `!unlink` first.",
-        )
+        await say("⚠️ A resumed session is active here. Send `!unlink` first.")
         return
     try:
-        reply = rebind_conversation_location(
+        linked = rebind_conversation_location(
             self.sessions,
             key=self._session_key(user_id, thread_id),
             location=self._origin_mirror_link(channel_id),
@@ -98,31 +97,30 @@ async def _handle_link(
         # reporting it beats surfacing a traceback as a generic command
         # failure.
         logger.info("discord link refused: conversation already held")
-        await self.client.send_message(
-            channel_id,
-            "⚠️ Another session is already linked here. Send `!unlink` first.",
-        )
+        await say("⚠️ Another session is already linked here. Send `!unlink` first.")
         return
-    await self.client.send_message(channel_id, reply)
+    await say(linked)
 
 
 async def _handle_unlink(
-    self: DiscordDispatcher, user_id: str, channel_id: str, thread_id: str = ""
+    self: DiscordDispatcher,
+    user_id: str,
+    channel_id: str,
+    thread_id: str = "",
+    *,
+    reply: "ReplyFn | None" = None,
 ) -> None:
-    assert self.client is not None
+    say = reply or self._channel_reply(channel_id)
     # A resumed session takes precedence: it is what the user is actually
     # talking to, so releasing it is the only way back to their own
     # conversation from Discord.
     try:
         left_resumed = await self._session_resume.leave_resumed_session(channel_id)
     except ResumeReleaseError:
-        await self.client.send_message(channel_id, _RELEASE_FAILURE)
+        await say(_RELEASE_FAILURE)
         return
     if left_resumed is not None:
-        await self.client.send_message(
-            channel_id,
-            "✅ Left the resumed session. Back to your Discord conversation.",
-        )
+        await say("✅ Left the resumed session. Back to your Discord conversation.")
         return
     key = self._session_key(user_id, thread_id)
     # Persist the refusal BEFORE releasing: mirroring is re-asserted on every
@@ -130,7 +128,7 @@ async def _handle_unlink(
     # message. Batched with the release so the pair is one whole-map write.
     with self.sessions.batched_save():
         self.sessions.set_mirror_opt_out(key, True)
-        reply, swept = release_conversation_location(
+        released, swept = release_conversation_location(
             self.sessions,
             key=key,
             location=self._origin_mirror_link(channel_id),
@@ -141,7 +139,7 @@ async def _handle_unlink(
         # projected at push time — nudge the dashboard like every other
         # binding mutation does.
         self._session_resume._push_slots()
-    await self.client.send_message(channel_id, reply)
+    await say(released)
 
 
 async def _handle_compact(
@@ -150,25 +148,25 @@ async def _handle_compact(
     channel_id: str,
     thread_id: str,
     resumed_key: str | None,
+    *,
+    reply: "ReplyFn | None" = None,
 ) -> None:
     """In-place ACP ``/compact`` on the conversation's session."""
     assert self.client is not None
+    say = reply or self._channel_reply(channel_id)
     session_key = resumed_key or self._session_key(user_id, thread_id)
     if not await self.sessions.try_acquire(session_key):
         if self.sessions.is_retiring(session_key):
-            await self.client.send_message(channel_id, COMPACT_ACCOUNT_CHANGED_TEXT)
+            await say(COMPACT_ACCOUNT_CHANGED_TEXT)
         elif self.sessions.has_session(session_key):
-            await self.client.send_message(
-                channel_id,
-                "⏳ Still working on your last message — try `!compact` " "once it finishes.",
-            )
+            await say("⏳ Still working on your last message — try `!compact` once it finishes.")
         else:
-            await self.client.send_message(channel_id, "No active session to compact.")
+            await say("No active session to compact.")
         return
     try:
         provider = self.sessions.get_provider(session_key)
         if provider is None:
-            await self.client.send_message(channel_id, "No active session to compact.")
+            await say("No active session to compact.")
             return
 
         # Capability gate (mirroring the dashboard's gate): a
@@ -177,10 +175,10 @@ async def _handle_compact(
         # 120s wait below. Informational, never an error.
         unsupported = compact_unsupported_backend(provider)
         if unsupported:
-            await self.client.send_message(channel_id, compact_unsupported_reply(unsupported))
+            await say(compact_unsupported_reply(unsupported))
             return
 
-        status_id = await self.client.send_message(channel_id, "🔄 Compacting context…")
+        status_id = await say("🔄 Compacting context…")
         result_text: str | None = None
 
         def _safe(text: str) -> str:
@@ -235,20 +233,22 @@ async def _handle_compact(
         final = result_text or "✅ Context compacted."
         # The status line is only a placeholder: when it cannot be edited (deleted
         # during the wait, or the edit failed) the result goes out as a new message.
-        if not (status_id and await self.client.edit_message(channel_id, status_id, final)):
-            await self.client.send_message(channel_id, final)
+        # A private status line is not a channel message, so a private reply always
+        # answers with a second private message instead.
+        if reply is not None or not (
+            status_id and await self.client.edit_message(channel_id, status_id, final)
+        ):
+            await say(final)
     finally:
         self.sessions.release(session_key)
 
 
 # Each handler takes a ``reply`` sink instead of a channel id, because the
 # same body serves two delivery shapes: a ``!`` text command answers with a
-# normal channel message, while a registered slash command must answer its
-# own interaction (ephemerally, inside Discord's ~3s callback deadline).
-# Sharing the body is the point: a second copy per surface is how the two
-# drift, and the slash form is the one an operator will actually discover.
-# Each handler replies EXACTLY ONCE — an interaction callback may only be
-# used for the first response, and a second would need a followup route.
+# normal channel message, while a registered slash command answers through its
+# own interaction, privately. Sharing the body is the point: a second copy per
+# surface is how the two drift, and the slash form is the one an operator will
+# actually discover.
 async def _handle_status(
     self: DiscordDispatcher, reply: "ReplyFn", scope_id: str | None = None
 ) -> None:
@@ -278,9 +278,9 @@ async def _handle_status(
 def _channel_reply(self: DiscordDispatcher, channel_id: str) -> "ReplyFn":
     """A reply sink that posts a normal channel message."""
 
-    async def _send(text: str) -> None:
+    async def _send(text: str, *, components: list[dict] | None = None) -> str | None:
         assert self.client is not None
-        await self.client.send_message(channel_id, text)
+        return await self.client.send_message(channel_id, text, components=components)
 
     return _send
 

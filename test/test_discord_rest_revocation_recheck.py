@@ -657,7 +657,14 @@ class TestCallerSuppliedDestination:
             p.read_text(encoding="utf-8")
             for p in sorted(Path(td.__file__).parent.glob("transport_dispatch*.py"))
         )
-        verbs = {"respond_interaction", "ack_component_interaction"}
+        verbs = {
+            "respond_interaction",
+            "ack_component_interaction",
+            "defer_interaction",
+            "edit_interaction_original",
+            "send_interaction_followup",
+            "delete_interaction_original",
+        }
         exempt_markers = ("Commands run in a direct message", "disabled by policy")
         sites: list[tuple[int, str, bool]] = []
         for node in ast.walk(ast.parse(source)):
@@ -669,7 +676,7 @@ class TestCallerSuppliedDestination:
             rendered = " ".join(ast.unparse(a) for a in node.args) + " " + " ".join(passed.values())
             announces_a_refusal = any(m in rendered for m in exempt_markers)
             sites.append((node.lineno, passed.get("destination", ""), announces_a_refusal))
-        assert len(sites) == 7, f"call-site count changed: {sites}"
+        assert len(sites) == 9, f"call-site count changed: {sites}"
         exempt = [ln for ln, _dest, is_refusal in sites if is_refusal]
         assert len(exempt) == 2, f"expected exactly 2 refusal notices, found {exempt}"
         # Each exempt site must also be ephemeral: that is what makes ungating it safe.

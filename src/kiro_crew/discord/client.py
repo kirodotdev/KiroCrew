@@ -175,6 +175,9 @@ _CALLBACK_DEFERRED_UPDATE_MESSAGE = 6
 #: publish runtime state, a dashboard login link, or a model list to everyone
 #: who can read the thread.
 _FLAG_EPHEMERAL = 1 << 6
+#: DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE: answer a command now with a loading
+#: state, and write the reply later through the interaction's webhook.
+_CALLBACK_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
 
 #: Discord rejects a whole bulk-overwrite array on one malformed row, and
 #: allows 200 command creates per day, so the payload is validated locally
@@ -741,6 +744,92 @@ class DiscordClient:
             destination=destination,
         )
 
+    # The verbs below write through an interaction's own webhook, the only route
+    # that reaches an ephemeral message. Each takes ``destination`` (the channel
+    # the interaction came from) because the path names none, and the mid-send
+    # re-check reads both authorities against it; ``caller_permitted`` adds the
+    # person a private reply is shown to. An expired token (15 minutes)
+    # answers 401 or 404: the verb returns None and nothing is re-sent elsewhere.
+
+    async def defer_interaction(
+        self, interaction_id: str, interaction_token: str, *, destination: str
+    ) -> bool:
+        """Answer a command with Discord's PRIVATE loading state.
+
+        The reply written later by :meth:`edit_interaction_original` keeps the
+        ephemeral flag set here, so it is seen only by the person who ran it.
+        """
+        result = await self._api(
+            "POST",
+            f"/interactions/{interaction_id}/{interaction_token}/callback",
+            {
+                "type": _CALLBACK_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+                "data": {"flags": _FLAG_EPHEMERAL},
+            },
+            destination=destination,
+        )
+        return result is not None
+
+    async def edit_interaction_original(
+        self,
+        interaction_token: str,
+        text: str,
+        *,
+        components: list[dict] | None = None,
+        destination: str,
+        caller_permitted: Callable[[], bool] | None = None,
+    ) -> str | None:
+        """Edit the message this token owns; returns its id, or None.
+
+        For a deferred command that is the reply itself; for a button press
+        acked with DEFERRED_UPDATE_MESSAGE it is the message the button sits on,
+        ephemeral or not.
+        """
+        result = await self._api(
+            "PATCH",
+            f"/webhooks/{self.application_id}/{interaction_token}/messages/@original",
+            _message_payload(text, components, keep_empty_components=True),
+            destination=destination,
+            caller_permitted=caller_permitted,
+        )
+        return str(result.get("id") or "") or None if result else None
+
+    async def send_interaction_followup(
+        self,
+        interaction_token: str,
+        text: str,
+        *,
+        components: list[dict] | None = None,
+        destination: str,
+        caller_permitted: Callable[[], bool] | None = None,
+    ) -> str | None:
+        """Send one more PRIVATE message for this interaction; returns its id.
+
+        A follow-up does not inherit the deferral's flag, so it carries its own.
+        """
+        data = _message_payload(text, components, keep_empty_components=False)
+        data["flags"] = int(data["flags"]) | _FLAG_EPHEMERAL
+        result = await self._api(
+            "POST",
+            f"/webhooks/{self.application_id}/{interaction_token}",
+            data,
+            destination=destination,
+            caller_permitted=caller_permitted,
+        )
+        return str(result.get("id") or "") or None if result else None
+
+    async def delete_interaction_original(
+        self, interaction_token: str, *, destination: str
+    ) -> bool:
+        """Remove a deferred command's loading message that got no reply."""
+        result = await self._api(
+            "DELETE",
+            f"/webhooks/{self.application_id}/{interaction_token}/messages/@original",
+            None,
+            destination=destination,
+        )
+        return result is not None
+
     async def download_attachment(self, url: str, dest: str) -> None:
         """Download a signed Discord CDN attachment without bot credentials.
 
@@ -930,6 +1019,7 @@ class DiscordClient:
         timeout: int = 30,
         destination: str = "",
         recheck_destination: bool = True,
+        caller_permitted: Callable[[], bool] | None = None,
     ) -> DiscordApiResult:
         """Call a REST endpoint with a JSON body, reporting the outcome.
 
@@ -944,6 +1034,7 @@ class DiscordClient:
             build=lambda: {"json": payload},
             destination=destination,
             recheck_destination=recheck_destination,
+            caller_permitted=caller_permitted,
         )
 
     async def api_files(
@@ -977,12 +1068,20 @@ class DiscordClient:
         timeout: int = 30,
         *,
         destination: str = "",
+        caller_permitted: Callable[[], bool] | None = None,
     ) -> Any:
         """:meth:`api_json` reduced to its body: the parsed JSON ({} for a 204)
         or None on any failure. The verbs that can only answer "did it land"
         use this; anything that must act on WHY calls ``api_json``."""
         return (
-            await self.api_json(method, path, payload, timeout=timeout, destination=destination)
+            await self.api_json(
+                method,
+                path,
+                payload,
+                timeout=timeout,
+                destination=destination,
+                caller_permitted=caller_permitted,
+            )
         ).data
 
     async def _api_multipart(

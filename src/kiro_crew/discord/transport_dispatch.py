@@ -173,7 +173,8 @@ from kiro_crew.session_map import ConversationOwnershipConflict  # noqa: F401
 from kiro_crew.stats import Stats  # noqa: F401
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable
+    from typing import Protocol
 
     from kiro_crew.context import ContextBuilder
     from kiro_crew.discord.client import DiscordClient
@@ -181,11 +182,16 @@ if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
 
-    #: Where a command handler's single reply goes. A ``!`` text command binds
-    #: this to a channel message; a registered slash command binds it to the
-    #: interaction's own (ephemeral) callback. Handlers reply exactly once, so
-    #: neither binding needs a followup route.
-    ReplyFn = Callable[[str], Awaitable[None]]
+    class ReplyFn(Protocol):
+        """Where a command's replies go: a ``!`` text command binds this to channel
+        messages, a registered slash command to its own private interaction
+        messages. A handler may reply more than once. Returns the message id, or
+        None when the reply did not land."""
+
+        def __call__(
+            self, text: str, *, components: list[dict] | None = None
+        ) -> Awaitable[str | None]: ...
+
 
 from kiro_crew.messaging.queue_receipt import (
     ATTACHMENT_PLACEHOLDER,
@@ -466,11 +472,16 @@ class DiscordDispatcher:
         monitor_completion: MonitorCompletionHook | None = None,
         monitor_session_key: str | None = None,
         skill_trigger_text: str | None = None,
+        reply: ReplyFn | None = None,
     ) -> MonitorDispatchResult | None:
         """Drive one authorized inbound message through the channel turn pipeline.
 
         ``skill_trigger_text`` is what skill triggers match when the text was
         generated rather than typed (an AutoNudge cycle); ``None`` matches the text.
+
+        ``reply`` is where a COMMAND's answers go; ``None`` posts them to the
+        channel. A slash command passes its private interaction sink, so no
+        answer to it is posted where the rest of a thread can read it.
 
         ``interpret_commands`` says whether *text* may execute as a command
         (model-authored text never may). Resume routing is consulted when
@@ -546,8 +557,19 @@ class DiscordDispatcher:
             self.sessions,
             channel_type="discord",
             route=inbound_route,
-            restricted=(True if monitor_completion is not None else _refused_turn_restricted),
+            # A private command is never spooled: the restart notice quotes the
+            # spooled text back into the conversation, where a thread reads it.
+            restricted=(
+                True
+                if monitor_completion is not None or reply is not None
+                else _refused_turn_restricted
+            ),
         ):
+            if reply is not None:
+                await reply(
+                    "⏳ The gateway is restarting, so the command did not run. "
+                    "Run it again in a moment."
+                )
             return MonitorDispatchResult.BUSY if monitor_completion is not None else None
 
         # Attachments make this a content-bearing turn, not a control command.
@@ -606,6 +628,7 @@ class DiscordDispatcher:
         # `!compact` and `!stop` act on the resolved session, so after a binding was
         # destroyed they would compact or cancel the NATIVE DM session while the user
         # believes they drive the resumed one; deciding here makes that structural.
+        say = reply or self._channel_reply(channel_id)
         route = RoutingDecision()
         wants_routing = interpret_commands or bool(origin_tag)
         if wants_routing and cmd not in _DETACH_EXEMPT_COMMANDS:
@@ -615,7 +638,7 @@ class DiscordDispatcher:
                     # Settle only once the refusal landed AND nobody who predates it
                     # is still in governance or queued: otherwise that message could
                     # route into a transcript the user never chose.
-                    landed = await self.client.send_message(channel_id, route.refusal)
+                    landed = await say(route.refusal)
                     if landed and len(queued) == 1 and not self._routing_checks.get(channel_id):
                         await self._session_resume.settle(channel_id, route)
                     return monitor_result
@@ -623,7 +646,7 @@ class DiscordDispatcher:
             try:
                 left_resumed = await self._session_resume.leave_resumed_session(channel_id)
             except ResumeReleaseError:
-                await self.client.send_message(channel_id, _RELEASE_FAILURE)
+                await say(_RELEASE_FAILURE)
                 return monitor_result
             self._conv.bump_gen(scope_id)
             new_session_key = self._session_key(user_id, thread_id)
@@ -637,11 +660,13 @@ class DiscordDispatcher:
                 message = "✅ New conversation started — left the resumed session."
             if not saved:
                 message += "\n⚠️ The new conversation could not be saved for restart."
-            await self.client.send_message(channel_id, message)
+            await say(message)
             return monitor_result
         if cmd == "compact":
             self._conv.clear_awaiting(scope_id)
-            await self._handle_compact(user_id, channel_id, thread_id, route.resumed_key)
+            await self._handle_compact(
+                user_id, channel_id, thread_id, route.resumed_key, reply=reply
+            )
             return monitor_result
         if cmd in ("sessions", "bot"):
             # DM-ONLY. The owner gate answers WHO may resume, not WHERE the
@@ -651,8 +676,7 @@ class DiscordDispatcher:
             # member of that thread. Resume is inherently a private-surface
             # operation, so refuse outside a DM rather than redacting harder.
             if thread_id:
-                await self.client.send_message(
-                    channel_id,
+                await say(
                     f"🔒 `!{cmd}` works only in a direct message — it lists and "
                     "replays private conversations, so it will not post "
                     "them into a shared thread. DM me instead.",
@@ -676,21 +700,21 @@ class DiscordDispatcher:
             )
             return monitor_result
         if cmd == "link":
-            await self._handle_link(user_id, channel_id, thread_id, route.resumed_key)
+            await self._handle_link(user_id, channel_id, thread_id, route.resumed_key, reply=reply)
             return monitor_result
         if cmd == "unlink":
-            await self._handle_unlink(user_id, channel_id, thread_id)
+            await self._handle_unlink(user_id, channel_id, thread_id, reply=reply)
             return monitor_result
         if cmd == "help":
-            await self.client.send_message(channel_id, build_help_text())
+            await say(build_help_text())
             return monitor_result
         if cmd == "stop":
-            await self._handle_stop(user_id, channel_id, thread_id, route.resumed_key)
+            await self._handle_stop(user_id, channel_id, thread_id, route.resumed_key, reply=reply)
             return monitor_result
         if cmd in _REPLY_COMMANDS:
             await self._run_reply_command(
                 cmd,
-                self._channel_reply(channel_id),
+                say,
                 user_id=user_id,
                 thread_id=thread_id,
                 text=text,
@@ -702,16 +726,17 @@ class DiscordDispatcher:
                 scope_id,
                 route.resumed_key or self._session_key(user_id, thread_id),
                 parse_command_argument(text),
+                reply=reply,
             )
             return monitor_result
         if cmd == "agent":
             if route.resumed_key is not None:
-                reply = (
+                agent_reply = (
                     "ℹ️ This conversation continues a dashboard session, so its agent "
                     "is changed from the dashboard. Send `!new` to start one here."
                 )
             else:
-                reply = await handle_channel_agent_command(
+                agent_reply = await handle_channel_agent_command(
                     self._agent_picks,
                     scope_id,
                     parse_command_argument(text),
@@ -722,7 +747,7 @@ class DiscordDispatcher:
                     session_key=lambda: self._session_key(user_id, thread_id),
                     prefix="!",
                 )
-            await self.client.send_message(channel_id, reply)
+            await say(agent_reply)
             return monitor_result
         # A lone `!queue` / `!steer` is a directive missing its message body, and
         # an unrecognized `!token` is a mistyped command. Both would otherwise be
@@ -734,15 +759,16 @@ class DiscordDispatcher:
         # been stripped off `text`, so what is left is the user's real message.
         if interpret_as_command and override_mode is None:
             if is_bare_mid_turn_override(text):
-                await self.client.send_message(
-                    channel_id,
-                    "Those take a message: `!queue <msg>` or `!steer <msg>`.",
-                )
+                await say("Those take a message: `!queue <msg>` or `!steer <msg>`.")
                 return monitor_result
             usage = unknown_command_usage(text)
             if usage:
-                await self.client.send_message(channel_id, usage)
+                await say(usage)
                 return monitor_result
+        if reply is not None:
+            # A private command never becomes a turn: a turn streams its answer
+            # into the channel, where the rest of a thread can read it.
+            return monitor_result
 
         # ── Mid-turn concurrency: check the CURRENT-generation key BEFORE any
         # idle/daily rotation (see the Telegram dispatcher's rationale). ──
@@ -1287,6 +1313,8 @@ class DiscordDispatcher:
         channel_id: str,
         thread_id: str,
         resumed_key: str | None,
+        *,
+        reply: ReplyFn | None = None,
     ) -> None:
         """Hard cancel: abort the in-flight turn and clear THIS caller's queued messages.
 
@@ -1313,7 +1341,7 @@ class DiscordDispatcher:
                     user_id=str(user_id), channel_id=str(channel_id), thread_id=str(thread_id or "")
                 )
             ),
-            deliver=lambda text: self.client.send_message(channel_id, text),  # type: ignore[union-attr]
+            deliver=reply or self._channel_reply(channel_id),
         )
 
     # ── Public injection surface ────────────────────────────────────────────

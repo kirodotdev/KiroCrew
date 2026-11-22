@@ -5,9 +5,9 @@ pick or an ``[OPTIONS:]`` choice) and a registered slash command.
 governance ceiling and the rosters before anything but an explicit reject resolves;
 ``_interaction_actionable``
 is the destination check it shares with the spawn-approval timeout path.
-``_on_command_interaction`` rebuilds a slash command's text form and runs it, and
-``_interaction_reply`` is the ephemeral reply sink it answers through. Every
-interaction response this dispatcher issues is in this module.
+``_on_command_interaction`` defers a slash command privately, rebuilds its text form
+and runs it, and ``_interaction_reply`` builds the private reply sink it answers
+through. Every interaction response this dispatcher issues is in this module.
 
 Each function here whose first parameter is ``self`` is a ``DiscordDispatcher``
 method: the class binds it by name, so it reads and writes the dispatcher's own
@@ -40,7 +40,9 @@ from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
-    from kiro_crew.discord.client import DiscordInteraction
+    from collections.abc import Awaitable, Callable
+
+    from kiro_crew.discord.client import DiscordClient, DiscordInteraction
     from kiro_crew.discord.transport_dispatch import DiscordDispatcher, ReplyFn
 
 #: The dispatcher's one logger, named for the facade module operators filter on.
@@ -281,11 +283,17 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
             # wording must not claim "expired" for a picker that was simply
             # used, which is what a double-press hits.
             self._model_pickers.pop(token, None)
-            await self.client.edit_message(
-                itx.channel_id,
-                itx.message_id,
+            # Both edits here go through the PRESS's own token, not the channel
+            # route: a `/model` picker is ephemeral, which only the interaction
+            # webhook can edit, and `@original` of a press acked with
+            # DEFERRED_UPDATE_MESSAGE is the message the button sits on, so one
+            # route serves a channel picker and a private one alike.
+            await self.client.edit_interaction_original(
+                itx.interaction_token,
                 "⌛ This model list is no longer active — send `!model` again.",
                 components=[],
+                destination=itx.channel_id,
+                caller_permitted=lambda: self._authorized(itx.user_id),
             )
             return
         # Consume the picker BEFORE applying: the switch takes a round-trip,
@@ -304,9 +312,32 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
             source="discord",
             resources=f"model={label}",
         )
+        # The switch above awaited, so authorization is read again before the
+        # result is written, in the approval path's order: ceiling, then rosters.
+        if not await channel_outbound_permitted("discord"):
+            logger.info("discord model result withheld: denied by channels governance policy")
+            return
+        if not self._authorized(itx.user_id) or (
+            itx.guild_id and thread_id not in self._allowed_threads
+        ):
+            logger.info("discord model result withheld: authorization withdrawn")
+            sel().log_api_access(
+                caller=itx.user_id or "unknown",
+                operation="discord.set_model_result",
+                outcome="denied",
+                source="discord",
+                resources=f"channel={itx.channel_id};roster=withdrawn",
+            )
+            return
         # One edit carries both the result text and the retired buttons, so
         # they never outlive the choice they represent.
-        await self.client.edit_message(itx.channel_id, itx.message_id, outcome, components=[])
+        await self.client.edit_interaction_original(
+            itx.interaction_token,
+            outcome,
+            components=[],
+            destination=itx.channel_id,
+            caller_permitted=lambda: self._authorized(itx.user_id),
+        )
         return
 
     # [OPTIONS:] choice: "opt:<ref>:<origin-tag>" — the choice is the button
@@ -395,102 +426,149 @@ async def _interaction_actionable(self: DiscordDispatcher, user_id: str, thread_
         return False
 
 
-def _interaction_reply(self: DiscordDispatcher, itx: "DiscordInteraction") -> "ReplyFn":
-    """A reply sink that answers the interaction itself, ephemerally.
+def _interaction_reply(
+    self: DiscordDispatcher, itx: "DiscordInteraction"
+) -> "tuple[ReplyFn, Callable[[], Awaitable[None]]]":
+    """The private reply sink for a slash command this dispatcher has deferred,
+    and the step that clears the deferral when nothing replied through it.
 
-    Ephemeral because a slash command is invocable from an allow-listed guild
-    thread that every member can read, and these replies carry runtime state
-    or a login link. Only the FIRST response may use the callback route, which
-    is why every handler behind this replies exactly once.
+    Private because a slash command is invocable from an allow-listed guild
+    thread that every member can read. The command was answered with an
+    ephemeral DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, so the first reply fills that
+    loading message (``@original``) and every later one is a follow-up carrying
+    its own ephemeral flag (``!compact`` replies twice). Every write
+    names the interaction's channel as its destination, so the mid-send re-check
+    judges it against both authorities.
+
+    A reply that does not land (the token expired after 15 minutes, or the
+    destination was withdrawn) is logged and dropped. It is never re-sent to the
+    channel: that would publish what the command promised was private.
     """
+    assert self.client is not None
+    # Typed, not narrowed: a closure does not keep an `assert`'s narrowing.
+    client: DiscordClient = self.client
+    name = itx.command_name
 
-    async def _respond(text: str) -> None:
-        assert self.client is not None
-        await self.client.respond_interaction(
-            itx.interaction_id,
-            itx.interaction_token,
-            text,
-            ephemeral=True,
-            destination=itx.channel_id,
-        )
+    def caller_permitted() -> bool:
+        return self._authorized(itx.user_id)
 
-    return _respond
+    # Whether a reply has filled the loading message. Until one does, the
+    # deferral is still Discord's loading message: the next reply aims at it,
+    # and if none lands ``_finish`` deletes it.
+    sent = False
+
+    async def _reply(text: str, *, components: list[dict] | None = None) -> str | None:
+        nonlocal sent
+        # Authorization is read again before EVERY reply: the gates ran before
+        # the deferral, and the deferral and the command itself are awaits in
+        # which an operator can withdraw the caller or the thread. The ladder
+        # re-checks only after a wait of its own. The ceiling first and the
+        # rosters LAST, as on the approval path: the ceiling read is an await.
+        # `/stop` skips only the ceiling: it is admitted on a denied channel as a
+        # pure cancel, and like the refusal notices above its reply (the stop
+        # result, or a routing refusal) goes to the caller alone. Without it the
+        # caller cannot tell whether the halt worked.
+        if name != "stop" and not await channel_outbound_permitted("discord"):
+            logger.info("discord /%s reply withheld: denied by channels governance policy", name)
+            return None
+        if not self._authorized(itx.user_id) or (
+            itx.guild_id and itx.channel_id not in self._allowed_threads
+        ):
+            logger.info("discord /%s reply withheld: authorization withdrawn", name)
+            sel().log_api_access(
+                caller=itx.user_id or "unknown",
+                operation="discord.slash_reply",
+                outcome="denied",
+                source="discord",
+                resources=f"command={name};channel={itx.channel_id};roster=withdrawn",
+            )
+            return None
+        if sent:
+            message_id = await client.send_interaction_followup(
+                itx.interaction_token,
+                text,
+                components=components,
+                destination=itx.channel_id,
+                caller_permitted=caller_permitted,
+            )
+        else:
+            message_id = await client.edit_interaction_original(
+                itx.interaction_token,
+                text,
+                components=components,
+                destination=itx.channel_id,
+                caller_permitted=caller_permitted,
+            )
+            # Only a landed edit fills the loading message; after a failed one
+            # the next reply aims at `@original` again and `_finish` clears it.
+            sent = message_id is not None
+        if message_id is None:
+            logger.info(
+                "discord /%s reply dropped: the interaction could not be answered; "
+                "not re-sent to the channel",
+                name,
+            )
+        return message_id
+
+    async def _finish() -> None:
+        # Nothing filled it: a DM session picker posts its own DM message, a
+        # dropped command answers nothing, and a withheld or failed reply did not
+        # land. The
+        # loading message is deleted rather than left until Discord reports a
+        # failure; deleting it discloses nothing.
+        if not sent:
+            await client.delete_interaction_original(
+                itx.interaction_token, destination=itx.channel_id
+            )
+
+    return _reply, _finish
 
 
 async def _on_command_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> None:
-    """Run a registered slash command.
+    """Run a registered slash command, answering only the person who ran it.
 
     Reconstructs the ``!``-form text from the command name and its options so
     the SAME parsers and handlers serve both surfaces; the alternative is a
     second argument grammar per command, which is how the two drift.
 
-    Commands whose reply is not a single message are handled separately:
-    ``model`` posts a real channel message because its buttons must be
-    editable (an ephemeral response is not), and the session-scoped commands
-    route through ``handle_message`` so they keep the resume-binding refusal
-    and mid-turn checks that path owns.
+    The interaction is deferred FIRST, privately, so a command slower than
+    Discord's ~3s callback window still answers; every reply then goes
+    through ``_interaction_reply``'s sink. The session-scoped commands route through
+    ``handle_message`` so they keep the resume-binding refusal and mid-turn
+    checks that path owns; it hands their replies to the same private sink.
     """
     assert self.client is not None
     name = itx.command_name
     thread_id = itx.channel_id if itx.guild_id else ""
-    if name in _REPLY_COMMANDS:
-        await self._run_reply_command(
-            name,
-            self._interaction_reply(itx),
-            user_id=itx.user_id,
-            thread_id=thread_id,
-            # Rebuild the text form so the shared argument parsers apply
-            # unchanged. Option order does not matter: every command here
-            # takes at most one.
-            text=" ".join([f"!{name}", *itx.options.values()]).strip(),
-        )
-        return
-    if name == "help":
-        await self.client.respond_interaction(
-            itx.interaction_id,
-            itx.interaction_token,
-            build_help_text(),
-            ephemeral=True,
-            destination=itx.channel_id,
-        )
-        return
-    if name == "model" and thread_id:
-        # `model` is the one command whose output CANNOT be ephemeral: its
-        # buttons have to live on an editable channel message, and an
-        # ephemeral response is not editable. In a guild thread that would
-        # publish the account's advertised model list to every member, after
-        # the slash surface promised a private reply. Refusing is the honest
-        # resolution: `!model` in the thread still works for anyone who
-        # accepts that it posts, and a DM has no such tension.
-        await self.client.respond_interaction(
-            itx.interaction_id,
-            itx.interaction_token,
-            "🔒 `/model` needs a message it can edit, so its reply cannot be "
-            "private here. DM me `/model`, or send `!model` if you are happy "
-            "for the list to be visible in this thread.",
-            ephemeral=True,
-            destination=itx.channel_id,
-        )
-        return
-    # Everything else is session-scoped. Acknowledge the interaction first so
-    # Discord does not show "interaction failed" while the turn or command
-    # runs, then replay it through the text path, which owns the resume
-    # refusal, the governance recheck and the mid-turn ladder.
-    await self.client.respond_interaction(
-        itx.interaction_id,
-        itx.interaction_token,
-        f"Running `/{name}`…",
-        ephemeral=True,
-        destination=itx.channel_id,
+    await self.client.defer_interaction(
+        itx.interaction_id, itx.interaction_token, destination=itx.channel_id
     )
-    argument = " ".join(itx.options.values()).strip()
-    synthetic = InboundMessage(
-        channel_type="discord",
-        user_id=itx.user_id,
-        conversation_id=itx.channel_id,
-        text=f"!{name} {argument}".strip(),
-        thread_id=thread_id or None,
-        # A person's own message, re-dispatched (kiro_crew.start_priority).
-        person_origin=True,
-    )
-    await self.handle_message(synthetic)
+    reply, finish = self._interaction_reply(itx)
+    try:
+        if name in _REPLY_COMMANDS:
+            await self._run_reply_command(
+                name,
+                reply,
+                user_id=itx.user_id,
+                thread_id=thread_id,
+                # Rebuild the text form so the shared argument parsers apply
+                # unchanged. Option order does not matter: every command here
+                # takes at most one.
+                text=" ".join([f"!{name}", *itx.options.values()]).strip(),
+            )
+        elif name == "help":
+            await reply(build_help_text())
+        else:
+            argument = " ".join(itx.options.values()).strip()
+            synthetic = InboundMessage(
+                channel_type="discord",
+                user_id=itx.user_id,
+                conversation_id=itx.channel_id,
+                text=f"!{name} {argument}".strip(),
+                thread_id=thread_id or None,
+                # A person's own message, re-dispatched (kiro_crew.start_priority).
+                person_origin=True,
+            )
+            await self.handle_message(synthetic, reply=reply)
+    finally:
+        await finish()

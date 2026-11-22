@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 from kiro_crew.discord.renderer import build_model_components
 
 if TYPE_CHECKING:
-    from kiro_crew.discord.transport_dispatch import DiscordDispatcher
+    from kiro_crew.discord.transport_dispatch import DiscordDispatcher, ReplyFn
 
 #: The dispatcher's one logger, named for the facade module operators filter on.
 logger = logging.getLogger("kiro_crew.discord.transport_dispatch")
@@ -102,7 +102,13 @@ def _prune_model_pickers(self: DiscordDispatcher, now: float) -> None:
 
 
 async def _handle_model(
-    self: DiscordDispatcher, channel_id: str, scope_id: str, session_key: str, arg: str
+    self: DiscordDispatcher,
+    channel_id: str,
+    scope_id: str,
+    session_key: str,
+    arg: str,
+    *,
+    reply: ReplyFn | None = None,
 ) -> None:
     """Post the model buttons (or say there is nothing to pick yet).
 
@@ -111,19 +117,15 @@ async def _handle_model(
     ``set_model`` mid-conversation. Any argument is treated as "show me the
     list" rather than parsed.
 
-    Unlike the other command handlers this one does not take a ``reply``
-    sink: the buttons must live on a real channel message whose id the picker
-    registry keys on, and an ephemeral interaction response is not editable
-    by ``edit_message``. A slash invocation therefore acknowledges the
-    interaction separately and the picker itself is posted to the channel.
+    ``reply`` is the slash command's private sink, so `/model` posts a picker
+    only its caller sees. A press edits either kind through its own
+    interaction token (see ``on_interaction``), which is the one route that
+    reaches an ephemeral message.
     """
-    assert self.client is not None
+    say = reply or self._channel_reply(channel_id)
     choices = self._model_choices(session_key)
     if len(choices) <= 1:
-        await self.client.send_message(
-            channel_id,
-            "No model list available yet — send a message first, then `!model`.",
-        )
+        await say("No model list available yet — send a message first, then `!model`.")
         return
 
     current = self._model_pref.get(scope_id, "")
@@ -136,9 +138,7 @@ async def _handle_model(
         # An argument is not an id to apply — say so once, then show the list
         # anyway so the message is still a step forward.
         header = f"`!model` takes no argument — pick from the list.\n\n{header}"
-    message_id = await self.client.send_message(
-        channel_id, header, components=build_model_components(choices, current)
-    )
+    message_id = await say(header, components=build_model_components(choices, current))
     if message_id is None:
         return
     now = time.time()

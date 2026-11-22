@@ -171,9 +171,11 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   the gateway. A config reload alone keeps those threads answering until the
   next restart. Removing one thread's ID from `allowed_thread_ids` stops that
   thread at once, and the bot does not re-admit it until the next restart.
-- **Slash commands answer privately.** A `/` command reply is ephemeral, so only
-  the person who ran it sees it, which is what keeps a refusal or a status line
-  out of a shared thread.
+- **Slash commands answer privately.** Every `/` command reply is ephemeral, so
+  only the person who ran it sees it, which is what keeps a refusal, a status
+  line or the `/model` list out of a shared thread. A reply that is not ready
+  within Discord's 15-minute interaction window is dropped, never posted to the
+  thread instead.
 - **No credential-minting or approval-granting command.** Discord's command set
   is deliberately narrower than Slack's: nothing here mints a dashboard login
   link or changes the gateway's auto-approve grant. Those act on the OPERATOR's
@@ -194,8 +196,10 @@ Discord ingests incoming attachments and can upload local image references from 
 
 Every listed command accepts both `!` and `/` prefixes; the `/` form is Discord's own command menu,
 which autocompletes as you type and answers **only to you**, so nobody else in a
-shared thread sees the reply. The `!` form is plain message text and always
-works, including before the `applications.commands` scope is installed.
+shared thread sees the reply (in a DM, `/sessions` and `/bot` show their picker as
+an ordinary DM message). The `!` form is plain message text that posts its reply
+where everyone in the conversation can read it, and it always works, including
+before the `applications.commands` scope is installed.
 
 | Command | Effect |
 |---------|--------|
