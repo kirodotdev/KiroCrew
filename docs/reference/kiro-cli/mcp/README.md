@@ -3,6 +3,13 @@
 Source: https://kiro.dev/docs/mcp/ (fetched 2026-09-06; upstream retired
 `/docs/cli/mcp/` and made the page surface-agnostic)
 
+> **Carries a local addition.** The Kiro Crew note below has no upstream
+> counterpart. A re-fetch must preserve it.
+
+**In Kiro Crew**, add or turn on a server on the dashboard's **MCP Servers** page
+(address `/mcp`, see [Connections](../../../../src/kiro_crew/docs/connections.md)).
+`kiro-cli mcp add` is not needed, and Kiro CLI may not be installed.
+
 ## In this section
 
 | Page | Covers |
