@@ -35,8 +35,8 @@ from kiro_crew.testing.wait import default_timeout, wait_until
 #: Past the grace window, so every tree reads as idle without ageing its files.
 _LATER = 2 * sc._UNOWNED_GRACE_SECONDS
 
-#: An owner pid that almost surely names no process.
-_DEAD_OWNER = 2**22 - 1
+#: The recorded owner of every dead tree; the `jobs` fixture reads its group as gone.
+_DEAD_OWNER = 4_194_303
 
 #: The resume under test, taken before any test patches the name through the facade.
 _RESUME_CRON_CHILD = cron_script_child_env._resume_cron_child
@@ -77,6 +77,8 @@ def jobs(monkeypatch) -> _FakeJobs:
     )
     monkeypatch.setattr(agent_scratch_job, "job_pids", lambda job: fake.members[job])
     monkeypatch.setattr(agent_scratch_job, "_close", fake.closed.append)
+    # The owner group is dead by fiat, so a live host group with that id cannot keep a tree.
+    monkeypatch.setattr(sc, "_pgroup_alive", lambda pid: False)
     return fake
 
 
