@@ -783,7 +783,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], data)
       // These rows are a fresh check, so a Retry server failure notice that
       // said "the status shown is from the last check" is no longer true.
-      resetFailures.reset()
+      // Only a FAILED Retry is reset: resetting one still running would detach
+      // it from the row, and its failure would then never be shown.
+      if (resetFailures.isError) resetFailures.reset()
     },
     onError: () => {
       refetch()
