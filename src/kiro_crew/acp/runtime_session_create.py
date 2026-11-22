@@ -296,6 +296,7 @@ async def create_session(
     session_work_dir = await self._session_work_dir(cwd)
     denied_tools: frozenset[tuple[str, str]] = frozenset()
     zero_tools = False
+    builtin_tools: tuple[str, ...] | None = None
     # Defined for every path, not just the array-building one: a caller that
     # supplied its own array never enters the block below, and the member
     # confirmation asks whether a MIRROR built this session's array.
@@ -334,6 +335,7 @@ async def create_session(
             stub_token = mirrored.stub_token
             denied_tools = mirrored.denied_tools
             zero_tools = mirrored.zero_tools
+            builtin_tools = mirrored.builtin_tools
             mirrored_snapshot = mirrored.derived_spec_snapshot
             consumed_spec = mirrored.agent_spec
             ref_spec = mirrored.ref_spec
@@ -552,7 +554,11 @@ async def create_session(
         )
         # This session's own envelope, built after the array it travels with.
         meta = self._harness.session_meta(
-            harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+            harness_state,
+            wire_servers,
+            zero_tools=zero_tools,
+            builtin_tools=builtin_tools,
+            stub_token=stub_token,
         )
         if meta is not None:
             params["_meta"] = {**(params.get("_meta") or {}), **meta}
@@ -654,7 +660,11 @@ async def create_session(
                         "the session's settings file was replaced; start the chat again"
                     ) from refusal
                 meta = self._harness.session_meta(
-                    harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+                    harness_state,
+                    wire_servers,
+                    zero_tools=zero_tools,
+                    builtin_tools=builtin_tools,
+                    stub_token=stub_token,
                 )
                 if meta is not None:
                     params["_meta"] = {**(params.get("_meta") or {}), **meta}

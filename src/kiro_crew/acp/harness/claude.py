@@ -748,6 +748,7 @@ class ClaudeHarness(MembershipHarness):
         mcp_servers: list[dict[str, Any]],
         *,
         zero_tools: bool = False,
+        builtin_tools: tuple[str, ...] | None = None,
         stub_token: str = "",
     ) -> dict[str, Any] | None:
         """The ``_meta.claudeCode`` envelope the per-session client sends, for this session.
@@ -772,6 +773,10 @@ class ClaudeHarness(MembershipHarness):
         # The spec's "tools": [] as the mirror's projection read it: a zero-tool
         # session whose array still mounts a server is refused here.
         state._spec_zero_tools = zero_tools
+        # The built-ins the mirror's projection keeps (a Bot worker's excludes, a named
+        # agent's ``tools`` list), carried as the envelope's ``tools`` option as on the
+        # per-session client.
+        state._note_worker_builtin_tools(builtin_tools)
         # The array this start sends, which the starting-mode pin reads to tell a
         # session carrying Crew's tools from one with none (on the per-session
         # client, ``_begin_session_report`` records it).

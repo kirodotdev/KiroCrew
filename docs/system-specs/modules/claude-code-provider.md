@@ -291,6 +291,23 @@ and effort selection, the full `session/request_permission` flow) works. So
   entry deliberately left unreferenced — the shape every `opt_in` grant uses, and
   what a hand-narrowed spec looks like — would come alive the moment a session ran
   on CC.
+- **The same `tools` list limits Claude Code's own built-ins** for an agent whose
+  spec Crew does not write (`agent_sdk.spec_builtin_tools._crew_written_agents` is
+  the set left out) and that is not a Bot's worker. A non-empty list with no
+  entry that grants every built-in (`*`, `@builtin`, `@builtin/`, `@builtin/*`)
+  makes the mirror set `SessionProjection.builtin_tools` to the built-ins of the
+  kiro-cli tools it grants
+  (`agent_sdk.claude_worker_tools.claude_agent_builtin_tools`, the worker's
+  `CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL` read as an include list, with a granted
+  `fs_read` also keeping `Glob`) plus `ToolSearch`, and the client sends it as
+  `session/new`'s and `session/load`'s `tools` option, on a withheld array too; a
+  session on a shared claude process gets the same option from the runtime's
+  projection (`ClaudeHarness.session_meta`'s `builtin_tools`). An entry no row covers
+  grants no built-in and refuses nothing; a built-in outside the table
+  (`TodoWrite`, `AskUserQuestion`, `Skill`, ...) is withheld. Below the
+  session-options floor the session is stopped before its first prompt, as a
+  narrowed worker is. A list that grants every row, `tools: []` (the tool-less
+  session below) and Side Chat keep their own shapes.
 - **kiro-cli's registry filter is SYMMETRIC, and only one half of it is
   reproducible here.** Outside registry mode kiro-cli drops the entries that
   *carry* `type: "registry"`, and that half is mirrored exactly: the marker is on
