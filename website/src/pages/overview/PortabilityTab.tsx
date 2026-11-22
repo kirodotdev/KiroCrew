@@ -434,10 +434,10 @@ export default function PortabilityTab() {
         title: i18nT('pages.overview.portabilityTab.import'),
         body: (
           <>
-            <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin')}</p>
+            <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_confirm_lead')}</p>
             <p className="m-0 mt-2" style={{ overflowWrap: 'anywhere' }}>
               {includeSettings
-                ? i18nT('pages.overview.portabilityTab.replace_overwrites_settings')
+                ? i18nT('pages.overview.portabilityTab.replace_overwrites_settings_dialog')
                 : i18nT('pages.overview.portabilityTab.replace_keeps_settings')}
             </p>
             {includeSettings && (
@@ -704,7 +704,7 @@ export default function PortabilityTab() {
                 ? i18nT('pages.overview.portabilityTab.replace_overwrites_settings')
                 : i18nT('pages.overview.portabilityTab.replace_keeps_settings')}
             </p>
-            {includeSettings && (
+            {includeSettings && preview && (
               <p className="text-text text-[12px] mb-3">{i18nT('pages.overview.portabilityTab.replace_settings_foreign_archive')}</p>
             )}
           </>

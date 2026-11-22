@@ -10067,7 +10067,6 @@
         "merge": "Merge",
         "plan_memory_files": "Plan memory files:",
         "replace": "Replace",
-        "replace_mode_will_overwrite_existing_data_contin": "Replace mode will overwrite existing data. Continue?",
         "share_memory_confirm": "Export memory",
         "share_memory_intro": "The file holds the items below.",
         "share_memory_item_episodic": "Summaries the agent kept from past conversations (not the chats)",

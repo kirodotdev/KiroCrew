@@ -19,6 +19,8 @@ const KEYS = [
   'import_include_settings',
   'replace_keeps_settings',
   'replace_overwrites_settings',
+  'replace_overwrites_settings_dialog',
+  'replace_confirm_lead',
   'replace_settings_foreign_archive',
   'settings_kept_name_hooks',
   'import_settings_installed',

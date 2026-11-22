@@ -375,7 +375,7 @@ describe('PortabilityTab restoring browser settings', () => {
       .toContain('Some items could not be imported and were left unchanged: ui-prefs.')
     expect(keptLine.textContent).toBe(
       "This install kept its own agent and gateway settings, local settings overrides, and notification settings. "
-      + "To use the archive's instead, set the mode to Replace, tick \"Also restore settings and hooks from the archive\", then import again. "
+      + "To use the archive's instead, set the mode to Replace, tick \"Also replace this install's settings and hooks with the archive's\", then import again. "
       + "Replace backs up this install first, then overwrites its settings with the archive's.",
     )
     // The refused item is not counted as imported.
@@ -587,7 +587,7 @@ describe('PortabilityTab replace-import confirmation', () => {
     fireEvent.click(importButton)
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toHaveAccessibleName('Import')
-    const body = within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'), { selector: 'p' })
+    const body = within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_confirm_lead'), { selector: 'p' })
     expect(body).toHaveStyle({ overflowWrap: 'anywhere' })
     return { fetchMock, dialog, input, file, view }
   }
@@ -650,11 +650,12 @@ describe('PortabilityTab replace-import confirmation', () => {
 
     it('sends include_settings=1 when ticked, names the files, and warns about a foreign archive', async () => {
       const { fetchMock, dialog } = await askToReplace({ includeSettings: true })
-      const overwrites = within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_overwrites_settings'), { selector: 'p' })
+      const overwrites = within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_overwrites_settings_dialog'), { selector: 'p' })
       expect(overwrites.textContent).toContain('config.json')
       expect(overwrites.textContent).toContain('hooks.json')
-      expect(overwrites.textContent).toContain('within seconds')
-      expect(overwrites.textContent).toContain('disabled or paused')
+      expect(overwrites.textContent).toContain('restart the gateway')
+      // The longer detail stays in the page hint only.
+      expect(overwrites.textContent).not.toContain('disabled or paused')
       expect(within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_settings_foreign_archive'), { selector: 'p' })).toBeTruthy()
       expect(within(dialog).queryByText(i18nT('pages.overview.portabilityTab.replace_keeps_settings'), { selector: 'p' })).toBeNull()
       await confirmAction('Import')
