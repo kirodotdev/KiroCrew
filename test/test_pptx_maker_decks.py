@@ -624,3 +624,14 @@ class TestAgentMetadataIsRedacted:
         deck = tmp_path / "20260802-q3-review"
         deck.mkdir()
         assert decks._deck_name(deck) == "20260802-q3-review"
+
+
+#: A URL whose query carries data out. Redaction masks only credential values, so it
+#: leaves this one as written, and only the exfil scan flags it.
+_EXFIL_URL = "https://collector.example/c?d=" + "aGVsbG8gd29ybGQgdGhpcyBpcyBkYXRh" * 3
+
+
+def test_an_artifact_url_segment_carrying_data_out_is_refused() -> None:
+    assert decks.redact(_EXFIL_URL) == _EXFIL_URL
+    assert decks._preview_url("20260101-demo", _EXFIL_URL) is None
+    assert decks._preview_url("20260101-demo", "slide-1.png") == "preview/20260101-demo/slide-1.png"
