@@ -67,6 +67,7 @@ class StubGateway:
                 "query": dict(request.query),
                 "body": body,
                 "cookie": request.headers.get("Cookie", ""),
+                "app_secret": request.headers.get("X-App-Secret", ""),
             }
         )
         if self.statuses:
@@ -178,6 +179,31 @@ class TestAuthCookie:
         async with _client(gw, token="stale", on_auth_expired=refresh) as mc:
             assert await mc.get_status() == {"version": "x"}
         assert gw.last["cookie"].endswith("=fresh")
+
+    async def test_explicit_app_secret_authenticates_and_refreshes(self, gw, monkeypatch, tmp_path):
+        # A self-managed app holds the secret its registration returned: no
+        # env pair and no file in the app's folder.
+        monkeypatch.delenv("KIROCREW_PROXY_SECRET", raising=False)
+        monkeypatch.delenv("KIROCREW_APP_NAME", raising=False)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        token_route = ("POST", "/api/apps/a/token")
+        gw.responses[token_route] = {"token": "t1"}
+
+        async with _client(gw, app_name="a", app_secret="s") as mc:
+            assert await mc.authenticate() is True
+            assert (gw.last["method"], gw.last["path"]) == token_route
+            assert gw.last["app_secret"] == "s"
+            assert mc.token == "t1"
+
+            gw.statuses = [401]
+            gw.responses[token_route] = {"token": "t2"}
+            await mc.get_status()
+
+        refresh, retried = gw.requests[-2], gw.requests[-1]
+        assert (refresh["method"], refresh["path"]) == token_route
+        assert refresh["app_secret"] == "s"
+        assert (retried["method"], retried["path"]) == ("GET", "/api/status")
+        assert retried["cookie"].endswith("=t2")
 
 
 class TestContextNotQueued:
