@@ -54,7 +54,9 @@ class TestCatalog:
         # The one literal pin on the catalog size: every other size assertion in
         # this file derives from ``len(BUILTIN_DENIED_RULES)``. A row added or
         # deleted changes this number on purpose, and the commit doing it says why.
-        # Most recently: the local-destructive-dd-of-device row was added (112 -> 113),
+        # Most recently: the sandbox-escape-git-tar-self row was added (113 -> 114),
+        # a git or tar command whose transport dials this host. Before that: the
+        # local-destructive-dd-of-device row was added (112 -> 113),
         # matched on argv: dd reads stdin, so an of= raw disk alone wipes it. Before
         # that: the data-exfil-curl-upload row was deleted (113 -> 112);
         # its lowercased `-T` match refused `find -type f`, `od -tx1` and spec
@@ -66,7 +68,7 @@ class TestCatalog:
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
         # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
-        assert len(BUILTIN_DENIED_RULES) == 113
+        assert len(BUILTIN_DENIED_RULES) == 114
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 
@@ -273,6 +275,10 @@ class TestSelfProtectionFlagInterposition:
         # resolves the host behind interposed options, so flags between the
         # verb and the self-target cannot separate anchor from token.
         "sandbox-escape-ssh-self": "ssh {flags} localhost",
+        # Keys on a git transport operand; the argv floor steps over git global
+        # options, so flags between ``git`` and the subcommand cannot separate
+        # the anchor from the self-target operand.
+        "sandbox-escape-git-tar-self": "git {flags} clone localhost:x",
     }
     # FLOOR-ONLY id -> command template. These have NO catalog row: their
     # product-name-anywhere regex rows were deleted and the argv floor
