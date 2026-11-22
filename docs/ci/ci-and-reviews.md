@@ -397,7 +397,10 @@ Out-of-band lanes that never gate a PR:
 - **Verification that is too slow or too expensive for a PR:** `ota-test.yml`
   builds two real app bundles and performs an actual update swap, because the
   Electron unit suite stops at the `autoUpdater` handoff and never proves a real
-  bundle is replaced on disk and relaunches.
+  bundle is replaced on disk and relaunches. `verify-cli-publish.yml`
+  (`workflow_dispatch` only) builds the pure and platform wheels the way the
+  nightly does and runs `publish-cli.yml` with `verify_only: true`: the platform
+  wheel gate runs, the publish job is skipped, and no secret is passed.
 - **The ratchet verdict `main` otherwise never gets:** `main-ratchet-audit.yml`
   re-runs only the cheap ratchet, ceiling and baseline gates (the file line cap
   among them, on the whole tree) on every push to `main` and on every merge group, where it is one of the runs the queue's
@@ -3164,7 +3167,8 @@ scheduled nightly, after merge. A PR that adds or changes such a job says in its
 description how the changed job was exercised: a test that extracts and runs the
 `run:` block, the exact local reproduction of the step against the same
 interpreter and inputs, or, for a workflow that publishes nothing, a
-`workflow_dispatch` run of the branch (link it). Never dispatch a publishing
+`workflow_dispatch` run of the branch (link it; for the CLI lane that is
+`gh workflow run verify-cli-publish.yml --ref <branch>`). Never dispatch a publishing
 workflow from a branch to prove a change. If none
 of these was possible, the description says so. A change that only edits
 comments or a guard already covered by a test needs no extra proof.
