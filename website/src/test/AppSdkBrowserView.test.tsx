@@ -300,6 +300,20 @@ describe('BrowserView on the app\'s own slot', () => {
     expect((layer.children[0] as HTMLElement).style.width).toBe('30px')
     expect(layer.textContent).toBe('<b>Price</b>')
   })
+
+  it('root element carries min-w-0 overflow-hidden and contain:inline-size for CSS grid compatibility', () => {
+    // Removing any of these makes the component expand in a 1fr CSS grid cell,
+    // squeezing a side-by-side second view to a sliver (slot=1209px second=273px
+    // without contain:inline-size, confirmed by Playwright in pod kc-bsdk-1c).
+    // One-line change that turns this test red: remove 'overflow-hidden' from the
+    // root wrapper className or remove the contain:inline-size style.
+    act(() => { browserLiveStore.applyEvent(ev(OWN)); browserLiveStore.applyFrame(frame(OWN)) })
+    mount(OWN, <BrowserView slot={OWN} aria-label="The page" />)
+    const root = screen.getByTestId('app-browser-view')
+    expect(root.className).toContain('min-w-0')
+    expect(root.className).toContain('overflow-hidden')
+    expect((root as HTMLElement).style.contain).toBe('inline-size')
+  })
 })
 
 /** The chat page's own hand-back listener (`useAutoSendIntake`), mounted beside the view. */
