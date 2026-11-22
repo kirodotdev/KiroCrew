@@ -12,7 +12,7 @@ nothing; each non-managed launch requires an explicit operator decision.
 
 This module binds the approval to CONTENT instead. For every approved server it
 records the launch fingerprints the operator accepted -- ``hash_command`` over
-the resolved command and args, and ``hash_declared_env`` over the declared env
+the resolved command and args, and ``hash_launch_env`` over the declared env
 -- in :data:`APPROVALS_LEAF` under the crew data home. That file is written only
 by gateway-side code (the dashboard stub toggle and rewrite-pass refusal
 recording), is write-protected from agent tools, and is read-only inside
@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any, Collection, Iterable, Mapping
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.mcp_gateway.hashing import hash_command, hash_declared_env
+from kiro_crew.mcp_gateway.hashing import gateway_path, hash_command, hash_launch_env
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +141,10 @@ def _coerced_env(env_pairs: Mapping[Any, Any] | None) -> dict[str, str]:
 def env_fingerprint(env_pairs: Mapping[Any, Any] | None) -> str:
     """Hash of the complete declared env block gatewayd may apply.
 
-    Secret-prefixed entries count too: private backends receive them.
+    Secret-prefixed entries count too: private backends receive them. The
+    gateway's own part of ``PATH`` does not (``hashing.hash_launch_env``).
     """
-    return hash_declared_env(_coerced_env(env_pairs))
+    return hash_launch_env(_coerced_env(env_pairs))
 
 
 def launch_pair(command_hash: str, derived_env_hash: str) -> str:
@@ -161,6 +162,18 @@ def launch_fingerprint(
 ) -> str:
     """``<command hash>:<env hash>`` for one launch."""
     return f"{hash_command(command, list(args))}:{env_fingerprint(env_pairs)}"
+
+
+def pin_gateway_part() -> None:
+    """Fix this process's gateway ``PATH`` part for the life of the MCP broker.
+
+    The broker calls it before its rewrite pass, so the pass, every later
+    agent-spec rebuild and the gatewayd it hands the part to fold one
+    composition. BLOCKING: the first read scans the well-known directories.
+    """
+    from kiro_crew.env import pin_gateway_spec_path
+
+    pin_gateway_spec_path(gateway_path())
 
 
 def _split(fingerprint: str) -> tuple[str, str]:
