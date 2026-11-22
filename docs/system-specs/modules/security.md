@@ -1736,7 +1736,23 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   fingerprints, documentation example keys, temp paths); `engine.py` resolves
   overlaps, so a structural Identifier that fully contains a label or pairing Secret
   hit drops it, and a Secret hit wins any other overlap. Every unit has a size bound and fails closed past it, so
-  `stream.py` yields the whole-text result for any split. `compat.py` is the seam
+  `stream.py` yields the whole-text result for any split. The one exception is a
+  header, cookie or command-line value still running past 4 KiB at the end of a
+  stream window (`headers._HOLD_MAX`): both streams (`stream.StreamRedactor` and
+  `text_redaction.StreamRedactor`) mask it from its start, even where the whole
+  text keeps it (a non-session cookie, a placeholder), and drop the rest of its
+  line (`model.TAIL_LINE`), never less than the whole text masks. The readers
+  of that text (a later cookie pair, a later `curl` flag) read it from the
+  line's start, which a stream past the bound does not keep, so the stream
+  fails closed on it instead of rebuilding the line. When the dropped line
+  names a private-key block (a BEGIN line, read without default-ignorable
+  characters as the credential plan reads it), whose body can run past the line's
+  end, the drop takes the rest of the text (`stream.line_tail`), and a unit
+  that already runs to the end of the text keeps its own drop
+  (`stream.span_tail`). The stream invariant after a drop: it sends no
+  credential the whole text masks. In `text_redaction.StreamRedactor` a value
+  one of its own STRONG anchors also reads (a Bearer value, a JWT-shaped value)
+  stays with that pass's 4 KiB ceiling. `compat.py` is the seam
   the credential plan reads (`compat.credential_plan`): the detectors read the text,
   each Secret hit's VALUE becomes a span replaced by the credential tag (a base64 or
   hex run whose decoded text holds a credential by `[REDACTED: encoded credential]`),
