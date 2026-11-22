@@ -50,17 +50,17 @@ def _slot_app(request: web.Request, key: str) -> str:
 
 async def _view_refusal(request: web.Request, key: str) -> web.Response | None:
     """An app slot, the preview on, and the app's ``view`` verb approved, or why not."""
-    from kiro_crew.apps.browser_sdk import app_browser_verbs, preview_on  # noqa: PLC0415
+    from kiro_crew.apps.browser_sdk import verb_refusal  # noqa: PLC0415
 
     app = _slot_app(request, key)
     if not app:
         return _error("not_app_slot", "a second view is for an app's own slot", 404)
-    if not await asyncio.to_thread(preview_on):
-        return _error("preview_off", "app browser access is turned off", 404)
-    if "view" not in await asyncio.to_thread(app_browser_verbs, app):
-        return _error(
-            "permission_denied", f"the owner has not approved browser view for {app!r}", 403
-        )
+    # Use the single authoritative gate rather than re-implementing preview + verb checks.
+    refused = await asyncio.to_thread(verb_refusal, app, "view")
+    if refused is not None:
+        code, message = refused
+        status = 404 if code == "preview_off" else 403
+        return _error(code, message, status)
     return None
 
 
