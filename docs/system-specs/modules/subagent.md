@@ -4816,7 +4816,16 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   variable, so the generation records the resolved root as `codex_home` at spawn and
   the prune and `spawn_release` delete under it. A Codex generation without
   `codex_home`, a refused delete or a failed delete answers not done, and a release
-  then answers `not_disposed`. Unsupported providers and transient deletion
+  then answers `not_disposed`. A KAS run's session record belongs to the KAS
+  engine, so its cleanup queues the id in `released_sessions` (delay 0) and is
+  done once that entry is written; the next cleanup tick sends
+  `_kiro/session/delete` while KAS is the chat backend. An id the entry refuses
+  (`..`, a `/`), a write error, or a sandboxed process answers not done.
+  Only the prune queues it, in the same pass that removes the run folder a
+  continue resumes from; a `spawn_release` of a KAS conversation queues
+  nothing and answers `not_disposed`, because a continue may still resume the
+  session until the run is pruned.
+  Unsupported providers and transient deletion
   failures preserve
   both retry surfaces for later sweeps, capped at 90 days so a permanently missing
   cleanup route cannot accumulate private run folders forever. A sweep does not
