@@ -463,6 +463,11 @@ def comparable_state(kind: str, state: Any) -> Any:
         # flipped since is no conflict for the goal, and the card's own Heartbeat
         # step is a compare-and-set of its own (``expected`` on the schedules route).
         return {k: v for k, v in state.items() if k != "heartbeat"}
+    if kind == catalog.KIND_CREWMATE_CHECK_INS and isinstance(state, dict):
+        # The Heartbeat's active hours are not a field this card sets (the
+        # Schedules tab owns them), so a window moved between preview, apply and
+        # Undo is no conflict; the card still states the bound they give.
+        return {k: v for k, v in state.items() if k != catalog.HEARTBEAT_HOURS_KEY}
     if kind == catalog.KIND_CREWMATE_KEY_RESULTS and isinstance(state, dict):
         out = {k: v for k, v in state.items() if k != KR_RECORDS_KEY}
         records = state.get(KR_RECORDS_KEY)
@@ -646,7 +651,7 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
     The member id is part of the compared snapshot: a crewmate deleted and made
     again under the same name between preview and apply reads as a change.
     """
-    from kiro_crew import member_goals
+    from kiro_crew import member_goals, member_goals_hours
     from kiro_crew import members as members_mod
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -675,11 +680,18 @@ def _goal_state(member: str, kind: str) -> dict[str, Any]:
         out["heartbeat"] = {
             "on": bool(rec["schedules"].get(member_goals.CADENCE_HEARTBEAT)),
             "interval": rec["schedules"].get("interval"),
+            "hours": list(member_goals_hours.active_hours(rec["schedules"])),
             "declined": rec.get("heartbeat_offer") == member_goals.HEARTBEAT_OFFER_DECLINED,
         }
     elif kind == catalog.KIND_CREWMATE_CHECK_INS:
         out["has_goal"] = member_goals.has_goal(rec)
         out["schedules"] = {k: rec["schedules"].get(k) for k in catalog.CHECK_IN_FIELDS}
+        # Beside the fields the card may set: the window the Heartbeat already
+        # runs in, so the card's daily bound is the one its schedule will fire.
+        # The card never writes it, so it is neither in ``schedules`` (the fields
+        # its Undo puts back) nor in what the conflict checks compare
+        # (:func:`comparable_state`).
+        out[catalog.HEARTBEAT_HOURS_KEY] = list(member_goals_hours.active_hours(rec["schedules"]))
     else:
         out["has_goal"] = member_goals.has_goal(rec)
         # Only the ids: which goals exist and their numbers. A goal's wording

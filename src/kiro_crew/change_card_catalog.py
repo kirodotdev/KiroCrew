@@ -767,6 +767,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         DEFAULT_CREWMATE_TEMPLATE,
         FOLDER_STEERING_DIR_MAX,
         GATEWAY_RESOLVED_KINDS,
+        HEARTBEAT_HOURS_KEY,
         KIND_SCHEDULE_UPDATE,
         KIND_TRUST_APP,
         KIND_WORKFLOW_SAVE,

@@ -85,8 +85,12 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for ``mcp-core`` (491 to 492): the resource-subscription tools'
 #: declarations live in their own ``kiro_crew.mcp_tools.catalog.resources``, which
 #: the core listing loads from ``mcp_tools.DOMAIN_MODULES`` like every other domain.
+#: Raised by 1 for ``mcp-core`` (492 to 493): a Heartbeat's active hours live in their
+#: own ``kiro_crew.member_goals_hours``, which keeps ``member_goals`` under the line cap
+#: and which ``member_goals`` (loaded by the listing's ``validation`` schemas) imports;
+#: the module count rose by that one file and nothing else loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 492,
+    "mcp-core": 493,
     "mcp-cron": 361,
     "mcp-guide": 355,
     "mcp-mate": 356,
