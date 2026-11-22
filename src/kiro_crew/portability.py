@@ -99,6 +99,7 @@ from kiro_crew.portability_archive import (
     logger,
     manifest_is_memory_only,
 )
+from kiro_crew.portability_export import unbundled_apps
 from kiro_crew.portability_templates import (
     AGENT_TEMPLATE_SECRET_PLACEHOLDER,
     AGENT_TEMPLATES_DIR,
@@ -1259,6 +1260,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_for_export,
         _keep_store_for_export,
         _manifest_entry_size,
+        _named_in_export,
         _open_contained_file,
         _open_verified,
         _plan_sessions,

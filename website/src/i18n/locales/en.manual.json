@@ -8576,6 +8576,7 @@
         "network_error": "Network error",
         "network_error_during_preview": "Network error during preview",
         "mode": "Mode",
+        "export_apps_not_included": "This export doesn't include these apps or their data: {{names}}. On the other machine, install them again or turn them back on; their data stays on this one.",
         "export_templates_not_included": "This export doesn't include the agent templates your crews use: {{names}}. Copy them from ~/.kiro/agents to the same folder on the other machine.",
         "import_templates_missing": "Some crews use an agent template this machine doesn't have (crew → template): {{crews}}. Copy the missing templates into ~/.kiro/agents before you use these crews.",
         "import_items_refused": "Some items could not be imported and were left unchanged: {{names}}.",
