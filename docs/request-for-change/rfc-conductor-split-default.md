@@ -9,7 +9,7 @@ doc-pr: null
 implementation-prs: [40682]
 tracking-issues: []
 supersedes: []
-superseded-by: []
+superseded-by: [rfc-bot-workers-conduct.md]
 ---
 
 # RFC: No split by default for conductors and Bots
