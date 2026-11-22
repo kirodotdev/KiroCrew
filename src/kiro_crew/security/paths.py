@@ -100,6 +100,8 @@ def _path_in_home_dirs(
     *,
     strict: bool = False,
     pre_resolved: bool = False,
+    candidates: set[str] | None = None,
+    roots: _ResolvedRoots | None = None,
 ) -> bool:
     """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
 
@@ -132,16 +134,20 @@ def _path_in_home_dirs(
     ``pre_resolved`` is :func:`_candidate_forms`'s flag of the same name, and
     such a caller is by contract on its own worker thread, so the anchors are
     resolved inline as well (``_home_dir_targets(inline=True)``): the whole
-    check then performs no ``mc-pathres`` submission.
+    check then performs no ``mc-pathres`` submission. *candidates* is
+    :func:`_candidate_forms`'s answer for these arguments, and *roots*
+    :func:`_decision_roots`'s, from a caller that matches one path against several
+    lists, so one decision resolves each once.
     """
     if not path_str:
         return False
 
     try:
-        candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
+        if candidates is None:
+            candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
         # The anchors are bounded the same way (see _rebuild_targets_bounded):
         # a stall with no prior canonical resolution to serve refuses too.
-        sensitive_targets = _home_dir_targets(home_dirs, inline=pre_resolved)
+        sensitive_targets = _home_dir_targets(home_dirs, inline=pre_resolved, roots=roots)
         from kiro_crew.config.paths import scratch_root_override_path_hint
 
         scratch_override = scratch_root_override_path_hint()
@@ -178,12 +184,9 @@ def _path_in_home_dirs(
     # protective (it can only ever over-match an alternate-case variant of an
     # already-sensitive path, which is itself suspicious), so it is safe on
     # case-sensitive Linux too — matching the IGNORECASE bash-read matcher.
-    for cand in candidates:
-        cand_cf = cand.casefold()
-        for sensitive_path in sensitive_targets:
-            if cand_cf == sensitive_path or cand_cf.startswith(sensitive_path + os.sep):
-                return True
-    return False
+    # A target is the candidate or one of its ancestors: look those up rather than
+    # scanning every target (:func:`_has_target_ancestor`).
+    return any(_has_target_ancestor(cand.casefold(), sensitive_targets) for cand in candidates)
 
 
 def _is_keystone_publish_artifact(
@@ -192,6 +195,8 @@ def _is_keystone_publish_artifact(
     *,
     strict: bool = False,
     pre_resolved: bool = False,
+    candidates: set[str] | None = None,
+    roots: _ResolvedRoots | None = None,
 ) -> bool:
     """Return True if *path_str* is the atomic-write temp or lock beside a keystone leaf.
 
@@ -212,12 +217,18 @@ def _is_keystone_publish_artifact(
       of the leaf's own directory, and a prefix test would sweep every descendant of the
       crew home whose name happens to end in ``.tmp`` -- far wider than this needs, in a
       directory that must stay readable.
+
+    *candidates* and *roots* are the decision's, from a caller that also matches the
+    path against a gate list, so one decision resolves each once.
     """
     if not path_str:
         return False
     try:
-        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS, inline=pre_resolved)
-        candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
+        artifact_parents = _home_dir_targets(
+            _KEYSTONE_ARTIFACT_PARENTS, inline=pre_resolved, roots=roots
+        )
+        if candidates is None:
+            candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
         if strict:
             raise
@@ -244,6 +255,21 @@ def _is_keystone_publish_artifact(
 # screens against the same set — a credential directory added for one app is
 # automatically denied by the others.
 DENIED_ROOT_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker"})
+
+
+def _decision_inputs(
+    path_str: str, base_dir: str | None, *, pre_resolved: bool = False
+) -> tuple[set[str] | None, _ResolvedRoots | None]:
+    """The candidates and anchor roots for ONE decision, resolved once for every list.
+
+    Nothing is kept past the decision, so each decision still resolves fresh.
+    """
+    if not path_str:
+        return None, None
+    return (
+        _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved),
+        _decision_roots(inline=pre_resolved),
+    )
 
 
 def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
@@ -303,9 +329,17 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
     calling thread inside ``realpath``, exactly as that thread's own walk of the
     same mount would. Nothing is admitted while it blocks.
     """
-    return _path_in_home_dirs(resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True) or (
+    try:
+        cands, roots = _decision_inputs(resolved, None, pre_resolved=True)
+    except PathResolutionStalled:
+        return True  # fail closed: see _path_in_home_dirs
+    return _path_in_home_dirs(
+        resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True, candidates=cands, roots=roots
+    ) or (
         _fold_windows_alias(resolved).casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
-        and _is_keystone_publish_artifact(resolved, pre_resolved=True)
+        and _is_keystone_publish_artifact(
+            resolved, pre_resolved=True, candidates=cands, roots=roots
+        )
     )
 
 
@@ -392,9 +426,12 @@ def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | 
     shortly" costs one wait.
     """
     try:
+        cands, roots = _decision_inputs(path_str, base_dir)
         matched = _path_in_home_dirs(
-            path_str, _SENSITIVE_HOME_DIRS, base_dir, strict=True
-        ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
+            path_str, _SENSITIVE_HOME_DIRS, base_dir, strict=True, candidates=cands, roots=roots
+        ) or _is_keystone_publish_artifact(
+            path_str, base_dir, strict=True, candidates=cands, roots=roots
+        )
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
     return f"Blocked: access to sensitive path: {path_str}" if matched else None
@@ -404,14 +441,27 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
     """:func:`is_sensitive_write_path` as reason-or-``None``: same decision, a stall
     still refuses, worded as the stall :func:`sensitive_path_refusal` words it."""
     try:
+        # One candidate and one anchor-root resolution for every list below.
+        cands, roots = _decision_inputs(path_str, base_dir)
+
+        def under(rows: list[str]) -> bool:
+            return _path_in_home_dirs(
+                path_str, rows, base_dir, strict=True, candidates=cands, roots=roots
+            )
+
         matched = _path_in_home_dirs(
-            path_str, _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS, base_dir, strict=True
-        ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
-        matched = matched or _path_in_home_dirs(
-            path_str, _app_readonly_dir_rows(), base_dir, strict=True
+            path_str,
+            _SENSITIVE_HOME_DIRS + _WRITE_PROTECTED_HOME_PATHS,
+            base_dir,
+            strict=True,
+            candidates=cands,
+            roots=roots,
+        ) or _is_keystone_publish_artifact(
+            path_str, base_dir, strict=True, candidates=cands, roots=roots
         )
+        matched = matched or under(_app_readonly_dir_rows())
         if not matched and (rule_rows := _permission_rule_rows()):
-            matched = _path_in_home_dirs(path_str, rule_rows, base_dir, strict=True)
+            matched = under(rule_rows)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
     except PathResolutionStalled as exc:
@@ -460,9 +510,10 @@ def path_contains_sensitive(
 
     List-based, no filesystem walk: the known sensitive roots
     (:data:`_SENSITIVE_HOME_DIRS`, including the crew data-home secret leaves
-    and any ``KIROCREW_HOME`` re-anchoring) are prefix-compared against the
-    directory's candidate forms, so the check is O(sensitive entries) even when
-    *dir_str* is a huge tree. Shares :func:`_candidate_forms` and
+    and any ``KIROCREW_HOME`` re-anchoring) are matched against the directory's
+    candidate forms by a set lookup of the directory among the targets' ancestors,
+    so the check costs the same whatever the size of the tree under *dir_str*.
+    Shares :func:`_candidate_forms` and
     :func:`_home_dir_targets` with :func:`_path_in_home_dirs` so the
     symlink/casefold hardening cannot drift between the two directions.
 
@@ -482,19 +533,20 @@ def path_contains_sensitive(
         candidates = _candidate_forms(dir_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
         return True  # fail closed: see _path_in_home_dirs
+    ancestors = _target_ancestors(sensitive_targets)
     for cand in candidates:
         # Normalize away a trailing separator so `/home/u/` and `/home/u`
         # produce the same prefix (a bare `/` or `C:\` root rstrips to ""/"C:",
         # whose prefix form still matches everything under it — correct: every
         # sensitive path is inside the filesystem root).
         cand_cf = cand.casefold().rstrip(os.sep)
-        prefix = cand_cf + os.sep
-        for target in sensitive_targets:
-            # Equality (the dir IS the sensitive path) is is_sensitive_path's
-            # job, but including it here fails safe for callers using only this
-            # gate.
-            if target == cand_cf or target.startswith(prefix):
-                return True
+        # Equality (the dir IS the sensitive path) is is_sensitive_path's job, but
+        # including it here fails safe for callers using only this gate. A target
+        # lies under the directory exactly when the directory is one of that
+        # target's ancestors (:func:`_target_ancestors`), so it is looked up rather
+        # than every target scanned.
+        if cand_cf in sensitive_targets or cand_cf in ancestors:
+            return True
     return False
 
 
@@ -770,8 +822,12 @@ from .paths_targets import (  # noqa: E402
     _OVERRIDE_ANCHORED_LEAVES,
     _app_readonly_dir_rows,
     _candidate_forms,
+    _decision_roots,
+    _has_target_ancestor,
     _home_dir_targets,
     _resolve_root_anchors,
+    _ResolvedRoots,
+    _target_ancestors,
 )
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -886,7 +942,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _report_expiry_pin,
         _resolved_env_root,
         _resolved_root_key,
-        _ResolvedRoots,
     )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.agent_sdk import (  # noqa: F401
