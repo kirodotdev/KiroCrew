@@ -6237,7 +6237,10 @@ a trust root on its own; publication therefore also writes a
   a token hash with no process to probe. It runs from `cleanup_orphaned_sessions`
   at startup and shutdown and from the same periodic tick that retracts
   session-pid mappings, on the maintenance executor for the same
-  `no-blocking-call-on-event-loop` reason. Without the tick, a gateway that
+  `no-blocking-call-on-event-loop` reason. The tick runs it at most once per
+  `SESSION_TOKEN_PRUNE_INTERVAL_SECS` (an hour), because the pass stats every
+  mapping and removal is age-based over a multi-day TTL, so an expired mapping
+  outlives the TTL by at most an hour. Without the tick, a gateway that
   keeps running, or is only ever stopped by a kill, would hold one mapping per
   session it has started. The TTL is unchanged and cannot cost a live session its
   identity: the mapping is republished at the start of every turn, before
