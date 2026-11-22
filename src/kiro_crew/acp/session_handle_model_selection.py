@@ -62,7 +62,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.backends import effort_config_option_levels
 from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
-from kiro_crew.agent_sdk.kas_model_catalog import record_catalog
+from kiro_crew.agent_sdk.kas_model_catalog import record_catalog, recorded_catalog_snapshot
 from kiro_crew.platform.context import redact_log_via_context
 
 if TYPE_CHECKING:
@@ -224,6 +224,19 @@ def select_lists_only_its_current_model(select: dict[str, Any]) -> bool:
     return len(ids) == 1 and ids[0] != DEFAULT_MODEL and ids[0] == select.get("currentModelId")
 
 
+def config_options_list_only_current_model(config_options: Any) -> bool:
+    """Whether a stored ``configOptions`` list carries a reloaded KAS session's select.
+
+    The session's stored half of :func:`select_lists_only_its_current_model`: such
+    a session advertises no list Auto can be judged against, and a reset would
+    reload it on the model it already runs.
+    """
+    if not isinstance(config_options, list):
+        return False
+    select = model_select_envelope({"configOptions": config_options})
+    return select is not None and select_lists_only_its_current_model(select)
+
+
 def session_models_envelope(resp: dict[str, Any], backend: str) -> Any:
     """The ``models`` payload of a session response, with the select folded in.
 
@@ -382,6 +395,25 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
                 self.model_pin_refused = model_id
                 return
             model_id = listed
+    # A reloaded KAS session lists no ``auto`` to judge it against, and ``auto``
+    # is what a new KAS session runs, so it is sent as asked unless this
+    # session's full select, or the catalog recorded for its account, lacks it.
+    reloaded_kas_auto = (
+        self._runtime.acp_backend == ACP_BACKEND_KAS
+        and model_id == DEFAULT_MODEL
+        and config_options_list_only_current_model(self._config_options)
+    )
+    if reloaded_kas_auto:
+        known = self._kas_served_ids or [
+            row["model_id"] for row in recorded_catalog_snapshot(self.request_vault_identity) or []
+        ]
+        if known and DEFAULT_MODEL not in known:
+            logger.warning(
+                "KAS %s lists no auto; keeping the session's current model",
+                "session's earlier model select" if self._kas_served_ids else "recorded catalog",
+            )
+            self.model_pin_refused = model_id
+            return
     # Backend-aware: on a ``<model>[<effort>]`` pair-id harness the advertised
     # list is the picker's vocabulary while the ``model`` config option's is
     # the BARE id, so a bare pin misses the list yet is exactly what the wire
@@ -391,7 +423,7 @@ async def set_model(self: AcpSessionHandle, model_id: str, *, inherit: bool = Fa
         model_id,
         self._advertised_model_ids(),
         backend=self._runtime.acp_backend,
-    )
+    ) or (DEFAULT_MODEL if reloaded_kas_auto else "")
     if not resolved:
         # Inherit the backend default — nothing to send. For the ephemeral
         # _bg session the current model IS session/new's served default.

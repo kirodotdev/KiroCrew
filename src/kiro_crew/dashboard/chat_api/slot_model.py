@@ -183,7 +183,19 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.
         advertised = {m.get("modelId", "") for m in provider.available_models()}
-        return "auto" if "auto" in advertised else ""
+        if "auto" in advertised:
+            return "auto"
+        from kiro_crew.agent_sdk.kas_model_catalog import lists_only_current_model
+
+        # A KAS ``session/load`` answers with a select naming only the model the
+        # session runs, so a reopened chat never lists ``auto``. A reset would
+        # reload the same session on that model; ``auto`` is what a new KAS
+        # session runs, so send it live.
+        if getattr(provider, "is_kas_backend", False) is True and lists_only_current_model(
+            getattr(provider.client, "acp_config_options", None)
+        ):
+            return "auto"
+        return ""
     return model_registry.to_acp_id(model_name)
 
 

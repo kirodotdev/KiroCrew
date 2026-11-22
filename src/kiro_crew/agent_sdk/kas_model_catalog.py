@@ -216,6 +216,20 @@ def record_catalog(resp: dict[str, Any], backend: str, *, identity: object) -> b
     return False
 
 
+def lists_only_current_model(config_options: Any) -> bool:
+    """Whether a session's ``configOptions`` carry a reloaded KAS session's select.
+
+    The application-side name for
+    ``acp.session_handle_model_selection.config_options_list_only_current_model``.
+    """
+    # Lazy for the same import-order reason as ``catalog_rows_from_session``.
+    from kiro_crew.acp.session_handle_model_selection import (
+        config_options_list_only_current_model,
+    )
+
+    return config_options_list_only_current_model(config_options)
+
+
 def recorded_catalog_snapshot(identity: str) -> list[dict[str, Any]] | None:
     """A copy of the last recorded select's rows, if they belong to *identity*.
 

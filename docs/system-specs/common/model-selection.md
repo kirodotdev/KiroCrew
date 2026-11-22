@@ -167,7 +167,13 @@ select (`select_lists_only_its_current_model`: one entry, not `auto`, equal to i
 earlier response gave and `record_catalog` does not record it, as for a response
 with no select. A reopened chat therefore judges no pin before the turn: a pin the
 engine does not serve fails that turn with `InvalidModelError`, and every other pick
-switches the live session.
+switches the live session. That includes Auto: on a session whose stored select
+has this shape (`config_options_list_only_current_model`), the dashboard's
+`_wire_model_id` sends `auto` live and the handle's `set_model` puts it on the
+wire, since a reset would reload the same session on that model. The handle
+refuses it instead (`model_pin_refused`, answered `model_unavailable`) when this
+session's earlier full select, or else the catalog recorded for its vault
+identity, lists models and no `auto`.
 
 Saving a pin is judged against the same select before any session sends it:
 with no `models` list on the newest live KAS session, the agent and role-pin

@@ -84,6 +84,63 @@ def test_a_reopened_chat_switches_to_a_model_its_load_select_omits() -> None:
     assert handle.served_model == "claude-opus-5.5"
 
 
+@pytest.mark.parametrize(
+    "response,sent",
+    [(_RELOADED, True), (_session(["claude-sonnet-5.5", "claude-haiku-5.5"], "x"), False)],
+)
+def test_auto_on_a_reopened_chat_is_sent_as_asked(response: dict, sent: bool) -> None:
+    # The reloaded select lists no ``auto``, so the substitute rule would drop it.
+    handle, runtime = _handle()
+    handle.store_session_config(response)
+    asyncio.run(handle.set_model("auto"))
+    if sent:
+        assert _sent(runtime) == [
+            (
+                METHOD_SET_CONFIG_OPTION,
+                {"sessionId": "sess-kas", "configId": MODEL_CONFIG_ID, "value": "auto"},
+            )
+        ]
+        assert handle.served_model == "auto"
+    else:
+        assert _sent(runtime) == []
+
+
+@pytest.mark.parametrize("identity,refused", [(_ID, True), ("fingerprint-of-account-b", False)])
+def test_auto_on_a_reopened_chat_is_refused_when_the_accounts_catalog_lacks_it(
+    identity: str, refused: bool
+) -> None:
+    # The region serves no ``auto``: KAS would take it and fail every prompt.
+    catalog.record_catalog(
+        _session(["claude-sonnet-5.5", "claude-haiku-5.5"], "claude-sonnet-5.5"),
+        ACP_BACKEND_KAS,
+        identity=identity,
+    )
+    handle, runtime = _handle()
+    handle.store_session_config(_RELOADED)
+    asyncio.run(handle.set_model("auto"))
+    if refused:
+        assert _sent(runtime) == []
+        assert handle.model_pin_refused == "auto"
+    else:
+        assert [p["value"] for _, p in _sent(runtime)] == ["auto"]
+        assert handle.model_pin_refused == ""
+
+
+@pytest.mark.parametrize("served,sent", [(_SERVED, True), (_SERVED[1:], False)])
+def test_auto_after_a_reload_follows_the_sessions_own_full_select(
+    served: list[str], sent: bool
+) -> None:
+    # The session's own earlier full select outranks a catalog that disagrees.
+    handle, runtime = _handle()
+    handle.store_session_config(_session(served, served[0]))
+    other = _SERVED[1:] if sent else _SERVED
+    catalog.record_catalog(_session(other, other[0]), ACP_BACKEND_KAS, identity=_ID)
+    handle.store_session_config(_RELOADED)
+    asyncio.run(handle.set_model("auto"))
+    assert bool(_sent(runtime)) is sent
+    assert handle.model_pin_refused == ("" if sent else "auto")
+
+
 def test_an_engine_error_on_the_switch_reaches_the_caller_as_itself() -> None:
     handle, runtime = _handle()
     handle.store_session_config(_RELOADED)
