@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Callable
 from typing import Any
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.discord.client import DISCORD_MAX_TEXT
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S, adoptable_reservation
+from kiro_crew.messaging.approval_scan import _BACKTICK_PAIR_RE, bounded_scan
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
 from kiro_crew.preview_text import drop_format_chars
 
@@ -33,16 +33,6 @@ _APPROVAL_TIMEOUT_S = APPROVAL_TIMEOUT_S
 
 #: A redaction pass the renderer hands in: its display-form or its source-form scan.
 _Scan = Callable[[str], str]
-
-#: A backtick followed by another. Each gets a zero-width space after it, so no two
-#: backticks stay adjacent and none can close a fence or a double-backtick span.
-#: The space is invisible, so the approver reads the text as it was sent.
-_BACKTICK_PAIR_RE = re.compile(r"`(?=`)")
-
-#: How much of one model-authored string the display scan reads. The prompt shows
-#: at most ``DISCORD_MAX_TEXT`` characters, so a 500 KB write costs the scan what a
-#: 16 KB one does.
-_SCAN_CHARS = 16 * 1024
 
 #: Length caps on the one-line fields, checked on the whole original: a longer
 #: field is hidden, never clipped, so the input always keeps most of the message.
@@ -64,29 +54,6 @@ _ASCII = frozenset(map(chr, range(0x20, 0x7F)))
 _LINE_CHARS = _ASCII - {"`"}
 #: The input may also hold tabs, newlines and backticks; it is shown in a fence.
 _INPUT_CHARS = _ASCII | {"\t", "\n"}
-
-
-def bounded_scan(text: str, scan: Callable[[str], str]) -> str:
-    """*scan* (the renderer's display-form redaction) of the part of *text* shown.
-
-    A longer *text* is scanned as its first :data:`_SCAN_CHARS` characters, and the
-    prompt shows only the start of those. The cut can split a key at the head's end,
-    leaving its first part unredacted there; that end stays off the prompt while the
-    scanned head is over half the bound. A head the scan shrank further (stripped
-    escapes, a long secret's short tag) is answered by a scan of the whole text.
-    Slack's approval card bounds its scan the same way.
-    """
-    return _bounded_scan(text, scan)[1]
-
-
-def _bounded_scan(text: str, scan: Callable[[str], str]) -> tuple[str, str]:
-    """``(source, scanned)``: the part of *text* :func:`bounded_scan` read, and its scan."""
-    if len(text) <= _SCAN_CHARS:
-        return text, scan(text)
-    head = scan(text[:_SCAN_CHARS])
-    if len(head) > _SCAN_CHARS // 2:
-        return text[:_SCAN_CHARS], head
-    return text, scan(text)
 
 
 def _shown(text: str, allowed: frozenset[str], scan: _Scan, plain: _Scan) -> str | None:
@@ -149,7 +116,8 @@ def _literal_scan(text: str, scan: _Scan, plain: _Scan) -> str | None:
     link's url and every emphasis marker: shown in a fence, ``[ok](https://evil)``
     would read ``ok`` while the tool gets the evil url. So the scanned text is kept
     only when it is exactly *plain* (the renderer's source-form redaction, the
-    scan's own first pass) of the same text, format characters aside. Then every
+    scan's own first pass) of the same text, format characters aside; both run
+    through :func:`~kiro_crew.messaging.approval_scan.bounded_scan`. Then every
     character shown outside a tag is the tool's own, in place. Otherwise ``None``:
     the caller says the text is hidden rather than show either the credential or a
     text the tool will not receive.
@@ -158,9 +126,11 @@ def _literal_scan(text: str, scan: _Scan, plain: _Scan) -> str | None:
     still needed: the allowlist admits ``*``, ``_``, ``[`` and ``(``, so markup can
     still hide a key from the plain scan.
     """
-    source, shown = _bounded_scan(text, scan)
-    literal = plain(source)
-    return literal if drop_format_chars(shown) == literal else None
+    # Both through the one shared bound. Should the two choose different spans of a
+    # long text (a scan that shrinks the head past half the bound reads it whole),
+    # the forms differ and the text is hidden: the mismatch fails closed.
+    literal = bounded_scan(text, plain)
+    return literal if drop_format_chars(bounded_scan(text, scan)) == literal else None
 
 
 def _break_backtick_pairs(text: str) -> str:

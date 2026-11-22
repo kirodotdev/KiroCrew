@@ -1581,15 +1581,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.discord.renderer_approval import (  # noqa: F401
         _APPROVAL_TIMEOUT_S,
         _ASCII,
-        _BACKTICK_PAIR_RE,
         _CUT_MARKER,
         _HIDDEN,
         _INPUT_CHARS,
         _LINE_CHARS,
         _LINE_MAX,
         _NAME_MAX,
-        _SCAN_CHARS,
-        _bounded_scan,
         _break_backtick_pairs,
         _cut,
         _inline,
@@ -1597,7 +1594,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _Scan,
         _shown,
         _tag_spans,
-        bounded_scan,
     )
     from kiro_crew.discord.renderer_components import (  # noqa: F401
         _BUTTON_LABEL_CHARS,
