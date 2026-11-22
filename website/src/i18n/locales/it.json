@@ -6410,6 +6410,7 @@
     "crashNotice": {
       "diagnostics_were_saved_locally": "Nuovi record di arresto anomalo salvati su questo computer: {{n}}. Allegali quando segnali il problema.",
       "dismiss": "Ignora",
+      "latest_crash": "Ultimo arresto anomalo: {{date}}",
       "report_issue": "Segnala un problema",
       "report_note": "L'app si è chiusa inaspettatamente. Nuovi registri di arresto anomalo salvati su questo computer: {{n}}.",
       "reveal_failed": "Impossibile aprire la cartella: cerca crashes.log nella directory dei log dell’app.",
