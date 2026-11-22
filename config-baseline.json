@@ -7782,6 +7782,7 @@
         "reactions": {},
         "reactions_enabled": true,
         "show_thinking": true,
+        "show_timing_footer": true,
         "dm_single_session": false,
         "home_tab_builtin": true,
         "home_tab_sessions_per_kind": 5,
@@ -8059,6 +8060,22 @@
       ],
       "label": "Show Thinking",
       "help": "Post the model's thinking/reasoning as a thread reply in Slack. Disable to keep responses concise.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "slack.show_timing_footer",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Show Timing Footer",
+      "help": "Post the \"Finished in … · ctx …%\" line after each reply. Turn it off for a cleaner chat; choice buttons and the Link to Dashboard button still post.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

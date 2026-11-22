@@ -1371,7 +1371,8 @@ async def _handle_compact_command(
 
             elapsed = time.monotonic() - _t0
             footer_blocks, footer_text = build_timing_footer(elapsed)
-            await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+            if footer_blocks:  # none when slack.show_timing_footer is off
+                await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
         except Exception:
             logger.debug("Post-compact reporting failed for %s", session_key, exc_info=True)
 
