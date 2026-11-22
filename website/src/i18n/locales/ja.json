@@ -13512,11 +13512,11 @@
         "restored": "接続が回復しました",
         "interrupted": "接続が中断されました",
         "give_up": "接続が不安定です — もう一度お試しください。",
-        "throttle_retrying": "モデルプロバイダーがリクエストを制限しています — 再試行中…",
+        "throttle_retrying": "リクエストが制限されています — 再試行中…",
         "throttle_restored": "リクエスト制限が解除されました",
-        "throttle_interrupted": "モデルプロバイダーによる制限が続きました",
-        "throttle_give_up": "モデルプロバイダーがリクエストを制限しています — もう一度お試しください。",
-        "throttle_resuming": "モデルプロバイダーがリクエストを制限しています — この回答を仕上げています…"
+        "throttle_interrupted": "リクエスト制限 — 再試行を停止しました",
+        "throttle_give_up": "リクエストが制限されています — もう一度お試しください。",
+        "throttle_resuming": "リクエストが制限されています — この回答を仕上げています…"
       },
       "gatewayNotice": {
         "turn_limit_minutes_other": "{{count}}分",

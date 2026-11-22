@@ -1678,9 +1678,9 @@ def _format_acp_error_worded(
             # Transient backend 5xx — Bedrock/Codewhisperer surfaces a
             # momentary InternalServerError (often wrapped in a
             # CodewhispererChatResponseStream ServiceError with a
-            # "please try again" hint). Distinct from throttling: this is a
-            # server-side blip, not a rate limit, so the guidance is just to
-            # retry rather than switch models or back off.
+            # "please try again" hint). Distinct from throttling: a server-side
+            # blip, not a rate limit, so retry first. One that persists can be the
+            # selected model's capacity, which another model does not share.
             #
             # Match the combined `data + message` haystack so a 5xx token in
             # either field is caught. Scanning `message` is safe

@@ -435,6 +435,21 @@ the text keeps "throttling" for the same `_TRANSIENT_MARKERS` reason.
 it, with the same text fallback as `acp_error_is_throttle`); the dashboard model
 fallback reads both (`modules/model-fallback.md`).
 
+**Model-switch advice is per row.** The throttle, 5xx and two kiro-cli wrapper rows
+tell the user to switch model because the failure each one matches can belong to the
+selected model alone: a provider throttle (a provider's quotas and capacity are per
+model, as Bedrock's are), a 5xx that keeps coming back, and kiro-cli's "failed to
+generate a response" and "failed to process the request" wrappers (a capacity or
+rollout blip on one model, which another model does not share). Kiro's per-user
+request-rate limit (`acp/user_rate_limit_errors.py`) counts every model against one
+allowance, so its row says a switch will not help. The automatic-retry throttle
+notices (`TRANSIENT_THROTTLE_*_TEXT` in `dashboard/chat_utils.py`, the
+`pages.chat.transientNotice.throttle_*` copy) name no one: the `throttle` tag that
+picks them is set for that per-user limit as well as for a provider throttle, so the
+retrying, resuming and give-up rows (`throttle_give_up`,
+`TRANSIENT_THROTTLE_GIVE_UP_TEXT`) say "Requests are being throttled", which is true
+of both.
+
 A **network-path drop** is the one transient class that waits by time rather
 than by count. `AcpError.connection_failure` is set from the raw frame when the
 verdict is transient and `classify_provider_error` names the frame

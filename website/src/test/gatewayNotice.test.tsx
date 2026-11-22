@@ -178,11 +178,12 @@ describe('resolveGatewayNotice', () => {
     expect(resolveGatewayNotice(retrying, withTool, 0)?.text).toBe(COPY.restored)
   })
 
-  it('words a throttle retry as the provider throttling, never as the connection', () => {
-    // A throttle is the provider's answer: the network was fine, so neither the
-    // pending card nor either settled card may speak of a connection.
+  it('words a throttle retry as throttling, never as the connection or the provider', () => {
+    // A throttle is an answer: the network was fine, so neither the pending card
+    // nor either settled card may speak of a connection. The same token covers
+    // Kiro's per-user request limit, so no card may blame the model provider.
     const throttled = withNotice('transient_throttle_retrying', 'transient_retry')
-    expect(COPY.throttle_retrying).toBe('The model provider is throttling requests — retrying…')
+    expect(COPY.throttle_retrying).toBe('Requests are being throttled — retrying…')
     expect(resolveGatewayNotice(throttled, [throttled], 0)).toEqual({ text: COPY.throttle_retrying, card: 'notice', tone: 'warn' })
     const answered = [throttled, throttled, msg('assistant', { content: 'ok' })]
     for (const i of [0, 1]) {
@@ -199,7 +200,7 @@ describe('resolveGatewayNotice', () => {
     expect(resolveGatewayNotice(throttleResuming, [throttleResuming, msg('assistant', { content: 'ok' })], 0)?.text).toBe(COPY.throttle_restored)
     expect(resolveGatewayNotice(throttleResuming, [throttleResuming, throttleGiveUp], 0)?.text).toBe(COPY.throttle_interrupted)
     for (const text of [COPY.throttle_retrying, COPY.throttle_restored, COPY.throttle_interrupted, COPY.throttle_give_up, COPY.throttle_resuming]) {
-      expect(text).not.toMatch(/connection/i)
+      expect(text).not.toMatch(/connection|provider/i)
     }
     // A plain 5xx in the same ladder keeps its own connection wording.
     const mixed = [throttled, retrying, msg('assistant', { content: 'ok' })]

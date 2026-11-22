@@ -37,6 +37,16 @@ _THROTTLE_FRAME = {
     },
 }
 _FIVE_XX_FRAME = {"code": -32603, "message": "Internal error: API Error: Internal server error"}
+# Kiro's per-user request-rate limit: the same throttle tag, but no provider is limiting.
+_USER_RATE_FRAME = {
+    "code": -32603,
+    "message": "You're sending requests faster than your rate limit allows.",
+    "data": {
+        "errorType": "ClientThrottleError",
+        "throttleReason": "USER_REQUEST_RATE_EXCEEDED",
+        "retryErrorType": "THROTTLING",
+    },
+}
 
 
 def _error(frame: dict):
@@ -302,6 +312,32 @@ class TestThrottledTurnRetry:
         ]
         assert give_up[0]["content"] == TRANSIENT_THROTTLE_GIVE_UP_TEXT
         assert not any("Connection" in t for t in self._err_texts(slot))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kas_kw", "run_kw", "expected"),
+        [
+            (
+                {},
+                {"stop_on_rewind": lambda _slot: True},
+                ["transient_throttle_retrying", "transient_throttle_give_up"],
+            ),
+            ({"partial_first": True}, {}, ["transient_throttle_resuming"]),
+        ],
+        ids=["retrying-then-give-up", "resuming"],
+    )
+    async def test_a_per_user_rate_limit_notice_names_no_provider(
+        self, tmp_path, monkeypatch, kas_kw, run_kw, expected
+    ):
+        """The throttle rows also carry Kiro's per-user limit, so they blame no provider."""
+        kas = _KasHistory(failures=1, frame=_USER_RATE_FRAME, **kas_kw)
+        _state, slot, _client, _outcomes = await self._run(tmp_path, monkeypatch, kas, **run_kw)
+
+        notices = [m for m in slot.messages if (m.get("meta") or {}).get("notice")]
+        assert [m["meta"]["notice"] for m in notices] == expected
+        for row in notices:
+            assert "throttl" in row["content"].lower(), row["content"]
+            assert "provider" not in row["content"].lower(), row["content"]
 
     @pytest.mark.asyncio
     async def test_throttle_fallback_swap_rewinds_before_its_resend(self, tmp_path, monkeypatch):

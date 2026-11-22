@@ -14172,11 +14172,11 @@
         "restored": "Conexão restabelecida",
         "interrupted": "Conexão interrompida",
         "give_up": "Conexão instável — tente novamente.",
-        "throttle_retrying": "O provedor do modelo está limitando as solicitações — tentando novamente…",
+        "throttle_retrying": "As solicitações estão sendo limitadas — tentando novamente…",
         "throttle_restored": "Limitação encerrada",
-        "throttle_interrupted": "O provedor do modelo continuou limitando as solicitações",
-        "throttle_give_up": "O provedor do modelo está limitando as solicitações — tente novamente.",
-        "throttle_resuming": "O provedor do modelo está limitando as solicitações — concluindo esta resposta…"
+        "throttle_interrupted": "Limitado — nova tentativa interrompida",
+        "throttle_give_up": "As solicitações estão sendo limitadas — tente novamente.",
+        "throttle_resuming": "As solicitações estão sendo limitadas — concluindo esta resposta…"
       },
       "gatewayNotice": {
         "turn_limit_minutes_many": "{{count}} minutos",
