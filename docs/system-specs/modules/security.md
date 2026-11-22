@@ -1066,7 +1066,18 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     decides whether a glob word can expand to an ssh-family program. It holds the
     ssh-family verb set, the quoted-separator sentinels and `_cannot_name_ssh_verb`.
   - `argv_floor_ssh.py` — the ssh self-target floor (`_is_ssh_to_self`), which reads
-    the gate, the frame walk and the host verdicts below it.
+    the gate, the frame walk and the host verdicts below it. `_judge_ssh_to_self` first
+    reads the line through the self floor's `_heredoc_data_view`, which blanks each
+    here-document body that no program on the line runs. When the view blanked a body
+    and the blanked line reaches no ssh to this host, the line is allowed, so
+    `python3 - <<'EOF'` with `n = a * localhost` in the body is not read as a glob
+    verb naming ssh and its target. The view is read on the words as written and
+    only then lowered, because bash matches a closing line case-sensitively; when
+    the words as written are not at hand, the view is not taken. The view is also
+    skipped, and the whole line read as before, when the text holds a `\r` (the view drops one from a tag but not from
+    the closing line, where bash keeps it) or a line holding `<<` ends in a backslash
+    (bash joins it to the next line; the view does not). Both guards only turn the
+    allow off, so this floor never refuses more than it did without the view.
   - `argv_floor_ssh_bodies.py` — the floor's reading of substitution bodies
     (`_reaches_self_over_ssh`). The static splice reads only the first command of a
     `$( )` or backtick body, so `$(echo hi; ssh -p 22 <this host> id)` would splice to
