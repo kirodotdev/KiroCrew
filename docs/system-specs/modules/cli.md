@@ -2034,8 +2034,13 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    step is skipped and the printed line says so. The engine is Kiro Crew's own
    install, which step 3 lays down for the new release's pin, and the
    gateway's boot-time "kiro-cli is outdated" warning (`_warn_if_kiro_cli_outdated`) is skipped on
-   that route for the same reason. The relay route and every other harness
-   keep the step as it was.
+   that route for the same reason. The step is also skipped, the printed line
+   saying so, when neither `agent.acp_backend` nor `agent.member_acp_backend`
+   runs kiro-cli (`cli_doctor._selected_roles_run_kiro_cli`, the test `kirocrew
+   doctor` makes), so a Claude or Codex install does not wait up to 120 s on a
+   self-update with the gateway down; an unreadable config keeps the
+   step. The relay route and a selection that runs kiro-cli keep the step as it
+   was.
 3. Installs the release through `platform/release_apply.apply_release`: the
    backend via `pip install -e .` (`dep_sync.sync_or_reinstall`), then the KAS
    engine the new revision pins (see [The release is the unit of
