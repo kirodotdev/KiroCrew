@@ -1610,13 +1610,14 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     ``permissions`` block and an ``allow`` it leaves out (``permissions.rules[<i>]``),
     since what they grant keeps asking, and, last, each unreadable ``allowedCommands``
     or ``allowedPaths`` entry (``<key>.allowedCommands: <entry> (<reason>)``): the
-    other entries apply unless the list is named whole. A ``hooks.postToolUse[<m>]`` key
-    gets :func:`unmet_post_tool_matchers_sentence` instead of "no effect". The
-    entries past the bound Kiro Crew applies get their own sentence
-    (``kas_unread_commands.over_limit_notice``).
+    other entries apply unless the list is named whole or cut by the bound. A
+    ``hooks.postToolUse[<m>]`` key gets :func:`unmet_post_tool_matchers_sentence`
+    instead of "no effect". The entries past the bound Kiro Crew applies get their own sentence
+    (``kas_unread_commands.over_limit_notice``), and so do the read and write
+    ``allowedPaths`` past theirs (``kas_unread_commands.allowed_paths_notice``).
     A Bot's worker gets its own deny wording (``kas_tool_view.deny_sentences``).
     """
-    from kiro_crew.acp.kas_unread_commands import over_limit_notice, unreadable_paths_notice
+    from kiro_crew.acp.kas_unread_commands import allowed_paths_notice, over_limit_notice
     from kiro_crew.agent_sdk.kas_tool_view import (
         allow_exclude_limit,
         deny_sentences,
@@ -1640,7 +1641,7 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
         "Each allows nothing, so a command only it matches asks for approval, or is refused "
         f"when denyByDefault is set{others}. Run kirocrew doctor to list them."
     )
-    unread_paths, keys = unreadable_paths_notice(agent, keys)
+    unread_paths, keys = allowed_paths_notice(agent, keys)
     named = [text for text in (entries if unread else "", unread_paths, over_limit) if text]
     if named and not keys and not judged and not deny_rest:
         return "ℹ️ " + " ".join(named)

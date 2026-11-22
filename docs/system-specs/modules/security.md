@@ -3772,8 +3772,14 @@ its names (so never a deny-only alias such as `delete_file`) whose every target
 `edit_target_candidates` names is covered as written and symlink-resolved, by the
 test the `spec-write-allowlist` row uses (`_write_target_uncovered`). A write whose
 targets cannot all be read grants nothing. Every other condition of the row still
-holds. An unusable entry, an over-long list and a withheld list are named in the
-session-start notice.
+holds. An unusable entry and a withheld list are named in the session-start
+notice. Past the 64-entry bound (this one and the read grant's below) the first 64
+still apply, and the notice names each entry past it by its position as written and
+its text (the first ten, then a count of the rest;
+`kas_unread_commands.name_unreadable_entries`, `paths_over_limit_notice`), never as a
+key with no effect, unless it names that list whole as withheld; a
+`fallbackAction: "deny"` list keeps its cut entries named, since the
+`spec-write-allowlist` row enforces its first 64.
 
 **KAS spec read grant (`allowedPaths`)** — the same for the read tool's
 `allowedPaths` (`fs_read` / `read`; kiro-cli reads `grep` and `glob` settings

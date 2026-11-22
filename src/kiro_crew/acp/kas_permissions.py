@@ -584,14 +584,12 @@ def crew_answered_paths(tools_settings: Any) -> list[str]:
     return _usable_allowed_paths(tools_settings)[:_MAX_ALLOWED_PATHS]
 
 
-def _paths_not_all_carried(paths: Any, tools_settings: Any, tool: str) -> bool:
-    """Whether some of *tool*'s ``allowedPaths`` cannot be answered: an entry is
-    unusable, or the bound cuts the list. Those paths keep prompting."""
-    keys = READ_SETTINGS_KEYS if tool in READ_SETTINGS_KEYS else WRITE_SETTINGS_KEYS
+def _paths_not_all_carried(paths: Any) -> bool:
+    """Whether some of an ``allowedPaths`` value cannot be answered: it is not a list,
+    or an entry is unusable. Those paths keep prompting. An entry past the bound is
+    named on its own (``kas_unread_commands.name_unreadable_entries``)."""
     return bool(paths) and (
-        not isinstance(paths, list)
-        or any(allowed_paths_mod.parse(p) is None for p in paths)
-        or len(_usable_allowed_paths(tools_settings, keys)) > _MAX_ALLOWED_PATHS
+        not isinstance(paths, list) or any(allowed_paths_mod.parse(p) is None for p in paths)
     )
 
 
@@ -1891,7 +1889,7 @@ def tools_settings_to_permissions(
             if tool in READ_SETTINGS_KEYS:
                 # No rule: Crew's gate answers a covered read (`crew_answered_read_paths`).
                 handled.add("allowedPaths")
-                if _paths_not_all_carried(settings.get("allowedPaths"), tools_settings, tool):
+                if _paths_not_all_carried(settings.get("allowedPaths")):
                     lost.append(f"{tool}.allowedPaths")
             # Kept apart so they never cost the denies above their place: they
             # travel only when the whole block still fits (below).
@@ -1910,9 +1908,9 @@ def tools_settings_to_permissions(
                 # usable `allowedPaths` do not cover (`spec_write_allowlist`).
                 handled.add("fallbackAction")
                 # No rule: Crew's gate answers a covered write (`crew_answered_paths`).
-                # Named when an entry is unusable or the bound cuts the list.
+                # Named when an entry is unusable.
                 handled.add("allowedPaths")
-                if _paths_not_all_carried(settings.get("allowedPaths"), tools_settings, tool):
+                if _paths_not_all_carried(settings.get("allowedPaths")):
                     lost.append(f"{tool}.allowedPaths")
                 if settings.get("fallbackAction") not in (
                     None,
