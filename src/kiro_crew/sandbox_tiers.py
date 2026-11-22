@@ -261,6 +261,28 @@ def app_backend_visible_targets(app_name: str, mode: str = "standard") -> tuple[
     )
 
 
+def app_backend_mac_key_mask_targets() -> tuple[str, ...]:
+    """Absolute paths of the session-token MAC key, for an app backend spawn.
+
+    ``trust/sel_hmac.key`` stays visible to agent sessions and MCP servers, which verify
+    session identity in-sandbox. A third-party app backend reads it nowhere, so
+    ``apps/backend.py`` passes this path as ``extra_hidden_dirs`` and the plan masks the
+    file alone. The key is made first (the first ``sel()`` of the process creates it when
+    absent), so a backend cannot be the one to create it; ``()`` means no key exists and the
+    caller must not spawn.
+    """
+    from kiro_crew.sel import sel, sel_hmac_key_path
+
+    try:
+        sel()
+        key = sel_hmac_key_path()
+    except Exception:  # noqa: BLE001 - a spawn must not fail on this lookup
+        logger.debug("could not resolve the trust-root key path for masking", exc_info=True)
+        return ()
+    paths = dict.fromkeys((str(key), os.path.realpath(key)))
+    return tuple(path for path in paths if os.path.lexists(path))
+
+
 def app_backend_secret_mask_targets() -> tuple[str, ...]:
     """Absolute paths of the gateway's internal-API secret files, for an app backend.
 

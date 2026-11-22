@@ -11,6 +11,7 @@ guard: a recorded pid whose live start time does not match names another process
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -127,6 +128,42 @@ def _write_pidfile(data: dict[str, dict[str, Any]]) -> None:
         logger.debug("Could not write app-backend pidfile: %s", exc)
 
 
+def _gateway_secret_identity() -> str:
+    """A fingerprint of the gateway's secret files, never their value.
+
+    It covers ``.local_secret`` and every ``run/gateway-*.secret`` by name, inode, size and
+    modification time. A new gateway boot writes new files, so the fingerprint changes.
+    """
+    root = config_dir()
+    parts: list[str] = []
+    for path in (root / ".local_secret", *sorted((root / "run").glob("gateway-*.secret"))):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path.name}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _spawn_predates_gateway_secret(app_name: str) -> bool:
+    """Whether the recorded spawn of *app_name* was not made beside the current secret.
+
+    A backend's sandbox masks the secret files that exist when it is spawned. A row that
+    names another fingerprint, or none, belongs to a sandbox that does not cover the
+    current files. No row means the gateway did not spawn it, so there is nothing to compare.
+    A pidfile that cannot be read says nothing about the spawn, so it counts as predating:
+    the listener is refused, never read as "no row".
+    """
+    rows = _read_pidfile_for_update()
+    if rows is None:
+        logger.warning("App-backend pidfile unreadable: not adopting %s", app_name)
+        return True
+    row = rows.get(app_name)
+    if not isinstance(row, dict):
+        return False
+    return row.get("secret_id") != _gateway_secret_identity()
+
+
 def _record_app_pid(
     app_name: str, pid: int, port: int, spawn_instance: str | None = None
 ) -> str | None:
@@ -154,7 +191,12 @@ def _record_app_pid(
             if data is None:
                 logger.warning("Backend of %s not recorded: pidfile could not be read", app_name)
                 return start_time
-            entry: dict[str, Any] = {"pid": pid, "start_time": start_time, "port": port}
+            entry: dict[str, Any] = {
+                "pid": pid,
+                "start_time": start_time,
+                "port": port,
+                "secret_id": _gateway_secret_identity(),
+            }
             if spawn_instance:
                 entry["spawn_instance"] = spawn_instance
             data[app_name] = entry

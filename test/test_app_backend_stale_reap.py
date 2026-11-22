@@ -23,9 +23,9 @@ def pidfile(tmp_path, monkeypatch):
 def test_record_read_forget_roundtrip(pidfile):
     with patch.object(backend_mod, "_proc_start_time", return_value="ST-1"):
         backend_mod._record_app_pid("code_reviewer", 4321, 9100)
-    assert backend_mod._read_pidfile()["code_reviewer"] == {
-        "pid": 4321, "start_time": "ST-1", "port": 9100,
-    }
+    row = backend_mod._read_pidfile()["code_reviewer"]
+    assert len(row.pop("secret_id")) == 64
+    assert row == {"pid": 4321, "start_time": "ST-1", "port": 9100}
     backend_mod._forget_app_pid("code_reviewer")
     assert "code_reviewer" not in backend_mod._read_pidfile()
 
@@ -846,7 +846,9 @@ class TestDeadLeaderOrphanedGroup:
         """The reap can only vouch a group the spawn stamped an instance on."""
         with patch.object(backend_mod, "_proc_start_time", return_value="ST-1"):
             backend_mod._record_app_pid("app", 4321, 9100, "inst-a")
-        assert backend_mod._read_pidfile()["app"] == {
+        row = backend_mod._read_pidfile()["app"]
+        row.pop("secret_id")
+        assert row == {
             "pid": 4321,
             "start_time": "ST-1",
             "port": 9100,

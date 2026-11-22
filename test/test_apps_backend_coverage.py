@@ -745,7 +745,7 @@ class TestSpawnPublicationOwnership:
         # what makes this a ratchet on the persisted row rather than a spot check.
         # The value itself cannot be pinned (a fresh uuid per spawn), so only its
         # presence and non-emptiness are asserted.
-        assert set(row) == {"pid", "start_time", "port", "spawn_instance"}
+        assert set(row) == {"pid", "start_time", "port", "spawn_instance", "secret_id"}
         assert (row["pid"], row["start_time"], row["port"]) == (702, "start-702", successor.port)
         # The successor's own incarnation token, which the startup reap needs to
         # vouch its process group once the leader is gone.
