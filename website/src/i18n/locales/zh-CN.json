@@ -14111,7 +14111,8 @@
         "quoting_author": "引用 {{author}}",
         "remove_quote": "移除引用",
         "jump_to_quoted_message": "跳转到被引用的消息",
-        "message_unavailable": "无法跳转 — 原消息已不在此对话中。"
+        "message_unavailable": "无法跳转 — 原消息已不在此对话中。",
+        "message_not_loaded": "无法跳转 — 被引用的消息不在此处已加载的消息中。"
       },
       "crewWindow": {
         "close": "关闭团队聊天",

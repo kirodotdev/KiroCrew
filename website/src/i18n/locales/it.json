@@ -14793,7 +14793,8 @@
         "quoting_author": "Citazione di {{author}}",
         "remove_quote": "Rimuovi citazione",
         "jump_to_quoted_message": "Vai al messaggio citato",
-        "message_unavailable": "Impossibile raggiungerlo: il messaggio originale non è più in questa conversazione."
+        "message_unavailable": "Impossibile raggiungerlo: il messaggio originale non è più in questa conversazione.",
+        "message_not_loaded": "Impossibile raggiungerlo: il messaggio citato non è tra i messaggi caricati qui."
       },
       "crewWindow": {
         "close": "Chiudi la chat dell’equipaggio",

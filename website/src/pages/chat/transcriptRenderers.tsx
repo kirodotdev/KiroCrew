@@ -969,6 +969,7 @@ export function createTranscriptRenderers(
                 continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
+                onJumpToQuote={ctx.onJumpToQuote}
               />
               {threadFooterFor(m, ctx, 'end')}
             </>,
