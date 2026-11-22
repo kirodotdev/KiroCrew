@@ -16,6 +16,7 @@ from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
 from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRuntimeError, continue_timed_out_calls
 from kiro_crew.agent_sdk.host_auth import for_terminal
+from kiro_crew.cli_chat_runs import ChatRun, note_turn, start_run
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
@@ -349,8 +350,10 @@ def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None,
     )
 
 
-async def _chat(message: str | None, model: str | None, agent: str | None = None) -> None:
-    """Run a single message or interactive chat session."""
+async def _chat(
+    message: str | None, model: str | None, agent: str | None = None, run: ChatRun | None = None
+) -> None:
+    """Run a single message or interactive chat session; :class:`ChatRun` documents *run*."""
     # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
     # never ran the gateway's KAS floor, so establish that evidence here, before
     # the config load below reads the pick. Probe-once, off the event loop.
@@ -441,16 +444,16 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # backend before the handshake completes: a failure partway through leaves a
     # process that only `shutdown()` ends.
     try:
-        await provider.start()
-
+        await start_run(provider, run)
         if message:
             # `-m` is documented as a non-interactive single message, so this
             # path never stops to ask -- a permission request is denied rather
             # than blocking a caller that may be a script.
             built = await context.first_message(provider, message)
             await _send_and_print(provider, built or message, interactive=False, gate=gate)
+            await note_turn(run, provider, message)
         else:
-            await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context)
+            await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context, run=run)
     finally:
         try:
             await provider.shutdown()
@@ -466,7 +469,9 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
             gc.collect()
 
 
-def _run_chat(message: str | None, model: str | None, agent: str | None = None) -> None:
+def _run_chat(
+    message: str | None, model: str | None, agent: str | None = None, run: ChatRun | None = None
+) -> None:
     """Run chat at the sync CLI boundary and render SIGINT as a clean exit.
 
     Also renders a fail-closed SANDBOX REFUSAL as a message rather than a traceback.
@@ -492,7 +497,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     this function's own ``BENIGN_SPAWNS`` entry read as stale.
     """
     try:
-        asyncio.run(_chat(message, model, agent=agent))
+        asyncio.run(_chat(message, model, agent=agent, run=run))
     except KeyboardInterrupt:
         print("\nBye! 👻")
     except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
@@ -1491,6 +1496,7 @@ async def _interactive(
     gate: _ToolGate | None = None,
     agent: str = "",
     context: CliSessionContext | None = None,
+    run: ChatRun | None = None,
 ) -> None:
     """REPL loop — read user input, stream responses, auto-compact at configured threshold.
 
@@ -1532,6 +1538,7 @@ async def _interactive(
         if context is not None and context.owed(provider, delivered_to):
             built = await context.first_message(provider, message)
         await _send_and_print(provider, built or message, interactive=True, gate=gate)
+        await note_turn(run, provider, message)
         if built is not None:
             delivered_to = provider.context_incarnation
         elif context is not None and context.clears_history(message):

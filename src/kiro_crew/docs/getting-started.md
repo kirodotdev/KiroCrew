@@ -176,6 +176,8 @@ is at `http://localhost:5476`.
 ```bash
 kirocrew chat                            # interactive REPL
 kirocrew chat -m "what's the weather like?"   # single message
+kirocrew chat --continue                 # reopen your last chat in this folder
+kirocrew chat --list                     # your recent terminal chats
 ```
 
 Lightweight mode: no messaging channels, no dashboard, just a terminal

@@ -350,6 +350,8 @@ choice blob makes the usage line unreadable.
 | `kirocrew chat -m -` | Read that single message from stdin to end of file (`cli_chat_stdin.py`), e.g. `git diff \| kirocrew chat -m -`, so a long prompt needs no shell quoting and stays out of the process list. The turn is the same non-interactive `-m` turn. Refused with one stderr line and exit 1, before any backend starts: a terminal stdin (it never waits on a keyboard), an empty or whitespace-only stdin, more than 1 MiB, and bytes that are not UTF-8. Not read under `--headless`, which takes `--message-file`: `--headless -m -` exits 2 before any run starts, rather than seeding the run with `-` |
 | `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D). On a harness other than kiro-cli and KAS the first message of each session carries Kiro Crew's session context (see [Session context](#session-context)) |
 | `kirocrew chat --model X` | Override model for this session |
+| `kirocrew chat --list` | Print the recorded terminal chats (see [Recorded terminal chats](#recorded-terminal-chats)), newest first: session id, last message time, the directory the command was started in, `--agent <name>` when one was given, and the first prompt line. Starts no backend |
+| `kirocrew chat --continue` | Reopen the newest recorded chat started in the current directory with the same `--agent` (no `--agent` matches only chats started without one) through the backend's own session restore, on KAS and Kiro CLI only. It exits 1, sending nothing and starting no new chat, when no chat matches, when that chat's run is still open in another terminal (where the platform gives a reboot-unique process token; `--continue` claims the entry for its own process as it picks it), on any other harness, or when the backend comes back on a session other than the one asked for; a restored chat is named on stderr (its time and first prompt line). With `-m` it answers one message and exits; `--model` changes the continued session's model. `--list` and `--continue` exclude each other and are refused with `--headless` (exit 2) |
 | `kirocrew chat --headless -m "seed"` | One unattended run on the running gateway of this data home (`cli_chat_headless.py`, design in `docs/request-for-change/rfc-builtin-eval.md` §12): signs in as the owner (and signs in again once when the session lapses: a 401, or a 403 carrying `X-Auth-Required: true`), opens one chat, sends the seed as an unattended turn (the gateway opens it with `[headless run cli:<run_id>]`, a nobody-typed marker the conductor's plan gate honours; a typed copy is defanged), polls until done, and never reads the terminal. `--mode conductor` opens it in conductor mode on the agent the gateway's `crew_mode_agent` resolves; `--approval-mode trust` puts that chat in Trust (audited; workers inherit it); `--until-done` stays through patrol and worker wakes until every ledger item is terminal or `--idle-grace` passes; `--cwd` (the chat's own project, no folder), `--timeout`, `--budget` (credits: the chats' saved turns plus their finished background agents, each counted when it ends), `--message-file` (sensitive paths refused), `--json`. A background agent that finished in the last 60 s keeps the run open, because the gateway can hold its result that long before it reaches the parent. With `work_ledger.remote_dispatch` on, a run exits 1 before opening a chat, because a remote crew's worker could not be stopped. A seed that opens with `/` or `@` exits 2: the marker opens the turn, so a command or saved prompt would not run. A pending approval, a question card, an `[OPTIONS:]` list or a ledger ask stops the run; every exit stops the run's chats and their background subagents (`POST /api/spawn/stop-all`) and closes them (history kept); a chat the gateway refuses to close is named in `unclosed`. Exit codes: 0 done, 1 error, 2 usage, 3 asked, 4 timeout, 5 budget, 6 not signed in, 7 sandbox refused, 8 no gateway, 9 incomplete (a conductor quiet with items still open), 130 interrupted. A headless-only flag without `--headless` exits 2 |
 | `kirocrew chat --agent <name>` | Chat as a crew member or a kiro agent. A `config.agents` key is a crew member and is resolved first through `resolve_agent_bindings`, as the dashboard and cron do: the session starts the member's bound kiro agent (the built-in `kirocrew` when it binds none) under the member's crew identity, with `--model` first and then the member's model pin. A member whose memory store is unusable is refused with a one-line error before anything spawns. Any other name is passed to kiro-cli as a kiro agent, unchanged. `agent.default_agent` is a template name and is never member-resolved. The tool gate keeps the name typed. The member's private memory store is not bound: every CLI chat shares the `cli_chat` session key, so a member bound to a named store opens its session with neither memory nor lessons (see [Session context](#session-context)). |
 | `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
@@ -1636,6 +1638,34 @@ After each message, checks `provider.context_usage_pct()`:
 - `>= autocompact_pct - CONTEXT_WARN_MARGIN_PCT`: warning printed to stderr. Relative, not absolute: the compact arm is tested first, so an absolute warn level at or above the threshold would be unreachable
 
 CLI compaction is blocking (single-user, acceptable).
+
+### Recorded terminal chats
+
+`cli_chat_runs.py` keeps `<data home>/cli_chat_runs.json`, the list `--list` prints
+and `--continue` chooses from; nothing else reads it, and the dashboard History does
+not list these chats. A run writes its entry after each turn that completes: the
+session id (`provider.session_id`), the resolved directory the command was started in
+(every CLI chat's backend runs in the same workspace directory, so the session cannot
+answer it), the time, the first prompt line, the `--agent` name, and the run's pid
+with its reboot-unique process token (`platform_compat.own_process_start_time`). A new
+chat that sends nothing writes nothing; `--continue` rewrites the pid and token of the
+entry it picks before its first turn, so a second `--continue` sees that chat as open
+where the platform gives a process token. The entry follows the run: after a
+compaction restart its next completed turn moves the entry onto the new session and
+keeps the first prompt line. The newest 50 entries are kept. Each write is a
+read-modify-write under a file lock, published with `atomic_write`. A turn's write
+runs off the event loop, and one that fails is logged and the chat goes on; a claim
+that cannot be written refuses the `--continue` (exit 1).
+
+The file is in the data home, which the agent can write, so an entry can choose which
+session is loaded (a plain id token: letters, digits, `-`, `_`, with its first prompt
+line no longer than a run keeps and its other text no longer than the longest Windows
+path; any other entry is ignored), refuse it as still open, and set the time and first
+prompt line the restore prints. It never chooses the agent: a continued chat's agent
+always comes from its own command line. `--continue` sets the entry's id as the
+provider's resume id before `start()` and then requires `provider.client.resumed` and
+`provider.session_id` to name that session: a load that fails falls through to a fresh
+session, which must not be handed to the person as their earlier chat.
 
 ## Entry Point
 

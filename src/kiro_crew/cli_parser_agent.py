@@ -58,6 +58,8 @@ Examples:
   kirocrew chat -m 'check my CRs'    # Single message
   git diff | kirocrew chat -m -      # Single message read from stdin
   kirocrew chat --model claude-opus  # Use specific model
+  kirocrew chat --continue           # Reopen your last chat in this directory
+  kirocrew chat --list               # Recent terminal chats, newest first
 
 Tool permission prompt (same keys as kiro-cli chat):
   y  allow this call once
@@ -79,6 +81,21 @@ Tool permission prompt (same keys as kiro-cli chat):
         "--model", help="Model to use (default: from config; `kirocrew models` lists the names)"
     )
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
+    earlier = chat_parser.add_mutually_exclusive_group()
+    earlier.add_argument(
+        "--list",
+        dest="list_chats",
+        action="store_true",
+        help="List the recent terminal chats (id, last message time, directory, --agent, first "
+        "prompt line) and exit",
+    )
+    earlier.add_argument(
+        "--continue",
+        dest="continue_chat",
+        action="store_true",
+        help="Reopen the newest terminal chat started in this directory with the same --agent, "
+        "on KAS or Kiro CLI. Exits 1, starting no new chat, when it cannot be restored",
+    )
     # --headless (rfc-builtin-eval.md §12): one unattended run on the local gateway.
     headless = chat_parser.add_argument_group("headless run (kirocrew chat --headless)")
     headless.add_argument(

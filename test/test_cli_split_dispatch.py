@@ -251,10 +251,12 @@ def test_a_coroutine_handler_runs_to_completion(
 def test_chat_reaches_the_chat_runner_with_its_flags(
     booted: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from kiro_crew.cli_chat_runs import ChatRun
+
     calls: list[Call] = []
     monkeypatch.setattr(cli, "_run_chat", _recorder(calls))
     _run(monkeypatch, "chat", "-m", "hello", "--model", "m1", "--agent", "a1")
-    assert calls == [(("hello", "m1"), {"agent": "a1"})]
+    assert calls == [(("hello", "m1"), {"agent": "a1", "run": ChatRun(agent="a1")})]
     assert "jail:chat" in booted
 
 
