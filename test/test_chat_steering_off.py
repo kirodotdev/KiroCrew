@@ -270,6 +270,15 @@ async def _call(
         return resp.status, await resp.json()
 
 
+def _bindings(
+    kiro_agent: str = "kirocrew", record: object = None, kind: str = "", alias: str = ""
+) -> SimpleNamespace:
+    """The session bindings the route reads: the agent, the record and the pick."""
+    return SimpleNamespace(
+        kiro_agent=kiro_agent, execution_context=record, selection_kind=kind, resolved_alias=alias
+    )
+
+
 @pytest.fixture
 def claude_chat(home, monkeypatch):
     """A cold chat on the Claude Code harness whose turns run the default agent."""
@@ -288,7 +297,7 @@ def claude_chat(home, monkeypatch):
     monkeypatch.setattr(
         selection,
         "resolve_session_agent_bindings",
-        lambda *_a, **_k: SimpleNamespace(kiro_agent="kirocrew"),
+        lambda *_a, **_k: _bindings(),
     )
     return _state(_ChatSlot("main"))
 
@@ -328,7 +337,7 @@ async def test_a_file_crew_does_not_write_cannot_be_switched(home, monkeypatch):
     monkeypatch.setattr(
         selection,
         "resolve_session_agent_bindings",
-        lambda *_a, **_k: SimpleNamespace(kiro_agent="kirocrew"),
+        lambda *_a, **_k: _bindings(),
     )
     state = _state(_ChatSlot("main"))
     _status, data = await _call(state, "GET")
@@ -336,6 +345,64 @@ async def test_a_file_crew_does_not_write_cannot_be_switched(home, monkeypatch):
     status, data = await _call(state, "PUT", {"path": path, "off": True})
     assert (status, data["code"]) == (409, "not_switchable")
     assert store.steering_off_for("dashboard:main") == frozenset()
+
+
+def _record(member_id: str | None, kind: str, name: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        member_id=member_id,
+        selection_kind=kind,
+        selection_name=name,
+        store=SimpleNamespace(legacy_name="default"),
+        memory_mode="",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("record", "kind", "owned"),
+    [
+        # A crewmate the chat picks, before its record is written or in a temporary chat.
+        (None, "member", True),
+        # The crewmate's own record, and its worker or delegate on its store.
+        (_record("m-1", "member", "mate"), "member", True),
+        (_record("m-1", "template", "kirocrew"), "template", True),
+        # A crewmate since removed: the turn cannot build its context either.
+        (_record("gone", "member", "mate"), "member", True),
+        # A plain chat keeps the switch.
+        (_record(None, "template", "kirocrew"), "template", False),
+        (None, "template", False),
+    ],
+)
+async def test_a_chat_whose_turns_carry_a_crewmate_envelope_offers_no_switch(
+    home, monkeypatch, record, kind, owned
+):
+    """An ordinary chat whose turns carry a crewmate's essentials envelope reads like
+    that crewmate's DM: the envelope does not read the switch-off record, so its rows
+    stay ``briefing`` and the route refuses the switch."""
+    import kiro_crew.session_agent_selection as selection
+
+    monkeypatch.setattr(
+        chat_handlers.KiroCrewConfig,
+        "load",
+        lambda: SimpleNamespace(
+            agent=SimpleNamespace(acp_backend="claude", member_acp_backend=""),
+            agents={"mate": SimpleNamespace(member_id="m-1", kiro_agent="kirocrew-mate-conductor")},
+            degraded_sections=frozenset(),
+            workspaces={},
+        ),
+    )
+    agent = "kirocrew-mate-conductor" if owned else "kirocrew"
+    monkeypatch.setattr(
+        selection,
+        "resolve_session_agent_bindings",
+        lambda *_a, **_k: _bindings(agent, record, kind, "mate"),
+    )
+    state = _state(_ChatSlot("main"))
+    _status, data = await _call(state, "GET")
+    row = next(r for r in data["files"] if r["name"] == "global.md")
+    assert (row["reaches"], row["switch"]) == (("briefing", "none") if owned else ("yes", "on"))
+    status, _data = await _call(state, "PUT", {"path": row["path"], "off": True})
+    assert status == (409 if owned else 200)
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@ P1 is on main from
 [#33600](https://github.com/kirodotdev/KiroCrew/pull/33600), and P2 from
 [#33966](https://github.com/kirodotdev/KiroCrew/pull/33966) for the Claude Code
 steering load only (folder steering deferred,
-[#34598](https://github.com/kirodotdev/KiroCrew/issues/34598)); the member essentials envelope is not filtered yet
+[#34598](https://github.com/kirodotdev/KiroCrew/issues/34598)); the member essentials envelope is not filtered: a chat whose turns carry it keeps its rows `briefing`
 ([#33955](https://github.com/kirodotdev/KiroCrew/issues/33955)). P3 is
 open (checked at `fc89562d69`: no turn-boundary steering digest on main). Tracks
 [#33112](https://github.com/kirodotdev/KiroCrew/issues/33112). Every main-side
