@@ -29,6 +29,7 @@ from kiro_crew.auth.login.endpoints import (
     BUILDER_ID_REGION,
     BUILDER_ID_START_URL,
     USER_AGENT,
+    idc_profile,
     oidc_scopes,
     social_service_url,
 )
@@ -517,8 +518,17 @@ class KasLoginService:
         # Only an explicit scope prefix changes the scopes (kiro-cli's
         # api.oidc.scopePrefix); unset keeps the public ones for every sign-in.
         scopes = oidc_scopes(await _oidc_scope_prefix())
-        stored = await asyncio.to_thread(self._store.load, identity)
-        client = builder_id.stored_client(stored, region, scopes)
+        # Only a start URL with a registered profile changes the call; it always
+        # registers its own client, so no stored registration of another form is reused.
+        form = (
+            await asyncio.to_thread(idc_profile, start_url)
+            if identity == "identity_center"
+            else None
+        )
+        client = None
+        if form is None:
+            stored = await asyncio.to_thread(self._store.load, identity)
+            client = builder_id.stored_client(stored, region, scopes)
         auth = None
         if client is not None:
             try:
@@ -530,7 +540,10 @@ class KasLoginService:
             except builder_id.BuilderIdAuthError as err:
                 logger.info("stored SSO-OIDC client refused, registering a new one: %s", err)
         if client is None or auth is None:
-            client = await builder_id.register_client(region, session=session, scopes=scopes)
+            extra = {"form": form} if form is not None else {}
+            client = await builder_id.register_client(
+                region, session=session, scopes=scopes, **extra
+            )
             auth = await builder_id.start_device_authorization(
                 client, region=region, start_url=start_url, session=session
             )
@@ -745,7 +758,15 @@ class KasLoginService:
             return {"status": "pending"}
         if pending.start_url:
             token.extra[START_URL_EXTRA_KEY] = pending.start_url
-        if pending.resolve_profile:
+        pinned = (
+            await asyncio.to_thread(idc_profile, pending.start_url)
+            if pending.resolve_profile
+            else None
+        )
+        if pinned is not None and pinned.profile_arn:
+            # The start URL's registered profile ARN: no control plane is asked.
+            token.profile_arn = pinned.profile_arn
+        elif pending.resolve_profile:
             # An IdC token is unusable without a profile ARN (the store itself drops
             # it), so resolution failures must end the login loudly, not save junk.
             # This leg deliberately gets no transport budget: the device code is

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -62,6 +63,19 @@ def test_lts_server_readers_read_every_preview_off(lts, all_on):
     assert KiroCrewConfig.load().dashboard.feature_previews == ALL_ON  # stored value kept
     readers = _readers()
     assert not any(readers.values()), readers
+
+
+def test_lts_reads_the_crew_client_preview_off(lts, all_on, monkeypatch):
+    """Config stores ``crew_client: true``; an LTS build still asks no edition profile."""
+    from kiro_crew.auth.login import endpoints
+
+    edition = SimpleNamespace(
+        dashboard=SimpleNamespace(idc_sign_in_profiles=lambda: pytest.fail("edition asked"))
+    )
+    monkeypatch.setattr("kiro_crew.platform.context.installed_context", lambda: edition)
+    assert KiroCrewConfig.load().dashboard.feature_previews["crew_client"] is True
+    assert edition_locks.preview_on("crew_client") is False
+    assert endpoints.edition_idc_profiles() == {}
 
 
 def test_oss_server_readers_still_follow_the_switch(all_on):
