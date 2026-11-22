@@ -176,31 +176,39 @@ export function distinctChanges(changes: readonly LaunchChange[]): LaunchChange[
 }
 
 /**
- * Env keys set by a launch on this side whose command the other side does not
- * run, unless a launch the other side alone runs sets the same key to the same
- * value. Such a launch replaced one with another command, so its own keys are
- * a change for it even when the set of values across all launches is the same
- * (a launch that newly carries a loader preload another launch already had).
+ * Whether a merged env-key list per side can show a change without hiding one.
+ * The gateway orders each side by its own hash, so launches are never paired
+ * by list position. It is safe in two cases only:
+ * - `single`: one launch per side, so the pairing is the only one possible,
+ *   unless a value is redacted or cut (equal displays could hide a change);
+ * - `same`: both sides run the same number of launches and every launch sets
+ *   the same pairs (compared as sets, so order is irrelevant), so no key can
+ *   have moved or changed. A launch with a hidden, redacted or cut value is
+ *   never `same`: equal displays cannot prove equal values. A change in launch count is never `same`: the
+ *   extra launch's whole env is new to the reader. A launch whose command was
+ *   replaced keeps the count and the env, so it is `same`, as in `single`:
+ *   the new command is drawn as changed and no env key changed.
+ * Anything else (several launches with different envs) returns `null`: the
+ * caller draws each launch with its own keys.
  */
-export function unmatchedKeys(
-  mine: { commands?: string[][]; envs?: string[][] },
-  other: { commands?: string[][]; envs?: string[][] },
-): Set<string> {
-  const cmds = (c?: string[][]) => new Set((c ?? []).map(x => JSON.stringify(x)))
-  const myCmds = cmds(mine.commands)
-  const otherCmds = cmds(other.commands)
-  const otherOnly = new Set(
-    (other.commands ?? []).flatMap((c, i) => (myCmds.has(JSON.stringify(c)) ? [] : (other.envs?.[i] ?? []))),
-  )
-  const out = new Set<string>()
-  ;(mine.commands ?? []).forEach((c, i) => {
-    if (otherCmds.has(JSON.stringify(c))) return
-    for (const pair of mine.envs?.[i] ?? []) {
-      const at = pair.indexOf('=')
-      if (at > 0 && !otherOnly.has(pair)) out.add(pair.slice(0, at))
-    }
-  })
-  return out
+export function mergedEnvRule(refusal: LaunchRefusal): 'single' | 'same' | null {
+  const before = (refusal.approved_commands ?? []).map((_, i) => refusal.approved_envs?.[i] ?? [])
+  const after = (refusal.commands ?? []).map((_, i) => refusal.envs?.[i] ?? [])
+  const value = (pair: string) => (pair.indexOf('=') > 0 ? pair.slice(pair.indexOf('=') + 1) : null)
+  // A redacted or cut value stands for many values, so equal displays do not
+  // prove an unchanged key; a hidden value's hash still tells a change.
+  const lossy = (pair: string) => {
+    const v = value(pair)
+    return v !== null && (v.includes('[REDACTED') || v.endsWith('…'))
+  }
+  if (before.length === 1 && after.length === 1) return [...before, ...after].some(env => env.some(lossy)) ? null : 'single'
+  if (before.length !== after.length) return null
+  // A hidden value stands for many values too, so for `same` it never counts.
+  const opaque = (pair: string) => value(pair) !== null && opaqueValue(value(pair) as string)
+  if ([...before, ...after].some(env => env.some(opaque))) return null
+  const key = (env: readonly string[]) => JSON.stringify([...new Set(env)].sort())
+  const all = new Set([...before, ...after].map(key))
+  return all.size <= 1 ? 'same' : null
 }
 
 /**
@@ -228,6 +236,42 @@ export function wholeLaunchChanges(refusal: LaunchRefusal): {
     after: fresh.map(draw),
     sameCommandChanged: [...gone, ...fresh].some(onBoth),
   }
+}
+
+/**
+ * For each launch on `mine`, the env keys to mark: a pair (`KEY=value`) on a
+ * launch the other side does not run whole, when the pair is not set on every
+ * launch of both sides. That covers a key a launch gained and a key that may
+ * have moved to another launch: without pairing launches, which the
+ * gateway's list order cannot support, the reader is shown where to look.
+ * A pair every launch sets on both sides (a shared PATH) is not marked.
+ */
+export function markedKeysPerLaunch(
+  mine: { commands?: string[][]; envs?: string[][] },
+  other: { commands?: string[][]; envs?: string[][] },
+): Set<string>[] {
+  const launches = (s: { commands?: string[][]; envs?: string[][] }) =>
+    (s.commands ?? []).map((command, i) => ({ command, env: [...new Set(s.envs?.[i] ?? [])] }))
+  const mineL = launches(mine)
+  const otherL = launches(other)
+  const counts = (ls: { env: string[] }[]) => {
+    const m = new Map<string, number>()
+    for (const l of ls) for (const p of l.env) m.set(p, (m.get(p) ?? 0) + 1)
+    return m
+  }
+  const mineCount = counts(mineL)
+  const otherCount = counts(otherL)
+  const whole = new Set(otherL.map(l => JSON.stringify([l.command, [...l.env].sort()])))
+  return mineL.map(l => {
+    const out = new Set<string>()
+    if (whole.has(JSON.stringify([l.command, [...l.env].sort()]))) return out
+    for (const p of l.env) {
+      const at = p.indexOf('=')
+      const everywhere = (mineCount.get(p) ?? 0) === mineL.length && (otherCount.get(p) ?? 0) === otherL.length
+      if (at > 0 && !everywhere) out.add(p.slice(0, at))
+    }
+    return out
+  })
 }
 
 /** Drawn launches with each identical one kept once. */
