@@ -360,6 +360,7 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
             monitor_loop_metrics.record_tick(loop, monitor_loop_metrics.OUTCOME_QUIET)
             now = time.time()
             fresh = now + loop.idle_secs
+            previous_due = loop.next_due_ts
             if pushed and loop.next_due_ts > now:
                 # A tick a worker's push brought forward is extra: keep the earlier
                 # deadline so a quiet push never delays the scheduled check.
@@ -368,6 +369,10 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
                 loop.next_due_ts = fresh
             self._persist_soon()
             self._arm_from_deadline(loop)
+            # The dashboard learns a deadline only from a state frame; without one
+            # its countdown reads "due" once the old deadline passes.
+            if loop.next_due_ts != previous_due and self._loops.get(loop.id) is loop:
+                self._emit("updated", loop)
         return
     self._firing.add(loop.id)
     try:
