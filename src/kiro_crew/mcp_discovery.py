@@ -75,8 +75,8 @@ def _spawn_excluded() -> set[str]:
         _quarantine_warned.add(name)
         logger.warning(
             "MCP server %s failed %d consecutive probes, so discovery will no longer "
-            "spawn it. Fix it, then clear it from the MCP panel (POST "
-            "/api/mcp/quarantine/clear) — the exclusion outlives a gateway restart; "
+            "spawn it. Fix it, then select Retry server on its row in MCP Servers "
+            "(POST /api/mcp/quarantine/clear) — the exclusion outlives a gateway restart; "
             "or set agent.mcp_quarantine_after_failures to 0 to stop quarantining.",
             name,
             snap[name].get("fails") or 0,
