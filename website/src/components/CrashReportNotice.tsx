@@ -42,6 +42,9 @@ import { fmtDateTime, toDate } from '../i18n/format'
  */
 const crashReportsAPI = (): CrashReportsAPI | undefined => window.crashReportsAPI
 
+/** Waits before each re-ask of a refused `get()`, from the previous refusal. */
+const REASK_DELAYS_MS = [15_000, 45_000, 120_000, 300_000, 600_000] as const
+
 export default function CrashReportNotice() {
   const [count, setCount] = useState(0)
   const [lastCrashAt, setLastCrashAt] = useState<Date | null>(null)
@@ -74,11 +77,13 @@ export default function CrashReportNotice() {
     const api = crashReportsAPI()
     if (!api) return
     let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
     // Swallowing the rejection is deliberate: the handler rejects a sender that
     // is not the local dashboard (a connection window pointed at a remote
     // gateway shares this preload), and that is a correct outcome, not an error
-    // worth putting on screen.
-    void api.get()
+    // worth putting on screen. A refused ask runs no scan, and the shell's
+    // port-owner check can refuse for minutes after launch, so it is re-asked.
+    const ask = (attempt: number): void => void api.get()
       .then(summary => {
         if (!alive) return
         setCount(summary.newCount)
@@ -86,8 +91,12 @@ export default function CrashReportNotice() {
         // line rather than printing the formatter's "—".
         setLastCrashAt(toDate(summary.lastCrashAt))
       })
-      .catch(() => {})
-    return () => { alive = false }
+      .catch(() => {
+        const delay = REASK_DELAYS_MS[attempt]
+        if (alive && delay !== undefined) timer = setTimeout(() => ask(attempt + 1), delay)
+      })
+    ask(0)
+    return () => { alive = false; clearTimeout(timer) }
   }, [])
 
   if (dismissed || count < 1) return null

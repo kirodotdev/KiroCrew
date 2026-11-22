@@ -1,4 +1,4 @@
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import CrashReportNotice from './CrashReportNotice'
 import { fmtDateTime } from '../i18n/format'
@@ -16,6 +16,16 @@ function bridge(present: boolean) {
 }
 
 const LAST_CRASH_AT = '2026-10-28T19:19:55.283Z'
+
+const refused = () => new Error('crash-reports:get is restricted to the local dashboard')
+
+/** The whole re-ask schedule (15 s + 45 s + 2 + 5 + 10 min) plus a margin. */
+const PAST_SCHEDULE_MS = 20 * 60_000
+
+/** Lets every settled ask and every timer due within `ms` run. */
+async function advance(ms: number) {
+  await act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+}
 
 function summary(over: Partial<Summary> = {}): Summary {
   return { newCount: 2, lastCrashAt: LAST_CRASH_AT, ...over }
@@ -186,5 +196,56 @@ describe('CrashReportNotice', () => {
     await screen.findByRole('status')
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  // The desktop shell refuses the ask while its port-owner check fails, which
+  // can last minutes after launch, and runs no scan on a refused ask. The notice
+  // asks again on a bounded schedule instead of waiting for a page reload.
+  describe('re-asking after a refused ask', () => {
+    beforeEach(() => { vi.useFakeTimers() })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('announces the crash once a later ask is answered', async () => {
+      get.mockRejectedValueOnce(refused()).mockRejectedValueOnce(refused())
+      renderWithProviders(<CrashReportNotice />)
+      await advance(0)
+      expect(get).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      await advance(15_000)
+      expect(get).toHaveBeenCalledTimes(2)
+      await advance(45_000)
+      expect(get).toHaveBeenCalledTimes(3)
+      expect(screen.getByRole('status')).toHaveTextContent(/closed unexpectedly/i)
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(3)
+    })
+
+    it('stops after five re-asks when every ask is refused', async () => {
+      get.mockRejectedValue(refused())
+      renderWithProviders(<CrashReportNotice />)
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(6)
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(6)
+    })
+
+    it('asks no more once an ask is answered, even with nothing new', async () => {
+      get.mockResolvedValue(summary({ newCount: 0 }))
+      renderWithProviders(<CrashReportNotice />)
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(1)
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    })
+
+    it('clears a pending re-ask on unmount', async () => {
+      get.mockRejectedValue(refused())
+      const { unmount } = renderWithProviders(<CrashReportNotice />)
+      await advance(0)
+      expect(get).toHaveBeenCalledTimes(1)
+      unmount()
+      await advance(PAST_SCHEDULE_MS)
+      expect(get).toHaveBeenCalledTimes(1)
+    })
   })
 })
