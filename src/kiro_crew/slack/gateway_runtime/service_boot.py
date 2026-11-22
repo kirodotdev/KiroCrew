@@ -150,6 +150,8 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     would trade a blocking bug for a thread-affinity one. The session map,
     which holds no asyncio primitives, is the exception: it is built in a
     worker thread so its startup read can retry a Windows sharing violation.
+    So is the skills loader, which holds none either and resolves every
+    ``skills.extra_paths`` root while it is built.
     (Other sync
     filesystem steps — e.g. agent-config install — remain on the loop;
     they are bounded small-file work, not usage-scaled. The builtin-skills
@@ -309,7 +311,7 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     # it may replace them, so its cost scales with what users put in the
     # skills dir — it must gate neither the event loop nor the dashboard
     # socket. Listings pick the synced skills up as soon as it completes.
-    skills = SkillsLoader(install_builtins=False)
+    skills = await asyncio.to_thread(lambda: SkillsLoader(install_builtins=False))
     # The in-place restarts end in os.execv, which kills the usage ledger's
     # daemon flush thread with up to 60 s of hits still in memory. The pre-exec
     # seam runs this before both of them; _shutdown_and_exit flushes on its own.

@@ -886,11 +886,13 @@ def reconfigure(self, cfg: KiroCrewConfig) -> None:
 def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
     """Resolve and screen ``skills.extra_paths`` -- filesystem work, no state.
 
-    Runs the SAME screening as construction -- expanduser, resolve,
+    The one screening for construction and reload -- expanduser, resolve,
     ``is_sensitive_path`` reject, existence check -- so a root added by hand to
     ``config.json`` can no more reach a credential directory than one present at
-    boot. Fails closed per entry: a rejected or missing root is dropped with the
-    same log line rather than admitted.
+    boot. Fails closed per entry: a rejected or missing root is dropped with a
+    warning rather than admitted. A root on a slow or network mount blocks here
+    until the mount answers, so a caller on the event loop runs this in a worker
+    thread.
     """
     resolved_paths: list[Path] = []
     # Logged by position, not value: a rejected entry is by definition a path
@@ -900,14 +902,14 @@ def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
         try:
             resolved = Path(p).expanduser().resolve()
         except (OSError, RuntimeError, ValueError):
-            logger.warning("skills.extra_paths[%d] cannot be resolved; skipped on reload", index)
+            logger.warning("skills.extra_paths[%d] cannot be resolved; skipped", index)
             continue
         if is_sensitive_path(str(resolved)):
-            logger.warning("Skipping sensitive skills.extra_paths[%d] on reload", index)
+            logger.warning("Skipping sensitive skills.extra_paths[%d]", index)
         elif resolved.is_dir():
             resolved_paths.append(resolved)
         else:
-            logger.debug("skills.extra_paths[%d] does not exist; skipped on reload", index)
+            logger.warning("skills.extra_paths[%d] is not a reachable directory; skipped", index)
     return resolved_paths
 
 

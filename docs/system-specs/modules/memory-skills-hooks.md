@@ -6348,12 +6348,19 @@ exclude). To keep it off the per-message filesystem/config hot path:
   resolve, deduplicate, sort or probe a path: the loader below remains the only authority, and
   a path it declines is skipped there rather than rejected at the save;
 - `extra_paths` is re-resolved by `reconfigure(cfg)` on a config write, running
-  the SAME screening as construction — expanduser, resolve, `is_sensitive_path`
-  reject, existence check — and failing closed per entry, so a root added by hand
-  to `config.json` can no more reach a credential directory than one present at
-  boot. An entry that cannot be resolved at all (an unknown `~user`, an embedded
-  NUL) is skipped with a warning at construction and on reload, never raised, so
-  one bad entry cannot stop the loader. Edition-contributed roots are preserved and stay LAST (lowest
+  the SAME screening as construction (`_screen_extra_paths`) — expanduser, resolve,
+  `is_sensitive_path` reject, existence check — and failing closed per entry, so a
+  root added by hand to `config.json` can no more reach a credential directory than
+  one present at boot. Each skipped entry logs a warning naming its position
+  (`skills.extra_paths[1]`), never its value. An entry that cannot be resolved at
+  all (an unknown `~user`, an embedded NUL) is skipped, never raised, so one bad
+  entry cannot stop the loader; one that is not a directory (a missing folder, or a
+  Windows network share that cannot be reached) is skipped the same way. A root on
+  a slow or network mount blocks the resolve until the mount answers, so gateway
+  start, `kirocrew run` and the eval runner build the loader in a worker thread (it
+  holds no asyncio primitives): the event loop keeps running, and start, the
+  dashboard bind included, still waits for the screening.
+  Edition-contributed roots are preserved and stay LAST (lowest
   precedence): they come from the platform context, not config, so a config write
   must not drop them. The discovery cache is cleared, so the next listing walks
   the new roots instead of serving the old set for the rest of the TTL;
