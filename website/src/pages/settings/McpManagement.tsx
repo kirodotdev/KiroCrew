@@ -1171,7 +1171,7 @@ export function McpManagement({
               </TabsTrigger>
               <TabsTrigger value="sharing">
                 <Share2 size={14} />
-                <span>{i18nT('pages.mcpPage.view_sharing')}</span>
+                <span {...uiLocation('mcp.sharing-view')}>{i18nT('pages.mcpPage.view_sharing')}</span>
               </TabsTrigger>
             </TabsList>
           </div>

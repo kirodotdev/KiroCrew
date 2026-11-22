@@ -37,6 +37,7 @@ import {
 } from './mcpManagementModel'
 import { RefusalLaunch, SHARE_BUTTON_CLASS } from './McpManagementLaunchReview'
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 export const HERO_TITLE_ID = 'mcp-hero-title'
 const SWITCH_NOTE_ID = 'mcp-hero-switch-note'
@@ -288,6 +289,7 @@ export function ApprovalCard({
           className={SHARE_BUTTON_CLASS}
           aria-describedby="mcp-approval-title"
           onClick={onReview}
+          {...uiLocation('mcp.review-approve')}
         >
           {i18nT('pages.mcpManagement.review_approve')}
         </Btn>
