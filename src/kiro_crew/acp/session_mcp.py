@@ -1513,14 +1513,25 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
     # still voids the pass. The first sample's descriptor is held until the
     # second is taken: a freed inode's number may go to the very next file
     # created, so a swap and swap-back inside one timestamp tick could
-    # otherwise return the first identity for a different file.
+    # otherwise return the first identity for a different file. An in-place
+    # same-size write inside the tick of the file's last change moves no field
+    # at all, so a file changed less than a settle period ago is re-read after
+    # the second sample and the pass is kept only when the re-read agrees.
     paths = [path for _label, path, _read in reads]
     changed: tuple[str, Path, str] = (reads[0][0], reads[0][1], _UNREADABLE_CHURN)
     for _ in range(_NATIVE_SOURCES_BRACKETED_PASSES):
         with contextlib.ExitStack() as held:
+            # Read before the first sample, so the age it gives is never more
+            # than the file's real age when it was sampled.
+            sampled_at = _wall_ns()
             before = [_settings_file_identity(path, hold=held) for path in paths]
             sources = _read_native_sources_once(reads)
             after = [_settings_file_identity(path) for path in paths]
+        unsettled = [
+            (label, path, _UNREADABLE_CHURN)
+            for (label, path, _read), was in zip(reads, before)
+            if isinstance(was, tuple) and sampled_at - was[2] < _NATIVE_SETTLE_NS
+        ]
         moved = [
             (
                 label,
@@ -1532,10 +1543,25 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
             for (label, path, _read), was, now in zip(reads, before, after)
             if was != now or was is _IDENTITY_UNKNOWN
         ]
-        if not moved:
+        if not moved and (not unsettled or _reread_agrees(reads, sources)):
             return sources
-        changed = moved[0]
+        changed = (moved or unsettled)[0]
     raise NativeSettingsUnreadable(*changed)
+
+
+def _reread_agrees(reads: list[tuple[str, Path, Any]], sources: list[NativeSettingsSource]) -> bool:
+    """Whether a fresh read, taken after the pass's second sample, returns *sources*.
+
+    A rewrite that the identity cannot see has been undone by the second sample
+    or it has not: if it has, this read sees the file as it is now and differs
+    from what the pass read; if it has not, the pass read what the file still
+    holds. A re-read that fails is not agreement.
+    """
+    try:
+        again = _read_native_sources_once(reads)
+    except NativeSettingsUnreadable:
+        return False
+    return [src.servers for src in again] == [src.servers for src in sources]
 
 
 #: How many bracketed passes :func:`native_settings_sources` makes off the event
@@ -1544,6 +1570,20 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
 #: moves under every pass is churning faster than any snapshot can be trusted,
 #: and the set is refused like an unreadable file.
 _NATIVE_SOURCES_BRACKETED_PASSES = 4
+
+#: Least age, by the wall clock, of a settings file's mtime for two equal
+#: identity samples to prove it was not rewritten between them. A same-size
+#: write in the same timestamp tick as the last change leaves the mtime as it
+#: was. FAT keeps a 2 s tick and HFS+ a 1 s tick; ext4's follows the kernel's
+#: coarse clock, a few milliseconds. The same bound the history listing's
+#: directory stamps settle on (``history_listing_index._DIR_STAMP_SETTLE_NS``).
+_NATIVE_SETTLE_NS = 2 * 10**9
+
+
+def _wall_ns() -> int:
+    """The wall clock :data:`_NATIVE_SETTLE_NS` is measured on (a test replaces it)."""
+    return time.time_ns()
+
 
 #: Identity of a settings file whose identity could not be taken safely. It
 #: never matches, so a pass it brackets is voided.
@@ -1556,8 +1596,10 @@ def _settings_file_identity(path: Path, *, hold: contextlib.ExitStack | None = N
     An atomic replace yields a new inode number while the replaced inode is
     still open -- *hold* keeps the sample's descriptor open for that (POSIX;
     see :func:`kiro_crew.hooks.safe_file_identity`) -- and an in-place write
-    moves the mtime or size, so two equal identities mean the file was neither
-    replaced nor rewritten in between. Every sample goes through
+    moves the mtime or size once the last change is a tick old, so two equal
+    identities of a settled file mean it was neither replaced nor rewritten in
+    between (a file younger than :data:`_NATIVE_SETTLE_NS` is re-read instead).
+    Every sample goes through
     :func:`kiro_crew.hooks.safe_file_identity`, which screens the path afresh
     and reads the identity from a no-reparse descriptor, so no sample follows a
     link swapped in after an earlier one. A refused or unopenable path returns

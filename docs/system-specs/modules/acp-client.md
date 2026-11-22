@@ -2249,7 +2249,11 @@ The details below describe the Kiro and Claude paths implemented directly here:
     open until the second is taken (`safe_file_identity(hold=...)`), because a
     filesystem may give a freed inode's number to the next file it creates, and a
     swap and swap-back in one timestamp tick would otherwise sample equal to the
-    file the pass started on; after `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
+    file the pass started on. An in-place same-size rewrite inside the tick of
+    the file's last change moves no identity field, so when a file's mtime is
+    under `_NATIVE_SETTLE_NS` (2 s) old by the wall clock the pass is read once
+    more after the second sample and kept only when that re-read returns the
+    same servers; a settled file costs no extra read. After `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
     set is treated as unreadable, the same as a refused read. When the settings
     are unreadable every identity element is withheld and a WARNING names the
     agent: its unpooled Kiro Crew servers mounted from the spec then refuse calls
