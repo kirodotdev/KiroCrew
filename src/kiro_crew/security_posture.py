@@ -1184,6 +1184,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # own uploaded file before it enters the prompt. Inbound sanitisation,
         # not agent output on its way to a user.
         "messaging/attachments.py",
+        # Inbound sheet digest: redacts the text of a user's own uploaded CSV or
+        # TSV before its digest enters the prompt, as the ingestion above does.
+        "acp/sheet_digest.py",
         "slack/interactions.py",
         "slack/interactions_approvals.py",
         "slack/interactions_modals.py",
