@@ -941,6 +941,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     from kiro_crew.config.loader_locations import (  # noqa: F401
         WorkspaceDirUnusable,
         _first_non_directory_on_path,
+        _is_broad_root,
         _PinnedCreateRefusal,
         _read_saved_workspace_dir,
         _resolve_workspace_root,

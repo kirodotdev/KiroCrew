@@ -87,13 +87,11 @@ def test_a_child_folder_of_the_home_is_still_used(crews):
     assert _channel_cwd("child-crew") == dirs["child"]
 
 
-@pytest.mark.parametrize("spelling", ["absolute", "dot"])
-def test_an_archive_config_with_the_data_home_as_workspace_folder_is_refused(crews, spelling):
+def test_an_archive_config_with_the_data_home_as_workspace_folder_is_refused(crews):
     from kiro_crew.archive_config_vetting import config_document_refusal
 
     _, dirs = crews
-    folder = dirs["data"] if spelling == "absolute" else "."
-    refusal = config_document_refusal({"workspaces": {"evil": {"dir": folder}}})
+    refusal = config_document_refusal({"workspaces": {"evil": {"dir": dirs["data"]}}})
     assert refusal is not None and "evil" in refusal
     assert dirs["data"] not in refusal
 
