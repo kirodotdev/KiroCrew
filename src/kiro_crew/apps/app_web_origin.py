@@ -636,13 +636,16 @@ async def serve_app_web_origin(
     from kiro_crew.dashboard.origin import (
         frame_ancestors_value,
         is_direct_local_request,
+        is_host_forwarded_request,
         is_proxied_request,
     )
 
     gate = ssm_gate.gate if ssm_gate is not None else None
     if gate is not None and gate.owns(request):
         return await _refusal(request, 421, "arrived on the Session Manager listener")
-    if is_proxied_request(request) or not is_direct_local_request(request):
+    if is_proxied_request(request) or not (
+        is_direct_local_request(request) or is_host_forwarded_request(request)
+    ):
         return await _refusal(request, 421, "not a direct local request")
     origins = dashboard_loopback_origins(request.app.get("allowed_origins") or ())
     pane = port not in _served_ports(origins)

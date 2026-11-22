@@ -6120,7 +6120,14 @@ is decided there and reaches no dashboard layer:
 
 - served only to a direct local request (`is_direct_local_request`, and not
   `is_proxied_request`): a loopback peer with no forwarding header, not relayed.
-  An `ssh -L` forward is served; a tailnet, relayed or proxied peer gets 421. A
+  An `ssh -L` forward is served; a tailnet, relayed or proxied peer gets 421.
+  A forward the container's host delivers into a container's loopback is served
+  too (`is_host_forwarded_request`): the socket's address is loopback and the
+  peer is link-local, as when the container's SSH server runs on its host and
+  its forwards arrive from the host's end of the link (for example
+  `169.254.255.193`), still with no forwarding header. The kernel drops a
+  `127.0.0.0/8` packet that arrives on a real interface, so only the host itself
+  produces that shape. Every other gate keeps `is_direct_local_request`. A
   request that arrived on the Session Manager listener's port gets 421 too,
   checked by listener (`SsmGate.owns`) because this router runs before that
   listener's gate;
@@ -6149,7 +6156,7 @@ is decided there and reaches no dashboard layer:
 usually not a dashboard port here (Instances spec §4). The pane's dashboard
 token carries the signed `embed_parent_port` claim, the hub page's port. When
 the token layer authenticates a dashboard (non-app) request with such a token,
-on a direct local request whose `Host` is `localhost`, `127.0.0.1` or
+on a direct local or host-forwarded request whose `Host` is `localhost`, `127.0.0.1` or
 `kirocrew.localhost` on a port P (no port in `Host` reads as 80, as the router
 reads it), it records
 `P -> {parent port: session_exp}` in memory (`apps/pane_ports.py`,
