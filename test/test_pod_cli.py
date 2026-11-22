@@ -345,7 +345,15 @@ class TestUpVerb:
         c = self._prep(base, monkeypatch, dist=False)
         with pytest.raises(SystemExit):
             pod_cli._up(
-                c, argparse.Namespace(name="demo", json=False, seed="", ttl="2h", provision=False)
+                c,
+                argparse.Namespace(
+                    # flake-ok: ttl is the token lifetime `up` records, not a wait or deadline
+                    name="demo",
+                    json=False,
+                    seed="",
+                    ttl="2h",
+                    provision=False,
+                ),
             )
         cd_line = next(line for line in capsys.readouterr().err.splitlines() if " cd " in line)
         assert shlex.split(cd_line.split("):", 1)[1]) == [
