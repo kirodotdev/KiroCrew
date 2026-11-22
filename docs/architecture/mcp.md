@@ -641,7 +641,7 @@ quarantine exclusion, and the discover-and-sync step (`sync_discovered_servers`,
 | `mcp_discovery_managed.py` | the managed servers' subcommand and tool-module tables, `managed_server_is_session_bound`, the in-process tool read, and stale-command repair |
 | `mcp_discovery_config.py` | loading the agent config and the `mcp.json` sources per scope, and `list_servers` |
 | `mcp_discovery_remote.py` | `_probe_remote`: the SSRF vet and pinned connection, the HTTP handshake, header expansion, and the authorization checks |
-| `mcp_discovery_probe.py` | `probe_server`: refusing a disabled server, and the stdio handshake of a local server spawned in the sandbox on a private loop, with its temp refusals |
+| `mcp_discovery_probe.py` | `probe_server`: refusing a disabled server, and the stdio handshake of a local server spawned in the sandbox on a private loop, with its temp refusals; on a centrally governed host it runs Kiro Crew's own managed server through a trusted absolute `env` that sets the scrub-listed cache-only policy markers as assignments (`_with_post_scrub_markers`), so a `sandbox.min_level` floor that raises the probe to the cc or strict tier, whose launcher scrubs them, still starts the child in the central policy tier |
 
 `list_servers()` reads `~/.kiro/agents/kirocrew.json`, then each scope file with
 provenance, re-resolves stale managed commands, and overlays cached probe
