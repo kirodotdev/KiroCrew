@@ -53,7 +53,7 @@ omit the policy.
 | `cfg` | carrier (`KiroCrewConfig`) | loaded config | same |
 | `providers` | adapter | `DefaultProviderRegistry` (the baseline in `agent_sdk/backends.py`; registration is a no-op) | registers an edition backend after the core knows and verifies its routing |
 | `publish` | adapter | `DefaultPublishRegistry` (registers the personal cloud drive under `PERSONAL_DRIVE_PROVIDER`; leaves the unnamed default unregistered) | registers enterprise artifact/publish providers |
-| `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup` and `works_in_place` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning; repositories a Bot's worker works in place |
+| `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup`, `works_in_place`, `worker_worktree_subpath`, `prepare_worktree` and `release_worktree` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning; repositories a Bot's worker works in place; a per-worker worktree layout and its setup and tidy-up |
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
 | `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
@@ -1353,6 +1353,23 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `safe_context_call`, so an older companion's `AttributeError`, or any other
   raise, answers `False`, and `PlatformCompositionError` propagates out of
   `ensure`.
+- `AgentRuntime.worker_worktree_subpath(repo: str) -> tuple[str, ...] | None`:
+  asked by `crewmate_worktree.ensure` on a worker's turn, with the repository's
+  checkout root. `None` (Default): the Bot's one shared worktree, as above. One to
+  three plain folder names (each one the name cleaning keeps as it is, never `.`
+  or `..`): the worker gets its own worktree at
+  `<Bot worktrees>/workers/<worker>/<names...>` on
+  `<prefix><slug>/<worker>/<repo>`, removed when its session is closed
+  (crew-mode.md). Any other answer is `None` with a warning; read through
+  `safe_context_call` like `works_in_place`.
+- `AgentRuntime.prepare_worktree(repo: str, path: str) -> None`: called by
+  `crewmate_worktree.ensure` once, right after a `git worktree add` it made
+  succeeds, in either layout. A raise undoes the add (folder, registration, and
+  a branch it cut) and refuses that worktree. Default: nothing; a runtime without
+  the method skips it.
+- `AgentRuntime.release_worktree(repo: str, path: str) -> None`: called after
+  each `git worktree remove` the gateway runs on a Bot's worktree succeeds. A
+  kept (dirty) worktree is not released, and a raise is logged. Default: nothing.
 - `SlackEnterpriseGate.heartbeat_safe_tools() -> frozenset[str]` — consulted by
   `slack/gateway_runtime/tool_policy.py::_is_heartbeat_safe_tool` after the core
   branches, matched only as the exact trusted `@server/tool` identity. Default

@@ -1078,6 +1078,10 @@ async def _thread_turn_body(
         if log is None:
             _final(_FAILED_FALLBACK, is_error=True)
             return
+        from kiro_crew.dashboard.crewmate_worktree_scope import settle_worker_project
+
+        # A Bot worker's close cleanup may be removing the folder its project names.
+        await settle_worker_project(state, slot)
         project: str | None = slot.project or None
         slot_agent: str | None = slot.agent or None
         kiro_agent: str | None = None

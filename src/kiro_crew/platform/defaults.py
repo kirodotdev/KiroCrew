@@ -169,6 +169,18 @@ class DefaultAgentRuntime:
         # WIRED: ``crewmate_worktree.ensure``. Every repository gets a Bot worktree.
         return False
 
+    def worker_worktree_subpath(self, repo: str) -> "tuple[str, ...] | None":
+        # WIRED: ``crewmate_worktree.ensure``. A Bot's workers share its one worktree.
+        return None
+
+    def prepare_worktree(self, repo: str, path: str) -> None:
+        # WIRED: ``crewmate_worktree.ensure``, after ``git worktree add``.
+        return None
+
+    def release_worktree(self, repo: str, path: str) -> None:
+        # WIRED: ``crewmate_worktree``, after each ``git worktree remove``.
+        return None
+
 
 class DefaultAgentExecutableResolver:
     """Use the executable selected by the public installation unchanged."""

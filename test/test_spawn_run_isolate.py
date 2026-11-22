@@ -19,7 +19,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import subagent_continuable_helpers
-from test_crewmate_worktree import _commit_in, _git, _init, git_here  # noqa: F401
+from crewmate_worktree_helpers import (  # noqa: F401 - fixtures
+    _commit_in,
+    _git,
+    _init,
+    git_here_fixture,
+)
 
 import kiro_crew.subagent_persistence as sp
 from kiro_crew import crewmate_worktree as cw

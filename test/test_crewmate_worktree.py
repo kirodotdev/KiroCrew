@@ -7,6 +7,11 @@ crewmate one worktree per repository, at
 ``<crewmate workspace>/worktrees/<slug>/<repo>-<hash>``, on a branch of its own,
 points its workers' cwd at it, and removes it with the crewmate. The rest of the
 git work is the worker's own.
+
+An edition can instead give each worker its own worktree
+(``AgentRuntime.worker_worktree_subpath``), set up each new one
+(``prepare_worktree``) and tidy up after each one removed
+(``release_worktree``); a worker's own worktrees go when its session is closed.
 """
 
 from __future__ import annotations
@@ -22,87 +27,22 @@ from types import SimpleNamespace
 
 import pytest
 from config_loader_helpers import _load_from_dict
+from crewmate_worktree_helpers import (  # noqa: F401 - fixtures
+    _commit_in,
+    _git,
+    _init,
+    _not_a_worktree_reason,
+    edition_runtime_fixture,
+    git_here_fixture,
+    repo_fixture,
+    sandboxed_git_fixture,
+)
 from test_chat_agent_selection import _finished
 from test_crewmate_worker_approval import home  # noqa: F401
 from test_mate_worker_dispatch import _create, _fresh_create_budget, crewmate  # noqa: F401
-from test_worktree_create import (
-    _passthrough_spawn,
-    _sandbox_exec_reason,
-)
 
 from kiro_crew import crewmate_worktree as cw
 from kiro_crew.dashboard import chat_runner
-
-
-def _git(cwd, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, encoding="utf-8"
-    ).stdout.strip()
-
-
-@pytest.fixture
-def git_here(monkeypatch, request):
-    """Git for these tests: plain, except in a case that asks for ``sandboxed_git``.
-
-    The worktree logic is what these cases test; the sandbox wrapper itself is
-    tested in ``test_worktree_create``. A sandboxed git costs about 0.3 s a spawn
-    on macOS (``sandbox-exec`` compiles the Seatbelt profile on every exec) and each
-    git call here is four spawns with its hook scan, so the sandbox stays off the
-    cases that do not need it. The Linux CI runners have no backend and run every
-    case plain. A case that names ``sandboxed_git`` keeps the host's real sandbox
-    where it has one, so the composition stays covered end to end.
-    Windows is skipped up front, before any probe: the sandbox fails closed there
-    ("not Linux"), and these cases are written for POSIX paths, permissions and links.
-    """
-    if sys.platform == "win32":
-        pytest.skip("sandboxed git does not run on Windows (no backend)")
-    if "sandboxed_git" not in request.fixturenames or _sandbox_exec_reason():
-        from kiro_crew.dashboard.handlers import worktree as wt
-
-        monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
-
-
-@pytest.fixture
-def sandboxed_git():
-    """Named by a case that runs its git under the host's real sandbox (see ``git_here``)."""
-
-
-def _init(root, branch: str = "main") -> str:
-    root.mkdir(parents=True, exist_ok=True)
-    _git(root.parent, "init", "-q", "-b", branch, str(root))
-    _git(root, "config", "user.email", "t@example.com")
-    _git(root, "config", "user.name", "t")
-    (root / "README.md").write_text("hi\n", encoding="utf-8")
-    _git(root, "add", ".")
-    _git(root, "commit", "-q", "-m", "init")
-    return str(root)
-
-
-@pytest.fixture
-def repo(tmp_path, git_here):
-    root = tmp_path / "shared" / "tasklog"
-    (root / "docs").mkdir(parents=True)
-    (root / "docs" / "a.md").write_text("a\n", encoding="utf-8")
-    return _init(root)
-
-
-def _not_a_worktree_reason(path: str) -> str:
-    """Git's reason the checkout at *path* cannot find its repository, or ``""``."""
-    proc = subprocess.run(
-        ["git", "-C", path, "rev-parse", "--git-dir"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    return "" if proc.returncode == 0 else proc.stderr.strip()
-
-
-def _commit_in(path: str, name: str, message: str) -> None:
-    with open(os.path.join(path, name), "w", encoding="utf-8") as fh:
-        fh.write(message + "\n")
-    _git(path, "add", name)
-    _git(path, "commit", "-q", "-m", message)
-
 
 # ── job 1: one worktree per crewmate and repository, on its own branch ──
 
@@ -163,26 +103,6 @@ def test_a_repository_holding_the_crewmates_workspace_has_no_worktree(repo, tmp_
     assert _git(repo, "branch", "--list", "crew/*") == ""
 
 
-@pytest.fixture
-def edition_runtime():
-    """``install(runtime)`` composes *runtime* as the edition's ``agent_runtime``.
-
-    The active context is reset after the test.
-    """
-    import dataclasses
-
-    from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.platform.bootstrap import build_default_context
-    from kiro_crew.platform.context import reset_context, set_context
-
-    def install(runtime) -> None:
-        base = build_default_context(KiroCrewConfig())
-        set_context(dataclasses.replace(base, agent_runtime=runtime))
-
-    yield install
-    reset_context()
-
-
 def test_a_repository_the_edition_works_in_place_has_no_worktree(
     repo, tmp_path, monkeypatch, edition_runtime
 ):
@@ -210,7 +130,9 @@ def test_a_repository_the_edition_works_in_place_has_no_worktree(
     scope, config = _scope_env(monkeypatch, ws)
     monkeypatch.setattr(scope, "_worker_crewmate", lambda _c, _e: "Atlas")
     slot = SimpleNamespace(project=repo, key="w1", _dirty=False)
-    out = asyncio.run(scope.scope_worker_turn(None, slot, config, None, f"build {repo}/docs"))
+    out = asyncio.run(
+        scope.scope_worker_turn(SimpleNamespace(), slot, config, None, f"build {repo}/docs")
+    )
     assert out == "" and slot.project == repo and slot._dirty is False
     assert _git(repo, "branch", "--list", "crew/*") == ""
 
@@ -794,7 +716,7 @@ def test_only_a_crewmates_worker_is_scoped(monkeypatch):
     monkeypatch.setattr(crewmate_approval, "crewmate_name_for", lambda _c, _e: "Atlas")
     assert scope._worker_crewmate(None, worker) == "Atlas"
     slot = SimpleNamespace(project="/p", key="s")
-    assert asyncio.run(scope.scope_worker_turn(None, slot, None, conductor, "")) == ""
+    assert asyncio.run(scope.scope_worker_turn(SimpleNamespace(), slot, None, conductor, "")) == ""
     assert slot.project == "/p"
 
 
@@ -804,7 +726,7 @@ def test_each_candidate_is_tried_in_turn(monkeypatch, tmp_path):
     hit = cw.CrewmateWorktree(repo="/r", path="/ws/wt/atlas/r", branch="crew/atlas/r", cwd="/ws/a")
     tried: list[str] = []
 
-    def ensure(_slug, _ws, candidate, _prefix):
+    def ensure(_slug, _ws, candidate, _prefix, _worker=""):
         tried.append(candidate)
         if candidate == "/r/named":
             raise cw.WorktreeRefused("checkout filter")
@@ -886,7 +808,7 @@ def test_a_new_worktree_moves_the_project_and_resets_a_running_session(monkeypat
     # No running session: the move arms no reset.
     idle = SimpleNamespace(project="", key="w2", _dirty=False)
     monkeypatch.setattr(scope, "resolve_worker_project", lambda *_a: hit)
-    assert asyncio.run(scope.scope_worker_turn(None, idle, None, None, "")) == hit.cwd
+    assert asyncio.run(scope.scope_worker_turn(SimpleNamespace(), idle, None, None, "")) == hit.cwd
     assert not hasattr(idle, "_pending_reset_history_key")
 
 
@@ -902,11 +824,13 @@ def test_a_project_a_person_picked_is_kept_on_later_turns(monkeypatch):
     slot.project = "/r"
     slot._project_picked = True
     slot._dirty = False
-    assert asyncio.run(scope.scope_worker_turn(None, slot, None, None, "edit /r/x")) == ""
+    assert (
+        asyncio.run(scope.scope_worker_turn(SimpleNamespace(), slot, None, None, "edit /r/x")) == ""
+    )
     assert (slot.project, slot._dirty) == ("/r", False)
     # A cleared pick hands the choice back to the worktree.
     slot._project_picked = False
-    assert asyncio.run(scope.scope_worker_turn(None, slot, None, None, "")) == hit.cwd
+    assert asyncio.run(scope.scope_worker_turn(SimpleNamespace(), slot, None, None, "")) == hit.cwd
 
 
 def test_a_pick_made_during_the_worktree_lookup_stands(monkeypatch):
@@ -923,7 +847,7 @@ def test_a_pick_made_during_the_worktree_lookup_stands(monkeypatch):
 
     monkeypatch.setattr(scope, "_worker_crewmate", lambda *_a: "Atlas")
     monkeypatch.setattr(scope, "resolve_worker_project", lookup)
-    assert asyncio.run(scope.scope_worker_turn(None, slot, None, None, "")) == ""
+    assert asyncio.run(scope.scope_worker_turn(SimpleNamespace(), slot, None, None, "")) == ""
     assert slot.project == "/r"
 
 
@@ -939,7 +863,9 @@ def test_a_drive_path_on_a_posix_gateway_never_reaches_the_gateways_own_checkout
     scope, config = _scope_env(monkeypatch, ws)
     monkeypatch.setattr(scope, "_worker_crewmate", lambda _c, _e: "Atlas")
     slot = SimpleNamespace(project="", key="w1", _dirty=False)
-    out = asyncio.run(scope.scope_worker_turn(None, slot, config, None, "fix C:\\tools\\x now"))
+    out = asyncio.run(
+        scope.scope_worker_turn(SimpleNamespace(), slot, config, None, "fix C:\\tools\\x now")
+    )
     assert out == "" and slot.project == ""
     assert _git(own, "branch", "--list", "crew/*") == ""
 

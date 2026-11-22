@@ -520,7 +520,11 @@ async def _run_side_turn(
         # landing during an await would have the check run against the old
         # project and the spawn happen in the new one, loading a file the check
         # never saw. A change is picked up by the NEXT turn, whose binding then
-        # differs and cold-starts under its own derivation.
+        # differs and cold-starts under its own derivation. A Bot worker's close
+        # cleanup may be removing the folder the project names: wait it out first.
+        from kiro_crew.dashboard.crewmate_worktree_scope import settle_worker_project
+
+        await settle_worker_project(state, slot)
         project: str | None = slot.project or None
         slot_agent: str | None = slot.agent or None
         # The READ_ONLY policy's classifier is the gateway's ONE live hook gate,
