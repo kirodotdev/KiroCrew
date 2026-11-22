@@ -21,6 +21,7 @@
 import { previewFlagsLocked } from '../utils/previewFlags'
 import { featurePreviewLockKnown } from '../utils/editionLocks'
 import { tabStatus } from './sessionTabs'
+import type { ProfileTab } from '../pages/members/CrewProfilePanel'
 
 /** Whether this build offers conductor mode: every build but LTS, the one that
  *  turns every Feature Preview off. Off until the gateway's lock is known (a cached
@@ -53,10 +54,15 @@ export function mateRootOf(row: { mate_root?: string | null } | null | undefined
 }
 
 /** Navigation state asking the Mates page to open the named member's Profile
- *  card on Sessions once that member is active (a mate session's breadcrumb). */
-export interface OpenMateSessionsState { openMateSessions: true }
+ *  card once that member is active: on Sessions (a mate session's breadcrumb)
+ *  unless the opener names a `tab` (the sidebar bot row menu's Profile). */
+export interface OpenMateSessionsState { openMateSessions: true; tab?: ProfileTab }
 export function wantsMateSessions(state: unknown): boolean {
   return !!state && typeof state === 'object' && (state as Partial<OpenMateSessionsState>).openMateSessions === true
+}
+/** The `tab` an `OpenMateSessionsState` names, unchecked: the page validates it against its own tabs. */
+export function requestedMateProfileTab(state: unknown): unknown {
+  return wantsMateSessions(state) ? (state as Partial<OpenMateSessionsState>).tab : undefined
 }
 
 /** The live mate threads among `rows` (slot `mode` `member`). Read over the FULL

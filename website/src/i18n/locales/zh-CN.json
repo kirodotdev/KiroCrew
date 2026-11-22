@@ -8322,7 +8322,10 @@
     },
     "matesDock": {
       "load_failed": "无法加载你标星的 Bot。",
-      "reorder_failed": "无法保存 Bot 的新顺序。"
+      "remove_from_sidebar": "从侧边栏移除",
+      "reorder_failed": "无法保存 Bot 的新顺序。",
+      "row_menu": "{{name}} 的更多操作",
+      "unstar_failed": "无法将此 Bot 从侧边栏移除。"
     },
     "mcpAppFrame": {
       "collapse": "收起",

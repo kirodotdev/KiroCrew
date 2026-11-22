@@ -8742,7 +8742,10 @@
     },
     "matesDock": {
       "load_failed": "Não foi possível carregar seus Bots marcados com uma estrela.",
-      "reorder_failed": "Não foi possível salvar a nova ordem dos Bots."
+      "remove_from_sidebar": "Remover da barra lateral",
+      "reorder_failed": "Não foi possível salvar a nova ordem dos Bots.",
+      "row_menu": "Mais ações para {{name}}",
+      "unstar_failed": "Não foi possível remover este Bot da barra lateral."
     },
     "mcpAppFrame": {
       "collapse": "Recolher",

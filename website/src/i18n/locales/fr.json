@@ -8742,7 +8742,10 @@
     },
     "matesDock": {
       "load_failed": "Impossible de charger tes Bots marqués d’une étoile.",
-      "reorder_failed": "Impossible d’enregistrer le nouvel ordre de tes Bots."
+      "remove_from_sidebar": "Retirer de la barre latérale",
+      "reorder_failed": "Impossible d’enregistrer le nouvel ordre de tes Bots.",
+      "row_menu": "Plus d’actions pour {{name}}",
+      "unstar_failed": "Impossible de retirer ce Bot de la barre latérale."
     },
     "mcpAppFrame": {
       "collapse": "Réduire",

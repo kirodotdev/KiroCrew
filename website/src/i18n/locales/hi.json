@@ -8532,7 +8532,10 @@
     },
     "matesDock": {
       "load_failed": "तुम्हारे तारे से चिह्नित Bot लोड नहीं किए जा सके।",
-      "reorder_failed": "Bot का नया क्रम सहेजा नहीं जा सका।"
+      "remove_from_sidebar": "साइडबार से हटाओ",
+      "reorder_failed": "Bot का नया क्रम सहेजा नहीं जा सका।",
+      "row_menu": "{{name}} के लिए और कार्रवाइयाँ",
+      "unstar_failed": "इस Bot को साइडबार से नहीं हटाया जा सका।"
     },
     "mcpAppFrame": {
       "collapse": "छोटा करें",

@@ -5393,7 +5393,10 @@
     },
     "matesDock": {
       "load_failed": "Couldn't load your starred bots.",
-      "reorder_failed": "Couldn't save the new order of your bots."
+      "remove_from_sidebar": "Remove from the sidebar",
+      "reorder_failed": "Couldn't save the new order of your bots.",
+      "row_menu": "More actions for {{name}}",
+      "unstar_failed": "Couldn't remove this bot from the sidebar."
     },
     "mcpBrowserModal": {
       "add_server": "Add Server",
