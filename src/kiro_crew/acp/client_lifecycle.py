@@ -54,6 +54,7 @@ from kiro_crew.acp.client_timeouts import (
 from kiro_crew.acp.liveness import LivenessOracle, _consume_future_exception
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_process_tree import ChildRecord
+from kiro_crew.acp.runtime_tree_kill import kill_ending_session_leftovers
 from kiro_crew.acp.stale_compaction import clear_stale_compaction_state
 from kiro_crew.acp.transport_errors import (
     AcpDelegateLaunchFailed,
@@ -1021,11 +1022,22 @@ async def shutdown(self: AcpClient) -> None:
     # `_kill_process` in a function that takes only that keyword, and a gateway
     # stop closes these sessions in batches inside one time budget, where a
     # wait per session could leave the later ones unclosed.
+    #
+    # What the root left in its session outside its tree is ended once the kill
+    # has returned or raised (`kill_ending_session_leftovers`).
     try:
+        process = self._process
         if self._is_kiro:
-            await self._kill_process(force=True, exit_grace=_EOF_EXIT_GRACE_SECS)
+            kill = functools.partial(
+                self._kill_process, force=True, exit_grace=_EOF_EXIT_GRACE_SECS
+            )
         else:
-            await self._kill_process(force=True)
+            kill = functools.partial(self._kill_process, force=True)
+        await kill_ending_session_leftovers(
+            process.pid if process is not None and process.returncode is None else None,
+            getattr(self, "_start_time", None),
+            kill,
+        )
     finally:
         await self._discard_bound_workspace()
         # `finally` for the same reason the kill above has one: `_reset_state`

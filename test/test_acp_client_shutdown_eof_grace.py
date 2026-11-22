@@ -17,6 +17,7 @@ before it reaches the pipes, so it never waits and these paths do not exist.
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import sys
 import textwrap
@@ -24,7 +25,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew import _process_group_supervisor, platform_compat
 from kiro_crew.acp import client_lifecycle
 from kiro_crew.acp.client import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO, AcpClient
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
@@ -45,6 +46,8 @@ pytestmark = pytest.mark.skipif(
 #   handoff   stubborn, with a grandchild in a group of its own whose parent
 #             exits when the test says so: from then on no walk from the agent
 #             finds the grandchild, and no signal to the agent's group reaches it
+#   session   tidy, with a job its shell left behind: a grandchild in a group
+#             of its own whose parent has exited, still in the agent's session
 _AGENT = textwrap.dedent("""
     import os, signal, subprocess, sys, time
 
@@ -76,6 +79,17 @@ _AGENT = textwrap.dedent("""
                 time.sleep(0.01)
             os._exit(0)
         extra = " %d %s" % (parent, os.read(read_end, 32).decode())
+    if mode == "session":
+        quiet = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        sleep = "import time; time.sleep(600)"
+        read_end, write_end = os.pipe()
+        middle = os.fork()
+        if middle == 0:
+            job = subprocess.Popen([sys.executable, "-c", sleep], preexec_fn=os.setpgrp, **quiet)
+            os.write(write_end, str(job.pid).encode())
+            os._exit(0)
+        os.waitpid(middle, 0)
+        extra = " " + os.read(read_end, 32).decode()
     if mode in ("stubborn", "handoff"):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     print("ready" + extra, flush=True)
@@ -325,3 +339,40 @@ async def test_a_cancel_during_the_wait_still_kills_the_agent(started, monkeypat
     assert await await_until(asyncio.ensure_future(real_wait()), what="the agent's exit") == (
         -signal.SIGKILL
     )
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or not _process_group_supervisor.can_reap(),
+    reason="the pinned terminator needs Linux and a kernel that pins processes with pidfd_open",
+)
+@pytest.mark.asyncio
+async def test_shutdown_ends_a_job_the_agent_left_in_its_session(started, monkeypatch):
+    """A job the agent's shell left behind does not outlive the closed session.
+
+    It was reparented to init and sits in a group of its own, so no walk from the
+    agent and no signal to the agent's group reaches it, but it keeps the agent's
+    session id. A second agent's job of the same shape is untouched.
+    """
+    monkeypatch.setattr(client_lifecycle, "_EOF_EXIT_GRACE_SECS", FALLBACK_TIMEOUT_SECS)
+    client, proc, _, (job,) = await started("session")
+    _, other, _, (other_job,) = await started("session")
+    starts = {pid: platform_compat.get_process_start_id(pid) for pid in (job, other.pid, other_job)}
+    assert os.getsid(job) == proc.pid and os.getpgid(job) == job
+
+    try:
+        await client.shutdown()
+
+        assert proc.returncode == 0
+        await async_wait_until(
+            lambda: _gone(job, starts[job]),
+            off_loop=True,
+            describe=lambda: f"session job {job} outlived the shutdown",
+        )
+        assert not _gone(other.pid, starts[other.pid]), "another agent was signalled"
+        assert not _gone(other_job, starts[other_job]), "another session's job was ended"
+    finally:
+        # Reaped on this loop, so its transport does not outlive it; the fixture
+        # ends what is still standing.
+        if not _gone(other.pid, starts[other.pid]):
+            other.kill()
+        await await_until(asyncio.ensure_future(other.wait()), what="the second agent's exit")
