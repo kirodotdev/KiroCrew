@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:ea346c17def3902a85cde16a6dc227e48f60c8d6923a637775d392ef149409bb"
+export const GUIDE_BUILD_DIGEST = "sha256:deb046e28fa25ddb753dca89d3089fe565e7924180db12ac5f53796ffad353e9"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -74,7 +74,10 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "mcp.add-custom",
   "mcp.add-server",
   "mcp.probe",
+  "mcp.review-approve",
   "mcp.servers-view",
+  "mcp.share-switch",
+  "mcp.sharing-view",
   "members.add-menu",
   "members.add-menu.import",
   "members.add-menu.new",
@@ -1823,6 +1826,40 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:mcp.servers-view",
             "location": "mcp.servers-view",
             "label_key": "pages.mcpPage.view_servers"
+          }
+        ]
+      }
+    ]
+  },
+  "mcp.share-switch": {
+    "version": 2,
+    "label_key": "pages.mcpManagement.share_switch_label",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.share-switch",
+            "location": "mcp.share-switch",
+            "label_key": "pages.mcpManagement.share_switch_label"
+          }
+        ]
+      }
+    ]
+  },
+  "mcp.sharing-view": {
+    "version": 2,
+    "label_key": "pages.mcpPage.view_sharing",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.sharing-view",
+            "location": "mcp.sharing-view",
+            "label_key": "pages.mcpPage.view_sharing"
           }
         ]
       }
