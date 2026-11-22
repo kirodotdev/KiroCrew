@@ -4887,7 +4887,7 @@ comment header per owner. The module-level code these owners hold is re-imported
 | Module | Owns |
 |---|---|
 | `skills_auto_model` | The `auto/` namespace and its on-disk layout, `AutoSkillProvenance` and the generated `SKILL.md` renderer, `ClaimRefusal`, and the pending-queue observer hooks |
-| `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md`, screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
+| `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md` or packaged built-in skill file (`kiro_crew/builtin_skills/`), screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
 | `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency`, the released-former-built-in skip it shares with the sync (`_ships_for_released_app`), and the deployed cron-script source verdicts |
 | `skills_builtin_sync` | The packaged-skill sync (`_ensure_builtin_skills`, `sync_builtins`) with its claim, retirement, quarantine and opt-out carry, stale and relocated cleanup (`_RELOCATED_SKILLS`), and `remove_retired_conductor_skill` |
 | `skills_body_reads` | The project trust key and its audit, the enumerated-read choke point (`_read_enumerated_skill_bytes`) and the frontmatter cache, `load_skill` and the global body reader, exact-key reads of the scoped catalog with their paging, and the shapes that mark a tool call as a skill-body read |
@@ -5500,7 +5500,17 @@ also keeps the `RECORD` rows for `.json` files under `kiro_crew/apps/builtins/<a
 which `_installed_builtin_app_file_match` checks for a shipped built-in app's
 `app.json` and the agent specs its manifest declares, never another `.json` the
 `RECORD` lists ([security](security.md)); `_installed_package_bytes_match` admits only
-a path named `SKILL.md`.
+a path named `SKILL.md`. It also keeps the `RECORD` rows for every file under
+`kiro_crew/builtin_skills/`. The built-in skill sync reads the packaged tree through
+them: `skills_builtin_provenance._skill_tree_fingerprint`, when it hashes the
+packaged source (`assume_owner_rwx_dirs`), passes
+`admit_hardlinked=_recorded_bytes_match`, so a hardlinked packaged file counts only
+when its bytes match the digest `RECORD` lists for that exact path. The update
+fingerprint, the provenance marker and the doctor's currency check therefore hold on
+a hardlinked install. The installed copy in the skills dir is always hashed with the
+plain refusal. `skills_builtin_sync._carried_skill_md` reads the packaged `SKILL.md`
+with `admit_hardlinked=_installed_package_bytes_match`, so a carried
+`inject_on_trigger: false` survives an update on such an install.
 Rewriting `RECORD` takes write access to the tree holding the package code, which
 already decides what the gateway runs. Project reads retain descriptor confinement
 and their byte cap.

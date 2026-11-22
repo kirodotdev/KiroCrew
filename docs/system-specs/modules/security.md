@@ -2216,11 +2216,15 @@ Hardlink, regular-file, sensitive-path, byte-limit and staged-rename identity
 checks retain their existing contracts. The reader's one hardlink exception is
 opt-in per call (`admit_hardlinked`) and decided on content: a hardlinked inode
 still passes every other check, is never returned truncated, and is returned only
-when the caller's callback accepts the exact bytes read. Its single caller is the
+when the caller's callback accepts the exact bytes read. Its callers are the
 global skill-body reader, which accepts an installed package `SKILL.md` whose bytes
-match the distribution `RECORD` digest
-([memory-skills-hooks](memory-skills-hooks.md)); every other caller, and every
-agent-writable root, keeps the plain refusal. The agent-spec reader
+match the distribution `RECORD` digest; the packaged built-in skill fingerprint
+(`skills_builtin_provenance._skill_tree_fingerprint` on the packaged source), which
+accepts a file under `kiro_crew/builtin_skills/` whose bytes match the `RECORD`
+digest for that path; and the opt-out carry read
+(`skills_builtin_sync._carried_skill_md`), which accepts the packaged `SKILL.md` on
+the same terms ([memory-skills-hooks](memory-skills-hooks.md)). Every other caller,
+the installed skill copies, and every agent-writable root keep the plain refusal. The agent-spec reader
 (`agent_discovery._read_agent_spec`) carries the same opt-in, passed through to
 `pinned_fs.open_fenced_for_read(allow_hardlinked=True)`, which then skips only the
 link-count check: the bytes are read whole under the cap and returned only when the
