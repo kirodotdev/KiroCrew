@@ -37,7 +37,13 @@ import NudgeCard from '../pages/chat/NudgeCard'
 import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { isProjectHooksNotice } from '../pages/chat/projectHooksNoticeMatch'
-import SpecHooksRunNowhereNotice, { isSpecHooksRunNowhereNotice, specHooksRunNowhereDismissed } from '../pages/chat/SpecHooksNotice'
+import SpecHooksRunNowhereNotice, {
+  ProjectHookFilesNotice,
+  isProjectHookFilesNotice,
+  isSpecHooksRunNowhereNotice,
+  projectHookFilesNoticeDismissed,
+  specHooksRunNowhereDismissed,
+} from '../pages/chat/SpecHooksNotice'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import { replyShowsFooter, replyTurnStats } from '../pages/chat/replyFooter'
 import { toolRailColor } from '../utils/toolRailColor'
@@ -871,6 +877,17 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     render: (m, ctx) => specHooksRunNowhereDismissed()
       ? null
       : ctx.row(<SpecHooksRunNowhereNotice content={m.content} askAgent={ctx.handOff !== false} />),
+  },
+  {
+    // The notice that a folder's own .kiro/hooks files do not run, with its
+    // per-folder Dismiss link. Shape-matched like the row above; a row whose
+    // folder mark was dismissed draws nothing anywhere.
+    id: 'spec_hooks_project_hook_files',
+    roles: ['*'],
+    match: isProjectHookFilesNotice,
+    render: (m, ctx) => projectHookFilesNoticeDismissed(m)
+      ? null
+      : ctx.row(<ProjectHookFilesNotice message={m} askAgent={ctx.handOff !== false} />),
   },
   {
     // A KAS session's notice about a folder agent's own hooks, with its Turn on
