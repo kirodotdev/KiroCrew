@@ -1827,8 +1827,9 @@ carry no credits but a dollar `cost` (a dollar-billed harness) is summed from `c
 instead: `cost_breakdown` reports `unit: "usd"`, keeps every amount under its `credits`
 key at four decimals, and the tab writes each amount as money under **Cost** labels.
 Any credit-bearing session turn inside the window keeps it in credits; the window before
-it is read in the same unit, so a credit-billed week before a harness switch reads as no
-prior spend. A window holding both credit-billed and dollar-billed session turns is the
+it is read in the same unit and leaves out its turns billed only in the other unit, so a
+credit-billed week before a harness switch reads as no prior spend rather than as free
+turns. A window holding both credit-billed and dollar-billed session turns is the
 credits view with the same view over `cost` nested under `usd`, which the tab renders as
 a second card. Each view counts only its own unit's turns (the dollar view keeps the turns
 billed in dollars, the credits view the rest; a turn billed in both units would show on
