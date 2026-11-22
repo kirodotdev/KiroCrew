@@ -39,7 +39,7 @@ CLEF = (
     + "0123abcd" * 4
     + "/ai/run/@cf/cloudflare/clef"
 )
-NON_JEV = (*(m.id for m in local_models.LOCAL_MODELS), "sagemaker", "clef")
+NON_JEV = (*(m.id for m in local_models.LOCAL_MODELS), "sagemaker", "aws_https", "clef")
 
 
 class _Recording:

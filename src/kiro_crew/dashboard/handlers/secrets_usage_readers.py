@@ -60,6 +60,7 @@ def scan_decisions(config: Any, stored: frozenset[str], add: Add) -> None:
     """The Jev key: referenced by ``decisions.provider.api_key`` and consented to."""
     from kiro_crew.decisions import consent
     from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint
+    from kiro_crew.decisions.impl_signed_https import is_signed_https_endpoint
     from kiro_crew.decisions.impl_systemone import HOSTED_TYPESAFE, VAULT_SECRET_NAME
     from kiro_crew.decisions.local_models import is_loopback_endpoint
 
@@ -72,10 +73,14 @@ def scan_decisions(config: Any, stored: frozenset[str], add: Add) -> None:
     if not value.startswith("secret://") or value[len("secret://") :].strip() != VAULT_SECRET_NAME:
         return
     # The endpoint the provider sends to, as it picks it. A loopback one is sent
-    # no key, and a ``sagemaker://`` one goes to the SageMaker provider, which
-    # signs with AWS credentials and never reads this entry.
+    # no key, and a ``sagemaker://`` or ``aws-https://`` one is signed with AWS
+    # credentials and never reads this entry.
     endpoint = str(provider.endpoint or HOSTED_TYPESAFE.endpoint)
-    if is_loopback_endpoint(endpoint) or is_sagemaker_endpoint(endpoint):
+    if (
+        is_loopback_endpoint(endpoint)
+        or is_sagemaker_endpoint(endpoint)
+        or is_signed_https_endpoint(endpoint)
+    ):
         return
     if consent.permits(endpoint):
         add(VAULT_SECRET_NAME, _place(KIND_INTEGRATION, "Jev"))

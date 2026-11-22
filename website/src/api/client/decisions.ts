@@ -158,6 +158,10 @@ export interface DecisionsProviderData {
   sagemaker_permitted?: boolean
   /** The configured SageMaker address is refused by the ceiling: its own regional host, or the `providers` list. */
   configured_refused?: boolean
+  /** The parts of the configured `aws-https://` address and its model id, when `active` is `aws_https`. Absent on an older gateway. */
+  aws_https?: DecisionsSignedHttpsSaved | null
+  /** `botocore` is installed, so an AWS-signed HTTPS endpoint can be used. Absent on an older gateway. */
+  aws_https_available?: boolean
   /**
    * Per decision model, by its allow-list id (`jev`, each preset id, `sagemaker`):
    * whether the administrator's policy allows it, every part of the ceiling that
@@ -186,6 +190,34 @@ export interface DecisionsSageMakerTestResult {
 /** The provider body for a SageMaker endpoint: its parts, never an address. */
 function sageMakerBody({ endpoint_name, region, profile }: DecisionsSageMakerTarget) {
   return profile ? { preset: 'sagemaker', endpoint_name, region, profile } : { preset: 'sagemaker', endpoint_name, region }
+}
+
+/** An HTTPS endpoint signed with AWS SigV4, as the picker names it; the gateway builds the address. */
+export interface DecisionsSignedHttpsTarget {
+  /** The `https://` URL requests are POSTed to. */
+  url: string
+  /** The SigV4 signing service name, such as `execute-api`. */
+  service: string
+  region: string
+  /** An AWS profile name from the local AWS config, or `""` for the default credentials. */
+  profile: string
+  /** The model id sent in each request, or `""` to keep the gateway's choice. */
+  model: string
+}
+
+/** A configured AWS-signed HTTPS endpoint as the gateway reports it. */
+export type DecisionsSignedHttpsSaved = DecisionsSignedHttpsTarget
+
+/** The provider body for an AWS-signed HTTPS endpoint: its parts, never an address. Empty optional parts are left out. */
+function signedHttpsBody({ url, service, region, profile, model }: DecisionsSignedHttpsTarget) {
+  return {
+    preset: 'aws_https',
+    url,
+    service,
+    region,
+    ...(profile ? { profile } : {}),
+    ...(model ? { model } : {}),
+  }
 }
 
 export function createDecisionsEndpoints({ get, post, put, del, j }: ClientTransport) {
@@ -240,6 +272,13 @@ export function createDecisionsEndpoints({ get, post, put, del, j }: ClientTrans
     // One fixed question to the endpoint those parts name; writes nothing.
     testDecisionsSageMaker: (target: DecisionsSageMakerTarget) =>
       post('/api/decisions/provider/sagemaker-test', sageMakerBody(target)).then(j) as Promise<DecisionsSageMakerTestResult>,
+    // An HTTPS endpoint signed with SigV4, by its parts; the gateway checks each and
+    // builds the `aws-https://` address itself.
+    saveDecisionsSignedHttps: (target: DecisionsSignedHttpsTarget) =>
+      put('/api/decisions/provider', signedHttpsBody(target)).then(j) as Promise<DecisionsProviderData>,
+    // One fixed question to the endpoint those parts name; writes nothing.
+    testDecisionsSignedHttps: (target: DecisionsSignedHttpsTarget) =>
+      post('/api/decisions/provider/aws-https-test', signedHttpsBody(target)).then(j) as Promise<DecisionsSageMakerTestResult>,
     // Delete a downloaded preset that is not in use, to give its disk space back.
     removeDecisionsLocalModel: (id: string) =>
       del(`/api/decisions/local-models/${encodeURIComponent(id)}`).then(j) as Promise<DecisionsProviderData>,

@@ -1159,9 +1159,17 @@ def _provider_payload() -> dict:
         configured_sagemaker,
         endpoint_refused,
     )
+    from kiro_crew.dashboard.handlers.decisions_signed_https import (
+        PRESET_SIGNED_HTTPS,
+        configured_signed_https,
+    )
     from kiro_crew.decisions import gate as _gate
-    from kiro_crew.decisions import impl_sagemaker, local_models
-    from kiro_crew.decisions.capability import PROVIDER_SAGEMAKER, denied_sides
+    from kiro_crew.decisions import impl_sagemaker, impl_signed_https, local_models
+    from kiro_crew.decisions.capability import (
+        PROVIDER_SAGEMAKER,
+        PROVIDER_SIGNED_HTTPS,
+        denied_sides,
+    )
     from kiro_crew.decisions.local_runtime import get_runtime
 
     cfg = live.snapshot() or KiroCrewConfig.load()
@@ -1175,6 +1183,9 @@ def _provider_payload() -> dict:
     sagemaker = configured_sagemaker(endpoint)
     if sagemaker is not None:
         active = PRESET_SAGEMAKER
+    signed_https = configured_signed_https(endpoint)
+    if signed_https is not None:
+        active = PRESET_SIGNED_HTTPS
     hosted_denied, local_denied = denied_sides()
     offers = provider_offers(
         hosted_denied=hosted_denied,
@@ -1199,6 +1210,18 @@ def _provider_payload() -> dict:
         and not hosted_denied
         and (
             not offers["listed"].get(PROVIDER_SAGEMAKER, False)
+            or endpoint_refused(endpoint, audit=False)
+        )
+    ):
+        active = local_models.PRESET_NONE
+        configured_refused = True
+    # The same for a configured AWS-signed HTTPS address whose own host the ceiling's
+    # ``endpoints`` list refuses, or that the ``providers`` list does not allow.
+    if (
+        active == PRESET_SIGNED_HTTPS
+        and not hosted_denied
+        and (
+            not offers["listed"].get(PROVIDER_SIGNED_HTTPS, False)
             or endpoint_refused(endpoint, audit=False)
         )
     ):
@@ -1234,6 +1257,11 @@ def _provider_payload() -> dict:
         # ``endpoints`` list (its own regional host) or its ``providers`` list, so
         # ``active`` reads "none".
         "configured_refused": configured_refused,
+        # The parts of a valid configured ``aws-https://`` address (an HTTPS endpoint
+        # signed with SigV4) and its model id, else null.
+        "aws_https": ({**signed_https, "model": model} if signed_https is not None else None),
+        # Whether that option can work here (botocore is installed).
+        "aws_https_available": impl_signed_https.botocore_installed(),
         # Per decision model, by allow-list id: whether the ceiling allows it, every
         # part that governs it ANDed (``decisions_offers``). The picker draws a refused
         # model greyed with the administrator's wording; the PUT refuses it.
@@ -1272,11 +1300,17 @@ def _provider_target(body: object) -> tuple[str, str, int] | None:
         PRESET_SAGEMAKER,
         sagemaker_target,
     )
+    from kiro_crew.dashboard.handlers.decisions_signed_https import (
+        PRESET_SIGNED_HTTPS,
+        signed_https_target,
+    )
     from kiro_crew.decisions import local_models
     from kiro_crew.decisions.local_runtime import free_port, get_runtime
 
     if isinstance(body, dict) and body.get("preset") == PRESET_SAGEMAKER:
         return sagemaker_target(body)
+    if isinstance(body, dict) and body.get("preset") == PRESET_SIGNED_HTTPS:
+        return signed_https_target(body)
     if not isinstance(body, dict) or set(body) != {"preset"}:
         return None
     preset = body.get("preset")
@@ -1350,11 +1384,13 @@ def _carry_consent(endpoint: str, model: str) -> bool:
 async def api_decisions_provider_put(request: web.Request) -> web.Response:
     """PUT /api/decisions/provider -- ``{"preset": id}`` switches the provider.
 
-    ``preset`` is ``"jev"``, ``"none"`` or a local preset id, or ``"sagemaker"`` with
+    ``preset`` is ``"jev"``, ``"none"`` or a local preset id, ``"sagemaker"`` with
     ``endpoint_name``, ``region`` and an optional ``profile``, from which the route
-    builds the ``sagemaker://`` address. Anything else is a 400: no field
-    of the body is written verbatim, which is what keeps a URL out of this route.
-    A SageMaker address is not a loopback one, so no standing consent is carried to it.
+    builds the ``sagemaker://`` address, or ``"aws_https"`` with an ``https`` ``url``,
+    a SigV4 ``service``, a ``region`` and an optional ``profile`` and ``model``, from
+    which it builds the ``aws-https://`` address. Anything else is a 400: no field
+    of the body is written verbatim. Neither address is a loopback one, so no
+    standing consent is carried to it.
     Choosing a local preset also starts it -- download, install and serve, in the
     background -- and choosing hosted Jev or ``"none"`` stops it; the GET reports progress.
     """
@@ -1396,7 +1432,8 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "error": 'body must be {"preset": "jev"}, {"preset": "none"}, {"preset": <local id>}'
-                ' or {"preset": "sagemaker", "endpoint_name", "region"[, "profile"]}',
+                ', {"preset": "sagemaker", "endpoint_name", "region"[, "profile"]}'
+                ' or {"preset": "aws_https", "url", "service", "region"[, "profile"][, "model"]}',
                 "code": _CODE_PROVIDER_INVALID_BODY,
             },
             status=400,

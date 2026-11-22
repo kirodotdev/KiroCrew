@@ -76,6 +76,7 @@ CAPABILITY_IMAGE = "image"
 PROVIDER_HOSTED = "systemone-hosted"
 PROVIDER_LOCAL = "systemone-local"
 PROVIDER_SAGEMAKER = "systemone-sagemaker"
+PROVIDER_SIGNED_HTTPS = "systemone-signed-https"
 PROVIDER_SESSION_LLM = "session-llm"
 
 #: The session-LLM lane's budget window in seconds. ``provider.timeout_ms`` is
@@ -181,6 +182,12 @@ def _build_sagemaker(provider_config: Any, _model: str) -> DecisionProvider:
     return module.SageMakerOracle(provider_config)  # type: ignore[no-any-return]
 
 
+def _build_signed_https(provider_config: Any, _model: str) -> DecisionProvider:
+    """The same System One request POSTed to an HTTPS endpoint, signed with SigV4."""
+    module = importlib.import_module("kiro_crew.decisions.impl_signed_https")
+    return module.SignedHttpsProvider(provider_config)  # type: ignore[no-any-return]
+
+
 def _build_session_llm(_provider_config: Any, model: str) -> DecisionProvider:
     """One tool-less model call; the inherit sentinel asks for no model at all."""
     module = importlib.import_module("kiro_crew.decisions.impl_llm")
@@ -221,6 +228,21 @@ _REGISTRY: dict[str, ProviderSpec] = {
             factory=_build_sagemaker,
             max_in_flight=8,
             latency_ms=150,
+        ),
+        ProviderSpec(
+            id=PROVIDER_SIGNED_HTTPS,
+            kind=KIND_HOSTED,
+            lane=LANE_ENDPOINT,
+            egress=EGRESS_THIRD_PARTY,
+            authority=AUTHORITY_KEYSTONE,
+            governance_row=ROW_DECISIONS,
+            # Text questions only: whether such an endpoint reads images is not
+            # known, so the gate never sends it one.
+            supports=QUESTION_KINDS,
+            timeout_window=None,
+            factory=_build_signed_https,
+            max_in_flight=8,
+            latency_ms=1000,
         ),
         ProviderSpec(
             id=PROVIDER_LOCAL,
@@ -280,6 +302,11 @@ def select(lane: str, *, endpoint: object = "", model: object = "") -> ProviderS
 
     if is_sagemaker_endpoint(endpoint):
         return _REGISTRY[PROVIDER_SAGEMAKER]
+    # An ``aws-https://`` endpoint: the same request over HTTPS, signed with SigV4.
+    from kiro_crew.decisions.impl_signed_https import is_signed_https_endpoint
+
+    if is_signed_https_endpoint(endpoint):
+        return _REGISTRY[PROVIDER_SIGNED_HTTPS]
     # Read from the catalog directly, so selecting a provider does not import the
     # governance graph ``capability`` pulls in. A catalog preset only: ``none``
     # and ``custom`` are not local presets.

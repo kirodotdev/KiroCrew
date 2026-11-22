@@ -193,7 +193,7 @@ class TestTheListIsCatalogData:
     def test_every_decision_model_has_one_id(self):
         ids = capability.provider_ids()
         assert len(ids) == len(set(ids))
-        assert set(ids) == {"jev", *PRESET_IDS, "sagemaker"}
+        assert set(ids) == {"jev", *PRESET_IDS, "sagemaker", "aws_https"}
         assert capability.PROVIDER_NONE not in ids
 
     def test_the_ids_are_stable_policy_ids(self):
@@ -204,6 +204,7 @@ class TestTheListIsCatalogData:
             "strands-decider-2b",
             "laya",
             "sagemaker",
+            "aws_https",
         )
 
     def test_the_ids_are_the_stored_picker_ids(self):

@@ -47,6 +47,12 @@ def provider_offers(
     for preset in local_models.LOCAL_MODELS:
         permitted[preset.id] = not local_denied and listed.get(preset.id, False)
     permitted[capability.PROVIDER_SAGEMAKER] = sagemaker
+    # An AWS-signed HTTPS endpoint names its own host, so there is no host to probe
+    # before one is typed: the row and its list entry decide the offer, and the PUT,
+    # the consent switch and the send path ask the ``endpoints`` list about the host.
+    permitted[capability.PROVIDER_SIGNED_HTTPS] = not hosted_denied and listed.get(
+        capability.PROVIDER_SIGNED_HTTPS, False
+    )
     return {
         "hosted_permitted": hosted,
         "sagemaker_permitted": sagemaker,

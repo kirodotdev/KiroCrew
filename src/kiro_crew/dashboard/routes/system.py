@@ -252,6 +252,11 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/decisions/provider/sagemaker-test", handlers.api_decisions_provider_sagemaker_test
     )
+    # One fixed question to an AWS-signed HTTPS endpoint the owner typed; writes nothing.
+    app.router.add_post(
+        "/api/decisions/provider/aws-https-test",
+        handlers.api_decisions_provider_signed_https_test,
+    )
     app.router.add_get(
         "/api/decisions/local-models/status", handlers.api_decisions_local_model_status
     )

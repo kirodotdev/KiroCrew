@@ -150,6 +150,40 @@ You can also set `provider` in `config.json` by hand (on Linux, apply the edit i
 - A request that carries images (`assets`) or a Box question sends the custom attribute `TypeSafe-Danger-Zone-Images=true` in place of the HTTP header of that name, because `InvokeEndpoint` carries no other headers. Images travel inline as `data_base64` (PNG or JPEG, at most 16 MiB each), and the whole request must stay under SageMaker's 25 MB limit; a larger one is refused before it is sent. A SageMaker endpoint gets the same screenshots and Box questions the hosted service gets: the browser sends them only while **Also send screenshots of the agent's browser tab** (under **Browser steps: pick and check** on the Decisions card) is on, so the model behind the endpoint must read images and answer Box. For a SageMaker endpoint that switch starts off: turn it on yourself to send screenshots there.
 - Errors name the cause without quoting your messages, images or credentials: no credentials, AWS refused the credentials, no endpoint by that name in that region, the endpoint is not ready, still throttled after every attempt, a timeout, or the container's error status.
 
+## Using an AWS-signed HTTPS endpoint
+
+A System One model behind an HTTPS address of its own (a custom domain, an API gateway, a service front door) can answer decisions when that address accepts requests signed with AWS Signature Version 4 instead of an API key. The endpoint must take the same JSON body Jev does (`state`, `model`, `questions`) as a `POST` and answer with the same JSON (`answers`, and optionally `model` and `usage`). This is off unless you set it.
+
+On the Decisions card, under **Decision model**, choose **Your AWS-signed HTTPS endpoint** and fill in:
+
+- **Endpoint URL**: the full `https://` address requests are sent to, such as `https://decider.example.com/v1/decisions`. A host name and a path only: `http://`, an IP address, user info, a query or a fragment is refused.
+- **Signing service name**: the service name the endpoint's documentation gives for its signature, such as `execute-api`.
+- **AWS region**: the region the signature is made for, such as `us-west-2`.
+- **AWS profile**, optional, as for SageMaker above.
+- **Model**, optional: the model id the endpoint expects in each request. Empty keeps the one already configured, or the default.
+
+**Test connection** sends one short fixed question, and **Use Your AWS-signed HTTPS endpoint** saves it. Kiro Crew builds an `aws-https://` address from the fields itself. Only the dashboard owner can do either, and both are written to the audit log. Choosing the endpoint, or changing any field, stops sending until you turn the Decisions switch off and on again.
+
+By hand in `config.json`:
+
+```json
+{
+  "decisions": {
+    "provider": {
+      "endpoint": "aws-https://decider.example.com/v1/decisions?service=execute-api&region=us-west-2&profile=research",
+      "model": "my-decision-model",
+      "timeout_ms": 5000
+    }
+  }
+}
+```
+
+- `endpoint` is `aws-https://<host>[:<port>]/<path>?service=<signing-service>&region=<aws-region>`, with an optional `&profile=<aws-profile>`. The request goes to `https://<host>[:<port>]/<path>`. Nothing else may appear in the address.
+- Each request is signed with your AWS credentials for that service and region. No API key is read and `api_key` is ignored. The credentials need whatever permission the endpoint asks for.
+- An organisation's endpoint allow or deny list is checked against the `https://` host. The `providers` list names this option `aws_https`.
+- Text questions only: no screenshots or Box questions are sent to this endpoint.
+- A 401 or 403 is reported as refused credentials; other errors name the HTTP status without quoting your messages or credentials. A redirect is never followed.
+
 ## Running a model on this machine
 
 Instead of Jev, decisions can be answered by an open-weight model running on your own machine. It speaks the same request format as Jev, so every feature on this page works with it, and **nothing a decision point collects leaves the machine**. Pick it under **Decision model** on the Decisions card. The card offers three models and marks the one your machine's memory suits:

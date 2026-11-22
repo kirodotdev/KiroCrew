@@ -385,12 +385,15 @@ def _targets_denied(
         jev = lane == LANE_JEV
         endpoint = configured_endpoint(config) if jev else None
         if endpoint is not None:
+            from kiro_crew.decisions import impl_signed_https
             from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint, policy_endpoint
 
             # The ceiling is asked about the AWS host the request reaches, not the
             # endpoint name; an address that names no host raises and denies below.
             if is_sagemaker_endpoint(endpoint):
                 endpoint = policy_endpoint(endpoint)
+            elif impl_signed_https.is_signed_https_endpoint(endpoint):
+                endpoint = impl_signed_https.policy_endpoint(endpoint)
         return targets_denied(
             session_key or DASHBOARD_SURFACE_KEY,
             point=point,

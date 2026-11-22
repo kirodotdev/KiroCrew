@@ -42,7 +42,7 @@ _PUBLISH_LISTS_OFF: Mapping[str, Mapping[str, object]] = {
 #: because this module is data only; ``test_decisions_lts_jev_lock.py`` pins it.
 _DECISION_PROVIDERS: Mapping[str, object] = {
     "mode": "allow",
-    "allow": ["plumb-4b", "strands-decider-2b", "laya", "sagemaker", "clef"],
+    "allow": ["plumb-4b", "strands-decider-2b", "laya", "sagemaker", "aws_https", "clef"],
 }
 
 BASELINE_CONTROLS: Dict[str, Mapping[str, object]] = {

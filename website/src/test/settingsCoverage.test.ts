@@ -77,7 +77,8 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'FollowDefaultModelAction.tsx': 'one action button under the Chat tab\'s Default Model that counts, then clears, the model older chats keep; it holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
   'CrewVersionStatus.tsx': "a connected Remote Crew row's version badge and its Update action; it reports and acts on one crew, and holds no setting",
-  'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id, or a SageMaker endpoint\'s name, region and profile, through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions entry deep-links to',
+  'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id, a SageMaker endpoint\'s name, region and profile, or an AWS-signed HTTPS endpoint\'s URL, signing service, region, profile and model, through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions entry deep-links to',
+  'DecisionsSignedHttpsFields.tsx': 'the AWS-signed HTTPS endpoint fields DecisionsProviderPicker mounts inside its own option; the parts are written through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index',
   'ImportPanel.tsx': 'single action button launching the import wizard; no persistent settings',
   'InstanceFormFields.tsx': 'per-instance CRUD form fields (add/edit crew), not global settings',
   'McpManagement.tsx': 'rendered on the MCP Servers page (`/mcp`), not on a Settings tab — a settings deep link would be dead; its per-server switches are table rows keyed by server, not Settings* primitives',
@@ -257,6 +258,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       '(the choice is written through the owner-only provider route as a preset id, ' +
       'or as an endpoint name, region and profile the gateway checks), and they sit ' +
       'inside the card the developer.decisions entry deep-links to',
+  },
+  'DecisionsSignedHttpsFields.tsx': {
+    counts: { Input: 1 },
+    reason:
+      'the AWS-signed HTTPS endpoint fields (one Input helper rendered per part): not a config ' +
+      'path, the parts go through the owner-only provider route, which checks each and builds ' +
+      'the address; they sit inside the card the developer.decisions entry deep-links to',
   },
   'DisplayPanel.tsx': {
     counts: { SimpleSelect: 1, Input: 1, input: 1 },

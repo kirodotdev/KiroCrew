@@ -23,12 +23,20 @@ export function isRefusedHostedDefault(data: {
   if (data.active !== PRESET_NONE || typeof data.configured_endpoint !== 'string') return false
   const endpoint = data.configured_endpoint.trim()
   if (endpoint === PRESET_NONE) return false
-  return data.hosted_permitted === false || (data.configured_refused === true && endpoint.startsWith('sagemaker://'))
+  return (
+    data.hosted_permitted === false ||
+    (data.configured_refused === true && (endpoint.startsWith('sagemaker://') || endpoint.startsWith('aws-https://')))
+  )
 }
 
 /** Whether the refused option is the configured SageMaker endpoint, not the hosted default. */
 export function isRefusedSageMaker(data: { configured_refused?: boolean; configured_endpoint?: string }): boolean {
   return data.configured_refused === true && (data.configured_endpoint ?? '').trim().startsWith('sagemaker://')
+}
+
+/** Whether the refused option is the configured AWS-signed HTTPS endpoint. */
+export function isRefusedSignedHttps(data: { configured_refused?: boolean; configured_endpoint?: string }): boolean {
+  return data.configured_refused === true && (data.configured_endpoint ?? '').trim().startsWith('aws-https://')
 }
 
 /**
@@ -49,12 +57,17 @@ export function configuredModelRefused(data: Parameters<typeof providerPermitted
  * the list does not govern and which may still be sent to.
  */
 export function allModelsRefused(
-  data: Parameters<typeof providerPermitted>[0] & { presets: { id: string }[]; sagemaker_available?: boolean },
+  data: Parameters<typeof providerPermitted>[0] & {
+    presets: { id: string }[]
+    sagemaker_available?: boolean
+    aws_https_available?: boolean
+  },
 ): boolean {
   return (
     !providerPermitted(data, PRESET_HOSTED) &&
     data.presets.every(p => !providerPermitted(data, p.id)) &&
-    (typeof data.sagemaker_available !== 'boolean' || !providerPermitted(data, 'sagemaker'))
+    (typeof data.sagemaker_available !== 'boolean' || !providerPermitted(data, 'sagemaker')) &&
+    (typeof data.aws_https_available !== 'boolean' || !providerPermitted(data, 'aws_https'))
   )
 }
 
