@@ -248,7 +248,7 @@ def redact_mcp_error(error: object, headers: object, extra_values: Iterable[str]
     # Configured-value spans and generic credential spans are both found in the
     # ORIGINAL text and written once: masking a short configured value first
     # (``X-Api-Version: 1``) could cut a reflected token into pieces the generic
-    # scanners no longer recognise.
+    # scanners cannot recognise.
     error, _ = redact_credentials_and_spans(
         error, _configured_value_spans(error, values), MCP_REDACTED_HEADER_VALUE
     )

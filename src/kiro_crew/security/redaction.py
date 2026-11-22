@@ -441,7 +441,7 @@ def redact_credentials_and_spans(
 
     Both span sets are positioned against the SAME original text, then merged
     where they overlap and written once, so a caller span can never cut a
-    credential into pieces the scanners no longer recognise. A merged region
+    credential into pieces the scanners cannot recognise. A merged region
     (or a caller-only span) becomes *replacement*; a credential-only span keeps
     its own tag.
     """

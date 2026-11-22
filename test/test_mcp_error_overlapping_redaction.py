@@ -3,7 +3,7 @@
 The configured-value scrub and the generic credential scanners both read the
 ORIGINAL error text; their spans are merged and replaced once. Running the
 scrub first let a one-character value (``X-Api-Version: 1``) cut a valid token
-into pieces the generic scanner no longer recognised (synthetic values only).
+into pieces the generic scanner cannot recognise (synthetic values only).
 """
 
 from __future__ import annotations
