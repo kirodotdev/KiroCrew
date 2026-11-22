@@ -5267,10 +5267,27 @@ jobs:
   # to RUNNER_TEMP (written to GITHUB_ENV by the version step, since job-level
   # env cannot read the runner context) so the cache restore (root, HOME=/root)
   # and the specs (runner, HOME=/home/runner) resolve the same directory.
+  #
+  # Sharded: the Playwright suite is one worker against one gateway, which is
+  # what its specs are written for, so the way to shorten it is more gateways,
+  # not more workers. Each leg boots its own gateway and runs `--shard=<i>/<K>`
+  # of the suite. The shard count is the length of the `shard` list and nothing
+  # else names it. Before it runs, every leg lists the whole suite and all K
+  # shards and fails unless they divide the suite exactly; after, it fails unless
+  # it ran exactly its own list (test/test_playwright_e2e.py, docs/ci/e2e-gate.md).
+  # Leg 1 also carries what runs once per pull request: the asserting harness
+  # steps below and the memory UI lane of scripts/ci_e2e_parallel.py.
   e2e:
-    name: E2E (stub ACP backend, offline)
+    name: E2E (stub ACP backend, offline, ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
+    strategy:
+      fail-fast: false
+      # The pool-wide ceiling for a matrix, not a throttle: every leg starts at
+      # once, and a list of up to four legs needs no edit here.
+      max-parallel: 4
+      matrix:
+        shard: [1, 2]
     runs-on: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Route-aware, for the same reason backend-test is. Off the CodeBuild fleet
     # this job runs on `kirocrew-linux-4-core`, where the slowest of six
@@ -5394,6 +5411,7 @@ jobs:
           npx playwright install chromium
 
       - name: MCP-App message rows render both delivery states (asserting harness)
+        if: ${{ matrix.shard == 1 }}
         # The same self-asserting harness that produced the PR's screenshot
         # evidence: serves the built SPA over loopback with fixture-backed
         # /api/** responses and fails on any scene assertion (envelope leak,
@@ -5405,6 +5423,7 @@ jobs:
         run: node scripts/capture-mcp-app-message-rows.mjs "$RUNNER_TEMP/mcp-app-message-rows"
 
       - name: kiro-light cards carry their own edge (computed-style sweep)
+        if: ${{ matrix.shard == 1 }}
         # kiro-light paints --card and --bg the same #ffffff, so a borderless
         # card there draws nothing while every other theme shows it. Renders
         # the core dashboard routes and every built-in app page of the built
@@ -5438,6 +5457,7 @@ jobs:
       # canary idiom as the boot matrices above: pytest exits 0 on a fully skipped
       # module, so the count is what proves the corpus actually ran.
       - name: SkillForm frontmatter parity (TS mirror vs Python read path)
+        if: ${{ matrix.shard == 1 }}
         env:
           KIROCREW_SKILLFORM_PARITY_REQUIRE: "1"
         run: |
@@ -5464,6 +5484,7 @@ jobs:
           }
 
       - name: Transcript rows hold the 4px grid floor (asserting harness)
+        if: ${{ matrix.shard == 1 }}
         # Renders every transcript row kind through the real ChatMessageList and
         # fails when a frame matches ZERO rows (the selector drifted and every
         # check below it would pass vacuously), when a row's card padding is off
@@ -5528,6 +5549,11 @@ jobs:
           # from the SAME expression as this job's timeout-minutes above so the two
           # cannot drift: 30 on the CodeBuild fleet, 40 on the hosted route.
           KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
+          # This leg's part of the suite. The harness passes it to Playwright as
+          # `--shard`, and the helper starts the memory UI lane on leg 1 only.
+          KIROCREW_E2E_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          # The harness copies the run's JSON report here for the upload below.
+          KIROCREW_E2E_REPORT_DIR: ${{ runner.temp }}/e2e-playwright-report
         run: exec python scripts/ci_e2e_parallel.py
 
       # Only after a started sampler: a job that failed before run-as-runner
@@ -5544,7 +5570,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: voice-recovery-evidence
+          name: voice-recovery-evidence-${{ matrix.shard }}
           path: website/test-results/**/voice-recovery/
           if-no-files-found: ignore
           retention-days: 7
@@ -5553,7 +5579,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: member-memory-ui-evidence
+          name: member-memory-ui-evidence-${{ matrix.shard }}
           path: |
             website/test-results/**/member-memory-*.png
             website/test-results/**/legacy-member-memory-*.png
@@ -5563,6 +5589,18 @@ jobs:
             website/test-results/**/memory-v2-*.png
             ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-*.png
             ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # The run's JSON report, on every outcome: each test's id and status, which
+      # is what shows from outside the job that the legs together ran every test
+      # once. `ignore`: a leg that failed before the specs started has no report.
+      - name: Upload Playwright JSON report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-playwright-report-${{ matrix.shard }}
+          path: ${{ runner.temp }}/e2e-playwright-report/
           if-no-files-found: ignore
           retention-days: 7
 
@@ -5580,7 +5618,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-playwright-failures
+          name: e2e-playwright-failures-${{ matrix.shard }}
           path: |
             website/test-results/
             website/playwright-report/
@@ -5591,7 +5629,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-host-pressure
+          name: e2e-host-pressure-${{ matrix.shard }}
           path: ${{ runner.temp }}/e2e-host-pressure.log
           if-no-files-found: ignore
           retention-days: 7
