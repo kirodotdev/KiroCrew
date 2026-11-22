@@ -2142,7 +2142,8 @@ no longer destroy older turns.
   stamped with no id was not written by this path, so both stay. Both
   noter wrappers (`rehydrate_slot_from_history_async`,
   `resume_slot_from_history`) do that exit work -- the owed record and the
-  un-stamp retry, worker-thread hops -- after their body has published, so
+  un-stamp retry (and, for rehydrate, the tab-id commit), worker-thread hops --
+  after their body has published, so
   each re-reads the key after its last await and hands back only the slot the
   key holds now: a permanent deletion landing in that window retires the
   published slot, and the wrapper answers `None` (rehydrate) or
@@ -2235,6 +2236,25 @@ no longer destroy older turns.
   in-memory transitions only — it is never held across the file replace, so
   the event loop never waits on the commit (which on Windows is a bounded
   retry loop, not a single rename).
+- **A restore commits the tab id it minted before it returns.** A slot rebuilt
+  from a line with no `tab_id` mints one, and persisting it is an `os.replace`
+  of the whole transcript. Every async driver (`restore_open_slots_async`,
+  `restore_recent_sessions_async` and the targeted
+  `rehydrate_slot_from_history_async`) collects those backfills through
+  `pending_backfills` and awaits them with `_commit_tab_id_backfills`
+  (`update_metadata_if(require_existing=True)`, so a session deleted meanwhile
+  is not recreated) before returning; the targeted driver does it as exit work,
+  before its re-read of the key, so a delete landing meanwhile still answers
+  `None`. Only the synchronous drivers still fire it off the loop
+  (`restore_open_slots` through `_rehydrate_slot_from_history`,
+  `restore_recent_sessions` through `_apply_recent_session`). A backfill left in
+  flight overlaps what the caller does next: an on-loop read of a file
+  mid-replace raises `PermissionError` on Windows, and a turn's admission reads
+  the session's execution carrier outside the transcript lock while the replace
+  holds it. A read there that finds no file answers "no record", so the turn
+  publishes over an empty carrier and the compare-and-set, which waits for the
+  lock and then reads the committed record, refuses the turn with "session
+  changed during admission" (#37384).
 - **Foreign-append merge & id-first dedup** (`_frozen_prefix_and_foreign_appends`):
   a default save captures its `window` snapshot BEFORE taking `_locked`, so a
   cross-process writer (subagent / cron / CLI) can fully append + release the
