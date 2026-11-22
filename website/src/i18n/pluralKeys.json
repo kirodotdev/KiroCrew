@@ -310,6 +310,8 @@
   "pages.membersPage.member_count",
   "pages.membersPage.member_count_filtered",
   "pages.membersPage.patrol_tasks_open",
+  "pages.membersPage.schedule_state_auto_paused",
+  "pages.membersPage.schedule_failed_notice_more",
   "pages.membersPage.patrol_tasks_still_open",
   "pages.membersPage.team_crewmate_count",
   "pages.membersPage.team_need_you_count",
