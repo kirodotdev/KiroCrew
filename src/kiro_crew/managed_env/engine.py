@@ -39,22 +39,25 @@ STEP_TIMEOUT_S = 120.0
 
 TEXT = {
     "bad_crew_name": "A crew name is 2 to 32 lowercase letters, digits or single hyphens.",
+    # An environment with no Remote Crew row has no Delete in the dashboard, so the
+    # route stays named for that case.
     "quota": "You have the most managed environments allowed. Delete one "
-    "(POST /api/managed-environments/<id>/delete), then launch again.",
+    "(Delete environment on its Remote Crew row, or "
+    "POST /api/managed-environments/<id>/delete for one with no row), then launch again.",
     "install_failed": "Crew could not be installed on {host} ({why}).",
     "not_running": "{host} did not start ({why}).",
     "hook_failed": "Crew's gateway did not start on {host} ({why}). Connect again, or delete it "
-    "(POST /api/managed-environments/<id>/delete).",
+    "(Delete environment on its Remote Crew row).",
     "not_machine": "Crew on {host} is not on machine mode ({why}). Check the environment, then "
     "Connect again.",
     "no_health": "{host} is in Remote Crew, but its gateway did not answer. Connect again, or "
-    "delete it (POST /api/managed-environments/<id>/delete).",
+    "delete it (Delete environment on its Remote Crew row).",
     "no_row": "{host} is running but could not be added to Remote Crew ({why}). Delete it "
     "(POST /api/managed-environments/<id>/delete).",
     "no_machine_mode": "This Crew release has no machine mode, which a managed environment's "
     "Crew needs. Update Crew, then launch again.",
     "ssh_config_missing": "Add the managed-environment ssh settings first "
-    "(POST /api/managed-environments/ssh-config writes them), then launch again.",
+    "(Allow this computer to connect, on the launch form), then launch again.",
 }
 
 

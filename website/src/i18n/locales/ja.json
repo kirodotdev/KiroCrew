@@ -24693,5 +24693,45 @@
       "label": "接続されたコンピューター",
       "shared_crew_off": "共有 Crew では無効"
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments は、Kiro が起動して維持するリモートマシンです。1 つ作成し、そこで新しいクルーを実行します。",
+      "name_label": "クルー名",
+      "name_placeholder": "research",
+      "name_rule": "小文字、数字、単一のハイフンを 2〜32 文字で使い、先頭は英字にしてください。",
+      "name_help": "環境にはクルーと同じ名前が付きます。",
+      "ssh_config_note": "このコンピューターから環境に接続できるようにします。{{path}} に数行を追加します。いつでも削除できます。ファイルのほかの部分は変わりません。",
+      "launch": "起動",
+      "ssh_add": "このコンピューターからの接続を許可",
+      "ssh_ready": "{{path}} に、Crew がマネージド環境に接続するための ssh 設定があります。",
+      "ssh_failed": "ssh 設定を追加できませんでした",
+      "launch_needs_name": "起動するにはクルー名を入力してください。",
+      "launch_needs_ssh": "このコンピューターからの接続を許可してから起動します。",
+      "ssh_failed_hint": "{{path}} を編集できるか確認してください。",
+      "launch_fix_name": "起動するにはクルー名を修正してください。",
+      "ssh_preview": "追加される行を見る",
+      "ssh_preview_why": "これらの行で、Crew は Kiro のサインインを使ってあなたの Kiro Managed Environments（名前が {{hosts}} で始まるもの）に接続し、ほかの ssh ホストはそのまま残ります。"
+    },
+    "row": {
+      "stop": "環境を停止",
+      "resume": "環境を再開",
+      "delete": "環境を削除",
+      "delete_title": "{{name}} の環境を削除しますか？",
+      "delete_body": "マネージド環境とその中のすべてが削除されます。元に戻せません。クルーは、取り除くまで一覧に残ります。",
+      "delete_confirm": "環境を削除",
+      "list_failed": "マネージド環境を読み込めませんでした。",
+      "gone": "この環境はもうマネージド環境にありません。クルーを一覧から取り除いてください。",
+      "state_creating": "環境を起動中",
+      "state_running": "環境は実行中",
+      "state_stopped": "環境は停止中",
+      "state_deleting": "環境を削除中",
+      "state_error": "環境でエラーが発生しました",
+      "state_error_hint": "サービスはこの環境を {{status}} と報告しています。削除して、もう一度起動するか、エージェントに調べてもらってください。",
+      "managed_by": "Kiro Managed Environments · 「取り除く」を選ぶとこの一覧からクルーが外れますが、環境は残ります。環境を削除するには「環境を削除」を使ってください。",
+      "stop_failed": "{{name}} の環境を停止できませんでした",
+      "resume_failed": "{{name}} の環境を再開できませんでした",
+      "delete_failed": "{{name}} の環境を削除できませんでした"
+    }
   }
 }

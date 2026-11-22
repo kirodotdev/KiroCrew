@@ -39,12 +39,15 @@
  *
  * **Registration is module-load, like every other frontend seam.** This registry
  * is not reactive; the edition registers during composition, before the shell
- * renders. The core registers nothing, so stock behavior is unchanged.
+ * renders. The core registers nothing; its own forms are the seed map below
+ * (the managed-environment lane's, drawn only when the server lists its
+ * provisioner, which it does only while the `crew_client` preview is on).
  */
 import type { ComponentType } from 'react'
 import type { LaunchJob, RemoteProvisioner } from '../api/client'
 import { BUILTIN_PROVISIONER_ID } from '../utils/remoteCrew'
 import { reportSeamCollision } from '../apps/seamCollision'
+import SandboxLaunchForm, { SANDBOX_PROVISIONER_KIND } from './managedEnv/SandboxLaunchForm'
 
 /**
  * Provisioner kinds the core draws itself, in `RemoteCrewPanel`.
@@ -92,7 +95,10 @@ export interface RemoteProvisionerRenderer {
   component: ComponentType<RemoteProvisionerFormProps>
 }
 
-const RENDERERS = new Map<string, RemoteProvisionerRenderer>()
+/** The core's own forms for lanes outside `BUILTIN_REMOTE_PROVISIONER_KINDS` (a seed map). */
+const RENDERERS = new Map<string, RemoteProvisionerRenderer>([
+  [SANDBOX_PROVISIONER_KIND, { kind: SANDBOX_PROVISIONER_KIND, component: SandboxLaunchForm }],
+])
 
 const isBuiltin = (kind: string): boolean =>
   (BUILTIN_REMOTE_PROVISIONER_KINDS as readonly string[]).includes(kind)

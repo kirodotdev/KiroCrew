@@ -25299,5 +25299,45 @@
       "label": "जुड़े हुए कंप्यूटर",
       "shared_crew_off": "साझा Crew में बंद"
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments ऐसी remote मशीनें हैं जिन्हें Kiro तुम्हारे लिए शुरू करता और चालू रखता है। एक बनाओ और उस पर एक नई क्रू चलाओ।",
+      "name_label": "क्रू का नाम",
+      "name_placeholder": "research",
+      "name_rule": "2 से 32 छोटे अक्षर, अंक या एक-एक हाइफ़न इस्तेमाल करो, और शुरुआत अक्षर से करो।",
+      "name_help": "Environment का नाम क्रू के नाम पर रखा जाता है।",
+      "ssh_config_note": "इससे यह कंप्यूटर तुम्हारे environments से जुड़ पाता है। {{path}} में कुछ लाइनें जुड़ती हैं; तुम उन्हें कभी भी हटा सकते हो। फ़ाइल में और कुछ नहीं बदलता।",
+      "launch": "शुरू करो",
+      "ssh_add": "इस कंप्यूटर को जुड़ने दो",
+      "ssh_ready": "{{path}} में वे ssh सेटिंग हैं जिनसे Crew तुम्हारे managed environments तक पहुँचता है।",
+      "ssh_failed": "ssh सेटिंग जोड़ी नहीं जा सकीं",
+      "launch_needs_name": "शुरू करने के लिए क्रू का नाम लिखो।",
+      "launch_needs_ssh": "इस कंप्यूटर को जुड़ने दो, फिर लॉन्च करो।",
+      "ssh_failed_hint": "देखो कि तुम {{path}} बदल सकते हो।",
+      "launch_fix_name": "शुरू करने के लिए क्रू का नाम ठीक करो।",
+      "ssh_preview": "जोड़ी जाने वाली पंक्तियाँ देखो",
+      "ssh_preview_why": "ये लाइनें Crew को तुम्हारे Kiro साइन-इन से तुम्हारे Kiro Managed Environments ({{hosts}} से शुरू होने वाले नाम) से जोड़ती हैं, और तुम्हारे बाकी ssh होस्ट जैसे हैं वैसे रहते हैं।"
+    },
+    "row": {
+      "stop": "Environment रोको",
+      "resume": "Environment फिर से शुरू करो",
+      "delete": "Environment हटाओ",
+      "delete_title": "{{name}} का environment हटाना है?",
+      "delete_body": "Managed environment और उसमें मौजूद सब कुछ हटा दिया जाएगा। इसे वापस नहीं किया जा सकता। जब तक तुम क्रू को नहीं हटाते, वह तुम्हारी सूची में रहती है।",
+      "delete_confirm": "Environment हटाओ",
+      "list_failed": "तुम्हारे managed environments पढ़े नहीं जा सके।",
+      "gone": "यह environment अब तुम्हारे managed environments में नहीं है। क्रू को अपनी सूची से हटाओ।",
+      "state_creating": "Environment शुरू हो रहा है",
+      "state_running": "Environment चल रहा है",
+      "state_stopped": "Environment रुका हुआ है",
+      "state_deleting": "Environment हटाया जा रहा है",
+      "state_error": "Environment में गड़बड़ी",
+      "state_error_hint": "सर्विस इस environment को {{status}} बता रही है। इसे मिटाओ और फिर से लॉन्च करो, या एजेंट से जाँच करवाओ।",
+      "managed_by": "Kiro Managed Environments · हटाओ चुनने से क्रू इस सूची से निकल जाती है, पर environment बना रहता है। उसे मिटाने के लिए Environment हटाओ इस्तेमाल करो।",
+      "stop_failed": "{{name}} का environment रोका नहीं जा सका",
+      "resume_failed": "{{name}} का environment फिर से शुरू नहीं हो सका",
+      "delete_failed": "{{name}} का environment हटाया नहीं जा सका"
+    }
   }
 }

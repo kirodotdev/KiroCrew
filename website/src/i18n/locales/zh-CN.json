@@ -24693,5 +24693,45 @@
       "label": "已连接的电脑",
       "shared_crew_off": "共享 Crew 中已停用"
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments 是 Kiro 为你启动并维护的远程机器。创建一台，并在上面运行一个新的团队。",
+      "name_label": "团队名称",
+      "name_placeholder": "research",
+      "name_rule": "使用 2 到 32 个小写字母、数字或单个连字符，并以字母开头。",
+      "name_help": "环境会以这个团队命名。",
+      "ssh_config_note": "让这台电脑可以连接到你的环境。会在 {{path}} 中添加几行，随时可以删除。文件的其他内容不会改变。",
+      "launch": "启动",
+      "ssh_add": "允许这台电脑连接",
+      "ssh_ready": "{{path}} 中已有 Crew 连接托管环境所用的 ssh 设置。",
+      "ssh_failed": "无法添加 ssh 设置",
+      "launch_needs_name": "输入团队名称后即可启动。",
+      "launch_needs_ssh": "允许这台电脑连接后即可启动。",
+      "ssh_failed_hint": "请确认你可以编辑 {{path}}。",
+      "launch_fix_name": "修正团队名称后即可启动。",
+      "ssh_preview": "查看要添加的内容",
+      "ssh_preview_why": "这些行让 Crew 通过 Kiro 登录连接到你的 Kiro Managed Environments（名称以 {{hosts}} 开头），其他 ssh 主机保持不变。"
+    },
+    "row": {
+      "stop": "停止环境",
+      "resume": "恢复环境",
+      "delete": "删除环境",
+      "delete_title": "删除 {{name}} 的环境？",
+      "delete_body": "托管环境及其中的所有内容都会被删除，且无法撤销。在你移除之前，该团队会一直留在列表中。",
+      "delete_confirm": "删除环境",
+      "list_failed": "无法读取你的托管环境。",
+      "gone": "这个环境已不在你的托管环境中。请把该团队从列表中移除。",
+      "state_creating": "环境正在启动",
+      "state_running": "环境正在运行",
+      "state_stopped": "环境已停止",
+      "state_deleting": "环境正在删除",
+      "state_error": "环境出错",
+      "state_error_hint": "服务报告此环境的状态为 {{status}}。请删除它后重新启动，或让智能体帮你排查。",
+      "managed_by": "Kiro Managed Environments · 移除只会把团队从此列表中去掉，环境仍会保留。要删除环境，请使用“删除环境”。",
+      "stop_failed": "无法停止 {{name}} 的环境",
+      "resume_failed": "无法恢复 {{name}} 的环境",
+      "delete_failed": "无法删除 {{name}} 的环境"
+    }
   }
 }

@@ -25299,5 +25299,45 @@
       "label": "যুক্ত কম্পিউটার",
       "shared_crew_off": "শেয়ার করা Crew-তে বন্ধ"
     }
+  },
+  "managedEnv": {
+    "form": {
+      "intro": "Kiro Managed Environments হলো remote মেশিন, যা Kiro তোমার জন্য চালু করে ও চালু রাখে। একটি তৈরি করো এবং তাতে একটি নতুন ক্রু চালাও।",
+      "name_label": "ক্রু-এর নাম",
+      "name_placeholder": "research",
+      "name_rule": "2 থেকে 32টি ছোট হাতের অক্ষর, সংখ্যা বা একক হাইফেন ব্যবহার করো, শুরু হবে অক্ষর দিয়ে।",
+      "name_help": "Environment-এর নাম ক্রু-এর নামে রাখা হয়।",
+      "ssh_config_note": "এতে এই কম্পিউটার তোমার environment-গুলোর সঙ্গে যুক্ত হতে পারে। {{path}}-এ কয়েকটি লাইন যোগ হয়; যেকোনো সময় সেগুলো সরাতে পারো। ফাইলের আর কিছু বদলায় না।",
+      "launch": "চালু করো",
+      "ssh_add": "এই কম্পিউটারকে যুক্ত হতে দাও",
+      "ssh_ready": "{{path}}-এ সেই ssh সেটিংস আছে যা দিয়ে Crew তোমার managed environment-গুলোতে পৌঁছায়।",
+      "ssh_failed": "ssh সেটিংস যোগ করা গেল না",
+      "launch_needs_name": "চালু করতে ক্রু-এর নাম লেখো।",
+      "launch_needs_ssh": "এই কম্পিউটারকে যুক্ত হতে দাও, তারপর চালু করো।",
+      "ssh_failed_hint": "দেখো তুমি {{path}} বদলাতে পারো কি না।",
+      "launch_fix_name": "চালু করতে ক্রু-এর নাম ঠিক করো।",
+      "ssh_preview": "যোগ হওয়া লাইনগুলো দেখো",
+      "ssh_preview_why": "এই লাইনগুলো দিয়ে Crew তোমার Kiro সাইন-ইনের মাধ্যমে তোমার Kiro Managed Environments-এ ({{hosts}} দিয়ে শুরু হওয়া নাম) যুক্ত হয়, আর তোমার অন্য ssh হোস্ট যেমন আছে তেমনই থাকে।"
+    },
+    "row": {
+      "stop": "Environment থামাও",
+      "resume": "Environment আবার চালু করো",
+      "delete": "Environment মুছে ফেলো",
+      "delete_title": "{{name}}-এর environment মুছে ফেলবে?",
+      "delete_body": "Managed environment এবং এর সবকিছু মুছে যাবে। এটি আর ফেরানো যাবে না। তুমি না সরানো পর্যন্ত ক্রু তোমার তালিকায় থাকে।",
+      "delete_confirm": "Environment মুছে ফেলো",
+      "list_failed": "তোমার managed environment-গুলো পড়া গেল না।",
+      "gone": "এই environment আর তোমার managed environment-এ নেই। ক্রু-কে তোমার তালিকা থেকে সরাও।",
+      "state_creating": "Environment চালু হচ্ছে",
+      "state_running": "Environment চলছে",
+      "state_stopped": "Environment থেমে আছে",
+      "state_deleting": "Environment মোছা হচ্ছে",
+      "state_error": "Environment-এ ত্রুটি",
+      "state_error_hint": "সার্ভিস এই environment-কে {{status}} বলছে। এটি মুছে ফেলো এবং আবার চালু করো, অথবা এজেন্টকে দেখতে বলো।",
+      "managed_by": "Kiro Managed Environments · সরাও বেছে নিলে ক্রু এই তালিকা থেকে সরে যায়, কিন্তু environment থেকে যায়। সেটি মুছতে Environment মুছে ফেলো ব্যবহার করো।",
+      "stop_failed": "{{name}}-এর environment থামানো গেল না",
+      "resume_failed": "{{name}}-এর environment আবার চালু করা গেল না",
+      "delete_failed": "{{name}}-এর environment মোছা গেল না"
+    }
   }
 }

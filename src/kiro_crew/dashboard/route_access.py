@@ -80,6 +80,9 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # teammate (teammate_access), 404 while the crew_client preview is off. The list
     # calls the service's List on every read, so it is not a `.read`.
     ("GET", "/api/managed-environments/list"): RouteAccess("managed_environments.list", UNSTABLE),
+    ("GET", "/api/managed-environments/ssh-config"): RouteAccess(
+        "managed_environments.ssh_config.read", UNSTABLE
+    ),
     ("POST", "/api/managed-environments/ssh-config"): RouteAccess(
         "managed_environments.ssh_config.write", UNSTABLE
     ),
