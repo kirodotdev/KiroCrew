@@ -50,9 +50,10 @@ def _dir_outside_roots(raw: str, roots: list[str]) -> bool:
     # joined under the data home it would still discard the data home.
     if os.path.isabs(path) or windows_path.root or ".." not in windows_path.parts:
         return False
-    # A backslash is a separator in an archive written on Windows, so a ``..\\x`` that
-    # would climb there must also climb here, where normpath keeps it as a name.
-    normal = os.path.normcase(os.path.normpath(os.path.join(roots[1], path).replace("\\", "/")))
+    # A backslash is a separator in an archive written on Windows, so a ``..\\x``
+    # must also climb here before symlinks are resolved for the containment check.
+    joined = os.path.join(roots[1], path).replace("\\", "/")
+    normal = os.path.normcase(os.path.realpath(joined))
     return not any(path_within(normal, os.path.normcase(root)) for root in roots)
 
 

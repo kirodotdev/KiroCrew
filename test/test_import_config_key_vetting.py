@@ -71,11 +71,29 @@ def test_a_workspace_folder_outside_the_roots_skips_the_config(tmp_path, workspa
     assert workspace_dir not in text
 
 
+def test_a_workspace_folder_that_escapes_through_a_symlink_skips_the_config(tmp_path):
+    workspace = tmp_path / "home" / "workspace"
+    workspace.mkdir(parents=True)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    try:
+        (workspace / "link").symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    snap = _stage(tmp_path, {"workspaces": {"evil": {"dir": "workspace/link/../target"}}})
+    vetted, summary = _vet(snap)
+    assert "config.json" not in vetted
+    text = " ".join(summary["items"])
+    assert "evil" in text and "workspace" in text, summary
+
+
 def test_a_workspace_folder_under_the_workspace_root_or_relative_is_kept(tmp_path):
     cfg = {
         "workspaces": {
             "rel": {"dir": "workspace"},
             "plain": "workspace-two",
+            "dotdot": {"dir": "workspace/a/../b"},
             "inside": {"dir": str(tmp_path / "ws-root" / "proj")},
         }
     }
