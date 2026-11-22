@@ -81,7 +81,7 @@ def test_a_workspace_folder_outside_the_roots_skips_the_config(tmp_path, workspa
 def test_a_workspace_folder_that_escapes_through_a_symlink_skips_the_config(tmp_path):
     workspace = tmp_path / "home" / "workspace"
     workspace.mkdir(parents=True)
-    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside = tmp_path / "outside"
     outside.mkdir()
     try:
         (workspace / "link").symlink_to(outside, target_is_directory=True)

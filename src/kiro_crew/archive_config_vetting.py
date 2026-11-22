@@ -44,6 +44,10 @@ def _dir_outside_roots(raw: str, roots: list[str]) -> bool:
     """
     from kiro_crew.sandbox_plan import path_within
 
+    # A NUL cannot be a real path component; refuse it the same on every OS.
+    if "\x00" in raw:
+        return True
+
     try:
         path = os.path.expanduser(raw)
         windows_path = PureWindowsPath(path)  # splits on / and \
