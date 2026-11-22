@@ -150,6 +150,56 @@ async def test_keys_outside_the_mcp_namespace_are_refused(tmp_path, params, meth
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        (
+            f"kiro.mcp.{_HASH}.path-client",
+            "key kind 'path-client' is outside the MCP sign-in namespace",
+        ),
+        (
+            f"kiro.mcp.idp.{_HASH}.client",
+            "key kind 'client' is outside the MCP sign-in namespace",
+        ),
+        (f"kiro.mcp.{_HASH}.tokens\n", "key is outside the MCP sign-in namespace"),
+        (f"kiro.mcp.{_HASH}.tok-SECRET-4f1c", "key is outside the MCP sign-in namespace"),
+        (f"kiro.mcp.{_HASH}.{'a' * 33}", "key is outside the MCP sign-in namespace"),
+        ("kiro.auth.refreshToken", "key is outside the MCP sign-in namespace"),
+    ],
+)
+async def test_a_refused_key_names_its_kind_only_when_it_is_a_plain_label(tmp_path, key, message):
+    with pytest.raises(kss.SecretStorageRefused) as exc:
+        await _server(tmp_path).answer(kss.METHOD_SECRET_GET, {"key": key})
+    assert str(exc.value) == message
+
+
+@pytest.mark.asyncio
+async def test_a_refused_secret_request_is_logged_at_warning(tmp_path, caplog):
+    from kiro_crew.acp import runtime_host_requests
+
+    class _Runtime:
+        def __init__(self):
+            self.errors = []
+
+        async def send_error(self, request_id, code, message):
+            self.errors.append((request_id, message))
+
+    runtime = _Runtime()
+    caplog.set_level(logging.WARNING, logger=runtime_host_requests.logger.name)
+    await runtime_host_requests._answer_secret_request(
+        runtime,
+        _server(tmp_path),
+        5,
+        kss.METHOD_SECRET_GET,
+        {"key": f"kiro.mcp.{_HASH}.path-client"},
+    )
+    message = "key kind 'path-client' is outside the MCP sign-in namespace"
+    assert runtime.errors == [(5, message)]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert [r.getMessage() for r in warnings] == [f"MCP grant store request refused: {message}"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("key", [_TOKENS_KEY, _VERIFIER_KEY])
 async def test_an_oversized_or_non_string_value_is_refused(tmp_path, key):
     server = _server(tmp_path)
