@@ -112,12 +112,14 @@ const {
   MAX_INSPECT_PER_RUN,
   MAX_PENDING_ATTEMPTS,
 } = require("./runtime/crash/scan");
+const { NATIVE_LOG_OFF_CAUSES } = require("./native-logging");
 
 /**
  * The renderer-facing view of a scan.
  *
- * Deliberately narrow: ONE number. No paths, filenames, module names, exception
- * codes, timestamps, or logs directory — all of which describe the machine (down
+ * Deliberately narrow: ONE number, plus `nativeLogOff` on a launch whose
+ * Chromium file log is off (a cause code from a closed set, read by the banner). No
+ * paths, filenames, module names, exception codes, timestamps, or logs directory — all of which describe the machine (down
  * to the account name in a home directory) and none of which the notice needs.
  * A connection window pointed at a remote gateway shares this preload, so the
  * smaller this payload is, the less the sender gate has to carry. The detail
@@ -131,9 +133,19 @@ const {
  * UI does not read are not free here: every one is another thing crossing the
  * boundary this channel's three gates exist to protect.
  */
-function crashNoticeSummary(scan) {
+function crashNoticeSummary(scan, nativeLogging = null) {
   const newCrashes = (scan && scan.newCrashes) || [];
-  return { newCount: newCrashes.length };
+  const summary = { newCount: newCrashes.length };
+  // Present only when Chromium's file log is off this launch (see
+  // `initNativeLogging`'s `fileLogOffCause`): then the chromium.log the banner
+  // asks the user to attach is from an earlier session, and the notice says so.
+  // Only a code from the closed set crosses; anything else is dropped, so no
+  // free text can ride this channel.
+  const cause = nativeLogging && nativeLogging.fileLogOffCause;
+  if (typeof cause === "string" && NATIVE_LOG_OFF_CAUSES.includes(cause)) {
+    summary.nativeLogOff = cause;
+  }
+  return summary;
 }
 
 module.exports = {
