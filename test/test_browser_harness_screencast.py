@@ -1078,3 +1078,40 @@ async def test_an_opaque_frame_that_moved_or_went_between_queries_is_not_kept(
     await stream._mask_rects(1280, 768, force=True)
     await stream._mask_rects(1280, 768, force=True)
     assert stream._mask_ok is ok
+
+
+@pytest.mark.asyncio
+async def test_chrome_hiding_the_tab_is_logged_once_and_a_shown_report_is_not(caplog) -> None:
+    """Chrome draws no frame of a hidden tab (a covered or minimised window), so the
+    card waits whatever it asks; the log line is how a report of that is traced."""
+    stream, relay, _clock, sink = make_stream()
+    await stream.start()
+    caplog.set_level("INFO", logger=sc.logger.name)
+    shown = {"method": "Page.screencastVisibilityChanged", "params": {"visible": True}}
+    hidden = {"method": "Page.screencastVisibilityChanged", "params": {"visible": False}}
+    await relay.on_event({**shown, "sessionId": SESSION})
+    await relay.on_event({**hidden, "sessionId": "another-tab"})
+    assert "hides the tab" not in caplog.text
+    await relay.on_event({**hidden, "sessionId": SESSION})
+    assert caplog.text.count("hides the tab") == 1 and sink.frames == []
+
+
+@pytest.mark.asyncio
+async def test_a_restart_whose_card_goes_during_the_stop_leaves_the_cast_stopped() -> None:
+    """The last card hides while the restart's stop is in flight: the hide finds no
+    cast to stop, so the restart itself must not start one again."""
+    stream, relay, _clock, _sink = make_stream()
+    await stream.start()
+    send = relay.send
+
+    async def hide_during_stop(method: str, params: Any = None, session_id: Any = None) -> Any:
+        answer = await send(method, params, session_id)
+        if method == "Page.stopScreencast":
+            await stream.set_visible(False)
+        return answer
+
+    relay.send = hide_during_stop  # type: ignore[method-assign]
+    starts = len(relay.methods("Page.startScreencast"))
+    await stream.restart()
+    assert stream.casting is False
+    assert len(relay.methods("Page.startScreencast")) == starts

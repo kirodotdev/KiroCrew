@@ -473,7 +473,8 @@
       "not_granted": "Cette app ne peut pas encore afficher le navigateur. Approuve son accès au navigateur sur la page de l'app dans Apps.",
       "note_not_sent_not_saved": "Ta note n'a pas été envoyée au Bot, et ce navigateur n'a pas pu en garder une copie. Copie-la maintenant : {{note}}",
       "tab_gone": "L'onglet du Bot est fermé, il n'y a donc aucune page en direct à afficher.",
-      "app_off": "Cette app est désactivée, elle ne peut donc pas afficher le navigateur. Active-la dans Apps pour revoir la page."
+      "app_off": "Cette app est désactivée, elle ne peut donc pas afficher le navigateur. Active-la dans Apps pour revoir la page.",
+      "actions": "Ce que le Bot a fait"
     }
   },
   "apps": {

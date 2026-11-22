@@ -1229,6 +1229,10 @@ import * as sdk from '@kirocrew/app-sdk'
 | `url`, `title` | the page's address and title |
 | `claim()`, `release(note?)` | take over, hand back; `false` when refused or not allowed |
 
+Below the picture the view lists what the Bot did this turn (the chat card's step
+strip): the latest five actions, newest last, behind a toggle that counts them all
+and that the person may fold. It needs no prop and no change in your app.
+
 `useBrowserCoords(slot)` answers `toPage(x, y)` (view point to frame pixels, `null` outside
 the picture) and `toView(x, y)` (frame pixels to view point), for the `BrowserView` of that
 slot on screen; both are `null` until a frame is drawn.

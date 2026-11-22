@@ -473,7 +473,8 @@
       "not_granted": "Questa app non può ancora mostrare il browser. Approva il suo accesso al browser nella pagina dell'app in App.",
       "note_not_sent_not_saved": "La tua nota non è stata inviata al Bot e questo browser non è riuscito a conservarne una copia. Copiala ora: {{note}}",
       "tab_gone": "La scheda del Bot è chiusa, quindi non c'è una pagina dal vivo da mostrare.",
-      "app_off": "Questa app è disattivata, quindi non può mostrare il browser. Attivala in App per rivedere la pagina."
+      "app_off": "Questa app è disattivata, quindi non può mostrare il browser. Attivala in App per rivedere la pagina.",
+      "actions": "Cosa ha fatto il Bot"
     }
   },
   "apps": {

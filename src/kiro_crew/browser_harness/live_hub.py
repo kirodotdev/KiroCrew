@@ -594,7 +594,27 @@ class LiveHub:
             sess.state = ""
         if self.recorder is not None:
             self.recorder.turn_started(session_key, sess.turn_id, sess.url)
-        self._emit(sess)
+        if sess.stream is None:
+            self._emit(sess)
+        else:
+            self._spawn(self._new_turn_picture(sess, sess.stream))
+
+    async def _new_turn_picture(self, sess: LiveSession, stream: LiveStream) -> None:
+        """Announce a turn that joins a running stream, then ask Chrome for its picture.
+
+        The card opens the new turn with no picture, and Chrome sends no frame of a
+        still page (a paused video, a song's end screen), so the card would wait for
+        the page to change. A screencast start answers with the current picture at
+        once; it goes out after the event, so the frame lands on the new turn.
+        ``restart`` does nothing while no card sees the view.
+        """
+        await self._emit_now(sess)
+        if sess.stream is not stream:
+            return
+        try:
+            await stream.restart()
+        except Exception:  # noqa: BLE001 - the tab moved or closed; the next op restarts it
+            logger.debug("browser live: new-turn picture not requested", exc_info=True)
 
     def step(self, session_key: str, label: str) -> None:
         """The agent is on a new step: the previous active one is done."""
