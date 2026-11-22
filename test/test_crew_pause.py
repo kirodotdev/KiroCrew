@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from skill_script_helpers import skill_text
 
 from kiro_crew import crew_mode, crew_pause, platform_compat
 from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
@@ -1207,8 +1208,8 @@ def test_the_lead_prompt_and_both_skills_carry_the_goal_first_rule():
     skills = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "builtin_skills"
     texts = {
         "prompt": _TEAM_LEAD_SYSTEM_PROMPT,
-        "team-lead": (skills / "team-lead" / "SKILL.md").read_text(encoding="utf-8"),
-        "goal-conductor": (skills / "goal-conductor" / "SKILL.md").read_text(encoding="utf-8"),
+        "team-lead": skill_text((skills / "team-lead" / "SKILL.md")),
+        "goal-conductor": skill_text((skills / "goal-conductor" / "SKILL.md")),
     }
     for name, text in texts.items():
         flat = " ".join(text.split())

@@ -1107,7 +1107,7 @@ class TestWorkingTarget:
         "website/AGENTS.md",
         "AUTOSDE.yaml",
         "website/AUTOSDE.yaml",
-        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/references/phase-2-gates.md",
     )
     # Every phrasing the homes use for the target. A figure is \d,\d{3}: the
     # homes write thousands with a comma, as they write the cap.
@@ -1136,7 +1136,7 @@ class TestWorkingTarget:
         # website/AGENTS.md's table row and the skill's checklist line are one line.
         anchor = {
             "website/AGENTS.md": "| a file nearing 2,000 lines",
-            "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md": (
+            "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/references/phase-2-gates.md": (
                 "**Split a code file the diff takes past"
             ),
         }[home]

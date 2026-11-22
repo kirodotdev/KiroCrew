@@ -10,6 +10,8 @@ worker's claim, checked against those cases before anyone is asked.
 
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 from kiro_crew.agent_materialization.worker_agent import worker_prompt
 from kiro_crew.context_assembly.output_contract import (
     _CRITICAL_RULES_VARIANTS,
@@ -54,7 +56,7 @@ def test_the_worker_prompt_and_schema_limit_needs_human_to_the_five_asks():
 
 
 def test_the_conductor_skill_checks_needs_human_instead_of_trusting_it():
-    skill = _flat(_SKILL.read_text(encoding="utf-8"))
+    skill = _flat(skill_text(_SKILL))
     start = skill.index("**`needs_human` is the worker's claim, not a fact: check it.**")
     rule = skill[start : start + 1000]
     assert "only for (a)-(e) in your rules" in rule
