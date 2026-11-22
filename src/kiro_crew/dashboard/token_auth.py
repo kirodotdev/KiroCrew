@@ -1296,7 +1296,7 @@ def token_auth_middleware(
         _scope_deny = _enforce_app_scope(request, app_name, path)
         if _scope_deny is not None:
             return _scope_deny
-        # A delegated (``via_app``) owner token: tagged routes only, grant read every request.
+        # A delegated (``via_app``) owner token: ``READ_ALLOW`` rows only, grant read every request.
         _scope_deny = await enforce_delegated(request, path)
         if _scope_deny is not None:
             return _scope_deny

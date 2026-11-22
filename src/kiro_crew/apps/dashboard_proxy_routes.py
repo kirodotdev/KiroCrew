@@ -2,8 +2,8 @@
 
 Owner only, app tokens included: the path sits in the app's own namespace
 (``token_auth_app_scope._app_owns_path``), so without the owner gate an app could grant
-itself. A delegated (``via_app``) token is refused too, by its route tag
-(``dashboard.delegated_route_tags``). ``apps.dashboard_proxy`` says what the grant is.
+itself. A delegated (``via_app``) token is refused too: no ``READ_ALLOW`` row names this
+path (``dashboard.delegated_scope``). ``apps.dashboard_proxy`` says what the grant is.
 
 GET reads the grant and the words to show the owner. PUT grants it, and only with
 ``{"confirm": true}`` and only for an app the gateway recorded as installed from a registry.

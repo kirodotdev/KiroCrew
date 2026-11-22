@@ -442,10 +442,12 @@ Request flow:
    stays open until the owner accepts the risk in writing. The grant is the owner's:
    `PUT /api/apps/<name>/dashboard-proxy` with `{"confirm": true}`, offered only
    for an app the gateway recorded as installed from a registry, with text naming
-   the registry and source and saying plainly what the access is: the app reads the
-   dashboard and chats and can stop a running chat turn, and it cannot send chat
-   messages, change settings, credentials, apps, terminal or approvals (the same
-   words as the card on the app's page and the confirm). Chat is read-only on
+   the registry and source and saying plainly what the access is: the app can show
+   the dashboard page with the owner's theme, preferences and chat list and stop a
+   running chat turn, it can use its own backend, and it cannot read chat messages,
+   send them, change settings, credentials, apps, the terminal or approvals (the same
+   words as the card on the app's page and the confirm,
+   `dashboard_proxy.DASHBOARD_ACCESS_SCOPE`). Chat is read-only on
    purpose: a message sent through the tunnel would run an agent as the owner, and
    that agent can do whatever the owner's agents can do, so such a grant would not
    be a secret boundary. A delegated send stays refused until the owner approves
@@ -479,37 +481,30 @@ Request flow:
    cookie matching no grant, even after the app is granted again. Provenance and
    the grant identity come from the gateway's sealed install record under
    `member-records/app-dashboard-proxy/`, never from `apps/<name>/installed.json`.
-   A READ reaches it only when `dashboard/delegated_route_tags.py` tags the route
-   `allow`; a WRITE (any method but GET and HEAD) only when
-   `delegated_scope.ALLOW_WRITES` lists it (the tag table holds reads only; writes
-   are deny by default). The list holds the token's own refresh and logout, the
-   token's own app routes, slot stop and interrupt, and three UI-order saves; it
-   holds no route that can start an agent turn, queue or edit a message, or run a
-   tool (`POST /api/chat` and `POST /api/chat/slots` are refused, and
-   `test_allow_writes_is_exactly_the_reviewed_set` pins the set, so a new row needs
-   a security review first). A GET that serves host file content, lists a directory
-   outside the app (`/api/file-read`, `/api/file-raw`, `/api/file-download`,
-   `/api/browse-files`, `/api/project/*`, `/api/outbox/<file>`), or exports the
-   install or the memory (`/api/portability/export`, `/api/memory/provider/export`)
-   is `deny`; one that is allowed anyway sits in
-   `delegated_scope.CONTENT_READ_REVIEWED` with a reason, and the route walk fails on
-   any other. A delegated request is never the owner's own view:
+   One rule, deny by default for EVERY method and EVERY channel (a plain read, a
+   write, a WebSocket upgrade, an SSE stream): a request is allowed only when
+   `delegated_scope.READ_ALLOW` has a row for its method and route, and a route
+   nobody listed is refused (`403 delegated_credential_refused`). Each row names its
+   handler (`file:line`) and what it does at most. The rows are the page's boot
+   reads (`GET /`, `/api/auth/me`, `/api/kiro-prerequisite`, `/api/dashboard/branding`,
+   `/api/theme/boot`, `/api/ui-prefs`, `/api/chat/slots`), the token's own
+   `POST /api/auth/refresh` and `/api/auth/logout`, `POST /api/chat/slots/<slot>/stop`
+   (no body, no query), and the token's own app routes (`/apps/<name>/api/*`,
+   `/app-frame-fetch/<name>/*`). No WebSocket, no SSE stream, no file read, no
+   export, no chat message body and no write but those is a row. A row that can stay
+   open (the two app routes) is registered while it runs and ended within seconds
+   when its grant ends (revoke, disable, uninstall, reinstall, new gateway secret).
+   The refresh chain only ever renews the same `via_app` and `via_grant` claims.
+   `test_delegated_read_allow.py` walks every route and method the gateway mounts
+   (the page table, the MCP tool routes, the dist and static routes, the edition
+   routes), pins the set of rows, checks each row's handler line, requires an
+   allowed GET to answer a plain response, and pins the grant prompt and the card
+   text to the rows (`DASHBOARD_ACCESS_SCOPE`), so a new row needs a security review
+   and new words first. A delegated request is never the owner's own view:
    `is_host_owner_dashboard_request` answers False for it, so every redaction seam
-   redacts in full, and `GET /api/mcp` masks launch arguments like headers.
-   `/api/apps/<name>/config` and `/manifest` are the token's own app only. Each
-   refusal and each allowed write leaves a SEL row (`delegated_scope`) that names the
-   app and the route template, never the raw path. A GET that returns a stored credential (`/api/mcp/custom/<name>`,
-   `/api/connections/mint`, `/api/config/kirocrew`, `/api/webhooks`, the channel
-   `/config` reads) is `deny`. The credential set
-   (`/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`,
-   `/api/apps/<name>/token`, `/api/apps/register`, `/api/webhooks/tokens`,
-   `/api/relay-viewer*`, the host-grant paths) and every control-plane write
-   (grant approve/revoke, app install/enable/disable/register, the owner-enable
-   marker, sandbox / approval-mode / sign-in settings, restart and upgrade,
-   `/v1/crew/owner/*`) are tagged `deny`, and a route with no tag is refused
-   (`403 delegated_credential_refused`). `test_delegated_route_tags.py` walks the
-   route table and fails on a route without a tag. Reads of admin pages stay
-   allowed.
+   redacts in full. Each refusal and each allowed write leaves a SEL row
+   (`delegated_scope`) that names the app and the route template, never the raw
+   path.
 
    `/api/token/local` carries its own gate: loopback (or a same-principal unix
    peer), then `X-Local-Secret`, then the local-owner process check. Each

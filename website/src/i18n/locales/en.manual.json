@@ -5520,7 +5520,7 @@
       "dashboard_access_restart": "Restart app",
       "dashboard_access_restarted": "App restarted.",
       "dashboard_access_restart_failed": "The app did not start again. Check its status above.",
-      "dashboard_access_scope": "With this access the app can read your dashboard and chats and stop a running chat turn. It cannot send chat messages, change settings, credentials, apps, the terminal or approvals. Turning the app off removes this access.",
+      "dashboard_access_scope": "The app can show the dashboard page with your theme, preferences and chat list, and stop a running chat turn. It can use its own backend. It cannot read chat messages, send them, change settings, credentials, apps, the terminal or approvals. Turning the app off removes this access.",
       "dashboard_access_load_failed": "Could not load the dashboard access for this app.",
       "grants_reconsent_link_hosts": "Link hosts: lets the app's hover cards see links to these sites in chat messages.",
       "grants_reconsent_link_patterns": "Text patterns: lets the app's hover cards see chat text these patterns match.",

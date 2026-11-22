@@ -50,6 +50,17 @@ APP_DASHBOARD_PROXY_KIND = "app-dashboard-proxy"
 #: different value for any other use.
 _DOMAIN = b"dashboard-proxy"
 
+#: What the grant allows, in the owner's words: the prompt before the grant, and (word for
+#: word, in English) the scope line of the card on the app's page. It matches
+#: ``delegated_scope.READ_ALLOW``; a row added there changes this text in the same commit
+#: (``test_delegated_read_allow`` pins the two together).
+DASHBOARD_ACCESS_SCOPE = (
+    "The app can show the dashboard page with your theme, preferences and chat list, and "
+    "stop a running chat turn. It can use its own backend. It cannot read chat messages, "
+    "send them, change settings, credentials, apps, the terminal or approvals. "
+    "Turning the app off removes this access."
+)
+
 _RECORD_MAX_BYTES = 4096
 _STAND_IN_SUFFIX = ".stand-in"
 
@@ -248,9 +259,7 @@ def prompt_text(app_name: str) -> dict[str, str] | None:
         "version": version,
         "text": (
             f"Allow {app_name} {version} (registry {registry}, source {source}) "
-            "to use this dashboard on your behalf? It can read your dashboard and chats "
-            "and stop a running chat turn. It cannot send chat messages, change settings, "
-            "credentials, apps, terminal or approvals. Turning the app off removes this access."
+            f"to use this dashboard on your behalf? {DASHBOARD_ACCESS_SCOPE}"
         ),
     }
 
