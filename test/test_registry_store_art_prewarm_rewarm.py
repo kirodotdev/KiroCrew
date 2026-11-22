@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -546,7 +547,16 @@ class TestBlobCacheReclaim:
             def __exit__(self, *a):
                 self._it.close()
 
-        def _spy_scandir(arg):
+        # The worker's stdlib os: count only the sweeps' own scans. (os is a name the
+        # registry's owners share, and its facade keeps every holder on one object.)
+        sweeps = {
+            reg_mod._gc_blob_cache_sweep_fd.__code__,
+            reg_mod._gc_blob_cache_sweep_lstat.__code__,
+        }
+
+        def _spy_scandir(arg="."):
+            if sys._getframe(1).f_code not in sweeps:
+                return real_scandir(arg)
             return _CountingScandir(real_scandir(arg))
 
         monkeypatch.setattr(os, "scandir", _spy_scandir)
@@ -556,7 +566,7 @@ class TestBlobCacheReclaim:
         # fewer than its 50 children before the budget stopped it. (The ``for`` loop
         # pulls one entry past the budget before the in-body check fires, so ``touched``
         # sits a hair above the cap, never near the full listing.)
-        assert touched < 50, touched
+        assert 0 < touched < 50, touched
         assert touched <= reg_mod._BLOB_CACHE_GC_MAX_ENTRIES + 2, touched
 
     def test_a_chain_deeper_than_the_ceiling_is_left_alone(self, monkeypatch, caplog):
