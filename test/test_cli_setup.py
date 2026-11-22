@@ -6,6 +6,7 @@ Slack-token ``.env`` written to, ``config_dir()``, the listener port ``logout`` 
 for, and which messaging channels ``setup`` configures.
 """
 
+import io
 import json
 import sys
 import threading
@@ -1007,3 +1008,36 @@ class TestSetupAbortNamesUnfinishedSteps:
         monkeypatch.setattr("builtins.input", _raise_eof)
         with pytest.raises(cs._SetupAborted):
             cs._maybe_setup_dashboard_url()
+
+
+class TestDashboardUrlRefusesControlCharacters:
+    """Ctrl+D then Enter on a Windows console reaches ``input()`` as U+0004."""
+
+    @pytest.mark.parametrize(
+        ("current", "outcome"),
+        [("http://old:1", "Keeping: http://old:1"), ("", "Skipped.")],
+    )
+    def test_a_control_character_answer_is_not_saved(
+        self, tmp_path, monkeypatch, capsys, current, outcome
+    ):
+        import kiro_crew.cli_setup as cs
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {}}), encoding="utf-8")
+        before = cfg_file.read_text(encoding="utf-8")
+        cfg = MagicMock()
+        cfg.load_credentials.return_value = {"SLACK_APP_TOKEN": "a", "SLACK_BOT_TOKEN": "b"}
+        cfg.dashboard.url = current
+        monkeypatch.setattr(cs, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(cs, "KiroCrewConfig", MagicMock(load=MagicMock(return_value=cfg)))
+        monkeypatch.setattr(cs, "_resolve_hostname_bounded", lambda _h: "10.0.0.1")
+        monkeypatch.setattr(cs, "_configured_port", lambda: 1)
+        monkeypatch.setattr("sys.stdin", io.StringIO("\x04\n"))
+
+        cs._maybe_setup_dashboard_url()
+
+        assert cfg_file.read_text(encoding="utf-8") == before
+        out = capsys.readouterr().out
+        assert "Not saved: the URL contains a control character." in out
+        assert outcome in out
+        assert "Dashboard URL saved" not in out
