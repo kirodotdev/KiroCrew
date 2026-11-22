@@ -1404,8 +1404,11 @@ in the store, and without the key component it read as signed out on every
 turn — every dashboard send retired idle sessions and cancelled their
 `spawn_run` children. The key joins only a DEFINITIVE store answer
 (read and audited with every credential row identified, or no store file at
-all): after an unauditable, unreadable or relocated store read, or one that
-found a login no stable claim identifies (a social login), only the key
+all). Only a row whose value is a JSON object is a credential row: any other
+value, such as the `kirocli:auth:last-forced-refresh-at` timestamp an earlier
+login leaves behind, names no login and is ignored. After an unauditable,
+unreadable or relocated store read, or one that found a login no stable claim
+identifies (a social login), only the key
 component is withheld and the fingerprint is exactly what it was before the key
 was counted, because a child can authenticate from the store rather than the
 key, and a key-only baseline would let a store account switch compare equal.
