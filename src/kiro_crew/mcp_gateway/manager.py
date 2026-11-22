@@ -32,9 +32,10 @@ from typing import Any, Optional
 from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint, warm_code_fingerprint
 from kiro_crew.config.paths import config_dir
-from kiro_crew.env import mcp_runtime_path, resolve_krb5_ccname
+from kiro_crew.env import mcp_runtime_path, pinned_gateway_spec_path, resolve_krb5_ccname
 from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.mcp_gateway import agent_socket, backend_record, transport
+from kiro_crew.mcp_gateway.hashing import GATEWAY_PATH_ENV, gateway_path
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.metrics.events import (
@@ -620,7 +621,13 @@ class GatewayManager:
         the target check cannot see that -- this is the check that can.
         """
         theirs = pong.get("fingerprint")
-        return not isinstance(theirs, str) or theirs != code_fingerprint()
+        if not isinstance(theirs, str) or theirs != code_fingerprint():
+            return True
+        # Same code, but folding launch approvals against another gateway PATH
+        # part (a package installer moved PATH across an in-place restart): its
+        # checks would refuse every launch this gateway approves.
+        ours = pinned_gateway_spec_path()
+        return ours is not None and pong.get("gateway_path") != ours
 
     async def _repair_or_adopt(
         self, missing: list[str], stale_code: bool = False, orphaned: bool = False
@@ -862,6 +869,10 @@ class GatewayManager:
         env.pop(BACKEND_WORK_DIR_ENV, None)
         if self._spec.backend_work_dir:
             env[BACKEND_WORK_DIR_ENV] = self._spec.backend_work_dir
+        # The PATH part this gateway appends to declared spec PATHs, so the
+        # daemon folds it out of launch approvals as the rewriter does
+        # (``hashing.gateway_path``). Computed before PATH is rewritten below.
+        env[GATEWAY_PATH_ENV] = await asyncio.to_thread(gateway_path)
         # Repair the Kerberos ccache pointer for pooled MCP backends so a
         # long-lived background daemon's forked children inherit a usable
         # ticket for any credential-gated MCP server. Off the loop: it stats
@@ -1178,6 +1189,11 @@ class GatewayManager:
             # Names OUR code so the daemon can confirm the mismatch itself; a
             # daemon on the same fingerprint refuses, which is correct.
             frame["caller_fingerprint"] = code_fingerprint()
+            # The part this gateway folds approvals against, so a daemon on the
+            # same code but another part yields too (``_code_drift``).
+            pinned = pinned_gateway_spec_path()
+            if pinned is not None:
+                frame["caller_gateway_path"] = pinned
         if orphaned:
             # A claim, not an instruction: the daemon re-checks its own owner
             # before honouring it, so a caller cannot end a daemon whose

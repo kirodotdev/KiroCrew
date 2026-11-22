@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         load_approvals,
         logger,
         maintenance_executor,
+        pin_gateway_part,
         resolve_prefetch,
         rewrite_agents,
         rewrite_kwargs,
@@ -164,6 +165,9 @@ async def _init_mcp_gateway(
         # comes from agent-writable files, and gatewayd execs it outside
         # the sandbox. See ``mcp_gateway.launch_approval``.
         approvals = await asyncio.to_thread(load_approvals)
+        # One gateway PATH part for this pass, later rebuilds and gatewayd, so
+        # a live PATH change cannot make them fold a declared PATH differently.
+        await asyncio.to_thread(pin_gateway_part)
 
         # rewrite_agents() walks ~/.kiro/agents, parses every JSON spec and
         # rewrites the overlay — pure-sync file I/O. The target filter is

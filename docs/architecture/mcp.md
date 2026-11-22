@@ -1366,6 +1366,26 @@ the encoding is accepted. Two installs sharing one data home (the desktop app an
 dev venv, say) therefore admit each other's approvals of a `python3`-pinned
 launch, since each reads the alias as its own interpreter; that widens nothing,
 because each gateway already runs as the user on that interpreter.
+The env half also folds the gateway's own part of a declared `PATH`: the part
+`env.spec_env_path` appends after the spec's own entries
+(`env.gateway_spec_path`). A `PATH` value that is exactly that composition hashes
+as its own entries plus a `gateway-path` alias (`hashing.hash_launch_env`), so a
+re-rendered service unit or a package installer that changes the gateway's own
+`PATH` pauses no share. The spec's own entries still count, any other `PATH`
+hashes as written, and the pool key keeps the real `PATH`. The broker pins the
+part when it starts (`launch_approval.pin_gateway_part`), so a live `PATH`
+change in the gateway reaches a declared spec `PATH` at the next start, and the
+manager hands gatewayd the same part (`KIROCREW_MCP_GATEWAY_PATH`), because the
+daemon's own `PATH` is rewritten at spawn. Only that current part folds: a value
+saved already expanded (App Kit register writes `emit_env` output into
+`mcp.json`) asks for approval once after the part moves, because an earlier part
+read as entries after the spec's own would be a search path nobody approved. An
+approval stored before the fold holds the literal digest, which matches no folded
+identity, so that launch is refused once as `changed_needs_reapproval` and
+approved again. A daemon's pong reports the part it was handed, and a gateway
+pinned to another part treats it as drift and replaces it rather than adopting
+it. Security detail:
+[security.md](../system-specs/modules/security.md#mcp-launch-authorization-leaves).
 An absent or empty store approves nothing. A stub
 without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same
