@@ -76,6 +76,11 @@ The electron-builder configuration lives in
   `rpm.depends` needs no alternatives but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
+  `rpm.fpm` defines `_build_id_links none`, so the rpm ships no
+  `/usr/lib/.build-id` links: Electron's binaries are identical in every app
+  on the same Electron, so any other Electron app's rpm (and the nightly rpm)
+  claims the same link paths and rpm refuses the second install, in-app
+  updates included, as a file conflict.
   Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
   binary links `libgbm.so.1` and no other entry requires it: Ubuntu 24.04,
   Debian 12 and Amazon Linux 2023 bring it in only as a recommendation or weak
