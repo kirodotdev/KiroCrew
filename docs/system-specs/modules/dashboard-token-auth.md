@@ -476,8 +476,11 @@ Request flow:
    `member-records/app-dashboard-proxy/`, never from `apps/<name>/installed.json`.
    A READ reaches it only when `dashboard/delegated_route_tags.py` tags the route
    `allow`; a WRITE (any method but GET and HEAD) only when
-   `delegated_scope.ALLOW_WRITES` lists it, whatever the tag says (writes are deny
-   by default). A GET that returns a stored credential (`/api/mcp/custom/<name>`,
+   `delegated_scope.ALLOW_WRITES` lists it (the tag table holds reads only; writes
+   are deny by default). On `POST /api/chat/slots` and `POST /api/chat` the body may
+   set only the fields in `delegated_scope.BODY_FIELDS`, and a send whose message
+   opens with `/` is refused, so no mode, agent, model, project or chat command rides
+   along (`delegated_scope.body_refusal`, called by both handlers). A GET that returns a stored credential (`/api/mcp/custom/<name>`,
    `/api/connections/mint`, `/api/config/kirocrew`, `/api/webhooks`, the channel
    `/config` reads) is `deny`. The credential set
    (`/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`,

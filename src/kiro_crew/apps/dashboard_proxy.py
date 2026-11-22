@@ -246,10 +246,11 @@ def prompt_text(app_name: str) -> dict[str, str] | None:
         "registry": registry,
         "source": source,
         "version": version,
-        # What the grant lets it do is the scope line the dashboard shows after this text.
         "text": (
             f"Allow {app_name} {version} (registry {registry}, source {source}) "
-            "to use this dashboard on your behalf?"
+            "to use this dashboard on your behalf? It can read your dashboard and chats "
+            "and send chat messages that run agents as you. It cannot change settings, "
+            "credentials, apps, terminal or approvals. Turning the app off removes this access."
         ),
     }
 

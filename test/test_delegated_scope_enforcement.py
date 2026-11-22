@@ -222,15 +222,118 @@ def test_a_delegated_request_never_carries_the_owner_session_principal():
         source_providers.is_owner_dashboard_request = orig
 
 
-def test_a_deny_star_row_stays_deny_for_every_concrete_method():
-    from kiro_crew.dashboard.delegated_route_tags import ROUTE_TAGS
-    from kiro_crew.dashboard.delegated_scope import route_tag
+def test_a_write_method_is_refused_on_a_read_route_for_every_concrete_method():
+    from kiro_crew.dashboard.delegated_scope import allowed
 
-    stars = [c for c, t in ROUTE_TAGS.items() if t.get("*") == "deny"]
-    assert stars
-    for canonical in stars:
-        for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
-            assert route_tag(method, canonical) != "allow", f"{method} {canonical}"
+    for method in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+        assert allowed(method, "/api/status") is False, method
+    assert allowed("GET", "/api/status") is True
+
+
+class _BodyReq(dict):
+    """A request as the body gate sees it: the canonical path and the delegated mark."""
+
+    def __init__(self, canonical: str, via_app: str = _APP) -> None:
+        super().__init__(via_app=via_app)
+        self.method = "POST"
+        self.match_info = type(
+            "M",
+            (),
+            {"route": type("R", (), {"resource": type("Res", (), {"canonical": canonical})()})()},
+        )()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"name": "x"},
+        {"name": "x", "title": "t", "folder_id": "f", "memory_mode": "incognito"},
+        {},
+    ],
+)
+def test_a_slot_create_with_only_plain_fields_passes_the_body_gate(sel_rows, body):
+    from kiro_crew.dashboard.delegated_scope import body_refusal
+
+    assert body_refusal(_BodyReq("/api/chat/slots"), body) is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "mode",
+        "agent",
+        "agent_kind",
+        "app_agent_owner",
+        "model",
+        "project_from_slot",
+        "work_item",
+        "instance_id",
+        "artifact",
+        "embed_app",
+        "app_launch",
+        "a_field_nobody_knows",
+    ],
+)
+def test_a_slot_create_that_sets_anything_else_is_refused(sel_rows, field):
+    from kiro_crew.dashboard.delegated_scope import body_refusal
+
+    refused = body_refusal(_BodyReq("/api/chat/slots"), {"name": "x", field: "yolo"})
+    assert refused is not None and refused.status == 403
+    assert field in sel_rows[0]["resources"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["/trust all", "/mcp add evil", "  /agent switch x", "/approval yolo", "/compact"],
+)
+def test_a_send_that_opens_with_a_slash_is_refused(sel_rows, message):
+    from kiro_crew.dashboard.delegated_scope import body_refusal
+
+    refused = body_refusal(_BodyReq("/api/chat"), {"message": message, "slot": "s"})
+    assert refused is not None and refused.status == 403
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["agent", "mode", "color_theme", "banner", "theme_consent", "memory_mode", "steer", "meta"],
+)
+def test_a_send_that_sets_anything_beyond_the_message_is_refused(sel_rows, field):
+    from kiro_crew.dashboard.delegated_scope import body_refusal
+
+    refused = body_refusal(_BodyReq("/api/chat"), {"message": "hi", field: "x"})
+    assert refused is not None and refused.status == 403
+
+
+def test_a_plain_send_passes_and_other_routes_and_tokens_are_not_gated(sel_rows):
+    from kiro_crew.dashboard.delegated_scope import body_refusal
+
+    assert (
+        body_refusal(_BodyReq("/api/chat"), {"message": "hello /not/a/command", "slot": "s"})
+        is None
+    )
+    assert body_refusal(_BodyReq("/api/chat"), {"message": "hi", "send_now": True}) is None
+    assert body_refusal(_BodyReq("/api/chat/pinned-order"), {"anything": 1}) is None
+    assert (
+        body_refusal(_BodyReq("/api/chat", via_app=""), {"message": "/trust", "agent": "a"}) is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_slot_create_route_refuses_a_mode_for_a_delegated_token(state, granted):
+    async with _serve(state) as client:
+        resp = await client.post("/api/chat/slots", params=_delegated(), json={"mode": "yolo"})
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+async def test_the_send_route_refuses_a_slash_command_for_a_delegated_token(state, granted):
+    async with _serve(state) as client:
+        resp = await client.post(
+            "/api/chat", params=_delegated(), json={"message": "/trust all", "slot": "s"}
+        )
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
 
 
 class _Match(dict):

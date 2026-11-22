@@ -12597,7 +12597,7 @@
       "dashboard_access_restart": "Redémarrer l'app",
       "dashboard_access_restarted": "App redémarrée.",
       "dashboard_access_restart_failed": "L'app n'a pas redémarré. Vérifiez son état ci-dessus.",
-      "dashboard_access_scope": "Avec cet accès, l'app peut lire vos discussions et sessions, envoyer des messages, démarrer et arrêter des discussions et utiliser son propre backend. Elle ne peut pas modifier les fichiers, les réglages, les autorisations ni les identifiants. Désactiver l'app supprime cet accès.",
+      "dashboard_access_scope": "Avec cet accès, l'app peut lire votre tableau de bord et vos discussions et envoyer des messages qui exécutent des agents en votre nom. Elle ne peut pas modifier les réglages, les identifiants, les apps, le terminal ni les approbations. Désactiver l'app supprime cet accès.",
       "dashboard_access_load_failed": "Impossible de charger l'accès au tableau de bord de cette app.",
       "grants_reconsent_events": "Événements WebSocket : permet à l’app de recevoir ou d’envoyer ces événements du tableau de bord en temps réel.",
       "grants_reconsent_link_hosts": "Hôtes de liens : permet aux cartes de survol de l’app de voir les liens vers ces sites dans les messages du chat.",

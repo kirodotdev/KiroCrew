@@ -97,7 +97,14 @@ def test_the_offer_names_publisher_and_package_from_the_install_record(records, 
     assert offer is not None
     assert offer["registry"] == "crew-tunnels"
     assert offer["source"] == "https://example.invalid/tunnel.git"
-    for words in ("tunnel-like", "0.9.4", "crew-tunnels", "on your behalf"):
+    for words in (
+        "tunnel-like",
+        "0.9.4",
+        "crew-tunnels",
+        "read your dashboard and chats",
+        "send chat messages that run agents as you",
+        "cannot change settings, credentials, apps, terminal or approvals",
+    ):
         assert words in offer["text"]
     assert "full dashboard control" not in offer["text"]
 

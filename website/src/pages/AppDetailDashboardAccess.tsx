@@ -53,7 +53,7 @@ export default function AppDetailDashboardAccess({ appName }: { appName: string 
     if (!data.offer) return
     const ok = await confirm({
       title: i18nT('pages.appDetailPage.dashboard_access_confirm_title'),
-      body: `${data.offer.text} ${scope}`,
+      body: data.offer.text,
       confirmLabel: i18nT('pages.appDetailPage.dashboard_access_allow'),
       danger: false,
       primary: true,

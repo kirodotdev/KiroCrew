@@ -9,9 +9,9 @@ Two rules, both deny by default:
 
 * A READ (GET, HEAD) needs the route to be tagged ``allow`` in
   :mod:`kiro_crew.dashboard.delegated_route_tags`; a route with no tag is denied.
-* A WRITE (any other method) needs the route to be in :data:`ALLOW_WRITES` below, whatever
-  its tag says. The tags were kept route by route, and each mis-tagged ``allow`` was an
-  owner power (file write). A write is now open only where this short list opens it.
+* A WRITE (any other method) needs the route to be in :data:`ALLOW_WRITES` below, and the
+  tag table holds no write entry. A write is open only where this short list opens it, and
+  the two chat routes also hold the body to :data:`BODY_FIELDS` (:func:`body_refusal`).
 
 Each request also re-reads the grant and the owner-enable marker for the app, off the
 event loop, and compares the grant id the token carries with the current grant, so a
@@ -105,6 +105,47 @@ def write_allowed(method: str, canonical: str) -> bool:
     return (verb, canonical) in ALLOW_WRITES or ("*", canonical) in ALLOW_WRITES
 
 
+def allowed(method: str, canonical: str) -> bool:
+    """The one decision: a read needs an ``allow`` tag, a write needs an ``ALLOW_WRITES`` row."""
+    if method.upper() in _READ_METHODS:
+        return route_tag(method, canonical) == "allow"
+    return write_allowed(method, canonical)
+
+
+#: The body fields a delegated token may set on the two chat routes that start work. Any
+#: other field is refused whole, so a field a later change adds is refused until it is
+#: listed. ``/api/chat/slots`` takes no mode, agent, model, working directory or work item;
+#: ``/api/chat`` takes a message and the slot it goes to.
+BODY_FIELDS: dict[str, frozenset[str]] = {
+    "/api/chat/slots": frozenset({"name", "title", "folder_id", "memory_mode"}),
+    "/api/chat": frozenset({"message", "slot", "send_now", "base_revision"}),
+}
+
+
+def body_refusal(request: web.Request, body: dict) -> web.Response | None:
+    """A 403 when a delegated token's body on a chat route sets more than it may.
+
+    Called by the two chat handlers after they parse the body. No-op for any request that
+    is not delegated (no ``via_app`` mark). A send whose message opens with ``/`` is a
+    chat command, not a plain message, and is refused.
+    """
+    via_app = request.get("via_app")
+    if not via_app:
+        return None
+    resource = request.match_info.route.resource
+    canonical = resource.canonical if resource is not None else ""
+    fields = BODY_FIELDS.get(canonical)
+    if fields is None:
+        return None
+    extra = sorted(str(key) for key in body if key not in fields)
+    if extra:
+        return _refuse(request, via_app, canonical, f"body-field {extra[0][:40]}")
+    message = body.get("message")
+    if canonical == "/api/chat" and isinstance(message, str) and message.lstrip().startswith("/"):
+        return _refuse(request, via_app, canonical, "slash-command")
+    return None
+
+
 def _refuse(request: web.Request, via_app: str, path: str, reason: str) -> web.Response:
     from kiro_crew.sel import sel
 
@@ -145,10 +186,9 @@ async def enforce_delegated(request: web.Request, path: str) -> web.Response | N
         return _refuse(request, via_app, path, "grant-ended")
     resource = request.match_info.route.resource
     canonical = resource.canonical if resource is not None else ""
-    if route_tag(request.method, canonical) != "allow":
-        return _refuse(request, via_app, path, "untagged-or-denied")
-    if request.method.upper() not in _READ_METHODS and not write_allowed(request.method, canonical):
-        return _refuse(request, via_app, path, "write-not-listed")
+    if not allowed(request.method, canonical):
+        read = request.method.upper() in _READ_METHODS
+        return _refuse(request, via_app, path, "untagged-or-denied" if read else "write-not-listed")
     if canonical in _OWN_APP_ONLY and request.match_info.get("name") != via_app:
         return _refuse(request, via_app, path, "other-app")
     request["via_app"] = via_app

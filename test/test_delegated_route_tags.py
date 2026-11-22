@@ -44,9 +44,29 @@ def _tag(method: str, canonical: str) -> str | None:
     return route_tag(method, canonical)
 
 
-def test_no_route_of_the_table_is_untagged() -> None:
-    untagged = sorted({f"{m} {p}" for m, p in _walk() if _tag(m, p) not in ("allow", "deny")})
-    assert not untagged, "routes with no delegated allow/deny tag:\n" + "\n".join(untagged)
+def _allowed(method: str, canonical: str) -> bool:
+    from kiro_crew.dashboard.delegated_scope import allowed
+
+    return allowed(method, canonical)
+
+
+def test_no_read_route_of_the_table_is_untagged() -> None:
+    untagged = sorted(
+        {
+            f"{m} {p}"
+            for m, p in _walk()
+            if m in ("GET", "HEAD") and _tag(m, p) not in ("allow", "deny")
+        }
+    )
+    assert not untagged, "read routes with no delegated allow/deny tag:\n" + "\n".join(untagged)
+
+
+def test_the_tag_table_holds_read_entries_only() -> None:
+    """A write is decided by ALLOW_WRITES alone; a write tag would be a second copy."""
+    from kiro_crew.dashboard.delegated_route_tags import ROUTE_TAGS
+
+    extra = sorted(f"{m} {p}" for p, tags in ROUTE_TAGS.items() for m in tags if m != "GET")
+    assert not extra, "non-GET tag entries:\n" + "\n".join(extra)
 
 
 def test_no_tag_names_a_route_that_does_not_exist() -> None:
@@ -135,7 +155,9 @@ _REFUSED = [
 @pytest.mark.parametrize("method,canonical", _REFUSED)
 def test_the_credential_and_control_plane_routes_are_denied(method: str, canonical: str) -> None:
     assert (method, canonical) in set(_walk()), "the route this test pins does not exist"
-    assert _tag(method, canonical) == "deny"
+    assert _allowed(method, canonical) is False
+    if method == "GET":
+        assert _tag(method, canonical) == "deny"
 
 
 @pytest.mark.parametrize(
@@ -143,7 +165,7 @@ def test_the_credential_and_control_plane_routes_are_denied(method: str, canonic
     [("GET", "/api/status"), ("GET", "/api/sessions"), ("POST", "/api/chat")],
 )
 def test_the_plain_dashboard_routes_are_allowed(method: str, canonical: str) -> None:
-    assert _tag(method, canonical) == "allow"
+    assert _allowed(method, canonical) is True
 
 
 def test_every_route_sharing_a_handler_and_method_shares_a_tag() -> None:
@@ -184,15 +206,18 @@ def test_every_b64_route_carries_the_tag_of_its_name_twin() -> None:
     assert checked
 
 
-def test_a_star_route_is_tagged_for_every_concrete_method() -> None:
+def test_a_star_route_is_open_to_every_concrete_method_only_where_listed() -> None:
     star = sorted({p for m, p in _walk() if m == "*"})
     assert "/apps/{name}/api/{path}" in star
-    for canonical in star:
-        from kiro_crew.dashboard.delegated_route_tags import ROUTE_TAGS
+    from kiro_crew.dashboard.delegated_scope import ALLOW_WRITES
 
-        expected = ROUTE_TAGS[canonical]["*"]
+    for canonical in star:
+        listed = ("*", canonical) in ALLOW_WRITES
         for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"):
-            assert _tag(method, canonical) == expected, f"{method} {canonical}"
+            if method in ("GET", "HEAD"):
+                assert _allowed(method, canonical) == (_tag(method, canonical) == "allow")
+            else:
+                assert _allowed(method, canonical) is listed, f"{method} {canonical}"
 
 
 _READS = ("GET", "HEAD")
@@ -224,7 +249,6 @@ def test_allow_writes_is_the_day_one_list_with_an_effect_note_each() -> None:
     for (method, canonical), note in ALLOW_WRITES.items():
         assert method in ("POST", "PUT", "PATCH", "DELETE", "*"), (method, canonical)
         assert (method, canonical) in real or (method == "*" and canonical in star), canonical
-        assert _tag("POST" if method == "*" else method, canonical) == "allow", canonical
         assert len(note) > 20 and "\n" not in note, canonical
     assert len(ALLOW_WRITES) <= 14
     forbidden = (

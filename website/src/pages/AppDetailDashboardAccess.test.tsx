@@ -27,7 +27,10 @@ const OFFER = {
   registry: 'crew-tunnels',
   source: 'https://example.invalid/tunnel.git',
   version: '0.9.4',
-  text: 'Allow tunnel 0.9.4 (registry crew-tunnels) to control this dashboard?',
+  text:
+    'Allow tunnel 0.9.4 (registry crew-tunnels) to use this dashboard on your behalf? ' +
+    'It can read your dashboard and chats and send chat messages that run agents as you. ' +
+    'It cannot change settings, credentials, apps, terminal or approvals.',
 }
 const OFFERED = { granted: false, offer: OFFER, platform_supported: true, needs_access: false }
 
@@ -56,10 +59,9 @@ describe('AppDetailDashboardAccess', () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
     await waitFor(() => expect(api.grantAppDashboardAccess).toHaveBeenCalledWith('tunnel'))
-    expect(confirmMock).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining(`${OFFER.text} With this access the app can read`) }),
-    )
-    expect(confirmMock.mock.calls[0][0].body).toContain('Turning the app off removes this access.')
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ body: OFFER.text }))
+    expect(confirmMock.mock.calls[0][0].body).toContain('send chat messages that run agents as you')
+    expect(confirmMock.mock.calls[0][0].body).toContain('cannot change settings, credentials, apps, terminal or approvals')
     expect(await screen.findByText('Dashboard access is on for this app.')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Restart app' }))
     await waitFor(() => expect(api.restartAppForDashboardAccess).toHaveBeenCalledWith('tunnel'))
@@ -69,7 +71,8 @@ describe('AppDetailDashboardAccess', () => {
   it('says on the card what the access can do and that turning the app off removes it', async () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     const scope = await screen.findByTestId('dashboard-access-scope')
-    expect(scope).toHaveTextContent('cannot change files, settings, grants or credentials')
+    expect(scope).toHaveTextContent('read your dashboard and chats and send chat messages that run agents as you')
+    expect(scope).toHaveTextContent('cannot change settings, credentials, apps, the terminal or approvals')
     expect(scope).toHaveTextContent('Turning the app off removes this access.')
   })
 

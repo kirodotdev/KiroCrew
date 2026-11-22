@@ -12052,7 +12052,7 @@
       "dashboard_access_restart": "重启应用",
       "dashboard_access_restarted": "应用已重启。",
       "dashboard_access_restart_failed": "应用没有重新启动。请查看上方的状态。",
-      "dashboard_access_scope": "有了此访问权限，应用可以读取你的聊天和会话、发送消息、启动和停止聊天，并使用它自己的后端。它不能更改文件、设置、授权或凭据。关闭该应用会移除此访问权限。",
+      "dashboard_access_scope": "有了此访问权限，应用可以读取你的仪表板和聊天，并发送以你的身份运行代理的聊天消息。它不能更改设置、凭据、应用、终端或审批。关闭该应用会移除此访问权限。",
       "dashboard_access_load_failed": "无法加载此应用的仪表板访问权限。",
       "grants_reconsent_link_hosts": "链接主机：允许应用的悬停卡片看到聊天消息中指向这些站点的链接。",
       "grants_reconsent_link_patterns": "文本模式：允许应用的悬停卡片看到聊天中与这些模式匹配的文本。",
