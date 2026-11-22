@@ -3208,7 +3208,12 @@ they go through `maybe_consolidate`, whose `include_history=False` passes never
 advance `last_consolidated`. `consolidate_now()` (the `kirocrew consolidate`
 CLI, whose process exits when it returns) has no sweep behind it, so it loops
 `_consolidate` itself until the tail is drained or a pass makes no progress, and
-the CLI prints the remainder rather than `done` when one is left. After a gateway
+the CLI prints the remainder rather than `done` when one is left. Inside its
+`asyncio.run`, the command and `consolidate_now()` make their message counts and
+sensitive-session reads in a worker thread: a transcript read's retry over a
+transient `OSError`, such as a Windows sharing violation while another process
+rewrites the metadata line, pauses between its attempts only off the event loop.
+After a gateway
 restart a deferred tail waits for that session's next idle window or session-end
 hook; nothing sweeps it on startup.
 
