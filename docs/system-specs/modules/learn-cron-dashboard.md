@@ -3839,8 +3839,14 @@ own key because the drain copies entry meta onto the user row, and a row's
 
 **An open queue editor holds the queue.** Opening a card's editor posts
 `{"editing": true}` to `/api/chat/slots/{slot}/queue/{queue_id}/editing`, which
-stamps the in-memory entry with `_edit_hold_until` (`queue_edit_hold`, 90 s,
-never persisted). While the editor stays open, `QueueStack` re-posts
+stamps the in-memory entry's `_edit_holds` (`queue_edit_hold`, 90 s, never
+persisted) with a deadline for the request's `holder`: the id
+`useQueuedMessageActions` mints once per hook instance, so each tab and each pane
+is its own editor (an absent `holder` is the shared `""`). The entry is held while
+any holder's deadline is live. A `holder` that is not a string (`invalid_field_type`)
+or is longer than `MAX_HOLDER_LEN` (64) characters (`holder_too_long`) is a 400 here
+and on the PATCH, and past `MAX_EDIT_HOLDERS` (32) holders a new one drops the
+earliest deadline and logs a warning, so an entry keeps a bounded set. While the editor stays open, `QueueStack` re-posts
 `{"editing": true}` every 30 s, which re-arms the deadline, so a long edit keeps
 its hold and a tab closed or killed mid-edit stalls the queue for 90 s at most.
 While any entry is held, `_start_next_queued_turn` treats the
@@ -3856,21 +3862,31 @@ since the person picked that entry to go first. The PATCH that
 saves the edit releases the hold after storing the text, `{"editing": false}`
 releases it unsaved (the card's cancel, an unchanged or empty commit, the stack
 unmounting, which both hosts force on a session switch by keying `QueueStack`
-by slot), cancelling the held card releases it with the entry, and the
-deadline releases it on its own; each release starts the drain only where
+by slot), each carrying the same `holder` and releasing only that editor's hold
+(a holder the entry does not carry changes nothing), so a card open in two tabs
+stays held until the last one closes; cancelling the held card drops every hold
+with the entry, and a deadline releases its own holder; each release starts the drain only where
 `idle_slot_admits_drain` admits one, so a slot held for sign-in stays held. A release
 by save or close does not drop the hold: it shortens it to `RELEASE_GRACE_SECONDS`
-(2 s), and the drain starts when that expires. Every drain, a turn's own end
-included, still sees the hold in that window, so moving straight to another
-card's editor, whose hold leaves the browser after the first editor's blur
-released its card, lands that hold before anything runs. A cancelled entry has
-left the queue, so its release drains at once. `useQueuedMessageActions` sends one card's open, save and release one
-after another, so a close never reaches the server before its own open. The
+(2 s), and when that expires the drain starts if no other holder's deadline is
+live. The grace covers a move whose next hold leaves the browser after that
+release: one made from the keyboard, with Ctrl held, or into another tab's view
+of the same session, none of which sends a press hold, or from a dashboard
+loaded before the press hold below. A cancelled entry has left the queue, so its release drains at once.
+`useQueuedMessageActions` sends a slot's opens, saves and releases one after
+another (one chain per slot, not per card), so a close never reaches the server
+before its own open, and a pencil press from card A's editor to card B's in the
+same stack never lets the queue run in between: `QueueStack` sends B's hold on
+that press, which fires before A's editor blurs, so A's blur-driven release or save queues behind
+it. Only a primary-button press without Ctrl sends it (Ctrl held opens the
+context menu on macOS). Opening B's editor sends its hold again, in case the
+press hold has lapsed, and a press that never becomes a click releases its hold once it is
+dragged off the pencil, another card's editor opens, or the stack unmounts. The
 client sends no release beside a save, since a release that reached the server
 first would drain the old words; a save the server refuses or never receives is
 followed by a release instead. Pinned by
-`test_queue_edit_hold.py` and the `QueueStack editor hold` cases of
-`QueueStack.test.tsx`.
+`test_queue_edit_hold.py`, the `QueueStack editor hold` cases of
+`QueueStack.test.tsx` and `useQueuedMessageActions.test.tsx`.
 
 **A steer whose RPC died ambiguously.** When `client.steer()` raises an
 `AcpProcessDied` with `ambiguous_delivery` (a stdin stall with the child alive),
