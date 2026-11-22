@@ -643,18 +643,24 @@ def test_native_settings_sources_repeated_permissive_reads_do_not_hide_a_restric
     permissive = json.dumps({"mcpServers": {}}).encode("utf-8")
     saved = {}
 
+    def save_later(path, data):
+        # Two replaces inside one pass can land on a recycled inode number and
+        # one coarse timestamp tick, so each save is stamped a second after the
+        # file it replaces, as a writer saving at a later moment would be.
+        staged = path.with_name("mcp.json.tmp")
+        staged.write_bytes(data)
+        later = path.stat().st_mtime_ns + 1_000_000_000
+        os.utime(staged, ns=(later, later))
+        os.replace(staged, path)
+
     def swap_in_permissive(n, path):
         if n <= 2:
             saved["restrictive"] = path.read_bytes()
-            staged = path.with_name("mcp.json.tmp")
-            staged.write_bytes(permissive)
-            os.replace(staged, path)
+            save_later(path, permissive)
 
     def swap_back(n, path):
         if n <= 2:
-            staged = path.with_name("mcp.json.tmp")
-            staged.write_bytes(saved["restrictive"])
-            os.replace(staged, path)
+            save_later(path, saved["restrictive"])
 
     session_mcp, reads = _bracket_fixture(
         tmp_path, monkeypatch, swap_in_permissive, after_read=swap_back
