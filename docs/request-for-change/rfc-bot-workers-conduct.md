@@ -42,7 +42,9 @@ as a worker does today. Those further workers are ordinary workers of the Bot:
 same identity, memory store, permission rules, deny rules, harness pin, Profile
 approval posture and `Workers at once` limit. The nesting is one level deep —
 the Bot's thread, its conducting workers, their plain workers — and the work
-ledger's existing depth cap holds it there. A Bot that leaves the switch off is
+ledger's existing depth cap holds it there. While the switch is on, the Bot's
+`Workers at once` limit always applies: 4 when the owner has set none. A Bot
+that leaves the switch off is
 not changed in any way: no mount, no grant, no prompt text, no extra process.
 
 What exists today, by role, and what the switch adds:
@@ -134,7 +136,8 @@ make its children the Bot's own workers.
 3. Nothing changes for a Bot with the switch off, byte for byte, in the worker
    spec it projects and the session array it is given.
 4. No new nesting machinery: the ledger's depth cap, the creator fence, the
-   Bot's caps and the governance ceiling are the bounds, unchanged.
+   Bot's caps and the governance ceiling are the bounds. The one addition is
+   that `Workers at once` fails closed while the switch is on (§5.5).
 5. The conductor rules are written once and rendered, never copied
    (`test/test_mate_conductor_parity.py`).
 
@@ -174,8 +177,9 @@ catalogs are translated in the same commit and `en-XA` regenerated, per
 - hint: "On: each worker {{name}} opens can split its task into tracked items,
   open further workers of {{name}} for them, follow them and check their
   results. Those workers keep {{name}}'s identity, memory, permissions and
-  limits and count toward Workers at once. Off (the default): a worker does its
-  task itself."
+  limits and count toward Workers at once. While this is on and Workers at once
+  has no limit, at most 4 of {{name}}'s workers are open at once. Off (the
+  default): a worker does its task itself."
 
 ### 5.2 Which sessions conduct: marked at create by the Bot's thread, switch read at start
 
@@ -206,7 +210,11 @@ the switch again at every session start means turning it off takes effect at
 each worker's next start, including a resume; a worker already running keeps
 the tools it was started with until then — the same live read `max_workers` and
 `session.max_per_creator` already have ("Read at each session create",
-`session.max_per_creator`'s description).
+`session.max_per_creator`'s description). So a conducting worker that is running
+when the owner turns the switch off keeps its kit until its session next starts
+(a resume, or its first turn after a gateway restart restores it) and is a plain
+worker from then on; the switch closes nothing, so the children it already
+opened keep running.
 
 Why thread-born and not "every session of the Bot": it is what makes "one level
 deep" a property of lineage rather than of a cap someone can raise. A conducting
@@ -284,12 +292,21 @@ ledger's refusal (`work_ledger.depth_cap_hint`), and `work_ledger_read` reports
 **Caps.** `agents.<name>.max_workers` ("Workers at once", 0 = no limit, 1–32,
 `sections_session.BOT_MAX_WORKERS_MAX`) counts every open session on the Bot's
 worker template with its member id, so conducting workers and their children
-share one Bot-wide budget; a create past it is refused `bot_worker_cap_reached`
-(unchanged). `session.max_per_creator` (default 50,
+share one Bot-wide budget; a create past it is refused `bot_worker_cap_reached`.
+`session.max_per_creator` (default 50,
 `sections_defaults.DEFAULT_MAX_PER_CREATOR`) bounds each creator separately: the
-thread and each conducting worker. The hint recommends setting `Workers at
-once` when turning the switch on; the RFC does not couple the two settings
-(§12).
+thread and each conducting worker.
+
+With the switch on, that budget fails closed rather than resting on the owner
+reading a hint (settled in review, §12): when `max_workers` is 0, the Bot's
+effective `Workers at once` is 4, a named constant added in Phase 1; a
+limit the owner set is used as is, and with the switch off nothing changes. The
+setting is not refused; the switch's hint says which limit applies (§5.1). The
+three verbs that ask the Bot's limit today, `session_create`, `session_revive`
+and `session_fork`, each through `bot_worker_cap.worker_cap_refusal`, ask a
+Phase 1 helper instead that computes the effective limit and calls the existing
+`bot_worker_cap.bot_worker_cap_refusal(state, member_id, cap)`, so nothing in
+`bot_worker_cap.py` changes (§4).
 
 **Memory.** Every level runs on the Bot's one V2 store, as the thread and its
 workers already do: no new store, no new writer kind, only more concurrent
@@ -363,18 +380,20 @@ day one through `config.json` and `PUT /api/agents/<name>`.
 its two feeders, the predicate and the two mounts, the KAS grant set, the
 projection's grants and prompt piece, the `_dispatching_crewmate` extension,
 the own-child exemption's second identity (`tool_approval._conductor_own_child_call`
-admits a conducting worker beside the two conductor agents), and the docs:
+admits a conducting worker beside the two conductor agents), the effective
+`Workers at once` limit and the `max_workers` description that names it
+(§5.5), and the docs:
 [crew-mode.md](../system-specs/modules/crew-mode.md) ("Conductor and worker",
 "The two workers stay in step"),
 [session-control.md](../system-specs/modules/session-control.md) ("What a
 created child inherits", the nested-conductor design),
-[config.md](../system-specs/modules/config.md) (the key),
+[config.md](../system-specs/modules/config.md) (the key and the effective limit),
 [agent-mcp-and-skill-reach.md](../architecture/agent-mcp-and-skill-reach.md)
 ("Mate worker"), [rfc-conductor-own-child-verbs.md](rfc-conductor-own-child-verbs.md)
 §5.2 (the admitted callers), and this document's status. Phase 1 implements the
-proposed answers to the two open questions (§12); a different ruling changes
-exit criteria 1 and 5 before Phase 1 opens. Exit criteria, each a test that
-fails on main:
+answers settled in review (§12); a different ruling at sign-off may change exit
+criteria 1, 5 and 8 before Phase 1 opens. Exit criteria, each a test that fails
+on main:
 
 1. `worker_conducts` loads (default `False`), a non-bool is refused at load and
    `400 invalid_worker_conducts` at `PUT /api/agents/<name>`; `GET /api/members`
@@ -398,11 +417,16 @@ fails on main:
    rules and copies no charter sentence (`test_mate_conductor_parity.py`).
 7. A gateway restarted with a marked worker open re-marks it from its verified
    `created_by`; an unverified creator re-marks nothing.
+8. With the switch on and `max_workers` 0, a `session_create` (from the thread
+   or a conducting worker), `session_revive` or `session_fork` that would open
+   the Bot's fifth worker is refused `bot_worker_cap_reached`; with the switch
+   off it is not, and a limit the owner set applies as is.
 
 **Phase 2 — the switch on the Profile tab (one PR, `Closes #N`).** The row in
 `website/src/pages/members/CrewProfileSettings.tsx` on the `dynamic_capabilities`
 pattern, the `agents.ts` type, the catalog strings in every shipped language.
-Exit criteria: the row renders off by default and a flip calls
+Exit criteria: the row renders off by default, its hint names the limit that
+applies while Workers at once has none (§5.1), and a flip calls
 `updateKirocrewAgent(name, { worker_conducts: true })`; the i18n parity and
 pseudolocale tests pass. Phase 1 is usable without Phase 2 through the API and
 `config.json`; Phase 2 is abandonable on its own.
@@ -410,8 +434,9 @@ pseudolocale tests pass. Phase 1 is usable without Phase 2 through the API and
 ## 7. Backward compatibility
 
 Compatible. The key is additive and defaults to off; an older build ignores it.
-A Bot with the switch off projects the same worker spec and receives the same
-session array as today (Phase 1 exit criteria 2 and 3 pin this). No persisted
+A Bot with the switch off projects the same worker spec, receives the same
+session array and keeps the same worker limit as today (Phase 1 exit criteria 2,
+3 and 8 pin this). No persisted
 format changes: the mark is derived from `created_by`, which the slot metadata
 already persists and verifies. `git revert` fully undoes the change.
 
@@ -482,7 +507,8 @@ is an RFC and not a fix.
 - **#37538 (count a Bot worker's children on other templates toward
   `max_workers`).** Independent; this RFC edits nothing in `bot_worker_cap.py`.
   For a conducting worker the gap does not arise (§5.4); for every other worker
-  #37538's fix applies as before.
+  #37538's fix applies as before. The effective limit (§5.5) calls that module's
+  public `bot_worker_cap_refusal`, so it composes with whatever #37538 changes.
 - **#33996 (a chat running a bot outside its thread hands work to its worker).**
   Independent population (§8.1); a later design there could reuse the mark and
   predicate this RFC adds, but nothing here presumes it.
@@ -510,9 +536,15 @@ is an RFC and not a fix.
   crosses the governance ceiling; a withheld verb prompts; a conducting worker
   is admitted to the exemption by the conducting predicate, never by its template's name, so an
   unmarked worker on the same template keeps prompting.
-- Spend: an unattended worker can now start further unattended sessions.
-  Bounded by `Workers at once` (Bot-wide), `session.max_per_creator`, the
-  500-session total, the one-level lineage rule and the ledger's depth cap.
+- Spend: an unattended worker can now start further unattended sessions. With
+  no Bot-wide limit, today's defaults would let the thread open 50 workers and
+  each conducting worker 50 children (`session.max_per_creator`), 2,550 worker
+  sessions in all, so only the 500 live-session total
+  (`slot_directory.MAX_LIVE_SLOTS`) would stop the tree. With the switch on,
+  `Workers at once` therefore always applies: the owner's limit N, or 4 when
+  none is set (§5.5), so the whole tree under the thread is at most N (or 4)
+  worker sessions. The one-level lineage rule and the ledger's depth cap bound
+  its depth.
 - Fail-closed: an unreadable or degraded config, an unverified `created_by`, a
   harness outside `ACP_BACKENDS_MEMBER_DISPATCH`, or a switched-off dashboard
   server each leave the worker a plain worker, logged once. On the claude
@@ -556,11 +588,17 @@ is an RFC and not a fix.
 
 ## 12. Open questions
 
-1. Should turning the switch on require `Workers at once` to be set (a bound on
-   the tree's fan-out), or only recommend it in the hint (proposed)?
-2. Does the maintainer want the own-child exemption (`agent.conductor_own_child_verbs`)
-   to cover a marked worker at all, or should a conducting worker's seed and
-   close prompt until the Profile posture is trust? The RFC proposes covering it:
-   without it every dispatch in an unattended worker stalls on an approval
-   nobody is reading, which is the stall the exemption was added to end for the
-   conductor-mode conductors.
+None open. The two questions this RFC put to a maintainer were settled in review
+on its pull request; the design as a whole still waits for a maintainer's
+sign-off (Phase 0).
+
+1. Should turning the switch on require `Workers at once` to be set? Settled:
+   the limit fails closed instead. With none set, the effective limit is 4
+   while the switch is on, and the setting is not refused (§5.5). A hint alone
+   would leave the bound on an unattended tree to the owner reading it.
+2. Should the own-child exemption (`agent.conductor_own_child_verbs`) cover a
+   conducting worker? Settled: yes, as proposed (§5.3). Without it every
+   dispatch in an unattended worker stalls on an approval nobody is reading,
+   which is the stall the exemption was added to end for the conductor-mode
+   conductors; it covers only `session_send` / `session_close` into a child the
+   caller created by vouched lineage, and the operator can switch it off.
