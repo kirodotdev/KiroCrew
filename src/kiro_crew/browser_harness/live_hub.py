@@ -214,11 +214,18 @@ class LiveSession:
     parked: bool = False
     #: When the parked op's hold ends (``HOLD_TIMEOUT_S`` after :meth:`LiveHub.park`;
     #: ``0.0`` at a turn's start). The hub
-    #: owns this end: past it a hand-back goes to chat and the op's poll is told the
-    #: hold is over (:meth:`LiveHub.hold_over`), so the two never disagree.
+    #: owns this end: past it a hand-back goes to chat and, unless one inside it
+    #: still stands (``hold_handed_back``), the op's poll is told the hold is over
+    #: (:meth:`LiveHub.hold_over`), so the two never disagree.
     parked_until: float = 0.0
-    #: The hand-back came while the op was still parked: its poll resumes the op.
+    #: The hand-back came while the op was still parked and no poll has seen it
+    #: yet: a claim before one does parks the op again (:meth:`LiveHub.claim`).
     park_resumed: bool = False
+    #: A hand-back found the op parked inside this hold and sent no words to chat:
+    #: every call parked on it resumes, one polling after the end too
+    #: (:meth:`LiveHub.hold_over`). A poll leaves it; the next claim or turn, or a
+    #: hand-back whose words go to chat, clears it.
+    hold_handed_back: bool = False
     #: A supervisor state (:meth:`LiveHub.set_state`) reported while the person held
     #: the browser, or ``""``. The card stays ``in_control`` until the hand-back,
     #: which publishes this instead of ``live``: only a lock release leaves
@@ -579,6 +586,7 @@ class LiveHub:
         sess.parked = False
         sess.parked_until = 0.0
         sess.park_resumed = False
+        sess.hold_handed_back = False
         sess.handback_options = []
         # A state queued for the hand-back belongs to the turn that reported it.
         sess.queued_state = ""
@@ -1182,6 +1190,8 @@ class LiveHub:
             # again, on its first hold's end, and is not resumed by the earlier one.
             sess.parked = True
             sess.park_resumed = False
+        # A call still polling waits for this takeover's hand-back, not the last one.
+        sess.hold_handed_back = False
         sess.claim_turn = sess.turn_id
         sess.seen_at = self._clock()
         sess.run = RunCount()
@@ -1248,6 +1258,8 @@ class LiveHub:
             delivered = DELIVERED_CHAT
         else:
             delivered = ""
+        # Words sent to chat clear the flag: no call polling past the end runs behind them.
+        sess.hold_handed_back = (sess.hold_handed_back or waiting) and delivered != DELIVERED_CHAT
         sess.handback_options = []
         sess.input_rect = None
 
@@ -1279,26 +1291,27 @@ class LiveHub:
             sess.parked_until = self._clock() + HOLD_TIMEOUT_S
 
     def hold_over(self, session_key: str) -> bool:
-        """The parked op's hold ended before the person handed back to it.
+        """The parked op's hold ended, and no hand-back inside it still stands.
 
-        Its poll then stops the op instead of resuming it: a hand-back after the end
-        went to chat (:meth:`release`), so resuming would run the op behind words
-        the agent never sees.
+        Its poll then stops the op instead of resuming it: a hand-back after the end,
+        or a later one whose words went to chat (:meth:`release`), would otherwise
+        run the op behind words the agent never sees.
         """
         sess = self._sessions.get(session_key)
         return (
             sess is not None
             and sess.parked_until > 0.0
-            and not sess.park_resumed
+            and not sess.hold_handed_back
             and self._clock() >= sess.parked_until
         )
 
     def handback_seen(self, session_key: str) -> None:
         """A parked op's poll saw the hand-back: a later claim has nothing to re-park.
 
-        The hold's end stays as it is: another call parked in the same session may
-        still be polling, and past the end it must be told ``hold_over`` too. The
-        next :meth:`park` or turn sets a fresh one.
+        The hold's end and ``hold_handed_back`` stay as they are: another call parked
+        on the same hold may still be polling; past the end it resumes while
+        ``hold_handed_back`` stands, else it is told ``hold_over``. The next
+        :meth:`park` or turn sets a fresh end.
         """
         sess = self._sessions.get(session_key)
         if sess is not None:

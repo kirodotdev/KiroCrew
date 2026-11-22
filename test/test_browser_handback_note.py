@@ -290,6 +290,65 @@ async def test_every_call_parked_in_the_session_hears_the_hold_end() -> None:
     assert second["hold_over"] is True and second["released"] is False
 
 
+async def test_a_hand_back_inside_the_hold_resumes_every_call_parked_on_it() -> None:
+    hub = lh.get_live_hub()
+    now = [1000.0]
+    hub._clock = lambda: now[0]
+    hub._sleep = _instant
+    hub.turn_started("chat-1", "turn-1")
+    await _live()
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    hub.park("chat-1")  # a second call held in the same session
+    now[0] += lh.HOLD_TIMEOUT_S - 1
+    assert await hub.release("chat-1") == ""  # in the hold's last poll interval
+
+    async def poll() -> dict:
+        resp = await ops_mod.api_browser_handback(_request({"session_key": "chat-1"}))
+        return json.loads(resp.body)
+
+    first = await poll()  # before the hold's end
+    now[0] += 2
+    second = await poll()  # after it: the hand-back still came in time
+    assert first["released"] is True and "hold_over" not in first
+    assert second["released"] is True and "hold_over" not in second
+
+
+@pytest.mark.parametrize("untaken_note", [False, True])
+async def test_words_sent_to_chat_after_an_in_time_hand_back_stop_the_call_still_parked(
+    untaken_note: bool,
+) -> None:
+    hub = lh.get_live_hub()
+    now = [1000.0]
+    hub._clock = lambda: now[0]
+    hub._sleep = _instant
+    hub.turn_started("chat-1", "turn-1")
+    await _live()
+    await hub.claim("chat-1")
+    hub.park("chat-1")
+    hub.park("chat-1")
+
+    async def poll() -> dict:
+        resp = await ops_mod.api_browser_handback(_request({"session_key": "chat-1"}))
+        return json.loads(resp.body)
+
+    if untaken_note:
+        assert await hub.release("chat-1", note="first") == lh.DELIVERED_AGENT
+        await hub.claim("chat-1")  # taken back before any call took the note
+        now[0] += lh.HOLD_TIMEOUT_S - 1
+        # Inside the hold, but the untaken note sends these words to chat.
+        assert await hub.release("chat-1", choice="Stop") == lh.DELIVERED_CHAT
+        await poll()
+    else:
+        now[0] += lh.HOLD_TIMEOUT_S - 1
+        assert await hub.release("chat-1") == ""
+        # A retry with words, before any check: nothing is parked, so chat.
+        assert await hub.release("chat-1", choice="Stop") == lh.DELIVERED_CHAT
+    now[0] += 2
+    late = await poll()
+    assert late["hold_over"] is True and late["released"] is False
+
+
 async def test_taken_back_before_the_poll_saw_the_hand_back_the_op_waits_again() -> None:
     hub = lh.get_live_hub()
     now = [1000.0]

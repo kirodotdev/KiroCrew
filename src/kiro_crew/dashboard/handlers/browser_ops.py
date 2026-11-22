@@ -1431,10 +1431,11 @@ async def api_browser_handback(request: web.Request) -> web.Response:
         hub.set_handback_options(key, body.get("options"))
     released = await hub.wait_for_release(key, HANDBACK_WAIT_S)
     if hub.hold_over(key):
-        # The hub's hold ended first: any hand-back since went to chat, so the op
-        # stops here instead of running behind what the person said there. A note
-        # given to this op before it was taken back again still reaches it here.
-        # The end is left in place, so every call parked in this session hears it.
+        # The hub's hold ended with no hand-back inside it standing: what the person
+        # said since went to chat, so the op stops here instead of running behind
+        # it. A note given to this op before it was taken back again still reaches
+        # it here. The end is left in place, so every call parked in this session
+        # hears it.
         said = hub.take_handback(key)
         return web.json_response(
             {

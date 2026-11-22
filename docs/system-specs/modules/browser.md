@@ -890,7 +890,11 @@ the end; a re-posted op held again starts a new hold on both sides): a poll afte
 answers `hold_over: true`, and the shim's own deadline is `HOLD_GRACE_S` later,
 only for a gateway that stopped answering. Either way the agent is told
 `user_in_control` ("held for 10 minutes; tell them you are waiting and end your
-turn"). An op the claim cut short mid-flight answers `interrupted` with `hold`:
+turn"). A hand-back that finds an op parked (`LiveSession.parked`) inside the hold,
+sending no words to chat, resumes every call parked there, one polling after the
+end too (`LiveSession.hold_handed_back`, kept until the next claim or turn, or a
+hand-back whose words go to chat). An op the claim cut short mid-flight
+answers `interrupted` with `hold`:
 the tool waits for the hand-back and then tells the agent to snapshot first; the op
 is never re-run blind. A cancelled tool call stops stepping. The turn's thinking
 line reads "Waiting for you to hand the browser back". Esc or "Hand back"
