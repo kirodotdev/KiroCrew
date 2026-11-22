@@ -204,8 +204,13 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
 
         # Strip any inline <thinking> tags that leaked into the text
         _untrimmed = ""
+        # The reply WITH its control tags: the stream's comment hold is settled
+        # against it, because against the stripped reply a held control-tag tail
+        # always reads as content and streams as text.
+        _with_tags = ""
         if answer.accumulated:
             answer.accumulated, inline_thinking = strip_thinking_tags(answer.accumulated)
+            _with_tags = answer.accumulated
             # Trailing control-tag lines are peeled BEFORE the whitespace trim: the
             # trim would erase the indentation that marks a quoted, 4-space-indented
             # tag as code, and the tail grammar would then read it as protocol.
@@ -407,7 +412,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
 
         try:
             if answer.use_slack_stream and answer.stream_ts:
-                await answer.finish(_untrimmed)
+                await answer.finish(_with_tags)
                 # ``answer.delivered`` rises only on a confirmed real-text append,
                 # so a stream whose every append was refused (a Slack outage) is a
                 # failure. Applied only when there was answer text, since a
