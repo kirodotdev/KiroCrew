@@ -169,6 +169,10 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
                 ),
                 timeout=5.0,
             )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Dashboard slot save before shutdown did not finish within 5.0s; shutting down without it"
+            )
         except Exception:
             logger.debug("Dashboard slot save before shutdown failed", exc_info=True)
         self.dashboard_state.file_indexes.stop_all()
