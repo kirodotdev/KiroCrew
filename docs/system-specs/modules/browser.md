@@ -346,7 +346,8 @@ person's browser usable. If Kiro's Chromium is not downloaded yet, the start
 fails saying so, and Settings shows Install on the main card. A hand pick of
 `user_chrome` never falls back: it fails with the remote-debugging step.
 
-A Kiro's Chromium that exits before the daemon answers fails the start at once
+A Kiro's Chromium that exits before its debugging port opens, or before the
+daemon answers, fails the start at once
 with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
 to a pipe of the gateway's own, drained for the browser's whole life (only the
 newest 4 KiB kept, in memory), and its last stderr lines follow, redacted, so a

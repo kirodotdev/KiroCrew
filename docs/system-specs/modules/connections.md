@@ -1522,7 +1522,10 @@ plain-http `localhost` redirect from a PKCE app alone. Slack answers errors as a
 200 with `{"ok": false, "error": ...}`; `invalid_refresh_token` asks the user to
 reconnect. Its refresh tokens rotate and are single-use, which the
 commit-before-use refresh already handles. Disconnect revokes the access token
-with `auth.revoke` and reads `revoked` from the body; Slack has no endpoint that
+with `auth.revoke` and reads `revoked` from the body. Slack revokes only a live
+access token (its access tokens last 12 hours), so a held one that is expiring is
+renewed once first and the fresh pair is revoked; a failed renewal still revokes
+the held token. Slack has no endpoint that
 revokes a refresh token, so that token lives on upstream until Slack's 30-day
 expiry, and the card's revoke page ends the whole grant. Crew's own sign-in takes
 Slack's client from Settings → Connections only, and reads it from the vault.

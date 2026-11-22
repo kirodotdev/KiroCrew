@@ -251,8 +251,10 @@ stock install.
 
 `dependencies.capabilities.mcp` is not `mcpServers`. `mcpServers` are servers
 your app itself provides and runs, and the gateway registers them into
-Kiro Crew's own agent config. `capabilities.mcp` are external servers your app
-merely consumes.
+Kiro Crew's own agent config. A user's own agent whose `tools` grants
+`tool_search` gets them too, with none of their tools auto-approved
+([agent spec fields](../../src/kiro_crew/docs/agent-spec-fields.md)).
+`capabilities.mcp` are external servers your app merely consumes.
 
 Resolved dependencies are recorded in a reference-counting ledger at
 `~/.kiro/crew/dependency-ledger.json`. On uninstall each declared dependency is
