@@ -14,6 +14,7 @@ import { slotBusySteer } from '../../../components/chat-input/busySend'
 import { useJevAutoSend } from '../useJevAutoSend'
 import { Btn } from '../../../components/ui'
 import QuestionCard from '../../../components/QuestionCard'
+import { ApprovalInputText } from '../../../components/ApprovalInputText'
 import ErrorNotice from '../../../components/ErrorNotice'
 import StatusNotice from '../../../components/StatusNotice'
 import { APPROVAL_MODE_KEYS, approvalTitle, questionText, type AttentionItem } from './model'
@@ -286,7 +287,7 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
       : item.approval ? <>
         <p className="text-sm break-words">{item.approval.tool_purpose?.trim() || t('commandCenter.purpose_missing')}</p>
         {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users must be able to scroll the exact command without splitting its tokens. */}
-        <pre tabIndex={0} role="region" aria-label={t('commandCenter.approval_needed')} className="max-w-full max-h-[40vh] overflow-auto whitespace-pre break-normal bg-bg-hover rounded-md px-3 py-2 text-[13px] font-mono">{typeof item.approval.tool_input === 'string' ? item.approval.tool_input : JSON.stringify(item.approval.tool_input, null, 2) || ''}</pre>
+        <pre tabIndex={0} role="region" aria-label={t('commandCenter.approval_needed')} className="max-w-full max-h-[40vh] overflow-auto whitespace-pre break-normal bg-bg-hover rounded-md px-3 py-2 text-[13px] font-mono"><ApprovalInputText text={typeof item.approval.tool_input === 'string' ? item.approval.tool_input : JSON.stringify(item.approval.tool_input, null, 2) || ''} /></pre>
         {/* A gone approval has nothing left to answer: no buttons, no help on them. */}
         {!expired && <>
           <p className="text-[12px] text-muted">{t('commandCenter.reject_help')}</p>

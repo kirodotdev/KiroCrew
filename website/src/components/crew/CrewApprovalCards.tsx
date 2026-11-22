@@ -12,6 +12,7 @@ import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useCrewWorkerSummary, crewWorkersQueryKey } from '../../pages/chat/command-center/CrewWorkerList'
 import type { ChatSlot, PendingApproval } from '../../types'
 import { approvalTitle } from '../../pages/chat/command-center/model'
+import { ApprovalInputText } from '../ApprovalInputText'
 import { mateRootOf } from '../../lib/crewMode'
 
 /** One request's identity: its worker, origin, request id and delivery
@@ -180,7 +181,7 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
             <p className="mt-1 text-text/80"><span className="font-semibold">{approval.tool || i18nT('components.crewMode.approval_tool_unknown')}</span>{approval.tool_purpose ? ` · ${approval.tool_purpose}` : ''}</p>
             {input && (
               // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users scroll the exact input.
-              <pre tabIndex={0} role="region" aria-label={i18nT('components.crewMode.approval_input_label')} className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all bg-bg-hover rounded px-2 py-1 font-mono text-[11px] text-text">{input}</pre>
+              <pre tabIndex={0} role="region" aria-label={i18nT('components.crewMode.approval_input_label')} className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all bg-bg-hover rounded px-2 py-1 font-mono text-[11px] text-text"><ApprovalInputText text={input} /></pre>
             )}
           </details>
           {approval.trust_grantable === '1' && (
@@ -222,7 +223,7 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
         // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users scroll the exact command.
         <pre tabIndex={0} role="region" aria-label={i18nT('components.crewMode.approval_input_label')}
           className="max-w-full max-h-40 overflow-auto whitespace-pre-wrap break-all bg-bg-hover rounded-md px-2 py-1.5 text-[12px] font-mono"
-        >{input}</pre>
+        ><ApprovalInputText text={input} /></pre>
       )}
       {/* A failed decision with nothing to lose: the request is already on the
           server and the composer's draft is saved per chat (utils/chatDrafts),
