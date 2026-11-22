@@ -112,6 +112,7 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
 )
 from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _build_snapshot,
+    _caller_name,
     _estimate_selected_bytes,
     _fsize,
     _report_named_workspaces_left_out,
@@ -272,7 +273,7 @@ def _audit(event_type: str, resources: str) -> None:
                 event_id=os.urandom(8).hex(),
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 event_type=event_type,
-                caller_identity=os.environ.get("USER", "unknown"),
+                caller_identity=_caller_name(),
                 agent="kirocrew",
                 source="cli",
                 operation=event_type,
