@@ -21,6 +21,7 @@ from typing import Any
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.redaction import redact_credentials_and_spans
 
 # Well-known MCP config locations, tagged by scope.  Scope names match
 # the dashboard badges (kirocrew / kiroGlobal / ccGlobal) and are the
@@ -244,15 +245,22 @@ def redact_mcp_error(error: object, headers: object, extra_values: Iterable[str]
             continue
         values.setdefault(extra, len(extra) < _MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH)
 
-    if values:
-        error = _scrub_configured_values(error, values)
+    # Configured-value spans and generic credential spans are both found in the
+    # ORIGINAL text and written once: masking a short configured value first
+    # (``X-Api-Version: 1``) could cut a reflected token into pieces the generic
+    # scanners no longer recognise.
+    error, _ = redact_credentials_and_spans(
+        error, _configured_value_spans(error, values), MCP_REDACTED_HEADER_VALUE
+    )
     error, _ = redact_exfiltration_urls(error)
     error, _ = redact_credentials(error)
     return error
 
 
-def _scrub_configured_values(error: str, values: dict[str, bool]) -> str:
-    """*error* with every configured value in *values* (value -> needs boundaries) masked."""
+def _configured_value_spans(error: str, values: dict[str, bool]) -> list[tuple[int, int]]:
+    """Spans of *error* holding a configured value in *values* (value -> needs boundaries)."""
+    if not values:
+        return []
     # Check the characters outside a suffix instead of using \b: base64 padding
     # ends in a non-word "=", so \b would fail between that padding and ordinary
     # punctuation. Longest-first keeps a full header ahead of its own suffix.
@@ -266,12 +274,7 @@ def _scrub_configured_values(error: str, values: dict[str, bool]) -> str:
             values.items(), key=lambda item: len(item[0]), reverse=True
         )
     )
-    return re.sub(
-        pattern,
-        MCP_REDACTED_HEADER_VALUE,
-        error,
-        flags=re.IGNORECASE,
-    )
+    return [m.span() for m in re.finditer(pattern, error, flags=re.IGNORECASE)]
 
 
 @dataclass

@@ -342,6 +342,22 @@ def test_a_short_elided_example_stays(name: str) -> None:
 
 
 @pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize("name", ["password", "secret"])
+@pytest.mark.parametrize("head", ["hunter2", "Ab3xY9q", "Zq81Lm"])
+def test_a_short_real_looking_value_cut_by_an_ellipsis_is_masked(
+    name: str, head: str, ellipsis: str
+) -> None:
+    assert redact(f"{name}={head}{ellipsis}")[0] == f"{name}={TAG}"
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize("stub", ["sk-", "sk-ant-", "ghp_", "AKIA"])
+def test_a_vendor_prefix_stub_stays(stub: str, ellipsis: str) -> None:
+    text = f"password={stub}{ellipsis}"
+    assert redact(text)[0] == text
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
 def test_a_long_token_cut_by_an_ellipsis_is_masked(ellipsis: str) -> None:
     cut = github_classic()[:20] + ellipsis
     assert redact(f"token={cut}")[0] == f"token={TAG}"

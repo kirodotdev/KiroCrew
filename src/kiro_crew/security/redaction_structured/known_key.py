@@ -46,8 +46,13 @@ SESSION_MIN = 100
 # (fail closed); the stream then discards the rest of the run.
 SESSION_FAIL_CLOSED = 4096
 LITERAL_MIN = 6
-# An elided value (``sk-...``) is documentation only when its head is shorter than this.
+# An elided value (``sk-...``) is documentation only when its head is shorter than this
+# AND is a clear stub: it ends in a separator (``sk-``, ``ghp_``) or is a vendor prefix.
 _ELIDED_HEAD_MAX = 8
+_ELIDED_STUB_SEPARATORS = "-_.:/=~"
+_ELIDED_VENDOR_PREFIXES = frozenset(
+    {"akia", "asia", "aiza", "ghp", "gho", "ghs", "ghu", "ghr", "xoxb", "xoxp", "xoxa", "glpat"}
+)
 LITERAL_MAX = 512
 # An unquoted literal ends at a blank, a separator another field starts after, or a quote.
 _LITERAL_STOPS = frozenset(" \t\r\n;&,\"'")
@@ -233,8 +238,15 @@ def _literal_gate(
         return None
     # An elided example (``sk-...``) is read as documentation. Only a short head counts: a
     # long token cut by a log's own ellipsis is still a credential and is masked.
-    if value.endswith(("...", "\u2026")) and len(value.rstrip(".\u2026")) < _ELIDED_HEAD_MAX:
-        return None
+    # A head that is not a clear stub (``password=hunter2...``) is a real value with its tail
+    # cut off: judge the head alone by the ordinary length gate.
+    if value.endswith(("...", "\u2026")):
+        head = value.rstrip(".\u2026")
+        is_stub = head.endswith(tuple(_ELIDED_STUB_SEPARATORS)) or (
+            ascii_lower(head) in _ELIDED_VENDOR_PREFIXES
+        )
+        if (is_stub and len(head) < _ELIDED_HEAD_MAX) or len(head) < LITERAL_MIN:
+            return None
     if any(text.startswith(tag, vs) for tag in PLAN_TAGS):
         return None  # already replaced, byte for byte: redaction is a fixed point
     if value.startswith(_ARMOUR_HEAD) or reads_as_example_words(value):
