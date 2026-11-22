@@ -1121,6 +1121,9 @@ async def start_oauth_mint(
 
     # Accumulates what this flow owns, so every exit path releases all of it.
     holdings: MintState = {}
+    # Set only while the spawn/ready wait is pending, so the failure handler asks
+    # kiro-cli whether it is signed out for that failure and no other.
+    ready_wait_pending = False
     try:
         # Off the loop: resolving the data home creates it when a KIROCREW_HOME
         # override is in play, so this is a write and not merely a path join.
@@ -1157,9 +1160,11 @@ async def start_oauth_mint(
                 _claim_mint_pid_when_spawned(client, holdings)
             )
             try:
+                ready_wait_pending = True
                 # Not wait_for: a start this deadline cuts is a startup timeout.
                 async with startup_deadline(_MINT_READY_TIMEOUT_SECONDS):
                     oauth_url = await _ready_and_challenged(client, slug)
+                ready_wait_pending = False
             finally:
                 claim.cancel()
                 # Covers the fast path, where readiness beat the poller's first tick,
@@ -1318,6 +1323,22 @@ async def start_oauth_mint(
             # No URL after a check disproved the stored grant: the card's
             # unproven-grant fence keys on this reason, so it wins over the others.
             reason = "mint_grant_unproven"
+        # A signed-out kiro-cli fails the same wait, and only kiro-cli's own
+        # ``whoami`` can say so: the error's text is no verdict, since a remote
+        # server's 401 can sit in the same stderr tail. Asked after the child is
+        # released and outside the table lock, because ``whoami`` can take 30 s.
+        # An error with a ``mint_reason`` came after kiro-cli started, and an
+        # unproven grant keeps its reason: neither is asked.
+        if (
+            ready_wait_pending
+            and reason not in ("mint_kiro_cli_missing", "mint_grant_unproven")
+            and getattr(exc, "mint_reason", None) is None
+        ):
+            # Local import: ``kiro_prerequisite`` pulls in the sandbox plane.
+            from kiro_crew.kiro_prerequisite import kiro_signed_out_confirmed
+
+            if await kiro_signed_out_confirmed():
+                reason = "mint_kiro_cli_signed_out"
         async with _mints_lock:
             entry = _mints.get(slug)
             if entry is not None and entry.get("token") == my_token:

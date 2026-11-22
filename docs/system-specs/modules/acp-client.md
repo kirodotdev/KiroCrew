@@ -4646,7 +4646,12 @@ message, and shows a failed fetch's own error text under its lead
   retry ladder. A timed-out or refused `whoami`, a failure after output, the
   KAS backend, and callers with no registered service (the CLI) keep the
   connection-failure retry unchanged. Pinned by
-  `test/test_acp_signed_out_dispatch_failure.py`.
+  `test/test_acp_signed_out_dispatch_failure.py`. Off the send path, the
+  Connections mint (`connections/mint.py`, `start_oauth_mint`) is another
+  caller: it asks only after its dedicated client's readiness wait failed with
+  an error that carries no reason of its own (no `kiro_cli_missing` tag, no
+  `mint_reason`) or hit its deadline, and records `mint_kiro_cli_signed_out` on
+  a True answer (see [connections](connections.md)).
 - **The readiness `whoami` runs against the real home, like an ACP session.**
   `kiro_prerequisite._run_auth_command(..., isolate_home=False)` runs the
   resolved CLI against the real environment/home under the standard OS sandbox
