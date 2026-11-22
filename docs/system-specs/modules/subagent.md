@@ -364,16 +364,21 @@ figure and the unreadable-host fallback), dispatched per operating system (see
   `cgroup.controllers` has no `memory`, no v1 memory hierarchy is in view, and
   neither `cgroup_disable=memory` nor a `memory` row in `/proc/cgroups` with
   `enabled` 0 shows the controller off; a missing row is no evidence, as Linux
-  6.12 kernels built without `CONFIG_MEMCG_V1` list none), the figure is the
-  host's `MemAvailable`, so a container's limit goes unread.
-  `out_of_view_memory_pressure_file()` then names that cgroup's
-  `memory.pressure` and `out_of_view_memory_stall_us()` reads its `full`
-  `total=`, which the memory guard turns into the share of time stalled
-  between two samples (`rfc-host-memory-guard.md` §4.1). Both are None
-  whenever any memory accounting is in view or the view's
-  `cgroup.controllers` or `cgroup.events` is unreadable; the stall reading
-  is also None when `memory.pressure` is unreadable or its `full` `total=`
-  is missing or malformed.
+  6.12 kernels built without `CONFIG_MEMCG_V1` list none),
+  `_available_memory_gb()` and the spawn gate still read the host's
+  `MemAvailable`. An ample host reading reports posture `unknown`; tight and
+  critical host readings keep those postures. `resource_status` names that the
+  container's memory limit cannot be read from this cgroup view. Its spawn-floor
+  line names the same gap beside the host figure; the gate keeps its existing
+  comparison, so visibility adds no hold. `ResourceStatus` keeps that
+  visible-figure classification as `decision_posture` for admission, notifier
+  state, the memory guard and the AutoNudge boot pacer. `out_of_view_memory_pressure_file()` names that
+  cgroup's `memory.pressure`, and `out_of_view_memory_stall_us()` reads its
+  `full` `total=`, which the memory guard turns into the share of time stalled
+  between two samples (`rfc-host-memory-guard.md` §4.1). Both are None whenever
+  any memory accounting is in view or the view's `cgroup.controllers` or
+  `cgroup.events` is unreadable; the stall reading is also None when
+  `memory.pressure` is unreadable or its `full` `total=` is missing or malformed.
 - **macOS** — the kernel's own available figure (free + active + inactive
   pages: everything not wired and not in the compressor) via the Mach
   `host_statistics64` syscall through `ctypes`/`libSystem`

@@ -324,8 +324,8 @@ def stall_share(before: tuple[float, int] | None, after: tuple[float, int] | Non
 
 
 def combined_posture(status: ResourceStatus, disk: tuple[str, str]) -> tuple[str, str] | None:
-    """The worse of memory and disk, with its reading; ``None`` while memory is unknown."""
-    memory = status.posture
+    """The worse operational memory/disk posture; ``None`` when memory is unreadable."""
+    memory = status.decision_posture
     if memory not in _POSTURE_RANK:
         return None
     disk_level, disk_text = disk
@@ -519,7 +519,7 @@ class ResourcePressureNotifier:
             # limit, so the stall is sampled at the heartbeat's cadence too: at 30 s a
             # stall can reach livelock between two samples.
             if (
-                status.posture in (POSTURE_TIGHT, POSTURE_CRITICAL)
+                status.decision_posture in (POSTURE_TIGHT, POSTURE_CRITICAL)
                 or self._view_reading is not None
             ):
                 self._next_sample = now + FAST_SAMPLE_INTERVAL_SECS
@@ -582,7 +582,7 @@ class ResourcePressureNotifier:
             if (
                 self.memory_guard is not None
                 and status.critical_gb > 0
-                and status.posture != POSTURE_CRITICAL
+                and status.decision_posture != POSTURE_CRITICAL
             ):
                 try:
                     total = self._view_stall_fn()
@@ -598,25 +598,28 @@ class ResourcePressureNotifier:
         """``"critical"``, ``"psi"``, ``"psi-cgroup"`` or None: whether the guard should run now.
 
         Off with ``agent.resource_critical_gb = 0`` on every arm: the critical
-        posture never occurs then, and PSI only stands in for critical, so it is
-        armed only while that threshold is on. ``psi`` is the host's PSI on a tight
-        reading; where the limit is in view an IO-only stall on an ample host stops
-        nothing. ``psi-cgroup`` is the share of time since the last sample in which
-        the topmost visible cgroup stalled, on a tight or ample reading, while the
-        memory cgroup is out of view: the free figure is then the host's, not the
-        limit the kernel reclaims at, so that stall is the only evidence of it, and
-        it counts no task outside this view. A share, not ``avg10``, because
+        decision posture never occurs then, and PSI only stands in for critical,
+        so it is armed only while that threshold is on. ``psi`` is the host's PSI
+        when its visible-memory figure is tight; where the limit is in view an
+        IO-only stall on an ample host stops nothing. ``psi-cgroup`` is the share
+        of time since the last sample in which the topmost visible cgroup stalled
+        while the memory cgroup is out of view. An ample host figure reports an
+        unknown posture; tight and critical host figures stay visible. The free
+        figure is then the host's, not the limit the kernel reclaims at, so that
+        stall is the only evidence of it, and it counts no task outside this
+        view. A share, not ``avg10``, because
         ``avg10`` takes about 13 s to fall below the bar after a stall ends, and
         each sample in between would stop another tree.
         """
         if not status.critical_gb or status.critical_gb <= 0:
             return None
-        if status.posture == POSTURE_CRITICAL:
+        decision_posture = status.decision_posture
+        if decision_posture == POSTURE_CRITICAL:
             return "critical"
-        if status.posture not in (POSTURE_TIGHT, POSTURE_AMPLE):
+        if decision_posture not in (POSTURE_TIGHT, POSTURE_AMPLE):
             return None
         psi = self._psi
-        if status.posture == POSTURE_TIGHT and psi is not None and psi >= GUARD_PSI_FULL_AVG10:
+        if decision_posture == POSTURE_TIGHT and psi is not None and psi >= GUARD_PSI_FULL_AVG10:
             return "psi"
         share = self._view_share
         if share is not None and share >= GUARD_PSI_FULL_AVG10:
@@ -641,8 +644,8 @@ class ResourcePressureNotifier:
             logger.warning("memory guard request failed", exc_info=True)
 
     def observe(self, status: ResourceStatus, now: float) -> None:
-        """Advance the episode state machine with one posture reading."""
-        posture = status.posture
+        """Advance the episode state machine with one decision-posture reading."""
+        posture = status.decision_posture
         if posture == POSTURE_CRITICAL:
             if self._episode_since is None:
                 self._episode_since = now
@@ -713,7 +716,7 @@ class ResourcePressureNotifier:
         if step is None:
             return
         moved = self._step_of_decline(
-            reading, step, (status.posture == level, self._disk[0] == level)
+            reading, step, (status.decision_posture == level, self._disk[0] == level)
         )
         if moved is None:
             return

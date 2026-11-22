@@ -32,7 +32,7 @@ def _isolated_home(tmp_path, _floor_monkeypatch):
 
 
 def _status(posture: str, available_gb: float = 8.0) -> SimpleNamespace:
-    return SimpleNamespace(posture=posture, available_gb=available_gb)
+    return SimpleNamespace(posture=posture, decision_posture=posture, available_gb=available_gb)
 
 
 def _headroom(root: str, space_pct: float, inodes: int = 100_000) -> TempHeadroom:
@@ -130,7 +130,10 @@ def test_the_sample_reads_disk_in_the_worker_thread_and_publishes(monkeypatch):
     notifier = rp.ResourcePressureNotifier(
         SimpleNamespace(push=lambda _note: None),
         probe_fn=lambda: SimpleNamespace(
-            posture=POSTURE_AMPLE, available_gb=9.0, agent_ceiling=None
+            posture=POSTURE_AMPLE,
+            decision_posture=POSTURE_AMPLE,
+            available_gb=9.0,
+            agent_ceiling=None,
         ),
         disk_fn=lambda: (POSTURE_TIGHT, "/tmp 7% free"),
         on_posture_change=lambda: pulls.append(1),

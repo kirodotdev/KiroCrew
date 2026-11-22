@@ -1103,7 +1103,8 @@ in boot order on one `BootPacer` (`autonudge_service/boot_pacer.py`), so the
 sessions they wake cold-start one at a time instead of together. Each loop's
 timer waits its turn there ahead of its own countdown, because the countdown can
 end early on a subject read. The gap after each release follows the memory
-posture a fresh `resource_status.probe` reports (memory, not disk: a woken
+`decision_posture` of a fresh `resource_status.probe`, never the advisory
+`unknown` reported while a container limit is out of view (memory, not disk: a woken
 session costs memory, and waiting frees no disk): `BOOT_WAKE_GAP_SECS` (2 s)
 while the host is `ample`, so two dozen loops are all released within about a
 minute; up to `BOOT_WAKE_TIGHT_GAP_SECS` (30 s) while it is `tight` or
