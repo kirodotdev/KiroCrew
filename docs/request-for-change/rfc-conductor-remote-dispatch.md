@@ -324,7 +324,8 @@ peer's own check, because only the peer can measure the peer.
 `session_create(work_item=)` and on `crew=`. It filters before ranking. When
 no crew that answered meets it, and none that meets it is merely short, the
 create is refused `crew_requirements_unmet`, naming what each crew lacked
-(`tag gpu`, `login gh (expired)`); there is no fallback to a crew without it.
+(`tag gpu`, `login gh (expired)`) and each connected crew it could not check
+(`b could not be checked`); there is no fallback to a crew without it.
 A named `crew=` is checked the same way, and a crew whose headroom cannot be
 read is refused, never assumed to qualify. `requires` stays on the hub; the
 peer never sees it.
@@ -542,7 +543,9 @@ ones.
   `requires.logins`. A worker stuck
   on a login reports `blocked` with reason `needs_human`. The conductor first
   redispatches the item to another crew (§5b), and asks the person only when no
-  crew works.
+  crew works. The hub does not verify a peer's login word: a peer that reports
+  `valid` while signed out still gets the item, and its worker reports `blocked`
+  (`needs_human`), as for any login failure.
 - **Risk: login status in headroom.** The headroom reply MAY carry per-login
   status flags, one word per named tool (`valid`, `expired`), such as
   `{"gh": "valid"}`. It never carries a token, a user name, a path, or any other
