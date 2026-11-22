@@ -117,10 +117,14 @@ Four cases, and the difference between them is the whole answer:
   Kind `external`: a real projection down a real channel whose code has not yet
   moved into the mirrors folder. When the agent mounts `use_subagent` (or
   `@builtin`, `@subagent` or `*`), the batch also carries each agent its
-  `toolsSettings.subagent.availableAgents` names, projected the same way (a `*`
-  pattern matched against your agents, at most 8), because KAS's sub-agent tool
-  finds a name only among the agents its session registers and does not load a
-  spec written for kiro-cli from disk. One it cannot carry is named in the
+  `toolsSettings.subagent.availableAgents` names, projected the same way (of the
+  entries the spawn gate keeps, every agent named outright, and at most 8
+  of the agents a `*` pattern matches, up to 50 agents with the chat's own;
+  none when the agent's entry carries the bare deny-all `subagent` rule the
+  translation writes for a list too long for one rule), because
+  KAS's sub-agent tool finds a name only among the agents its session
+  registers and does not load a spec written for kiro-cli from disk. One it
+  cannot carry is named in the
   session-start notice: a name no spec declares; Kiro Crew's own agents
   (`kirocrew-worker` included); an agent with a `denyByDefault` or
   `fallbackAction: "deny"` allowlist, a granted tool beside `deniedCommands` or
