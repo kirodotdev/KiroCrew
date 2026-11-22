@@ -533,7 +533,7 @@ class TestForkLaneFinalizeRetries:
         flat = _flat(_workflow(lane))
         assert "complete() {" in flat, f"{lane}: no complete() helper"
         assert (
-            "for attempt in 1 2; do" in flat
+            'while [ "$attempt" -le 2 ]; do' in flat
         ), f"{lane}: finalize does not retry, so one transient 5xx strands the run"
 
     @pytest.mark.parametrize("lane", FORK_FINALIZE_LANES)
@@ -558,11 +558,11 @@ class TestForkLaneFinalizeRetries:
         """The first-principles lane is where this helper was introduced; the
         ported copies should not diverge from its retry shape."""
         ref = _flat(_workflow("fork-first-principles-review.yml"))
-        assert "for attempt in 1 2; do" in ref
+        assert 'while [ "$attempt" -le 2 ]; do' in ref
         assert "could not complete check-run" in ref
         for lane in FORK_FINALIZE_LANES:
             flat = _flat(_workflow(lane))
-            assert "for attempt in 1 2; do" in flat, lane
+            assert 'while [ "$attempt" -le 2 ]; do' in flat, lane
             assert "sleep 5" in flat, f"{lane}: retry has no backoff"
 
 
