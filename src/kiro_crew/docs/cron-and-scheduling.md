@@ -230,7 +230,7 @@ The reaper tracks per-run session keys so it can still SIGKILL stuck ephemeral s
 
 ### A New Chat per Run (`new_chat_per_run`)
 
-A stateless job has no chat tab: its result reaches the bell, Slack and the job's History, but there is no conversation to reply in. Set `new_chat_per_run: true` to give every run its own tab, `Cron: <name> | <run time>`, on that run's own fresh session. Open it and reply like any other chat, for example to approve a draft the run wrote; the next run starts clean in a tab of its own.
+A stateless job has no chat tab: its result reaches the bell, Slack and the job's History, but there is no conversation to reply in. Reopened from History, such a run's transcript is read-only: it can be read but not replied to, so start a new chat to follow up on it. Set `new_chat_per_run: true` to give every run its own tab, `Cron: <name> | <run time>`, on that run's own fresh session. Open it and reply like any other chat, for example to approve a draft the run wrote; the next run starts clean in a tab of its own.
 
 ```
 cron_add(
