@@ -8,6 +8,7 @@ install's workspace root, skips the whole document; the rest of the import conti
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -71,6 +72,10 @@ def test_a_workspace_folder_outside_the_roots_skips_the_config(tmp_path, workspa
     assert workspace_dir not in text
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows collapses .. before following a link, so there is no escape to refuse",
+)
 def test_a_workspace_folder_that_escapes_through_a_symlink_skips_the_config(tmp_path):
     workspace = tmp_path / "home" / "workspace"
     workspace.mkdir(parents=True)

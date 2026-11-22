@@ -54,7 +54,7 @@ def _dir_outside_roots(raw: str, roots: list[str]) -> bool:
     # must also climb here before symlinks are resolved for the containment check.
     joined = os.path.join(roots[1], path).replace("\\", "/")
     normal = os.path.normcase(os.path.realpath(joined))
-    return not any(path_within(normal, os.path.normcase(root)) for root in roots)
+    return not any(path_within(normal, os.path.normcase(os.path.realpath(root))) for root in roots)
 
 
 def config_document_refusal(data: Any) -> str | None:
