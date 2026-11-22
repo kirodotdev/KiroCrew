@@ -106,6 +106,7 @@ from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-export
     _named_path,
     _unreadable_reason,
 )
+from kiro_crew.acp.session_mcp_tools_allowlist import ToolsAllowlist, _tools_allowlist
 from kiro_crew.agent import (
     _mcp_registry_mode,
     ensure_agent_materialized,
@@ -114,7 +115,6 @@ from kiro_crew.agent import (
     session_agent_spec_path,
 )
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
-from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
 from kiro_crew.env import sanitize_spec_env
 from kiro_crew.mcp_cleanup import (
     CONTROL_PLANE_SERVERS,
@@ -435,63 +435,6 @@ def _global_settings(*, strict: bool = False) -> dict[str, Any]:
             raise
         logger.debug("session MCP: global settings unreadable")
         return {}
-
-
-class ToolsAllowlist(NamedTuple):
-    """The spec's ``tools`` allowlist, as a value rather than a filter pass.
-
-    Exists so the SAME allowlist can gate every element that reaches a session
-    -- the translated entries inside :func:`session_mcp_servers`, and the pooled
-    broker stubs a mirror appends beside them. A stub carries the name of the
-    entry it rewrites, so a stub for a server the spec's ``tools`` never
-    references is an unreferenced server mounted anyway, which is the exact
-    thing the filter on the translated half exists to prevent.
-
-    ``applies`` is False when there is no spec at all: then there is no allowlist
-    to apply and everything stands, the same reading :func:`session_mcp_servers`
-    takes for the control plane. A spec whose ``tools`` is missing or not a list
-    is an EMPTY allowlist, not "no filter" (see the filter's own comment).
-
-    Why an allowlist at all: kiro-cli loads a server only when ``tools`` references
-    it (``@server`` or ``@server/tool``), so an ``mcpServers`` entry with no
-    reference is declared but never mounted. An ACP array has no such indirection
-    -- everything in it is mounted -- so the reference is applied here instead.
-    Without it, an entry the user deliberately left unreferenced (the shape every
-    ``opt_in`` grant uses, and what a narrowed-by-hand spec looks like) would come
-    alive the moment the session ran on a mirrored backend.
-
-    The refs are read through :func:`~kiro_crew.agent_sdk.mcp_refs.parse_tools_refs`
-    rather than scanned here, so this module and the unresolved-ref detector cannot
-    disagree about what an entry names -- a guard that read ``@srv`` where this
-    read nothing would report a ref as unresolved while the server mounted, and the
-    reverse would mount a server the guard called absent. Only the bare ``*``
-    grants everything: ``@*`` is a server LITERALLY named ``*`` there, matching
-    this repo's other readers. ``@builtin`` is not special-cased -- a server
-    actually called ``builtin`` is mountable, and the namespace exclusion belongs
-    to the guard asking whether a ref resolves.
-    """
-
-    applies: bool
-    grant_all: bool
-    refs: frozenset[str]
-    #: Servers switched off WHOLE (:func:`session_mcp_disabled_servers`). Never
-    #: granted, whatever ``tools`` says, so a mirror's stub loop -- which asks this
-    #: allowlist -- withholds them exactly as the translated half does.
-    muted: frozenset[str] = frozenset()
-
-    def grants(self, name: str) -> bool:
-        if name in self.muted:
-            return False
-        return (not self.applies) or self.grant_all or name in self.refs
-
-
-def _tools_allowlist(spec: dict[str, Any] | None) -> ToolsAllowlist:
-    """The allowlist *spec* declares; see :class:`ToolsAllowlist` for the two edges."""
-    if spec is None:
-        return ToolsAllowlist(applies=False, grant_all=False, refs=frozenset())
-    tools = spec.get("tools")
-    grant_all, refs = parse_tools_refs(tools if isinstance(tools, list) else [])
-    return ToolsAllowlist(applies=True, grant_all=grant_all, refs=frozenset(refs))
 
 
 def _project_spec_path_for(agent: str, work_dir: str | Path | None) -> Path | None:
@@ -1513,14 +1456,31 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
     # still voids the pass. The first sample's descriptor is held until the
     # second is taken: a freed inode's number may go to the very next file
     # created, so a swap and swap-back inside one timestamp tick could
-    # otherwise return the first identity for a different file.
+    # otherwise return the first identity for a different file. An in-place
+    # same-size write inside the tick of the file's last change moves no field
+    # at all, so a file changed less than a settle period ago is re-read after
+    # the second sample and the pass is kept only when the re-read agrees.
     paths = [path for _label, path, _read in reads]
     changed: tuple[str, Path, str] = (reads[0][0], reads[0][1], _UNREADABLE_CHURN)
     for _ in range(_NATIVE_SOURCES_BRACKETED_PASSES):
         with contextlib.ExitStack() as held:
+            # Read before the first sample, so the age it gives is never more
+            # than the file's real age when it was sampled.
+            sampled_at = _wall_ns()
             before = [_settings_file_identity(path, hold=held) for path in paths]
             sources = _read_native_sources_once(reads)
             after = [_settings_file_identity(path) for path in paths]
+            unsettled = [
+                (label, path, _UNREADABLE_CHURN)
+                for (label, path, _read), was in zip(reads, before)
+                if isinstance(was, tuple) and sampled_at - was[2] < _NATIVE_SETTLE_NS
+            ]
+            agrees = not unsettled
+            if unsettled and after == before:
+                agrees = _reread_agrees(reads, sources)
+                # The re-read may pause for a retry like any read, so it is
+                # bracketed too: still holding the first samples, sample again.
+                after = [_settings_file_identity(path) for path in paths]
         moved = [
             (
                 label,
@@ -1532,10 +1492,29 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
             for (label, path, _read), was, now in zip(reads, before, after)
             if was != now or was is _IDENTITY_UNKNOWN
         ]
-        if not moved:
+        if not moved and agrees:
             return sources
-        changed = moved[0]
+        changed = (moved or unsettled)[0]
     raise NativeSettingsUnreadable(*changed)
+
+
+def _reread_agrees(reads: list[tuple[str, Path, Any]], sources: list[NativeSettingsSource]) -> bool:
+    """Whether a fresh read, taken after the pass's second sample, returns *sources*.
+
+    A rewrite that the identity cannot see has been undone by the second sample
+    or it has not: if it has, this read sees the file as it is now and differs
+    from what the pass read; if it has not, the pass read what the file still
+    holds. A re-read that fails is not agreement.
+
+    shortcut: a writer that flips a file away and back once around EACH of the
+    two reads, all inside one timestamp tick, still matches; only waiting out
+    the settle period closes that, at up to 2 s per session start after a save.
+    """
+    try:
+        again = _read_native_sources_once(reads)
+    except NativeSettingsUnreadable:
+        return False
+    return [src.servers for src in again] == [src.servers for src in sources]
 
 
 #: How many bracketed passes :func:`native_settings_sources` makes off the event
@@ -1544,6 +1523,20 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
 #: moves under every pass is churning faster than any snapshot can be trusted,
 #: and the set is refused like an unreadable file.
 _NATIVE_SOURCES_BRACKETED_PASSES = 4
+
+#: Least age, by the wall clock, of a settings file's mtime for two equal
+#: identity samples to prove it was not rewritten between them. A same-size
+#: write in the same timestamp tick as the last change leaves the mtime as it
+#: was. FAT keeps a 2 s tick and HFS+ a 1 s tick; ext4's follows the kernel's
+#: coarse clock, a few milliseconds. The same bound the history listing's
+#: directory stamps settle on (``history_listing_index._DIR_STAMP_SETTLE_NS``).
+_NATIVE_SETTLE_NS = 2 * 10**9
+
+
+def _wall_ns() -> int:
+    """The wall clock :data:`_NATIVE_SETTLE_NS` is measured on (a test replaces it)."""
+    return time.time_ns()
+
 
 #: Identity of a settings file whose identity could not be taken safely. It
 #: never matches, so a pass it brackets is voided.
@@ -1556,8 +1549,10 @@ def _settings_file_identity(path: Path, *, hold: contextlib.ExitStack | None = N
     An atomic replace yields a new inode number while the replaced inode is
     still open -- *hold* keeps the sample's descriptor open for that (POSIX;
     see :func:`kiro_crew.hooks.safe_file_identity`) -- and an in-place write
-    moves the mtime or size, so two equal identities mean the file was neither
-    replaced nor rewritten in between. Every sample goes through
+    moves the mtime or size once the last change is a tick old, so two equal
+    identities of a settled file mean it was neither replaced nor rewritten in
+    between (a file younger than :data:`_NATIVE_SETTLE_NS` is re-read instead).
+    Every sample goes through
     :func:`kiro_crew.hooks.safe_file_identity`, which screens the path afresh
     and reads the identity from a no-reparse descriptor, so no sample follows a
     link swapped in after an earlier one. A refused or unopenable path returns
