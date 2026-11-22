@@ -797,6 +797,36 @@ def test_native_settings_sources_keeps_an_unchanged_fresh_file_after_one_re_read
     assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
 
 
+def test_native_settings_sources_samples_again_after_the_re_read(tmp_path, monkeypatch):
+    """A file replaced while the re-read runs voids the pass, even when both reads agree.
+
+    The re-read can pause for a retry like any read, so a restriction saved during
+    it would otherwise be missed: both reads saw the permissive file and agree.
+    """
+    path = tmp_path / ".kiro" / "settings" / "mcp.json"
+
+    def save_restriction(n, path):
+        if n == 2:
+            staged = path.with_name("mcp.json.tmp")
+            staged.write_text(
+                json.dumps({"mcpServers": {"kirocrew-core": {"disabledTools": ["workflow_run"]}}}),
+                encoding="utf-8",
+            )
+            os.replace(staged, path)
+
+    session_mcp, reads = _bracket_fixture(
+        tmp_path, monkeypatch, lambda n, path: None, after_read=save_restriction
+    )
+    path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+    _fresh_clock(session_mcp, monkeypatch, path)
+
+    sources = session_mcp.native_settings_sources(tmp_path)
+
+    assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
+    # Pass 1: read and the re-read the save landed in; pass 2: read and re-read.
+    assert len(reads) == 4
+
+
 def test_native_settings_sources_refuses_files_that_never_hold_still(tmp_path, monkeypatch):
     """Off the loop, a file replaced during every bracketed pass is refused, not guessed."""
     session_mcp, reads = _bracket_fixture(
