@@ -301,7 +301,9 @@
     "update_failed_2": "更新に失敗しました",
     "update_when_i_restart": "再起動したときに更新",
     "updates": "更新",
+    "updates_count_other": "更新 {{count}} 件",
     "subagents_in_flight_fallback": "サブエージェント実行中",
+    "subagents_in_flight_count_other": "サブエージェント {{count}} 件実行中",
     "updating_kirocrew": "{{productName}} を更新中…",
     "v": "v",
     "view_full_changelog": "▸ チェンジログ全文を表示",
@@ -11821,9 +11823,12 @@
     "webhooks": "Webhooks",
     "crew_members": "Bot",
     "badge_unread_conversations": "未読の会話",
+    "badge_unread_conversations_count_other": "未読の会話 {{count}} 件",
     "badge_unread_member_threads": "未読のメンバースレッド",
+    "badge_unread_member_threads_count_other": "未読のメンバースレッド {{count}} 件",
     "badge_notifications": "通知",
     "badge_approvals_needed": "承認待ち",
+    "badge_approvals_needed_count_other": "承認待ち {{count}} 件",
     "account_and_settings": "アカウントと設定"
   },
   "pages": {

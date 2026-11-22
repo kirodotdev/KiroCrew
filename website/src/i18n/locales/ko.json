@@ -301,7 +301,9 @@
     "update_failed_2": "업데이트 실패",
     "update_when_i_restart": "다시 시작할 때 업데이트",
     "updates": "업데이트",
+    "updates_count_other": "업데이트 {{count}}개",
     "subagents_in_flight_fallback": "서브에이전트 실행 중",
+    "subagents_in_flight_count_other": "서브에이전트 {{count}}개 실행 중",
     "updating_kirocrew": "{{productName}} 업데이트 중…",
     "v": "v",
     "view_full_changelog": "▸ 전체 변경 내역 보기",
@@ -11821,9 +11823,12 @@
     "webhooks": "Webhooks",
     "crew_members": "Bot",
     "badge_unread_conversations": "읽지 않은 대화",
+    "badge_unread_conversations_count_other": "읽지 않은 대화 {{count}}개",
     "badge_unread_member_threads": "읽지 않은 멤버 스레드",
+    "badge_unread_member_threads_count_other": "읽지 않은 멤버 스레드 {{count}}개",
     "badge_notifications": "알림",
     "badge_approvals_needed": "승인 대기",
+    "badge_approvals_needed_count_other": "승인 대기 {{count}}건",
     "account_and_settings": "계정 및 설정"
   },
   "pages": {

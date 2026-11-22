@@ -96,13 +96,17 @@ export interface Surface {
    * slot-bearing path is already memoized via `selectUnreadByMode`.
    */
   unreadSelector?: (state: RootState) => number
-  /** Accessibility label for the badge ("X unread conversations"). */
+  /** The badge's tooltip ("unread conversations"), and its accessible name
+   *  after the count when no `badgeCountKey` is set. */
   badgeLabel?: string
   /**
    * Catalog key for the badge label, resolved when the badge renders so it
    * follows the active language. Wins over `badgeLabel` when both are set.
    */
   badgeLabelKey?: string
+  /** Plural catalog key (in `pluralKeys.json`, strings carry `{{count}}`) for
+   *  the badge's accessible name, resolved with the count when it renders. */
+  badgeCountKey?: string
   /**
    * Optional live-activity count, rendered as a small pulsing dot on the rail
    * item rather than folded into the unread badge. Use for "something is
@@ -115,7 +119,8 @@ export interface Surface {
    * `createSelector`.
    */
   activitySelector?: (state: RootState) => number
-  /** Accessibility label for the activity dot ("X subagents running"). */
+  /** The activity readout's tooltip ("subagents in flight"), and its
+   *  accessible name after the count. */
   activityLabel?: string
   /**
    * Mark a surface as registered for badge wiring only — its nav item is
