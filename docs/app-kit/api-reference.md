@@ -1117,10 +1117,10 @@ const { media, error, busy, play, pause, seek, setVolume } = sdk.useBrowserMedia
 
 | Member | Does |
 |---|---|
-| `media` | the playing element's state: `kind`, `paused`, `ended`, `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
+| `media` | the playing element's state: `kind`, `paused`, `ended` (true once the tab counted an ending, also one the site answered by taking the source away, until something plays), `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
 | `error` | the last refusal's code: `no_tab` (no tab open for that session yet), `no_media` (no `<video>` or `<audio>` on the page), `redirect_refused` (the page left your approved sites; it was moved to `about:blank`), `not_app_browser`, `not_declared`, `policy_denied` |
 | `play()`, `pause()`, `seek(seconds)`, `setVolume(0..1)`, `refresh()` | one request each: a `POST` per button; `refresh`, the first read and each poll are a `GET` that changes nothing |
-| `onEnded(media)` (option) | called once each time an answer first shows `ended: true`; again only after the element plays and ends anew. A song that has already ended when the page mounts counts once |
+| `onEnded(media)` (option) | called once for each ending the tab counted; again only after something plays and ends anew. A song that has already ended when the page mounts counts once |
 
 For continuous play, poll and let the ending pick the next song:
 
@@ -1162,9 +1162,18 @@ async def on_media_ended(ctx, event):
 The gateway calls it once per ending, whether or not your page is open: after your
 agent's first successful `browser` op in a slot, it reads that tab's media state every 3
 seconds (the read `useBrowserMedia` makes, skipped while the browser is busy or the
-person has taken the tab over) and calls your hook when an element newly shows
-`ended`. The same ending is not reported twice; a new song that plays and ends is a new
-call. The hook runs in the gateway like your other hooks, with the same `ctx`; an async
+person has taken the tab over) and calls your hook for each new ending the tab counted.
+The same ending is not reported twice; a new song that plays and ends is a new call.
+
+The tab counts an ending as it happens, so neither the page nor the gateway has to read
+at that moment: the element's `ended` event, or its source going away within 2 seconds
+of the end (YouTube removes the source when a song ends, leaving the element paused at
+0 with no duration, and `duration` in the event is then `null`). An ending counts once
+nothing plays on the same page for 3 seconds after it, so an advert that hands over to
+the video on the same page is not one, and the reports arrive up to that much later.
+The page moving on to another address and playing there (the site's own autoplay) counts
+at once. Only the page's largest media element is followed, so a small preview ending
+is not one, and media already ended when the tab is first read counts once. The hook runs in the gateway like your other hooks, with the same `ctx`; an async
 hook gets 30 seconds before the gateway stops waiting for it. Keep it short: turning
 your app off or uninstalling it waits for a hook that is still running, and
 withdrawing its trust fails until the hook returns. Nothing of the page is

@@ -10382,15 +10382,26 @@ walker's `media` method in the isolated world (`browser_harness/media.py`), afte
 page check. A play the browser refuses gets one click on the element, after the page is judged again, and a `state` read writes no audit row (a player polls it). The SDK's
 `useBrowserMedia` (`website/src/app-sdk/browserMedia.ts`) is the page's handle (its `pollMs` is raised to at least 500 ms; a non-finite or non-positive value reads once); it sends
 through the scoped client, so the app declares `/api/browser/media`. Its `onEnded` option
-is the continuous-play cue: called once per ending, derived in the page from the `ended`
-field of the state it already polls, so it adds no route, no event and nothing the agent
-can reach. With the page closed the gateway itself reports the ending to the app's
+is the continuous-play cue: called once per ending, derived in the page from the `endId`
+field of the state it already polls (the first answer, with nothing to compare, counts an
+`ended` element), so it adds no route, no event and nothing the agent can reach. The
+walker counts endings in the tab itself (`mediaEnds` in `snapshot_walker.js`, once per
+document, in the isolated world): the `ended` event, or `emptied` within `END_NEAR_S`
+(2 s) of the end, since YouTube removes `src` at the end and leaves an element that is
+never `ended`. An ending counts after `END_GRACE_MS` (3 s) with no `playing` on the same
+`pathname` + `search` (an advert handing over to the video is dropped), or at once when
+`playing` comes at another address (the site's own autoplay); `ended` then reads true
+until the next `playing`, and `endId` (`<document id>:<count>`, null before the first)
+changes. Only the largest shown element's events count (a preview or sound effect is
+ignored), an element already ended when the listeners go in is counted at once, and a
+`playing` past the grace with no read between still counts the ending. The address is
+compared in the page and never returned. With the page closed the gateway itself reports the ending to the app's
 backend, when the app declares `backend.hooks.on_browser_media_ended`
 (`dashboard/handlers/browser_media_watch.py`): a successful op of the app's own agent
 (`browser_ops.run_browser_op`, a slot with approved sites) starts one watch per slot,
 which every `WATCH_S` (3 s) makes the same `state` read on the slot's own tab, skipping
 the tick while an agent op, a media request or a takeover holds the tab, and calls the
-hook once per ending with `(ctx, {"event": "browser_media_ended", "session_key",
+hook once per new `endId` (a watch's first read counts an `ended` element) with `(ctx, {"event": "browser_media_ended", "session_key",
 "origin", "duration"})` through `hooks_integration.dispatch_app_event` and
 `LifecycleDispatcher.start_event` / `finish_event`. The checks below and the hook's start
 run under `app_lifecycle_lock(app)`, and the started task joins `_DETACHED_HOOK_TASKS`,
