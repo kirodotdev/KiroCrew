@@ -49,7 +49,12 @@ nothing runs; so is a name two files share.
 `--agent` takes a crew member or an agent name, resolved as `kirocrew chat --agent`
 resolves it. `--model` is the explicit pick for every scenario session and outranks
 the agent's own model. Both apply to the sessions the scenario drives; the memory
-consolidation between sessions keeps its default agent and model.
+consolidation between sessions keeps its default agent and model. A `--model` that a
+scenario session refuses when it starts (the backend does not serve it) stops the run
+before that session's first turn: it prints
+`Error: <name> is not a model this backend offers` and exits 1, with nothing scored
+or saved, instead of scoring the backend default under that name. `--model auto` pins
+nothing, so it is never stopped this way.
 
 With `--repeat N` each scenario runs N times in a row. The report shows the runs
 passed (`Runs passed: 2/3`), the scenario counts as passed only when every run did,
