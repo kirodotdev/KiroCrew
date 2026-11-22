@@ -33,8 +33,8 @@ Each tip names one dashboard control, such as Split View, Side Chat or the Comma
 
 Verified at `cb3c2f0703`:
 
-1. The "Thinking..." row is on screen for the whole of every turn and shows only the ghost and the word.
-2. Kiro Crew teaches features only through the tip card above the composer (`src/kiro_crew/docs/feature-tips.md`). The card has a six-hour cadence gate and mixes real capabilities (scheduled jobs, apps, MCP) with small interface controls (Split View, Command Bar, Focus mode).
+1. The "Thinking..." row shows while a turn runs: during thinking, tool calls and the gaps between steps. `website/src/pages/chat/ChatFooter.tsx` hides it while reply text is arriving, so in a turn it shows in the gaps, not the whole time. It holds only the ghost and the word.
+2. Kiro Crew teaches features through the tip card above the composer (`src/kiro_crew/docs/feature-tips.md`), and Settings > Chat > Discovery lists every curated tip for a user who goes looking (`website/src/pages/settings/FeatureTipsList.tsx`). The card has a six-hour cadence gate and mixes real capabilities (scheduled jobs, apps, MCP) with small interface controls (Split View, Command Bar, Focus mode).
 3. `dashboard.tips_enabled` defaults to `True` (`config/sections_dashboard.py`, `tips_enabled`), and the Settings Feature Tips switch is the per-user opt-out.
 
 ### Problem
@@ -70,6 +70,8 @@ On hover or keyboard focus, a small x shows at the end of the tip:
 ![The dismiss x on hover](assets/exploratory-tips-hover-dismiss.png)
 
 When the tip does not fit after "Thinking...", it drops to its own line and wraps. It is never cut off with an ellipsis, and the divider hides while the two are on separate lines. The fade-in is off under reduced motion.
+
+If reading the tips fails with an error other than 404, the row shows a short inline error beside "Thinking..." in place of a tip, for that turn only. A 404 means an older gateway with no tips route, and shows nothing.
 
 ![An 800 px window: the tip wraps onto its own line](assets/exploratory-tips-narrow-wrap.png)
 
@@ -113,11 +115,22 @@ This is the product-shape decision the First Principles lane asked for, and the 
 
 1. **Off by default would reach almost nobody.** A tip that teaches a control a user does not know about only works for people who have not gone looking. A user who goes into Settings to switch tips on is already the one who needs them least.
 2. **It matches the default the user already has.** `dashboard.tips_enabled` is `True` today and the card is on by default. This adds a second place under the same switch, not a new default.
-3. **It costs no space and no attention it does not already have.** The row exists only while the user waits on the agent, the tip takes the free end of it, and it is gone when the answer arrives. It takes no focus, opens nothing, makes no sound and needs no click.
+3. **It costs little space and attention.** The row exists only while the user waits on the agent, the tip takes the free end of it, and it is gone when the answer arrives. It takes no focus, opens nothing, makes no sound and needs no click. The costs it does have are listed under "Downsides".
 4. **It is bounded.** There are 11 tips. Each one can be hidden for good with one click, and one switch hides all of them. A user who never wants to see one again is at most one Settings toggle away.
 5. **It stays out of the way of work.** No tip shows where its control does not work, on a phone, in an embedded or popped-out chat, or in a temporary session.
 
-One tip on every turn is the one part of this that could be too much for a heavy user. This RFC accepts it for the first release and names how it gets revisited: if the dismiss rate of tips as a group is high, the follow-up is a cap per day or a lower rate after the first week (Open question 1), not a different default.
+One tip on every turn is the part of this that could be too much for a heavy user. This RFC accepts it for the first release and sets a number for when it is revisited (Open question 1). The follow-up then is a cap per user per day, not a different default.
+
+### Downsides
+
+Each cost below is accepted for the first release. The line under it says how it is bounded.
+
+1. **An agent with many short turns shows a new line every few seconds.** A chat answering a cron, or a steer loop, can start a turn every few seconds, and each turn picks a new tip.
+   Bounded: a tip shows only while that chat is open in the full desktop view, and `shown` is sent only when the tip renders. Each tip the user does not want is gone for good with one click, and there are 11. If the dismiss rate passes the threshold in Open question 1, the per-day cap in Alternatives 9 is added.
+2. **The row gets wider when the tip appears, which can pull the eye.** The tip is added to the right of "Thinking...".
+   Bounded: the ghost and "Thinking..." keep their place; the tip only fills the free space to their right. The tip never changes mid-turn and has no timer of its own; it shows and hides with the row. The fade-in is short and off under reduced motion. In a narrow window the wrapped tip adds one line under "Thinking...".
+3. **The tip competes with "Thinking..." itself,** which is the one signal a waiting user is reading.
+   Bounded: the tip is muted text after a divider, and "Thinking..." stays first. The tip sits outside the row's `role="status"` element, so screen readers still announce only the status. No tip shows when the row says something other than "Thinking...", such as a stage label or a browser in control.
 
 ### How it is measured
 
@@ -125,7 +138,9 @@ Only what #39769 emits at `02e732ded1`. It uses the existing counter `kirocrew.t
 
 - `source=exploratory` marks a Thinking-row tip. Card tips keep `curated`, `catalog` and `generated`. The schema manifest diff against main is that one added value.
 - `feature` is the tip id, such as `e07-side-chat`. Only ids shipped in `tips_exploratory.json` pass; anything else reads `other`.
-- `action` is `shown`, sent once per turn for the one tip picked, or `dismiss`, sent from the x. The route also accepts `ack`, but nothing sends it, because the chips are not clickable.
+- `action` is `shown`, sent the first time the tip renders in a turn, or `dismiss`, sent from the x. The route also accepts `ack`, but nothing sends it, because the chips are not clickable.
+
+Expected volume: at most one `shown` per turn in each open view that renders the tip. A turn whose row never shows, or with no eligible tip left, sends none. This repository holds no public figure for turns per user per day, so the range here is an estimate: a user who runs 20 to 100 turns a day in an open desktop chat sends 20 to 100 `shown` a day until they dismiss tips. Card tips are held to at most about four a day by their six-hour gate. So `source=exploratory` will likely be the largest `source` on `kirocrew.tips.feedback`, and dashboards on that counter should split by `source`.
 
 From this we can read, per tip, how often it was shown and how often it was dismissed. We cannot yet read adoption, meaning whether people start using a control after seeing its tip: most of these controls have no use counter (`kirocrew.voice.stt.started` for dictation is one exception). Until a use signal exists per control, a high dismiss rate on one tip is the signal to fix or drop it.
 
@@ -161,9 +176,10 @@ One new read-only route and one new value on an existing counter. Every existing
 6. **Pick the tip on the server.** Most eligibility facts live only in the browser.
 7. **A `placement` attribute on the counter.** Built and removed in #39769: every exploratory tip shows only on the Thinking row and every other source only in the card, so it restated `source` and would have cost a permanent key on an append-only schema.
 8. **A separate setting for Thinking-row tips.** One Feature Tips switch is easier to find, and the per-tip x covers "not this one".
+9. **A built-in damper in this release:** stop showing tips to a user after N turns in a day (for example 20), or once they have seen each tip once. Not in this release, so #39769 ships as built. A daily cap adds per-user daily state to the tips state file and a number to tune, and there is no data yet to tune it on. "Seen each tip once" would end the tips for most users within their first day, which takes away the reach that "Why on by default" argues for. This is the planned follow-up, tied to Open question 1: when that threshold is crossed, add a cap of at most N `shown` per user per day.
 
 ## Open questions
 
-1. **Is one tip per turn too often for a heavy user?** Decided for the first release: yes, one per turn. Revisit with a cap per day or a lower rate after the first week if the group dismiss rate is high.
+1. **Is one tip per turn too often for a heavy user?** Decided for the first release: one per turn. Revisit when, over the first two weeks after release, more than 30% of exploratory `shown` events end in a `dismiss` (`dismiss` count over `shown` count, `source=exploratory`, all tips together). Then add the per-day cap from Alternatives 9. The 30% and two weeks are a starting line chosen in review, not measured from data.
 2. **Should chips be clickable?** Clicking `/side` could fill the composer and `Ctrl+K` could open the Command Bar, which would give an `ack` signal. It also makes the row a control with focus and keyboard rules to design. Not in this change.
 3. **What is the use signal per control?** Judging adoption needs a content-free "used" event for each control and a link from its tip to that event. Not in this change.
