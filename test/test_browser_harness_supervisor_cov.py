@@ -789,9 +789,10 @@ async def test_the_port_launcher_clears_a_stale_port_file_and_reads_the_new_one(
 
 
 @pytest.mark.asyncio
-async def test_the_port_launcher_gives_up_when_chromium_exits_first(
+async def test_the_port_launcher_reports_the_exit_code_when_chromium_exits_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopped: list[Any]
 ) -> None:
+    """A browser that died is told apart from one that is only slow to open its port."""
     sup = HarnessSupervisor(tmp_path, base_env={})
     exited = _Proc(returncode=21)
 
@@ -803,8 +804,9 @@ async def test_the_port_launcher_gives_up_when_chromium_exits_first(
 
     sup._spawn = _spawn  # type: ignore[method-assign]
     monkeypatch.setattr(supervisor, "_devtools_ws_url", _no_url)
-    with pytest.raises(supervisor.BrowserUnavailable, match="did not open its debugging port"):
+    with pytest.raises(supervisor.BrowserUnavailable) as raised:
         await sup._launch_chromium_port(["chromium"], tmp_path)
+    assert str(raised.value) == "Kiro's Chromium exited with code 21"
     assert stopped == [exited]
 
 
