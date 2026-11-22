@@ -191,7 +191,7 @@ provider.
 | `strands` | Strands | Runs the Strands CLI (`strands --agent <project> --acp-server`) on Kiro Crew's bundled Python project, or on yours from `agent.strands_project`; Kiro Crew adds a gate that asks before every tool call. Provider keys come from `agent.strands_env`. |
 | `claude` | Claude Code | Uses the public `claude-agent-acp` adapter. |
 | `codex` | Codex | Uses the Codex ACP adapter. |
-| `opencode` | OpenCode | Uses OpenCode's native ACP server. |
+| `opencode` | OpenCode | Uses OpenCode's native ACP server. On opencode 1.x the model is not offered OpenCode's own sub-agents (its `task` tool), because 1.x cannot route their tool approvals to Kiro Crew; Kiro Crew's own sub-agents still work. |
 | `mimocode` | MiMo Code | Uses MiMo Code's native ACP server (`mimo acp`, tested on the 0.1 line). Requires a working sandbox backend; a session is refused when `MIMOCODE_HOME` is set. |
 | `pi` | Pi | Uses `pi-acp` and its Pi gate extension. |
 | `goose` | goose | Uses goose's native ACP server. |
