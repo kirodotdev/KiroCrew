@@ -1038,7 +1038,9 @@ class ScriptHookStore:
         # Only a hook that passes its matcher changes the status bookkeeping
         # (last_run / run_count / last_status). A fire that matched nothing has
         # nothing to record, so it must not rewrite hooks.json: that rewrite ran
-        # on EVERY tool call and turn, hook or not.
+        # on EVERY tool call and turn, hook or not. An agent spec hook
+        # (``extra_hooks``) is never written to the file, so only a stored hook
+        # that matched marks the fire for a write.
         touched = False
         for hook in [*self._hooks.values(), *extra_hooks]:
             if not hook.enabled or hook.event != event:
@@ -1064,7 +1066,8 @@ class ScriptHookStore:
                     )
                     if not matched:
                         continue
-            touched = True
+            if id(hook) not in extra_ids:
+                touched = True
             # Skills-only hooks: inject skill-loading directive without subprocess.
             # Only meaningful for UserPromptSubmit/AgentSpawn — on tool hooks or Stop
             # the synthesized "Load skills:" text has no consumer.
