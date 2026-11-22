@@ -21,10 +21,12 @@ import re
 from typing import TYPE_CHECKING, NamedTuple
 
 from .call_views import once_per_call
-from .shell_heredoc_lines import READ_CHARS, HeredocReader
+from .shell_heredoc_lines import carry_docs, heredoc_stream
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from .shell_heredoc_lines import HereDocSpan
 
 
 #: Any one of these in a view means it is not a single plain command: it can
@@ -358,8 +360,16 @@ _SHELL_LINE_CONTINUATION_RE = re.compile(r"\\\r?\n")
 
 
 def _shell_join_continuations(text: str) -> str:
-    """Collapse bash ``\\<newline>`` line continuations, as the shell does pre-lex."""
-    return _SHELL_LINE_CONTINUATION_RE.sub("", text)
+    """Collapse bash ``\\<newline>`` line continuations, as the shell does pre-lex.
+
+    The heredoc bodies of the joined text are the ones found on *text*
+    (:func:`shell_heredoc_lines.carry_docs`).
+    """
+    joined = _SHELL_LINE_CONTINUATION_RE.sub("", text)
+    if "<<" in text and joined != text:
+        cuts = [m.span() for m in _SHELL_LINE_CONTINUATION_RE.finditer(text)]
+        carry_docs(text, joined, cuts)
+    return joined
 
 
 @once_per_call()
@@ -404,12 +414,17 @@ def _fold_line_continuations(text: str) -> str:
 
     An unterminated quote simply runs to the end in that state; the scan never
     raises, because it feeds the permission gate.
+
+    The heredoc bodies of the folded text are the ones found on *text*
+    (:func:`shell_heredoc_lines.carry_docs`): bash folds nothing in a body whose tag
+    is quoted, so a fold there must not make a closing line.
     """
     out: list[str] = []
     i = 0
     n = len(text)
     # None = unquoted, "'" = single, '"' = double, "$'" = ANSI-C.
     quote: str | None = None
+    cuts: list[tuple[int, int]] = []  # the continuations removed, for carry_docs
     while i < n:
         ch = text[i]
         if quote is None:
@@ -426,6 +441,7 @@ def _fold_line_continuations(text: str) -> str:
             if ch == "\\" and i + 1 < n:
                 folded = _continuation_width(text, i)
                 if folded:
+                    cuts.append((i, i + folded))
                     i += folded
                     continue
                 # The backslash escapes the next character, so that character
@@ -440,6 +456,7 @@ def _fold_line_continuations(text: str) -> str:
             if ch == "\\" and i + 1 < n:
                 folded = _continuation_width(text, i)
                 if folded:
+                    cuts.append((i, i + folded))
                     i += folded
                     continue
                 out.append(text[i : i + 2])
@@ -468,7 +485,10 @@ def _fold_line_continuations(text: str) -> str:
             quote = None
         out.append(ch)
         i += 1
-    return "".join(out)
+    folded_text = "".join(out)
+    if cuts and "<<" in text:
+        carry_docs(text, folded_text, cuts)
+    return folded_text
 
 
 def _continuation_width(text: str, i: int) -> int:
@@ -565,6 +585,7 @@ def _iter_shell_chars(
     start: int = 0,
     *,
     bodies: "list[tuple[int, int]] | None" = None,
+    plain: bool = False,
 ) -> "Iterator[_ShellChar]":
     """THE shell quote/escape state machine. Every reading of shell quoting walks
     through this one generator, so no two readings disagree on where a quote ends.
@@ -578,28 +599,35 @@ def _iter_shell_chars(
     separator or a ``git`` word.
 
     A ``<<`` outside quotes, a comment and an arithmetic span opens a here-document
-    body on the next line, up to its closing line (:class:`HeredocReader`), as bash
-    reads it, inside a ``$(...)`` or a backtick too. The body's steps are yielded as
+    body on the next line, up to its closing line (``shell_heredoc_lines.heredoc_docs``),
+    as bash reads it, inside a ``$(...)`` or a backtick too. The body's steps are yielded as
     usual, so a shell fed the body is still read, and the walk starts unquoted where
     the closing line ends: a quote in the body does not reach the text after it.
 
     *state* and *ansi* resume a walk, so a quoted word spanning whitespace is read
     without desyncing; *start* resumes it at that offset of *text* without copying
     the rest. *bodies*, when given, receives ``(start, end)`` of each closed body.
+    *plain* reads quotes only, for the heredoc reader's own walk.
     """
     i = start
     n = len(text)
     dollar_run = 0  # consecutive LITERAL ``$`` immediately before this char
-    docs = HeredocReader(text, bodies)
-    ends = docs.ends
+    docs: "list[HereDocSpan]" = []
+    reader = None if plain else heredoc_stream(text, start, state, ansi, docs)
+    reach, end, told = start - 1, 0, len(docs)
+    if bodies is not None:
+        bodies += [(doc.start, doc.tail) for doc in docs if doc.tail < n]
     while i < n:
-        while ends and i >= ends[0]:
+        while reader is not None and reach < i:  # the reader stays just ahead of the walk
+            reach = next(reader, n)
+            reader = None if reach >= n else reader
+            if bodies is not None:
+                bodies += [(doc.start, doc.tail) for doc in docs[told:] if doc.tail < n]
+                told = len(docs)
+        while end < len(docs) and i >= docs[end].tail:
             state, ansi, dollar_run = 0, False, 0
-            ends.pop(0)
+            end += 1
         ch = text[i]
-        if state == 0 and not ends and ch in READ_CHARS:
-            docs.read(i, ch)
-            ends = docs.ends
         if ch == "\\" and (state != 1 or ansi):
             dollar_run = 0  # an escaped ``$`` is data and introduces nothing
             if i + 1 >= n:

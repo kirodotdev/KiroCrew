@@ -1119,9 +1119,14 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   so `shell_normalizer_walk.py` and every reader above it can import it.
 - `shell_heredoc_lines.py` — heredoc lines as bash reads them: the tag after a `<<`
   outside quotes (`heredoc_opener`, `heredoc_tag`), and each body's closing line
-  (`heredoc_closing_line`, `heredoc_bodies`). `HeredocReader` decides which `<<` the
-  walk opens a body for: not a `<<<` here-string, not one in a `#` comment, and not a
-  shift inside `$((…))` or `((…))`, whose nesting it carries across lines. bash
+  (`heredoc_closing_line`). `heredoc_docs` decides, once for every reader, which `<<`
+  opens a body: a live one that is not a `<<<` here-string, not in a `#` comment, not
+  inside a `${…}` or `$[…]` expansion, and not a shift inside `$((…))` or `((…))`,
+  whose nesting it carries across lines. The quote walk reads the same decision
+  lazily (`heredoc_stream`), a step ahead of itself, so a line that many walks
+  resume over stays linear. Bodies of a text that `_fold_line_continuations` or
+  `_shell_join_continuations` folded are found on the text before folding
+  (`carry_docs`), so a fold inside a quoted-tag body cannot make a closing line. bash
   compares a body's lines with its tag case-sensitively, and the floors read a
   lower-cased copy, so `is_denied` keeps the command as submitted for its call
   (`keep_submitted_case`, in the call memo) and the reader reads the tag and the
@@ -1129,8 +1134,8 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   submitted case it cannot find, such as a payload with its escapes removed, a `<<`
   whose tag the command spells in two cases opens no body (`case_varies`). It reads
   raw lines only and never looks for the close of a `$(…)` or a backtick, so the quote walk
-  (`shell_normalizer_walk._iter_shell_chars`) calls it and `shell_commands.read_commands`
-  reads its tags and closing lines from it. A `$'…'` tag is decoded with
+  (`shell_normalizer_walk._iter_shell_chars`) calls it, and `shell_commands.read_commands`
+  takes each body's start and end from it and keeps no opener logic of its own. A `$'…'` tag is decoded with
   `shell_normalizer_escapes._decode_ansi_c_body` before lines are compared with it, as
   bash decodes it (`$'e\x6ff'` closes on `eof`). `heredoc_body_spans(text)` lists the
   bodies a walk of the text meets. At import time it reads only

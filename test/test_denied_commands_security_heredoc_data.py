@@ -368,6 +368,23 @@ def test_heredoc_pieces_walk_the_text_once(line, cuts):
         )
     ]
     + [
+        # A ``<<`` inside a ``$[…]`` arithmetic or a ``${…}`` parameter expansion is
+        # data, not a heredoc opener: the span holds it, so the quote after the span
+        # pairs and the command that follows runs. Both readers track these spans.
+        (f"echo $[1<<X]\n'\nX]\n' ; {command}\n# '", rule)
+        for command, rule in (
+            (_RESTART, "self-protection-restart"),
+            (_SSH, "sandbox-escape-ssh-self"),
+        )
+    ]
+    + [
+        (f"echo ${{x:0:1<<X}}\n'\nX]\n' ; {command}\n# '", rule)
+        for command, rule in (
+            (_RESTART, "self-protection-restart"),
+            (_SSH, "sandbox-escape-ssh-self"),
+        )
+    ]
+    + [
         (f": # <<X\necho '\nX\n' ; {_RESTART} ; echo \\'", "self-protection-restart"),
         (f"((\nx = 1 << 2\n))\n: '\n2\n'\n{_RESTART}\n# '", "self-protection-restart"),
     ],

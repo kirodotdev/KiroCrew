@@ -1399,6 +1399,11 @@ def _heredoc_data_view(text_lower: str) -> str:
         for doc in cmd.heredocs:
             if not doc.quoted and any(ch in doc.body for ch in "$`\\"):
                 continue
+            if doc.tail <= doc.end:
+                # No closing line: on this lower-cased text, whether the body closes
+                # can turn on a letter case the lowered copy dropped, so it stays
+                # commands.
+                continue
             if python and not _python_body_is_data(doc.body):
                 continue
             blank = "".join(ch if ch == "\n" else " " for ch in doc.body)

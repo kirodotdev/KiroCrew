@@ -167,6 +167,8 @@ class TestReader:
             f"cat <<A <<-'B'\n'\nA\n\t\"\n\tB\nx=$((1<<2))\n{HOME}", id="two-bodies-then-shift"
         ),
         pytest.param(f"x=$[1<<2]\ny=$((1<<2))\n{HOME}", id="old-arith-is-no-heredoc"),
+        # bash reads an arithmetic span over its lines: the ``<<`` is still a shift
+        pytest.param(f"x=$((1<<2\n))\n{HOME}", id="shift-in-multiline-arith"),
         pytest.param(f'echo "$(printf ok)"; x=$((1<<2))\n{HOME}', id="quoted-subst-then-shift"),
     ],
 )
@@ -225,8 +227,6 @@ def test_the_floor_refuses(cmd):
         ),
         # a ``$((`` that is not arithmetic: its heredoc is real
         pytest.param(f"n=$((cat <<'EOF'\n{HOME}\nEOF\n) | wc -l)", id="failed-arith-subst-data"),
-        # main's reading: a span that closes on a later line is not followed
-        pytest.param(f"x=$((1<<2\n))\n{HOME}", id="shift-in-multiline-arith"),
         # main's reading: a ``((`` that closes as subshells keeps its heredoc
         pytest.param(f"((cat <<'EOF'\n{HOME}\nEOF\n); echo z)", id="heredoc-in-failed-arith"),
         pytest.param(f"cat <<'EOF' | grep \"$(true)\"\n{HOME}\nEOF", id="pipe-grep-quoted-subst"),
@@ -298,7 +298,7 @@ def test_the_arithmetic_line_reading_stays_linear(monkeypatch, cmd):
 
 
 def test_releasing_arithmetic_shifts_does_linear_identity_work(monkeypatch):
-    from kiro_crew.security import shell_commands
+    from kiro_crew.security import shell_heredoc_lines as shell_commands
 
     work = 0
 
@@ -325,9 +325,10 @@ def test_releasing_arithmetic_shifts_does_linear_identity_work(monkeypatch):
         assert [word.raw for word in commands[-1].argv] == ["rm", "-f", "scratch"]
         assert all(not command.heredocs for command in commands)
 
-    # Count either identity comparisons or ID lookups, not unrelated reader work.
-    assert 0 < counts[0] <= 2 * 2000, counts
-    assert 0 < counts[1] <= 2 * 4000, counts
+    # Count ID lookups, not unrelated reader work. Outside a gate call, read_commands
+    # and its quote walk each ask the heredoc reader once, at two lookups a shift.
+    assert 0 < counts[0] <= 4 * 2000, counts
+    assert 0 < counts[1] <= 4 * 4000, counts
     assert counts[1] <= 2 * counts[0], counts
 
 
