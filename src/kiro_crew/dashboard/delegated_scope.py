@@ -28,9 +28,16 @@ VIA_APP_CLAIM = "via_app"
 REFUSED_CODE = "delegated_credential_refused"
 
 
-#: Allowed routes that reach an app's backend by ``{name}``: a delegated token may use
-#: only the app it was minted for, never another installed app.
-_OWN_APP_ONLY = frozenset({"/apps/{name}/api/{path}", "/app-frame-fetch/{name}/{path}"})
+#: Allowed routes that reach an app's backend (or its frame page, which carries the
+#: frame capability) by ``{name}``: a delegated token may use only the app it was minted
+#: for, never another installed app.
+_OWN_APP_ONLY = frozenset(
+    {
+        "/apps/{name}/api/{path}",
+        "/app-frame-fetch/{name}/{path}",
+        "/app-frame/{name}/{point}/{point_id}/{frame_id}/{token}",
+    }
+)
 
 
 def route_tag(method: str, canonical: str) -> str | None:

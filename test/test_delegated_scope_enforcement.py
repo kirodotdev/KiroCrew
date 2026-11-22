@@ -204,20 +204,27 @@ class _Match(dict):
 
 
 class _FakeReq(dict):
-    method = "POST"
-
     def __init__(self, canonical: str, name: str) -> None:
         super().__init__(auth_token="t")
+        self.method = "GET" if canonical.startswith("/app-frame/") else "POST"
         self.match_info = _Match(canonical, name)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canonical", ["/apps/{name}/api/{path}", "/app-frame-fetch/{name}/{path}"])
-async def test_enforce_delegated_allows_only_the_tokens_own_app_on_both_proxy_routes(
+@pytest.mark.parametrize(
+    "canonical",
+    [
+        "/apps/{name}/api/{path}",
+        "/app-frame-fetch/{name}/{path}",
+        "/app-frame/{name}/{point}/{point_id}/{frame_id}/{token}",
+    ],
+)
+async def test_enforce_delegated_allows_only_the_tokens_own_app_on_the_app_routes(
     granted, sel_rows, monkeypatch, canonical
 ):
-    # /app-frame-fetch/ skips token auth today (its capability is the credential), so the
-    # scope check is driven directly: it must hold if that route ever sees a delegated token.
+    # /app-frame/ and /app-frame-fetch/ skip token auth today (the path token or the
+    # capability is the credential), so the scope check is driven directly: it must hold
+    # if either route ever sees a delegated token.
     from kiro_crew.dashboard import token_auth_tokens
     from kiro_crew.dashboard.delegated_scope import enforce_delegated
 
