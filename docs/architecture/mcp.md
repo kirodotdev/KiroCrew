@@ -1509,17 +1509,28 @@ only a **Remove** button that takes the mark off. A row's **Details** shows
 the launch in the gateway's display-safe form (argv, env key names), each
 distinct command line once, with the approved launch beside the new one for a
 changed command. The changed arguments are marked in each column and repeated
-in no line above them; each column lists only the env keys that were added,
-removed or changed, and those keys are said once above the columns. A launch
-whose command is new on its side also lists and marks its own keys
-(`unmatchedKeys`), unless a launch the other side alone runs had the same
-value, so a key it gained is shown even when another launch already set it.
-When a launch of a command both sides run changed as well
-(`wholeLaunchChanges`), per-key sets cannot prove which keys moved between
-those launches (two of them swapping a loader preload), so the columns hide no
-key and the changed launches are drawn whole behind **Show full command**. A key the
-same on both sides, such as a PATH that did not change, is not listed. An env
-key set on both sides with a new value is said there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
+in no line above them. The gateway orders each side by its own hash, so
+launches are never paired by list position. A column draws one merged key list
+only where that cannot hide a change (`mergedEnvRule`): with one launch per
+side it lists that launch's added, removed and changed keys (a plain version
+bump lists none), unless a value is redacted or cut, since equal displays
+could then hide a change; when both sides run the same number of launches and every
+launch sets the same env, compared as sets, it lists none. A value the gateway
+hid, redacted or cut stands for many values, so a launch carrying one never
+counts as the same env. A change in launch
+count never counts as the same env; a replaced command with the same count and
+env does, as in the one-launch case, because no env key changed. In every other case each column draws every launch
+with its own env keys under its command, so a key that moved from one launch
+to another shows under a different command. Added and removed key names are
+marked, and said once above the columns. In the per-launch view a launch also
+marks a key (`markedKeysPerLaunch`): a pair on a launch the other side does
+not run whole, when the pair is not set on every launch of both sides. That
+marks a key a launch gained and a key that may have moved to another launch,
+and leaves a PATH that every launch sets unmarked. It is counted, never
+paired, so list order cannot change it. When a launch of a command both sides run changed as well
+(`wholeLaunchChanges`), the changed launches are also drawn whole behind
+**Show full command**. An env key set on both sides with a new value is said
+there too: for a value the gateway shows in clear (PATH, `LD_*`, a `${VAR}`
 reference) the list entries added and removed, and otherwise only its key
 (`envValueChanges`). When both sides run the same commands, the summary is per
 launch (`mcpLaunchDiff.launchChanges`): each new launch is paired with the
