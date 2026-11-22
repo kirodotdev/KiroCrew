@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import web
@@ -24,6 +25,7 @@ from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
     prefetch_cron_dismissed,
+    read_cron_tab_rows,
     restore_cron_turn_timeout,
     stored_cron_folder,
 )
@@ -53,6 +55,38 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from ._shared import guard_owner_surface_routes, read_bounded_json
 
 
+async def _run_target_missing(state: DashboardState, job_id: str) -> web.Response:
+    """The 404 for a run of a missing job, naming its last run when history kept one.
+
+    A one-shot is removed after it runs but keeps its run history, so a trigger
+    after the run can say the job ran rather than that it never existed.
+    """
+    # Local: a module-level name here would be served by the ``cron`` facade.
+    from kiro_crew.cron_trigger import RAN_AND_REMOVED_CODE
+
+    try:
+        rows, _total = await state.crons.get_history().get_job_history(job_id, 0, 1)
+    except ValueError:
+        rows = []
+    started = rows[0].get("started_at") if rows else None
+    when = ""
+    if isinstance(started, (int, float)) and not isinstance(started, bool) and started > 0:
+        try:
+            when = datetime.fromtimestamp(started, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (OverflowError, OSError, ValueError):
+            when = ""
+    if not when:
+        return web.json_response({"error": "job not found", "code": "job_not_found"}, status=404)
+    return web.json_response(
+        {
+            "error": f"job not found: it already ran at {when} and was removed",
+            "code": RAN_AND_REMOVED_CODE,
+            "last_run_at": started,
+        },
+        status=404,
+    )
+
+
 async def api_cron_run(request: web.Request) -> web.Response:
     """POST /api/crons/{id}/run — trigger immediate execution."""
     if request.get("app") == "":
@@ -75,7 +109,7 @@ async def api_cron_run(request: web.Request) -> web.Response:
     # not blocked.
     job = await state.crons.get_job_async(job_id)
     if not job:
-        return web.json_response({"error": "job not found"}, status=404)
+        return await _run_target_missing(state, job_id)
     # trigger_run is await-free, so although the lookup above awaits and two
     # concurrent requests can both reach it, only one passes its guard.
     if not state.crons.trigger_run(job_id):
@@ -140,10 +174,10 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     jobs = state.crons.list_jobs(include_disabled=True)
     job = next((j for j in jobs if j.id == job_id), None)
     if job:
-        history = (
-            await asyncio.to_thread(state.conversation_log.read_messages, f"cron:{job.id}")
+        tab = (
+            await asyncio.to_thread(read_cron_tab_rows, state.conversation_log, f"cron:{job.id}")
             if state.conversation_log
-            else []
+            else None
         )
         # Re-surfacing a stored result, not delivering a fresh run: the prompt
         # that produced it is not recoverable from live config -- see
@@ -152,7 +186,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             state,
             job,
             job.last_result or "",
-            history=history,
+            history=tab,
             dismissed=await prefetch_cron_dismissed(state, job.id),
             stored_folder=await stored_cron_folder(state, job.id),
             include_prompt=False,
@@ -161,10 +195,10 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     else:
         # Job deleted (one-shot with delete_after_run). Create slot from history or notification.
         session_key = f"cron:{job_id}"
-        history = (
-            await asyncio.to_thread(state.conversation_log.read_messages, session_key)
+        history, hidden = (
+            await asyncio.to_thread(read_cron_tab_rows, state.conversation_log, session_key)
             if state.conversation_log
-            else []
+            else ([], (0, 0))
         )
         if history:
             # Read before the mint, so the folder is on the tab before any await
@@ -183,7 +217,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 )
 
                 bind_transcript(state, slot)
-                hydrate_slot_from_history(slot, history)
+                hydrate_slot_from_history(slot, history, hidden)
                 # Mark dismissed-UNHYDRATED before the off-loop read: the slot is
                 # now bound + dirty with an empty in-memory set, and a periodic
                 # flush during the await would otherwise serialize [] over the
@@ -412,10 +446,11 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
     app = _app_caller(request)
     if app:
         # An app sees only the runs of jobs it owns, judged by the same
-        # ``created_by`` stamp ``_refuse_foreign_app_job`` reads. The filter
-        # runs before pagination so ``total`` counts the app's own runs; the
-        # index is capped by ``cron_max_index_records``, so the full read is
-        # bounded. Function-local import for the reason ``api_crons`` gives.
+        # ``created_by`` stamp ``_refuse_foreign_app_job`` reads. The store
+        # filters before pagination so ``total`` counts the app's own runs; the
+        # read is bounded because each job file is capped by
+        # ``cron_max_records_per_job`` and the index by ``cron_max_index_records``.
+        # Function-local import for the reason ``api_crons`` gives.
         from kiro_crew.apps.cron_sdk import app_owner_name
 
         owned = {
@@ -423,12 +458,9 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
             for j in state.crons.list_jobs(include_disabled=True)
             if app_owner_name(j.created_by) == app
         }
-        rows, _ = await state.crons.get_history().get_all_history(
-            job_id=job_id, limit=sys.maxsize, offset=0
+        runs, total = await state.crons.get_history().get_all_history(
+            job_ids=owned & {job_id} if job_id else owned, limit=limit, offset=offset
         )
-        rows = [row for row in rows if row.get("job_id") in owned]
-        total = len(rows)
-        runs = rows[offset : offset + limit]
         # Record the ownership scoping decision: this branch applies an
         # access-control filter to an app token's read, and token-auth events
         # log only authentication while dashboard GET auditing is excluded, so
@@ -437,7 +469,7 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
         _audit_app_cron(app, "crons.history_all", "allowed", f"rows={total}")
     else:
         runs, total = await state.crons.get_history().get_all_history(
-            job_id=job_id, limit=limit, offset=offset
+            job_ids=[job_id] if job_id else None, limit=limit, offset=offset
         )
     # Enrich with job_name
     jobs_by_id = {j.id: j for j in state.crons.list_jobs(include_disabled=True)}

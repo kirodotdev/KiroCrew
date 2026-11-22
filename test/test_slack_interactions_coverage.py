@@ -220,7 +220,7 @@ class TestAckButton:
         assert _mock_aiohttp.post.await_args.args[0] == "https://hooks.slack.com/x"
         body = _mock_aiohttp.post.await_args.kwargs["json"]
         assert body["replace_original"] is True
-        assert body["text"] == "Acknowledged"
+        assert body["text"] == "✅ Acknowledged"
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -233,7 +233,7 @@ class TestAckButton:
         async with slack_wire(monkeypatch) as wire:
             orch.slack = wire.client
             await ix.ack_button(_payload(response_url="https://hooks.slack.com/x"), "C1", "m1")
-        assert _updates(wire) == [("C1", "m1", "Acknowledged")]
+        assert _updates(wire) == [("C1", "m1", "✅ Acknowledged")]
 
     @pytest.mark.asyncio
     async def test_falls_back_when_response_url_raises(
@@ -244,7 +244,7 @@ class TestAckButton:
             orch.slack = wire.client
             await ix.ack_button(_payload(response_url="https://hooks.slack.com/x"), "C1", "m1")
         _mock_aiohttp.post.assert_awaited_once()
-        assert _updates(wire) == [("C1", "m1", "Acknowledged")]
+        assert _updates(wire) == [("C1", "m1", "✅ Acknowledged")]
 
     @pytest.mark.asyncio
     async def test_strips_action_blocks_and_appends_ack_context(self, orch: MagicMock) -> None:
@@ -260,7 +260,7 @@ class TestAckButton:
         await ix.ack_button(payload, "C1", "m1")
         blocks = orch.slack.update_message.await_args.kwargs["blocks"]
         assert all(b["type"] != "actions" for b in blocks)
-        assert blocks[-1]["elements"][0]["text"] == "Acknowledged"
+        assert blocks[-1]["elements"][0]["text"] == "✅ Acknowledged"
 
     @pytest.mark.asyncio
     async def test_truncates_oversized_section_text(self, orch: MagicMock) -> None:
@@ -1083,7 +1083,7 @@ class TestAgentSelect:
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_agent_select(payload, action, "C1", "m1", "U1")
         _mock_aiohttp.post.assert_awaited_once()
-        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "Reset to default agent."
+        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "🔄 Reset to default agent."
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1098,7 +1098,7 @@ class TestAgentSelect:
             orch.slack = wire.client
             await ix._handle_agent_select(payload, action, "C1", "m1", "U1")
         _mock_aiohttp.post.assert_awaited_once()
-        assert _updates(wire) == [("C1", "m1", "Reset to default agent.")]
+        assert _updates(wire) == [("C1", "m1", "🔄 Reset to default agent.")]
 
 
 class TestUsersSelect:
@@ -1335,7 +1335,7 @@ class TestSessionNew:
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_session_new(payload, {"action_id": "mc_session_new"}, "C1", "m1", "U1")
         assert "New session started" in orch.slack.post_message.await_args.args[1]
-        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "New session created."
+        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "✨ New session created."
         assert _audit_ops(audit, "slack.session_new") == [("allowed", "C1")]
 
     @pytest.mark.asyncio
@@ -1417,7 +1417,7 @@ class TestResumeChoice:
         )
         resume_orch.slack.post_message.assert_any_await(
             "C5",
-            "*My session*\nSession resumed. Continue the conversation in this thread.",
+            "🧵 *My session*\nSession resumed. Continue the conversation in this thread.",
         )
         resume_orch.sessions.set_slack_link.assert_called_once_with("dashboard_s1", "ts1", "C5")
         assert _audit_ops(audit, "slack.session_resume") == [("allowed", "dashboard_s1")]
@@ -1658,7 +1658,7 @@ class TestStopConfirm:
         stop_orch.sessions.stop_turn = AsyncMock(side_effect=stop_turn)
         payload = _payload(message={"ts": "m1", "blocks": [], "thread_ts": "t1"})
         await ix._handle_stop_confirm(payload, "C1", "m1", "U1")
-        stop_orch.slack.post_message.assert_awaited_once_with("C1", "Execution stopped.", "t1")
+        stop_orch.slack.post_message.assert_awaited_once_with("C1", "⏹ Execution stopped.", "t1")
         assert _stops(audit) == [("t1", "soft")]
 
     @pytest.mark.asyncio
@@ -1687,7 +1687,7 @@ class TestStopConfirm:
         stop_orch.sessions.stop_turn = AsyncMock(side_effect=stop_turn)
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_stop_confirm(payload, "C1", "m1", "U1")
-        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "[Stopped]"
+        assert _mock_aiohttp.post.await_args.kwargs["json"]["text"] == "⏹ [Stopped]"
         assert _stops(audit) == [("m1", "soft")]
 
     @pytest.mark.asyncio
@@ -1707,7 +1707,7 @@ class TestStopConfirm:
         await ix._handle_stop_confirm(payload, "C1", "m1", "U1")
         _mock_aiohttp.post.assert_awaited_once()
         # The thread notice still lands after the ephemeral update failed.
-        stop_orch.slack.post_message.assert_awaited_once_with("C1", "Execution stopped.", "m1")
+        stop_orch.slack.post_message.assert_awaited_once_with("C1", "⏹ Execution stopped.", "m1")
         assert _stops(audit) == [("m1", "soft")]
 
     @pytest.mark.asyncio
@@ -1770,7 +1770,7 @@ class TestStopConfirm:
         stop_orch.sessions.stop_turn.assert_not_awaited()
         # The button is still visually acked so it cannot be re-clicked forever.
         stop_orch.slack.update_message.assert_awaited_once()
-        assert stop_orch.slack.update_message.await_args.kwargs["text"] == "Acknowledged"
+        assert stop_orch.slack.update_message.await_args.kwargs["text"] == "✅ Acknowledged"
         assert _sel_ops(sel_log) == [("slack.stop_confirm", "denied")]
         stop_orch.slack.post_message.assert_not_awaited()
 
@@ -1783,7 +1783,7 @@ class TestStopConfirm:
         async with slack_wire(monkeypatch) as wire:
             o.slack = wire.client
             await ix._handle_stop_confirm(_payload(), "C1", "m1", "U1")
-        assert _updates(wire) == [("C1", "m1", "Acknowledged")]
+        assert _updates(wire) == [("C1", "m1", "✅ Acknowledged")]
         assert wire.posts() == []
 
 

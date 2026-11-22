@@ -798,7 +798,7 @@ def _mount_work_ledger(config: dict, grants: tuple[str, ...]) -> None:
     (owner decision in docs/decisions, case N2): a switch-off of ``kirocrew-work``
     on the default template (its entry's ``disabled`` or ``disabledTools``, an
     ``excludedTools`` entry naming it) is not carried over, as
-    :func:`_mount_team_lead_dispatch` and the Ultra Mode worker do not carry it.
+    :func:`_mount_team_lead_dispatch` and the conductor-mode worker do not carry it.
     """
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):

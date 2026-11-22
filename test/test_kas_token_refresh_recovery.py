@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp import kas_host_auth, runtime_session_load, session_handle_mcp
 from kiro_crew.acp.kas_host_auth import HostAuthCallbackError, answer_get_access_token
@@ -242,8 +243,7 @@ _PARAMS = {
 
 
 def _governance_off_handle() -> AcpSessionHandle:
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
-    handle._session_id = _SID
+    handle = bare_session_handle(_SID)
     handle._mcp_report = McpSessionReport()
     handle._mcp_report.begin_session([])
     handle._queue = asyncio.Queue()
@@ -279,6 +279,32 @@ class TestAFailClosedStart:
         assert "Sign in" in str(raised.value)
         assert "governance" not in str(raised.value).lower()
         assert acp_error_is_transient(raised.value) is False
+
+    @pytest.mark.asyncio
+    async def test_a_refused_sign_in_names_this_runtimes_route(
+        self, runtime, data_home, monkeypatch
+    ):
+        """The prompt names the route THIS runtime was spawned on, even when another
+        chat's spawn has since moved the process-wide one."""
+        from kiro_crew.acp import kas_route
+        from kiro_crew.acp.harness.kas import KasHarness
+        from kiro_crew.agent_sdk import host_auth
+
+        own = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI)
+        harness = KasHarness()
+        harness.spawn_route = own
+        runtime._harness_resolved = harness
+        monkeypatch.setattr(
+            kas_route,
+            "_LAST_SPAWN_ROUTE",
+            kas_route.KasRoute(bundle=False, reason=kas_route.REASON_KIRO_CLI_LAUNCHER),
+        )
+        TokenStore(data_home).save(_token())
+        with _refresh(RefreshRejected("social refresh failed: HTTP 401")):
+            with pytest.raises(AcpAuthRequired) as raised:
+                await runtime._wait_managed_mcp(_governance_off_handle(), _PARAMS, _AGENT, 30.0, 0)
+        assert str(raised.value) == host_auth.signed_out_message("kas", route=own)
+        assert "kiro-cli login" not in str(raised.value)
 
     @pytest.mark.asyncio
     async def test_a_renewed_sign_in_keeps_the_retryable_error(self, runtime, data_home):

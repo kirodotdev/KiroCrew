@@ -244,7 +244,7 @@ logger = logging.getLogger(__name__)
 #: A pressed option is valid only while this chat still targets the session that
 #: rendered it. One constant serves both the pre-busy and post-rotation checks.
 _STALE_OPTIONS_REFUSAL = (
-    "These buttons belong to a conversation this chat has since moved away "
+    "🔘 These buttons belong to a conversation this chat has since moved away "
     "from, so your choice was NOT applied. Type it as a message instead."
 )
 
@@ -252,7 +252,7 @@ _STALE_OPTIONS_REFUSAL = (
 #: A busy-path queue or steer retains only bare text, dropping the provenance
 #: required to validate the choice when it later executes.
 _BUSY_OPTIONS_REFUSAL = (
-    "That conversation is busy with another turn, so your choice was NOT "
+    "🔘 That conversation is busy with another turn, so your choice was NOT "
     "applied. Type it as a message once the turn finishes."
 )
 
@@ -318,7 +318,7 @@ def _user_safe_failure_reason(exc: BaseException) -> str | None:
         return None
     if len(text) > _FAILURE_REASON_MAX_CHARS:
         text = text[: _FAILURE_REASON_MAX_CHARS - 1].rstrip() + "…"
-    return f"Warning: {text}"
+    return f"⚠️ {text}"
 
 
 #: ``/title`` ceiling. The dashboard sidebar row truncates well before this; the
@@ -709,11 +709,11 @@ class TelegramDispatcher:
                 new_session_key,
                 channel_type="Telegram",
             )
-            message = "New conversation started."
+            message = "✅ New conversation started."
             if left_resumed is not None:
-                message = "New conversation started — left the resumed session."
+                message = "✅ New conversation started — left the resumed session."
             if not saved:
-                message += "\nWarning: The new conversation could not be saved for restart."
+                message += "\n⚠️ The new conversation could not be saved for restart."
             await self._reply(chat_id, message, thread=reply_thread)
             return
         if cmd == "compact":
@@ -767,7 +767,7 @@ class TelegramDispatcher:
                 # `/temporary <message>`: the message is NOT processed.
                 await self._reply(
                     chat_id,
-                    "Privacy mode can't be changed while a dashboard session is "
+                    "🔒 Privacy mode can't be changed while a dashboard session is "
                     "resumed. Your message was NOT processed. Use /unlink or /new first.",
                     thread=reply_thread,
                 )
@@ -1231,7 +1231,7 @@ class TelegramDispatcher:
         if await self._session_restricted(titled_key):
             await self._reply(
                 chat_id,
-                "This conversation is private, so its name isn't saved.",
+                "🔒 This conversation is private, so its name isn't saved.",
                 thread=thread,
             )
             return
@@ -1249,9 +1249,9 @@ class TelegramDispatcher:
                 await asyncio.to_thread(self.conv_log.set_title, titled_key, title)
         except Exception:
             logger.warning("telegram /title: set_title failed", exc_info=True)
-            await self._reply(chat_id, "Warning: Couldn't rename this conversation.", thread=thread)
+            await self._reply(chat_id, "⚠️ Couldn't rename this conversation.", thread=thread)
             return
-        await self._reply(chat_id, f"Renamed to “{title}”.", thread=thread)
+        await self._reply(chat_id, f"✅ Renamed to “{title}”.", thread=thread)
 
     # dispatch/commands.py
     _handle_cron = _commands._handle_cron

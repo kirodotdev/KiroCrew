@@ -12,6 +12,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+import git_repo_templates
 import pytest
 from builtin_adoption_helpers import (
     NAME,
@@ -36,6 +37,8 @@ from kiro_crew.testing.ids import UNALLOCATABLE_PID
 pytestmark = [requires_git, pytest.mark.asyncio]
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+repo_templates = git_repo_templates.repo_templates  # the fixture, bound for this module
 
 
 class _HardKill(BaseException):
@@ -63,8 +66,8 @@ def audit(monkeypatch):
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch, audit):
-    w = build_world(tmp_path, monkeypatch)
+def world(tmp_path, monkeypatch, audit, repo_templates):
+    w = build_world(tmp_path, monkeypatch, templates=repo_templates)
     write_builtin_record()
     _invalidate_config_cache()
     return w
@@ -164,10 +167,10 @@ async def test_no_nav_is_recorded_for_a_record_from_another_repository(world):
 
 
 async def test_a_fresh_install_registers_the_built_in_then_adopts_like_an_upgrade(
-    tmp_path, monkeypatch, audit
+    tmp_path, monkeypatch, audit, repo_templates
 ):
     """Row 18: a host that never had the app gets the built-in, then the same move."""
-    world = build_world(tmp_path, monkeypatch)
+    world = build_world(tmp_path, monkeypatch, templates=repo_templates)
     _invalidate_config_cache()
     monkeypatch.setattr(manager, "discover_builtin_apps", lambda: [_shipped_definition(world)])
     manager.register_builtin_apps()
@@ -235,9 +238,9 @@ async def test_an_approved_set_narrower_than_the_pin_is_widening(world):
     ],
 )
 async def test_a_widening_manifest_is_refused_with_nothing_mutated(
-    tmp_path, monkeypatch, audit, overrides
+    tmp_path, monkeypatch, audit, overrides, repo_templates
 ):
-    build_world(tmp_path, monkeypatch, **overrides)
+    build_world(tmp_path, monkeypatch, templates=repo_templates, **overrides)
     write_builtin_record()
     home = manager.config_dir()
     await _stage()
@@ -513,9 +516,9 @@ async def test_an_overlay_owned_trust_key_blocks_then_adopts_once_removed(world)
     ],
 )
 async def test_a_deterministic_tree_refusal_is_never_retried(
-    tmp_path, monkeypatch, audit, overrides, code
+    tmp_path, monkeypatch, audit, overrides, code, repo_templates
 ):
-    world = build_world(tmp_path, monkeypatch, **overrides)
+    world = build_world(tmp_path, monkeypatch, templates=repo_templates, **overrides)
     write_builtin_record()
     assert await _stage() == {NAME: "blocked"}
     assert read_ledger(NAME).reason == code
@@ -956,13 +959,13 @@ def test_the_gateway_s_own_files_do_not_hold_the_swap(world):
 
 
 async def test_what_the_pinned_tree_ships_beside_the_manifest_does_not_hold_the_swap(
-    tmp_path, monkeypatch, audit
+    tmp_path, monkeypatch, audit, repo_templates
 ):
     """An app that renders ``agents/`` and ``prompts/`` from its own package beside
     ``app.json`` adopts when its pinned tree ships both: the swap replaces them, as
     an update does, and only what nothing ships holds it."""
     shipped = {"agents/deck.json": "{}", "prompts/deck.md": "pinned"}
-    build_world(tmp_path, monkeypatch, tree_files=shipped)
+    build_world(tmp_path, monkeypatch, tree_files=shipped, templates=repo_templates)
     write_builtin_record()
     _invalidate_config_cache()
     dest = manager.app_dir(NAME)

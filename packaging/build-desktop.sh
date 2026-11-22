@@ -48,6 +48,9 @@ cd "$ROOT"
 
 # The backend bytecode steps (bytecode_coverage_gate, precompile_macos_backend).
 . "$ROOT/packaging/desktop-bytecode.sh"
+# The electron-builder call and its transient-failure retry
+# (run_electron_builder_with_retry).
+. "$ROOT/packaging/desktop-electron-builder.sh"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 # Git Bash / MSYS on Windows reports MINGW64_NT-10.0-... / MSYS_NT-...;
@@ -431,80 +434,6 @@ rm_rf_resilient() {
   done
 }
 
-# Invoke electron-builder. Split into its own function purely so a test can
-# shadow it with a stub -- CSC_IDENTITY_AUTO_DISCOVERY=false disables macOS
-# codesign identity auto-discovery for local/CI builds.
-_eb_invoke() {
-  CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "$@"
-}
-
-# Run electron-builder (EB_ARGS as "$@"), retrying a bounded number of times
-# on two transient failure classes -- and still failing the build on anything
-# else, or once the retry budget is exhausted:
-#
-#   - macOS .DS_Store/ENOTEMPTY temp-dir race (electron-userland/electron-builder#6890):
-#     the universal build's lipo-merge stage removes dist/mac-universal-<arch>-temp
-#     dirs with a recursive fs.rm that has no retries of its own, and Desktop
-#     Services (Finder/Spotlight) can drop a fresh .DS_Store into one mid-removal.
-#   - transient network/TLS failures in electron-builder's OWN mid-build
-#     fetches: the AppImage and NSIS/Squirrel targets pull their own tooling
-#     through `got` AFTER the electron zip has already reported
-#     progress=100%. A dropped connection ("socket hang up"), a
-#     TLS-intercepted response ("self-signed certificate"), or an HTTP-level
-#     answer from the artifact CDN that is retryable rather than final
-#     ("Response code 504") aborts the whole build there. These are
-#     per-execution network events, not build errors -- the same commit
-#     passes on a plain re-run, and one matrix leg can fail while its
-#     siblings go green in the same attempt (#3088, #6795).
-#
-# Split out of the packaging step (rather than left inline) so the
-# retry/classification logic is testable in isolation, mirroring
-# rm_rf_resilient above: a test extracts this function's body, shadows
-# _eb_invoke with a stub that fails N times, and asserts the real retry/
-# classification logic here recovers (or correctly gives up).
-run_electron_builder_with_retry() {
-  local attempt=1 max_attempts=3 eb_log eb_transient eb_backoff
-  while : ; do
-    eb_log="$(mktemp "${TMPDIR:-/tmp}/kc-eb.XXXXXX")"
-    if _eb_invoke "$@" 2>&1 | tee "$eb_log"; then
-      rm -f "$eb_log"; return 0
-    fi
-    # Classify the failure before deciding: each transient class needs its
-    # own cleanup, and anything unrecognised must still abort on the first
-    # failure.
-    eb_transient=""
-    if grep -q "ENOTEMPTY" "$eb_log"; then
-      eb_transient="ds_store"
-    # Socket-level errno strings and HTTP-level statuses share ONE class
-    # because the class boundary here is cleanup, not protocol layer (see the
-    # header comment): both arise in the same `got` fetches, and both recover
-    # by simply re-fetching on the next attempt with nothing to sweep first.
-    # A 5xx is transient by definition and a 429 is a rate limit that clears;
-    # every OTHER 4xx (401/403/404/400) is a configuration or authorisation
-    # fault that would fail identically on all three attempts, so it stays
-    # unrecognised and still aborts on the first one.
-    elif grep -qE "socket hang up|self[- ]signed certificate|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND" "$eb_log" \
-      || grep -qE "Response code (429|5[0-9][0-9])" "$eb_log"; then
-      eb_transient="network"
-    fi
-    if [ -n "$eb_transient" ] && [ "$attempt" -lt "$max_attempts" ]; then
-      if [ "$eb_transient" = "ds_store" ]; then
-        echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
-        find dist -name .DS_Store -delete 2>/dev/null || true
-        rm -rf dist/*-temp 2>/dev/null || true
-        eb_backoff=2
-      else
-        echo "  ⚠ transient network/TLS/HTTP failure in an electron-builder fetch (attempt $attempt/$max_attempts); retrying…" >&2
-        eb_backoff=$((attempt * 10))
-      fi
-      rm -f "$eb_log"; attempt=$((attempt + 1)); sleep "$eb_backoff"; continue
-    fi
-    rm -f "$eb_log"
-    echo "❌ electron-builder failed (not a known transient class, or retries exhausted)." >&2
-    return 1
-  done
-}
-
 # --- 1. Frontend ------------------------------------------------------------
 if [ "${SKIP_FRONTEND:-0}" != "1" ]; then
   log "Building dashboard (npm)…"
@@ -608,6 +537,9 @@ build_backend() {
   # nothing to do with. The cloud transports go in unconditionally, then
   # the recogniser is attempted on its own. Codex remains opt-in and its media
   # packages load only when selected; a sealed bundle cannot pip-install later.
+  # A target without aiortc or PyAV wheels ships without Codex dictation instead
+  # of failing the build: the provider is experimental, and Settings reports the
+  # missing extra as `stt_codex_extra_missing`.
   #
   # `--only-binary pywhispercpp` (scoped to that one name, so kirocrew itself still
   # installs from this checkout) prevents a surprise CMake/C++ source build. Missing
@@ -617,10 +549,12 @@ build_backend() {
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
     "$ROOT[voice-aws]"
-  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
-    "$out/bin/python3.12" -m pip install --prefer-binary \
-    --no-warn-script-location --disable-pip-version-check \
-    "$ROOT[voice-codex]"
+  if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+      "$out/bin/python3.12" -m pip install --prefer-binary \
+      --no-warn-script-location --disable-pip-version-check \
+      "$ROOT[voice-codex]"; then
+    log "Codex dictation media packages did not install for ${OS}/${want_arch:-$HOST_ARCH}; this bundle ships without Codex dictation."
+  fi
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
@@ -634,11 +568,9 @@ build_backend() {
     fi
   fi
 
-  # The Feishu channel SDK. Settings offers no install command for this bundle,
-  # and every app update replaces the whole bundle, so it ships here or not at all.
-  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
-    "$out/bin/python3.12" -m pip install --prefer-binary \
-    --no-warn-script-location --disable-pip-version-check "$ROOT[feishu]"
+  # The Feishu channel SDK is NOT bundled: about 11,000 files per backend that
+  # most users never load. The app installs it into the data home when the owner
+  # presses Install in Settings (src/kiro_crew/sdk_extras.py).
 
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
@@ -822,11 +754,7 @@ build_backend_windows() {
     --only-binary pywhispercpp \
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[voice] @ $root_uri"
-  # The Feishu channel SDK, for the same reason as in build_backend.
-  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
-    "$out/python.exe" -m pip install --prefer-binary \
-    --no-warn-script-location --disable-pip-version-check \
-    "kirocrew[feishu] @ $root_uri"
+  # The Feishu channel SDK is installed on first use, as in build_backend.
 
   sp="$out/Lib/site-packages"
   install_desktop_decoder "$out/python.exe" "$sp" ""
@@ -902,18 +830,16 @@ build_backend_windows() {
   # median 12.5 s on a cold file cache. Both hash modes ignore mtime, which is
   # the property this needs; only the re-read is dropped. The POSIX trees above
   # are checked-hash: a codesigned macOS bundle and a Linux package, neither of
-  # which shows the symptom. lark_oapi is traced too: the Feishu channel
-  # imports its ~11k modules on the gateway loop, and compiling them there on
-  # the first start stalls that loop. (macOS leaves it out; see
-  # precompile_macos_backend.)
+  # which shows the symptom. The Feishu SDK is not in the bundle; its on-demand
+  # install compiles its own caches (sdk_extras.py).
   log "Precompiling Windows gateway startup modules ($(basename "$out"))…"
   env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
     "$out/python.exe" -s "$ROOT/packaging/precompile_windows.py" \
-    --root "$out" --module kiro_crew.cli_server --module lark_oapi
+    --root "$out" --module kiro_crew.cli_server
 
   # An update moves every installed file into %TEMP% first, and a file whose
   # moved path passes MAX_PATH abandons the update (the script states the
-  # arithmetic). Some lark_oapi caches written just above are that deep, so
+  # arithmetic). A cache written just above may be that deep, so
   # drop each over-budget cache (its module compiles from source instead) and
   # fail the build on any other over-budget file. -B: measuring writes nothing.
   log "Checking the Windows update path budget ($(basename "$out"))…"
@@ -1714,6 +1640,12 @@ if [ "${BUNDLE_KAS:-1}" = "1" ]; then
     stage_kas_bundle "$ELECTRON_DIR/backend-dist/kirocrew-backend" "$ELECTRON_DIR/backend-dist/kas" "$KAS_SYSTEM" "$KAS_MACHINE"
   fi
 else
+  # Engine guarantee (#39623): CI never builds a desktop artifact without its
+  # engine, so no release can ship one. A local build may still opt out.
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "ERROR: BUNDLE_KAS=0 is refused in CI: every desktop artifact must carry the pinned KAS engine" >&2
+    exit 1
+  fi
   log "BUNDLE_KAS=0: app ships without a bundled KAS engine"
 fi
 
@@ -1851,10 +1783,10 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
   rm_rf_resilient dist
 
   # Each electron-builder invocation below goes through
-  # run_electron_builder_with_retry (defined above, alongside rm_rf_resilient)
-  # so the macOS .DS_Store/ENOTEMPTY race AND transient network/TLS failures
-  # in electron-builder's own mid-build fetches are both retried, not just
-  # the former.
+  # run_electron_builder_with_retry (packaging/desktop-electron-builder.sh)
+  # so the macOS .DS_Store/ENOTEMPTY race, dmgbuild's "Resource busy" eject
+  # and transient network/TLS failures in electron-builder's own mid-build
+  # fetches are all retried.
   if [ "$OS" = "darwin" ]; then
     EB_ARGS+=( --mac )
     if [ "$UNIVERSAL" = "1" ]; then

@@ -460,6 +460,12 @@ jobs:
       # not pass it. Runbook: docs/build/release.md step 2.
       ui_index_strict: true
 
+  build-platform-wheels:
+    name: Build Platform Wheels
+    if: needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true'
+    needs: [version, build-wheel]
+    uses: ./.github/workflows/build-platform-wheels.yml
+
   build-desktop:
     name: Build Desktop
     if: needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true'
@@ -526,10 +532,10 @@ jobs:
   # failure never blocks the CLI release.
   publish-cli:
     name: Publish CLI (${{ needs.version.outputs.channel }} channel)
-    needs: [version, stable-gate, build-wheel, resolve-promotion]
+    needs: [version, stable-gate, build-wheel, build-platform-wheels, resolve-promotion]
     if: >-
       ${{ always() && needs.version.result == 'success' && needs.stable-gate.result == 'success' &&
-          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-wheel.result == 'success') ||
+          (((needs.version.outputs.channel == 'insider' || needs.version.outputs.rebuild == 'true') && needs.build-wheel.result == 'success' && needs.build-platform-wheels.result == 'success') ||
            (needs.version.outputs.promote_mode == 'true' && needs.resolve-promotion.result == 'success')) }}
     permissions:
       contents: read

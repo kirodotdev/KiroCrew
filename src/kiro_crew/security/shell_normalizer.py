@@ -1120,7 +1120,17 @@ def _mint_verb_in_substitution(tokens: "list[str]", idx: int) -> bool:
     PROGRAM?".  This one answers "does it compute the VERB?", for the spelling that
     hides that half instead (``T=$(printf <verb>); <name> $T``).
     """
-    joined = " ".join(tokens[idx:])
+    return _mint_verb_in_text(" ".join(tokens[idx:]))
+
+
+@once_per_call()
+def _mint_verb_in_text(joined: str) -> bool:
+    """:func:`_mint_verb_in_substitution`'s answer for one suffix text, kept per gate call.
+
+    Pure in its text, so a repeat read is the same answer. Frames of a command whose
+    substitutions never close are suffixes of one another and share their assignment
+    suffixes; without the memo each frame reads each suffix again (cubic in length).
+    """
     for body in _substitution_bodies(joined):
         if any(_is_mint_verb(word) for word in body.split()):
             return True

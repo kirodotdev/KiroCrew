@@ -516,9 +516,13 @@ class TestFetchAppManifest:
             owner_designated=True,
         )
         assert got == {"name": "demo"}
-        # Exactly the builder's env plus the network entries the git spawn may add.
+        # Exactly the builder's env plus the network entries the git spawn may add,
+        # with the English locale the private-repo classifier reads git's output in.
         assert seen_env == [
-            registry._git_network_env({"SENTINEL": "owner"}, "https://github.com/o/demo.git")
+            {
+                **registry._git_network_env({"SENTINEL": "owner"}, "https://github.com/o/demo.git"),
+                "LC_ALL": registry._GIT_CLONE_LOCALE,
+            }
         ]
         assert grants == ["fetch_app_manifest"]
 
@@ -547,9 +551,13 @@ class TestFetchAppManifest:
         await registry._fetch_app_manifest(
             "o/demo", "main", git_url="https://github.com/o/demo.git"
         )
-        # Exactly the builder's env plus the network entries the git spawn may add.
+        # Exactly the builder's env plus the network entries the git spawn may add,
+        # with the English locale the private-repo classifier reads git's output in.
         assert seen_env == [
-            registry._git_network_env({"SENTINEL": "anon"}, "https://github.com/o/demo.git")
+            {
+                **registry._git_network_env({"SENTINEL": "anon"}, "https://github.com/o/demo.git"),
+                "LC_ALL": registry._GIT_CLONE_LOCALE,
+            }
         ]
         assert modes == ["strict"]
 
@@ -842,6 +850,93 @@ class TestManifestNegativeCache:
         monkeypatch.setattr(manifests_mod, "_git_target_is_unsupported", _target_check)
         assert await real_fetch("", "main", app_name="demo", git_url=self._ROW["gitUrl"]) is None
         assert started == [self._ROW["gitUrl"]]
+
+
+class _RefusedClone(_FakeProc):
+    """A clone that exits 128 with *stderr*."""
+
+    def __init__(self, stderr: bytes) -> None:
+        super().__init__(returncode=128)
+        self._stderr = stderr
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return b"", self._stderr
+
+
+class TestSshSignInRefusal:
+    """ssh refuses a sign-in before it names a repository, so a listing asks a
+    refusing ssh destination once instead of cloning every app there."""
+
+    @staticmethod
+    def _rows(*urls: str) -> list[dict[str, str]]:
+        return [{"name": f"app{i}", "gitUrl": url} for i, url in enumerate(urls)]
+
+    async def _list(self, monkeypatch, tmp_path, stderr: bytes, rows) -> list[str]:
+        """Resolve *rows* in turn over clones that fail with *stderr*; the cloned URLs."""
+        monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
+        _tmp_clone_dir(monkeypatch, tmp_path)
+        spawned = _fake_sandbox(monkeypatch, [_RefusedClone(stderr) for _ in rows])
+        for row in rows:
+            assert await registry._resolve_manifest(dict(row)) == row
+        return [argv[-2] for argv in spawned]
+
+    @pytest.mark.asyncio
+    async def test_rows_at_a_destination_that_refused_the_sign_in_clone_once(
+        self, cache_dir, monkeypatch, tmp_path
+    ):
+        refusal = (
+            b"git@git.example.com: Permission denied (publickey).\r\n"
+            b"fatal: Could not read from remote repository.\n"
+        )
+        rows = self._rows(
+            *(f"git@git.example.com:acme/app{i}.git" for i in range(4)),
+            "other@git.example.com:acme/app4.git",
+        )
+        cloned = await self._list(monkeypatch, tmp_path, refusal, rows)
+        # The other user at the same host signs in on its own.
+        assert cloned == [rows[0]["gitUrl"], rows[4]["gitUrl"]]
+        assert all(registry._read_manifest_negative_cache(row) for row in rows)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("branch", "echo"),
+        [
+            pytest.param(
+                "main",
+                b"fatal: 'acme/git@git.example.com: Permission denied (publickey).' "
+                b"does not appear to be a git repository\n",
+                id="path",
+            ),
+            pytest.param(
+                "missing\u2028Permission denied (publickey).\u2028missing",
+                "fatal: Remote branch missing\u2028Permission denied (publickey).\u2028"
+                "missing not found in upstream origin\n".encode(),
+                id="branch-with-line-separators",
+            ),
+            pytest.param(
+                "missing\nPermission denied (publickey).\nmissing",
+                b"fatal: Remote branch missing\nPermission denied (publickey).\n"
+                b"missing not found in upstream origin\n",
+                id="branch-spanning-lines",
+            ),
+        ],
+    )
+    async def test_index_text_git_echoes_that_spells_the_refusal_is_not_one(
+        self, cache_dir, monkeypatch, tmp_path, branch, echo
+    ):
+        # git echoes the index-chosen path and branch in its own errors; only ssh's
+        # whole line counts.
+        rows = self._rows(*(f"git@git.example.com:acme/app{i}.git" for i in range(2)))
+        rows[0]["branch"] = branch
+        assert await self._list(monkeypatch, tmp_path, echo, rows) == [r["gitUrl"] for r in rows]
+
+    @pytest.mark.asyncio
+    async def test_refresh_asks_a_refusing_destination_again(self, monkeypatch):
+        monkeypatch.setitem(registry._SSH_SIGN_IN_REFUSED, "git@git.example.com", time.monotonic())
+        monkeypatch.setattr(registry, "_effective_registries", lambda: [])
+        monkeypatch.setattr(registry, "list_registry", AsyncMock(return_value=[]))
+        await registry.refresh_registries()
+        assert registry._SSH_SIGN_IN_REFUSED == {}
 
 
 class TestMergeManifest:

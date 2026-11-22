@@ -1053,7 +1053,7 @@ async def _route_message(
                 await orch.slack.post_ephemeral(
                     channel,
                     sender_id,
-                    "Blocked: You are not authorized to use this bot. "
+                    "⛔ You are not authorized to use this bot. "
                     "Ask the owner to add you to the allowlist.",
                 )
             except Exception:
@@ -1073,6 +1073,9 @@ async def _route_message(
     # message captured above before transcription and ingestion.
     _spool_text = _gate_text
     _spool_attachments = len(files) if files else 0
+    # Slack's own name for each file, which the restart notice lists so the user
+    # knows what to resend; a file Slack gives no name is still counted.
+    _spool_attachment_names = tuple(f.get("name") or "" for f in files) if files else ()
     # Named by the undelivered notice when a held message is given up on.
     _spool_voice_memos = sum(1 for f in files if is_voice_memo(f)) if files else 0
 
@@ -1206,9 +1209,7 @@ async def _route_message(
                 error="unauthorized sender",
             )
             if orch.slack:
-                await orch.slack.post_message(
-                    channel, "Blocked: Not authorized.", thread_ts or msg_ts
-                )
+                await orch.slack.post_message(channel, "⛔ Not authorized.", thread_ts or msg_ts)
             return
         if not orch.sessions:
             sel().log_tool_invocation(
@@ -1366,13 +1367,13 @@ async def _route_message(
                     async def _on_soft() -> None:
                         if orch.slack:
                             await orch.slack.post_message(
-                                channel, "Execution stopped.", stop_post_ts
+                                channel, "⏹ Execution stopped.", stop_post_ts
                             )
 
                     async def _on_hard() -> None:
                         if orch.slack:
                             await orch.slack.post_message(
-                                channel, "Execution stopped — session reset.", stop_post_ts
+                                channel, "⛔ Execution stopped — session reset.", stop_post_ts
                             )
 
                     # ``force`` only when set: the default call shape is what every
@@ -1582,6 +1583,7 @@ async def _route_message(
             from_trusted_bot=from_trusted_bot,
             spool_text=_spool_text,
             spool_attachments=_spool_attachments,
+            spool_attachment_names=_spool_attachment_names,
             spool_voice_memos=_spool_voice_memos,
             had_voice_input=_had_voice_input,
             **_queue_tags(sender_id, channel, shared=_shared_sender),
@@ -1605,6 +1607,7 @@ async def _route_message(
                         from_trusted_bot=from_trusted_bot,
                         spool_text=_spool_text,
                         spool_attachments=_spool_attachments,
+                        spool_attachment_names=_spool_attachment_names,
                         spool_voice_memos=_spool_voice_memos,
                         had_voice_input=_had_voice_input,
                         **_queue_tags(sender_id, channel, shared=_shared_sender),
@@ -1637,6 +1640,7 @@ async def _route_message(
         from_trusted_bot=from_trusted_bot,
         spool_text=_spool_text,
         spool_attachments=_spool_attachments,
+        spool_attachment_names=_spool_attachment_names,
         spool_voice_memos=_spool_voice_memos,
         had_voice_input=_had_voice_input,
         **_queue_tags(sender_id, channel, shared=_shared_sender),
@@ -1673,6 +1677,7 @@ async def _route_message(
                     from_trusted_bot=from_trusted_bot,
                     spool_text=_spool_text,
                     spool_attachments=_spool_attachments,
+                    spool_attachment_names=_spool_attachment_names,
                     spool_voice_memos=_spool_voice_memos,
                     had_voice_input=_had_voice_input,
                     **_queue_tags(sender_id, channel, shared=_shared_sender),
@@ -1734,7 +1739,7 @@ async def _route_message(
                 # is captured at startup and would make toggle saves inert
                 # until restart).
                 reactions_enabled=KiroCrewConfig.load().slack.reactions_enabled,
-                # Respect slack.show_thinking (surface reasoning as a Thinking reply).
+                # Respect slack.show_thinking (surface reasoning as a 💭 reply).
                 show_thinking=KiroCrewConfig.load().slack.show_thinking,
                 # History consolidation + display-name context, same as native
                 # handle_message (parity: don't drop these on the transport path).
@@ -1753,6 +1758,7 @@ async def _route_message(
                 start_priority=person_priority(not from_trusted_bot),
                 spool_text=_spool_text,
                 spool_attachments=_spool_attachments,
+                spool_attachment_names=_spool_attachment_names,
                 had_voice_input=_had_voice_input,
             )
         )
@@ -1822,6 +1828,7 @@ async def _route_message(
                 had_voice_input=_had_voice_input,
                 spool_text=_spool_text,
                 spool_attachments=_spool_attachments,
+                spool_attachment_names=_spool_attachment_names,
                 start_priority=person_priority(not from_trusted_bot),
             )
         )

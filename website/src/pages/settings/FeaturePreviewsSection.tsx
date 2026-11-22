@@ -8,15 +8,13 @@ import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../compo
 import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { clearPreviewFlagWriteError, usePreviewFlagWriteError } from '../../hooks/usePreviewFlagServerSync'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Btn } from '../../components/ui'
+import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { useSharedCrewCapabilities } from '../../hooks/sharedCrew/useSharedCrew'
+import { PREVIEW_APP_BROWSER_SDK, PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CONNECTED_COMPUTERS, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_VISUAL_REFRESH, PREVIEW_WEBHOOKS, PREVIEW_WIDGETS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
-import { KasBundleCard } from '../developer/KasBundleCard'
-import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
-import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
 import { RemoteDispatchCard } from './RemoteDispatchCard'
 import { EditionPreviewRows } from './EditionPreviewRows'
@@ -137,9 +135,12 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
     case PREVIEW_WORKER_GRILL: return i18nT('pages.developer.featurePreviewsTab.worker_grill')
+    case PREVIEW_APP_BROWSER_SDK: return i18nT('pages.developer.featurePreviewsTab.app_browser_sdk')
+    case PREVIEW_WIDGETS: return i18nT('pages.developer.featurePreviewsTab.widgets')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
     case PREVIEW_CONNECTED_COMPUTERS: return i18nT('connectedComputers.preview.label')
+    case PREVIEW_VISUAL_REFRESH: return i18nT('pages.developer.featurePreviewsTab.visual_refresh')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
   }
 }
@@ -196,11 +197,14 @@ export function FeaturePreviewsSection() {
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
   const workerGrill = usePreviewFlag(PREVIEW_WORKER_GRILL)
+  const appBrowserSdk = usePreviewFlag(PREVIEW_APP_BROWSER_SDK)
+  const widgets = usePreviewFlag(PREVIEW_WIDGETS)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
   const connectedComputers = usePreviewFlag(PREVIEW_CONNECTED_COMPUTERS)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
+  const visualRefresh = usePreviewFlag(PREVIEW_VISUAL_REFRESH)
   const writeError = usePreviewFlagWriteError()
   // An LTS build ships no Feature Preview (RFC D12): the flag rows, their "See what
   // it looks like" intros and the edition rows go; every other row here stays.
@@ -209,6 +213,8 @@ export function FeaturePreviewsSection() {
   const [restartFailed, setRestartFailed] = useState(false)
   const sharedCrewPreview = useSharedCrewPreviewSetting({ poll: gatewayRestarting })
   const sharedCrewSetting = sharedCrewPreview.setting
+  const { capabilities } = useSharedCrewCapabilities()
+  const connectedComputersUnavailable = (sharedCrewSetting?.active ?? capabilities.shared_crew_preview) === true
   // The stored choice and what this gateway started with disagree: a restart applies it.
   const sharedCrewNeedsRestart = !!sharedCrewSetting && (sharedCrewSetting.restart_required
     || (!sharedCrewSetting.env_override && sharedCrewSetting.enabled !== sharedCrewSetting.active))
@@ -252,12 +258,6 @@ export function FeaturePreviewsSection() {
     setGatewayRestarting(false)
     setRestartFailed(false)
   }, [sharedCrewNeedsRestart])
-  // The KAS engine card is for a deployment that can select KAS at all: the same
-  // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
-  // unanswered schema hides nothing, as on the harness tab.
-  const acpBackends = useConfigSchema()?.get('agent.acp_backend')?.enum
-  const kasOffered = !acpBackends || acpBackends.includes(KIRO_SIGN_IN_BACKEND)
-
   return (
     // The wrapper exists for the legacy redirect: `?highlight=key:<anchor>`
     // rings whatever element carries that `data-setting-key`, so this rings
@@ -448,6 +448,42 @@ export function FeaturePreviewsSection() {
             onChange={v => setPreviewFlag(PREVIEW_BRIDGE_APPROVALS, v)}
           />
         )}
+        {/* App browser SDK (`app_browser_sdk`): a gateway switch read per call
+            (`apps/browser_sdk.py`). Off, no app gets `ctx.browser` and an approved
+            `permissions.browser` verb does nothing. NO ingress button: the verbs are
+            approved on each app's own page. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.app_browser_sdk')}
+            description={i18nT('pages.developer.featurePreviewsTab.app_browser_sdk_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.app_browser_sdk_desc')}
+            checked={appBrowserSdk}
+            onChange={v => setPreviewFlag(PREVIEW_APP_BROWSER_SDK, v)}
+          />
+        )}
+        {/* Phone widgets (`widgets`): a gateway switch (`kiro_crew/widgets_preview.py`).
+            Off, agents are not told about widgets and `dashboard_save` refuses them.
+            NO ingress button: the widgets are placed on the phone. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.widgets')}
+            description={i18nT('pages.developer.featurePreviewsTab.widgets_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.widgets_desc')}
+            checked={widgets}
+            onChange={v => setPreviewFlag(PREVIEW_WIDGETS, v)}
+          />
+        )}
+        {/* The visual refresh. NO ingress button and NO capture: it restyles pages
+            already on screen, and nothing is restyled yet. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.visual_refresh')}
+            description={i18nT('pages.developer.featurePreviewsTab.visual_refresh_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.visual_refresh_desc')}
+            checked={visualRefresh}
+            onChange={v => setPreviewFlag(PREVIEW_VISUAL_REFRESH, v)}
+          />
+        )}
       </PreviewGroup>
 
       <PreviewGroup title={i18nT('pages.settings.developerPanel.group_engines_and_workspaces')}>
@@ -497,29 +533,14 @@ export function FeaturePreviewsSection() {
           <SettingsToggle
             label={i18nT('connectedComputers.preview.label')}
             description={i18nT('connectedComputers.preview.description')}
+            descriptionBadge={connectedComputersUnavailable && (
+              <Badge variant="muted">{i18nT('connectedComputers.preview.shared_crew_off')}</Badge>
+            )}
             hint={i18nT('connectedComputers.preview.hint')}
-            checked={connectedComputers}
+            checked={!connectedComputersUnavailable && connectedComputers}
+            disabled={connectedComputersUnavailable}
             onChange={value => setPreviewFlag(PREVIEW_CONNECTED_COMPUTERS, value)}
           />
-        )}
-        {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
-            and the Install button for the pinned engine. It lives here, not on the
-            KAS harness row, while the route is in shadow testing, so the one click
-            that moves every new session onto an engine still being tested is not in
-            plain view of every KAS user. Unlike the rows around it, the switch is not
-            a preview flag but its own config value; the card writes it through the
-            same config PATCH it always did, and says itself that it needs a
-            restart. A plain row of the group box, not a box of its own: a nested
-            group box that renders empty (status still loading, or the boundary's
-            null fallback) would match the group's `:empty` hide rule and take the
-            whole group down. `data-settings-card` keeps the capture/test anchor;
-            isolated so a throwing card cannot take the group down. */}
-        {kasOffered && (
-          <div data-settings-card="">
-            <ErrorBoundary scope="feature-preview-kas-bundle" fallback={null}>
-              <KasBundleCard />
-            </ErrorBoundary>
-          </div>
         )}
         {/* Conductor remote dispatch (`work_ledger.remote_dispatch`). Like the KAS card
             above, its switch is the gateway's own config value, not a preview flag:

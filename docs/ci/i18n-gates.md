@@ -189,13 +189,13 @@ parent is the PR head), the script measures from that commit's first parent inst
 of the `pull_request.base.sha` it was handed. A re-run keeps the event's base while
 the merge commit is built on the current base branch, and with no merge-base at
 depth 1 the gates would otherwise charge every base-branch change in between to the
-PR (#33167).
+PR.
 The local form measures from the merge-base, as the local gate does:
 `I18N_BASE_REF="$(.github/scripts/resolve-i18n-base.sh "$(git merge-base HEAD origin/main)")"`.
 
 **A gate that cannot run must fail, not pass.** `check-source-strings.mjs` skips
-itself and exits 0 when the base ref is unreadable, and a failed fetch used to sail
-past the step with a printed "OK: skipped" while the new-key gate was silently
+itself and exits 0 when the base ref is unreadable, so a failed fetch would otherwise sail
+past the step with a printed "OK: skipped" while the new-key gate is silently
 disabled for the whole PR. An unavailable base ref is a CI problem to fix, not a
 reason to stop checking. The render scanner and the diff-scoped vitest gates exit
 non-zero on an unresolvable configured ref for the same reason.
@@ -316,6 +316,14 @@ attributes and multiple catalog units inside one control. Ungrouped inline-flex
 content does not receive this boundary. Use these roles for actual control groups;
 they do not exempt text from translation checks.
 
+A `hidden` element is not page text. As a child it ends the run; nested inside an
+inline child, such as a `HoverTip` description copy, it is left out of that child's
+text, so two controls' hints never read as one spliced sentence. Such a copy, listed
+by its control's `aria-describedby`, is how an in-page hint stands in for a `title`
+inside the desktop window's drag band ([desktop-app](../build/desktop-app.md)), so
+it is treated as one: the attribute pass grades its words, and the layout check
+counts a clipped label inside that control as reachable in full.
+
 Locale-formatted machine timestamps may use a semantic `<time dateTime="...">`
 with `data-i18n-opaque` around only the formatted value. Keep surrounding labels
 in the catalog and keep active-locale formatting. Memory record fixture keys,
@@ -418,7 +426,7 @@ Runs in `frontend-test`, outside the `i18n:check` runner above, because it is a
 plain vitest assertion over the catalog files rather than a diff-scoped gate.
 
 The same job also runs `src/i18n/destructiveConfirm.test.ts`, which is the
-convention detector for quoted operands on destructive confirms (#4821): every
+convention detector for quoted operands on destructive confirms: every
 `confirm` key that interpolates a placeholder is swept in and must quote its
 operand, unless it has an explicit key exemption or interpolates only names in
 `EXEMPT_CONFIRM_PLACEHOLDER_NAMES`. A brand-new confirm with a bare `{{name}}`

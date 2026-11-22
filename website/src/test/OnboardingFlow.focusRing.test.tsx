@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, within, waitFor } from '@testing-library/react'
+import { screen, fireEvent, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import OnboardingFlow from '../components/OnboardingFlow'
-import PrivacyChapter from '../components/PrivacyChapter'
 
 // Keyboard-only first run (WCAG 2.4.7 Focus Visible): on every onboarding
 // dialog, focus must move into the dialog on open, stay inside it, and show a
@@ -25,21 +24,6 @@ vi.mock('../api/client', async importOriginal => {
       }),
       patchConfig: vi.fn().mockResolvedValue({}),
       themeBoot: vi.fn().mockResolvedValue({ mode: '', color: '', onboarded: false }),
-      beaconStatus: vi.fn().mockResolvedValue({
-        enabled: true,
-        would_send: true,
-        reason: 'ready',
-        reason_code: 'ready',
-        endpoint_configured: true,
-        env_override: false,
-        env_var: 'KIROCREW_TELEMETRY_DISABLED',
-        governance_override: false,
-      }),
-      collectionStatus: vi.fn().mockResolvedValue({
-        enabled: true,
-        env_pinned: false,
-        env_var: 'KIROCREW_TELEMETRY',
-      }),
     },
   }
 })
@@ -93,7 +77,7 @@ function assertEveryStopShowsARing(dialog: HTMLElement) {
   ).toEqual([])
 }
 
-describe('OnboardingFlow / PrivacyChapter - keyboard focus on first-run dialogs', () => {
+describe('OnboardingFlow - keyboard focus on first-run dialogs', () => {
   beforeEach(() => { localStorage.removeItem('mc-onboarding-step') })
 
   it('Customize step 1 (Pick your look): every Tab stop shows a visible ring', () => {
@@ -106,15 +90,6 @@ describe('OnboardingFlow / PrivacyChapter - keyboard focus on first-run dialogs'
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(screen.getByText('Tell Kiro about you')).toBeInTheDocument()
-    assertEveryStopShowsARing(screen.getByRole('dialog'))
-  })
-
-  it('Privacy: every Tab stop shows a visible ring', async () => {
-    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    // The action buttons wait for the status reads; once "Keep on" is enabled
-    // the dialog's controls are all mounted.
-    const keepOn = await screen.findByRole('button', { name: 'Keep on' })
-    await waitFor(() => expect(keepOn).toBeEnabled())
     assertEveryStopShowsARing(screen.getByRole('dialog'))
   })
 
@@ -141,16 +116,5 @@ describe('OnboardingFlow / PrivacyChapter - keyboard focus on first-run dialogs'
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab' })
     expect(dialog.contains(document.activeElement)).toBe(true)
     expect(document.activeElement).toBe(stops[0])
-  })
-
-  it('focus moves into the Privacy dialog on open and the Tab trap keeps it inside', async () => {
-    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
-    const dialog = await screen.findByRole('dialog')
-    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
-    const stops = tabStops(dialog)
-    const last = stops[stops.length - 1]
-    last.focus()
-    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Tab' })
-    expect(dialog.contains(document.activeElement)).toBe(true)
   })
 })

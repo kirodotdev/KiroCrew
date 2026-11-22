@@ -830,14 +830,14 @@ describe('CrewProfileSettings harness', () => {
   })
 
   it('lists KAS models for a pin that runs on KAS', async () => {
-    readout({ acp_backend: 'pi', harness: 'kas', kas_pin_harnesses: ['pi', 'goose'] })
+    readout({ acp_backend: 'deepseek', harness: 'kas', kas_pin_harnesses: ['deepseek', 'goose'] })
     setup(member())
     await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kas'))
-    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('pi')
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('deepseek')
   })
 
   it('lists the floor models when policy sends the pin to the floor', async () => {
-    readout({ acp_backend: 'pi', harness: 'kiro', kas_pin_harnesses: ['pi'], kas_pin_landing: 'kiro' })
+    readout({ acp_backend: 'deepseek', harness: 'kiro', kas_pin_harnesses: ['deepseek'], kas_pin_landing: 'kiro' })
     setup(member())
     await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kiro'))
     expect(mockApi.harnessModels).not.toHaveBeenCalledWith('kas')

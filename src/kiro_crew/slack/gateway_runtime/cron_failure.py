@@ -99,6 +99,24 @@ def _failure_alert_is_duplicate(self: GatewayOrchestrator, job: CronJob, failure
     )
 
 
+def _scrubbed(text: str, cap: int | None = None) -> str:
+    """The one spelling of the alert-side scrub: redact, strip exfiltration
+    URLs and credentials, trim, and cap.
+
+    Every cron notice interpolates two attacker-shaped strings — the
+    user-authored job name and a reason that can carry subprocess output — and
+    each one must take all three passes before it reaches a surface. The
+    message path's exception text keeps its own pipeline (its redaction order
+    is entangled with the fallback-story append) and is deliberately not a
+    caller.
+    """
+    out = redact(text or "")
+    out, _ = redact_exfiltration_urls(out)
+    out, _ = redact_credentials(out)
+    out = out.strip()
+    return out[:cap] if cap is not None else out
+
+
 def _slack_safe_fenced(self: GatewayOrchestrator, text: str) -> str:
     """Make *text* safe to interpolate into a Slack mrkdwn code fence.
 
@@ -124,6 +142,7 @@ async def _deliver_failure_alert(
     plain: str,
     actor_key: str,
     silent: bool = False,
+    pin: tuple[str, str] | None = None,
 ) -> tuple[bool, bool, bool]:
     """Deliver a failure alert on exactly ONE surface.
 
@@ -137,7 +156,8 @@ async def _deliver_failure_alert(
     still wins, so the channel leg is skipped for it -- without that guard the
     channel leg reports a delivery, stands the Slack leg down, and the alert
     lands on the origin conversation instead of the destination the user
-    named.
+    named. A non-empty launch *pin* outranks a Slack channel set while the
+    run ran: the run launched with none, so its Slack fallback is the owner DM.
 
     *mrkdwn* and *plain* are composed by the caller and are deliberately two
     strings: Slack's markup is not another transport's dialect, so a shared
@@ -151,10 +171,14 @@ async def _deliver_failure_alert(
     channel_delivered = False
     slack_delivered = False
     slack_failed = False
-    if not silent and not job.channel:
+    launched_pinned = pin is not None and all(pin)
+    if not silent and (launched_pinned or not job.channel):
         try:
             channel_delivered = await self._deliver_cron_to_channel(
-                job.session_key, plain, actor_key=actor_key
+                job.session_key,
+                plain,
+                actor_key=actor_key,
+                pin=pin if pin is not None else (job.channel_type, job.target_id),
             )
         except Exception:
             logger.error(
@@ -164,7 +188,7 @@ async def _deliver_failure_alert(
             )
     if self.slack and not silent and not channel_delivered:
         try:
-            channel = job.channel
+            channel = "" if launched_pinned else job.channel
             dm_user = self._cron_dm_user(job)
             if not channel and dm_user:
                 channel = await self._open_dm_with_retry(dm_user, job.name)
@@ -214,6 +238,7 @@ async def _alert_cron_failure(
     *,
     denied: bool = False,
     exit_code: int | None = None,
+    pin: tuple[str, str] | None = None,
 ) -> None:
     """Tell the user WHY a script/command cron run failed or was denied.
 
@@ -247,22 +272,20 @@ async def _alert_cron_failure(
       exception is the real story; an alert that failed must not replace
       it. Cancellation still propagates (``CancelledError`` is a
       ``BaseException``).
+
+    *pin* is a script run's launch ``(channel_type, target_id)``: its reason
+    carries that run's output, so it goes where the run's grant bound it.
     """
     try:
         if job.silent:
             # Silent jobs still execute and still count toward auto-pause;
             # only the user-facing surfaces are suppressed.
             return
-        text = redact(detail or "")
-        text, _ = redact_exfiltration_urls(text)
-        text, _ = redact_credentials(text)
-        text = text.strip()[:_CRON_FAILURE_DETAIL_CAP] or "no reason reported"
+        text = _scrubbed(detail, _CRON_FAILURE_DETAIL_CAP) or "no reason reported"
         # job.name is user-controlled and the reason can carry subprocess
         # output, so both are scrubbed once, ahead of either surface and
         # of either branch below.
-        label = redact(job.name)
-        label, _ = redact_exfiltration_urls(label)
-        label, _ = redact_credentials(label)
+        label = _scrubbed(job.name)
         headline = "Blocked by policy" if denied else "Run failed"
         if exit_code is not None and not denied:
             # Said once, here, so the fenced body is only what the command wrote.
@@ -353,6 +376,7 @@ async def _alert_cron_failure(
             mrkdwn=msg,
             plain=plain,
             actor_key=f"cron:{job.id}",
+            pin=pin,
         )
         self._advance_failure_dedup(
             job, fh, channel_delivered=channel_delivered, slack_failed=slack_failed
@@ -362,7 +386,10 @@ async def _alert_cron_failure(
             # does not read "none" for a run answered on Discord.
             surfaces = ["slack"] if slack_delivered else []
             if channel_delivered:
-                surfaces.append(channel_namespace_of(job.session_key))
+                # A pinned job's channel leg sent to its pin (a script run's, when
+                # given), not its origin.
+                sent_to = pin[0] if pin is not None else job.channel_type
+                surfaces.append(sent_to or channel_namespace_of(job.session_key))
             sel().log_tool_invocation(
                 session_key=f"cron:{job.id}",
                 tool_name="cron_run_failure_alert",
@@ -373,6 +400,107 @@ async def _alert_cron_failure(
             logger.debug("SEL logging failed in cron run-failure alert path", exc_info=True)
     except Exception:
         logger.warning("Cron '%s': run-failure alert failed", job.name, exc_info=True)
+
+
+async def _alert_cron_auto_paused(
+    self: GatewayOrchestrator, job: CronJob, streak: int, reason: str
+) -> None:
+    """Tell the user *job* paused ITSELF and does not run again until resumed.
+
+    The one cron notice ``silent`` does not gate. ``silent`` suppresses a run's
+    noise — results and per-run failure alerts — and this is not run noise: the
+    job's schedule just ended, for every future run, until someone resumes it.
+    A silent job is exactly the one whose owner heard none of the failures that
+    led here, so this notice is the first and only word they get; without it
+    the job reads as idle from the moment it stops, the state the failure
+    ladder exists to prevent.
+
+    *streak* and *reason* are the transition's own readings, passed rather
+    than re-read: the notice is composed on the loop after a hand-off that can
+    cross threads, and a resume plus a successful run in that window resets
+    the live job's count and error — a notice reading them late would claim
+    "0 consecutive failures".
+
+    Fires once per transition by construction: it rides the audit's one
+    spelling (``_audit_pause_change`` → ``announce_auto_pause``, state-gated),
+    and every writer that lands a pause audits only a decision that changed.
+    No dedup anchor moves here — the failure dedup belongs to the per-run
+    alerts, and a once-per-transition notice has nothing to dedup. Never
+    raises: it is scheduled from the model's bookkeeping, which an alert
+    failure must not undo.
+    """
+    try:
+        label = _scrubbed(job.name)
+        detail = _scrubbed(reason, _CRON_FAILURE_DETAIL_CAP)
+        # The loop-stall breaker pauses a job whose streak is 0: its pause is
+        # not failure-driven, so claiming "0 consecutive failed runs" would be
+        # the exact stale-count message the snapshot exists to prevent. The
+        # cause then lives in the reason block alone.
+        cause = f" after {streak} consecutive failed runs" if streak > 0 else ""
+        cause_mrkdwn = f" after {streak} consecutive failures" if streak > 0 else ""
+        text = (
+            f"Paused itself{cause}. It does not run "
+            f"again until you resume it: the Schedule page, `cron resume {job.id}` "
+            f"in chat, or `kirocrew cron resume {job.id}`."
+        )
+        if detail:
+            text += f"\nLast error: {detail}"
+        try:
+            if self.dashboard_state:
+                self.dashboard_state.notify(
+                    "cron",
+                    f"Cron: {label} paused itself",
+                    # No mark: emoji are replaced with icons only where the web
+                    # UI shows them, and the notification card does not map
+                    # this one; the Slack and channel twins keep theirs.
+                    text,
+                    meta={"job_id": job.id},
+                )
+                # Awaited to disk, as the interrupted-run notice is: a pause
+                # landed by stop()'s held-record flush is composed while the
+                # gateway exits, and on a silent job the bell is the surface
+                # the owner actually watches.
+                persisted = self.dashboard_state.last_notification_persist
+                if persisted is not None:
+                    await persisted
+        except Exception:
+            logger.debug("Dashboard notify failed in cron auto-pause notice path", exc_info=True)
+        host = socket.gethostname().split(".")[0]
+        safe_label = self._slack_safe_fenced(label)
+        # The reason is fenced, as the failure alert fences it — stray
+        # backticks or markup in subprocess output must not swallow the
+        # resume affordances. The instruction line is authored here, with
+        # its own deliberate code spans, so it is not escaped.
+        reason_block = f"\n```{self._slack_safe_fenced(detail)}```" if detail else ""
+        msg = (
+            f"⏰ *Cron: {safe_label}* ⏸ _Paused itself on {escape_mrkdwn(host)}"  # emoji-ok: the cron alert family's mark, matching the sibling alerts' feed
+            f"{cause_mrkdwn} — it does not run again until "
+            f"you resume it: the Schedule page, `cron resume {job.id}` in chat, "
+            f"or `kirocrew cron resume {job.id}`._{reason_block}"
+        )
+        msg, _ = redact_exfiltration_urls(msg)
+        msg, _ = redact_credentials(msg)
+        plain = f"⏰ Cron: {label} ⏸ Paused itself on {host}\n{text}"  # emoji-ok: the cron alert family's mark, matching the sibling alerts' feed
+        plain, _ = redact_exfiltration_urls(plain)
+        plain, _ = redact_credentials(plain)
+        # Deliberately not ``silent=job.silent``: see the docstring.
+        channel_delivered, slack_delivered, _ = await self._deliver_failure_alert(
+            job, mrkdwn=msg, plain=plain, actor_key=f"cron:{job.id}"
+        )
+        try:
+            surfaces = ["slack"] if slack_delivered else []
+            if channel_delivered:
+                surfaces.append(job.channel_type or channel_namespace_of(job.session_key))
+            sel().log_tool_invocation(
+                session_key=f"cron:{job.id}",
+                tool_name="cron_auto_pause_alert",
+                outcome="alerted",
+                downstream_service=",".join(surfaces) or "none",
+            )
+        except Exception:
+            logger.debug("SEL logging failed in cron auto-pause notice path", exc_info=True)
+    except Exception:
+        logger.warning("Cron '%s': auto-pause notice failed", job.name, exc_info=True)
 
 
 async def _alert_cron_interrupted(self: GatewayOrchestrator, job: CronJob, detail: str) -> None:
@@ -393,9 +521,7 @@ async def _alert_cron_interrupted(self: GatewayOrchestrator, job: CronJob, detai
     try:
         if job.silent:
             return
-        label = redact(job.name)
-        label, _ = redact_exfiltration_urls(label)
-        label, _ = redact_credentials(label)
+        label = _scrubbed(job.name)
         text = f"{detail}."
         if job.schedule.kind != "at" and not job.enabled:
             # A paused job can still be run by hand; the scheduler skips it,
@@ -704,7 +830,8 @@ async def _cron_single_failure(
             # trail does not read "none" for a crash sent to Discord.
             surfaces = ["slack"] if slack_delivered else []
             if channel_delivered:
-                surfaces.append(channel_namespace_of(job.session_key))
+                # A pinned job's channel leg sent to its pin, not its origin.
+                surfaces.append(job.channel_type or channel_namespace_of(job.session_key))
             sel().log_tool_invocation(
                 session_key=f"cron:{job.id}",
                 tool_name="cron_failure_alert",

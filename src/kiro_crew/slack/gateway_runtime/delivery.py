@@ -32,8 +32,10 @@ if TYPE_CHECKING:
         CronJob,
         GatewayOrchestrator,
         PostedOptions,
+        _send_to_channel_target,
         asyncio,
         channel_namespace_of,
+        derive_caller_app,
         logger,
         open_dm_with_retry,
         parse_session_key,
@@ -233,8 +235,38 @@ def _cron_origin_key(self: GatewayOrchestrator, parent_key: str) -> str:
     return origin if isinstance(origin, str) else ""
 
 
+def _cron_channel_pin(
+    self: GatewayOrchestrator, parent_key: str, *, pin: tuple[str, str] | None = None
+) -> tuple[str, str, str] | None:
+    """The ``(channel_type, target_id, app)`` of the pin on the job behind *parent_key*.
+
+    ``app`` is the app that created the job (``""`` for the person), read by the
+    same rule that names a ``cron:`` caller's app on a request, so the send asks
+    that app's own messaging grant as every proactive leg does. ``None`` for a
+    job with no pin, a non-cron key or an unknown job.
+
+    A caller holding the job passes its ``(channel_type, target_id)`` as *pin* (a
+    script run, the pair it launched with); the stored pair is read only when no
+    *pin* is given. A pin whose job is gone resolves to None.
+    """
+    if not parent_key.startswith("cron:") or self.cron_svc is None:
+        return None
+    job = self.cron_svc.get_job(parent_key.split(":", 2)[1])
+    if job is None:
+        return None
+    channel_type, target_id = pin if pin is not None else (job.channel_type, job.target_id)
+    if not (channel_type and target_id):
+        return None
+    return channel_type, target_id, derive_caller_app(None, parent_key, [job])
+
+
 async def _deliver_cron_to_channel(
-    self: GatewayOrchestrator, origin_key: str, text: str, *, actor_key: str
+    self: GatewayOrchestrator,
+    origin_key: str,
+    text: str,
+    *,
+    actor_key: str,
+    pin: tuple[str, str] | None = None,
 ) -> bool:
     """Deliver cron output to the non-Slack channel that owns *origin_key*.
 
@@ -260,8 +292,35 @@ async def _deliver_cron_to_channel(
     callers stand their Slack leg down, because one run notifying one operator
     twice is how notifications become noise. An explicit ``job.channel`` is a
     destination the user pinned and takes precedence over both.
+
+    So is the job's ``channel_type``/``target_id`` pin, and it replaces the origin
+    conversation here: it is sent through ``send_message``'s explicit-target leg,
+    whose gates (transport, proactive send, the creating app's messaging grant,
+    ``channels`` governance, the transport's allow-list) are re-run under
+    *actor_key*, the job's own key. A script run passes the pair it launched with
+    as *pin*, so its output goes where its grant fingerprint bound it. A pin whose
+    job is gone delivers nothing, never to the origin.
     """
-    if not origin_key or not text.strip():
+    if not text.strip():
+        return False
+    pinned = self._cron_channel_pin(actor_key, pin=pin)
+    if pinned is None and pin is not None and all(pin):
+        # Deleted mid-run: never its origin, and its creating app is unknown.
+        return False
+    if pinned is not None:
+        if self.dashboard_state is None:
+            return False
+        channel_type, target_id, app = pinned
+        sent = await _send_to_channel_target(
+            self.dashboard_state,
+            channel_type,
+            target_id,
+            text,
+            caller_session=actor_key,
+            request_app=app,
+        )
+        return sent.status == 200
+    if not origin_key:
         return False
     resolved = self._channel_reply_link(origin_key)
     if resolved is None:

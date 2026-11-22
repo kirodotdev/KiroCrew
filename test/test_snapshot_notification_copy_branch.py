@@ -82,11 +82,11 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         ).exists(), "a partially copied file was left where the reader will find it"
         out = capsys.readouterr().out
         assert "Notifications: copied" not in out, "reported success on a refused copy"
-        assert "Done: notifications" not in out
+        assert "✅ notifications" not in out
         assert "not valid UTF-8" in out
 
     def test_a_platform_skip_does_not_print_the_success_tick(self, tmp_path, monkeypatch, capsys):
-        """A caught NotificationCopyUnsupported skip must NOT report "Done: notifications".
+        """A caught NotificationCopyUnsupported skip must NOT report ✅ notifications.
 
         A component that imported nothing never reports a tick, as the crons branch
         gates its tick on ``crons_ok``.
@@ -99,7 +99,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         )
         out = capsys.readouterr().out
         assert "Notifications: SKIPPED" in out, out
-        assert "Done: notifications" not in out, "a skipped component reported a success tick"
+        assert "✅ notifications" not in out, "a skipped component reported a success tick"
 
     def test_the_reader_loads_every_record_the_copy_installs(self, tmp_path, monkeypatch):
         """The consequence, asserted through the reader that actually loses the file.

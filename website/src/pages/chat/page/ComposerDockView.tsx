@@ -28,6 +28,8 @@ import type { SessionRef } from '../../../utils/sessionRefs'
 import type { SlotApprovalMode } from '../../../utils/slotApprovalMode'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../../../hooks/useSettingHighlight'
 import { settingsPath } from '../../../components/settingsPath'
+import { useKiroCliCanRunHere, useKiroCliSignInInTerminal } from '../../../components/KiroCliSignInInTerminal'
+import { useModelsAuthRequired } from '../../../providers/modelListHealth'
 import { agentOrDefaultLabel } from '../../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
@@ -57,6 +59,7 @@ import { useStableCallbackProps } from '../useStableCallbackProps'
 import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { GUIDE_KEEP_CLEAR } from '../../../guide/trustRoot'
 import KiroSignInPrompt from '../../../components/KiroSignInPrompt'
 import { pinIsWithheld } from '../../../lib/model'
 import FollowUpCard, { type FollowupStartMode } from '../../../components/FollowUpCard'
@@ -101,8 +104,6 @@ interface ComposerDockViewProps {
   activeSlot: string
   connected: boolean
   dispatch: AppDispatch
-  isMobile: boolean
-  isTouch: boolean
   navigate: NavigateFunction
   provider: ProviderAdapter
   activityOpen: boolean
@@ -304,7 +305,7 @@ interface ComposerDockViewProps {
   /** A plain chat that already has messages: the same chip sits right of the
    *  permission button and turns this chat into a conductor mode chat, one way. */
   crewModeMidChatOffered?: boolean
-  turnOnCrewMode: () => void
+  turnOnCrewMode: () => void | Promise<boolean>
   /** Set only while Crew Mode is on and no message is sent yet: the composer's
    *  Crew Mode mark is then a toggle that turns it off. */
   turnOffCrewMode?: () => void
@@ -337,7 +338,7 @@ interface ComposerDockViewProps {
  * Its body is not re-indented: `ChatPage.statusStackLayering.test.tsx` finds the status stack's end by its closing tag's depth (14 spaces).
  */
 export default function ComposerDockView({
-  embedded, forkUnavailable = false, mode, activeSlot, connected, dispatch, isMobile, isTouch, navigate, provider, activityOpen, composerBusy, contextPct, contextTokens, knowledgeFetch, messages, pendingFollowup,
+  embedded, forkUnavailable = false, mode, activeSlot, connected, dispatch, navigate, provider, activityOpen, composerBusy, contextPct, contextTokens, knowledgeFetch, messages, pendingFollowup,
   pendingQuestion, projectLocked, restoredQuestionNotice, sentMessages, slotRunning, slotStopping, composerDraft, historySuggestions, showHistorySuggestions, chatConfig, agentDropdown,
   agentDropdownRef, agentFilter, agentInputRef, defaultAgent, defaultAgentFailed, effectiveAgents, filteredAgents, installedAgents, setAgentDropdown, setAgentFilter, toggleDefaultAgent,
   codexPairModels, filteredModels, hiddenModelsQ, ownModelsFailed, ownModelsFetching, retryOwnModels, modelsBackend, jevRouteOn, modelDropdown, modelDropdownRef, modelFilter, modelInputRef, modelPickerConfigured, modelPickerReturnsFocusRef, setModelDropdown,
@@ -384,6 +385,14 @@ export default function ComposerDockView({
   // A worker's steer is refused past the steer route's limit BEFORE the draft is
   // cleared, so an over-long paste stays in the box with the reason beside it.
   const [steerTooLong, setSteerTooLong] = useState(false)
+  // The configured list is short because kiro-cli's own login is missing: the
+  // picker says so and signs kiro-cli in through the Terminal panel. The flag
+  // speaks only for the configured list, never a harness's own (`modelsBackend`).
+  const kiroCliSignedOut = useModelsAuthRequired(provider.id) && modelsBackend === undefined
+  const kiroCliSignIn = useKiroCliSignInInTerminal()
+  // An embedded chat has no dock to run it in, and a chat that is not known to
+  // run here refuses a local run: those copy the command instead.
+  const kiroCliCanRun = useKiroCliCanRunHere(!embedded && currentSlot?.executor !== 'remote' ? runsHere : false)
   const steerFits = (text?: string): boolean => {
     if (steerWorker === undefined) return true
     const fits = (text ?? composerDraft.get()).length <= CREW_STEER_MAX_CHARS
@@ -483,6 +492,7 @@ export default function ComposerDockView({
                   className="px-4 mb-1.5 mx-auto w-full"
                   style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
                   data-testid="refused-press-error"
+                  {...GUIDE_KEEP_CLEAR}
                 >
                   <ErrorNotice
                     title={i18nT(REFUSED_PRESS_TITLE_KEYS[refusedPress.action])}
@@ -740,9 +750,12 @@ export default function ComposerDockView({
               // drawn from, so chip, menu and gate cannot disagree.
               modelIsJevRouted={jevRouteOn && isUnpinnedModel(currentSlot?.model)}
               harnessBackend={modelsBackend}
-              // A crew member's footer is the conductor's: the Crew Mode mark (never
-              // a switch there) in place of the agent picker and its label.
-              agentBadge={crewChipPressed ? undefined : agentPickerHidden || steerWorker !== undefined ? <CrewModeComposerChip /> : undefined}
+              // The conductor mode bolt in place of the agent picker. On a crew
+              // member that is not itself a conductor its tip names the role,
+              // Worker, so it does not read as a conductor.
+              agentBadge={crewChipPressed ? undefined
+                : agentPickerHidden ? <CrewModeComposerChip />
+                : steerWorker !== undefined ? <CrewModeComposerChip worker /> : undefined}
               onAgentClick={provider.capabilities.agentTemplates && !agentPickerHidden && !agentSwitchLocked && steerWorker === undefined ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect, trigger, composerHadFocus) => {
                 modelPickerReturnsFocusRef.current = !!composerHadFocus
@@ -842,7 +855,6 @@ export default function ComposerDockView({
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
               sentMessages={sentMessages}
               onEditLastRequest={handleEditLastRequest}
-              sendOnEnter={isMobile && isTouch ? 'ctrl-enter' : chatConfig.sendOnEnter}
               followUpOptions={followUpOptions}
               followUpPicked={followUpPicked}
               quickSend={dashCfg?.quick_send}
@@ -859,7 +871,7 @@ export default function ComposerDockView({
               connected={connected}
             />
               </Composer>
-              {steerWorker !== undefined && steerTooLong && <p role="alert" className="mt-1 px-4 mx-auto w-full text-[12px] text-danger-text" style={{ maxWidth: 'var(--mc-content-width, 900px)' }} data-testid="crew-steer-too-long">{i18nT('components.crewMode.steer_too_long', { name: steerWorker, max: fmtNumber(CREW_STEER_MAX_CHARS) })}</p>}
+              {steerWorker !== undefined && steerTooLong && <p role="alert" className="mt-1 px-4 mx-auto w-full text-[12px] text-danger-text" style={{ maxWidth: 'var(--mc-content-width, 900px)' }} data-testid="crew-steer-too-long" {...GUIDE_KEEP_CLEAR}>{i18nT('components.crewMode.steer_too_long', { name: steerWorker, max: fmtNumber(CREW_STEER_MAX_CHARS) })}</p>}
               </div>
             </div>
             {/* Agent dropdown portal — triggered from input bar */}
@@ -898,6 +910,7 @@ export default function ComposerDockView({
                 modelsFailedMessage={i18nT('components.modelEffortDropdown.harness_models_failed', { harness: acpBackendName({ id: modelsBackend ?? '' }) })}
                 retryingModels={ownModelsFetching}
                 onRetryModels={retryOwnModels}
+                kiroCliSignIn={kiroCliSignedOut ? { run: () => { setModelDropdown(false); kiroCliSignIn.askToSignIn() }, command: kiroCliSignIn.command, canRun: kiroCliCanRun } : undefined}
                 filter={modelFilter}
                 setFilter={setModelFilter}
                 onClose={() => setModelDropdown(false)}
@@ -940,6 +953,8 @@ export default function ComposerDockView({
                 }}
               />
             </OverlayPortal>}
+            {/* Outside the model picker's portal: the picker closes before it opens. */}
+            {kiroCliSignIn.dialog}
             {/* Project picker — triggered from input bar */}
             <ProjectPicker
               open={projectPickerOpen}

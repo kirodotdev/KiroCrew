@@ -33,6 +33,7 @@ import {
 } from '../../api/client'
 import {
   BUILTIN_PROVISIONER_ID,
+  crewTransportLabel,
   hasDashboardPane,
   shortenEcsTarget,
   usesSsmTransport,
@@ -61,13 +62,6 @@ import {
 } from './InstanceFormFields'
 import type { SigninNotice } from './remoteCrewPanelModel'
 import { SigninPromptBlock } from './RemoteCrewPanelLaunch'
-
-const connectionTypeLabel = (inst: InstanceView): string =>
-  inst.connection_method === 'fargate'
-    ? i18nT('pages.settings.remoteCrewPanel.type_fargate')
-    : inst.connection_method === 'ssm'
-      ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
-      : i18nT('pages.settings.remoteCrewPanel.type_ssh')
 
 // The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
 // not know; the hover title spells out what each one means.
@@ -440,7 +434,7 @@ export function CrewRow({
               </Badge>
             )}
             <Badge variant="muted" title={connectionTypeHint(inst)} aria-label={connectionTypeHint(inst)}>
-              {connectionTypeLabel(inst)}
+              {crewTransportLabel(inst)}
             </Badge>
             {awaitingSignin && (
               <Badge variant="warn" title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}>

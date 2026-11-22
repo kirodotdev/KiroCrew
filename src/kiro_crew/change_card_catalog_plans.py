@@ -484,6 +484,11 @@ def build_preview(
             {"label": "Name", "after": p["name"]},
             {"label": "Goal", "after": p["goal"]},
         ]
+        # "" and DEFAULT_MODEL both mean inherit: no row, and the create body
+        # carries no pin, exactly as a card without `model`.
+        model = normalize_agent_model(p.get("model"))
+        if model:
+            out["changes"].append({"field": "model", "label": "Model", "after": model})
         inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
         if inherited:
             # The crewmate runs these without asking from its first turn; the
@@ -515,6 +520,7 @@ def build_preview(
                     # Its first chat opens with the crewmate asking about this
                     # goal, as one made on the Crewmates page does.
                     "first_greeting": True,
+                    **({"model": model} if model else {}),
                 },
             ),
             step(

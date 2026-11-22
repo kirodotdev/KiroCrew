@@ -3,10 +3,10 @@ title: Session-keyed scratch, a $KIROCREW_SCRATCH that lasts as long as the chat
 status: draft
 author: Pearcekieser
 created: 2026-10-28
-last-audited: 2026-11-02
-audited-at: 62c27336b1
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
+doc-pr: 25411
+implementation-prs: [30062]
 tracking-issues: [15979]
 supersedes: []
 superseded-by: []

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -56,7 +57,7 @@ def _probe_dashboard_health(port: int) -> None:
             body = resp.read(8192).decode("utf-8", errors="replace")
             if DASHBOARD_HTML_NOT_FOUND_MARKER.lower() in body.lower():
                 print(
-                    "Warning: gateway is serving a stale dashboard "
+                    "⚠️  Warning: gateway is serving a stale dashboard "
                     "(assets missing — likely an update pruned the "
                     "running install). Restart the gateway to fix.",
                     file=sys.stderr,
@@ -115,12 +116,37 @@ def _token_refusal_message(exc: urllib.error.HTTPError) -> str:
     if not isinstance(payload, dict):
         payload = {}
     detail = str(payload.get("error") or "")
-    message = f"Error: Gateway refused the token request (HTTP {exc.code}): {detail or exc.reason}"
+    message = f"❌ Gateway refused the token request (HTTP {exc.code}): {detail or exc.reason}"
     code = payload.get("code")
     remedy = _TOKEN_REFUSAL_REMEDIES.get(code) if isinstance(code, str) else None
     if remedy:
         message += f"\n   code {code}: {remedy}"
     return message
+
+
+#: Where an embedding gateway passes the port its forward reaches this dashboard
+#: on: an environment variable rather than a flag, because a CLI older than the
+#: claim refuses an unknown argument and the mint would fail, while it ignores a
+#: variable it does not read.
+EMBED_FORWARD_PORT_ENV = "KIROCREW_EMBED_FORWARD_PORT"
+
+
+def _embed_query(args: argparse.Namespace) -> str:
+    """The pane claims for ``/api/token/local``: ``&embed_parent_port=``, and with it
+    ``&embed_forward_port=`` from :data:`EMBED_FORWARD_PORT_ENV`.
+
+    A forward port alone says nothing (it pairs with a parent), so it is sent only
+    beside one; a value that is not a port in 1-65535 is left out.
+    """
+    epp = getattr(args, "embed_parent_port", None)
+    if not epp:
+        return ""
+    query = f"&embed_parent_port={int(epp)}"
+    raw = os.environ.get(EMBED_FORWARD_PORT_ENV, "").strip()
+    efp = int(raw) if raw.isascii() and raw.isdigit() else None
+    if efp and 1 <= efp <= 65535:
+        query += f"&embed_forward_port={int(efp)}"
+    return query
 
 
 def _token(args: argparse.Namespace) -> None:
@@ -141,7 +167,7 @@ def _token(args: argparse.Namespace) -> None:
 
     ttl = parse_duration(args.ttl)
     if ttl is None:
-        print(f"Error: Invalid TTL: {args.ttl} (use e.g. 1h, 30m)", file=sys.stderr)
+        print(f"❌ Invalid TTL: {args.ttl} (use e.g. 1h, 30m)", file=sys.stderr)
         sys.exit(1)
 
     port = resolve_client_port(args.port)
@@ -156,7 +182,7 @@ def _token(args: argparse.Namespace) -> None:
     # way for a legitimate sign-in to fail.
     secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if not secret:
-        print("Error: Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
+        print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
 
     # /api/token/local MINTS owner tokens, so the request below carries a
@@ -172,10 +198,7 @@ def _token(args: argparse.Namespace) -> None:
     # unprovable peer is refused (fail closed) rather than sent to. So no pre-
     # send gate is needed here; the live connected-peer verdict is the single
     # authority.
-    url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={args.ttl}"
-    epp = getattr(args, "embed_parent_port", None)
-    if epp:
-        url += f"&embed_parent_port={int(epp)}"
+    url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={args.ttl}" + _embed_query(args)
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
         with _owner_verified_secret_urlopen(
@@ -187,9 +210,7 @@ def _token(args: argparse.Namespace) -> None:
         # The gateway is live but its connection-bound ownership proof refused
         # this peer -- report the refusal, not "could not reach gateway".
         # _GatewayPeerRefused is NOT an OSError, so it reaches here unwrapped.
-        print(
-            f"Error: Gateway ownership could not be verified on port {port}: {exc}", file=sys.stderr
-        )
+        print(f"❌ Gateway ownership could not be verified on port {port}: {exc}", file=sys.stderr)
         sys.exit(1)
     except urllib.error.HTTPError as exc:
         # The gateway answered; its body names the reason (for example the
@@ -206,7 +227,7 @@ def _token(args: argparse.Namespace) -> None:
             # healthy gateway. The line names no other probe command: the
             # status command's own short timeout reports a busy gateway as down.
             print(
-                f"Error: Gateway on port {port} is up but did not answer within "
+                f"❌ Gateway on port {port} is up but did not answer within "
                 f"{_TOKEN_REQUEST_TIMEOUT:g} s (busy). Try again in a moment.",
                 file=sys.stderr,
             )
@@ -218,14 +239,14 @@ def _token(args: argparse.Namespace) -> None:
             # phrase is the documented stable classification (cli.md) and
             # stays; the remedy is a second line.
             print(
-                f"Error: Could not reach gateway on port {port}: {exc}\n"
+                f"❌ Could not reach gateway on port {port}: {exc}\n"
                 f"{_GATEWAY_NOT_LISTENING_HINT}",
                 file=sys.stderr,
             )
         sys.exit(1)
 
     if not token:
-        print("Error: Gateway returned empty token", file=sys.stderr)
+        print("❌ Gateway returned empty token", file=sys.stderr)
         sys.exit(1)
     _probe_dashboard_health(port)
 
@@ -280,7 +301,7 @@ def _emit_session_urls(port: int, token: str) -> None:
         if policy_off():
             print()
             print(
-                f"Warning: dashboard.tailscale.enabled is on, but {POLICY_OFF_DETAIL} "
+                f"⚠  dashboard.tailscale.enabled is on, but {POLICY_OFF_DETAIL} "
                 "No tailnet URL is printed.",
                 file=sys.stderr,
             )
@@ -288,7 +309,7 @@ def _emit_session_urls(port: int, token: str) -> None:
         if is_governance_pinned_off():
             print()
             print(
-                "Warning: dashboard.tailscale.enabled is on, but your administrator has "
+                "⚠️  dashboard.tailscale.enabled is on, but your administrator has "
                 "pinned tailnet access off (capabilities.tailnet_origin), so the "
                 "gateway will not trust a tailnet origin and no tailnet URL is "
                 "printed.",
@@ -317,7 +338,7 @@ def _emit_session_urls(port: int, token: str) -> None:
             else:
                 print()
                 print(
-                    "Warning: Not printing a tailnet URL: this dashboard is not verified to "
+                    "⚠️  Not printing a tailnet URL: this dashboard is not verified to "
                     f"be the service published at {tailnet_url} "
                     f"({state.detail}). The URL carries a session, so handing it out "
                     "while another service holds that name would leak it. Run "
@@ -331,7 +352,7 @@ def _emit_session_urls(port: int, token: str) -> None:
             # origin at startup -- so the dashboard would answer 403 there anyway.
             print()
             print(
-                "Warning: dashboard.tailscale.enabled is on, but no tailnet name resolves "
+                "⚠️  dashboard.tailscale.enabled is on, but no tailnet name resolves "
                 "right now, so there is no tailnet URL to hand out (and the gateway "
                 "will not trust one either). Check `tailscale status`.",
                 file=sys.stderr,
@@ -349,7 +370,7 @@ def _logout(port: int) -> None:
     # for a legitimate sign-in to fail.
     secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if not secret:
-        print("Error: Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
+        print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
 
     url = f"http://{_CLI_LOOPBACK}:{port}/api/logout"
@@ -365,10 +386,10 @@ def _logout(port: int) -> None:
         ) as resp:
             data = json.loads(resp.read())
             if data.get("ok"):
-                print("Done: All dashboard sessions revoked.")
+                print("✅ All dashboard sessions revoked.")
             else:
                 print(
-                    f"Failed to revoke sessions: {data.get('error', 'unknown error')}",
+                    f"❌ Failed to revoke sessions: {data.get('error', 'unknown error')}",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -377,7 +398,7 @@ def _logout(port: int) -> None:
         # this peer. _GatewayPeerRefused is NOT an OSError, so it reaches here
         # unwrapped instead of being folded into the URLError arm below and
         # mislabelled "gateway not running" against a live gateway.
-        print(f"Failed to revoke sessions: gateway ownership not verified: {e}", file=sys.stderr)
+        print(f"❌ Failed to revoke sessions: gateway ownership not verified: {e}", file=sys.stderr)
         sys.exit(1)
     except urllib.error.HTTPError as e:
         # The gateway answered, and its body says why (an invalid secret, or a
@@ -386,7 +407,7 @@ def _logout(port: int) -> None:
 
         reason = http_error_reason(e)
         print(
-            f"Failed to revoke sessions: HTTP {e.code}" + (f": {reason}" if reason else ""),
+            f"❌ Failed to revoke sessions: HTTP {e.code}" + (f": {reason}" if reason else ""),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -399,12 +420,12 @@ def _logout(port: int) -> None:
 
         if deadline_expired(e):
             print(
-                f"Error: Gateway on port {port} is up but did not answer in time "
+                f"❌ Gateway on port {port} is up but did not answer in time "
                 "(busy) — try again in a moment.",
                 file=sys.stderr,
             )
         else:
-            print("Error: Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
+            print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
 
 
@@ -426,23 +447,23 @@ def _update_approve() -> None:
     # approval. Saying so and exiting cleanly beats hunting for a nonce that
     # this shape never writes.
     if derive_capability().managed_by == MANAGED_BY_ELECTRON:
-        print("Note: This is a packaged desktop install.")
+        print("ℹ️  This is a packaged desktop install.")
         print("   Approve the update in the app: Settings › About › Install & restart.")
         return
 
-    print("Approving the pending in-app update…\n")
+    print("👻 Approving the pending in-app update…\n")
     # Default read: never writes. This runs in the CLI process, outside the
     # gateway's nonce mutex — expiry cleanup here could race a gateway
     # re-arm and delete a fresh request. Cleanup is the gateway's job.
     pending = read_pending()
     if pending is None:
-        print("Error: No armed update request (it may have expired).", file=sys.stderr)
+        print("❌ No armed update request (it may have expired).", file=sys.stderr)
         print(
             "   Arm one from the dashboard's About panel first, then re-run this.",
             file=sys.stderr,
         )
         sys.exit(1)
-    print(f"  v{pending.version} ({pending.channel} channel), expires in {pending.expires_in}s")
+    print(f"  📦 v{pending.version} ({pending.channel} channel), expires in {pending.expires_in}s")
 
     port = resolve_client_port(None)
     url = f"http://127.0.0.1:{port}/api/update/approve"
@@ -477,9 +498,7 @@ def _update_approve() -> None:
         # The gateway is live but its connection-bound ownership proof refused
         # this peer. _GatewayPeerRefused is NOT an OSError, so it reaches here
         # unwrapped instead of being mislabelled a transport failure.
-        print(
-            f"Error: Gateway ownership could not be verified on port {port}: {e}", file=sys.stderr
-        )
+        print(f"❌ Gateway ownership could not be verified on port {port}: {e}", file=sys.stderr)
         sys.exit(1)
     except urllib.error.HTTPError as e:
         try:
@@ -487,8 +506,7 @@ def _update_approve() -> None:
         except Exception:
             detail = ""
         print(
-            f"Error: Gateway refused the approval (HTTP {e.code})"
-            + (f": {detail}" if detail else ""),
+            f"❌ Gateway refused the approval (HTTP {e.code})" + (f": {detail}" if detail else ""),
             file=sys.stderr,
         )
         sys.exit(1)
@@ -502,19 +520,19 @@ def _update_approve() -> None:
 
         if deadline_expired(e):
             print(
-                f"Error: Gateway on port {port} is up but busy (did not answer); it may "
+                f"❌ Gateway on port {port} is up but busy (did not answer); it may "
                 "have taken the request — check the dashboard before re-running.",
                 file=sys.stderr,
             )
         else:
             print(
-                "Error: Gateway is not running — start it, or update directly with: kirocrew update",
+                "❌ Gateway is not running — start it, or update directly with: kirocrew update",
                 file=sys.stderr,
             )
         sys.exit(1)
     if body.get("status") == "armed":
-        print(f"\nDone: Approved. v{body.get('version', pending.version)} is armed.")
+        print(f"\n✅ Approved. v{body.get('version', pending.version)} is armed.")
         print("   It installs at the gateway's next start; nothing restarts now.")
         return
-    print(f"\nDone: Approved. The gateway is applying v{body.get('version', pending.version)}")
+    print(f"\n✅ Approved. The gateway is applying v{body.get('version', pending.version)}")
     print("   and will restart itself; watch progress in the dashboard.")

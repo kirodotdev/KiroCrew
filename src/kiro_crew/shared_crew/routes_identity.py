@@ -32,6 +32,7 @@ from kiro_crew.shared_crew.contracts import Principal, SessionPage, SessionQuery
 from kiro_crew.shared_crew.identity import viewer_principal
 from kiro_crew.shared_crew.people import people_view
 from kiro_crew.shared_crew.people import registry as people_registry
+from kiro_crew.shared_crew.preview import preview_enabled
 from kiro_crew.shared_crew.session_query import query_sessions
 
 logger = logging.getLogger(__name__)
@@ -170,9 +171,11 @@ async def api_shared_crew_people(request: web.Request) -> web.Response:
 
     viewer = viewer_principal(request)
     owner_id = _owner_id(request)
-    catalog = await _catalog_rows(request)
+    # With the preview off this Crew is single-operator: no catalogue walk, no daemon read.
+    on = preview_enabled()
+    catalog = await _catalog_rows(request) if on else []
     # Only the owner's view lists sharees, so only it reads the daemon.
-    sharees = await read_sharees() if is_owner_principal(viewer, owner_id) else ()
+    sharees = await read_sharees() if on and is_owner_principal(viewer, owner_id) else ()
 
     def build() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         rows = _conversations(catalog)
@@ -248,7 +251,8 @@ async def api_shared_crew_mode(request: web.Request) -> web.Response:
     from kiro_crew.shared_crew.access import setup_paths_dict
     from kiro_crew.shared_crew.crew_mode import mode_view
 
-    catalog = await _catalog_rows(request)
+    # With the preview off this Crew is single-operator: nobody else created a session.
+    catalog = await _catalog_rows(request) if preview_enabled() else []
     creators = await asyncio.to_thread(lambda: _session_creators(_conversations(catalog)))
     crew_id = await asyncio.to_thread(gateway_id)
     body = mode_view(

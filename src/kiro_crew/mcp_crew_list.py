@@ -38,7 +38,12 @@ def _line(row: dict[str, Any]) -> str:
     # either can be missing without the other.
     flag = row.get("version_match")
     if flag is not None or row.get("version"):
-        match = "matches" if flag is True else "MISMATCH" if flag is False else "unknown"
+        if flag is True:
+            match = "matches"
+        elif flag is False:
+            match = "MISMATCH"
+        else:
+            match = "unknown"
         text = f"v{row['version']} " if row.get("version") else ""
         head += f", version {text}({match})"
     room = row.get("headroom")

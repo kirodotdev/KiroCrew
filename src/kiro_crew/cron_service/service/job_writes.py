@@ -23,7 +23,11 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import milestones
-from kiro_crew.cron_service.fields import validate_managed_by
+from kiro_crew.cron_service.fields import (
+    _validate_cron_string_fields,
+    check_delivery_pin,
+    validate_managed_by,
+)
 from kiro_crew.cron_service.identity import bind_cron_memory
 from kiro_crew.cron_service.model import CronJob
 
@@ -59,6 +63,7 @@ def add_job(
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
     new_chat_per_run: bool = False,
+    on_tab_close: str = "resume",
     folder_id: str = "",
     chat_folder_id: str = "",
     project_path: str = "",
@@ -112,6 +117,7 @@ def add_job(
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
         new_chat_per_run=new_chat_per_run,
+        on_tab_close=on_tab_close,
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
         project_path=project_path,
@@ -344,6 +350,7 @@ async def add_job_async(
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
     new_chat_per_run: bool = False,
+    on_tab_close: str = "resume",
     folder_id: str = "",
     chat_folder_id: str = "",
     project_path: str = "",
@@ -360,6 +367,8 @@ async def add_job_async(
     alert_after_failures: int | None = None,
     source_preset: str = "",
     source_template_prompt: str = "",
+    channel_type: str = "",
+    target_id: str = "",
 ) -> CronJob:
     """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
@@ -395,6 +404,7 @@ async def add_job_async(
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
         new_chat_per_run=new_chat_per_run,
+        on_tab_close=on_tab_close,
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
         project_path=project_path,
@@ -420,6 +430,11 @@ async def add_job_async(
     if source_preset:
         job.source_preset = source_preset
         job.source_template_prompt = source_template_prompt
+    # Dashboard-only too: the Schedule page is the one surface that picks a
+    # channel destination, so it is set here the same way.
+    _validate_cron_string_fields({"channel_type": channel_type, "target_id": target_id})
+    check_delivery_pin(channel, channel_type, target_id)
+    job.channel_type, job.target_id = channel_type, target_id
     await asyncio.to_thread(self._persist_add_locked, job)
     self._arm_timer()
     logger.info("Added cron job '%s' (%s)", name, job.id)

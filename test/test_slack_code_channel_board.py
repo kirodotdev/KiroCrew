@@ -55,6 +55,11 @@ def _passthrough_spawn(argv, mode="standard", **kw):
 def _no_sandbox(_floor_monkeypatch):
     _floor_monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     _floor_monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
+    # These tests prove the board, not hook handling: the hook scan starts three gits
+    # before every git read. Both names that bind it are stubbed (`wt` for `_run_git`,
+    # `git_ops` for the capped diff reader); test_git_config_hooks.py covers both.
+    _floor_monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
+    _floor_monkeypatch.setattr(git_ops, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
 
 
 class _LiveConfig:
@@ -334,6 +339,10 @@ def test_read_board_projects_only_the_published_set_with_liveness():
         "pr_state",
         "pr_ci",
         "pr_checks",
+        # Who stopped the worker from the Workers tab, and when (model's
+        # published set; cleared by the worker's next turn).
+        "stopped_by",
+        "stopped_at",
     }
 
 

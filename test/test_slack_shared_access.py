@@ -390,7 +390,7 @@ async def test_dashboard_links_stay_the_owners() -> None:
         "!dashboard", slack, None, "D1", "t1", "m1", "s1", FRIEND, None  # type: ignore[arg-type]
     )
     assert handled is True
-    slack.post_message.assert_awaited_once_with("D1", "Blocked: Not authorized.", "t1")
+    slack.post_message.assert_awaited_once_with("D1", "⛔ Not authorized.", "t1")
 
 
 @pytest.mark.asyncio
@@ -403,7 +403,7 @@ async def test_owner_commands_stay_the_owners(command: str) -> None:
     assert await _route_bang_command(
         command, slack, None, "D1", "t1", "m1", "s1", FRIEND, None  # type: ignore[arg-type]
     )
-    assert slack.post_message.await_args.args[1] == "Blocked: Owner-only command."
+    assert slack.post_message.await_args.args[1] == "⛔ Owner-only command."
 
 
 @pytest.mark.asyncio

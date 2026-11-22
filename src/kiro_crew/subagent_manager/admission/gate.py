@@ -1245,8 +1245,8 @@ class _GateMixin(ManagerComponent):
                 memory_detail = f"{unknown_note}; need {min_mem:.1f} GB"
             else:
                 memory_detail = (
-                    f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
-                    f"({candidate_price or 0.0:.2f} GB for this start)"
+                    f"low memory: {avail_gb:.1f} GB free, needs {min_mem:.1f} GB; "
+                    "close other apps to free some"
                 )
             # A floor wait carries no pressure clock (the hold below is not
             # evaluated for it): one an earlier hold started is dropped, so time

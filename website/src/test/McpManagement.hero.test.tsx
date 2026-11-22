@@ -86,7 +86,7 @@ const footprintSettled = () =>
     { timeout: 5000 },
   )
 
-const findSharing = () => screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+const findSharing = () => screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
 
 beforeEach(() => {
   vi.restoreAllMocks()
@@ -389,26 +389,51 @@ describe('the Review dialog', () => {
   const block = (dialog: HTMLElement, name: string) =>
     within(dialog).getByRole('heading', { name }).closest('section') as HTMLElement
 
+  it('keeps the "what changed" line when the diff draws nothing (only an env value changed)', async () => {
+    const envOnly = {
+      reason: 'changed_needs_reapproval', complete: true, expected_launch: 'env-shown',
+      commands: [['/opt/search']], approved_commands: [['/opt/search']],
+      envs: [['MODE=<hidden sha256:00000002>']], approved_envs: [['MODE=<hidden sha256:00000001>']],
+    }
+    vi.spyOn(api, 'mcpGatewayStatus').mockImplementation((async () =>
+      status({ enabled: true, stub: ['search-mcp'], launch_refused: { 'search-mcp': envOnly } })) as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({
+      servers: [server({ name: 'search-mcp', stub: true, in_allowlist: true })],
+    } as never)
+    mount()
+    const { dialog } = await openDialog()
+    const search = block(dialog, 'search-mcp')
+    expect(within(search).getByText(M('command_changed_hint_settings'))).toBeTruthy()
+  })
+
   it('lists only the waiting servers, with what each runs and env names only', async () => {
     mockTwo()
     mount()
     const { dialog } = await openDialog()
-    expect(within(dialog).getByText(M('approval_title', { count: 2 }))).toBeTruthy()
+    // The title asks the yes/no question the two buttons answer.
+    expect(within(dialog).getByRole('heading', { level: 2, name: M('review_title', { count: 2 }) })).toBeTruthy()
     expect(within(dialog).getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['search-mcp', 'tickets-mcp'])
     const search = block(dialog, 'search-mcp')
-    expect(within(search).getByText(M('command_changed_hint_command'))).toBeTruthy()
     expect(pres(search)).toEqual(['/opt/search --v1', '/opt/search --v2'])
-    // What changed is said once, above the two columns, and marked in NEW.
-    expect(within(search).getByText(M('diff_changed', { from: '--v1', to: '--v2' }))).toBeTruthy()
-    expect(Array.from(search.querySelectorAll('mark')).map(m => m.textContent)).toEqual(['--v2'])
+    // The columns mark what changed on each side, so no line above repeats it.
+    expect(Array.from(search.querySelectorAll('li')).filter(li => li.textContent?.includes('--v1'))).toEqual([])
+    expect(Array.from(search.querySelectorAll('mark')).map(m => m.textContent)).toEqual(['--v1', '--v2'])
     expect(search.textContent).not.toContain('sha256')
     const tickets = block(dialog, 'tickets-mcp')
     expect(within(tickets).getByText(M('reapproval_reason_added_outside_dashboard_unapprovable'))).toBeTruthy()
-    // Each block says what Approve and Skip do.
-    expect(within(search).getByText(M('review_what_approve_does'))).toBeTruthy()
-    // What approving risks and when it is fine is said once, above every block.
-    const intro = `${M('share_risk')} ${M('review_when_safe')}`
-    expect(Array.from(dialog.querySelectorAll('p')).filter(p => p.textContent === intro)).toHaveLength(1)
+    // No explainer in the dialog: the risk is said once, in the turn-on
+    // confirm, and each block's buttons are named by their result. So
+    // neither an intro nor a per-block line repeats it.
+    expect(dialog.textContent).not.toContain(M('share_risk'))
+    expect(dialog.querySelectorAll('[id^="mcp-review-means-"]')).toHaveLength(0)
+    // A changed launch has no "what changed" hint line: its diff says it.
+    expect(within(search).queryByText(M('command_changed_hint_command'))).toBeNull()
+    expect(search.querySelector('[id^="mcp-review-reason-"]')).toBeNull()
+    // A reason that is not a change (never approved here) still shows.
+    expect(within(tickets).getByText(M('reapproval_reason_added_outside_dashboard_unapprovable'))).toBeTruthy()
+    expect(within(search).getAllByRole('button').map(b => b.textContent)).toEqual(
+      expect.arrayContaining([M('review_skip'), M('approve_button')]),
+    )
     // One Approve per server; no approve-all.
     expect(within(dialog).getAllByRole('button', { name: M('approve_button') })).toHaveLength(2)
   })
@@ -427,7 +452,8 @@ describe('the Review dialog', () => {
     expect(outcome.textContent).toBe(M('review_approved'))
     // The status read is invalidated, so the card shrinks to what still waits,
     // and the dialog's own title counts only what still waits.
-    await waitFor(() => expect(screen.getAllByText(M('approval_title', { count: 1 })).length).toBe(2), { timeout: 5000 })
+    await waitFor(() => expect(screen.getAllByText(M('approval_title', { count: 1 })).length).toBe(1), { timeout: 5000 })
+    await waitFor(() => expect(within(dialog).getByText(M('review_title', { count: 1 }))).toBeTruthy(), { timeout: 5000 })
 
     fireEvent.click(within(block(dialog, 'tickets-mcp')).getByRole('button', { name: M('review_skip') }))
     expect(setStub).toHaveBeenCalledTimes(1)

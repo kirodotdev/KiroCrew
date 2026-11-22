@@ -32,10 +32,12 @@ silently fails to act.
   keeps it from being the place someone accidentally makes approval
   world-readable.
 * **Trust reuses the session's own approval policy** rather than adding a
-  second trust store. ``slack/handler.py`` keeps an in-memory
-  ``_trusted_sessions`` set that ``dashboard/server_runtime/inherited_trust.py`` already
-  reaches across a circular-import boundary to clear; a third copy of "is this session
-  trusted" would be one more thing to keep in sync. ``SessionManager``'s
+  second trust store, and the typed reply makes that grant before it resolves
+  the request, so the receipt names what was actually granted.
+  ``slack/handler.py`` keeps an in-memory ``_trusted_sessions`` set that
+  ``dashboard/server_runtime/inherited_trust.py`` already reaches across a
+  circular-import boundary to clear; a third copy of "is this session trusted"
+  would be one more thing to keep in sync. ``SessionManager``'s
   approval policy is durable, already SEL-audited on write, and already what
   spawned subagents inherit.
 
@@ -321,22 +323,25 @@ def parse_approval_reply(text: str) -> str:
     return APPROVAL_WORDS.get(token, "")
 
 
-def deliver_verdict(session_key: str, verdict: str, conversation_id: str = "") -> str:
+def deliver_verdict(
+    session_key: str, verdict: str, conversation_id: str = "", *, sessions: Any = None
+) -> str:
     """Hand *verdict* to the oldest open request; return the receipt to send.
 
     Returns :data:`RECEIPT_EXPIRED` when nothing is open, which is the case
     that must never be silent: the operator typed "yes" believing they were
-    approving something, and they need to know they were not.
+    approving something, and they need to know they were not. A request whose
+    window already closed counts as not open.
+
+    Trust is granted HERE, strictly, before the request resolves, so the receipt
+    names what was granted: with no *sessions* manager, or a grant refused or
+    failed, this one tool is approved and the receipt says "Approved.".
     """
     entry = pending_for(session_key, conversation_id)
-    if entry is None:
+    if entry is None or entry.expired:
         return RECEIPT_EXPIRED
     if verdict == TRUST:
-        from kiro_crew.messaging.session_trust import trust_permitted
-
-        if not trust_permitted():
-            # A ``permission_mode`` deny of ``trust``: approve this one tool, and say so.
-            verdict = APPROVE
+        verdict = _grant_session_trust(entry.session_key, sessions)
     if not entry.future.done():
         entry.future.set_result(verdict)
     _forget(entry.session_key, entry.request_id)
@@ -345,6 +350,31 @@ def deliver_verdict(session_key: str, verdict: str, conversation_id: str = "") -
     if verdict == TRUST:
         return RECEIPT_TRUSTED
     return RECEIPT_DENIED
+
+
+def _grant_session_trust(session_key: str, sessions: Any) -> str:
+    """:data:`TRUST` when the session's Trust was granted whole, else :data:`APPROVE`.
+
+    The grant is the session's approval policy, which is what makes a spawned
+    subagent inherit it, so without a manager there is nothing to grant.
+    """
+    from kiro_crew.messaging.link import telemetry_channel_of
+    from kiro_crew.messaging.session_trust import add_trusted_session, trust_permitted
+
+    if not trust_permitted() or sessions is None:
+        # A ``permission_mode`` deny of ``trust``, or no policy to write.
+        return APPROVE
+    try:
+        # Through the shared grant, so its deny hook revokes it later (both halves).
+        add_trusted_session(session_key, sessions, strict=True)
+    except Exception:  # noqa: BLE001: a grant that failed still approves this one tool
+        logger.warning(
+            "approval: could not grant session trust on %s",
+            telemetry_channel_of(session_key),
+            exc_info=True,
+        )
+        return APPROVE
+    return TRUST
 
 
 def abandon_approval(session_key: str, request_id: Any) -> None:
@@ -442,7 +472,7 @@ class TextReplyApprovalDecider:
             return False
         verdict = await entry.wait(self._timeout_s)
         if verdict == TRUST:
-            self._grant_session_trust()
+            # Granted by the reply in :func:`deliver_verdict`.
             return True
         if entry.expired:
             self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
@@ -461,24 +491,6 @@ class TextReplyApprovalDecider:
         except Exception:  # noqa: BLE001: a read failure must not grant trust
             logger.warning("approval: trust lookup failed", exc_info=True)
             return False
-
-    def _grant_session_trust(self) -> None:
-        """Record Trust as the session's approval policy.
-
-        Reusing the session's own policy rather than a module-level set is what
-        makes a spawned subagent inherit the grant: it reads the parent's
-        approval policy, never an in-memory trust set.
-        """
-        if self._sessions is None:
-            return
-        from kiro_crew.messaging.session_trust import add_trusted_session
-
-        try:
-            # Through the shared grant, so a ``permission_mode`` deny of ``trust``
-            # refuses it here and its deny hook revokes it later (both halves).
-            add_trusted_session(self.session_key, self._sessions)
-        except Exception:  # noqa: BLE001: the tool is already approved
-            logger.warning("approval: could not persist session trust", exc_info=True)
 
 
 def reset_for_tests() -> None:

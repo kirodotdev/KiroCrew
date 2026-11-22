@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Folder, FolderCode, RotateCw, ExternalLink, ChevronDown, ChevronUp, MoreHorizontal, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
 import { revealOrOpen, useCanReveal, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
+import { useBranding } from '../../hooks/useBranding'
+import { isEmbeddedPane } from '../../lib/embedded'
+import { isElectron } from '../../lib/electron'
+import { REMOTE_EDITORS, remoteEditorUrl } from '../../utils/remoteEditorUrl'
 import ErrorNotice from '../../components/ErrorNotice'
+import { IconButton } from '../../components/ui'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import TruncatedText from '../../components/TruncatedText'
+import { pushNav, type NavState } from '../../components/WebPreviewPanel'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
@@ -98,6 +105,9 @@ const SEARCH_RESULT_LIMIT_MAX = 60
  *  prefixes the user has already typed past. */
 const SEARCH_DEBOUNCE_MS = 200
 
+/** Back/Forward: the header's 26px icon-button look, dimmed and hover-free while inert. */
+const NAV_BUTTON_CLASS = 'flex items-center justify-center w-[26px] h-[26px] p-0 rounded-md aria-disabled:opacity-40 aria-disabled:cursor-default aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted'
+
 /**
  * Directory listing as a side-panel tab body.
  *
@@ -121,7 +131,8 @@ const SEARCH_DEBOUNCE_MS = 200
  * lifts the new path back to the tab record so the strip label follows along. In
  * tree mode nothing re-targets while browsing descendants, so `onPathChange`
  * fires only for the parent row — which leaves the project root, and therefore
- * leaves tree mode, on purpose.
+ * leaves tree mode, on purpose. Back and Forward in the header step through the
+ * folders this tab has shown, in memory only.
  *
  * Clicking a file hands off to `onFileOpen` in both modes, which opens a normal
  * file tab.
@@ -157,7 +168,10 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // Still read for `atProjectRoot`'s case-sensitivity flag below; the reveal
   // label it used to spell out now comes from the shared `useRevealLabel`.
   const gatewayPlatform = useGatewayPlatform()
-  const [cwd, setCwd] = useState(path)
+  const [nav, setNav] = useState<NavState>(() => ({ stack: [path], index: 0 }))
+  const cwd = nav.stack[nav.index]
+  const canBack = nav.index > 0
+  const canForward = nav.index < nav.stack.length - 1
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [searchLimit, setSearchLimit] = useState(SEARCH_RESULT_CAP)
@@ -189,7 +203,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   // different directory reuses this tab when the id matches). A query typed for
   // the previous directory must not survive: it would render matches from a tree
   // the header no longer names.
-  useEffect(() => { setCwd(path); setQuery(''); setDebouncedQuery('') }, [path])
+  useEffect(() => { setNav(n => pushNav(n, path)); setQuery(''); setDebouncedQuery('') }, [path])
 
   // Read by the timer, not captured by it, for the reason `useDebouncedValue`
   // gives: an overtaken timer firing before this effect's cleanup would move the
@@ -253,10 +267,19 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   })
 
   const navigate = (next: string) => {
-    setCwd(next)
+    setNav(n => pushNav(n, next))
     setQuery('')
     setDebouncedQuery('')
     onPathChange?.(next)
+  }
+  // Moves the index, then reports outside the updater: StrictMode double-invokes updaters.
+  const step = (delta: -1 | 1) => {
+    const index = nav.index + delta
+    if (index < 0 || index >= nav.stack.length) return
+    setNav({ stack: nav.stack, index })
+    setQuery('')
+    setDebouncedQuery('')
+    onPathChange?.(nav.stack[index])
   }
 
   // One refresh button, two things to refresh. In tree mode the listing is not
@@ -380,9 +403,19 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   const reveal = useRevealFailure(cwd)
   // `/api/reveal` shells out on the gateway, so revealing `cwd` only makes sense
   // when the browser is on that same machine and the machine can open a file
-  // manager. Anywhere else the click could only copy the path, so the button is
+  // manager. Anywhere else the click could only copy the path, so the menu item is
   // hidden by the same gate every other file-location surface applies.
   const canReveal = useCanReveal()
+  // "Open in <editor>": this folder as a workspace in the viewer's own editor over
+  // the viewer's own SSH, once Settings → Display → Remote editor names an editor
+  // and a host. The folder link carries no `:line` suffix, which is what makes the
+  // editor open it as a folder (see remoteEditorUrl). Not gated on `directLocal`,
+  // which reads true through an `ssh -L` forward.
+  const { remoteEditor, remoteEditorHost } = useBranding()
+  const remoteEditorHref = remoteEditorUrl(remoteEditor, remoteEditorHost, cwd, 'dir')
+  const remoteEditorLabel = remoteEditorHref
+    ? t('components.markdownPanel.open_in_remote_editor', { editor: REMOTE_EDITORS[remoteEditor] })
+    : ''
 
   return (
     <DetailPanel
@@ -392,6 +425,27 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
       onClose={onClose}
       customHeader={
         <div className="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-border">
+          {/* Inert via `aria-disabled` and the guard in `step`, not `disabled`: see Refresh below. */}
+          <span className="flex items-center gap-0.5 shrink-0">
+            <IconButton
+              onClick={() => step(-1)}
+              aria-disabled={!canBack}
+              className={NAV_BUTTON_CLASS}
+              title={t('pages.chat.folderPanel.back')}
+              aria-label={t('pages.chat.folderPanel.back')}
+            >
+              <ArrowLeft size={14} />
+            </IconButton>
+            <IconButton
+              onClick={() => step(1)}
+              aria-disabled={!canForward}
+              className={NAV_BUTTON_CLASS}
+              title={t('pages.chat.folderPanel.forward')}
+              aria-label={t('pages.chat.folderPanel.forward')}
+            >
+              <ArrowRight size={14} />
+            </IconButton>
+          </span>
           <Folder size={14} className="shrink-0 text-muted" />
           <TruncatedText full={cwd} className="text-[12px] text-text-strong">{basename(cwd)}</TruncatedText>
           <span className="flex-1" />
@@ -423,15 +477,43 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               </span>
             )}
           </button>
-          {canReveal && (
-            <button
-              onClick={() => { void revealOrOpen(cwd, 'reveal', reveal) }}
-              className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
-              title={revealLabel}
-              aria-label={revealLabel}
-            >
-              <ExternalLink size={14} />
-            </button>
+          {/* Refresh stays in the row; the rarer folder-level actions share one overflow
+              trigger so the row holds at most two buttons. Rendered only when it has an item. */}
+          {(canReveal || remoteEditorHref) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
+                  title={t('pages.chatPage.more_actions')}
+                  aria-label={t('pages.chatPage.more_actions')}
+                  data-testid="folder-panel-more"
+                >
+                  <MoreHorizontal size={14} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[190px]">
+                {canReveal && (
+                  <DropdownMenuItem onSelect={() => { void revealOrOpen(cwd, 'reveal', reveal) }}>
+                    <ExternalLink size={13} className="shrink-0 text-muted" />
+                    <span>{revealLabel}</span>
+                  </DropdownMenuItem>
+                )}
+                {/* The desktop app refuses an in-window navigation to an editor scheme, so
+                    there the link opens as a new window, which the desktop app confirms. */}
+                {remoteEditorHref && (
+                  <DropdownMenuItem asChild>
+                    <a
+                      href={remoteEditorHref}
+                      target={isElectron || isEmbeddedPane() ? '_blank' : undefined}
+                      data-testid="folder-panel-remote-editor"
+                    >
+                      <FolderCode size={13} className="shrink-0 text-muted" />
+                      <span>{remoteEditorLabel}</span>
+                    </a>
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       }

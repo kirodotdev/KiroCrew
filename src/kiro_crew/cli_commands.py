@@ -316,7 +316,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         bad_path = None
     except ConfigReadError as exc:
         print(
-            f"Error: {bad_path} is not usable ({exc}); refusing to continue, because "
+            f"❌ {bad_path} is not usable ({exc}); refusing to continue, because "
             "even reading it would rewrite it. Fix that file, then retry.",
             file=sys.stderr,
         )
@@ -373,7 +373,7 @@ def _tailnet(args: argparse.Namespace) -> None:
             else None
         )
         if refused is not None:
-            print(f"Error: {refused.detail}", file=sys.stderr)
+            print(f"❌ {refused.detail}", file=sys.stderr)
             sys.exit(1)
 
     if action == "up" and not port_source:
@@ -390,7 +390,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         # fallback: one only reports, and the other checks mount ownership before
         # removing anything.
         print(
-            f"Error: Cannot tell which port the dashboard is on, so refusing to publish "
+            f"❌ Cannot tell which port the dashboard is on, so refusing to publish "
             f"{port} — nothing is verified to be listening there, and `tailscale "
             f"serve` would expose whatever is. Start the gateway that serves the "
             f"dashboard (`kirocrew gateway`, or `kirocrew service install` to keep "
@@ -403,7 +403,7 @@ def _tailnet(args: argparse.Namespace) -> None:
     if action == "status":
         if tailnet.policy_off():
             # The enterprise policy does not turn tailnet on; no daemon is read.
-            print("Tailnet dashboard access")
+            print("👻 Tailnet dashboard access")
             print(f"   Policy:     {tailnet.POLICY_OFF_DETAIL}")
             print(
                 f"   Trust:      {'enabled' if enabled else 'disabled'} "
@@ -418,7 +418,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         # "in the allowlist".
         name = tailnet.self_dns_name()
         state = tailnet_serve.serve_state(port)
-        print("Tailnet dashboard access")
+        print("👻 Tailnet dashboard access")
         if pinned:
             print(
                 "   Policy:     PINNED OFF by your administrator " "(capabilities.tailnet_origin)"
@@ -438,12 +438,12 @@ def _tailnet(args: argparse.Namespace) -> None:
         return
 
     if action not in ("up", "down"):
-        print(f"Error: Unknown tailnet action: {action}", file=sys.stderr)
+        print(f"❌ Unknown tailnet action: {action}", file=sys.stderr)
         sys.exit(1)
 
     if action == "down":
         result = tailnet_serve.unpublish(port)
-        print(("Done: " if result.ok else "Error: ") + result.detail)
+        print(("✅ " if result.ok else "❌ ") + result.detail)
         if result.ok:
             # The trust setting is deliberately left ON. It contributes one origin
             # that nothing can reach while serve is off, so clearing it would be
@@ -479,7 +479,7 @@ def _tailnet(args: argparse.Namespace) -> None:
         # disables this is caught here too -- printing "published" while the gateway
         # will still refuse the origin is the exact false promise to avoid.
         print(
-            "Error: dashboard.tailscale.enabled is false, so the gateway would refuse "
+            "❌ dashboard.tailscale.enabled is false, so the gateway would refuse "
             "your tailnet origin even once published — refusing to publish a "
             "dashboard that would answer 403.\n"
             "   Enable it once, then re-run this command:\n"
@@ -492,22 +492,22 @@ def _tailnet(args: argparse.Namespace) -> None:
 
     result = tailnet_serve.publish(port, audit_tool="tailnet_cli_up")
     if not result.ok:
-        print(f"Error: {result.detail}", file=sys.stderr)
+        print(f"❌ {result.detail}", file=sys.stderr)
         sys.exit(1)
-    print(f"Done: {result.detail}")
+    print(f"✅ {result.detail}")
 
     name = tailnet.self_dns_name()
     if name:
-        print(f"URL:        https://{name}")
+        print(f"👻 URL:        https://{name}")
     else:
         print(
-            "Warning: No tailnet name is resolvable right now, so the gateway will not "
+            "⚠️  No tailnet name is resolvable right now, so the gateway will not "
             "trust anything on restart. Check `tailscale status`."
         )
     # Said unconditionally, including when the switch was already on: the origin
     # is resolved once at startup, so a gateway that booted before this command
     # has an allowlist that does not contain the name yet.
-    print("Restart the gateway for the tailnet origin to be trusted.")
+    print("👻 Restart the gateway for the tailnet origin to be trusted.")
 
 
 def _telemetry(args: argparse.Namespace) -> None:
@@ -517,15 +517,8 @@ def _telemetry(args: argparse.Namespace) -> None:
     ``enable`` persist BOTH switches, ``telemetry.enabled`` (local recording) and
     ``telemetry.beacon_enabled`` (the heartbeat), to config.json, so the choice
     survives restarts and upgrades — an env-var-only opt-out would silently lapse
-    the next time the user launched from a different shell. Both record
-    ``dashboard.privacy_acked``; ``dashboard.privacy_ack_version`` ("told that
-    local recording is on") only when ``enable`` actually turns recording on, the
-    same rule the dashboard's Privacy chapter applies.
+    the next time the user launched from a different shell.
     """
-    # Bound here, not from the module-level ``beacon`` name: tests stand that name
-    # in with a mock, and the stored version must stay a real int.
-    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
-
     action = getattr(args, "telemetry_action", None) or "status"
     cfg = KiroCrewConfig.load()
 
@@ -538,14 +531,13 @@ def _telemetry(args: argparse.Namespace) -> None:
                     cfg.telemetry.beacon_endpoint,
                     enabled=cfg.telemetry.beacon_enabled,
                     app_version=__version__,
-                    acked=cfg.dashboard.privacy_acked,
                 )
             )
         )
         return
 
     if action not in ("disable", "enable"):
-        print(f"Error: Unknown telemetry action: {action}", file=sys.stderr)
+        print(f"❌ Unknown telemetry action: {action}", file=sys.stderr)
         sys.exit(1)
 
     want = action == "enable"
@@ -561,7 +553,7 @@ def _telemetry(args: argparse.Namespace) -> None:
     # the trail readable about WHICH control refused.
     if want and beacon.is_governance_pinned_off(audit_tool="telemetry_enable_cli"):
         print(
-            "Error: The anonymous beacon is pinned OFF by your administrator's "
+            "❌ The anonymous beacon is pinned OFF by your administrator's "
             "security policy (capabilities.telemetry).",
             file=sys.stderr,
         )
@@ -578,8 +570,8 @@ def _telemetry(args: argparse.Namespace) -> None:
     set_recording = True
     if want:
         try:
-            # The built-in Kiro destination does not count: the notice this
-            # command records below names it.
+            # The built-in Kiro destination does not count: it needs no
+            # written opt-in.
             from kiro_crew.metrics.kiro_export import egress_needs_written_opt_in
 
             set_recording = not egress_needs_written_opt_in(cfg.telemetry)
@@ -593,48 +585,31 @@ def _telemetry(args: argparse.Namespace) -> None:
             # Should not happen (read_config_for_update rejects non-objects),
             # but guard defensively.
             print(
-                f"Error: {path} is not a JSON object ({type(data).__name__}); refusing to "
+                f"❌ {path} is not a JSON object ({type(data).__name__}); refusing to "
                 "overwrite it. Fix or move the file, then retry.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        # Same rule as the whole-file check above, applied per section: coercing a
+        # Same rule as the whole-file check above, applied to the section: coercing a
         # non-object section to {} would DISCARD whatever the user had there and then
         # print success. Absent is fine (create it); present-but-wrong-type is a
         # refusal, because this command cannot know what the value was meant to be.
-        sections: dict[str, dict[str, object]] = {}
-        for name in ("telemetry", "dashboard"):
-            existing = data.get(name)
-            if existing is None:
-                sections[name] = {}
-                continue
-            if not isinstance(existing, dict):
-                print(
-                    f'Error: {path} has a non-object "{name}" value '
-                    f"({type(existing).__name__}); refusing to overwrite it. Fix or "
-                    "remove it, then retry.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            sections[name] = existing
+        telemetry = data.get("telemetry")
+        if telemetry is None:
+            telemetry = {}
+        elif not isinstance(telemetry, dict):
+            print(
+                f'❌ {path} has a non-object "telemetry" value '
+                f"({type(telemetry).__name__}); refusing to overwrite it. Fix or "
+                "remove it, then retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         if set_recording:
-            sections["telemetry"]["enabled"] = want
-        sections["telemetry"]["beacon_enabled"] = want
-        data["telemetry"] = sections["telemetry"]
-        # Running this command IS the informed choice the first-run chapter exists to
-        # collect, so record the ack. Otherwise `telemetry enable` on a fresh
-        # headless install would write beacon_enabled: true and still send nothing,
-        # because the first-egress gate would keep waiting for a dashboard screen the
-        # user may never open.
-        sections["dashboard"]["privacy_acked"] = True
-        # The notice version means "told that local recording is on", the same
-        # rule the dashboard's Privacy chapter applies. Only an enable that really
-        # turns recording on records it; a disable, or an enable that leaves
-        # recording off because it would also start an export, does not.
-        if want and set_recording:
-            sections["dashboard"]["privacy_ack_version"] = PRIVACY_NOTICE_VERSION
-        data["dashboard"] = sections["dashboard"]
+            telemetry["enabled"] = want
+        telemetry["beacon_enabled"] = want
+        data["telemetry"] = telemetry
         return data
 
     try:
@@ -657,15 +632,15 @@ def _telemetry(args: argparse.Namespace) -> None:
         err_str = str(exc)
         if "not a JSON object" in err_str:
             print(
-                f"Error: {path} is not a JSON object; refusing to "
+                f"❌ {path} is not a JSON object; refusing to "
                 "overwrite it. Fix or move the file, then retry.",
                 file=sys.stderr,
             )
         else:
-            print(f"Error: Could not read {path}: {exc}", file=sys.stderr)
+            print(f"❌ Could not read {path}: {exc}", file=sys.stderr)
         sys.exit(1)
     except OSError as exc:
-        print(f"Error: Could not write {path}: {exc}", file=sys.stderr)
+        print(f"❌ Could not write {path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
     # Verify the write actually took EFFECT before claiming success.
@@ -701,7 +676,7 @@ def _telemetry(args: argparse.Namespace) -> None:
     if effective != want:
         state = "ENABLED" if effective else "DISABLED"
         print(
-            f"Warning: Wrote {path.name}, but the beacon is still {state}: an overlay "
+            f"⚠️  Wrote {path.name}, but the beacon is still {state}: an overlay "
             "in config.local.json takes precedence.",
             file=sys.stderr,
         )
@@ -729,7 +704,7 @@ def _telemetry(args: argparse.Namespace) -> None:
             "destination configured, but nothing is exported until "
             "telemetry.enabled: true is written in the config file."
         )
-        if _kiro_telemetry_exporting(loaded_cfg):
+        if _kiro_telemetry_listed():
             print("   Product usage metrics are sent to Kiro telemetry (kiro-telemetry).")
     elif want and not set_recording:
         print("Anonymous usage beacon ENABLED (one heartbeat per day).")
@@ -748,48 +723,12 @@ def _telemetry(args: argparse.Namespace) -> None:
                 "labelled with a hashed install ID.",
                 flush=True,
             )
-            _record_kiro_telemetry_ack(path)
         print("   Run 'kirocrew telemetry status' to see exactly what is sent.")
     else:
         print("Usage data DISABLED: local metric recording and the anonymous beacon")
         print("   are off. Nothing will be recorded or sent.")
         print(f"   You can also delete {beacon.INSTALL_ID_FILE} from the data home.")
     _report_env_pin(want)
-
-
-def _record_kiro_telemetry_ack(path: Path) -> None:
-    """Record that this command's line naming Kiro telemetry reached a terminal.
-
-    Written after the line printed, and only to a terminal: a redirected or
-    closed stdout told nobody, so the Kiro destination keeps waiting for a notice
-    (``kiro_export.notice_shown``).
-    """
-    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
-
-    try:
-        if not sys.stdout.isatty():
-            return
-
-        def _mutate(data: dict) -> dict:
-            if isinstance(data, dict):
-                dashboard = data.get("dashboard")
-                if isinstance(dashboard, dict):
-                    dashboard["kiro_telemetry_ack_version"] = PRIVACY_NOTICE_VERSION
-            return data
-
-        update_config_locked(path, mutate=_mutate, fsync=True, stamp_meta=False)
-    except Exception:  # noqa: BLE001 - not recorded: the notice still waits
-        return
-
-
-def _kiro_telemetry_exporting(cfg: object) -> bool:
-    """Whether recording on sends product usage metrics to Kiro telemetry now."""
-    try:
-        from kiro_crew.metrics import kiro_export
-
-        return bool(kiro_export.destinations()) and kiro_export.notice_shown(cfg or None)
-    except Exception:  # noqa: BLE001 - informational only
-        return False
 
 
 def _kiro_telemetry_listed() -> bool:
@@ -804,7 +743,6 @@ def _kiro_telemetry_listed() -> bool:
 
 def _format_recording_status(cfg: KiroCrewConfig) -> str:
     """The local metric recording half of ``kirocrew telemetry status``."""
-    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
     from kiro_crew.metrics.provider import _held_consent, env_pin, env_pin_is_soft, pin_env_var
 
     pin = env_pin()
@@ -823,7 +761,7 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         egress_host = effective is None or otlp_egress_active(cfg.telemetry)
         from kiro_crew.metrics import kiro_export
 
-        builtin = bool(kiro_export.destinations()) and kiro_export.notice_shown(cfg)
+        builtin = bool(kiro_export.destinations())
         exports = egress_host and (effective is None or outbound_consented(cfg) or builtin)
     except Exception:  # noqa: BLE001 - unknown posture is treated as egress
         egress_host = exports = True
@@ -843,25 +781,25 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         )
     except Exception:  # noqa: BLE001 - the line is informational; the posture above stands
         sends_to = ""
-    lines = [
-        "Local metric recording"
-        + (
-            " (when on, also sent to the metrics destination configured for this machine)"
-            if exports
-            else (
-                " (stays on this machine until telemetry.enabled: true is written)"
-                if egress_host
-                else " (stays on this machine)"
-            )
-        ),
-        "",
-        "  Enabled:     "
-        + (
+    if exports:
+        where = " (when on, also sent to the metrics destination configured for this machine)"
+    elif egress_host:
+        where = " (stays on this machine until telemetry.enabled: true is written)"
+    else:
+        where = " (stays on this machine)"
+    if effective is None:
+        enabled = (
             "unknown (telemetry.enabled is not true or false; a running gateway keeps "
             "recording until it restarts)"
-            if effective is None
-            else ("yes" if effective else "no")
-        ),
+        )
+    elif effective:
+        enabled = "yes"
+    else:
+        enabled = "no"
+    lines = [
+        "Local metric recording" + where,
+        "",
+        "  Enabled:     " + enabled,
         f"  Config:      telemetry.enabled is {'true' if cfg.telemetry.enabled else 'false'}",
     ]
     if sends_to:
@@ -875,10 +813,6 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         lines.append(f"  Held off by: {pin_env_var()} until telemetry.enabled is written {remedy}")
     elif pin is not None:
         lines.append(f"  Pinned by:   {pin_env_var()} (the config value has no effect)")
-    lines.append(
-        f"  Notice:      privacy notice version {cfg.dashboard.privacy_ack_version} "
-        f"acknowledged (current: {PRIVACY_NOTICE_VERSION})"
-    )
     return "\n".join(lines)
 
 
@@ -1052,7 +986,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.cli_commands_gateway_api import (  # noqa: F401
         _SPAWN_WAIT_SECS,
-        _STATUS_WIDTH,
         _artifact,
         _client_port,
         _create_cron_folder,

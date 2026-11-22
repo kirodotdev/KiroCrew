@@ -963,13 +963,17 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why  # noqa: F401
     from kiro_crew.mcp_tools.spawn_parts.schemas import (  # noqa: F401
+        _BRIEF_LIMIT,
         _CORE,
         _MAX_ROSTER_NAMES,
         _SPAWN,
+        _TOOLLESS_MARK,
         _agent_roster_hint,
         _parent_allowlist_filter,
         _parent_template_for_roster,
+        _roster_with_tools_first,
         _subagent_reader,
+        _toolless_agent_names,
         schemas,
     )
     from kiro_crew.mcp_tools.spawn_parts.session_memory import (  # noqa: F401
@@ -977,6 +981,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _memory_count,
         _memory_mb,
         _memory_runtime_line,
+        _worker_line,
         render_session_memory,
     )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401
@@ -992,7 +997,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
     from kiro_crew import subagent_standalone  # noqa: F401
-    from kiro_crew.agent_discovery import list_agents  # noqa: F401
+    from kiro_crew.agent_discovery import (  # noqa: F401
+        SCOPE_GLOBAL,
+        _kiro_agents_dir,
+        _read_agent_spec,
+        list_agents,
+        spec_is_toolless,
+    )
     from kiro_crew.constants import (  # noqa: F401
         DEFAULT_SUBAGENT_MAX_TURNS,
         LEAKED_TOOL_CALL_NOTE,
@@ -1016,6 +1027,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
+        MAX_LONG_STRING,
         MAX_MEDIUM_STRING,
         MAX_RESPONSE_LEN,
         MAX_SHORT_STRING,

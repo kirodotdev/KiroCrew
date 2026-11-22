@@ -3,8 +3,8 @@ title: Gated PR poll loops -- the prepare-pr and babysit recipes arm their pull-
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-20
-last-audited: 2026-10-21
-audited-at: 098bc0a174
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 22440
 implementation-prs: [22442]
 tracking-issues: [22418]

@@ -25,7 +25,7 @@ logger = logging.getLogger("kiro_crew.telegram.transport_dispatch")
 #: A legacy button carries no proof of which session authored its model-written
 #: label, so applying it to the current session would be a cross-session injection.
 _UNTAGGED_OPTIONS_REFUSAL = (
-    "These buttons predate a session-safety update, so which conversation "
+    "🔘 These buttons predate a session-safety update, so which conversation "
     "they belong to cannot be verified and your choice was NOT applied. "
     "Type it as a message instead."
 )
@@ -206,9 +206,9 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
         resolved = facade.TelegramApprovalDecider.resolve_global(key, approved, nonce=nonce)
         if resolved:
             if trust:
-                verdict = "Trusted — this conversation's tools auto-approve."
+                verdict = "🤝 Trusted — this conversation's tools auto-approve."
             else:
-                verdict = "Approved" if approved else "Denied"
+                verdict = "✅ Approved" if approved else "🚫 Denied"
         else:
             # No pending decision to resolve — the request already timed out
             # (decider denies by default and pops the key), was answered, or the
@@ -217,7 +217,7 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
             # name an id that is live again for a different tool).
             # Don't imply the press took effect: a post-timeout "Approve" on
             # an already-denied tool must not display "Approved".
-            verdict = "This approval already expired."
+            verdict = "⌛ This approval already expired."
         await self.client.edit_message(
             cb.chat_id, cb.message_id, verdict, reply_markup={"inline_keyboard": []}
         )
@@ -273,7 +273,7 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
                 await self.client.edit_message(
                     cb.chat_id,
                     cb.message_id,
-                    "This model list belongs to a session this chat no longer "
+                    "⌛ This model list belongs to a session this chat no longer "
                     "controls. Send /model again.",
                     reply_markup={"inline_keyboard": []},
                 )
@@ -335,7 +335,7 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
         if not choice_text:
             await self._reply(
                 cb.chat_id,
-                "Warning: Couldn't read that choice — please type it instead.",
+                "⚠️ Couldn't read that choice — please type it instead.",
                 thread=cb_thread,
             )
             return

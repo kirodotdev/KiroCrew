@@ -171,9 +171,9 @@ async def _apply_model(
     # path before it consults ``model=``. With nothing live the next message
     # starts the session, so it genuinely lands then; with a session already
     # up, only a fresh conversation picks it up.
-    deferred = f"Model set to {label} — it applies to your next message."
+    deferred = f"✅ Model set to {label} — it applies to your next message."
     next_new = (
-        f"Model set to {label} — this conversation keeps its current "
+        f"✅ Model set to {label} — this conversation keeps its current "
         f"model; the switch applies to your next one (`!new`)."
     )
     # Auto has no ACP id meaning "let the backend choose", so it can only be
@@ -192,7 +192,7 @@ async def _apply_model(
         if not self.sessions.has_session(session_key) or self.sessions.is_retiring(session_key):
             return deferred
         return (
-            f"Model set to {label}, but a reply is still running — this "
+            f"✅ Model set to {label}, but a reply is still running — this "
             f"conversation keeps its current model; the switch applies to "
             f"your next one (`!new`)."
         )
@@ -212,10 +212,10 @@ async def _apply_model(
         # The stored preference still stands, so the next session gets it,
         # but do not claim the running conversation switched when it did not.
         return (
-            f"Warning: Couldn't switch this conversation to {label} "
+            f"⚠️ Couldn't switch this conversation to {label} "
             f"({type(exc).__name__}) — it applies to your next "
             f"conversation (`!new`)."
         )
     finally:
         self.sessions.release(session_key)
-    return f"Now using {label}."
+    return f"✅ Now using {label}."

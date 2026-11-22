@@ -1,5 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
 import { isEdgeChallengeError, isPermissionRefusal } from './apiError'
+import { edgeThrottleDelayMs } from './edgeThrottleRetry'
 
 /**
  * True when the error is an HTTP 429 (edge/proxy rate limit). When the
@@ -83,7 +84,7 @@ export const refetchWhileFailed = (query: { state: { status: string; error?: unk
  */
 export const retryDelayPolicy = (attempt: number, error: unknown): number =>
   isThrottleError(error)
-    ? Math.min(1_000 * 2 ** attempt, 15_000) + Math.random() * 500
+    ? edgeThrottleDelayMs(attempt)
     : Math.min(1_000 * 2 ** attempt, 30_000)
 
 /**

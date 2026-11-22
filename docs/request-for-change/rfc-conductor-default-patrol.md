@@ -4,8 +4,8 @@ status: implemented
 revision: v2
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-05
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 17079
 implementation-prs: [17069, 19742, 27948]
 tracking-issues: [17051, 19741]

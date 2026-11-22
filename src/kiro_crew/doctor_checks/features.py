@@ -94,7 +94,7 @@ def _doctor_vector_memory(issues: list[str]) -> None:
     _lib_path_override = cli_doctor.operator_lib_path_override() or ""
 
     if cli_doctor._load_llama_class() is not None:
-        print("  runtime:     OK:      vendored llama-cpp-python importable")
+        print("  runtime:     ✅ vendored llama-cpp-python importable")
     elif cli_doctor._platform_libs_dirname() is None:
         # Designed degradation, not a defect: no vendored native libs exist for
         # this platform (e.g. linux/armv7l or win32/arm64 — Intel Macs are NOT
@@ -102,11 +102,11 @@ def _doctor_vector_memory(issues: list[str]) -> None:
         # embeddings_native.py documents the keyword-search fallback. Nothing for the
         # user to fix — don't fail.
         print(
-            "  runtime:     Note:    unsupported platform "
+            "  runtime:     ⏹ unsupported platform "
             f"({sys.platform}/{_plat.machine()}) — memory uses keyword search"
         )
     else:
-        print("  runtime:     Error:   vendored runtime failed to load")
+        print("  runtime:     ❌ vendored runtime failed to load")
         # Distinguish an incomplete SHIPPED payload from a load failure on a
         # complete one. Both surface as the same ctypes "base name 'llama' not
         # found", but only the former is a packaging defect the user cannot fix
@@ -137,7 +137,7 @@ def _doctor_vector_memory(issues: list[str]) -> None:
         # some Kiro Crew install or an empty value. This remains a note rather
         # than an issue because this install uses its own bundled tree.
         shown = _lib_path_raw or "(empty)"
-        print(f"  lib path:    Note:    {cli_doctor._LIB_PATH_ENV}={shown}")
+        print(f"  lib path:    ⏹ {cli_doctor._LIB_PATH_ENV}={shown}")
         if not _lib_path_raw:
             # Empty on either path: the record only establishes it was empty and
             # removed, so neither spelling may claim inheritance.
@@ -158,10 +158,10 @@ def _doctor_vector_memory(issues: list[str]) -> None:
     try:
         import faiss  # noqa: F401
 
-        print("  faiss:       OK:      vector-search accelerator installed")
+        print("  faiss:       ✅ vector-search accelerator installed")
     except ImportError:
         print(
-            "  faiss:       Note:    not installed (optional) — episodic recall uses "
+            "  faiss:       ⏹ not installed (optional) — episodic recall uses "
             "the stdlib fallback; installing faiss-cpu accelerates it"
         )
         # The command names THIS interpreter, not a bare `pip`. On a packaged or
@@ -184,23 +184,21 @@ def _doctor_vector_memory(issues: list[str]) -> None:
         # model is deliberately not downloaded in this mode, so its reachability
         # is irrelevant and pointing at it would be misleading advice.
         if _custom.error:
-            print(f"  model:       Error:   custom model unusable — {_custom.error}")
+            print(f"  model:       ❌ custom model unusable — {_custom.error}")
             issues.append("custom embedding model unusable")
         elif cli_doctor.model_file_present():
-            print(f"  model:       OK:      {_custom.path} (custom)")
+            print(f"  model:       ✅ {_custom.path} (custom)")
             print(f"  vector space: {_custom.model_id} @ {_custom.dim}d")
         else:
-            print(f"  model:       Error:   custom model not readable: {_custom.path}")
+            print(f"  model:       ❌ custom model not readable: {_custom.path}")
             issues.append("custom embedding model unreadable")
     elif cli_doctor.model_file_present():
-        print(f"  model:       OK:      {cli_doctor.default_model_path()}")
+        print(f"  model:       ✅ {cli_doctor.default_model_path()}")
     else:
-        print(
-            "  model:       Note:    not downloaded yet (downloads in background on gateway start)"
-        )
+        print("  model:       ⏹ not downloaded yet (downloads in background on gateway start)")
         cli_doctor._doctor_model_url_reachable(issues)
 
-    print("  embeddings:  OK:      always-on")
+    print("  embeddings:  ✅ always-on")
 
 
 def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
@@ -210,9 +208,9 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     stt_active = cfg.stt.enabled
 
     if not stt_active:
-        print(f"  status:      Note:    disabled (enable from dashboard → {_STT_SETTINGS_PATH})")
+        print(f"  status:      ⏹ disabled (enable from dashboard → {_STT_SETTINGS_PATH})")
     else:
-        print(f"  provider:    OK:      {cfg.stt.provider}")
+        print(f"  provider:    ✅ {cfg.stt.provider}")
 
     # STT is enabled by default, but a CLI or source install does not pull in the
     # optional voice extra or a system ffmpeg, so a gap there is a note with its
@@ -220,12 +218,12 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     # parts (build-gated) is broken without them, so that gap stays a hard issue.
     # Windows keeps its historical non-fatal report everywhere.
     stt_fatal = not cli_doctor.platform_compat.IS_WINDOWS and cli_doctor.bundle_carries_decoder()
-    stt_mark = "Error:  " if stt_fatal else "Warning:"
+    stt_mark = "❌" if stt_fatal else "⚠️ "
 
     if stt_active and cfg.stt.provider == "local":
         engine = cli_doctor.availability_detail(cfg.stt)
         if engine.ok:
-            print("  engine:      OK:      local recogniser loadable (whisper.cpp, in-process)")
+            print("  engine:      ✅ local recogniser loadable (whisper.cpp, in-process)")
         else:
             # Only "not installed" is optional. A recogniser that is installed but
             # cannot run (import, CPU or load failure) is still broken on POSIX.
@@ -236,7 +234,7 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
             engine_fatal = stt_fatal or (
                 not cli_doctor.platform_compat.IS_WINDOWS and not not_installed
             )
-            engine_mark = "Error:  " if engine_fatal else stt_mark
+            engine_mark = "❌" if engine_fatal else stt_mark
             print(f"  engine:      {engine_mark} {engine.detail}")
             if engine_fatal:
                 issues.append(f"speech recogniser ({engine.code})")
@@ -246,11 +244,11 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         model = cli_doctor.stt.resolve_model(cfg.stt.model)
         if cli_doctor.stt.is_present(model):
             print(
-                f"  model:       OK:      {model.name} at {cli_doctor.stt.models_dir() / model.filename}"
+                f"  model:       ✅ {model.name} at {cli_doctor.stt.models_dir() / model.filename}"
             )
         else:
             print(
-                f"  model:       Note:    {model.name} not downloaded yet "
+                f"  model:       ⏹ {model.name} not downloaded yet "
                 f"({model.size_bytes // 1_000_000} MB, fetched on first use)"
             )
 
@@ -262,7 +260,7 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     if ffmpeg_bin:
         # The resolved path can contain a username or a credential-bearing mount
         # name. Doctor only needs to confirm the exact resolver found a decoder.
-        print("  ffmpeg:      OK:      available")
+        print("  ffmpeg:      ✅ available")
     elif (
         stt_active
         and cli_doctor.platform_compat.IS_MACOS
@@ -270,7 +268,7 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     ):
         # Every macOS decoder but a fixed system one runs from a snapshot staged under
         # a root the agent sandbox denies, so a miss there looks the same as that denial.
-        print("  ffmpeg:      Skipped: not checkable from this shell")
+        print("  ffmpeg:      ⏭  not checkable from this shell")
         print("               Run `kirocrew doctor` from your own terminal to check the decoder.")
     elif stt_active:
         # A prerequisite of every provider, not of one of them: a Slack voice memo
@@ -291,7 +289,7 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         if stt_fatal:
             issues.append("ffmpeg")
     else:
-        print("  ffmpeg:      Skipped: not installed (not needed)")
+        print("  ffmpeg:      ⏭  not installed (not needed)")
 
     # Cloud transcription (AWS Transcribe) is an OPTIONAL feature requiring
     # user-provided AWS credentials and the `amazon-transcribe`/`boto3` extras.
@@ -300,9 +298,9 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         try:
             import amazon_transcribe.client  # noqa: F401
 
-            print("  transcribe:  OK:      amazon_transcribe importable (optional)")
+            print("  transcribe:  ✅ amazon_transcribe importable (optional)")
         except ImportError:
-            print("  transcribe:  Note:    optional cloud STT not installed")
+            print("  transcribe:  ⏹ optional cloud STT not installed")
             # Same reasoning as the faiss line above: this process imports the
             # package, so the command has to name this interpreter, and it is
             # printed only where that command can actually run.
@@ -312,9 +310,9 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         try:
             import boto3  # noqa: F401
 
-            print("  boto3:       OK:      importable (optional)")
+            print("  boto3:       ✅ importable (optional)")
         except ImportError:
-            print("  boto3:       Note:    optional AWS SDK not installed")
+            print("  boto3:       ⏹ optional AWS SDK not installed")
             if cli_doctor.pip_install_channel_available():
                 print(f"               Install: {cli_doctor.pip_install_command('voice-aws')}")
 
@@ -331,9 +329,9 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     if stt_active and cfg.stt.provider == "apple":
         apple = cli_doctor.availability_detail(cfg.stt)
         if apple.ok:
-            print("  apple:       OK:      on-device SpeechAnalyzer available")
+            print("  apple:       ✅ on-device SpeechAnalyzer available")
         else:
-            print(f"  apple:       Error:   {apple.detail}")
+            print(f"  apple:       ❌ {apple.detail}")
             issues.append(f"apple speech ({apple.code})")
 
 
@@ -354,7 +352,7 @@ def _doctor_saved_prompts() -> None:
     for path in shadowed:
         token = f"/{path.stem.lower()}"
         print(
-            f"  {token + ':':<13}Warning: ~/.kiro/prompts/{path.name} never runs: "
+            f"  {token + ':':<13}⚠️  ~/.kiro/prompts/{path.name} never runs: "
             f"{token} is a built-in command"
         )
         # Lowercase: a prompt is read as ``<token>.md``, so ``Fork-prompt.md``

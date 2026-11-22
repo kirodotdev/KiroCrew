@@ -63,7 +63,8 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
     """The wake judge's answer for this tick, or ``None`` when no judge applies.
 
     ``None`` means no judge applies, so the caller falls through to the typed probe
-    path: ungated loops, opted-out ones, and machines without the evidence scope.
+    path: ungated loops, opted-out ones, machines without the evidence scope, and a
+    loop under the default brief whose message names no target it can read.
     Once the scope is granted, a GATED loop with no brief runs under
     :func:`~kiro_crew.autonudge_judge.default_spec`.
 
@@ -142,6 +143,13 @@ async def _judge_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> bool 
     wake_when, quiet_when = judge.criteria_of(spec)
     targets_wanted = judge.parse_targets(spec, loop.message, watched=judge.watched_pr_subject(loop))
     if not targets_wanted:
+        if brief_kind == judge.BRIEF_DEFAULT:
+            # Nothing the default brief can read, such as the gateway's conductor
+            # patrol, which names no session and no pull request. No judge applies,
+            # so the tick keeps the answer it has with the scope off; firing here
+            # turned every quiet probe tick into a turn once the scope was granted.
+            logger.debug("AutoNudge: loop %s has no target the default brief can read", loop.id)
+            return None
         logger.debug("AutoNudge: loop %s has a judge spec naming no usable target", loop.id)
         return False
     verdict_trace: dict[str, Any] = {}

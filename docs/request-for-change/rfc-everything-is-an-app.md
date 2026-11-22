@@ -3,8 +3,8 @@ title: Everything is an App — the core/app boundary and what makes a surface r
 status: partial
 author: zezhexu
 created: 2026-08-18
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -77,7 +77,7 @@ customize":
 
 - **There is no overview surface.** `/overview` is a redirect to
   `/settings?tab=overview` (the `/overview` route in `website/src/App.tsx`). Overview is a settings
-  tab reached through `website/src/pages/settings/OverviewPanel.tsx:1-4`.
+  tab reached through `OverviewPanel` (`website/src/pages/settings/OverviewPanel.tsx`), which only renders `OverviewPage`.
 - **It is one fixed layout for everyone.** The six stat tiles are a hardcoded
   literal with no conditional (`website/src/pages/OverviewPage.tsx::OverviewPage`).
   There is no per-user, per-role, or per-workspace variation on it or on any
@@ -88,7 +88,7 @@ customize":
   `registerOverviewStatCards` is documented edition seam 7
   (`website/docs/extension-seams.md:26`), populated at module load, explicitly
   non-reactive (`website/docs/extension-seams.md:371`), and **empty in the stock
-  build** (`website/src/pages/overviewStatCards.tsx:32`). It composes cards into a
+  build** (`OVERVIEW_STAT_CARDS` in `website/src/pages/overviewStatCards.tsx`). It composes cards into a
   page rather than letting anyone own the page, and it is build-time, so an
   installed app cannot contribute to it.
 - **Job-family overviews are already being built — inside apps.** `ops-mission-control`
@@ -109,16 +109,16 @@ definitions — returns eleven, at `e6b06685e`:
 | Field | Declared | Status |
 |---|---|---|
 | `jobFamilies` | `src/kiro_crew/apps/manifest.py::AppManifest` | Parsed, serialized, echoed to the client. No consumer. |
-| `sops` | `manifest.py:976` | `bridges.register_app` (`apps/bridges_register.py`) registers MCP servers, agents, skills, crons. There is no `_register_sops`. Declaring `sops` copies nothing. |
-| `backend.routes` | `manifest.py:386` | No reader. `_resolve_app_backend_url` (`apps/routes_proxy.py`) still carries a comment describing it. The prefix is hardcoded at `apps/route_registry.py:122`. |
-| `permissions.mcpTools` | `manifest.py:442` | Declarative only. `check_tool_permission` (`apps/permissions.py::check_tool_permission`) has no non-test caller. |
-| `permissions.network` | `manifest.py:444` | Not enforced. An app makes outbound calls regardless. |
-| `permissions.memory` | `manifest.py:445` | Not enforced. There is no `ctx.memory` on `AppContext` (`apps/context.py::AppContext`). |
-| `setup.configSchema` | `manifest.py:515` | Parsed, serialized, no reader. |
-| `platform.arch` | `manifest.py:712` | No reader. Only `os` is gated (`manifest.py:718-763`). |
-| `platform.clientInstall.postInstall` | `manifest.py:664` | Parsed, serialized, no reader. |
-| `ui.pages[].iconInactiveUrl` | `manifest.py:247` | No reader outside serialization. Since given one: the sidebar's not-selected icon (#21344), so Phase 1 no longer removes it. |
-| `ui.pages[].mountFunction` | `manifest.py:249` | No reader outside serialization. |
+| `sops` | `src/kiro_crew/apps/manifest.py::AppManifest` | `bridges.register_app` (`apps/bridges_register.py`) registers MCP servers, agents, skills, crons. There is no `_register_sops`. Declaring `sops` copies nothing. |
+| `backend.routes` | `src/kiro_crew/apps/manifest_sections.py::BackendConfig` | No reader. `_resolve_app_backend_url` (`apps/routes_proxy.py`) still carries a comment describing it. The prefix is hardcoded in `apps/route_registry.py::RouteRegistry.ensure_catch_all`. |
+| `permissions.mcpTools` | `src/kiro_crew/apps/manifest_sections.py::Permissions` | Declarative only. `check_tool_permission` (`apps/permissions.py::check_tool_permission`) has no non-test caller. |
+| `permissions.network` | `src/kiro_crew/apps/manifest_sections.py::Permissions` | Not enforced. An app makes outbound calls regardless. |
+| `permissions.memory` | `src/kiro_crew/apps/manifest_sections.py::Permissions` | Not enforced. There is no `ctx.memory` on `AppContext` (`apps/context.py::AppContext`). |
+| `setup.configSchema` | `src/kiro_crew/apps/manifest_sections.py::SetupConfig` | Parsed, serialized, no reader. |
+| `platform.arch` | `src/kiro_crew/apps/manifest_sections.py::PlatformConfig` | No reader. Only `os` is gated (`PlatformConfig.supports_platform`). |
+| `platform.clientInstall.postInstall` | `src/kiro_crew/apps/manifest_sections.py::ClientInstallConfig` | Parsed, serialized, no reader. |
+| `ui.pages[].iconInactiveUrl` | `src/kiro_crew/apps/manifest_sections.py::UIPage` | No reader outside serialization. Since given one: the sidebar's not-selected icon (#21344), so Phase 1 no longer removes it. |
+| `ui.pages[].mountFunction` | `src/kiro_crew/apps/manifest_sections.py::UIPage` | No reader outside serialization. |
 
 The whole of `src/kiro_crew/apps/permissions.py` is dead in production:
 `validate_permissions` (`:34`), `check_tool_permission` (`:71`) and
@@ -158,27 +158,27 @@ them:
 Consequences, each grep-verified rather than demonstrated:
 
 - The keystone list is a module-level Python list mutated at import
-  (`src/kiro_crew/security.py:4436`), not frozen. In-process code can read and
+  (`_SENSITIVE_HOME_DIRS`, extended with `+=` in `src/kiro_crew/security/paths_lists.py`), not frozen. In-process code can read and
   write the keystone files directly, `security_policy.json` included.
 - The SEL chain's integrity rests on the HMAC key living outside the log
   directory (`src/kiro_crew/sel_trust_root.py`, `_TRUST_SUBDIR`). That defeats an actor with
   log-directory write access, which is narrower access than an app has.
 - Audit failure never changes a decision, by explicit policy
-  (`apps/execution.py::app_execution_denied`, `admission.py:154-156`), so suppressing the record
+  (`apps/execution.py::app_execution_denied`, `apps/admission.py::load_app_admission_policy`), so suppressing the record
   is free.
 - App admission (`apps/admission.py::app_admission_denied`) is the one control that acts while an
   app is still inert, and an **absent** policy file admits, documented as accepted
-  risk at `apps/admission.py:25-30`.
+  risk in the `apps/admission.py` module docstring.
 
 Meanwhile the *declarative* surface is strictly add-only. An app cannot take a
 position in any core flow: `HookManager` is constructed solely from the `hooks`
-section of `config.json` (`src/kiro_crew/hooks.py:931`, callers at
-`_run_task` in `cli_server.py`, `slack/gateway.py:653`) and has no registration path; the
+section of `config.json` (`hooks_config_from_config_dict`, now in `src/kiro_crew/hook_runtime/denied_commands.py`; callers at
+`_run_task` in `cli_server.py` and `_init_services` in `slack/gateway_runtime/service_boot.py`) and has no registration path; the
 app `EventBus` is publish-only, with no `subscribe` anywhere in
 `apps/event_bus.py`; notification **routing** transports register through
 `DashboardState.register_channel_transport` (in `dashboard/state_parts/session_events.py`) whose only
 callers are first-party gateways; HTTP routes are confined to
-`/api/apps/<own-name>/*` by a hardcoded prefix (`apps/route_registry.py:122`).
+`/api/apps/<own-name>/*` by a hardcoded prefix (`apps/route_registry.py::RouteRegistry.ensure_catch_all`).
 
 So the current state is inverted from the intuition. The declarative surface is
 too narrow to build a real surface on, and the executable surface is unbounded.
@@ -400,7 +400,7 @@ Let an app we did not write own a core surface.
 - Exit: an installed third-party app can own the overview slot without holding
   gateway-process privileges.
 - Exit: app admission fails closed on an absent policy file, reversing the
-  accepted risk at `apps/admission.py:25-30`.
+  accepted risk in the `apps/admission.py` module docstring.
 - Blocked on: [`rfc-app-sandbox-isolation.md`](rfc-app-sandbox-isolation.md)
   Phases 1–3. Do not start this phase while §2.4 holds.
 

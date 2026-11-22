@@ -247,11 +247,11 @@ async def _judge_results(
                             )
                             reason, _ = redact_exfiltration_urls(verdict.reason)
                             reason, _ = redact_credentials(reason)
-                            print(f"  Judge: {verdict.score}/5 — {safe_terminal_line(reason)}")
-                        except Exception as exc:
                             print(
-                                f"  Warning: Judge failed for turn: {safe_terminal_line(str(exc))}"
+                                f"  🧑‍⚖️ Judge: {verdict.score}/5 — {safe_terminal_line(reason)}"
                             )
+                        except Exception as exc:
+                            print(f"  ⚠️ Judge failed for turn: {safe_terminal_line(str(exc))}")
                             tr.assertion_results[idx] = (a, False)
 
 
@@ -330,7 +330,7 @@ async def _run_eval(args: argparse.Namespace) -> None:
     if dims:
         print("## Dimension Summary")
         for dim, s in sorted(dims.items()):
-            status = "pass" if s["rate"] >= 0.75 else "FAIL"
+            status = "✅" if s["rate"] >= 0.75 else "❌"
             print(
                 f"  {status} {safe_terminal_line(dim)}: {s['passed']}/{s['total']} ({s['rate']:.0%})"
             )
@@ -384,7 +384,17 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
 
 #: Flags that only mean something after ``kirocrew eval run`` (dest names).
-_EVAL_RUN_ONLY = ("suite", "tier", "harness", "case_ids", "eval_home", "out", "json", "check")
+_EVAL_RUN_ONLY = (
+    "suite",
+    "tier",
+    "harness",
+    "case_ids",
+    "eval_home",
+    "out",
+    "json",
+    "check",
+    "use_operator_credentials",
+)
 #: Scenario flags ``kirocrew eval run`` does not take (dest names).
 _SCENARIO_ONLY = (
     "all_scenarios",
@@ -450,9 +460,17 @@ def _run_eval_tasks(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(safe_terminal_line(f"Error: {exc}"), file=sys.stderr)
         return 2
+    operator = bool(getattr(args, "use_operator_credentials", False))
+    if operator:
+        import copy
+
+        arms = [copy.copy(arm) for arm in arms]  # never the shared ARMS instances
+        for arm in arms:
+            arm.operator_credentials = True
+        print(safe_terminal_line(tasks.OPERATOR_RISK_LINE), file=sys.stderr)
     if not args.eval_home:
         print(
-            "Error: --suite tasks needs --eval-home DIR; task arms never run in your own home.",
+            "Error: --suite tasks needs --eval-home DIR; each run gets a fresh home under it.",
             file=sys.stderr,
         )
         return 2
@@ -484,6 +502,7 @@ def _run_eval_tasks(args: argparse.Namespace) -> int:
     summary: dict[str, object] = {
         "timestamp": ts,
         "suite": "tasks",
+        "credentials": tasks.OPERATOR_RISK_LINE if operator else "eval-only",
         "summary": rows,
         "runs": records,
     }

@@ -161,6 +161,7 @@ from kiro_crew.jsonl_util import bounded_records
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+    from kiro_crew.history_vectors import SessionVectorStore
 
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
@@ -356,6 +357,7 @@ class SessionCatalogProjection:
     def __init__(self, log: "ConversationLog") -> None:
         self._log = log
         self._index: "SessionSearchIndex | None" = None
+        self._vectors: "SessionVectorStore | None" = None
         #: ``digest + needle key -> (count, cost)`` over the folded text of a
         #: session the index vouches for, and ``digest + repr(snippet tiers) ->
         #: (snippet, cost)`` for the same sessions; each ``None`` when switched
@@ -385,6 +387,15 @@ class SessionCatalogProjection:
         if self._index is None:
             self._index = SessionSearchIndex(self._log._dir / ".index" / INDEX_FILENAME)
         return self._index
+
+    @property
+    def vector_store(self) -> "SessionVectorStore":
+        """The semantic chunk store beside the index; it opens no file until used."""
+        if self._vectors is None:
+            from kiro_crew.history_vectors_index import vector_store_for
+
+            self._vectors = vector_store_for(self._log._dir)
+        return self._vectors
 
     @staticmethod
     def _canonical_key(key: str) -> str:

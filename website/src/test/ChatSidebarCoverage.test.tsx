@@ -990,6 +990,25 @@ describe('ChatSidebar — Older Sessions pane', () => {
     expect(screen.getByText('Filed hit')).toBeTruthy()
   })
 
+  it('groups a search hit filed inside a hidden Bot home under its folder', async () => {
+    // No listed session sits in the Bot's home, so the Sessions list draws no
+    // row for it; History still names the folder the hit was filed in.
+    mocks.sessionsSearch.mockResolvedValue({
+      sessions: [{ key: 'h-bot', title: 'Bot hit', modified: daysAgo(2), folder_id: 'f-bot-child' }],
+    })
+    const botFolders = [
+      ...FOLDERS,
+      { id: 'f-bot', name: 'Radar', order: 9, mate_home: true, owner_app: 'member:radar' },
+      { id: 'f-bot-child', name: 'Radar inbox', order: 0, parent_id: 'f-bot' },
+    ]
+    renderSidebar({ history: HISTORY, folders: botFolders })
+    openHistory()
+    fireEvent.change(screen.getByPlaceholderText('Search older sessions…'), { target: { value: 'hit' } })
+    expect(await screen.findByText('Bot hit')).toBeTruthy()
+    expect(screen.getByLabelText('Collapse Radar inbox results')).toBeTruthy()
+    expect(screen.queryByLabelText('Collapse Unfiled results')).toBeNull()
+  })
+
   it('exposes the resize separator only while the pane is open', () => {
     renderSidebar({ history: HISTORY })
     expect(screen.queryByLabelText('Resize history pane')).toBeNull()

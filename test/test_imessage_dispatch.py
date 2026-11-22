@@ -229,13 +229,13 @@ class TestStop:
         await dispatcher.handle_message(_inbound("/stop"))
         assert provider.cancels == [0]
         assert provider.steered == []
-        assert client.sent == ["Stopping the reply in progress…"]
+        assert client.sent == ["⏹ Stopping the reply in progress…"]
 
     @pytest.mark.asyncio
     async def test_stop_with_nothing_running_says_so(self) -> None:
         dispatcher, client, sessions = _dispatcher()
         await dispatcher.handle_message(_inbound("/cancel"))
-        assert client.sent == ["Note: No reply is running."]
+        assert client.sent == ["ℹ️ No reply is running."]
         assert sessions.acquired == []
 
     def test_only_the_whole_message_is_a_stop(self) -> None:
@@ -374,7 +374,7 @@ class TestCompact:
         sessions.retiring = True
         sessions.sessions.add(key)
         await dispatcher.handle_message(_inbound("/compact"))
-        assert client.sent == [f"Note: {COMPACT_ACCOUNT_CHANGED_TEXT}"]
+        assert client.sent == [f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}"]
         assert sessions.released == []
 
     @pytest.mark.asyncio
@@ -396,8 +396,8 @@ class TestCompact:
     @pytest.mark.parametrize(
         ("kind", "reply"),
         [
-            ("failed", "Warning: Compaction failed — please try again."),
-            ("timeout", "Warning: Compaction timed out."),
+            ("failed", "⚠️ Compaction failed — please try again."),
+            ("timeout", "⚠️ Compaction timed out."),
         ],
     )
     async def test_an_unsuccessful_result_is_reported_not_announced_as_done(

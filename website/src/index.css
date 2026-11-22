@@ -106,7 +106,7 @@
      the opt-out and paint a hard high-contrast rectangle on every element that
      meant to opt out: the chat composer and docked SearchBar, the
      programmatically-focused `<h1 tabIndex={-1} outline-hidden>` page titles
-     (OnboardingFlow, AgentImportFlow, PrivacyChapter) and the `focus-visible:
+     (OnboardingFlow, AgentImportFlow) and the `focus-visible:
      bg-*` menu rows. Keeping the global rule outline-only means opting out stays
      a complete opt-out, exactly as on main.
      WHERE THE 3:1 HAIRLINE LIVES: controls that need to clear WCAG 1.4.11's 3:1

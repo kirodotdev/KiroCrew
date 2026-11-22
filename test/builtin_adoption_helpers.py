@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
+from git_repo_templates import RepoTemplates
 
 from kiro_crew.apps import builtin_adoption_fetch as fetch_mod
 from kiro_crew.apps import builtin_adoption_pins as pins_mod
@@ -119,17 +120,43 @@ def write_tree(root: Path, manifest: dict[str, Any], extra: dict[str, str] | Non
     return root
 
 
-def make_bare_repo(base: Path, tree: Path) -> tuple[Path, str]:
-    """Commit *tree* into a fresh bare repository under *base*; ``(bare, commit)``."""
-    work = base / "work"
-    shutil.copytree(tree, work)
-    git("init", "-q", "-b", "main", ".", cwd=work)
-    git("add", "-A", cwd=work)
-    git("commit", "-q", "-m", "app", cwd=work)
-    commit = git("rev-parse", "HEAD", cwd=work)
-    bare = base / "remote.git"
-    git("clone", "-q", "--bare", str(work), str(bare), cwd=base)
-    return bare, commit
+def make_bare_repo(
+    base: Path, tree: Path, templates: RepoTemplates | None = None
+) -> tuple[Path, str]:
+    """Commit *tree* into a fresh bare repository under *base*; ``(bare, commit)``.
+
+    With *templates*, the pair is built once per tree content and copied to
+    *base*; the commit dates are fixed, so the copy holds the same commit.
+    """
+
+    def build(root: Path) -> None:
+        work = root / "work"
+        shutil.copytree(tree, work)
+        git("init", "-q", "-b", "main", ".", cwd=work)
+        git("add", "-A", cwd=work)
+        git("commit", "-q", "-m", "app", cwd=work)
+        git("clone", "-q", "--bare", str(work), str(root / "remote.git"), cwd=root)
+
+    if templates is None:
+        base.mkdir(parents=True)
+        build(base)
+        commit = git("rev-parse", "HEAD", cwd=base / "work")
+    else:
+        templates.copy(build, base, key=_tree_key(tree))
+        # The one commit of a repository just built is a loose ref.
+        commit = (base / "work" / ".git" / "refs" / "heads" / "main").read_text("ascii").strip()
+    return base / "remote.git", commit
+
+
+def _tree_key(tree: Path) -> str:
+    """A digest of every file under *tree*: its path, executable bit and bytes."""
+    digest = hashlib.sha256()
+    for path in sorted(tree.rglob("*")):
+        if path.is_file():
+            rel = path.relative_to(tree).as_posix()
+            digest.update(f"{rel}\0{path.stat().st_mode & 0o111}\0".encode())
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
 
 
 def make_archive(tree: Path, commit: str) -> bytes:
@@ -271,12 +298,14 @@ def build_world(
     *,
     wheel_manifest: dict[str, Any] | None = None,
     tree_files: dict[str, str] | None = None,
+    templates: RepoTemplates | None = None,
     **repo_overrides: Any,
 ) -> World:
     """Wheel copy + repository + archive + pins on a host with the seams, under *tmp_path*.
 
     *wheel_manifest* replaces the wheel's :func:`shipped_manifest`; *tree_files* adds
-    files (relative path to text) to the repository tree.
+    files (relative path to text) to the repository tree; *templates* is passed to
+    :func:`make_bare_repo`.
     """
     home = Path(os.environ["KIROCREW_HOME"])
     wheel_root = tmp_path / "wheel"
@@ -284,7 +313,7 @@ def build_world(
     wheel = write_tree(wheel_root / PACKAGE, shipped)
     monkeypatch.setattr(exec_mod, "_builtin_manifest_sources", lambda: (wheel_root.resolve(),))
     tree = write_tree(tmp_path / "repo-tree", repository_manifest(**repo_overrides), tree_files)
-    bare, commit = make_bare_repo(tmp_path / "git", tree)
+    bare, commit = make_bare_repo(tmp_path / "git", tree, templates)
     archive = make_archive(tree, commit)
     world = World(
         tmp=tmp_path, home=home, wheel=wheel, tree=tree, bare=bare, commit=commit, archive=archive

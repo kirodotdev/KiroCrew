@@ -322,7 +322,13 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     state = turn.state
     _turn_tool_calls += 1
     turn._turn_tool_calls = _turn_tool_calls
-    _repeat_loop.note_call(event.tool_call_id, event.tool_name or "", event.tool_input, event.title)
+    _repeat_loop.note_call(
+        event.tool_call_id,
+        event.tool_name or "",
+        event.tool_input,
+        event.title,
+        wire_title=event.wire_title or "",
+    )
     if turn._terminal_directive_applied:
         _activity_after_terminal += 1
         turn._activity_after_terminal = _activity_after_terminal
@@ -554,6 +560,7 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             event.title,
             event.tool_input,
             session_model=hook_session_model(client, in_prompt=True),
+            raw_tool_params=getattr(event, "raw_tool_params", None),
         )
     # Mirror tool call to linked Slack stream. Fenced like the reply
     # legs: a tool's purpose line is the peer's steer showing through in
@@ -654,7 +661,11 @@ async def _on_tool_call_update(turn: _ChatTurn, event) -> None:
         return None
     if event.tool_input:
         _repeat_loop.note_call(
-            event.tool_call_id, event.tool_name or "", event.tool_input, event.title
+            event.tool_call_id,
+            event.tool_name or "",
+            event.tool_input,
+            event.title,
+            wire_title=event.wire_title or "",
         )
     _dir_refresh = _pending_dir_for_digest.get(event.tool_call_id, "")
     if not _dir_refresh:

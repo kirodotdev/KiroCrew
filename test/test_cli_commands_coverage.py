@@ -136,7 +136,7 @@ class TestSpawnCli:
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
         out = capsys.readouterr().out
-        assert "a1" in out and "a2" in out and "  done    a1" in out and "  running a2" in out
+        assert "a1" in out and "a2" in out and "✅" in out and "⏳" in out
 
     def test_list_empty_says_so(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
@@ -384,7 +384,7 @@ class TestAppCli:
         ):
             cc._handle_app(_ns(app_action="enable", name="demo"))
         out = capsys.readouterr().out
-        assert "Done: Recorded demo as enabled." in out
+        assert "✅ Recorded demo as enabled." in out
         assert "No running gateway was reached" in out
         assert "Agents registered: 2" in out and "Skills registered: 1" in out
 
@@ -547,7 +547,7 @@ class TestAppCli:
         assert timeouts == [5, 300]
         err = capsys.readouterr().err
         assert "… applying enable for demo through the running gateway" in err
-        assert "Note: the gateway did not finish enable for demo within 300 s" in err
+        assert "⏳ the gateway did not finish enable for demo within 300 s" in err
         assert "may still be applying it" in err
         assert "applies it twice" in err
         assert "refused" not in err
@@ -648,7 +648,7 @@ class TestAppCli:
         local_enable.assert_called_once_with("demo")
         local_register.assert_called_once_with("demo")
         out = capsys.readouterr().out
-        assert "Done: Recorded demo as enabled." in out
+        assert "✅ Recorded demo as enabled." in out
         assert "No running gateway was reached" in out
         assert "next gateway start" in out
         assert "picks up the app's crons and hooks within a minute" in out
@@ -732,7 +732,7 @@ class TestAppCli:
         urlopen.assert_not_called()
         local_enable.assert_called_once_with("demo")
         local_register.assert_called_once_with("demo")
-        assert "Done: Recorded demo as enabled. No running gateway was reached" in (
+        assert "✅ Recorded demo as enabled. No running gateway was reached" in (
             capsys.readouterr().out
         )
 
@@ -909,7 +909,7 @@ class TestAppCli:
         urlopen.assert_not_called()
         local_install.assert_called_once_with("/pkg")
         out = capsys.readouterr().out
-        assert out.startswith("Done: done\n")
+        assert out.startswith("✅ done\n")
         assert "Run: kirocrew app enable demo" in out
 
     def test_install_gateway_route_error_exits_without_file_edit(
@@ -1216,7 +1216,7 @@ class TestAppCli:
         cleanup.assert_called_once_with("demo")
         dereg.assert_called_once_with("demo")
         out = capsys.readouterr().out
-        assert "Done: Recorded demo as disabled." in out
+        assert "✅ Recorded demo as disabled." in out
         assert "No running gateway was reached" in out
         assert "drops the app's crons and hooks within a minute" in out
 
@@ -1264,7 +1264,7 @@ class TestAppCli:
         ):
             cc._handle_app(_ns(app_action="uninstall", name="demo", purge_data=purge))
         uninstall.assert_called_once_with("demo", keep_data=expect_keep_data)
-        assert capsys.readouterr().out.startswith("Done: done\n")
+        assert capsys.readouterr().out.startswith("✅ done\n")
 
     def test_uninstall_failure_exits_1(self) -> None:
         with (
@@ -1313,7 +1313,7 @@ class TestAppCli:
             )
         setter.assert_called_once_with("demo", True, confirm_out_of_install_root=True)
         captured = capsys.readouterr()
-        assert "Done: demo is now in dev mode" in captured.out
+        assert "✅ demo is now in dev mode" in captured.out
         assert captured.err == ""
 
     def test_dev_confirm_flag_with_off_warns(self, capsys: pytest.CaptureFixture[str]) -> None:

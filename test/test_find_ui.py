@@ -152,6 +152,18 @@ def test_a_setting_carries_its_route_setting_id_and_guide() -> None:
     }
 
 
+def test_the_ctrl_copy_paste_setting_needs_windows_or_linux() -> None:
+    # The Terminal panel never draws this switch on a Mac, so the answer says so.
+    d = ui_index.find_ui("Ctrl+C and Ctrl+V copy and paste", "en")
+    hit = next(
+        r for r in d["results"] if r.get("setting_id") == "display.ctrl-c-and-ctrl-v-copy-and-paste"
+    )
+    (placement,) = hit["placements"]
+    conds = [r for r in placement["requires"] if r["kind"] == "condition"]
+    assert [c["id"] for c in conds] == ["not_macos"]
+    assert "Windows or Linux, not on a Mac" in conds[0]["description"]
+
+
 def test_a_credential_setting_never_carries_a_guide() -> None:
     d = ui_index.find_ui("jev api key", "en")
     hit = next(r for r in d["results"] if r.get("setting_id") == "developer.jev-api-key")
@@ -540,7 +552,12 @@ def test_a_label_covering_only_part_of_the_question_is_dropped(tmp_path: Path) -
         # chat" is one of its terms), never Voice > Model.
         ("chat model", "en", "settings.sub.chat.models", "setting:voice.model"),
         ("display language", "en", "setting:display.language", "setting:voice.language"),
-        ("slack session folder", "en", "setting:channels.file-sessions-in-a-folder-slack", None),
+        (
+            "slack session folder",
+            "en",
+            "setting:channels.file-sessions-in-a-different-folder-slack",
+            None,
+        ),
         ("语音模型", "zh-CN", "setting:voice.model", "settings.sub.chat.models"),
         ("聊天模型", "zh-CN", "settings.sub.chat.models", "setting:voice.model"),
         # Task phrases ("make a schedule", "新建提醒") now answer with the two

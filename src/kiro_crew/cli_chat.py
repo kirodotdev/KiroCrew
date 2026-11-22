@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
-from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
+from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRuntimeError, continue_timed_out_calls
 from kiro_crew.agent_sdk.host_auth import for_terminal
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -361,7 +361,7 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # like `gateway` and `run`.
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg, headless=True)
+    usage_notice.print_notice_in_background(cfg)
     if model:
         cfg.agent.model = model
     channel_id = os.environ.get("KIROCREW_CHANNEL_ID") or None
@@ -377,7 +377,7 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
                 _resolve_cli_agent, cfg, agent
             )
         except UnknownMemoryStore as exc:
-            print(f"\nError: {safe_terminal_line(str(exc))}", file=sys.stderr)
+            print(f"\n❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
             sys.exit(1)
     provider: LLMProvider = build_provider_factory(cfg)(
         _CLI_SESSION_KEY,
@@ -493,7 +493,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     try:
         asyncio.run(_chat(message, model, agent=agent))
     except KeyboardInterrupt:
-        print("\nBye!")
+        print("\nBye! 👻")
     except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
         # Escaped HERE as well as in the formatters that build these sentences, and the
         # duplication is the point: this handler takes ANY builder of this exception,
@@ -503,16 +503,20 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
         # safe; defusing at the sink keeps a NEW BUILDER safe. Only both cover both.
         # ``safe_terminal_line`` strips controls without quoting, so the remedy's path and
         # ``find`` invocation stay copyable -- see ``_print_wrapped``'s docstring.
-        print(f"\nError: {safe_terminal_line(str(exc))}", file=sys.stderr)
+        print(f"\n❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
         print(
             "   Run `kirocrew doctor` to see this before the next spawn.",
             file=sys.stderr,
         )
         sys.exit(1)
-    except AcpError as exc:
-        # A backend that fails to start, before any turn, prints its message as a
-        # failed turn does in ``_send_and_print``, not as a traceback.
-        print(f"\nError: {for_terminal(str(exc))}", file=sys.stderr)
+    except (AcpError, AcpRuntimeError) as exc:
+        # A backend that refuses to start, before any turn or on the REPL's restart
+        # after a compaction, prints its message as a failed turn does in
+        # ``_send_and_print``, not as a traceback. ``AcpRuntimeError`` is outside the
+        # ``AcpError`` hierarchy and is what a KAS engine install that cannot fetch
+        # the engine raises; the stack trace goes to the debug log only.
+        logger.debug("chat backend refused to start", exc_info=True)
+        print(f"\n❌ {for_terminal(str(exc))}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -1450,10 +1454,10 @@ async def _send_and_print(
     except AcpTimeoutError as e:
         if e.partial_output:
             print(e.partial_output)
-        print("\nError: Response timed out.", file=sys.stderr)
+        print("\n⏱️  Response timed out.", file=sys.stderr)
         sys.exit(1)
     except AcpError as e:
-        print(f"\nError: {for_terminal(str(e))}", file=sys.stderr)
+        print(f"\n❌ {for_terminal(str(e))}", file=sys.stderr)
         sys.exit(1)
     if undelivered:
         print(
@@ -1510,13 +1514,13 @@ async def _interactive(
         try:
             message = input("you> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nBye!")
+            print("\nBye! 👻")
             break
 
         if not message:
             continue
         if message.lower() in ("exit", "quit", "/exit", "/quit", ":q"):
-            print("Bye!")
+            print("Bye! 👻")
             break
 
         built: str | None = None
@@ -1539,7 +1543,7 @@ async def _interactive(
 
         if needs_compact:
             reason = f"context at {pct:.0f}%"
-            print(f"\nCompacting — {reason}", file=sys.stderr)
+            print(f"\n🔄 Compacting — {reason}", file=sys.stderr)
             # The restart below is what frees the context; a backend that cannot
             # serve /compact would only read the command as text first.
             if not compact_unsupported_backend(provider):
@@ -1551,7 +1555,7 @@ async def _interactive(
             await provider.start()
             delivered_to = None
         elif warn_at > 0 and pct >= warn_at:
-            print(f"\nWarning: Context at {pct:.0f}%", file=sys.stderr)
+            print(f"\n⚠️  Context at {pct:.0f}%", file=sys.stderr)
 
         print()
 

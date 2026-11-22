@@ -63,7 +63,7 @@ class TestNothingToDoTool:
         # The human line tells the model the turn is OVER, and says the quiet
         # step is the consumer's to record — never that it already happened.
         human = session_directive.strip_marker(out)
-        assert "Write nothing and call nothing" in human
+        assert f"Reply with exactly {session_directive.QUIET_END_TOKEN} and nothing else" in human
         assert "requested" in human.lower()
 
     def test_no_note_encodes_an_empty_payload(self):

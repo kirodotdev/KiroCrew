@@ -100,7 +100,6 @@ profiles/
 skills/             ai-discover, metric-design
 agents/             discovery, pr-author, scout, engineer
 docs/MANUAL.md      user manual — how to run it, read findings, and configure it
-docs/PORT_PLAN.md   why the port is shaped the way it is
 ```
 
 The **spine** is deliberately target-agnostic: it consumes a target only through

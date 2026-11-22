@@ -3,10 +3,10 @@ title: Slack Code — agent sessions and code channels for Kiro Crew
 status: partial
 author: kseam
 created: 2026-10-16
-last-audited: 2026-11-16
-audited-at: 09e5482863
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr:
-implementation-prs: [21425, 21410, 22001, 21993]
+implementation-prs: [21425, 21410, 22001, 21993, 22370, 38112, 38181, 38240, 38243, 38998]
 tracking-issues: [15175]
 supersedes: []
 superseded-by: []
@@ -26,6 +26,13 @@ superseded-by: []
   defaults off, so no default changes; the 2026-11-16 amendment changes the
   agent a code channel with no settings runs, and turns helper agents on with a
   first enable of Code channels (Backward compatibility).
+- Built since (checked at `0c5d8bd5f3`): the 2026-11-12 Stop amendment ([#38243](https://github.com/kirodotdev/KiroCrew/pull/38243),
+  `slack/code_channels/stop_helpers.py`) and every item of the 2026-11-16 amendment:
+  helper agents on a first enable ([#38112](https://github.com/kirodotdev/KiroCrew/pull/38112)), the default agent and **Always use
+  conductor mode** ([#38240](https://github.com/kirodotdev/KiroCrew/pull/38240)), the bar actions and canvas comments ([#22370](https://github.com/kirodotdev/KiroCrew/pull/22370)), the
+  tabs ([#38998](https://github.com/kirodotdev/KiroCrew/pull/38998)) and the board's per-row PR and CI and wrap-up outcomes
+  ([#38181](https://github.com/kirodotdev/KiroCrew/pull/38181)). Not built: the §3 "Stop", "What happens next" brake, open in
+  [#38882](https://github.com/kirodotdev/KiroCrew/pull/38882). The notes below record each amendment as it was written.
 - Amended 2026-11-12: Stop in a code channel also stops the channel's helper
   agents (§3, "Stop"). The owner left this call to the Slack Code team lead, who
   decided it; it takes effect when the owner merges this amendment. Nothing is
@@ -448,7 +455,8 @@ crewmates' private copies.
 * **Agent tools.** Pinned to the session's own channel server-side:
   `set_code_channel_view` (html, block_kit, canvas), `publish_plan_canvas` (the
   comment-only plan loop: `setView canvas/comment` → `getCanvas` →
-  `setCanvasContent`), `set_code_channel_status`, `archive_code_channel`. No tool
+  `setCanvasContent`), `code_channel_read_plan_canvas` (amended 2026-11-18: the
+  plan text and open comments read back after a restart or compaction), `set_code_channel_status`, `archive_code_channel`. No tool
   can target another channel or open a second one.
 * **Commands.** `agents.conversations.setCommands` registers `/summarize`,
   `/run-tests` and `/create-pr`, delivered over Socket Mode and turned into a
@@ -496,7 +504,12 @@ crewmates' private copies.
   channel (so the same authorization applies), redacted like all channel text,
   and framed as feedback to weigh, not instructions. Each comment is delivered
   once (remembered across restarts once delivered), at most 20 per read, each cut
-  to 1,000 characters.
+  to 1,000 characters. Slack keeps only the newest 100 threads and 100 replies
+  each (`has_more_comments`, `has_more_replies`); a message says so when it
+  delivers comments from such a listing (amended 2026-11-18). A
+  `setCanvasContent` that changes nothing (`sections_changed_count` 0) is
+  reported to the agent as unchanged. `agent_content_hash` is not sent: with the
+  Plan tab comment-only no human edits the text for it to detect.
 * **Work board** (built in
   [#21993](https://github.com/kirodotdev/KiroCrew/pull/21993); amended
   2026-11-16). In a conductor-led code channel the gateway posts one work board
@@ -559,9 +572,9 @@ crewmates' private copies.
     from this channel's recorded Workers tab, and its target is resolved by the
     gateway from an item id on this channel's board. Audited as
     `slack.code_channel.stop`.
-  * **Deep links.** The board's header links the Workers and Code tabs, each
-    board task's PR links its PR tab, and the wrap-up links the Code tab and the
-    open PR tabs. Context-bar items take only a URL, so the bar keeps GitHub
+  * **Deep links.** The board's header links the Plan, Workers and Code tabs, each
+    board task's PR links its PR tab, and the wrap-up links the Plan tab, the Code
+    tab and the open PR tabs (the Plan link amended 2026-11-18). Context-bar items take only a URL, so the bar keeps GitHub
     links.
   * **The limit.** Three tiers: (1) the Plan canvas, the Code tab and the Workers
     tab, never removed to make room; (2) the PR tabs, at most two; (3) the

@@ -108,11 +108,11 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         # ── Status ──
         yolo = is_yolo_mode()
         blocks.append(
-            {"type": "header", "text": {"type": "plain_text", "text": "Kiro Crew Status"}}
+            {"type": "header", "text": {"type": "plain_text", "text": "👻 Kiro Crew Status"}}
         )
         status_lines = [
-            "*Gateway:* Online",
-            f"*YOLO mode:* {'ON' if yolo else 'OFF'}",
+            "*Gateway:* ✅ Online",
+            f"*YOLO mode:* {'🟢 ON' if yolo else '🔴 OFF'}",
         ]
         if orch.sessions is not None:
             status_lines.append(f"*Active sessions:* {orch.sessions.count}")
@@ -124,7 +124,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         blocks.append({"type": "divider"})
 
         # ── Capabilities ──
-        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "Capabilities"}})
+        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "🔌 Capabilities"}})
         try:
             # Only servers a session can actually use: ``disabled`` is the
             # aggregate of the launch predicate over every scope, so a server
@@ -183,19 +183,19 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         blocks.append({"type": "divider"})
 
         # ── Cron Jobs ──
-        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "Cron Jobs"}})
+        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "⏰ Cron Jobs"}})
         if orch.cron_svc is not None:
             jobs = orch.cron_svc.list_jobs(include_disabled=True)
             if jobs:
                 lines = []
                 for j in jobs[:15]:
-                    status = "On" if j.enabled else "Paused"
+                    status = "✅" if j.enabled else "⏸️"
                     # The zone the scheduler fires the job in: its own, else the
                     # configured one, else the host's (format_schedule resolves
                     # it). Never the viewer's Slack zone, which would show a
                     # different instant than the one the job runs at.
                     sched = format_schedule(j.schedule, tz_name=job_zone_name(j))
-                    raw = f"*{j.name}* — `{sched}` ({status})"
+                    raw = f"{status} *{j.name}* — `{sched}`"
                     lines.append(redact_credentials(redact_exfiltration_urls(raw)[0])[0])
                 if len(jobs) > 15:
                     lines.append(f"_…and {len(jobs) - 15} more_")
@@ -216,7 +216,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         blocks.append({"type": "divider"})
 
         # ── Sessions (main chat + task runner) ──
-        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "Sessions"}})
+        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "🧵 Sessions"}})
         # Deny-by-default authorization gate (defense-in-depth).
         #
         # Session JSONLs contain prior conversation contents. The dispatcher
@@ -337,7 +337,9 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
             blocks.append({"type": "divider"})
 
         # ── Recent Lessons ──
-        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "Recent Lessons"}})
+        blocks.append(
+            {"type": "header", "text": {"type": "plain_text", "text": "📚 Recent Lessons"}}
+        )
         lesson_lines: list[str] = []
         total_lessons = 0
         vs_ok = False
@@ -397,18 +399,18 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         blocks.append({"type": "divider"})
 
         # ── Commands ──
-        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "Commands"}})
+        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "⌨️ Commands"}})
         _sc = f"/{orch.slack_command}"
         for name, (_, desc) in sorted(SLASH_REGISTRY.items()):
             blocks.append(command_hint_block(f"{_sc} {name}", desc))
         blocks.append(command_hint_block(f"{_sc} #channel", "track/untrack channel"))
 
         # ── Version ──
-        version_text = f"Kiro Crew v{__version__}"
+        version_text = f"📦 Kiro Crew v{__version__}"
         update_info = get_update_info()
         remote_ver = update_info.get("latest_version")
         if update_info.get("update_available") and remote_ver:
-            version_text += f"  •  v{remote_ver} available — open Dashboard to update"
+            version_text += f"  •  🆕 v{remote_ver} available — open Dashboard to update"
         version_text = redact_credentials(redact_exfiltration_urls(version_text)[0])[0]
         blocks.append({"type": "divider"})
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": version_text}]})
@@ -432,7 +434,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": "Warning: Failed to load Home Tab. Try again later.",
+                                "text": "⚠️ Failed to load Home Tab. Try again later.",
                             },
                         }
                     ],

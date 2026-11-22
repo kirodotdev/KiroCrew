@@ -349,6 +349,73 @@ def _mark_mcp_broker_ready(
             )
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
+    # Holders for stored MCP resource subscriptions restore once ``run`` marks the
+    # gateway ready, after ``start_dashboard`` and its open-tab restore have
+    # returned, so the startup closure check reads a final ``open_slots_restored``.
+    # On a gateway with no dashboard restore, or with an unknowable open-tab
+    # registry, the flag stays False and every dashboard key is kept: absence is
+    # never closure. With the default-off switch, even the module import stays
+    # off the boot path. Here rather than at the boot start, so a broker a retry
+    # brings up later holds them too.
+    cfg_gw = self._cfg.mcp_gateway
+    if cfg_gw.resource_subscriptions.enabled:
+        ready = getattr(self, "_mcp_launch_approval_ready", None)
+        if ready is None:
+            ready = asyncio.Event()
+            self._mcp_launch_approval_ready = ready
+
+        async def _start_resource_subscriptions() -> None:
+            await ready.wait()  # type: ignore[union-attr]  # narrowed above
+            from kiro_crew.dashboard.resource_wakes import ResourceWakeDispatcher
+            from kiro_crew.mcp_gateway.resource_subscriptions import (
+                EventSink,
+                ResourceSubscriptionService,
+                start_active_service,
+            )
+
+            # The service's events become session wakes. Same task, so the
+            # dispatcher exists only with the switch on and stops with the broker.
+            dispatchers: list[ResourceWakeDispatcher] = []
+
+            def _wake_sink(service: ResourceSubscriptionService) -> EventSink:
+                dispatcher = ResourceWakeDispatcher(service, lambda: self.dashboard_state)
+                dispatchers.append(dispatcher)
+                return dispatcher.handle
+
+            async def _session_is_closed(session_key: str) -> bool:
+                from kiro_crew.dashboard.session_owners import session_closure_recorded
+
+                return await session_closure_recorded(
+                    self.dashboard_state,
+                    session_key,
+                    f"resource subscription restore for {session_key}",
+                )
+
+            try:
+                await start_active_service(
+                    lambda: manager.socket_path,
+                    lambda: (live.snapshot() or self._cfg).mcp_gateway.resource_subscriptions,
+                    _wake_sink,
+                    session_is_closed=_session_is_closed,
+                    backends_shared=lambda: (live.snapshot() or self._cfg).mcp_gateway.enabled,
+                    backend_spawn_wait_secs=cfg_gw.spawn_queue_wait_secs,
+                )
+                # Held until the broker stops this task.
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("mcp-gateway: resource subscriptions did not start")
+            finally:
+                for dispatcher in dispatchers:
+                    await dispatcher.close()
+
+        subscription_task = asyncio.create_task(
+            _start_resource_subscriptions(), name="mcp-resource-subscriptions-start"
+        )
+        self._mcp_resource_subscription_task = subscription_task
+        self._background_tasks.add(subscription_task)
+        subscription_task.add_done_callback(self._background_tasks.discard)
     # App installs and enables write agent specs after this rewrite; this is
     # how they reach the overlay without a restart. The hook lives exactly as
     # long as the broker: ``_stop_mcp_broker`` clears it.
@@ -553,6 +620,19 @@ async def _stop_mcp_broker(self: GatewayOrchestrator) -> None:
     from kiro_crew.mcp_gateway.overlay_refresh import set_overlay_refresher
 
     set_overlay_refresher(None)
+    subscription_task = getattr(self, "_mcp_resource_subscription_task", None)
+    self._mcp_resource_subscription_task = None
+    if subscription_task is not None:
+        if not subscription_task.done():
+            subscription_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await subscription_task
+        from kiro_crew.mcp_gateway.resource_subscriptions import stop_active_service
+
+        try:
+            await stop_active_service()
+        except Exception:
+            logger.exception("mcp-gateway: resource subscription holders did not stop cleanly")
     managers = (self._mcp_gateway_pending, self._mcp_gateway_manager)
     self._mcp_gateway_pending = None
     self._mcp_gateway_manager = None

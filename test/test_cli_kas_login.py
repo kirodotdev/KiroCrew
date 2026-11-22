@@ -417,7 +417,7 @@ class TestLogin:
         monkeypatch.setattr(fake_service, "begin_device", _refused)
         assert cli_kas.kas_cmd(_parse("login")) == 1
         assert capsys.readouterr().err == (
-            "Error: could not reach the sign-in service (oidc.us-east-1.amazonaws.com): "
+            "❌ could not reach the sign-in service (oidc.us-east-1.amazonaws.com): "
             "connection refused.\n"
             "   Nothing was stored. Check your network connection, then run the command again.\n"
         )
@@ -437,7 +437,7 @@ class TestLogin:
         monkeypatch.setattr(fake_service, "begin_device", _slow)
         assert cli_kas.kas_cmd(_parse("login")) == 1
         assert capsys.readouterr().err.startswith(
-            f"Error: could not reach the sign-in service: Connection timeout to host {url}.\n"
+            f"❌ could not reach the sign-in service: Connection timeout to host {url}.\n"
         )
 
     def test_a_sign_out_during_the_login_is_a_line_not_a_traceback(

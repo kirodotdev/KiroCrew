@@ -109,7 +109,12 @@ from kiro_crew.platform_compat import (
 from kiro_crew.pod import _windows_job as jobs
 from kiro_crew.pod import _windows_run as runs
 from kiro_crew.pod import log_mark
-from kiro_crew.pod.config import EXIT_REFUSED_UNRECOVERABLE, PodConfig, environment_vars
+from kiro_crew.pod.config import (
+    EXIT_REFUSED_UNRECOVERABLE,
+    POD_HEALTH_WAIT_SECS_DEFAULT,
+    PodConfig,
+    environment_vars,
+)
 from kiro_crew.pod.unit import _kirocrew_argv as _shared_kirocrew_argv
 from kiro_crew.sandbox import apply_windows_resource_ceiling
 
@@ -178,11 +183,17 @@ def _unlink_waiting_out_sharing(
 #: pod's gateway sidecar after the process it supervised exits. Bounds how long a
 #: pod can report itself alive after its LAST gateway is gone, so it is a
 #: correctness ceiling rather than a comfort setting: too short and an in-app
-#: restart is misread as a stop (the fail-OPEN direction — `pod down` would then
-#: reclaim a live pod), too long and a genuinely stopped pod lingers as running.
+#: restart is misread as a stop (the supervisor drains its lifetime Job with the
+#: booting successor inside it, so the pod goes down), too long and a genuinely
+#: stopped pod lingers as running.
+#:
+#: The successor writes that sidecar only once its listener is bound, which is
+#: the END of a full gateway boot, so the window has to fit a whole boot. It is
+#: therefore the same budget `pod up` gives a first boot to answer health, not a
+#: shorter one: a restart successor does the same work on the same host.
 #: The wait is only ever entered while the exited gateway still has a live
 #: attributed child, so an ordinary shutdown never pays it.
-SUCCESSOR_ADOPT_TIMEOUT_SECS = 30.0
+SUCCESSOR_ADOPT_TIMEOUT_SECS = float(POD_HEALTH_WAIT_SECS_DEFAULT)
 
 
 class WindowsTaskError(RuntimeError):
@@ -1140,6 +1151,16 @@ def _await_successor(record: Path, reaped_pid: int, reaped_token: str) -> int | 
         if not _live_children_of(reaped_pid, reaped_token):
             return None
         time.sleep(0.2)
+    if not _live_children_of(reaped_pid, reaped_token):
+        return None
+    # A live child outlived the whole window without claiming the pod, and the
+    # caller now drains the Job it is in. Said once, in the pod's own log, so a
+    # restart that went down reads as this and not as a successor that crashed.
+    print(
+        f"kirocrew-pod: no restart successor claimed the pod within "
+        f"{SUCCESSOR_ADOPT_TIMEOUT_SECS:.0f}s of gateway pid {reaped_pid} exiting; "
+        "stopping the processes it left"
+    )
     return None
 
 

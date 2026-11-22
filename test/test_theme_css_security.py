@@ -346,6 +346,31 @@ class TestTerminalSurfaceVars:
         assert _validate_theme_data(theme) is not None
 
 
+class TestGlassBandVar:
+    """A pack may colour the lit band of the glass panes per polarity."""
+
+    def test_validation_accepts_and_keeps_glass_band_plain(self) -> None:
+        theme: dict = {
+            "name": "Test",
+            "dark": {
+                "--bg": "#000",
+                "--text": "#fff",
+                "--accent": "#00f",
+                "--glass-band-plain": "rgba(214, 232, 196, 0.22)",
+            },
+            "light": {
+                "--bg": "#fff",
+                "--text": "#000",
+                "--accent": "#00f",
+                "--glass-band-plain": "#f4f8ee",
+            },
+        }
+        assert _validate_theme_data(theme) is None
+        dark = _strip_to_allowed_vars(theme["dark"])
+        assert dark["--glass-band-plain"] == "rgba(214, 232, 196, 0.22)"
+        assert _strip_to_allowed_vars(theme["light"])["--glass-band-plain"] == "#f4f8ee"
+
+
 class TestAllowlistParity:
     """The backend and frontend allowlists must be the SAME set.
 

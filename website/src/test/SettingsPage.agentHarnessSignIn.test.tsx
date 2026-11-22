@@ -8,7 +8,7 @@
  * It also pins what the Agent Harness tab keeps: one line and a link, no card.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -18,7 +18,7 @@ vi.mock('../api/client', async importOriginal => {
     ...mod,
     api: {
       ...mod.api,
-      kirocrewConfig: vi.fn(() => Promise.resolve({ agent: { acp_backend: 'kiro' } })),
+      kirocrewConfig: vi.fn(() => Promise.resolve({ agent: { acp_backend: harness.value } })),
       patchConfig: vi.fn(() => Promise.resolve({})),
       acpBackends: vi.fn(() =>
         Promise.resolve({
@@ -44,6 +44,7 @@ vi.mock('../api/client', async importOriginal => {
 })
 
 const choices = vi.hoisted(() => ({ value: ['kiro', 'claude', 'kas'] }))
+const harness = vi.hoisted(() => ({ value: 'kiro' }))
 vi.mock('../components/settingRef/useConfigSchema', async importOriginal => {
   const schema = () => new Map([['agent.acp_backend', { path: 'agent.acp_backend', type: 'enum', enum: choices.value }]])
   return {
@@ -108,6 +109,7 @@ const LAZY_TAB = { timeout: 10_000 }
 
 beforeEach(() => {
   choices.value = ['kiro', 'claude', 'kas']
+  harness.value = 'kiro'
   sessionStorage.clear()
   // Not available in jsdom; the hook scrolls the anchor into view.
   Element.prototype.scrollIntoView = vi.fn()
@@ -128,11 +130,22 @@ describe('Settings > Kiro account sign-in deep link, through the real tab', () =
     expect(screen.getAllByText('Kiro account').length).toBeGreaterThan(0)
   })
 
-  it('has no Kiro account tab on a build that cannot use the sign-in', async () => {
+  it('has no Kiro account tab on a build that cannot use the sign-in and has no credits to show', async () => {
     choices.value = ['kiro', 'claude']
+    harness.value = 'claude'
     renderAt('/settings/agent')
     await screen.findByRole('radio', { name: 'Kiro CLI' }, LAZY_TAB)
     expect(screen.queryByText('Kiro account')).toBeNull()
+  })
+
+  it('keeps the Kiro account tab for its Credits on a Kiro harness whose build cannot use the sign-in', async () => {
+    choices.value = ['kiro', 'claude']
+    renderAt('/settings/kiro-account')
+    const card = await screen.findByTestId('kiro-credits-card', {}, LAZY_TAB)
+    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    // No sign-in card means no draft to lose, so the failed reading (this
+    // suite does not mock the usage read) keeps its hand-off to the agent.
+    expect(await within(card).findByRole('button', { name: /Ask the agent/i }, LAZY_TAB)).toBeInTheDocument()
   })
 
   it('keeps one line and a link in the Kiro Agent row, and no card', async () => {

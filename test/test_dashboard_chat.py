@@ -708,6 +708,215 @@ class TestRunChatModelFallback:
         assert slot._fallback_candidate_idx == 0
         assert slot._fallback_walked == []
 
+    @staticmethod
+    def _capacity_error(*, user_rate_limit=False):
+        from kiro_crew.acp.client import AcpError
+
+        err = AcpError("model is unavailable on the backend (capacity throttle)")
+        err.transient = True
+        err.throttle = True
+        err.model_unavailable = not user_rate_limit
+        err.user_rate_limit = user_rate_limit
+        return err
+
+    async def _run_streamed_then_throttled(
+        self,
+        tmp_path,
+        monkeypatch,
+        chain,
+        failing,
+        *,
+        during_backoff=None,
+        live_inner=False,
+        user_rate_limit=False,
+    ):
+        """A turn that streams, then hits a capacity error on every model in *failing*.
+
+        *during_backoff(slot, n)* runs inside the n-th post-token continue's backoff;
+        *live_inner* gives the client a live inner handle, which the usage seam bills from;
+        *user_rate_limit* makes the error Kiro's per-user rate limit instead."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: chain)
+        prompts: list[tuple[str, str]] = []
+        holder: dict = {}
+
+        async def _stream(msg):
+            model = holder["client"]._model
+            prompts.append((model, msg))
+            if model in failing:
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"partial on {model}")
+                raise self._capacity_error(user_rate_limit=user_rate_limit)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="fb-result")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        if live_inner:
+            client.client = MagicMock(pop_pending_oauth_requests=MagicMock(return_value=[]))
+        holder["client"] = client
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        backoffs: list[None] = []
+
+        async def _backoff(_delay):
+            backoffs.append(None)
+            if during_backoff is not None:
+                during_backoff(slot, len(backoffs))
+
+        # The post-token continue's backoff is its only wait.
+        with patch("kiro_crew.dashboard.chat_runner._recovery_delay", side_effect=_backoff):
+            await _run_chat(state, slot, "hello")
+            await self._drain_bg(state)
+        return slot, client, prompts
+
+    @pytest.mark.asyncio
+    async def test_capacity_error_after_the_continue_moves_to_the_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        """A streamed turn whose one continue also hits a capacity error is moved onto
+        the fallback, announced, and continued there with a re-armed allowance."""
+        slot, client, prompts = await self._run_streamed_then_throttled(
+            tmp_path, monkeypatch, ("fallback-model",), {"claude-test-model"}
+        )
+
+        assert [m for m, _ in prompts] == [
+            "claude-test-model",
+            "claude-test-model",
+            "fallback-model",
+        ]
+        # The candidate continues the turn on the same session; it is never a replay.
+        assert all("Continue from where it stopped" in p for _, p in prompts[1:])
+        assert all("hello" not in p for _, p in prompts[1:])
+        client.set_model.assert_awaited_once_with("fallback-model")
+        roles = [m.get("role") for m in slot.messages]
+        notice_at = roles.index("notice")
+        assert "throttled" in slot.messages[notice_at]["content"]
+        # Below the primary's second partial, which it interrupts.
+        assert slot.messages[notice_at - 1]["content"] == "partial on claude-test-model"
+        assert any("fb-result" in t for t in self._assistant_texts(slot))
+        assert not any(t.startswith("Error:") for t in self._err_texts(slot))
+        # Re-armed for the candidate, then spent by its continue.
+        assert slot._posttoken_retry_used is True
+        assert slot._active_fallback_model == "fallback-model"
+
+    @pytest.mark.asyncio
+    async def test_the_primary_partial_is_billed_to_the_primary_before_the_swap(
+        self, tmp_path, monkeypatch
+    ):
+        """The partial the primary streamed before its capacity error is recorded, usage
+        row and footer, under the PRIMARY: the swap runs only after it is persisted."""
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.dashboard.handlers.usage import read_turn_model
+
+        rows: list[tuple[str, str]] = []
+
+        async def _row(slot, client, session_key, *, stop_reason, **_kw):
+            rows.append((stop_reason, read_turn_model(client)))
+            return True
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._persist_abnormal_turn_usage", _row)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner.provider_last_turn_usage",
+            lambda *_a, **_kw: TurnUsage(credits=1.5),
+        )
+        slot, client, _ = await self._run_streamed_then_throttled(
+            tmp_path, monkeypatch, ("fallback-model",), {"claude-test-model"}, live_inner=True
+        )
+
+        client.set_model.assert_awaited_once_with("fallback-model")
+        # The first partial (the one continue's turn) and the second (the swap's) are
+        # both the primary's; the fallback finished without an abnormal row.
+        assert rows == [
+            ("error: transient attempt", "claude-test-model"),
+            ("error: transient attempt", "claude-test-model"),
+        ]
+        partials = [
+            m
+            for m in slot.messages
+            if m.get("role") == "assistant" and m["content"] == "partial on claude-test-model"
+        ]
+        assert len(partials) == 2
+        footers = [m["meta"]["turn_stats"] for m in partials if "turn_stats" in m.get("meta", {})]
+        assert footers and all(f["model"] == "claude-test-model" for f in footers), footers
+
+    @pytest.mark.asyncio
+    async def test_a_stop_during_the_fallback_backoff_resets_the_walk(self, tmp_path, monkeypatch):
+        """A Stop during the candidate's backoff drops its continue, and the walk state is
+        refreshed so the next genuine turn's restore probe is not skipped."""
+
+        def _intervene(slot, n):
+            # The primary's own continue runs; the candidate's is dropped. The stop
+            # resolves during the wait, so only the monotonic generation records it.
+            if n == 2:
+                slot._stop_generation = getattr(slot, "_stop_generation", 0) + 1
+
+        slot, client, prompts = await self._run_streamed_then_throttled(
+            tmp_path,
+            monkeypatch,
+            ("fallback-model",),
+            {"claude-test-model"},
+            during_backoff=_intervene,
+        )
+
+        client.set_model.assert_awaited_once_with("fallback-model")
+        assert "fallback-model" not in [m for m, _ in prompts]
+        assert slot._posttoken_retry_used is False
+        assert slot._fallback_candidate_idx == 0
+        assert slot._fallback_walked == []
+        assert slot._fallback_walk_refused is False
+        # The session really is on the fallback until the restore probe moves it back.
+        assert slot._active_fallback_model == "fallback-model"
+
+    @pytest.mark.asyncio
+    async def test_capacity_error_after_the_continue_without_a_chain_shows_the_card(
+        self, tmp_path, monkeypatch
+    ):
+        """REGRESSION PIN: no chain configured, so the one continue is followed by the card."""
+        slot, client, prompts = await self._run_streamed_then_throttled(
+            tmp_path, monkeypatch, (), {"claude-test-model"}
+        )
+
+        assert len(prompts) == 2
+        client.set_model.assert_not_awaited()
+        assert not self._notice_texts(slot)
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
+
+    @pytest.mark.asyncio
+    async def test_a_per_user_rate_limit_after_the_continue_shows_the_card(
+        self, tmp_path, monkeypatch
+    ):
+        """Kiro's per-user rate limit is shared by every model: no swap, the card shows."""
+        slot, client, prompts = await self._run_streamed_then_throttled(
+            tmp_path, monkeypatch, ("fallback-model",), {"claude-test-model"}, user_rate_limit=True
+        )
+
+        assert len(prompts) == 2
+        client.set_model.assert_not_awaited()
+        assert not self._notice_texts(slot)
+        assert any(t.startswith("Error:") for t in self._err_texts(slot))
+
+    @pytest.mark.asyncio
+    async def test_capacity_error_on_every_model_ends_on_the_card_with_the_walk(
+        self, tmp_path, monkeypatch
+    ):
+        """The candidate also fails after its own continue: the card names the walk."""
+        slot, client, prompts = await self._run_streamed_then_throttled(
+            tmp_path, monkeypatch, ("fallback-model",), {"claude-test-model", "fallback-model"}
+        )
+
+        assert [m for m, _ in prompts] == [
+            "claude-test-model",
+            "claude-test-model",
+            "fallback-model",
+        ]
+        client.set_model.assert_awaited_once_with("fallback-model")
+        errs = self._err_texts(slot)
+        assert any("fallback-model" in t and "also unavailable" in t for t in errs), errs
+
     @pytest.mark.asyncio
     async def test_candidate_budget_routes_through_shared_rewind_body(self, tmp_path, monkeypatch):
         """DRIFT PIN: the post-swap counter rewind must come

@@ -37,7 +37,7 @@ serves carries no relay header, so the strip passes it through as the same objec
 and cannot clone away the identity set here (a clone would reset ``request.remote``
 to the socket's peer).
 
-Off by default. With ``tunnel.relay_enabled`` false no :class:`RelayIngress` accepts a
+Off unless the relay is selected (``edition_locks.relay_selected``). Otherwise no :class:`RelayIngress` accepts a
 stamp, so the only behaviour left is the strip.
 """
 

@@ -114,9 +114,9 @@ async def _handle_dashboard(
         # block cannot outlast the link it describes.
         link_mins = min(LINK_WINDOW_SECS, session_ttl) // 60
         blks = dashboard_link_block(url, link_mins, session_ttl // 60)
-        await respond("Dashboard link sent to your DMs.", blocks=blks)
+        await respond("🔗 Dashboard link sent to your DMs.", blocks=blks)
     else:
-        await respond("Error: Failed to send dashboard link.")
+        await respond("❌ Failed to send dashboard link.")
 
 
 def _selector_agent_names() -> list[str]:
@@ -139,7 +139,7 @@ async def _handle_agent(
     )
 
     if not is_owner(caller_id):
-        await respond("Blocked: Only the owner can switch agents.")
+        await respond("⛔ Only the owner can switch agents.")
         return
 
     if args:
@@ -148,9 +148,9 @@ async def _handle_agent(
             try:
                 await run_config_write(_set_default_agent, "")
             except ValueError as e:
-                await respond(f"Error: {e}")
+                await respond(f"❌ {e}")
                 return
-            await respond("Reset to default agent.")
+            await respond("🔄 Reset to default agent.")
             return
         # Resolution reads a spec's content; off the loop, like the listing.
         resolved = await asyncio.to_thread(_resolve_agent_name, name)
@@ -158,11 +158,11 @@ async def _handle_agent(
             try:
                 await run_config_write(_set_default_agent, resolved)
             except ValueError as e:
-                await respond(f"Error: {e}")
+                await respond(f"❌ {e}")
                 return
-            await respond(f"Switched to agent: *{resolved}*")
+            await respond(f"🔄 Switched to agent: *{resolved}*")
             return
-        await respond(f"Error: Unknown agent `{name}`. Pick one below:")
+        await respond(f"❌ Unknown agent `{name}`. Pick one below:")
 
     # Show selector dropdown. The listing walks the agents directory and reads
     # every markdown candidate to decide whether it is a spec, so it runs off
@@ -199,7 +199,7 @@ async def _handle_voice(
 
     trigger_id = getattr(orch, "_last_trigger_id", "")
     if not trigger_id:
-        await respond("Error: Missing trigger_id — cannot open modal.")
+        await respond("❌ Missing trigger_id — cannot open modal.")
         return
 
     modal = voice_config_modal(
@@ -218,7 +218,7 @@ async def _handle_voice(
         await orch.slack.views_open(trigger_id=trigger_id, view=modal)
     except Exception:
         logger.exception("Failed to open voice config modal")
-        await respond("Error: Failed to open voice settings modal.")
+        await respond("❌ Failed to open voice settings modal.")
 
 
 register_slash_command("dashboard", _handle_dashboard, "get a dashboard access link")
@@ -231,7 +231,7 @@ async def _handle_yolo(
 ) -> None:
     """Toggle YOLO mode on/off/renew."""
     if not is_owner(caller_id):
-        await respond("Blocked: Only the owner can toggle YOLO mode.")
+        await respond("⛔ Only the owner can toggle YOLO mode.")
         return
 
     arg = args.strip().lower()
@@ -241,7 +241,7 @@ async def _handle_yolo(
     slack_yolo = so.is_active() and so.is_cli_launch is not True
     if arg == "on":
         if slack_yolo:
-            await respond(f"YOLO mode is already *ON* ({describe_grant_lifetime()}).")
+            await respond(f"🟢 YOLO mode is already *ON* ({describe_grant_lifetime()}).")
             return
         # Off-loop: activate() writes a SEL event and consults the
         # ``approval_modes`` policy, so running it inline stalls the whole gateway
@@ -255,9 +255,9 @@ async def _handle_yolo(
             # path in ``handler.py``, which must not drift from this one. The verdict
             # is a memory read (pushed at ceiling install), so no thread.
             if not yolo_policy_permits():
-                await respond("YOLO mode is disabled by your organization's policy.")
+                await respond("🔒 YOLO mode is disabled by your organization's policy.")
             else:
-                await respond("Error: Failed to activate YOLO mode (audit system unavailable).")
+                await respond("❌ Failed to activate YOLO mode (audit system unavailable).")
             return
         sel().log_api_access(
             caller=caller_id,
@@ -269,7 +269,7 @@ async def _handle_yolo(
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
         await respond(
-            f"YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
+            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
         )
     elif arg == "off":
         from kiro_crew.slack.handler import (
@@ -286,7 +286,7 @@ async def _handle_yolo(
         )
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
-        await respond("YOLO mode *OFF* — tools require approval.")
+        await respond("🔴 YOLO mode *OFF* — tools require approval.")
     elif arg == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep that
         # filesystem I/O off the event loop.
@@ -303,17 +303,17 @@ async def _handle_yolo(
             )
             if orch.dashboard_state:
                 orch.dashboard_state.push_slots_update()
-            await respond(f"YOLO mode *renewed* (auto-expires in {renew_result.ttl // 60}min).")
+            await respond(f"🟢 YOLO mode *renewed* (auto-expires in {renew_result.ttl // 60}min).")
         else:
-            await respond("YOLO mode is not active. Use `on` to activate first.")
+            await respond("🔴 YOLO mode is not active. Use `on` to activate first.")
     else:
         if slack_yolo:
             await respond(
-                f"YOLO mode is currently *ON* ({describe_grant_lifetime()}).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
+                f"YOLO mode is currently *ON 🟢* ({describe_grant_lifetime()}).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
             )
         else:
             await respond(
-                f"YOLO mode is currently *OFF*.\nUsage: `/{orch.slack_command} yolo on|off|renew`"
+                f"YOLO mode is currently *OFF 🔴*.\nUsage: `/{orch.slack_command} yolo on|off|renew`"
             )
 
 
@@ -322,7 +322,7 @@ async def _handle_config(
 ) -> None:
     """Open config modal (owner-only) — users and channels."""
     if not is_owner(caller_id):
-        await respond("Blocked: Only the owner can change config.")
+        await respond("⛔ Only the owner can change config.")
         return
 
     tracking_ids = list(orch._tracking_channels)
@@ -332,7 +332,7 @@ async def _handle_config(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "Warning: Multi-user access is disabled for security. Only the owner can interact via Slack.",
+                "text": "⚠️ Multi-user access is disabled for security. Only the owner can interact via Slack.",
             },
         },
         {
@@ -360,7 +360,7 @@ async def _handle_config(
 
     trigger_id = getattr(orch, "_last_trigger_id", "")
     if not trigger_id:
-        await respond("Warning: Cannot open modal — missing trigger_id.")
+        await respond("⚠️ Cannot open modal — missing trigger_id.")
         return
 
     try:
@@ -368,7 +368,7 @@ async def _handle_config(
         await orch.slack.views_open(trigger_id=trigger_id, view=view)
     except Exception:
         logger.exception("Failed to open config modal")
-        await respond("Error: Failed to open config modal.")
+        await respond("❌ Failed to open config modal.")
 
 
 register_slash_command("yolo", _handle_yolo, "toggle YOLO mode (auto-approve tools)")
@@ -380,7 +380,7 @@ async def _handle_allowlist_cmd(
 ) -> None:
     """Multi-user access disabled — user management is blocked."""
     await respond(
-        "Blocked: Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack."
+        "⛔ Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack."
     )
 
 
@@ -443,7 +443,7 @@ async def _handle_channel_cmd(
 ) -> None:
     """Open modal showing tracked channels with per-channel activation mode."""
     if not is_owner(caller_id):
-        await respond("Blocked: Only the owner can manage tracked channels.")
+        await respond("⛔ Only the owner can manage tracked channels.")
         return
 
     current_ids = sorted(orch._tracking_channels)
@@ -461,14 +461,14 @@ async def _handle_channel_cmd(
 
     trigger_id = getattr(orch, "_last_trigger_id", "")
     if not trigger_id:
-        await respond("Warning: Cannot open modal — missing trigger_id.")
+        await respond("⚠️ Cannot open modal — missing trigger_id.")
         return
     try:
         assert orch.slack is not None
         await orch.slack.views_open(trigger_id=trigger_id, view=modal)
     except Exception:
         logger.exception("Failed to open channels modal")
-        await respond("Error: Failed to open channels modal.")
+        await respond("❌ Failed to open channels modal.")
 
 
 register_slash_command("users", _handle_allowlist_cmd, "manage allowed users")
@@ -552,7 +552,7 @@ async def _handle_sessions(
         return
 
     blocks = _build_sessions_blocks(rows)
-    await respond("Recent sessions:", blocks=blocks)
+    await respond("\U0001f4cb Recent sessions:", blocks=blocks)
 
 
 register_slash_command("sessions", _handle_sessions, "list recent sessions")
@@ -587,7 +587,7 @@ async def _handle_restart(
             outcome="denied",
             resources=f"user={caller_id}",
         )
-        await respond("Blocked: Only the owner can restart the gateway.")
+        await respond("⛔ Only the owner can restart the gateway.")
         return
 
     if not os.environ.get("INVOCATION_ID"):
@@ -599,7 +599,7 @@ async def _handle_restart(
             resources=f"user={caller_id},reason=no_supervisor",
         )
         await respond(
-            "Blocked: Restart requires a process supervisor (systemd). "
+            "⛔ Restart requires a process supervisor (systemd). "
             "Running in bare mode — restart manually."
         )
         return
@@ -612,7 +612,7 @@ async def _handle_restart(
         resources=f"user={caller_id}",
     )
     try:
-        await respond("Restarting gateway…")
+        await respond("♻️ Restarting gateway…")
     except Exception:
         logger.debug("Restart notification failed", exc_info=True)
     try:
@@ -782,7 +782,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
             resources=cmd_text,
             error="unauthorized sender",
         )
-        _spawn(_respond("Blocked: You are not authorized to use this command."))
+        _spawn(_respond("⛔ You are not authorized to use this command."))
         return
 
     sel().log_api_access(
@@ -794,7 +794,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     )
 
     if not (orch.slack and orch._owner_id):
-        _spawn(_respond("Warning: Owner not configured."))
+        _spawn(_respond("⚠️ Owner not configured."))
         return
     # The owner typed a name this app registered: adopt it, so usage replies,
     # the Home tab and the code-channel pickers name a command that exists even
@@ -818,7 +818,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     if user_match:
         _spawn(
             _respond(
-                "Blocked: Multi-user access is disabled. Only the owner can use Kiro Crew via Slack."
+                "⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack."
             )
         )
         return
@@ -829,7 +829,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
         channel_id = channel_match.group(1)
         channel_name = channel_match.group(2) or "Secret"
         _spawn(prompt_track_channel(orch.slack, orch._owner_id, channel_id, channel_name))
-        _spawn(_respond(f"Track request sent for #{channel_name or channel_id}."))
+        _spawn(_respond(f"📨 Track request sent for #{channel_name or channel_id}."))
         return
 
     # Unknown sub-command → help

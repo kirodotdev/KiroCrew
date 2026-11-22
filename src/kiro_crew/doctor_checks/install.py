@@ -45,10 +45,10 @@ def _doctor_data_home_owner(issues: list[str]) -> None:
 
     access = check_data_home(Path(cli_doctor.config_dir()))
     if access.ok:
-        print("  owner:       OK:      this account owns its files")
+        print("  owner:       ✅ this account owns its files")
         return
     whose = f"belong to {access.owner}" if access.owner else "can't be used by this account"
-    print(f"  owner:       Error:   some files {whose}, so Kiro Crew can't read them:")
+    print(f"  owner:       ❌ some files {whose}, so Kiro Crew can't read them:")
     for path in access.foreign:
         print(f"               {path}")
     print("               Kiro Crew was probably started as root once (for example with sudo).")
@@ -71,7 +71,7 @@ def _doctor_data_home() -> None:
     # Print the canonical (symlink-resolved) spelling, the same form the PATH
     # launcher row prints: one install reached through a ``current`` symlink and
     # through its versioned directory must not read as two installs.
-    print(f"  location:    OK:      {os.path.realpath(home)}")
+    print(f"  location:    ✅ {os.path.realpath(home)}")
     _doctor_browser_leftover(Path(home))
 
     legacy = Path.home() / cli_doctor.LEGACY_CONFIG_DIR_NAME
@@ -87,7 +87,7 @@ def _doctor_data_home() -> None:
             # The override points AT the legacy dir, so it IS the active data
             # home — don't mislabel the home the process is actually using.
             print(
-                f"  legacy:      OK:      {legacy} is the ACTIVE data home "
+                f"  legacy:      ✅ {legacy} is the ACTIVE data home "
                 f"(KIROCREW_HOME override points to it)"
             )
             return
@@ -97,7 +97,7 @@ def _doctor_data_home() -> None:
         # hold it. Never advise deleting it — removing it takes the running
         # interpreter with it (`which kirocrew` may resolve through it).
         print(
-            f"  legacy:      OK:      {legacy} retained to hold a Kiro Crew "
+            f"  legacy:      ✅ {legacy} retained to hold a Kiro Crew "
             f"virtual environment ({', '.join(venvs)})"
         )
         print(
@@ -106,7 +106,7 @@ def _doctor_data_home() -> None:
         )
         return
     print(
-        f"  legacy:      Note:    {legacy} present but not the data home — safe to "
+        f"  legacy:      ⏹ {legacy} present but not the data home — safe to "
         f"delete once you have confirmed it holds nothing you need"
     )
 
@@ -142,11 +142,11 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
         name = render._safe_display(state.name)
         source = render._safe_display(str(state.source))
         if state.state == CRON_SOURCE_IN_SYNC:
-            print(f"  {name}:  OK:      agrees with {source}")
+            print(f"  {name}:  ✅ agrees with {source}")
         elif state.state == CRON_SOURCE_DIVERGED:
-            print(f"  {name}:  Error:   DIVERGED from {source}")
+            print(f"  {name}:  ❌ DIVERGED from {source}")
         else:
-            print(f"  {name}:  Note:    could not be compared against {source}")
+            print(f"  {name}:  ⏹ could not be compared against {source}")
 
     if any(state.state == CRON_SOURCE_DIVERGED for state in states):
         issues.append("deployed cron script diverged from its skill source")
@@ -218,17 +218,17 @@ def _doctor_skill_currency(issues: list[str]) -> None:
     # shadowing a builtin legible rather than surprising.
     for state in behind:
         print(
-            f"  {render._safe_display(state.name)}:  Error:   does not match "
+            f"  {render._safe_display(state.name)}:  ❌ does not match "
             f"{render._safe_display(str(state.source))}"
         )
     for state in edited:
         print(
-            f"  {render._safe_display(state.name)}:  Warning: edited since install, so it is not "
+            f"  {render._safe_display(state.name)}:  ⚠ edited since install, so it is not "
             f"compared against {render._safe_display(str(state.source))}"
         )
     for state in unverifiable:
         print(
-            f"  {render._safe_display(state.name)}:  Note:    could not be compared against "
+            f"  {render._safe_display(state.name)}:  ⏹ could not be compared against "
             f"{render._safe_display(str(state.source))}"
         )
 
@@ -357,19 +357,19 @@ def _doctor_path_launcher() -> None:
     if not on_path:
         # Not an error on its own: the desktop app runs its bundled backend
         # directly, and a user who never wanted a terminal command is fine.
-        print("  kirocrew CLI: Note:    not on PATH (run `kirocrew setup` to link it)")
+        print("  kirocrew CLI: ⏹ not on PATH (run `kirocrew setup` to link it)")
         return
     running = _resolve_kirocrew_bin()
     if not os.path.isabs(running) or os.path.realpath(on_path) == os.path.realpath(running):
         # Canonical spelling, matching the Data Home row and the comparison above.
-        print(f"  kirocrew CLI: OK:      {os.path.realpath(on_path)}")
+        print(f"  kirocrew CLI: ✅ {os.path.realpath(on_path)}")
         return
     if _toolbox_launcher_runs_this_version(on_path):
         # The realpath can be Toolbox's shared dispatcher, so the PATH spelling is
         # the one that names the tool.
-        print(f"  kirocrew CLI: OK:      {on_path} (Toolbox launcher, same version)")
+        print(f"  kirocrew CLI: ✅ {on_path} (Toolbox launcher, same version)")
         return
-    print("  Warning: kirocrew CLI on PATH belongs to a different install than this one.")
+    print("  ⚠ kirocrew CLI on PATH belongs to a different install than this one.")
     # Paths are printed UNWRAPPED, one per line: a wrapped path cannot be copied
     # or pasted into a command, which is the first thing someone does with it.
     print(f"{render._INDENT}on PATH:      {os.path.realpath(on_path)}")
@@ -411,7 +411,7 @@ def _doctor_service_launch() -> None:
         return
     program = _service_program(unit)
     if program is None:
-        print(f"  service runs: Warning: could not read the program the service starts ({unit})")
+        print(f"  service runs: ⚠️  could not read the program the service starts ({unit})")
         return
     real = os.path.realpath(program)
     checkout = _kirocrew_checkout_of(Path(real))
@@ -419,16 +419,16 @@ def _doctor_service_launch() -> None:
     # control character is shown escaped; an ordinary one stays copyable.
     shown = real if real.isprintable() else render._safe_display(real)
     if checkout is None:
-        print(f"  service runs: OK:      {shown}")
+        print(f"  service runs: ✅ {shown}")
         return
     if live_target.read_target() is not None:
-        print(f"  service runs: Note:    {shown} (source checkout, Dev Fleet live target is set)")
+        print(f"  service runs: ℹ️  {shown} (source checkout, Dev Fleet live target is set)")
         return
     wheel = _managed_wheel_launcher()
     if wheel is None:
-        print(f"  service runs: OK:      {shown} (source checkout)")
+        print(f"  service runs: ✅ {shown} (source checkout)")
         return
-    print("  Warning: The installed service runs a source checkout, not the wheel install.")
+    print("  ⚠️  The installed service runs a source checkout, not the wheel install.")
     print(f"{render._INDENT}service runs:  {shown}")
     print(f"{render._INDENT}wheel install: {wheel}")
     render._print_wrapped(
@@ -524,7 +524,7 @@ def _doctor_browser_leftover(home: Path) -> None:
     if not present:
         return
     print(
-        f"  browser:     Note:    {render._safe_display(str(leftover))} is left over from an "
+        f"  browser:     ℹ  {render._safe_display(str(leftover))} is left over from an "
         "earlier version and is no longer used; it can be deleted"
     )
 
@@ -544,12 +544,12 @@ def _doctor_source_checkout(repo: Path) -> None:
     """
     print("\nSource Checkout")
     if not (repo / ".git").exists():
-        print(f"  source:      Note:    not a git checkout ({repo})")
+        print(f"  source:      ⏹ not a git checkout ({repo})")
         return
 
     branch = cli_doctor._git_line(repo, "rev-parse", "--abbrev-ref", "HEAD")
     if branch is None:
-        print("  branch:      Warning: could not check (git failed)")
+        print("  branch:      ⚠️  could not check (git failed)")
         return
 
     # Default branch as recorded at clone time (refs/remotes/origin/HEAD).
@@ -561,7 +561,7 @@ def _doctor_source_checkout(repo: Path) -> None:
         # Fresh clones always have origin/HEAD; only manual remote surgery
         # loses it. Report the branch we ARE on and stop — guessing "main"
         # could mislabel a repo whose default genuinely differs.
-        print(f"  branch:      Warning: {branch} (could not determine default branch)")
+        print(f"  branch:      ⚠️  {branch} (could not determine default branch)")
         return
 
     behind = cli_doctor._git_line(repo, "rev-list", "--count", f"HEAD..origin/{default_branch}")
@@ -570,18 +570,16 @@ def _doctor_source_checkout(repo: Path) -> None:
         if behind is None or not behind.isdigit():
             # A failed count must not masquerade as a verified-fresh checkout:
             # "up to date" is a claim this probe could not actually establish.
-            print(
-                f"  branch:      Warning: {default_branch} (could not count commits behind origin)"
-            )
+            print(f"  branch:      ⚠️  {default_branch} (could not count commits behind origin)")
             return
         if int(behind) > 0:
             print(
-                f"  branch:      Warning: {default_branch}, {behind} commit(s) behind origin (as of last fetch)"
+                f"  branch:      ⚠️  {default_branch}, {behind} commit(s) behind origin (as of last fetch)"
             )
             print("               The running gateway predates those commits until an")
             print("               update + restart.")
         else:
-            print(f"  branch:      OK:      {default_branch} (up to date as of last fetch)")
+            print(f"  branch:      ✅ {default_branch} (up to date as of last fetch)")
         return
 
     detail = (
@@ -589,7 +587,7 @@ def _doctor_source_checkout(repo: Path) -> None:
         if behind and behind.isdigit() and int(behind) > 0
         else ""
     )
-    print(f"  branch:      Warning: on '{branch}' — not the default branch{detail}")
+    print(f"  branch:      ⚠️  on '{branch}' — not the default branch{detail}")
     print("               The gateway runs this checkout as-is: fixes merged to")
     print(f"               {default_branch} since divergence are NOT active, and update")
     print(f"               pulls this branch, not {default_branch}.")
@@ -617,7 +615,7 @@ def _doctor_import_path(issues: list[str]) -> None:
             entry = s.path_entry or os.getcwd()
             # ascii(): the path is caller-chosen bytes; escape control characters
             # rather than write them to the terminal.
-            print(f"  import path: Error:   {s.name} shadowed by {ascii(s.resolved)}")
+            print(f"  import path: ❌ {s.name} shadowed by {ascii(s.resolved)}")
             print(f"               sys.path entry {ascii(entry)} ({s.entry_kind})")
         remedy = cli_doctor.stdlib_shadow.remedy_command(shadows[0])
         if remedy is None:
@@ -632,10 +630,10 @@ def _doctor_import_path(issues: list[str]) -> None:
     if not getattr(sys.flags, "safe_path", False) and sys.path:
         launch = sys.path[0]
     if launch is None:
-        print("  import path: OK:      stdlib intact (launch directory kept off sys.path: -P)")
+        print("  import path: ✅ stdlib intact (launch directory kept off sys.path: -P)")
     else:
         print(
-            f"  import path: OK:      stdlib intact; launch entry on sys.path: {launch or os.getcwd()!r}"
+            f"  import path: ✅ stdlib intact; launch entry on sys.path: {launch or os.getcwd()!r}"
         )
         print("               A stdlib-named directory placed there would shadow the stdlib")
 
@@ -660,7 +658,7 @@ def _doctor_project(issues: list[str]) -> str:
                 # A file left root-owned by one ``sudo kirocrew setup``, or not
                 # UTF-8: report it as this row, so the sections after it still
                 # print (Data Home's owner row is the one that explains it).
-                print(f"  source dir:  Error:   {saved_proj} is unreadable ({type(exc).__name__})")
+                print(f"  source dir:  ❌ {saved_proj} is unreadable ({type(exc).__name__})")
                 print(
                     f"               Fix: rm {shlex.quote(str(saved_proj))}, then run kirocrew setup"
                 )
@@ -669,7 +667,7 @@ def _doctor_project(issues: list[str]) -> str:
             if saved and Path(saved).is_dir():
                 proj = saved
             else:
-                print(f"  source dir:  Error:   stale — points to deleted {saved}")
+                print(f"  source dir:  ❌ stale — points to deleted {saved}")
                 print(f"               Fix: rm {shlex.quote(str(saved_proj))}")
                 issues.append("stale project_dir")
                 stale_project = True
@@ -682,21 +680,21 @@ def _doctor_project(issues: list[str]) -> str:
 
         is_checkout = all((Path(proj) / m).is_dir() for m in _PROJECT_MARKERS)
         if is_checkout:
-            print(f"  source dir:  OK:      {proj} (Kiro Crew source checkout)")
+            print(f"  source dir:  ✅ {proj} (Kiro Crew source checkout)")
         else:
-            print(f"  source dir:  OK:      {proj}")
+            print(f"  source dir:  ✅ {proj}")
         # A git worktree or submodule stores ``.git`` as a FILE holding a
         # ``gitdir:`` pointer, not a directory, so accept both forms.
         git_marker = Path(proj) / ".git"
         if git_marker.exists():
-            print("  git repo:    OK:")
+            print("  git repo:    ✅")
         elif is_checkout:
-            print("  git repo:    Warning: source checkout is not a git repo")
+            print("  git repo:    ⚠️  source checkout is not a git repo")
         else:
-            print("  git repo:    Warning: not a git repo")
+            print("  git repo:    ⚠️  not a git repo")
     elif not stale_project:
         print(
-            "  source dir:  Warning: not set (set from a Kiro Crew checkout by"
+            "  source dir:  ⚠️  not set (set from a Kiro Crew checkout by"
             " kirocrew setup; not needed for wheel installs)"
         )
     return proj
@@ -713,9 +711,9 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
         from kiro_crew._sqlite_compat import PYSQLITE3_REQUIREMENT, fts5_available
 
         if fts5_available():
-            print("  sqlite fts5: OK:      available")
+            print("  sqlite fts5: ✅ available")
         else:
-            print("  sqlite fts5: Error:   missing (memory/knowledge search will fail)")
+            print("  sqlite fts5: ❌ missing (memory/knowledge search will fail)")
             # Only the pip half is gated. Where that command cannot run, using a
             # different Python IS the remaining fix, so it stays visible in
             # exactly the case the gate hides the command.
@@ -726,7 +724,7 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
             print("               Or use a Python whose SQLite was built with FTS5.")
             issues.append("sqlite fts5")
     except Exception as exc:  # pragma: no cover - defensive
-        print(f"  sqlite fts5: Warning: could not check ({exc})")
+        print(f"  sqlite fts5: ⚠️  could not check ({exc})")
 
 
 # ── timezone data ─────────────────────────────────────────────────────────────
@@ -781,7 +779,7 @@ def _doctor_tz_data(issues: list[str]) -> None:
     try:
         offset = _tz_probe_offset()
     except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
-        print("  tz data:     Error:   no timezone data resolves America/Vancouver")
+        print("  tz data:     ❌ no timezone data resolves America/Vancouver")
         print("               A named timezone does not resolve, so a job cannot use one.")
         if cli_doctor.pip_install_channel_available():
             print(f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for('tzdata')}")
@@ -789,10 +787,10 @@ def _doctor_tz_data(issues: list[str]) -> None:
         issues.append("timezone data missing")
         return
     if offset == _TZ_PROBE_OFFSET:
-        print("  tz data:     OK:      current (IANA tzdb 2026b or later)")
+        print("  tz data:     ✅ current (IANA tzdb 2026b or later)")
         print("               Sample check on America/Vancouver, not your configured zone.")
         return
-    print("  tz data:     Warning: out of date (older than IANA tzdb 2026b)")
+    print("  tz data:     ⚠️  out of date (older than IANA tzdb 2026b)")
     print("               It still moves America/Vancouver back to UTC-8 on")
     print("               2026-11-01, so a job in that zone runs an hour late.")
     if _tz_data_from_system():
@@ -821,14 +819,14 @@ def _doctor_tls_trust(issues: list[str]) -> None:
     if state == _ssl_compat.TRUST_NOT_MACOS:
         return
     if state == _ssl_compat.TRUST_SYSTEM:
-        print("  tls trust:   OK:      macOS system trust store")
+        print("  tls trust:   ✅ macOS system trust store")
         return
     if state == _ssl_compat.TRUST_OPERATOR_BUNDLE:
         print(
-            f"  tls trust:   OK:      SSL_CERT_FILE={render._safe_display(detail)} (Keychain CAs not used)"
+            f"  tls trust:   ✅ SSL_CERT_FILE={render._safe_display(detail)} (Keychain CAs not used)"
         )
         return
-    print("  tls trust:   Error:   macOS system trust store not in use")
+    print("  tls trust:   ❌ macOS system trust store not in use")
     print(f"               {render._safe_display(detail)}")
     print("               CAs installed in the Keychain are not trusted, so an HTTPS")
     print("               download behind a corporate root fails verification.")

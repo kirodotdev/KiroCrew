@@ -1275,7 +1275,7 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
 
         for name in ("LINUX", "WINDOWS", "MACOS"):
             monkeypatch.setattr(platform_compat, "IS_" + name, name == "MACOS")
-        monkeypatch.setattr(subagent_mod, "_host_available_gb", lambda: -1.0)
+        monkeypatch.setattr(subagent_mod, "_macos_available_memory_gb", lambda: -1.0)
         mgr = self._mgr()
         self._busy(mgr)
         self._level(monkeypatch, 2)
@@ -1299,7 +1299,7 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
         for name in ("LINUX", "WINDOWS", "MACOS"):
             monkeypatch.setattr(platform_compat, "IS_" + name, name == "MACOS")
         # 8 GB reclaimable clears the 4.0 GB floor plus warming-start reserves.
-        monkeypatch.setattr(subagent_mod, "_host_available_gb", lambda: 8.0)
+        monkeypatch.setattr(subagent_mod, "_macos_available_memory_gb", lambda: 8.0)
         self._level(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
         mgr = self._mgr()
         self._busy(mgr)
@@ -1307,6 +1307,28 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
         assert info is not None and info.queued is True
         assert info.queued_reason == "memory_pressure"
         assert events[-1]["reason"] == "memory_pressure"
+
+    def test_a_pressured_macs_first_start_is_admitted_when_nothing_of_ours_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """By design: the hold applies only while one of our dedicated runtimes
+        runs, so a Mac at WARN whose figure clears the floor still starts its
+        first sub-agent. Only the floor guards that start."""
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew import platform_compat
+        from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+
+        for name in ("LINUX", "WINDOWS", "MACOS"):
+            monkeypatch.setattr(platform_compat, "IS_" + name, name == "MACOS")
+        monkeypatch.setattr(subagent_mod, "_macos_available_memory_gb", lambda: 8.0)
+        self._level(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
+        mgr = self._mgr()
+        info, _events, mock_sel = self._spawn_capturing_queued(
+            mgr, floor_gb=DEFAULT_SPAWN_MIN_MEMORY_GB
+        )
+        assert info is not None and info.queued is False
+        assert info.queued_reason != "memory_pressure"
+        assert "deferred_memory_pressure" not in self._outcomes(mock_sel)
 
     def test_the_pump_keeps_a_held_row_in_the_window_without_a_defer(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1416,3 +1438,187 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
         assert held.queued is True and held.done is False
         assert mgr._queue_wait.get("sess-1", {}).get("reason") == "low_memory"
         assert events and events[-1]["reason"] == "low_memory"
+
+    # ── macOS: our settled runtimes keep their start price ───────────────────
+    #
+    # The macOS figure (free + active + inactive pages) counts a running
+    # runtime's resident pages as available, so it does not drop as our
+    # runtimes start. A settled dedicated runtime keeps owing its price there.
+
+    @staticmethod
+    def _as_platform(monkeypatch: pytest.MonkeyPatch, platform: str, figure_gb: float) -> None:
+        """Present as *platform*, with the macOS kernel figure at *figure_gb* and
+        no MCP roster raising a start's price."""
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew import platform_compat
+
+        for name in ("LINUX", "WINDOWS", "MACOS"):
+            monkeypatch.setattr(platform_compat, "IS_" + name, name == platform)
+        monkeypatch.setattr(subagent_mod, "_macos_available_memory_gb", lambda: figure_gb)
+        monkeypatch.setattr(subagent_mod, "session_mcp_roster_gb", lambda: 0.0)
+
+    @staticmethod
+    def _settled(mgr, count: int) -> None:
+        """Give *mgr* *count* dedicated children whose sessions answered long ago:
+        settled rows, each admitted at the unlearned dedicated price."""
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew.subagent import SubagentInfo
+
+        answered = time.monotonic() - 10 * subagent_mod._SETTLE_AFTER_SECS
+        for i in range(count):
+            info = SubagentInfo(
+                id=f"settled{i}",
+                task="w",
+                parent_session_key="sess-0",
+                _pid=5000 + i,
+                _start_price_gb=subagent_mod._UNLEARNED_DEDICATED_START_GB,
+            )
+            info._first_stream_mono = answered
+            info._first_stream_generation = info._rss_generation
+            assert subagent_mod._row_settled(info, time.monotonic())
+            mgr._agents[info.id] = info
+
+    @pytest.mark.parametrize(("running", "admitted"), [(9, True), (10, False)])
+    def test_a_green_mac_admits_starts_only_while_held_prices_fit(
+        self, monkeypatch: pytest.MonkeyPatch, running: int, admitted: bool
+    ) -> None:
+        """12 GB figure, green pressure, default floor and unlearned price: a start
+        fits while 12 >= floor + its price + 1 GB per settled runtime of ours,
+        so the tenth defers once nine run, however long ago they settled."""
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew import platform_compat
+        from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+
+        self._as_platform(monkeypatch, "MACOS", 12.0)
+        self._level(monkeypatch, platform_compat.MEMORY_PRESSURE_NORMAL)
+        mgr = self._mgr()
+        self._settled(mgr, running)
+        bar = DEFAULT_SPAWN_MIN_MEMORY_GB + subagent_mod._UNLEARNED_DEDICATED_START_GB * (
+            running + 1
+        )
+        assert (12.0 >= bar) is admitted
+        info, events, _sel = self._spawn_capturing_queued(mgr, floor_gb=DEFAULT_SPAWN_MIN_MEMORY_GB)
+        assert info is not None
+        if admitted:
+            assert info.queued is False and info.queued_reason != "low_memory"
+        else:
+            assert info.done is False
+            assert info.queued is True and info.queued_reason == "low_memory"
+            assert events[-1]["available_gb"] == pytest.approx(12.0)
+            assert events[-1]["required_gb"] == pytest.approx(bar)
+
+    @pytest.mark.parametrize("running", [5, 6])
+    def test_settled_shared_starts_keep_their_discounted_prices_on_macos(
+        self, monkeypatch: pytest.MonkeyPatch, running: int
+    ) -> None:
+        """Each shared session keeps its own MCP reserve, not its parent's price."""
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew import platform_compat
+
+        self._as_platform(monkeypatch, "MACOS", 6.0)
+        self._level(monkeypatch, platform_compat.MEMORY_PRESSURE_NORMAL)
+        mgr = self._mgr()
+        self._settled(mgr, running)
+        price = subagent_mod._shared_start_price_gb(subagent_mod._UNLEARNED_DEDICATED_START_GB)
+        assert price == pytest.approx(0.65)
+        for row in mgr._agents.values():
+            row._session_sharing = True
+            row._start_priced_shared = True
+            row._start_price_gb = price
+        monkeypatch.setattr(mgr, "_sharing_plan", lambda *_a, **_k: SimpleNamespace(shared=True))
+
+        info, events, _sel = self._spawn_capturing_queued(mgr, floor_gb=2.0)
+
+        assert info is not None
+        bar = 2.0 + (running + 1) * price
+        assert info.queued is (6.0 < bar)
+        if info.queued:
+            assert info.queued_reason == "low_memory"
+            assert events[-1]["required_gb"] == pytest.approx(bar)
+        assert mgr.settled_runtime_hold_gb(0.5) == pytest.approx(running * price)
+        assert mgr._admission._memory_bar_base_gb(2.0, 0.5) == pytest.approx(2.0 + running * price)
+        assert subagent_mod._settled_runtime_hold_total_gb(0.5) == pytest.approx(running * price)
+
+    @pytest.mark.parametrize("platform", ["MACOS", "LINUX", "WINDOWS"])
+    def test_a_settled_nested_shared_session_reserves_only_its_own_price(
+        self, monkeypatch: pytest.MonkeyPatch, platform: str
+    ) -> None:
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew.subagent import SubagentInfo
+
+        self._as_platform(monkeypatch, platform, 6.0)
+        mgr = self._mgr()
+        self._settled(mgr, 1)
+        price = subagent_mod._shared_start_price_gb(subagent_mod._UNLEARNED_DEDICATED_START_GB)
+        child = SubagentInfo(
+            id="shared-child",
+            task="w",
+            parent_session_key="subagent:settled0",
+            _session_sharing=True,
+            _start_priced_shared=True,
+            _start_price_gb=price,
+            _rss_samples=subagent_mod._RSS_SAMPLES_TO_SETTLE,
+        )
+        mgr._agents[child.id] = child
+        held = subagent_mod._UNLEARNED_DEDICATED_START_GB + price if platform == "MACOS" else 0.0
+        assert mgr.settled_runtime_hold_gb(0.5) == pytest.approx(held)
+        assert mgr._admission._memory_bar_base_gb(2.0, 0.5) == pytest.approx(2.0 + held)
+
+        # Sizing uses the same held prices, not another charge for the parent.
+        monkeypatch.setattr(subagent_mod, "_available_memory_gb", lambda **_k: 6.0)
+        monkeypatch.setattr(subagent_mod, "read_cap_costs", lambda *_a, **_k: (None, None))
+        cfg = SimpleNamespace(
+            agent=SimpleNamespace(subagent_mem_buffer_pct=0, subagent_cost_gb=1.0),
+            session=SimpleNamespace(pool_size=0),
+        )
+        assert subagent_mod._host_mem_term(cfg) == (4 if platform == "MACOS" else 6)
+
+    def test_a_nested_start_counts_our_settled_runtimes_on_macos(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A child of one of our runtimes reads the same reduced figure: eleven
+        settled runtimes at 1 GB leave 12 GB below the 2 GB floor."""
+        from kiro_crew import platform_compat
+        from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+
+        self._as_platform(monkeypatch, "MACOS", 12.0)
+        self._level(monkeypatch, platform_compat.MEMORY_PRESSURE_NORMAL)
+        mgr = self._mgr()
+        self._settled(mgr, 11)
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, floor_gb=DEFAULT_SPAWN_MIN_MEMORY_GB, parent_session_key="subagent:settled0"
+        )
+        assert info is not None and info.queued is True
+        assert info.queued_reason == "low_memory"
+
+    @pytest.mark.parametrize(
+        ("platform", "held"), [("MACOS", 8), ("LINUX", 0)], ids=["macos", "linux"]
+    )
+    def test_memory_sizing_subtracts_our_settled_runtimes_on_macos(
+        self, monkeypatch: pytest.MonkeyPatch, platform: str, held: int
+    ) -> None:
+        """The TaskRunner's memory-sized value and the auto cap with the floor at
+        0 size from the figure less what our settled runtimes hold, on macOS
+        only: there the figure does not drop as they start. Linux's reading
+        already drops with resident memory."""
+        import kiro_crew.subagent as subagent_mod
+
+        self._as_platform(monkeypatch, platform, 20.0)
+        monkeypatch.setattr(subagent_mod, "_available_memory_gb", lambda **_k: 20.0)
+        monkeypatch.setattr(subagent_mod, "read_cap_costs", lambda *_a, **_k: (None, None))
+        cfg = SimpleNamespace(
+            agent=SimpleNamespace(
+                subagent_mem_buffer_pct=0,
+                subagent_cost_gb=1.0,
+                subagent_auto_max=32,
+                spawn_min_memory_gb=0.0,
+                max_subagents=0,
+            ),
+            session=SimpleNamespace(pool_size=0),
+        )
+        mgr = self._mgr()
+        idle_steps = subagent_mod.compute_memory_sized_parallel_cap(cfg)
+        idle_cap = subagent_mod.resolve_max_subagents(cfg)
+        self._settled(mgr, 8)
+        assert idle_steps - subagent_mod.compute_memory_sized_parallel_cap(cfg) == held
+        assert idle_cap - subagent_mod.resolve_max_subagents(cfg) == held

@@ -862,6 +862,12 @@ class LLMProvider(ABC):
         return ""
 
     @property
+    def kas_folder_hooks_projected(self) -> bool:
+        """Whether this session's registered agent batch projects a folder agent's
+        own hooks (``kas_project_hooks.kas_hook_checkout``). False with no batch."""
+        return False
+
+    @property
     def tool_search_settings(self) -> "ToolSearchSettings | None":
         """The operator's MCP Tool Search choice this provider spawned with, or
         ``None`` when it carries none.

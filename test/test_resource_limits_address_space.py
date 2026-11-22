@@ -152,7 +152,7 @@ class TestConfigSetWarning:
         _set(home, "resource_limits.max_address_space_mb", "16384")
         captured = capsys.readouterr()
         assert _read(home / "config.json")["resource_limits"]["max_address_space_mb"] == 16384
-        assert "Done: " in captured.out
+        assert "✅" in captured.out
         assert "VIRTUAL address space" in captured.err
         assert "Node/V8" in captured.err
         assert "resource_limits.max_memory_mb" in captured.err

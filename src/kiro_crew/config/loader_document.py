@@ -16,6 +16,7 @@ import os
 import secrets
 import stat as _stat
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -142,35 +143,28 @@ def acp_backend_stored_runs_kas() -> bool:
 
 
 def acp_backend_bundle_route() -> bool:
-    """Whether the stored ``agent.kas_bundle`` is on (the bundled KAS engine route).
+    """Whether a SAVED ``agent.kas_bundle`` is ``true`` (the bundled KAS engine route).
 
     Reads the documents (overlay winning) like :func:`acp_backend_stored_as_kiro`.
     On the bundle route a Kiro CLI pick stays on kiro-cli: KAS there spawns Crew's
     own bundled engine, which kiro-cli's own v3 support says nothing about, so the
     gateway floor and the per-process probe both decline to promote the pick.
-    An absent key reads :func:`kas_bundle_build_default`, as the loader does.
-    A stored value that is not a bool reads the same default, as the loader's
-    ``_safe_bool`` does, so the two readers agree.
+    An absent key is ``False``, as the loader reads it: a packaged build only
+    PREFERS the engine for an unset key (``acp.kas_build_default``), which leaves
+    a Kiro CLI pick where it was. A stored value that is not a bool reads ``False``
+    too, as the loader's ``_safe_bool`` does, so the two readers agree.
     """
     stored = _stored_agent_value("kas_bundle")
-    return stored if isinstance(stored, bool) else kas_bundle_build_default()
+    return stored if isinstance(stored, bool) else False
 
 
-def kas_bundle_build_default() -> bool:
-    """What an UNDECLARED ``agent.kas_bundle`` resolves to in this build.
+def kas_bundle_declared() -> bool:
+    """Whether ``config.json`` or the overlay names ``agent.kas_bundle`` at all.
 
-    True only in a build the nightly pipeline stamped (``_build_info.BUILD_CHANNEL
-    == "nightly"``, :mod:`kiro_crew.build_channel`), so the nightly lane runs the
-    bundled engine by default while stable, insider and source builds keep the
-    relay. A fact about the build's bytes, never the ``channel`` file a user can
-    switch before the update lands. Like :func:`unsandboxed_exec_platform_default`
-    it is resolved into the loaded value, and ``save()`` leaves the key off disk
-    while it is undeclared, so a nightly install that later takes a stable build
-    goes back to the stable default instead of keeping a value nobody chose.
+    A saved value always wins over the build's preference
+    (``acp.kas_build_default``), so the route asks this before applying it.
     """
-    from kiro_crew.build_channel import is_nightly_build
-
-    return is_nightly_build()
+    return _agent_key_declared("kas_bundle")
 
 
 #: The ``agent`` keys whose absent value is resolved from the host or the build,
@@ -875,9 +869,54 @@ def _config_write_lock(p: Path, *, wait: bool = True) -> Iterator[None]:
     fd = platform_compat.open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     try:
         with platform_compat.file_lock(fd, exclusive=True, wait=wait):
-            yield
+            held = _held_lock_paths()
+            key = str(lock_path)
+            held[key] = held.get(key, 0) + 1
+            try:
+                yield
+            finally:
+                held[key] -= 1
+                if not held[key]:
+                    del held[key]
     finally:
         os.close(fd)
+
+
+#: Per sidecar lock path, how many :func:`_config_write_lock` holds this thread is
+#: inside, so code that runs both inside a locked write of THAT file and outside one
+#: can tell which it is in.
+_write_lock_held = threading.local()
+
+
+def _held_lock_paths() -> dict[str, int]:
+    held: dict[str, int] | None = getattr(_write_lock_held, "paths", None)
+    if held is None:
+        held = _write_lock_held.paths = {}
+    return held
+
+
+@contextlib.contextmanager
+def try_config_write_lock(p: Path) -> Iterator[bool]:
+    """Yield whether this thread may write *p*'s config now, never waiting.
+
+    ``True`` inside a :func:`_config_write_lock` this thread already holds, or
+    when the sidecar lock is free and taken for the block; ``False`` when another
+    writer holds it (or it cannot be taken), and the caller skips its write.
+    """
+    target = _lock_target(p)
+    if str(target.parent / (target.name + ".lock")) in _held_lock_paths():
+        yield True
+        return
+    try:
+        held = _config_write_lock(target, wait=False)
+        held.__enter__()
+    except Exception:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        held.__exit__(None, None, None)
 
 
 def update_config_locked(

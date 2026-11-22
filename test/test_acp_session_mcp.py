@@ -21,6 +21,7 @@ from acp_session_mcp_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_session_mcp_helpers import agents_dir_fixture  # noqa: F401
 from acp_session_mcp_helpers import isolated_seed_provenance  # noqa: F401
 from acp_session_mcp_helpers import _by_name, _write_project_spec, _write_spec
+from claude_settings_tier_helpers import empty_claude_settings_tiers
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
@@ -828,6 +829,11 @@ class TestLocalSettingsSeed:
     ``test_acp_seed_provenance.py``.
     """
 
+    @pytest.fixture(autouse=True)
+    def _empty_user_and_managed_tiers(self, tmp_path, _floor_monkeypatch):
+        """The host's ``~/.claude`` must not decide the seed; ``_user_settings`` repoints it."""
+        empty_claude_settings_tiers(tmp_path, _floor_monkeypatch)
+
     def _client(self, tmp_path, **kw):
         return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, **kw)
 
@@ -873,14 +879,12 @@ class TestLocalSettingsSeed:
         # source the seed actually uses.
         assert data["availableModels"] == model_registry.seed_available_models("claude_code")
 
-    def test_warm_cache_with_no_other_source_writes_the_model_without_the_allowlist(
-        self, tmp_path, monkeypatch
-    ):
+    def test_warm_cache_with_no_other_source_writes_no_allowlist(self, tmp_path, monkeypatch):
         """An allowlist entry naming a specific id disables the family alias wildcard.
 
         With no other settings source defining ``availableModels``, the seed omits
         the allowlist, so ``haiku`` keeps resolving to its current model. The pinned
-        ``model`` is still written, because a model key does not narrow any alias.
+        model is pushed live, never written.
         """
         from kiro_crew import model_registry
 
@@ -896,7 +900,7 @@ class TestLocalSettingsSeed:
         client = self._client(tmp_path, model="haiku", permission_mode="default")
         data = json.loads(client._render_claude_settings_payload())
         assert "availableModels" not in data
-        assert data["model"] == "haiku"
+        assert "model" not in data
 
     def test_warm_cache_with_another_source_writes_the_seeded_list(self, tmp_path, monkeypatch):
         from kiro_crew import model_registry
@@ -1036,9 +1040,9 @@ class TestLocalSettingsSeed:
         # session/new, which is the whole reason the seed runs at spawn.
         assert data["permissions"]["defaultMode"] == "default"
 
-    def test_seeded_model_is_folded_onto_an_advertised_id(self, tmp_path, monkeypatch):
-        # Another settings source defines availableModels, so the list is written too and
-        # the folded model can be checked against it.
+    def test_the_warm_reseed_lists_the_folded_pin(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the list is written and
+        # the folded pin, which the live push sends, can be checked against it.
         monkeypatch.setattr(
             "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
             lambda *a, **k: True,
@@ -1055,13 +1059,16 @@ class TestLocalSettingsSeed:
         assert "model" not in json.loads(path.read_text())
 
         # Same client, cache now warm (its own session/new was captured): the
-        # re-seed writes both, and the model folds onto the advertised spelling.
+        # re-seed writes the list, which names the advertised spelling the pin folds
+        # onto, and still no model key.
         self._advertised(monkeypatch)
-        client._model = model_registry.resolve_wire_model_id("claude-opus-5", "claude_code")
+        folded = model_registry.resolve_wire_model_id("claude-opus-5", "claude_code")
+        assert folded == "global.anthropic.claude-opus-5[1m]"
+        client._model = folded
         client._write_claude_local_settings()
         data = json.loads(path.read_text())
-        assert data["model"] == "global.anthropic.claude-opus-5[1m]"
-        assert data["model"] in data["availableModels"]
+        assert "model" not in data
+        assert folded in data["availableModels"]
 
     def test_no_permission_mode_leaves_the_adapter_default(self, tmp_path):
         client = self._client(tmp_path)
@@ -1075,28 +1082,31 @@ class TestLocalSettingsSeed:
         data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
         assert data["permissions"]["defaultMode"] == "default"
 
-    def test_resolved_model_written_but_auto_omitted(self, tmp_path, monkeypatch):
-        # Another settings source defines availableModels, so the warm cache is written.
+    @pytest.mark.parametrize("other_list", [True, False])
+    def test_a_pinned_model_never_reaches_the_settings_file(
+        self, tmp_path, monkeypatch, other_list
+    ):
+        """A settings ``model`` key makes Claude Code fold that model's family into one row.
+
+        Pinned to Opus 4.8, the adapter then offers one ``opus`` row and drops Opus 5
+        and Opus 5.5, Crew caches that short list as what the account is served, and
+        an in-chat ``/model`` to the pinned id does nothing. The pin reaches the
+        session over ``session/set_config_option`` (``_apply_startup_model``), which
+        narrows nothing, so the seed carries no ``model`` key, warm cache or cold.
+        """
         monkeypatch.setattr(
             "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
-            lambda *a, **k: True,
+            lambda *a, **k: other_list,
         )
-        self._advertised(monkeypatch, ["claude-sonnet-4-5"])
-        auto = self._client(tmp_path)
-        auto._write_claude_local_settings()
-        path = tmp_path / ".claude" / "settings.local.json"
-        assert "model" not in json.loads(path.read_text())
-        # A second client only writes when the path is free, so clear the first
-        # session's file the way its own reset would -- including handing back
-        # its live claim, which the create path now refuses to author under.
-        auto._claude_settings_authored = False
-        path.unlink()
-        from kiro_crew.acp import seed_provenance
-
-        seed_provenance.release(path, auto._seed_owner)
-        pinned = self._client(tmp_path, model="claude-sonnet-4-5")
+        served = ["global.anthropic.claude-opus-5-5[1m]", "global.anthropic.claude-opus-4-8[1m]"]
+        self._advertised(monkeypatch, served)
+        pinned = self._client(tmp_path, model="global.anthropic.claude-opus-4-8[1m]")
         pinned._write_claude_local_settings()
-        assert json.loads(path.read_text())["model"] == "claude-sonnet-4-5"
+        data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+        assert "model" not in data
+        if other_list:
+            # The list still names the pin, so the live push is accepted.
+            assert "global.anthropic.claude-opus-4-8[1m]" in data["availableModels"]
 
     def test_disabled_tools_reach_the_settings_deny_list(self, tmp_path, agents_dir):
         _write_spec(
@@ -1261,6 +1271,7 @@ class TestLocalSettingsSeed:
         assert "model" not in json.loads(path.read_text())
 
         client._model = "claude-sonnet-4-5"
+        client._adopted_substitute_model = "claude-sonnet-4-5"
         client._write_claude_local_settings()
 
         assert json.loads(path.read_text())["model"] == "claude-sonnet-4-5"
@@ -1290,6 +1301,7 @@ class TestLocalSettingsSeed:
         assert "availableModels" not in first
 
         client._model = "claude-sonnet-4-5"
+        client._adopted_substitute_model = "claude-sonnet-4-5"
         client._write_claude_local_settings()
 
         data = json.loads(path.read_text())

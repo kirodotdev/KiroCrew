@@ -19,7 +19,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.history import ConversationLog
-from kiro_crew.shared_crew import people, routes_identity
+from kiro_crew.shared_crew import people, preview, routes_identity
 from kiro_crew.shared_crew.codec import ContractError
 from kiro_crew.shared_crew.contracts import (
     ACTOR_REQUEST_KEY,
@@ -51,6 +51,12 @@ def _write_session(base, key: str, *, title: str, creator: Principal | None, mti
     row = {"role": "user", "content": "x", "ts": "t"}
     path.write_text(json.dumps(meta) + "\n" + json.dumps(row) + "\n", encoding="utf-8")
     os.utime(path, (mtime, mtime))
+
+
+@pytest.fixture(autouse=True)
+def _preview_on(_floor_monkeypatch):
+    # The People and mode reads list the catalogue only with the Shared Crew preview on.
+    _floor_monkeypatch.setenv(preview.PREVIEW_ENV, "1")
 
 
 @pytest.fixture

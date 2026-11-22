@@ -718,10 +718,6 @@ class TestInstallRows:
         assert _installs(ceiling, "agent", "reviewer")
         assert not _installs(ceiling, "agent", "other")
 
-    def test_an_mcp_server_glob_deny_still_refuses_the_policy(self):
-        with pytest.raises(t.Unrepresentable):
-            t.translate("rules:\n  - {capability: mcp, effect: deny, match: ['corp-*/x']}\n")
-
 
 class TestBatchOneMeta:
     def test_a_deny_all_turns_every_new_row_off(self):

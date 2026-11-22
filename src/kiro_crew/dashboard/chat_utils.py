@@ -739,6 +739,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AUTH_REQUIRED_KIND,
         AUTOMATION_NOTICE_KIND,
         AUTOMATION_STEER_META,
+        AUTOMATION_STEER_WIRE_KEY,
         COMPOSER_SEND_META,
         CONTEXT_OVERFLOW_KIND,
         CRON_NOTIFICATION_KIND,
@@ -754,6 +755,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
         REQUEUED_STEER_ROW_MID_META,
+        RESOURCE_WAKE_KIND,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
@@ -782,6 +784,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_system_injection_item,
         payload_for_replay,
         releases_past_subagent_hold,
+        resource_inject_row,
         teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401

@@ -390,6 +390,111 @@ def test_oversized_transcript_item_id_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_a_local_start_fault_is_a_retryable_failure_with_its_type_logged(monkeypatch, caplog):
+    def broken_media_stack():
+        raise RuntimeError("private reply text")
+
+    monkeypatch.setattr(codex, "availability", lambda: codex.Availability(True))
+    monkeypatch.setattr(codex, "codex_argv", lambda: ["/installed/codex"])
+    monkeypatch.setattr(codex.codex_media, "load_media_stack", broken_media_stack)
+    session = codex.StreamingSession()
+    with caplog.at_level("DEBUG", logger=codex.logger.name):
+        problem = await session.start()
+    assert problem == "The Codex dictation connection failed."
+    assert session.failure.code == codex.CODE_FAILED
+    warnings = [
+        r for r in caplog.records if r.name == codex.logger.name and r.levelname == "WARNING"
+    ]
+    assert [r.getMessage() for r in warnings] == ["codex dictation did not start: RuntimeError"]
+    assert all("private reply text" not in r.getMessage() for r in warnings)
+    assert session.stopping
+
+
+def test_transcript_item_id_at_its_cap_is_accepted():
+    session = codex.StreamingSession()
+    ident = "x" * codex._MAX_ITEM_ID_CHARS
+    session._data_event({"type": "input_transcript.added", "item": {"id": ident, "text": "hi"}})
+    assert session.seen == {ident}
+    assert session.pending_text == "hi"
+
+
+def test_transcript_text_cap_admits_exactly_its_limit():
+    session = codex.StreamingSession()
+    half = codex._MAX_TEXT_CHARS // 2
+    rest = codex._MAX_TEXT_CHARS - half
+    session._data_event({"type": "input_transcript.added", "item": {"id": "a", "text": "a" * half}})
+    session._data_event({"type": "input_transcript.added", "item": {"id": "b", "text": "b" * rest}})
+    assert len(session.pending_text) == codex._MAX_TEXT_CHARS
+    with pytest.raises(ValueError):
+        session._data_event({"type": "input_transcript.added", "item": {"id": "c", "text": "c"}})
+    assert "c" not in session.seen
+    assert len(session.pending_text) == codex._MAX_TEXT_CHARS
+
+
+def test_transcript_item_cap_admits_exactly_its_limit(monkeypatch):
+    session = codex.StreamingSession()
+    # The partials are not under test here; only the item cap is.
+    monkeypatch.setattr(session, "_emit", lambda event: None)
+    for ident in range(codex._MAX_ITEMS):
+        session._data_event(
+            {"type": "input_transcript.added", "item": {"id": str(ident), "text": ""}}
+        )
+    assert len(session.seen) == codex._MAX_ITEMS
+    # A repeat of an item already seen is still ignored at the cap.
+    session._data_event({"type": "input_transcript.added", "item": {"id": "0", "text": ""}})
+    with pytest.raises(ValueError):
+        session._data_event({"type": "input_transcript.added", "item": {"id": "new", "text": ""}})
+    assert len(session.seen) == codex._MAX_ITEMS
+
+
+def test_session_event_queue_holds_its_limit_then_reports_falling_behind():
+    session = codex.StreamingSession()
+    for index in range(codex._MAX_EVENTS):
+        session._emit({"type": "partial", "text": str(index)})
+    assert session.queue.qsize() == codex._MAX_EVENTS
+    assert session.failure is None
+    session._emit({"type": "partial", "text": "one too many"})
+    assert session.queue.qsize() == codex._MAX_EVENTS
+    assert session.failure.code == codex.CODE_FAILED
+    events = [session.queue.get_nowait() for _ in range(codex._MAX_EVENTS)]
+    # The oldest event made room for the error, which is the last one delivered.
+    assert events[0] == {"type": "partial", "text": "1"}
+    assert events[-1] == {
+        "type": "error",
+        "message": "Codex dictation output could not keep up.",
+        "code": codex.CODE_FAILED,
+    }
+
+
+def _realtime_frames(count):
+    line = (json.dumps({"method": "thread/realtime/notice", "params": {}}) + "\n").encode()
+    return [line] * count
+
+
+@pytest.mark.asyncio
+async def test_rpc_event_queue_holds_its_limit():
+    rpc = codex_rpc.CodexRpc()
+    frames = [*_realtime_frames(codex_rpc._MAX_EVENTS), asyncio.CancelledError()]
+    rpc.process = SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(side_effect=frames)))
+    with pytest.raises(asyncio.CancelledError):
+        await rpc._read()
+    assert rpc.events.qsize() == codex_rpc._MAX_EVENTS
+    assert rpc.failure is None
+
+
+@pytest.mark.asyncio
+async def test_rpc_event_queue_overflow_is_a_transport_failure():
+    rpc = codex_rpc.CodexRpc()
+    frames = [*_realtime_frames(codex_rpc._MAX_EVENTS + 1), asyncio.CancelledError()]
+    rpc.process = SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(side_effect=frames)))
+    await rpc._read()
+    assert rpc.failure.code == codex_rpc.CODE_FAILED
+    assert rpc.events.qsize() == codex_rpc._MAX_EVENTS
+    events = [rpc.events.get_nowait() for _ in range(codex_rpc._MAX_EVENTS)]
+    assert events[-1] == {"method": codex_rpc.TRANSPORT_FAILED, "params": {}}
+
+
+@pytest.mark.asyncio
 async def test_fragment_spaces_and_repeated_words_are_not_normalized():
     session = codex.StreamingSession()
     for ident, text in enumerate(["我", "们", " say", " very", " very", " well"]):

@@ -1044,14 +1044,14 @@ def _memory_verb(args: argparse.Namespace) -> None:
             elif action == "audit":
                 findings = scan_memory()
                 if findings:
-                    print(f"Warning: {len(findings)} suspicious entries:\n")
+                    print(f"⚠️  {len(findings)} suspicious entries:\n")
                     for f in findings:
                         print(
                             f"  [{f['type']}] {f['key']}{_finding_store_suffix(f)}: {f['warning']}"
                         )
                         print(f"    {f['value'][:120]}\n")
                 else:
-                    print("No suspicious content in memory.")
+                    print("✅ No suspicious content in memory.")
 
             elif action == "export":
                 if getattr(args, "include_markdown", False) and named_store_or_empty(store_name):

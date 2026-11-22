@@ -242,6 +242,12 @@ export interface RowScene {
   /** The LOCAL Crew Mode root whose worker the chat pane shows, or null. Workers
    *  are not listed, so the root's row is marked as the shown worker's parent. */
   crewParent: string | null
+  /** The chat page is in Split View (`ChatSidebarProps.splitMode`). */
+  splitMode: boolean
+  /** The last open of the active chat failed and has not loaded since
+   *  (`ChatState.slotOpenFailed`): a click on its row retries the open instead
+   *  of toggling. */
+  openFailed: boolean
   shell: RowShell
   /** Local state that only some rows carry, every member keyed by LOCAL slot key. */
   local: {
@@ -296,6 +302,11 @@ export interface SessionRowView {
    *  answer flips, not every row (which carrying `activeSlot` in `rowActions`
    *  would cause). */
   isSidebarActiveSlot: boolean
+  /** A plain click on this row shows or hides the side panel: it is the active
+   *  LOCAL row, outside Split View (lib/reclickPanelToggle). The row's tooltip and
+   *  its click both read this one field, so the tooltip never promises a toggle
+   *  the click will not make. */
+  reclickPanel: boolean
   /** This row is the Crew Mode root whose worker the chat pane shows: not the
    *  active row, but the way the person found the worker, so it stays marked. */
   isCrewParent: boolean
@@ -1037,6 +1048,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     // when a crew window covers the pane (where isActiveIn is false but the
     // session is still active). Matches the key the drop handler refuses against.
     isSidebarActiveSlot: local !== null && scene.activeSlot === local,
+    reclickPanel: local !== null && !scene.splitMode && !scene.openFailed && isActiveIn(scene, slot),
     isCrewParent: local !== null && !scene.crewWindow && scene.crewParent === local,
     // A crew window covers the chat pane, so no composer is visible to stage a
     // reference into — withhold "Reference in chat" on every row, same reason as
@@ -1083,7 +1095,7 @@ const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true, crew: true,
-  isActive: true, isSidebarActiveSlot: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
+  isActive: true, isSidebarActiveSlot: true, reclickPanel: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
   opensElsewhere: true, shell: true,

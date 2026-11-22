@@ -188,8 +188,22 @@ RELAY_VIEWER_TOKEN_PATH = "/api/relay-viewer/token"
 #: (it is not a session).
 CONNECTOR_CONNECT_PATH = "/api/connected-computers/connect"
 
+#: The four local authorization routes (``routes/local_authorization.py``): an app on
+#: this machine asks for a grant before it holds any credential. Each handler admits
+#: only a direct loopback request and gives nothing by itself: the owner answers the
+#: request through the Owner tier, and a code is redeemed only with the asking app's
+#: PKCE verifier. One method each; every other method stays behind the token gate.
+LOCAL_AUTH_METADATA_PATH = "/.well-known/oauth-authorization-server"
+LOCAL_AUTH_AUTHORIZE_PATH = "/oauth/authorize"
+LOCAL_AUTH_TOKEN_PATH = "/oauth/token"
+LOCAL_AUTH_REVOKE_PATH = "/oauth/revoke"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    LOCAL_AUTH_METADATA_PATH: frozenset({"GET"}),
+    LOCAL_AUTH_AUTHORIZE_PATH: frozenset({"GET"}),
+    LOCAL_AUTH_TOKEN_PATH: frozenset({"POST"}),
+    LOCAL_AUTH_REVOKE_PATH: frozenset({"POST"}),
     AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
     CREW_OAUTH_CALLBACK_PATH: frozenset({"GET"}),
     RELAY_VIEWER_TOKEN_PATH: frozenset({"POST"}),

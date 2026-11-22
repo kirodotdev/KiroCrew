@@ -499,7 +499,7 @@ def test_the_route_budget_counts_the_report_only_while_it_is_on() -> None:
     assert browser_ops._op_budget("click", off) == plain
     assert browser_ops._op_budget("hover", on) == plain
     assert browser_ops._op_budget("navigate", on) == budgets.SLOW_OP_TIMEOUT_S + (
-        budgets.DECISION_HEADROOM_S
+        budgets.DECISION_HEADROOM_S + budgets.SIGN_IN_WORST_S
     )
     for op in ops.REPORT_OPS:
         assert browser_ops._op_budget(op, on) == plain + budgets.CHANGE_REPORT_S
@@ -677,7 +677,9 @@ def test_glance_is_a_walker_method_read_in_the_isolated_world() -> None:
 
 
 def _glance_source() -> str:
-    return ops.WALKER_SOURCE[ops.WALKER_SOURCE.index("glance: function") :]
+    # The walker as written: ``ops.WALKER_SOURCE`` drops its comment lines and indents.
+    walker = ops.WALKER_PATH.read_text(encoding="utf-8")
+    return walker[walker.index("glance: function") :]
 
 
 def test_glance_leaves_a_secret_field_out_of_the_invalid_list_whole() -> None:

@@ -168,6 +168,15 @@ describe('NotificationBanner: arrival', () => {
     input.remove()
   })
 
+  it('only a critical card hides a relay Crew pane; a passing note leaves the Crew on screen', () => {
+    renderBanner()
+    arrive(mkN())
+    expect(cards()[0].hasAttribute('data-relay-pane-overlay')).toBe(false)
+    arrive(mkN({ priority: 'critical', kind: 'approval' }))
+    const critical = cards().find(c => c.getAttribute('data-priority') === 'critical')
+    expect(critical?.hasAttribute('data-relay-pane-overlay')).toBe(true)
+  })
+
   it('switches to an alert region while a critical card is pending', () => {
     renderBanner()
     arrive(mkN({ priority: 'critical', kind: 'approval' }))
@@ -278,6 +287,16 @@ describe('shouldBannerNote / targetsCurrentView (pure)', () => {
     expect(targetsCurrentView(mkN({ url: '/schedule?job=1' }), { pathname: '/schedule', activeSlot: null, windowFocused: true })).toBe(true)
     expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/schedule', activeSlot: null, windowFocused: false })).toBe(false)
     expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/settings', activeSlot: null, windowFocused: true })).toBe(false)
+  })
+  it('a relay Crew tab over the Notifications page lets a note banner', () => {
+    const onFeed = { enabled: true, popoverOpen: false, pathname: '/notifications', activeSlot: null, windowFocused: true }
+    expect(shouldBannerNote(mkN(), onFeed)).toBe(false)
+    expect(shouldBannerNote(mkN(), { ...onFeed, relayCovered: true })).toBe(true)
+  })
+  it('a relay Crew tab in front means no local view is on screen, so the note banners', () => {
+    expect(targetsCurrentView(mkN({ url: '/schedule' }), { pathname: '/schedule', activeSlot: null, windowFocused: true, relayCovered: true })).toBe(false)
+    expect(targetsCurrentView(mkN({ slot: 's1' }), { pathname: '/chat', activeSlot: 's1', windowFocused: true, relayCovered: true })).toBe(false)
+    expect(targetsCurrentView(mkN({ slot: 's1' }), { pathname: '/chat', activeSlot: 's1', windowFocused: true, relayCovered: false })).toBe(true)
   })
   it("treats a mate's message as on screen only while its own thread is", () => {
     const ada = mkN({ channel: MEMBER_MESSAGE_CHANNEL, kind: 'agent', slot: 'member-ada', url: '/members?member=Ada', member: { slug: 'ada', name: 'Ada' } })

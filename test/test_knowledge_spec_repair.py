@@ -723,7 +723,9 @@ def _reinjecting_factory(
 def pool_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """An ACP pool on Kiro CLI with no config file behind it."""
     monkeypatch.setattr(llm_pool, "_read_config", lambda: {})
-    monkeypatch.setattr(llm_pool, "_get_acp_backend", lambda config=None: ACP_BACKEND_KIRO)
+    monkeypatch.setattr(
+        llm_pool, "_get_acp_backend", lambda config=None, *, sessions=None: ACP_BACKEND_KIRO
+    )
     monkeypatch.setattr(llm_pool, "_get_sandbox_mode", lambda config=None: "auto")
 
 
@@ -755,6 +757,8 @@ class TestASpecThatNeverSticks:
         assert str(_spec_path(agents_dir)) in message
         assert "mcpServers" in message and "allowedTools" in message
         assert _NONCE not in message and "launcher-creds" not in message
+        # The refusal names the likely writer and what to do about it.
+        assert "leave Kiro Crew's tool-less specs alone" in message
 
         # A later ingest inside the window spawns nothing.
         with pytest.raises(llm_pool.KnowledgeSpecUnconfirmed):

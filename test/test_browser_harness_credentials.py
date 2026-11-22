@@ -426,7 +426,16 @@ async def test_cookies_land_before_the_daemon_and_again_after_a_relaunch(
     # The browser died: the next ensure() relaunches it and fills it again.
     handle.daemon.returncode = 1  # type: ignore[union-attr]
     await sup.ensure()
-    assert events == ["Storage.setCookies", "daemon", "Storage.setCookies", "daemon"]
+    # The old browser's teardown deletes what was set there first (a delete is a set
+    # with a past expires), then the new browser is filled before its daemon.
+    assert events == [
+        "Storage.setCookies",
+        "daemon",
+        "Storage.setCookies",
+        "Storage.setCookies",
+        "daemon",
+    ]
+    assert [c["name"] for c in relays[0].cookies_set()] == ["session", "session"]
     assert len(relays) == 2 and relays[1].cookies_set()[0]["name"] == "session"
     assert [t.reason for t in provider.targets] == ["start", "start"]
     assert SECRET not in json.dumps(sup.status())
@@ -557,7 +566,8 @@ async def test_each_injection_writes_one_audit_row_without_a_value(
 
     fake = _Sel()
     monkeypatch.setattr(sel_module, "sel", lambda: fake)
-    sup, _events, _relays, _argvs = _supervisor_with_fakes(tmp_path, monkeypatch, FakeProvider())
+    provider = FakeProvider()
+    sup, _events, _relays, _argvs = _supervisor_with_fakes(tmp_path, monkeypatch, provider)
     await sup.ensure()
     (row,) = fake.rows
     assert row["operation"] == "browser_harness.credentials_injected"
@@ -568,6 +578,10 @@ async def test_each_injection_writes_one_audit_row_without_a_value(
     await sup._apply_credentials(_relays[-1], sup._handle.choice, "source_changed")
     assert fake.rows[-1]["resources"].endswith(" cookies=1 domains=example.com contexts=1,1")
     assert SECRET not in json.dumps(fake.rows)
+    # An apply that only deleted still writes its row, naming the count.
+    provider._cookies = []
+    await sup._apply_credentials(_relays[-1], sup._handle.choice, "source_changed")
+    assert fake.rows[-1]["resources"].endswith(" cookies=0 domains= contexts=0,0 removed=2")
 
 
 @pytest.mark.asyncio
@@ -798,3 +812,245 @@ async def test_a_slow_re_pull_never_holds_the_navigation_past_its_budget(
     # The old key is kept, so the next navigation tries again.
     monkeypatch.setattr(supervisor, "NAV_REFRESH_BUDGET_SECS", 5.0)
     assert await sup.refresh_credentials_if_source_changed() is True
+
+
+# ── stale provider cookies ──
+
+
+def _deletes(relay: FakeRelay) -> list[tuple[str, str | None]]:
+    """``(name, browserContextId)`` of every cookie sent with a past ``expires``."""
+    return [
+        (c["name"], p.get("browserContextId"))
+        for m, p in relay.sent
+        if m == "Storage.setCookies"
+        for c in p["cookies"]
+        if c.get("expires") is not None
+    ]
+
+
+def _reach_expiry(placed: Any, name: str) -> None:
+    """Move one remembered cookie's ``expires`` into the past: the clock reached it."""
+    held = placed._by_context[""]
+    key = (name, ".example.com", "/")
+    held[key] = (held[key][0], time.time() - 1)
+
+
+async def _apply_placed(relay: Any, provider: Any, placed: Any, contexts: Any = ("",)) -> Any:
+    return await credentials.apply(
+        relay,
+        provider=provider,
+        target=_target(),
+        settings=credentials.effective_settings(None, provider),
+        contexts=contexts,
+        placed=placed,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cookie_the_provider_stops_supplying_is_deleted_in_every_context() -> None:
+    relay, placed = FakeRelay(), credentials.PlacedCookies()
+    provider = FakeProvider([_cookie(), _cookie(name="device")])
+    await _apply_placed(relay, provider, placed, ("", "CTX-a"))
+    assert _deletes(relay) == []
+    relay.sent.clear()
+    provider._cookies = [_cookie()]  # the source dropped "device"
+    status = await _apply_placed(relay, provider, placed, ("", "CTX-a"))
+    assert _deletes(relay) == [("device", None), ("device", "CTX-a")]
+    assert status.removed == 2 and status.applied == 1
+    gone = [c for c in relay.cookies_set() if c.get("expires") is not None]
+    # Deleted by a past expires on the same name, domain and path; no value travels.
+    assert all(c["expires"] < time.time() and c["value"] == "" for c in gone)
+    assert {(c["domain"], c["path"], c["secure"]) for c in gone} == {(".example.com", "/", True)}
+    assert SECRET not in json.dumps(status.as_dict())
+    relay.sent.clear()
+    await _apply_placed(relay, provider, placed, ("", "CTX-a"))
+    assert _deletes(relay) == []  # deleted once, then forgotten
+
+
+@pytest.mark.asyncio
+async def test_an_all_expired_pull_deletes_what_the_gateway_set() -> None:
+    relay, placed = FakeRelay(), credentials.PlacedCookies()
+    provider = FakeProvider()
+    await _apply_placed(relay, provider, placed)
+    provider._cookies = [_cookie(expires=time.time() - 60)]
+    status = await _apply_placed(relay, provider, placed)
+    assert status.reason == "source_expired" and _deletes(relay) == [("session", None)]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pull_deletes_only_cookies_past_their_expires() -> None:
+    relay, placed = FakeRelay(), credentials.PlacedCookies()
+    provider = FakeProvider([_cookie(), _cookie(name="short", expires=FUTURE + 60)])
+    await _apply_placed(relay, provider, placed)
+    assert placed.next_expiry() == FUTURE
+    provider._raises = RuntimeError("source unreadable")
+    relay.sent.clear()
+    await _apply_placed(relay, provider, placed)
+    assert _deletes(relay) == []  # a hiccup signs no one out
+    _reach_expiry(placed, "short")
+    status = await _apply_placed(relay, provider, placed)
+    assert _deletes(relay) == [("short", None)] and status.removed == 1
+    assert placed.next_expiry() == 0.0  # the failed pull still owes "short" a renewal
+
+
+@pytest.mark.asyncio
+async def test_an_expired_cookie_is_deleted_even_with_the_switch_off() -> None:
+    relay, placed = FakeRelay(), credentials.PlacedCookies()
+    provider = FakeProvider()
+    await _apply_placed(relay, provider, placed)
+    _reach_expiry(placed, "session")
+    relay.sent.clear()
+    pulls = len(provider.targets)
+    status = await credentials.apply(
+        relay,
+        provider=provider,
+        target=_target(),
+        settings=credentials.CredentialSettings(enabled=False, domains=("example.com",)),
+        placed=placed,
+    )
+    # Deleted from memory alone: the provider is not asked, and the expiry clears.
+    assert status.state == credentials.STATE_DISABLED and status.removed == 1
+    assert _deletes(relay) == [("session", None)] and len(provider.targets) == pulls
+    assert placed.next_expiry() is None
+
+
+@pytest.mark.asyncio
+async def test_a_delete_chromium_refuses_is_tried_again() -> None:
+    relay, placed = FakeRelay(), credentials.PlacedCookies()
+    provider = FakeProvider([_cookie(), _cookie(name="device")])
+    await _apply_placed(relay, provider, placed)
+    provider._cookies = [_cookie()]
+    relay.refuse = {"device"}
+    status = await _apply_placed(relay, provider, placed)
+    assert status.removed == 0
+    relay.refuse = set()
+    relay.sent.clear()
+    status = await _apply_placed(relay, provider, placed)
+    assert status.removed == 1 and _deletes(relay) == [("device", None)]
+
+
+@pytest.mark.asyncio
+async def test_a_renewal_cut_short_is_owed_until_a_pull_finishes() -> None:
+    # The navigation budget cancels the pull after the expired cookie went: the
+    # next navigation must still re-pull, though nothing remembered expires now.
+    relay, placed = FakeRelay(), credentials.PlacedCookies()
+    provider = FakeProvider()
+    await _apply_placed(relay, provider, placed)
+    _reach_expiry(placed, "session")
+    provider._raises = asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        await _apply_placed(relay, provider, placed)
+    assert _deletes(relay) == [("session", None)]
+    assert placed.next_expiry() == 0.0  # due now
+    provider._raises = RuntimeError("source unreadable")
+    await _apply_placed(relay, provider, placed)
+    assert placed.next_expiry() == 0.0  # a failed pull still owes it
+    provider._raises = None
+    await _apply_placed(relay, provider, placed, ("CTX-a",))
+    assert placed.next_expiry() == 0.0  # seeding one chat's context does not pay it
+    await _apply_placed(relay, provider, placed)
+    assert placed.next_expiry() == FUTURE
+
+
+def test_a_closed_context_is_forgotten() -> None:
+    placed = credentials.PlacedCookies()
+    placed._record("CTX-a", [credentials.normalize_cookie(_cookie(), 0.0)], {})  # type: ignore[list-item]
+    placed._by_context["CTX-a"] = {
+        k: (v[0], FUTURE) for k, v in placed._by_context["CTX-a"].items()
+    }
+    assert placed.next_expiry() == FUTURE
+    placed.retain(("",))
+    assert placed.next_expiry() is None
+
+
+@pytest.mark.asyncio
+async def test_a_cookie_past_its_expires_re_pulls_at_the_next_navigation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The fingerprint never moves: only the clock says the cookie is stale.
+    provider = FakeProvider([_cookie(), _cookie(name="device", expires=FUTURE)])
+    provider.fp = "v1"
+    sup, _events, relays, _argvs = _supervisor_with_fakes(tmp_path, monkeypatch, provider)
+    await sup.ensure()
+    assert await sup.refresh_credentials_if_source_changed() is False
+    _reach_expiry(sup._placed, "session")
+    _reach_expiry(sup._placed, "device")
+    provider._cookies = [_cookie()]  # renewed "session"; "device" is left out
+    relays[-1].sent.clear()
+    assert await sup.refresh_credentials_if_source_changed() is True
+    # Both expired copies go first; the renewed one is set again after its delete.
+    assert sorted(_deletes(relays[-1])) == [("device", None), ("session", None)]
+    last = [c for c in relays[-1].cookies_set() if c["name"] == "session"][-1]
+    assert "expires" not in last and last["value"] == SECRET
+    assert sup.status()["credentials"]["removed"] == 2
+    assert await sup.refresh_credentials_if_source_changed() is False
+
+
+@pytest.mark.asyncio
+async def test_a_relaunched_browser_gets_no_deletes_for_the_old_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = FakeProvider([_cookie(), _cookie(name="device")])
+    sup, _events, relays, _argvs = _supervisor_with_fakes(tmp_path, monkeypatch, provider)
+    handle = await sup.ensure()
+    provider._cookies = [_cookie()]
+    handle.daemon.returncode = 1  # type: ignore[union-attr]
+    await sup.ensure()
+    assert len(relays) == 2 and _deletes(relays[1]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_stop_deletes_every_cookie_the_gateway_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Chromium can keep a session cookie in the profile's Cookies file across a
+    # restart, so the ones the gateway set are deleted before the browser stops.
+    provider = FakeProvider([_cookie(), _cookie(name="device")])
+    sup, _events, relays, _argvs = _supervisor_with_fakes(tmp_path, monkeypatch, provider)
+    await sup.ensure()
+    assert _deletes(relays[0]) == []
+    await sup.stop()
+    assert sorted(_deletes(relays[0])) == [("device", None), ("session", None)]
+
+
+def _cookie_db(path: Path, rows: list[tuple[str, str, str]]) -> None:
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, path TEXT)")
+        conn.executemany("INSERT INTO cookies VALUES (?, ?, ?)", rows)
+    conn.close()
+
+
+def _rows(path: Path) -> list[tuple[str, str, str]]:
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    try:
+        return sorted(conn.execute("SELECT host_key, name, path FROM cookies").fetchall())
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_leaves_no_provider_cookie_in_the_profile_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Chromium writes session cookies into the profile and loses a delete it has not
+    # committed at its exit: the rows of the cookies the gateway set go after it stops.
+    provider = FakeProvider([_cookie(), _cookie(name="device")])
+    sup, _events, _relays, _argvs = _supervisor_with_fakes(tmp_path, monkeypatch, provider)
+    await sup.ensure()
+    db = sup.profile_dir / "Default" / "Cookies"
+    _cookie_db(
+        db,
+        [
+            (".example.com", "session", "/"),
+            ("example.com", "device", "/"),
+            (".example.com", "mine", "/"),
+            (".other.example", "session", "/"),
+        ],
+    )
+    await sup.stop()
+    assert _rows(db) == [(".example.com", "mine", "/"), (".other.example", "session", "/")]

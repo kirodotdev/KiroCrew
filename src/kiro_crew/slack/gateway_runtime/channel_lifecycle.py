@@ -273,7 +273,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
         return False
     try:
         await self._socket_client.connect()
-        print("Kiro Crew gateway connected to Slack")
+        print("👻 Kiro Crew gateway connected to Slack")
         return True
     except Exception as exc:
         # Keep a short reason for status surfaces (settings badge). Slack
@@ -295,7 +295,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
             exc_info=True,
         )
         print(
-            "Warning: Slack connect failed — running dashboard-only "
+            "⚠️  Slack connect failed — running dashboard-only "
             "(check network/proxy; details in gateway.log)"
         )
         return False
@@ -659,6 +659,12 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
             "or run `kirocrew restart`, to apply the new Slack token or owner.",
             ", ".join(slack_cred_keys),
         )
+        # A credential any writer (the CLI included) changed away from what an
+        # open owner-claim window pinned closes it; a re-save of the same
+        # tokens (this notice arriving after the window opened) does not.
+        claim = getattr(self.dashboard_state, "slack_owner_claim", None)
+        if claim is not None:
+            claim.recheck_soon("credential_change")
     slack_paths = change.under("slack")
     if slack_paths and "slack" in new.degraded_sections:
         # Deferred, not dropped: the watcher retries these paths once the

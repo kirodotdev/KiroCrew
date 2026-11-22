@@ -250,7 +250,7 @@ def test_other_arguments_still_show_as_json(chan: Any) -> None:  # noqa: F811
 def test_an_ordinary_card_is_unchanged(chan: Any) -> None:  # noqa: F811
     texts = _texts(_card_blocks(chan, json.dumps({"command": "git status"}), channel_trust=False))
     assert any('"command"' in t for t in texts)  # the raw input, as before
-    assert any(t.startswith("*") and "Running: git status" in t for t in texts)
+    assert any(t.startswith(":lock:") and "Running: git status" in t for t in texts)
 
 
 # ── Review fixes: commit-time fences on a worker's grant ──────────────────
@@ -341,7 +341,7 @@ def test_an_unverified_title_stays_on_the_card(chan: Any) -> None:  # noqa: F811
         )
     )
     texts = _texts(chan.slack.blocks_posts[-1][1])
-    assert any("UNVERIFIED" in t and "Running: git status" in t for t in texts)
+    assert any(t.startswith(":lock:") and "UNVERIFIED" in t for t in texts)
 
 
 def test_a_title_that_says_more_than_the_command_stays(chan: Any) -> None:  # noqa: F811

@@ -176,8 +176,8 @@ class TestTransportAdmissionSpool:
         """The ingested *text* inlines temp paths and file contents.
 
         Both refusal points -- the admission gate and a SessionClosingError at
-        dispatch -- must record what the user sent and how many files it had,
-        never the turn's prompt.
+        dispatch -- must record what the user sent, how many files it had and
+        their names, never the turn's prompt.
         """
         from kiro_crew.session_allocation import SessionClosingError
 
@@ -201,22 +201,37 @@ class TestTransportAdmissionSpool:
             monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
             monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: False)
 
-        _run_transport(monkeypatch, spool_text="look at this", spool_attachments=2)
+        _run_transport(
+            monkeypatch,
+            spool_text="look at this",
+            spool_attachments=2,
+            spool_attachment_names=("shot.png", ""),
+        )
 
         assert len(routes) == 1
         assert routes[0].text == "look at this"
         assert routes[0].attachments_dropped == 2
+        assert routes[0].attachment_names == ("shot.png", "")
 
     @pytest.mark.parametrize(
-        ("extra", "text", "dropped"),
+        ("extra", "text", "dropped", "names"),
         [
-            ({"spool_text": "look at this", "spool_attachments": 2}, "look at this", 2),
+            (
+                {
+                    "spool_text": "look at this",
+                    "spool_attachments": 2,
+                    "spool_attachment_names": ("shot.png", ""),
+                },
+                "look at this",
+                2,
+                ("shot.png", ""),
+            ),
             # No pre-ingestion capture (interaction re-dispatch): text as is.
-            ({}, "approve the plan", 0),
+            ({}, "approve the plan", 0, ()),
         ],
     )
     def test_native_admission_spools_the_pre_ingestion_message(
-        self, monkeypatch, extra, text, dropped
+        self, monkeypatch, extra, text, dropped, names
     ):
         turn_text = (
             "hello\n/tmp/kiro-attach-dead.png\n\n[File: notes.txt]\nbody"
@@ -254,6 +269,7 @@ class TestTransportAdmissionSpool:
         assert len(routes) == 1
         assert routes[0].text == text
         assert routes[0].attachments_dropped == dropped
+        assert routes[0].attachment_names == names
 
     def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch, caplog):
         from kiro_crew.session_allocation import SessionClosingError
@@ -563,7 +579,7 @@ def test_classified_acp_error_reaches_the_user(monkeypatch):
         transport_dispatch, "session_store_for_turn", AsyncMock(side_effect=failure)
     )
     slack, _sessions = _run_transport_text(monkeypatch, "hello there")
-    assert f"Error: {failure}" in _posts(slack)
+    assert f"❌ {failure}" in _posts(slack)
 
 
 def test_classified_acp_error_is_redacted_on_the_wire(monkeypatch):
@@ -579,7 +595,7 @@ def test_classified_acp_error_is_redacted_on_the_wire(monkeypatch):
     )
     slack, _sessions = _run_transport_text(monkeypatch, "hello there")
     posted = "\n".join(_posts(slack))
-    assert "Error: The monthly usage limit has been reached. cannot read " in posted
+    assert "❌ The monthly usage limit has been reached. cannot read " in posted
     assert private_path not in posted and "alice" not in posted
 
 
@@ -593,13 +609,13 @@ class TestTransportErrorText:
     def test_classified_acp_error_shows_its_reason(self):
         err = _classified_acp_error("The monthly usage limit has been reached.")
         assert err.usage_limit
-        assert transport_dispatch._transport_error_text(err) == f"Error: {err}"
+        assert transport_dispatch._transport_error_text(err) == f"❌ {err}"
         assert "monthly usage limit" in str(err)
 
     def test_prompt_busy_shows_its_reason(self):
         err = _classified_acp_error("Prompt already in progress")
         assert isinstance(err, AcpPromptBusy)
-        assert transport_dispatch._transport_error_text(err) == f"Error: {err}"
+        assert transport_dispatch._transport_error_text(err) == f"❌ {err}"
 
     def test_prompt_busy_with_provider_text_keeps_the_generic_reply(self):
         # Busy named only in ``message``: the formatter's curated busy branch
@@ -631,7 +647,7 @@ class TestTransportErrorText:
             user_worded=True,
         )
         text = transport_dispatch._transport_error_text(err)
-        assert text.startswith("Error: Backend refused: cannot read ")
+        assert text.startswith("❌ Backend refused: cannot read ")
         assert private_path not in text and "alice" not in text
         assert credential not in text
 
@@ -645,14 +661,14 @@ class TestTransportErrorText:
         )
         assert err.user_worded and rest in str(err)
         text = transport_dispatch._transport_error_text(err)
-        assert text.startswith("Error: The monthly usage limit has been reached.")
+        assert text.startswith("❌ The monthly usage limit has been reached.")
         assert rest not in text
 
     def test_classified_acp_error_is_truncated(self):
         cap = transport_dispatch._TRANSPORT_ERROR_DETAIL_MAX_CHARS
         err = _classified_acp_error("The monthly usage limit has been reached. " + "x" * cap)
         assert err.user_worded and len(str(err)) > cap
-        assert transport_dispatch._transport_error_text(err) == "Error: " + str(err)[:cap]
+        assert transport_dispatch._transport_error_text(err) == "❌ " + str(err)[:cap]
 
     @pytest.mark.parametrize(
         "message",

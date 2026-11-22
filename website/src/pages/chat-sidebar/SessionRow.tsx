@@ -4,7 +4,7 @@
  *  (./rows) and its one `actions` object; the row's memo compares both. */
 import { useRef, useEffect, useState, memo, useMemo, useContext, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, Split, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon, Zap } from 'lucide-react'
+import { X, Pin, VolumeX, EyeOff, VenetianMask, MoreVertical, CornerDownRight, Split, Loader, Loader2, Bot, ExternalLink, Workflow, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Hourglass, GripVertical, Moon } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppDispatch, useAppSelector, type RootState } from '../../store'
@@ -49,12 +49,12 @@ import { sameRowView, type SessionRowView } from './rows'
 import { memberThreadTitle } from '../../lib/memberThreadTitle'
 import { CrewOfflineContext } from './CrewGroups'
 import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
-import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
+import { DisclosureChevron, isOpenInTabModifierClick, reclickDoubleClick, reclickPanelTitle, reclickTogglesPanel } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 import { useSessionCardLines, cardLineClass } from './cardLines'
 import { RowTrailingMeta, SearchHitTail } from './searchHits'
 import { connectedChannelLinks } from './connectedChannelLinks'
-import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
+import { ConductorModeTitleMark } from '../../components/crew/CrewModeMarks'
 import { crewRootOf } from '../../lib/crewMode'
 import { summarizeCrewWorkers, crewRowCounts } from '../../lib/crewWorkers'
 import { CrewRowAttention, crewRowTooltip } from './CrewRowCounts'
@@ -313,7 +313,7 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
 
 export const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) {
   const {
-    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, isCrewParent, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
+    slot: s, showDivider, scope, navScope, holdContainer, isActive, isSidebarActiveSlot, reclickPanel, isCrewParent, crewWindowCovers, isOut, isPinned, isUnread, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, drawnOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
     rowMotionHeld, opensElsewhere, peerId, peerName,
@@ -1314,7 +1314,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             <IconButton aria-label={i18nT('pages.chatSidebar.more_options')} {...uiLocation('sessions.row-menu')} onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}><MoreVertical size={12} /></IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-            <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
+            <SessionActionsMenu variant="dropdown" {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
           </DropdownMenuContent>
         </DropdownMenu>
         <IconButton variant="accent" aria-label={i18nT('pages.chatSidebar.duplicate')} {...uiLocation('sessions.row-duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><Split size={12} /></IconButton>
@@ -1333,9 +1333,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     ), [renamingHere, foreignRow, isMobile, isActive, guideOnRowControl, rowMenuProps, onMenuCloseAutoFocus, onDuplicate, onCloseSession, closeReachLabel, releaseLocally, rowKey, langGen])
     const rowContextMenuContent = useMemo(() => (void langGen, !foreignRow ? (
       <ContextMenuContent className="min-w-[160px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-        <SessionActionsMenu variant="context" {...rowMenuProps} />
+        <SessionActionsMenu variant="context" {...rowMenuProps} onDuplicate={() => onDuplicate(rowKey)} />
       </ContextMenuContent>
-    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, langGen])
+    ) : null), [foreignRow, onMenuCloseAutoFocus, rowMenuProps, onDuplicate, rowKey, langGen])
     return (
       // A drop target in its own order: a pinned row takes pinned drags (the
       // pinned order), an unpinned row unpinned ones (the manual order, in any
@@ -1407,7 +1407,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               ? i18nT('pages.chatSidebar.opens_here_runs_on_instance', { name: peerName })
               : onOpenElsewhere
                 ? i18nT('pages.chatSidebar.opens_on_members_page')
-                : undefined
+                : reclickPanel && !isMobile ? reclickPanelTitle() : undefined
           }
           {...offlineProps(connected, i18nT('utils.offline.switch_sessions'))}
           role="button"
@@ -1493,6 +1493,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             onOpenSlotInNewTab(s.key, { background: true })
           }) : undefined}
           onClick={e => {
+            if (reclickTogglesPanel(e, reclickPanel && !isMobile && connected && !foreignRow && !isRenaming)) { onSelectSlot?.(s.key); return } // the open chat: side panel (see chrome)
             // A browser emits two click events before dblclick. Let the first
             // select an inactive session, but do not fetch it a second time
             // before the title's double-click handler opens rename.
@@ -1533,7 +1534,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             onSelectSlot?.(s.key)
           }}
           onDoubleClick={e => {
-            if (foreignRow) return
+            if ((e.target as HTMLElement).closest?.('[data-session-title]')) reclickDoubleClick(); if (foreignRow) return
             if (!(e.target as HTMLElement).closest?.('[data-session-title]')) return
             if (renamingHere) return
             e.preventDefault()
@@ -1621,10 +1622,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             // shifted left by the missing chevron.
             <span className="mt-2.5 mr-0.5 w-4 h-4 shrink-0" aria-hidden="true" />
           ))}
-          {/* The `:has` rule hides the title line below while a crewmate head (`MemberRowHead`),
-              which already carries the name, is drawn on the first line. Not while
-              renaming: the rename box lives in that title line. */}
-          <div className={`flex-1 min-w-0 overflow-hidden ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden'}`}>
+          {/* The `:has` rules hide the title line below, and the bolt that leads it, while a crewmate
+              head (`MemberRowHead`), which already carries the name, is drawn on the first line. Not
+              while renaming: the rename box lives in that title line. `relative` anchors the bolt. */}
+          <div className={`relative flex-1 min-w-0 overflow-x-clip ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden [&:has([data-member-head])>[data-read-only-bolt]]:hidden'}`}>
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
@@ -1633,12 +1634,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  framer-only (no new CSS @keyframes). */}
               {/* A crewmate's own thread has no agent chip (its title is the name), so the
                 *  line starts at the Members-page chip with no placeholder gap before it. */}
-              {/* A Crew Mode root names the mode, not the conductor behind it: the
-                *  conductor is Crew Mode's to choose and may be swapped. The bolt sits
-                *  inline on this line rather than as a badge before the title, so the
-                *  title keeps the row's full width. */}
-              {crewRoot && <Zap size={12} aria-hidden="true" className="inline-block shrink-0 conductor-mode-accent" />}
-              {crewRoot && <CrewEyebrow active={crewWorking} />}
+              {/* A Conductor mode root leaves this line empty. Its coloured bolt
+                *  sits before the title below, so the title and the mark scan as
+                *  one item without repeating the mode name. */}
               {/* A code-channel row's agent name gives way first, so the Slack
                 *  mark and the time keep their room; other rows keep `shrink-0`. */}
               {memberTitle === null && !crewRoot && (
@@ -1856,10 +1854,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 on some rows, which reads as ragged, so wrapping to 2 or 3 lines
                 is the user's opt-in (Title Lines on Session Cards). The full
                 string stays reachable through the `title` attribute, and the
-                rename box below shows it in full. */}
+                rename box below shows it in full. A Conductor mode root's bolt sits
+                outside this line box, over the indent the title reserves for it. */}
+            {crewRoot && !renamingHere && <ConductorModeTitleMark />}
             <div
               data-session-title
-              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : cardLineClass(cardLines.title)}`}
+              className={`${ROW_TITLE_CLS} font-semibold text-text ${renamingHere ? '' : cardLineClass(cardLines.title)}${crewRoot && !renamingHere ? ' indent-6' : ''}`}
               {...(renamingHere ? {} : offlineProps(connected, i18nT('utils.offline.rename_sessions')))}
               // AFTER the spread, deliberately: `offlineProps` would otherwise
               // replace this with its own tooltip, and this one is the only

@@ -18,8 +18,8 @@
  * default registry is deliberately store-free and therefore renders a WEAKER
  * transcript: a static pill instead of the live tool line, and nothing at all
  * for a thinking trace, a sent file, an auto-nudge turn, a workflow launch, a
- * sub-agent launch, a recovery inject or a workflow completion. This module
- * carries ChatPage's row set as registry entries so a second surface reads the
+ * sub-agent launch or a workflow completion. This module carries ChatPage's
+ * row set as registry entries so a second surface reads the
  * SAME transcript rather than a reduced one.
  *
  * It lives under pages/chat rather than in app-sdk on purpose: the registry's
@@ -37,14 +37,14 @@ import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import ConversationCard, { CARD_ROLE, changeCardShownAgainBelow } from '../../cards/ConversationCard'
-import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
+import { opensTurn } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
 import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAgentRefused, isAuthRequired, isKiroCliSignIn, kiroCliRowOffersCrewSignIn, isContextOverflow, isImageRepair, isKiroCliMissing, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type CapabilityFix, type FreshSessionState, type RepairImagesState } from './ErrorCard'
 import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
-import { resolveGatewayNotice } from './gatewayNotice'
+import { isKasSignedOut, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
 import McpSignInNeededNotice, { isMcpSignInNeededNotice } from './McpSignInNeededNotice'
@@ -72,6 +72,8 @@ import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
 import { isToolCallRow } from '../../lib/toolRowContract'
+import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
+import { replyTurnStats } from './replyFooter'
 
 /** Disclosure-map identity for a tool row (#8204). messageRowKey is
  *  `${role}-${clientTs ?? ts}` and tool rows are never clientTs-stamped, so a
@@ -91,6 +93,11 @@ export function toolDisclosureKey(m: ChatMessage, key: string): string {
   if (m.role !== 'tool') return key
   const tcid = m.meta?.tool_call_id
   return typeof tcid === 'string' && tcid ? `${key}-${tcid}` : key
+}
+
+/** A reply that has no visible content in a crewmate chat. */
+function isHiddenCrewmateReply(m: ChatMessage): boolean {
+  return isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false })
 }
 
 export interface TranscriptRendererOptions {
@@ -180,6 +187,12 @@ export interface TranscriptRendererOptions {
   /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
    *  card in Settings. Omitted on a surface with no settings route. */
   onOpenSignIn?: () => void
+  /** True while Kiro's own sign-in works (`/api/kas-login`). The newest
+   *  `kas_signed_out` row then offers Resume with the sign-in, since a
+   *  retry no longer meets that wall. Omitted: that row never does. */
+  kiroSignedIn?: boolean
+  /** That read's failure, on a surface where nothing else reports it. */
+  kiroSignInCheckError?: Error | null
   /** Fix affordance for a capability refusal row (`capabilityRefusal`): open
    *  the named crew member where that code's fix lives. Omitted on a surface
    *  with no crew editor. */
@@ -394,9 +407,10 @@ export function newestErrorOwnsRecovery(messages: readonly ChatMessage[]): boole
 }
 
 /** True when the newest error row is a sign-in error (`auth_required`, or
- *  `kiro_cli_sign_in` for kiro-cli's own sign-in) and
- *  nothing after it opens a new turn. The card withholds its own Continue, but
- *  the composer keeps Resume: once the sign-in lands, the same press works
+ *  `kiro_cli_sign_in` for kiro-cli's own sign-in) and nothing after it opens a
+ *  new turn. The card withholds its own Continue (a `kas_signed_out` row offers
+ *  it once Kiro's sign-in reads working, see `kiroSignedIn`), but the composer
+ *  keeps Resume either way: once the sign-in lands, the same press works
  *  (Continue is not readiness-gated), and it is the one-press way back. So the
  *  composer only words its hint to name the sign-in first. */
 export function authRequiredIsNewest(messages: readonly ChatMessage[]): boolean {
@@ -506,7 +520,7 @@ export function createTranscriptRenderers(
       roles: ['system'],
       match: isSkillLoadRow,
       render: (m, ctx) => ctx.row(
-        <SkillLoadCard key={ctx.key} message={m} disclosureKey={ctx.key} />,
+        <SkillLoadCard key={ctx.key} message={m} disclosureKey={ctx.key} onArtifactOpen={ctx.onArtifactOpen} />,
       ),
     },
     {
@@ -521,6 +535,7 @@ export function createTranscriptRenderers(
           message={m}
           onFileOpen={o.onFileOpen}
           onFolderOpen={o.onFolderOpen}
+          onArtifactOpen={ctx.onArtifactOpen}
           onSessionOpen={o.onSessionOpen}
           sessions={o.sessions}
           activeSession={o.activeSession}
@@ -586,6 +601,7 @@ export function createTranscriptRenderers(
             // The same gate as the body's session chips: a host that withholds
             // the roster (offline) cannot navigate, so the @tag stays plain text.
             onOpenSession={o.sessions ? o.onSessionOpen : undefined}
+            onArtifactOpen={ctx.onArtifactOpen}
           />,
           true,
         )
@@ -694,38 +710,6 @@ export function createTranscriptRenderers(
         ),
     },
     {
-      // Refines `inject`: a gateway-authored injection is a one-line card, not
-      // the cron-notification bubble the default draws.
-      //
-      // Matched via the SHARED resolver rather than the recovery parser alone, so
-      // this registry (ChatPane, SideChat, ChatEmbed) makes the same decision
-      // ChatPage does. Gating only on a recognised recovery marker left every
-      // other injected shape — the sub-agent synthesis prompt included — falling
-      // through to the SDK default, which paints raw machine prose as a bubble.
-      id: 'recovery_inject',
-      roles: ['inject'],
-      match: m => resolveInjectCard(m) !== null,
-      render: (m, ctx) => {
-        const parsed = resolveInjectCard(m)
-        if (!parsed) return null
-        return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
-      },
-    },
-    {
-      // A re-routed automation refusal (`injectKind: 'automation_notice'`,
-      // session_directive_apply._deliver_refusal_to_crewmate) exists ONLY to
-      // carry the refusal into the crewmate's next turn for the model; the
-      // person-facing surface is the `notice` bar the same refusal already
-      // wrote. The crewmate DM hides this inject row via MACHINERY_ROLES; every
-      // other surface (the Sessions page) suppresses it here too, so the raw
-      // `[Automation notice] …` text never draws as a second row beside the
-      // notice bar. Must precede the generic inject bubble.
-      id: 'automation_notice_inject',
-      roles: ['inject'],
-      match: m => (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'automation_notice',
-      render: () => null,
-    },
-    {
       // Refines `assistant`: a gateway system notice (kind=compaction or
       // kind=session_reload, the SYSTEM_NOTICE_KINDS set the last-real-message
       // scans already skip) is a status card, not a reply. The gateway writes
@@ -776,7 +760,12 @@ export function createTranscriptRenderers(
           render: (m: ChatMessage, ctx: MessageRenderContext) => {
             // Run position reads turn boundaries off the UNFILTERED transcript
             // (a patrol wake between two replies is filtered from `ctx.messages`).
-            const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscriptOf())
+            const transcript = crewmateTranscriptOf()
+            const pos = crewmateRunPosition(ctx.messages, ctx.index, transcript)
+            const transcriptIndex = transcript?.indexOf(m) ?? -1
+            const turnStats = transcript && transcriptIndex >= 0
+              ? replyTurnStats(m, transcript, transcriptIndex, isHiddenCrewmateReply)
+              : replyTurnStats(m, ctx.messages, ctx.index)
             // The run ends here (single / end): the row after it is a boundary
             // the user sees or the turn ended, so this bubble is the one that
             // carries the hover actions. No "Steered" chip on any bubble: in a
@@ -790,6 +779,7 @@ export function createTranscriptRenderers(
               forceFooter: pos === 'single' || pos === 'end',
               suppressSteerAck: true,
               hideFileChanges: true,
+              turnStats,
               // A crewmate's reply is prose about the crew's own work, so it
               // names sessions constantly. Same triple the single-chat page
               // hands its bubble, and `m.ts` with it so the SHORT form resolves
@@ -869,21 +859,31 @@ export function createTranscriptRenderers(
         // already answered past, is settled and its session may already be new.
         const overflow = isContextOverflow(m)
         const imageRepair = isImageRepair(m)
+        // A request sent after this row is the one Resume would rerun.
+        const latestSignedOut = authRequired && newest && isKasSignedOut(m) && authRequiredIsNewest(ctx.messages)
+        // A rejection the backend says no retry can fix never offers Continue,
+        // even when this row is the newest and the turn was interrupted:
+        // resuming would replay the identical rejection (or the same
+        // signed-out wall, unless it is Kiro's own sign-in and that works
+        // again, or the same spent allowance, or the same start that already
+        // failed twice, or the same model the backend refused).
+        const onContinue =
+          !pickModelFix && (!withholdContinue || (!!o.kiroSignedIn && latestSignedOut)) && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
+            ? o.onContinue
+            : undefined
+        // Signed in since this row: Resume, with the kept sign-in button,
+        // reruns its turn in this chat, with copy that says so.
+        const signInWorks = authRequired && onContinue !== undefined
         return ctx.row(
           <ErrorCard
             content={transient ? transient.text : m.content}
-            resumeContent={transient?.card === 'error' ? transient.resumeText : undefined}
-            meta={m.meta}
-            // A rejection the backend says no retry can fix never offers Continue,
-            // even when this row is the newest and the turn was interrupted:
-            // resuming would replay the identical rejection (or the same
-            // signed-out wall, or the same spent allowance, or the same start
-            // that already failed twice, or the same model the backend refused).
-            onContinue={
-              !pickModelFix && !withholdContinue && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
-                ? o.onContinue
-                : undefined
+            resumeContent={
+              signInWorks
+                ? i18nT('pages.chat.errorCard.retry_kas_signed_in')
+                : transient?.card === 'error' ? transient.resumeText : undefined
             }
+            meta={m.meta}
+            onContinue={onContinue}
             sessionStartRepeat={sessionStartRepeat}
             onRestartGateway={sessionStartRepeat ? o.onRestartGateway : undefined}
             continuing={o.continuing}
@@ -896,6 +896,8 @@ export function createTranscriptRenderers(
             kiroCliSignIn={!!o.onOpenSignIn && isKiroCliSignIn(m)}
             kiroCliCrewSignIn={!!o.onOpenSignIn && kiroCliRowOffersCrewSignIn(m)}
             rawContent={m.content}
+            signInWorks={signInWorks}
+            signInCheckError={latestSignedOut ? o.kiroSignInCheckError : undefined}
             unentitledElsewhere={pickModelFix}
             featureRequestFormUrl={featureRequestFormUrl}
             // The newest row only, where the gateway's wait lives (it ends once the

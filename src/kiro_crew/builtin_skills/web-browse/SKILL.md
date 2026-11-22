@@ -16,10 +16,25 @@ Kiro's own headless Chromium. **The page shows live in the chat** while you
 work, in a card attached to your turn. The user can click that card to take
 over with their real mouse and keyboard, and hand it back with Esc.
 
-Other ops: `snapshot` (the page as an outline with element refs), then
-`click` / `type` / `press_key` / `hover` / `drag` / `scroll` / `select_option`
-/ `wait_for` / `back` / `console` / `screenshot` / `tabs`. Call `snapshot`
-first to get refs before a `click` or `type`.
+Other ops: `snapshot` (the page as an outline with element refs), `read`
+(the page's text, the whole page and not only the screen;
+a long page names the `offset` to read next), then
+`click` (`clicks: 2` or `3` for a double or triple click) / `type` / `fill`
+(replace a field's value with real key presses when `type` is ignored) /
+`paste` / `press_key` / `dispatch_key` / `hover` / `drag` / `scroll` /
+`select_option` / `upload` (local files, folders or globs into a `[file]`
+field, a button's file picker with `via: chooser`, or a drop zone with
+`via: drop`) / `wait_for` /
+`wait_for_element` / `wait_for_network_idle` / `back` / `console` /
+`screenshot` / `tabs` (list, switch or close the tabs you opened) / `dialog` /
+`reflex`, and `ask` for a step only the user may do. When no op fits, `js`
+runs JavaScript in your tab, `cdp` sends one DevTools Protocol command to it
+(`iframe_target` finds a cross-site frame for `js`), and `http_get` fetches a
+public URL without the browser's cookies; prefer the ops above. Call `snapshot`
+first to get refs before a `click` or `type`. To read a page's content, use
+`read`, not a scroll and a screenshot per screen. An unselected tab or a
+closed section (`details`) is left out, so click the tab or open the section
+first.
 
 ## What the tool opens
 
@@ -63,9 +78,11 @@ has **no** fallback: say that browsing is disabled by policy.
 ## Passwords, CAPTCHAs, 2FA: the user takes over
 
 `type` refuses a password field (`password_field`), and the live view masks
-one. When a page needs a sign-in, a CAPTCHA or a one-time code, say so in one
-line and ask the user to **take over**: they click the live card, do the step,
-and hand the browser back. While they hold it, your next op waits until they
+one. When a page needs a sign-in, a CAPTCHA, a one-time code or a final
+irreversible click, use the `ask` op (kinds `credentials`, `text`, `otp`,
+`human_check`, `confirm`; the tool's description lists its args): the user
+answers on the live card. Otherwise say so in one line and ask the user to
+**take over**: they click the live card, do the step, and hand the browser back. While they hold it, your next op waits until they
 hand back (up to 10 minutes) and then runs; `snapshot` and carry on. The
 **browser-auth** skill has the details.
 
@@ -89,7 +106,8 @@ you need opened instead.
 - **View** (this skill): open a URL and show it.
 - **Operate** (click, type, fill, multi-step flows): the same tool, more ops.
   `snapshot` to get refs, then `click`, `type` (with `submit: true` for Enter),
-  `press_key`, `select_option`. Re-snapshot after every page change; a stale
+  `press_key`, `select_option`, and `paste` to put a table or formatted text
+  into an editor in one call. Re-snapshot after every page change; a stale
   ref is refused, never silently redirected.
   When a result carries `changes` (the user's `browser.report_changes` setting),
   read it first: it names a new page, an opened dialog, an alert, the fields that

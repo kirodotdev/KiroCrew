@@ -151,6 +151,7 @@ class _SlackTurn:
     had_voice_input: "bool"
     spool_text: "str | None"
     spool_attachments: "int"
+    spool_attachment_names: "tuple[str, ...]"
     _compaction_replay: "_CompactionReplay | None"
     start_priority: "StartPriority"
     user_meta: "dict[str, Any] | None"
@@ -168,6 +169,7 @@ class _SlackTurn:
     # session's channel link (``test_crew_log_class_recorder`` reads it as one).
     _acquired: "bool"
     _agent: "str | None"
+    spec_agent: "str | None"
     answer: "_AnswerStream"
     client: "LLMProvider | None"
     _had_error: "bool"
@@ -222,6 +224,7 @@ class _SlackTurn:
         had_voice_input: "bool",
         spool_text: "str | None",
         spool_attachments: "int",
+        spool_attachment_names: "tuple[str, ...]",
         _compaction_replay: "_CompactionReplay | None",
         start_priority: "StartPriority",
         user_meta: "dict[str, Any] | None" = None,
@@ -256,6 +259,7 @@ class _SlackTurn:
         self.had_voice_input = had_voice_input
         self.spool_text = spool_text
         self.spool_attachments = spool_attachments
+        self.spool_attachment_names = spool_attachment_names
         self._compaction_replay = _compaction_replay
         # Set by ``_run_turn``; none until a turn has run its hooks.
         self._hook_turn = None
@@ -636,6 +640,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 had_voice_input=had_voice_input,
                 spool_text=turn.spool_text,
                 spool_attachments=turn.spool_attachments,
+                spool_attachment_names=turn.spool_attachment_names,
                 _compaction_replay=replay,
                 start_priority=start_priority,
                 user_meta=turn.user_meta,
@@ -671,7 +676,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                     continue
                 if candidate_key != session_key:
                     logger.info(
-                        "Slack thread %s linked to dashboard session %s — routing there",
+                        "🔗 Slack thread %s linked to dashboard session %s — routing there",
                         session_key,
                         candidate_key,
                     )
@@ -758,7 +763,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             # the cron conversation instead.
             sessions.set_slack_link(session_key, reply_ts, channel)
         logger.info(
-            "session state: key=%s is_new=%s resumed=%s",
+            "🔍 session state: key=%s is_new=%s resumed=%s",
             session_key,
             is_new,
             resumed,
@@ -924,9 +929,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
 
         # The permission ladder reads the routed conversation, its agent and this
         # turn's presentation off the turn (``_answer_permission_request``); none of
-        # them is rebound past this point.
+        # them is rebound past this point. Its spec hooks are the template's, so a
+        # channel bound to a Crew record is gated by the agent the record runs.
         turn.session_key = session_key
         turn._agent = _agent
+        turn.spec_agent = _context_agent
         turn.answer = answer
         turn.task = task
 
@@ -1178,7 +1185,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 )
     except AcpProcessDied:
         _had_error = True
-        answer.accumulated = answer.accumulated or "Error: Agent process died. Please try again."
+        answer.accumulated = answer.accumulated or "💀 Agent process died. Please try again."
         task.fail("process_died")
         # The circuit breaker counts a session's OWN consecutive failures, and
         # trips into a reset. A process this session was sharing dying is not
@@ -1245,7 +1252,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             await sessions.reset(session_key)
         except Exception:
             logger.debug("Failed to reset session %s after prompt-busy", session_key, exc_info=True)
-        answer.accumulated = f"Error: {e}"
+        answer.accumulated = f"❌ {e}"
         task.fail(str(e))
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()
@@ -1304,20 +1311,20 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if _session_lost:
                 sessions.close_replay_gap(session_key)
             if _session_lost and (answer.accumulated or answer.task_counter):
-                answer.accumulated = SESSION_NOT_FOUND_NOT_REPLAYED_TEXT
+                answer.accumulated = f"⟳ {SESSION_NOT_FOUND_NOT_REPLAYED_TEXT}"
             elif _session_lost and acp_error_needs_fresh_credentials(e):
                 # A broken helper fails the fresh process too: a new thread
                 # would fail alike, so the provider's remedy is the message.
                 answer.accumulated = (
-                    f"Error: {credential_give_up_text(e)} Then send your message again."
+                    f"❌ {credential_give_up_text(e)} Then send your message again."
                 )
             elif _session_lost:
                 answer.accumulated = (
-                    f"Error: {SESSION_NOT_FOUND_GIVE_UP_TEXT} Send your message again, "
+                    f"❌ {SESSION_NOT_FOUND_GIVE_UP_TEXT} Send your message again, "
                     "or start a new thread if this keeps happening."
                 )
             else:
-                answer.accumulated = f"Error: {e}"
+                answer.accumulated = f"❌ {e}"
             task.fail(str(e))
             await sessions.record_failure(session_key)
             Stats().inc_message_failed()
@@ -1343,7 +1350,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     except Exception:
         _had_error = True
         logger.exception("Unexpected error handling message")
-        answer.accumulated = answer.accumulated or "Error: Something went wrong. Please try again."
+        answer.accumulated = answer.accumulated or "🔧 Something went wrong. Please try again."
         task.fail("unexpected")
         await sessions.record_failure(session_key)
         Stats().inc_message_failed()

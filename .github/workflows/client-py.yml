@@ -50,7 +50,7 @@ jobs:
     # carries would wait out GitHub's pending limit instead of running. See
     # "Larger runners for the review lanes and CodeQL" in
     # docs/ci/ci-and-reviews.md.
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.runner || (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') }}
     timeout-minutes: 10
     strategy:
       max-parallel: 4
@@ -58,6 +58,12 @@ jobs:
       matrix:
         # The package's floor and the main package's current floor.
         python: ["3.9", "3.12"]
+        include:
+          # actions/setup-python publishes no Python 3.9 build for ubuntu-26.04,
+          # the image the larger runner and ubuntu-latest boot, so the floor job
+          # runs on the last hosted image that has one.
+          - python: "3.9"
+            runner: ubuntu-24.04
     defaults:
       run:
         working-directory: packages/kirocrew-client-py

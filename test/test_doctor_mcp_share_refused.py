@@ -48,7 +48,7 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     mcp._doctor_mcp_share_refused(_cfg(), issues)
 
     out = capsys.readouterr().out
-    assert "mcp sharing: Warning: not shared, one copy per chat:" in out
+    assert "mcp sharing: ⚠ not shared, one copy per chat:" in out
     assert "alpha-mcp (not approved yet)" in out
     assert "beta-mcp (command changed since it was approved)" in out
     assert "/mcp?view=sharing" in out
@@ -58,6 +58,15 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     # Unflattened on purpose: the command must stay on one line to be pasteable.
     assert "kirocrew restart" in out
     assert issues == ["2 MCP server(s) set to share are not shared: launch not approved"]
+
+
+def test_a_share_over_the_launch_cap_is_named_with_its_remedy(refused, capsys):
+    refused["alpha-mcp"] = {"reason": launch_approval.REFUSED_TOO_MANY}
+
+    mcp._doctor_mcp_share_refused(_cfg(stub=("alpha-mcp",)), [])
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"alpha-mcp ({mcp._SHARE_REFUSAL_LABELS.get(launch_approval.REFUSED_TOO_MANY)})" in out
 
 
 def _changed(**over):
@@ -196,7 +205,7 @@ def test_refusal_for_a_server_no_longer_shared_is_ignored(refused, capsys):
 
     out = capsys.readouterr().out
     assert "gone-mcp" not in out
-    assert "mcp sharing: OK:      1 server(s) set to share, none waiting for approval" in out
+    assert "mcp sharing: ✅ 1 server(s) set to share, none waiting for approval" in out
     assert issues == []
 
 
@@ -217,9 +226,10 @@ def test_refused_shares_keys_by_configured_name():
         "playwright-mcp": {"reason": launch_approval.REFUSED_UNAPPROVED},
         "alpha-mcp": {"reason": launch_approval.REFUSED_CHANGED},
         "gone-mcp": {"reason": launch_approval.REFUSED_UNAPPROVED},
+        "capped-mcp": {"reason": launch_approval.REFUSED_TOO_MANY},
     }
     assert launch_approval.refused_shares(
-        ["npm:@playwright/mcp", "alpha-mcp", "beta-mcp"], refused
+        ["npm:@playwright/mcp", "alpha-mcp", "beta-mcp", "capped-mcp"], refused
     ) == {
         "npm:@playwright/mcp": launch_approval.REFUSED_UNAPPROVED,
         "alpha-mcp": launch_approval.REFUSED_CHANGED,
@@ -290,7 +300,7 @@ def test_unreadable_or_corrupt_store_never_reports_healthy(store_file, capsys, w
     mcp._doctor_mcp_share_refused(_cfg(), issues)
 
     out = capsys.readouterr().out
-    assert f"mcp sharing: Warning: cannot read launch approvals: {reason}" in out
+    assert f"mcp sharing: ⚠ cannot read launch approvals: {reason}" in out
     assert "none waiting for approval" not in out
     assert issues == ["MCP launch approvals cannot be read: sharing state unknown"]
 

@@ -3,8 +3,8 @@ title: Living UI — style-neutral motion, focus and readout rules plus a small 
 status: implemented
 author: iamwhatever
 created: 2026-10-18
-last-audited: 2026-10-21
-audited-at: 0b89e0c6f7
+last-audited: 2026-11-19
+audited-at: fc89562d69
 doc-pr: 21797
 implementation-prs: [21897, 21840, 22107, 22225, 22441, 22093, 22240, 21874, 22117, 22091, 22231]
 tracking-issues: [21796]

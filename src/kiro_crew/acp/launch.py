@@ -52,14 +52,23 @@ from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
-from kiro_crew.env import append_mcp_path_dirs, describe_search_path, mise_data_dir
+from kiro_crew.env import (
+    _validated_bin_dir,
+    append_mcp_path_dirs,
+    describe_search_path,
+    mise_data_dir,
+)
 
 # Re-exported: the launcher was these helpers' first home, and their callers and
 # tests still import them from here (``acp.kas_app_identity`` reads the port gate).
 # They live in port_resolution now so the MCP gateway daemon can apply them
 # without importing the launcher.
 from kiro_crew.port_resolution import _well_formed_port, drop_foreign_inherited_port  # noqa: F401
-from kiro_crew.sandbox import RLIMIT_PROFILE_SESSION_HOST, ssh_auth_sock_consent_notice
+from kiro_crew.sandbox import (
+    RLIMIT_PROFILE_SESSION_HOST,
+    RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
+    ssh_auth_sock_consent_notice,
+)
 
 # The client's logger name, because the helpers below were the client's and every
 # log line they emit has always been filed there. The launch tail itself logs under
@@ -514,9 +523,11 @@ def _resolve_self_served_bin(backend: str) -> tuple[str | None, str]:
     """Find *backend*'s own executable and the PATH searched for it.
 
     Three rungs, the plain-binary ladder: explicit override, then mise, then the
-    augmented PATH. No ``node_modules`` rung and no node resolution, because every
-    harness this serves is a binary that speaks ACP itself rather than a Node entry
-    script -- which is exactly what membership in ``ACP_BACKEND_LAUNCH`` asserts.
+    augmented PATH with the record's ``install_dirs`` behind it, so an install made
+    while the gateway runs resolves on the next probe. No ``node_modules`` rung and no
+    node resolution, because every harness this serves is a binary that speaks ACP
+    itself rather than a Node entry script -- which is exactly what membership in
+    ``ACP_BACKEND_LAUNCH`` asserts.
 
     The binary name and the override variable come from that record, so a harness is
     resolved by its row rather than by a function of its own.
@@ -531,7 +542,14 @@ def _resolve_self_served_bin(backend: str) -> tuple[str | None, str]:
     from kiro_crew.acp.client import _mise_which, augmented_path
 
     launch = launch_for(backend)
-    search_path = augmented_path(os.environ.get("PATH", ""))
+    home = os.path.expanduser("~")
+    # Absolute-only, so a home that does not expand adds no cwd-relative entry.
+    install_dirs = [
+        _validated_bin_dir(os.path.normpath(d.format(home=home))) for d in launch.install_dirs
+    ]
+    search_path = os.pathsep.join(
+        p for p in (augmented_path(os.environ.get("PATH", "")), *install_dirs) if p
+    )
 
     override = os.environ.get(launch.bin_env_var)
     if override and platform_compat.is_executable_file(override):
@@ -1189,7 +1207,15 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # the first call probes /proc + /sys and the config read touches the config
     # dir. Guarded: the wrap above allocated the sandbox temp file, so a
     # cancellation here must not orphan it.
+    unscoped_argv = argv
     argv = await host._to_thread_guarding_sandbox(tools.cgroup_scope_argv, argv)
+    # No scope means no memory.max over this tree, so the host OOM killer is its
+    # only ceiling: bias the tree so that killer takes an agent, not the gateway.
+    session_host_profile = (
+        RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST
+        if argv == unscoped_argv
+        else RLIMIT_PROFILE_SESSION_HOST
+    )
     argv, scope_unit = request.scope_argv(argv)
 
     env = {**os.environ}
@@ -1321,7 +1347,7 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         # ``cwd``'s pathname, which a same-UID symlink retarget could aim elsewhere
         # in between; ``cwd`` stays the same directory by name.
         chdir_fd=process_directory(host)[1],
-        profile=RLIMIT_PROFILE_SESSION_HOST,
+        profile=session_host_profile,
     )
     if tools.retrying_spawn_factory is not None:
         factory = functools.partial(tools.retrying_spawn_factory, factory)

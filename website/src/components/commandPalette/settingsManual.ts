@@ -394,6 +394,16 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
     configKey: 'instances.enabled',
   },
+  {
+    // RemoteControlCard draws its on/off state from raw markup (no Settings
+    // primitive), so the extractor never sees it.
+    id: 'instances.remote-control',
+    labelKey: 'pages.settings.remoteControlCard.title',
+    tab: 'instances',
+    type: 'toggle',
+    occurrence: 1,
+    settingId: 'instances.remote-control',
+  },
   // BotChannelPanel's SecretFields take their labels from each channel's spec, so the
   // extractor never sees them; each spec passes a literal catalog key, indexed here.
   {

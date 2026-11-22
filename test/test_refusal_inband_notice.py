@@ -865,7 +865,7 @@ class TestEveryHostDenyCallSiteIsWired:
             ),
             (
                 "approval timeout",
-                "format_approval_timeout_card(_approval_window)",
+                "format_approval_timeout_card(\n            _approval_window, yolo_covers=",
                 400,
                 "DENY_CAUSE_APPROVAL_TIMEOUT",
             ),

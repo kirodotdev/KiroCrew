@@ -10,6 +10,8 @@ floor (``>=22.12.0``) is stricter still, so that is the floor.
 from __future__ import annotations
 
 import io
+import os
+import shutil
 import subprocess
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -24,8 +26,10 @@ from kiro_crew.constants import (
     node_version_meets_floor,
     parse_node_version,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 FLOOR_TEXT = "v22.12.0"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_the_floor_is_the_first_22_with_both_needs() -> None:
@@ -255,10 +259,10 @@ def test_doctor_fails_below_the_full_floor(monkeypatch, stdout: str, ok: bool) -
         cli_doctor._report_node(issues)
     out = buf.getvalue()
     if ok:
-        assert "OK:" in out and "too old" not in out
+        assert "✅" in out and "too old" not in out
         assert issues == []
     else:
-        assert "Error:" in out
+        assert "❌" in out
         assert f"needs {FLOOR_TEXT} or newer" in out
         assert issues == ["node"]
 
@@ -280,7 +284,7 @@ def test_bundle_route_without_node_on_path_names_the_bundles_node(monkeypatch) -
         cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
     out = buf.getvalue()
     assert out == (
-        "  node:        Skipped: not on PATH; not needed "
+        "  node:        ⏭  not on PATH; not needed "
         "(KAS runs its engine bundle's own Node 22.23.3)\n"
     )
     assert issues == []
@@ -303,7 +307,7 @@ def test_bundle_route_passes_a_node_on_path_at_the_floor(monkeypatch) -> None:
     with redirect_stdout(buf):
         cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
     out = buf.getvalue()
-    assert "OK:" in out and "engine bundle" not in out
+    assert "✅" in out and "engine bundle" not in out
     assert issues == []
 
 
@@ -311,7 +315,7 @@ def test_bundle_route_passes_a_node_on_path_at_the_floor(monkeypatch) -> None:
 def test_bundle_route_warns_on_an_old_node_on_path_without_failing(
     monkeypatch, stdout: str
 ) -> None:
-    """The KAS engine runs its bundle's own Node, so an old one on PATH is a Warning: that
+    """The KAS engine runs its bundle's own Node, so an old one on PATH is a ⚠ that
     names the bundle's Node, never the ``node`` issue that fails the run."""
     _fake_node(monkeypatch, cli_doctor, stdout)
     issues: list[str] = []
@@ -319,10 +323,10 @@ def test_bundle_route_warns_on_an_old_node_on_path_without_failing(
     with redirect_stdout(buf):
         cli_doctor._report_node(issues, bundle_route=True, bundle_node_version="22.23.3")
     out = buf.getvalue()
-    assert f"Warning: {stdout.strip()} on PATH < {FLOOR_TEXT}" in out
+    assert f"⚠  {stdout.strip()} on PATH < {FLOOR_TEXT}" in out
     assert "engine bundle's own Node 22.23.3" in out
     assert "npx" in out
-    assert "Error:" not in out and "Fix:" not in out
+    assert "❌" not in out and "Fix:" not in out
     assert issues == []
 
 
@@ -334,3 +338,32 @@ def test_relay_route_without_node_keeps_the_install_advice(monkeypatch) -> None:
     out = buf.getvalue()
     assert "not found (Kiro Crew needs Node" in out
     assert "Fix: install Node.js" in out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the Makefile recipe is POSIX sh")
+@pytest.mark.skipif(shutil.which("make") is None, reason="GNU make is not installed")
+def test_make_frontend_without_npm_names_the_ensure_node_floor(tmp_path) -> None:
+    """`make build` with no npm must ask for the floor ensure-node.sh enforces."""
+    script = (REPO_ROOT / "ensure-node.sh").read_text(encoding="utf-8")
+    floor = next(line for line in script.splitlines() if line.startswith("MIN_VERSION="))
+    floor = floor.split('"')[1]
+    work = tmp_path / "work"
+    (work / "website").mkdir(parents=True)
+    (work / "ensure-node.sh").write_text("exit 0\n", encoding="utf-8")
+    # Only the tools the recipe calls before its npm check, so a host npm is never found.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for tool in ("bash", "cat"):
+        real = shutil.which(tool)
+        if real:
+            (tools / tool).symlink_to(real)
+    proc = subprocess.run(
+        [str(shutil.which("make")), "-f", str(REPO_ROOT / "Makefile"), "-C", str(work), "frontend"],
+        env={"PATH": str(tools), "KIROCREW_HOME": str(tmp_path / "home")},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert f"ERROR: npm not found. Install Node {floor} or newer" in proc.stderr, proc.stderr

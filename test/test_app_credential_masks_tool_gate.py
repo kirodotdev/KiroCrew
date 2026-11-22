@@ -68,6 +68,11 @@ def _fenced_both_ways(path: Path | str) -> bool:
     return read
 
 
+def _readable_and_write_fenced(path: Path | str) -> bool:
+    """A manifest that holds a fence: the read gate allows it, the write gate refuses it."""
+    return not security.is_sensitive_path(str(path)) and security.is_sensitive_write_path(str(path))
+
+
 class TestAnInstalledDeclarationIsFenced:
     def test_a_file_mask_its_artifacts_and_its_staged_copy(self, home):
         data = _install(home, "demo", ["secrets.json"])
@@ -77,7 +82,7 @@ class TestAnInstalledDeclarationIsFenced:
         assert _fenced_both_ways(data / "secrets.json.lock")
         assert _fenced_both_ways(home / "apps" / ".demo-data-tmp" / "secrets.json")
         assert not _fenced_both_ways(data / "notes.md"), "an undeclared sibling stays open"
-        assert not _fenced_both_ways(home / "apps" / "demo" / "app.json")
+        assert _readable_and_write_fenced(home / "apps" / "demo" / "app.json")
 
     def test_a_directory_mask_covers_everything_beneath_it(self, home):
         data = _install(home, "demo", ["secrets/"])
@@ -147,7 +152,7 @@ class TestADeclarationThatCannotBeReadFailsClosed:
         assert _fenced_both_ways(home / "apps" / "demo" / "data" / "tmpab12cd.tmp")
         assert _fenced_both_ways(home / "apps" / ".demo-data-tmp" / "anything.json")
         assert not _fenced_both_ways(home / "apps" / "neighbour" / "data" / "anything.json")
-        assert not _fenced_both_ways(home / "apps" / "demo" / "app.json")
+        assert _readable_and_write_fenced(home / "apps" / "demo" / "app.json")
         for beside in ("apps/demo/app.json.tmp", "apps/demo/x.lock", "apps/x.tmp", "apps/.a.lock"):
             assert not _fenced_both_ways(home / beside), f"{beside} is not the app's data"
 

@@ -880,8 +880,8 @@ class TestSecurityCli:
         with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
             cc._security(_ns(sec_action="deny-list"))
         out = capsys.readouterr().out
-        assert "  x keep-me" in out
-        assert "  x 5" not in out and "  x None" not in out
+        assert "  ✗ keep-me" in out
+        assert "  ✗ 5" not in out and "  ✗ None" not in out
         assert "2 entries in hooks.auto_deny_tools are not text" in out
 
     def test_deny_list_reads_the_local_overlay_the_gateway_merges(
@@ -896,7 +896,7 @@ class TestSecurityCli:
         with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
             cc._security(_ns(sec_action="deny-list"))
         out = capsys.readouterr().out
-        assert "  x overlay-pattern" in out
+        assert "  ✗ overlay-pattern" in out
         assert "base-pattern" not in out
 
     @pytest.mark.parametrize("value", [7, "rm", {"a": 1}, ["keep-me", 5, None], ["a", "b"]])
@@ -914,7 +914,7 @@ class TestSecurityCli:
         user_half = (
             out.split("User-configured deny patterns:")[1] if "User-configured" in out else ""
         )
-        listed = [line[4:] for line in user_half.splitlines() if line.startswith("  x ")]
+        listed = [line[4:] for line in user_half.splitlines() if line.startswith("  ✗ ")]
         assert listed == HooksConfig.from_dict({"auto_deny_tools": value}).auto_deny_tools
 
     def test_deny_list_without_config_file(
@@ -1500,7 +1500,7 @@ class TestPolicyCli:
         assert "Policy: v2 OK" in captured.out
         assert "good.json: OK" in captured.out
         assert "bad.json: INVALID→deny-all" in captured.out
-        assert "valid" not in captured.out.splitlines()
+        assert "✅ valid" not in captured.out
         assert "some profiles failed validation" in captured.err
 
     @pytest.mark.parametrize("declared_fallback", [False, True])
@@ -1572,7 +1572,7 @@ class TestPolicyCli:
         ):
             cc._policy(_ns(policy_action="validate"))
         captured = capsys.readouterr()
-        assert "good.json: OK" in captured.out and "valid" in captured.out.splitlines()
+        assert "good.json: OK" in captured.out and "✅ valid" in captured.out
         assert captured.err == ""
 
     def test_explain_unknown_scope_lists_catalog(self, capsys: pytest.CaptureFixture[str]) -> None:

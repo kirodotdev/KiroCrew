@@ -75,7 +75,7 @@ def _cut(text: str, marker: str) -> str:
 
 def approval_header_text(title: str) -> str:
     """The card's first line, naming the tool *title* asks about."""
-    return f"Approve tool *{_cut(escape_mrkdwn(title), '…')}*?"
+    return f"🔧 Approve tool *{_cut(escape_mrkdwn(title), '…')}*?"
 
 
 def approval_detail_blocks(

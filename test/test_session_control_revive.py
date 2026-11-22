@@ -276,6 +276,33 @@ def test_revive_may_not_refile_a_session_out_of_a_mate_home(tmp_path, monkeypatc
     assert key not in state._slots
 
 
+def test_a_refused_revive_filing_does_not_restore_a_folder_deleted_in_the_window(
+    tmp_path, monkeypatch
+):
+    """The rollback keeps the revived session's own folder only while it exists."""
+    state = _make_state(tmp_path)
+    _folder(state, "f0", "Home")
+    _folder(state, "f1", "Gamma")
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.folder_id = "f0"
+    key = _archive(state, caller, peer)
+    refused: list[str] = []
+
+    async def _both_deleted(state_, folder_id, **_kw):
+        state_._folders[:] = []
+        refused.append(folder_id)
+        return False
+
+    monkeypatch.setattr(sc, "_unhide_folder", _both_deleted)
+
+    result = _revive(state, caller, key, folder_id="f1")
+
+    assert refused == ["f1"]
+    assert result["filed"] is False
+    assert state._slots[key].folder_id == ""
+
+
 def test_revive_without_a_folder_keeps_the_previous_placement(tmp_path):
     state = _make_state(tmp_path)
     _folder(state, "f1", "Gamma")

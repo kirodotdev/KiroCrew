@@ -92,13 +92,15 @@ kirocrew secrets import           # report only
 kirocrew secrets import --apply   # store the secrets and rewrite .env
 ```
 
-Migration is deliberately narrow. Only the Jira credentials are moved today —
-the global `JIRA_API_TOKEN` and the per-host `JIRA_TOKEN_<HEX>` entries — because
-those are the only `.env` consumers in the migration set that resolve a
-`secret://` reference. Every other credential in `.env` (Slack, Discord,
-kiro-cli, and the rest) still reads the literal value, so rewriting its line
-would hand the reader the reference string instead of the token and break
-authentication. Those keys migrate as their readers become vault-aware.
+Migration is deliberately narrow. It moves only credentials whose every reader
+resolves a `secret://` reference: the Jira credentials (the global
+`JIRA_API_TOKEN` and the per-host `JIRA_TOKEN_<HEX>` entries) and the channel
+secrets (the Slack app and bot tokens, and the Telegram, Discord, Webex, Teams,
+WeCom, Weixin and Feishu secrets). Every other credential in `.env` (kiro-cli's
+own key, the Azure DevOps PAT, and the rest) is read by a child process from its
+inherited environment, so rewriting its line would hand the reader the
+reference string instead of the token and break authentication. Those keys
+migrate as their readers become vault-aware.
 
 Running the import again is safe: a key whose value is already a `secret://`
 reference is reported as such and skipped.

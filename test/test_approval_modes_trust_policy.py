@@ -428,12 +428,16 @@ class TestOtherEntryPoints:
     @pytest.mark.asyncio
     async def test_a_typed_trust_reply_approves_once_and_says_so(self):
         from kiro_crew.messaging import approval as ap
+        from kiro_crew.messaging import session_trust as st
 
         ap.reset_for_tests()
         _install(OWNER_RULE)
+        sessions = MagicMock()
         entry = ap.open_approval("whatsapp:1", "r1")
-        assert ap.deliver_verdict("whatsapp:1", ap.TRUST) == ap.RECEIPT_APPROVED
+        assert ap.deliver_verdict("whatsapp:1", ap.TRUST, sessions=sessions) == ap.RECEIPT_APPROVED
         assert await entry.future == ap.APPROVE
+        sessions.set_approval_policy.assert_not_called()
+        assert "whatsapp:1" not in st._trusted_sessions
         ap.reset_for_tests()
 
     def test_editing_a_saved_auto_job_still_saves(self):
@@ -798,17 +802,17 @@ def test_a_late_grant_under_a_deny_holds_nothing(tmp_path):
     assert slot._trust_reads is False, "a denied Reads write was never held"
 
 
-def test_a_typed_trust_grant_is_revoked_by_a_deny():
+@pytest.mark.asyncio
+async def test_a_typed_trust_grant_is_revoked_by_a_deny():
     """A text-reply Trust goes through the shared grant, so a deny revokes it."""
+    from kiro_crew.messaging import approval as ap
     from kiro_crew.messaging import session_trust as st
-    from kiro_crew.messaging.approval import TextReplyApprovalDecider
 
     _install(None)
+    ap.reset_for_tests()
     sessions = MagicMock()
-    decider = TextReplyApprovalDecider.__new__(TextReplyApprovalDecider)
-    decider._sessions = sessions
-    decider.session_key = "whatsapp:1"
-    decider._grant_session_trust()
+    ap.open_approval("whatsapp:1", "r1")
+    assert ap.deliver_verdict("whatsapp:1", ap.TRUST, sessions=sessions) == ap.RECEIPT_TRUSTED
     assert st.is_session_trusted("whatsapp:1") is True
     sessions.set_approval_policy.assert_called_with("whatsapp:1", "auto")
     _install(OWNER_RULE)

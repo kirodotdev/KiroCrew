@@ -95,14 +95,14 @@ def _unreadable_skips_section(
             except Exception:  # noqa: BLE001 — a broken probe must not end the report
                 is_confined = False
         if is_confined:
-            print(f"  {label}: Skipped: {shown} is not readable from this shell")
+            print(f"  {label}: ⏭  skipped — {shown} is not readable from this shell")
             _print_wrapped(
                 "This shell runs inside a sandbox (an agent's shell is one), which "
                 "can hide part of the Kiro Crew data home. Run `kirocrew doctor` from "
                 "your own terminal to check this section."
             )
             return
-        print(f"  {label}: Error:   {shown} is not readable ({exc.strerror or exc})")
+        print(f"  {label}: ❌ {shown} is not readable ({exc.strerror or exc})")
         _print_wrapped(
             "If this shell runs inside an agent sandbox, that sandbox hides part of "
             "the Kiro Crew data home on purpose: run `kirocrew doctor` from your own "

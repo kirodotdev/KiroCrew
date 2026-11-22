@@ -42,13 +42,21 @@ import {
   FEATURE_TIPS_SETTING_ID,
   GATEWAY_AUTO_UPDATE_SETTING_ID,
   REOPEN_LAST_PAGE_SETTING_ID,
+  SLACK_TOOLS_SWITCH_KEY,
   settingEntryOffered,
+  TERMINAL_CTRL_COPY_PASTE_SETTING_ID,
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
 import { extractFromSource } from '../../../scripts/settingsExtract'
 import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import type { SettingEntry } from './settingsTypes'
+
+const platform = vi.hoisted(() => ({ mac: false }))
+vi.mock('../../utils/platform', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../utils/platform')>()),
+  get isMac() { return platform.mac },
+}))
 
 const decisionsEntry = (): SettingEntry => {
   const entry = SETTINGS_REGISTRY.find(e => e.id === DECISIONS_SETTING_ID)
@@ -76,6 +84,7 @@ const GOVERNED_IDS = new Set([
   ...DECISIONS_SETTING_IDS, FEATURE_TIPS_SETTING_ID, GATEWAY_AUTO_UPDATE_SETTING_ID, APP_AUTO_DOWNLOAD_SETTING_ID,
   KIRO_SIGN_IN_SETTING_ID, ENABLE_REMOTE_CREWS_SETTING_ID, AUTO_CONNECT_CREWS_SETTING_ID, CHANNELS_SETTING_ID,
   REOPEN_LAST_PAGE_SETTING_ID,
+  TERMINAL_CTRL_COPY_PASTE_SETTING_ID,
 ])
 
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
@@ -185,6 +194,25 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(otherEntry(), { ...ON, channelsOn: false })).toBe(true)
   })
 
+  it('withholds the Slack tools switch only once Settings > Slack is known not to draw it', () => {
+    const slackTools = SETTINGS_REGISTRY.find(e => e.configKey === SLACK_TOOLS_SWITCH_KEY)!
+    expect(slackTools).toBeDefined()
+    expect(settingEntryOffered(slackTools, ON)).toBe(true)
+    expect(settingEntryOffered(slackTools, { ...ON, slackToolsShown: true })).toBe(true)
+    expect(settingEntryOffered(slackTools, { ...ON, slackToolsShown: false })).toBe(false)
+    expect(settingEntryOffered(otherEntry(), { ...ON, slackToolsShown: false })).toBe(true)
+  })
+
+  it('offers Remote Control only while Remote Crew draws its card (Bug Bash row 60)', () => {
+    // The card is drawn only while the setting is on or the relay runs; a hit
+    // that opens the page without it lands on nothing to highlight.
+    const card = entryById('instances.remote-control')
+    expect(settingEntryOffered(card, ON)).toBe(false)
+    expect(settingEntryOffered(card, { ...ON, remoteControlShown: false })).toBe(false)
+    expect(settingEntryOffered(card, { ...ON, remoteControlShown: true })).toBe(true)
+    expect(settingEntryOffered(otherEntry(), { ...ON, remoteControlShown: false })).toBe(true)
+  })
+
   it('offers Display > Explore only while the Explore preview is on', () => {
     const explore = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.milestones_enabled')!
     expect(explore).toBeDefined()
@@ -197,6 +225,19 @@ describe('settingEntryOffered', () => {
     } finally {
       setPreviewFlag(PREVIEW_EXPLORE, false)
     }
+  })
+})
+
+describe('the terminal Ctrl+C / Ctrl+V switch follows the platform DisplayPanel draws it on', () => {
+  afterEach(() => { platform.mac = false })
+
+  it('withholds it on macOS and offers it elsewhere', () => {
+    const entry = entryById(TERMINAL_CTRL_COPY_PASTE_SETTING_ID)
+    platform.mac = true
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    expect(settingEntryOffered(otherEntry(), ON)).toBe(true)
+    platform.mac = false
+    expect(settingEntryOffered(entry, ON)).toBe(true)
   })
 })
 
@@ -561,6 +602,50 @@ describe('the Kiro sign-in entry follows whether the build offers Kiro sign-in',
   it('offers it while the build is unknown (no schema in the cache)', async () => {
     const { result } = await renderWithSchema(undefined)
     expect(offersSignIn(result.current)).toBe(true)
+  })
+})
+
+describe('the Slack tools switch follows what Settings > Slack draws', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // Settings > Slack draws the switch only while the server says Connections offers
+  // the Slack card (`slack_mcp_card`) or the switch is already on. The search reads
+  // that answer from the cache the Slack page's own `['slack-config']` read fills,
+  // so each case seeds that cache (or leaves it empty) instead of serving a fetch.
+  const renderWithSlackConfig = async (cached: unknown) => {
+    const slack = vi.spyOn(api, 'getSlackConfig')
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+    vi.spyOn(api, 'tipsStatus').mockResolvedValue({ enabled_config: true } as never)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    if (cached !== undefined) client.setQueryData(['slack-config'], cached)
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(Provider, { store: createTestStore() },
+        createElement(QueryClientProvider, { client }, createElement(MemoryRouter, null, children)))
+    const hook = renderHook(() => useSettingsProvider(), { wrapper })
+    await waitFor(() => expect(client.getQueryState(['tipsStatus'])?.status).not.toBe('pending'))
+    // Cache only: opening a search never asks the gateway for the Slack config.
+    expect(slack).not.toHaveBeenCalled()
+    return hook
+  }
+  const offersSlackTools = (provider: ResourceProvider) =>
+    (provider.search('Slack tools for your agents') as { id?: string }[])
+      .some(r => (r.id ?? '').endsWith('channels.slack-tools-for-your-agents-slack'))
+
+  it.each([
+    ['Connections offers the Slack card', { slack_mcp_card: true, slack_mcp: false }, true],
+    ['there is no card but the switch is on', { slack_mcp_card: false, slack_mcp: true }, true],
+    ['there is no card and the switch is off', { slack_mcp_card: false, slack_mcp: false }, false],
+    ['the server reports neither field', {}, false],
+  ])('when %s', async (_label, cached, offered) => {
+    const { result } = await renderWithSlackConfig(cached)
+    await waitFor(() => expect(offersSlackTools(result.current)).toBe(offered))
+  })
+
+  it('offers it while the Slack page has not been read (no answer in the cache)', async () => {
+    const { result } = await renderWithSlackConfig(undefined)
+    expect(offersSlackTools(result.current)).toBe(true)
   })
 })
 

@@ -91,7 +91,8 @@ async def test_a_deferral_retried_next_step_reports_no_security_block() -> None:
     provider = _Provider(refused={"r1"}, deferred={"r1"}, events=[_event("r1"), _event("r2")])
     tally = await _run_cron_turn(provider)
     assert provider.approved == ["r2"]
-    assert tally.refused == []
+    assert tally.refused == 0
+    assert tally.refused_calls == []
     assert not tally.partially_blocked
     assert not tally.all_blocked
 
@@ -100,7 +101,8 @@ async def test_a_deferral_retried_next_step_reports_no_security_block() -> None:
 async def test_a_transport_floor_refusal_is_still_a_security_block() -> None:
     provider = _Provider(refused={"r1"}, deferred=set(), events=[_event("r1"), _event("r2")])
     tally = await _run_cron_turn(provider)
-    assert tally.refused == ["@kirocrew-core/artifact_list"]
+    assert tally.refused == 1
+    assert [title for title, _rule in tally.refused_calls] == ["@\u200bkirocrew-core/artifact_list"]
     assert tally.partially_blocked
 
 

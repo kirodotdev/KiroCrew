@@ -8,6 +8,7 @@ for, and which messaging channels ``setup`` configures.
 
 import json
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -444,7 +445,7 @@ class TestManifest:
         assert exc_info.value.code == 1
         err_lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
         assert len(err_lines) == 1
-        assert err_lines[0].startswith(f"Error: Could not write {out_file}: ")
+        assert err_lines[0].startswith(f"❌ Could not write {out_file}: ")
 
     def test_exits_when_template_missing(self):
         mock_resource = MagicMock()
@@ -657,13 +658,16 @@ class TestConfigDirOverride:
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         seen: list[tuple[Path, bool]] = []
+        test_thread = threading.get_ident()
         real = pc.restrict_to_owner
 
         def _spy(path):
             # Record what the lockdown saw: the path, and whether the tokens
-            # were already readable there at that moment.
-            p = Path(path)
-            seen.append((p.parent, "xoxb-test" in p.read_text(encoding="utf-8")))
+            # were already readable there at that moment. This thread only: the
+            # SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                p = Path(path)
+                seen.append((p.parent, "xoxb-test" in p.read_text(encoding="utf-8")))
             return real(path)
 
         monkeypatch.setattr(pc, "restrict_to_owner", _spy)
@@ -817,7 +821,7 @@ class TestSetupChannelGating:
         assert "Agent config left unchanged" in out
         assert "Agent installed" not in out
         self._run_setup(monkeypatch, tmp_path, agent_only=True)
-        assert "Done: Agent installed" in capsys.readouterr().out
+        assert "✅ Agent installed" in capsys.readouterr().out
 
     def test_slack_flag_opts_into_slack_steps(self, tmp_path, monkeypatch):
         """--slack runs the guided Slack credential + slash-command steps in order."""

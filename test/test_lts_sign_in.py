@@ -605,10 +605,10 @@ class TestLoginSource:
     def test_describe_reports_the_sign_in(self, vault) -> None:
         vault()
         line = sign_in.describe()
-        assert line.startswith("OK:") and "Kiro Crew's own sign-in" in line and _ARN in line
+        assert line.startswith("✅") and "Kiro Crew's own sign-in" in line and _ARN in line
 
     def test_describe_reports_no_sign_in(self, store) -> None:
-        assert sign_in.describe().startswith("Error:   no Kiro sign-in was found")
+        assert sign_in.describe().startswith("❌ no Kiro sign-in was found")
 
 
 class TestDoctor:

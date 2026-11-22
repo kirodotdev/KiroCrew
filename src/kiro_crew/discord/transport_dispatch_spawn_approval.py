@@ -133,13 +133,13 @@ async def deliver_spawn_approval(
                 {
                     "type": 2,
                     "style": _STYLE_SUCCESS,
-                    "label": "Approve",
+                    "label": "✅ Approve",
                     "custom_id": f"a:{rid}:{nonce}:1",
                 },
                 {
                     "type": 2,
                     "style": _STYLE_DANGER,
-                    "label": "Deny",
+                    "label": "🚫 Deny",
                     "custom_id": f"a:{rid}:{nonce}:0",
                 },
             ],
@@ -174,7 +174,7 @@ async def deliver_spawn_approval(
     try:
         posted = await client.send_message(
             channel_id,
-            f"Approve sub-agent spawn?\n```\n{detail}\n```",
+            f"🔐 Approve sub-agent spawn?\n```\n{detail}\n```",
             components=components,
         )
     except Exception:

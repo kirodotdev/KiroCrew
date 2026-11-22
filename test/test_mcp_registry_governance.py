@@ -412,7 +412,7 @@ class TestDoctorGovernanceSection:
             assert name in out
         # Whether the admin actually allow-listed the names is not knowable
         # locally, so this branch must not render as a verified success.
-        assert "OK:" not in out
+        assert "✅" not in out
         assert "cannot verify" in out
         # And it must name the way out of a stale declaration.
         assert "mcp_registry_mode false" in out

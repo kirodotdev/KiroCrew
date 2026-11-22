@@ -141,9 +141,9 @@ class TestTelegramInboundResumeRouting:
     @pytest.mark.parametrize(
         ("command", "native_reply"),
         [
-            pytest.param("/help", "Kiro Crew — Telegram\n", id="/help"),
+            pytest.param("/help", "🦞 Kiro Crew — Telegram\n", id="/help"),
             pytest.param("/status", "uptime ", id="/status"),
-            pytest.param("/new", "New conversation started.", id="/new"),
+            pytest.param("/new", "✅ New conversation started.", id="/new"),
             pytest.param("/unlink", "This conversation wasn't linked.", id="/unlink"),
         ],
     )
@@ -829,10 +829,10 @@ class TestTelegramRestrictedResumedSession:
         """An ambiguous or corrupt transcript is where an incognito session hides.
 
         ``_probe_persisted_session`` reports ``(True, None)`` when one stem matches
-        several transcripts, so taking the write would risk persisting a session
-        that promised to leave nothing. A legacy header with no ``memory_mode``
-        does NOT land here — it reads ``persistent`` — so denying costs no ordinary
-        history.
+        several transcripts that disagree on the mode, so taking the write would
+        risk persisting a session that promised to leave nothing. A legacy header
+        with no ``memory_mode`` does NOT land here — it reads ``persistent`` — so
+        denying costs no ordinary history.
         """
         from kiro_crew.messaging import upload_gate
 
@@ -1058,15 +1058,15 @@ class TestResumedRefusalsCharacterization:
     """
 
     _BUSY = (
-        "That session is busy with a turn started elsewhere. Send your message again "
+        "⏳ That session is busy with a turn started elsewhere. Send your message again "
         "once it finishes, or /unlink to return to your Telegram conversation."
     )
     _PRIVACY = (
-        "Privacy mode can't be changed while a dashboard session is resumed. Your "
+        "🔒 Privacy mode can't be changed while a dashboard session is resumed. Your "
         "message was NOT processed. Use /unlink or /new first."
     )
     _BUSY_OPTION = (
-        "That conversation is busy with another turn, so your choice was NOT "
+        "🔘 That conversation is busy with another turn, so your choice was NOT "
         "applied. Type it as a message once the turn finishes."
     )
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from kiro_crew.browser_harness import ops as _ops
+from kiro_crew.browser_harness.keys import known_key
 from kiro_crew.browser_harness.supervisor import HelperError
 
 
@@ -39,7 +40,7 @@ def _step_shape_error(step: Any) -> str | None:
     if keys == {"text"}:
         return None if isinstance(step["text"], str) else "a text step needs a `text` string"
     if "key" in keys and keys <= {"key", "modifiers"}:
-        if _ops._known_key(step["key"]):
+        if known_key(step["key"]):
             return None
         return f"unknown key: {step['key']!r} (named keys or a single character)"
     return "each step is exactly {text} or {key, modifiers?}"

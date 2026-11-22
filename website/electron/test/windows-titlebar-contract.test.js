@@ -2,8 +2,10 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
+const Module = require("node:module");
 const { buildMenuTemplate } = require("../app-menu");
 const { serializeMenuItems } = require("../windows-menu-model");
+const { createWindowLifecycle } = require("../window-lifecycle");
 
 // The Windows titlebar menu's top-level list is maintained in THREE places that
 // must agree, and every disagreement fails silently rather than loudly:
@@ -177,5 +179,176 @@ test("menuItems accepts and forwards senderIsLocal into serializeMenuItems", () 
     /serializeMenuItems\(item, senderIsLocal === true\)/,
     "senderIsLocal must reach serializeMenuItems with strict === true, "
     + "so any non-boolean value falls to the fail-closed (greyed) branch",
+  );
+});
+
+// The fifth place the titlebar menu's behaviour is maintained: the platform
+// admission on the two seams themselves. A CSD Wayland compositor draws no
+// frame and so no menu bar, which is why the shell's own menu is offered
+// there -- but a renderer that draws the trigger and gets no rows back opens
+// an EMPTY menu whose every click refuses, so the renderer's admission and
+// these two are one decision in two processes.
+//
+// The platform is FAKED, never read from the host: this suite runs on the
+// macOS, Linux and Windows CI runners, so a test that read `process.platform`
+// would assert a different thing on each of them.
+
+/** A view menu with one safe leaf and one LOCAL_ONLY leaf (`role: "zoom"`). */
+function fakeViewMenu(dispatched) {
+  return {
+    id: "view-menu",
+    submenu: {
+      items: [
+        {
+          visible: true, enabled: true, label: "Reload", type: "normal",
+          click: () => dispatched.push("reload"),
+        },
+        {
+          visible: true, enabled: true, label: "Zoom In", type: "normal", role: "zoom",
+          click: () => dispatched.push("zoom"),
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * A Linux lifecycle on either frame branch.
+ *
+ * `linuxFrameless` is the operator override `decideLinuxFrame()` honours ahead
+ * of every other check, so passing it pins the branch without depending on the
+ * host's session type or desktop name.
+ */
+function linuxLifecycle({ frameless }) {
+  const dispatched = [];
+  const sender = { id: "dashboard-webcontents" };
+  const win = { _mcView: { webContents: sender }, isDestroyed: () => false };
+  const viewMenu = fakeViewMenu(dispatched);
+  const lifecycle = createWindowLifecycle({
+    electron: {
+      BaseWindow: { getAllWindows: () => [win] },
+      Menu: { getApplicationMenu: () => ({ getMenuItemById: (id) => (id === viewMenu.id ? viewMenu : null) }) },
+    },
+    store: { get: (key) => (key === "linuxFrameless" ? frameless : null) },
+    backendUrl: "http://localhost:5476",
+    port: 5476,
+    mintLocalToken: async () => "",
+    fetchRemoteToken: async () => ({ token: "" }),
+    requestQuit: () => {},
+    connectWindow: async () => {},
+    platform: "linux",
+    env: {},
+  });
+  return { lifecycle, sender, dispatched };
+}
+
+test("menuItems answers a frameless Linux window with its rows", () => {
+  // Without this seam the trigger draws, asks for its rows, and is handed [],
+  // so the menu opens EMPTY with no error raised anywhere.
+  const { lifecycle, sender } = linuxLifecycle({ frameless: true });
+  const rows = lifecycle.menu.items(sender, "view-menu", true);
+  assert.deepStrictEqual(
+    rows.map((row) => row.label), ["Reload", "Zoom In"],
+    "a frameless Linux window has no native menu bar, so [] here is a menu that "
+    + "opens empty",
+  );
+});
+
+test("executeMenu dispatches a frameless Linux window's click", () => {
+  const { lifecycle, sender, dispatched } = linuxLifecycle({ frameless: true });
+  assert.strictEqual(lifecycle.menu.execute(sender, "view-menu", 0, true), true);
+  assert.deepStrictEqual(dispatched, ["reload"]);
+});
+
+test("a framed Linux window is still refused on both seams", () => {
+  // Its compositor draws the menu bar itself, so the shell offers no menu
+  // there and neither seam answers one: two bars on one window is a duplicate
+  // menu, the most visible way this surface can be got wrong.
+  const { lifecycle, sender, dispatched } = linuxLifecycle({ frameless: false });
+  assert.deepStrictEqual(lifecycle.menu.items(sender, "view-menu", true), []);
+  assert.strictEqual(lifecycle.menu.execute(sender, "view-menu", 0, true), false);
+  assert.deepStrictEqual(dispatched, []);
+});
+
+test("a remote sender is refused per-action on frameless Linux too", () => {
+  // The per-action gate classifies by item, not by platform, so this pins that
+  // property rather than proving it: the frameless Linux surface must never be
+  // a platform the gate skips. `role: "zoom"` is LOCAL_ONLY; "Reload" is not,
+  // so the safe leaf still dispatches -- a refusal of BOTH would be a gate
+  // that had stopped classifying.
+  const { lifecycle, sender, dispatched } = linuxLifecycle({ frameless: true });
+
+  const rows = lifecycle.menu.items(sender, "view-menu", false);
+  assert.deepStrictEqual(
+    rows.map((row) => ({ label: row.label, gated: row.gated, enabled: row.enabled })),
+    [
+      { label: "Reload", gated: false, enabled: true },
+      { label: "Zoom In", gated: true, enabled: false },
+    ],
+    "a remote sender must be painted the LOCAL_ONLY row greyed, not enabled",
+  );
+
+  assert.strictEqual(lifecycle.menu.execute(sender, "view-menu", 1, false), false);
+  assert.deepStrictEqual(dispatched, [], "the gated item must not have been clicked");
+  assert.strictEqual(lifecycle.menu.execute(sender, "view-menu", 0, false), true);
+  assert.deepStrictEqual(dispatched, ["reload"]);
+});
+
+/**
+ * Loads the real preload under a stubbed `electron` and returns the object it
+ * hands the page. The pattern is app-window-preload.test.js's: replace the
+ * module loader for `electron` only, require the file fresh, and read what
+ * `exposeInMainWorld` was given. `sendSync` answers the remote-gateway probe
+ * the preload makes at import; `false` is the local-dashboard case.
+ */
+function loadDashboardPreloadBridge() {
+  const exposed = {};
+  const electron = {
+    contextBridge: { exposeInMainWorld: (key, api) => { exposed[key] = api; } },
+    ipcRenderer: {
+      send: () => {},
+      sendSync: () => false,
+      invoke: () => Promise.resolve(null),
+      on: () => {},
+      removeListener: () => {},
+    },
+    webUtils: { getPathForFile: () => "" },
+  };
+  const modulePath = path.join(__dirname, "..", "preload.js");
+  delete require.cache[require.resolve(modulePath)];
+  const originalLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === "electron") return electron;
+    return originalLoad(request, parent, isMain);
+  };
+  try {
+    require(modulePath);
+  } finally {
+    Module._load = originalLoad;
+    delete require.cache[require.resolve(modulePath)];
+  }
+  return exposed.kirocrew;
+}
+
+test("the preload advertises the Linux menu this shell actually serves", () => {
+  // The two halves of the contract, asserted together, because either one
+  // alone is a shell that lies. The SPA mounts the Linux trigger only when the
+  // preload sets `linuxAppMenu`, and it is an OLDER shell -- one without that
+  // line -- whose `menuItems` returns []. So this shell must both advertise
+  // the capability and answer for the surface. Dropping the flag would take
+  // the menu from every Linux user with nothing failing; dropping the guard
+  // would advertise a menu that opens empty.
+  const bridge = loadDashboardPreloadBridge();
+  assert.strictEqual(
+    bridge.linuxAppMenu,
+    true,
+    "the preload must advertise the capability the SPA gates the Linux menu on",
+  );
+
+  const { lifecycle, sender } = linuxLifecycle({ frameless: true });
+  assert.notDeepStrictEqual(
+    lifecycle.menu.items(sender, "view-menu", true),
+    [],
+    "and this shell must answer for the surface it just advertised",
   );
 });

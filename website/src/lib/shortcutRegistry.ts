@@ -244,6 +244,10 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // chat header's pop-out button. Not browser-reserved: a browser tab hands the
   // keydown to the page, and claiming it cancels the browser's Open File.
   { id: 'pop-out-session', group: 'actions', dispatch: 'registry', defaults: both({ key: 'o', mod: true }) },
+  // ⌘⇧F / Ctrl+Shift+F — Search all chats: the cross-chat twin of ⌘F, which
+  // searches the open chat (useMessageSearch reads `e.key === 'f'`, and Shift
+  // makes it `F`, so the two never fire together).
+  { id: 'search-all-chats', group: 'actions', dispatch: 'registry', defaults: both({ key: 'f', mod: true, shift: true }) },
   // Dispatched by ChatInput, not the global handler; listed for the reference.
   { id: 'optimize-prompt', group: 'actions', dispatch: 'code', defaults: both({ key: 'Enter', mod: true, shift: true }) },
   // ⌘↑ on macOS / Ctrl+↑ elsewhere — edit the last user message.
@@ -267,6 +271,9 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   { id: 'agent-monitor', group: 'actions', dispatch: 'code', defaults: both({ key: 'g', ctrl: true }) },
   // Bare Escape, handled by a capture-phase listener; listed for the reference.
   { id: 'stop-speaking', group: 'actions', dispatch: 'code', defaults: both({ key: 'Escape' }) },
+  // Bare Escape in the message box while a turn runs, handled by the composer's
+  // own key gate (chat-input/stopKey.ts); listed for the reference.
+  { id: 'stop-turn', group: 'actions', dispatch: 'code', defaults: both({ key: 'Escape' }) },
   // Bare Up/Down, handled by NotificationFeed while one of its rows has focus
   // (inbox page and bell sheet); listed for the reference.
   { id: 'notification-prev', group: 'actions', dispatch: 'code', defaults: both({ key: 'ArrowUp' }) },
@@ -304,7 +311,7 @@ export type ShortcutOverrides = Partial<Record<string, Chord | null>>
 /**
  * A chord a user may store: a non-empty key plus at least one non-shift
  * modifier. A bare key or Shift+key would fire mid-typing. `stop-speaking`
- * (bare Escape) is a `code` entry and never reaches this check.
+ * and `stop-turn` (bare Escape) are `code` entries and never reach this check.
  */
 export function isValidChord(c: Partial<Chord> | null | undefined): c is Chord {
   if (!c || typeof c.key !== 'string' || c.key.trim() === '') return false

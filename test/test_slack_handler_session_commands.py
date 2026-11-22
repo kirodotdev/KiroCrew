@@ -537,7 +537,7 @@ class TestCompactCommand:
 
         texts = self._posted_texts(slack)
         assert any("Compacting" in t for t in texts)
-        assert "Context compacted." in texts
+        assert any("✅" in t for t in texts)
 
     @pytest.mark.asyncio
     async def test_bare_compact_does_not_trigger(self):
@@ -549,7 +549,7 @@ class TestCompactCommand:
         await handle_message(slack, sessions, "C1", "compact", "thread1", "msg1", "U_OWNER")
 
         texts = self._posted_texts(slack)
-        # The compact command posts "Compacting context…" — bare word must not.
+        # The compact command posts "🔄 Compacting context…" — bare word must not.
         assert not any("Compacting context" in t for t in texts)
 
     @pytest.mark.asyncio
@@ -596,7 +596,7 @@ class TestCompactCommand:
         await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
 
         texts = self._posted_texts(slack)
-        assert "Context compacted." in texts
+        assert any("✅" in t for t in texts)
 
     @pytest.mark.asyncio
     async def test_compact_failed_reports_error(self):
@@ -611,7 +611,7 @@ class TestCompactCommand:
         await handle_message(slack, sessions, "C1", "!compact", "thread1", "msg1", "U_OWNER")
 
         texts = self._posted_texts(slack)
-        assert any(t.startswith("Error:") and "out of memory" in t for t in texts)
+        assert any("❌" in t and "out of memory" in t for t in texts)
 
     @pytest.mark.asyncio
     async def test_compact_with_summary_keeps_internal_body_private(self):

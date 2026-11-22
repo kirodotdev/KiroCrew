@@ -66,7 +66,7 @@ describe('Teams', () => {
     get.teams.mockResolvedValue({ ...TEAMS, ...card('/gw/bin/python -m pip install PyJWT') })
     renderWithProviders(<TeamsPanel />)
     expect(await screen.findByTestId('sdk-install-command')).toBeInTheDocument()
-    expect(text()).toMatch(/restart the gateway/i)
+    expect(text()).toMatch(/then restart .+'s background service and turn .+ on/i)
   })
 
   it('after install, before restart: the alert says to restart the gateway', async () => {

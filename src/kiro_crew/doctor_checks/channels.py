@@ -76,19 +76,19 @@ def _discord_msg_content_line(
             if state in cli_doctor.intent_probe.GRANTED_STATES
             else "not needed (DMs deliver content without it)"
         )
-        print(f"  msg content: Skipped: {detail}")
+        print(f"  msg content: ⏭  {detail}")
     elif state in cli_doctor.intent_probe.GRANTED_STATES:
         limited = state == cli_doctor.intent_probe.INTENT_LIMITED
         extra = " (capped at 100 servers until the app is verified)" if limited else ""
-        print(f"  msg content: OK:      granted{extra}")
+        print(f"  msg content: ✅ granted{extra}")
     elif state == cli_doctor.intent_probe.INTENT_DISABLED:
-        print("  msg content: Error:   OFF, so thread and channel messages arrive empty")
+        print("  msg content: ❌ OFF, so thread and channel messages arrive empty")
         print(f"{render._INDENT}and Discord can close the connection with code 4014.")
         print(f"{render._INDENT}Fix: Developer Portal → Bot → Message Content Intent,")
         print(f"{render._INDENT}then `kirocrew restart`.")
         issues.append("discord: Message Content Intent off with threads allow-listed")
     else:
-        print(f"  msg content: Warning: cannot verify ({grants.error or 'no answer'})")
+        print(f"  msg content: ⚠️  cannot verify ({grants.error or 'no answer'})")
         print(f"{render._INDENT}If thread messages arrive empty, enable Message Content")
         print(f"{render._INDENT}Intent in the Developer Portal → Bot.")
 
@@ -101,7 +101,7 @@ def _discord_unused_intent_line(label: str, name: str, state: str) -> None:
     something to turn off.
     """
     if state in cli_doctor.intent_probe.GRANTED_STATES:
-        print(f"  {label + ':':<13}Warning: {name} Intent is on but unused")
+        print(f"  {label + ':':<13}⚠️  {name} Intent is on but unused")
         print(f"{render._INDENT}Turn it off in the Developer Portal → Bot: nothing in Kiro")
         print(f"{render._INDENT}Crew reads it, and it widens what Discord sends this bot.")
 
@@ -118,7 +118,7 @@ def _discord_install_line(application_id: str, *, dm_only: bool) -> None:
     try:
         url = cli_doctor.install_url.build_install_url(application_id, dm_only=dm_only)
     except ValueError:
-        print(f"  install URL: Skipped: needs the app id: the {shape} template is")
+        print(f"  install URL: ⏭  needs the app id: the {shape} template is")
         print(f"{render._INDENT}in the Discord Integration doc")
         return
     print(f"  install URL: {url}")
@@ -127,7 +127,7 @@ def _discord_install_line(application_id: str, *, dm_only: bool) -> None:
 
 #: Printed in place of a credential verdict when the credentials file could not be
 #: read: the value may be in that file, so its absence from *creds* proves nothing.
-_CREDS_UNKNOWN = "Skipped: unknown — credentials not readable from this shell"
+_CREDS_UNKNOWN = "⏭  unknown — credentials not readable from this shell"
 
 
 def _doctor_discord(
@@ -151,24 +151,24 @@ def _doctor_discord(
     print("\nDiscord Integration")
     dc = cfg.discord
     if not dc.enabled:
-        print("  status:      Skipped: not enabled (optional)")
+        print("  status:      ⏭  not enabled (optional)")
         print("  setup:       enable it in the dashboard under")
         print(f"{render._INDENT}Settings → Messaging Channels → Discord, or set")
         print(f"{render._INDENT}discord.enabled in config.json and DISCORD_BOT_TOKEN in")
         print(f"{render._INDENT}{cli_doctor.env_path()}, then `kirocrew restart`")
         return
 
-    print("  status:      OK:      enabled")
+    print("  status:      ✅ enabled")
     # Same resolution order the gateway uses, so doctor and the running channel
     # can never disagree about whether a token exists. The value itself is
     # never printed, in whole or in part.
     token = creds.get(cli_doctor.CRED_DISCORD_BOT_TOKEN, "") or dc.bot_token
     if token:
-        print("  token:       OK:      present")
+        print("  token:       ✅ present")
     elif creds_unreadable:
         print(f"  token:       {_CREDS_UNKNOWN}")
     else:
-        print("  token:       Error:   missing, so the channel never starts")
+        print("  token:       ❌ missing, so the channel never starts")
         print(f"{render._INDENT}Fix: paste the bot token in")
         print(f"{render._INDENT}Settings → Messaging Channels → Discord, or add")
         print(
@@ -180,9 +180,9 @@ def _doctor_discord(
     threads = [str(t) for t in dc.allowed_thread_ids]
     channels = [str(c) for c in dc.allowed_channel_ids]
     if users:
-        print(f"  users:       OK:      {len(users)} allow-listed")
+        print(f"  users:       ✅ {len(users)} allow-listed")
     else:
-        print("  users:       Error:   allow-list empty, so EVERY message is denied")
+        print("  users:       ❌ allow-list empty, so EVERY message is denied")
         print(f"{render._INDENT}Fix: add your numeric user ID under")
         print(f"{render._INDENT}Settings → Messaging Channels → Discord")
         print(f"{render._INDENT}(Discord → Settings → Advanced → Developer Mode, then")
@@ -195,11 +195,11 @@ def _doctor_discord(
     needs_content = bool(threads or channels)
     if needs_content:
         print(
-            f"  servers:     OK:      {len(threads)} thread(s), {len(channels)} channel(s)"
+            f"  servers:     ✅ {len(threads)} thread(s), {len(channels)} channel(s)"
             " (Message Content required)"
         )
     else:
-        print("  servers:     Note:    none, DMs only (add thread or channel IDs to use one)")
+        print("  servers:     ⏹ none, DMs only (add thread or channel IDs to use one)")
 
     grants = cli_doctor._discord_intent_grants(token)
     _discord_msg_content_line(grants, needs_content=needs_content, issues=issues)
@@ -208,21 +208,21 @@ def _doctor_discord(
 
     live = _discord_live_state(port)
     if live is None:
-        print("  connection:  Note:    live state unavailable (gateway not running, or it")
+        print("  connection:  ⏹ live state unavailable (gateway not running, or it")
         print(f"{render._INDENT}requires a dashboard token on this interface)")
     elif live.get("connected"):
-        print("  connection:  OK:      connected to Discord's Gateway")
+        print("  connection:  ✅ connected to Discord's Gateway")
     elif str(live.get("connect_error", "")):
         # Foreign text on the way to a terminal: shown escaped, so a control
         # sequence in a close reason cannot rewrite the lines around it.
         reason = render._safe_display(str(live.get("connect_error", ""))[:120])
-        print(f"  connection:  Error:   not connected: {reason}")
+        print(f"  connection:  ❌ not connected: {reason}")
         print(f"{render._INDENT}Fix: 4014 = enable Message Content Intent (or clear the")
         print(f"{render._INDENT}thread and channel allow-lists); 4004 = reset the bot")
         print(f"{render._INDENT}token. Then `kirocrew restart`.")
         issues.append("discord: channel not connected")
     else:
-        print("  connection:  Warning: not connected, and no reason was recorded")
+        print("  connection:  ⚠️  not connected, and no reason was recorded")
         print(f"{render._INDENT}Discord settings are read at startup: run `kirocrew")
         print(f"{render._INDENT}restart` after changing them.")
 
@@ -251,15 +251,15 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     print("\nWhatsApp Integration")
     wa = cfg.whatsapp
     if not wa.enabled:
-        print("  status:      Skipped: not enabled (optional)")
+        print("  status:      ⏭  not enabled (optional)")
         print("  setup:       run 'kirocrew setup --whatsapp', or enable it from")
         print("               the dashboard (Settings → Messaging Channels → WhatsApp)")
         return
 
     if neonize_available():
-        print("  extra:       OK:      neonize importable")
+        print("  extra:       ✅ neonize importable")
     else:
-        print("  extra:       Error:   neonize not installed, so the enabled channel cannot start")
+        print("  extra:       ❌ neonize not installed, so the enabled channel cannot start")
         command = ""
         if cli_doctor.pip_install_channel_available():
             command = cli_doctor.pip_install_command("whatsapp")
@@ -272,14 +272,14 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     # recovery breadcrumb as a side effect of reporting a path.
     store = default_db_path(cli_doctor.data_home())
     if store.exists():
-        print(f"  session:     OK:      paired session store at {store}")
+        print(f"  session:     ✅ paired session store at {store}")
     else:
         # Deliberately NOT an issue. Pairing is a QR scan served BY the running
         # gateway, so a freshly enabled channel legitimately has no store yet, and
         # failing here would break the documented `kirocrew doctor && kirocrew
         # gateway` chain at the one moment the operator must start the gateway to
         # make progress.
-        print("  session:     Warning: not paired yet, so the channel starts unpaired")
+        print("  session:     ⚠️  not paired yet, so the channel starts unpaired")
         print(f"               Expected store: {store}")
         print("               Pair from the dashboard (Settings → Messaging Channels → WhatsApp)")
 
@@ -287,9 +287,9 @@ def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
     if groups:
         # Membership is only knowable from a live connection, so the gateway checks
         # it on connect and logs the unmatched JIDs; doctor reports the count.
-        print(f"  groups:      OK:      {len(groups)} configured")
+        print(f"  groups:      ✅ {len(groups)} configured")
     else:
-        print("  groups:      Note:    none configured (group messages are ignored)")
+        print("  groups:      ⏹ none configured (group messages are ignored)")
     print(f"  dm policy:   {wa.dm_policy}")
 
 
@@ -309,11 +309,11 @@ def _doctor_slack(
     print("\nSlack Integration")
     if has_slack:
         has_owner = bool(creds.get("KIROCREW_OWNER_ID"))
-        print("  tokens:      OK:      configured")
+        print("  tokens:      ✅ configured")
         if has_owner:
-            print(f"  owner:       OK:      {creds['KIROCREW_OWNER_ID']}")
+            print(f"  owner:       ✅ {creds['KIROCREW_OWNER_ID']}")
         else:
-            print("  owner:       Warning: KIROCREW_OWNER_ID not set")
+            print("  owner:       ⚠️  KIROCREW_OWNER_ID not set")
 
         # Optional workspace allowlist validation (default-open unless the user
         # configured slack.allowed_enterprise_ids).
@@ -327,15 +327,15 @@ def _doctor_slack(
             if cli_doctor.current_context().slack_gate.validate_enterprise(
                 bot_token, extra_ids=extra_ids
             ):
-                print("  workspace:   OK:      allowed")
+                print("  workspace:   ✅ allowed")
             else:
-                print("  workspace:   Error:   not in configured workspace allowlist")
+                print("  workspace:   ❌ not in configured workspace allowlist")
                 print("               The gateway will refuse to connect.")
                 issues.append("slack workspace: not in allowlist")
     elif creds_unreadable:
         print(f"  status:      {_CREDS_UNKNOWN}")
     else:
-        print("  status:      Skipped: not configured (optional)")
+        print("  status:      ⏭  not configured (optional)")
         print("  setup:       run 'kirocrew setup --slack', or connect any channel")
         print("               (Slack, Discord, Telegram, …) from the dashboard")
 
@@ -372,9 +372,9 @@ def _doctor_other_channels(
         ]
     except Exception:
         rows = []
-        print("  status:      Warning: channel roster unavailable")
+        print("  status:      ⚠️  channel roster unavailable")
     if rows and not any(row.enabled for row in rows):
-        print("  status:      Skipped: none enabled (optional)")
+        print("  status:      ⏭  none enabled (optional)")
         print("  setup:       connect one from the dashboard's Settings > Messaging Channels")
     for row in rows:
         if not row.enabled:
@@ -387,12 +387,12 @@ def _doctor_other_channels(
         )
         if not installed:
             package = _SDK_PACKAGE_NAMES.get(name, f"the {name} SDK")
-            print(f"  {name + ':':12} Error:   enabled, but {package} is not installed,")
+            print(f"  {name + ':':12} ❌ enabled, but {package} is not installed,")
             print("               so the channel cannot start")
             _print_sdk_fix(command)
             issues.append(f"{name}: {package} not installed")
         elif row.ready:
-            print(f"  {name + ':':12} OK:      enabled, credentials present")
+            print(f"  {name + ':':12} ✅ enabled, credentials present")
         else:
             # Credentials and required config are reported separately because they
             # live in different places: a secret belongs in .env, a non-secret like
@@ -410,7 +410,7 @@ def _doctor_other_channels(
             if not parts:
                 continue
             missing = " and ".join(parts)
-            print(f"  {name + ':':12} Error:   enabled but missing {missing}")
+            print(f"  {name + ':':12} ❌ enabled but missing {missing}")
             print(
                 "               The channel will not start. Set it in "
                 "Settings > Messaging Channels, or in ~/.kiro/crew/.env"

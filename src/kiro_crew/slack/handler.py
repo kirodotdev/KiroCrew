@@ -51,7 +51,7 @@ from kiro_crew.agent_discovery import (
     project_agent_name,
     read_agent_spec_strict,
 )
-from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - read by the owners
     continue_timed_out_calls,
 )
@@ -59,18 +59,26 @@ from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
     agent_switch_target,
 )
+from kiro_crew.channel_spec_hooks import (  # noqa: F401 - read by the owners
+    pre_tool_refusal as spec_pre_tool_refusal,
+)
+from kiro_crew.channel_spec_hooks import turn_spec as spec_turn  # noqa: F401 - read by the owners
+from kiro_crew.config.live import ConfigChange, ConfigDeferred  # noqa: F401 - read by the owners
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
     KIRO_CLI_BUILTIN_AGENTS,
     ConfigReadError,
+    ConfigWriteRefused,
     KiroCrewConfig,
     config_local_path,
     config_path,
+    overlay_pins,
     read_config_text,
     read_merged_config_files,
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
+from kiro_crew.config.resolution import _deep_merge  # noqa: F401 - read by the owners
 from kiro_crew.constants import (  # noqa: F401 - read by the owners
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
@@ -417,9 +425,11 @@ from kiro_crew.slack.handler_runtime.turn_context import (  # noqa: F401
     _thread_meta_fallback,
 )
 from kiro_crew.slack.handler_runtime.voice import (  # noqa: F401
+    _adopt_voice_reply,
     _reply_by_voice,
     _safe_voice_reply,
     _str_or_default,
+    apply_voice_reply_change,
     load_voice_reply_config,
 )
 from kiro_crew.slack.linked_thread_images import (  # noqa: F401 - read by the owners
@@ -530,7 +540,7 @@ _IDENTITY_NAME_MAX = 200
 
 # Slack UX strings
 _THINKING = "_Thinking…_"
-_THINKING_PLACEHOLDER = "*Thinking…*"
+_THINKING_PLACEHOLDER = "💭 _Thinking…_"
 _WORKING = "Working…"
 #: Row meta key naming the Slack message a thread import read the row from.
 _SLACK_TS_META = "slack_ts"
@@ -562,7 +572,7 @@ DELIVERY_DEBT_NOTICE = (
 )
 
 # Max chars of reasoning to surface inline in Slack before truncating. Keeps
-# the Thinking block from becoming a wall of text; the full
+# the 💭 Thinking block from becoming a wall of text; the full
 # reasoning remains available in the dashboard Activity panel.
 _THINKING_PREVIEW_LIMIT = 600
 
@@ -579,7 +589,7 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         limit: Soft character cap before truncation.
 
     Returns:
-        A Slack-mrkdwn string headed by ``*Thinking*``.
+        A Slack-mrkdwn string headed by ``💭 *Thinking*``.
     """
     text = mrkdwn.strip()
     truncated = False
@@ -595,7 +605,7 @@ def _condense_thinking(mrkdwn: str, *, limit: int = _THINKING_PREVIEW_LIMIT) -> 
         truncated = True
     quoted = "\n".join(f"> {ln}" if ln.strip() else ">" for ln in text.splitlines())
     suffix = "\n> _…full reasoning in dashboard Activity_" if truncated else ""
-    return f"*Thinking*\n{quoted}{suffix}"
+    return f"💭 *Thinking*\n{quoted}{suffix}"
 
 
 # Pending approvals: keyed by f"{channel}:{approval_msg_ts}"
@@ -779,7 +789,7 @@ _COMPACTION_FAILED_RETRIES = 2
 # directly, never through the turn's own reply path: the abandoned attempt
 # persists nothing and mirrors nothing, so the conversation log records the
 # message once, with the reply the replay produces.
-_COMPACTION_RETRY_NOTICE = "Compaction failed — retrying…"
+_COMPACTION_RETRY_NOTICE = "⟳ Compaction failed — retrying…"
 
 # Terminals the session handle synthesizes for a turn the backend never
 # finished: its own turn ceiling ("timeout") and a stale turn its probe
@@ -787,7 +797,7 @@ _COMPACTION_RETRY_NOTICE = "Compaction failed — retrying…"
 # is failed, the thread is told, and the session is reset so the next message
 # starts a fresh runtime.
 _UNFINISHED_STOP_REASONS = frozenset({"timeout", STOP_REASON_STALE_RECOVER})
-_TIMEOUT_REPLY = "Error: Request timed out. Please try again."
+_TIMEOUT_REPLY = "⏱️ Request timed out. Please try again."
 
 
 @dataclass(frozen=True)
@@ -882,7 +892,8 @@ def _iter_cc_agent_names(cc_plugins_dir: Path | None = None) -> Iterator[str]:
             raw = safe_read_file_bytes(str(md_file))
             if raw is None:
                 continue
-            content = raw.decode("utf-8")
+            # utf-8-sig: an editor that saves "UTF-8 with BOM" puts U+FEFF before the fence.
+            content = raw.decode("utf-8-sig")
             if not content.startswith("---"):
                 continue
             frontmatter = content[3 : content.index("---", 3)]
@@ -984,6 +995,7 @@ async def handle_message(
     had_voice_input: bool = False,
     spool_text: str | None = None,
     spool_attachments: int = 0,
+    spool_attachment_names: tuple[str, ...] = (),
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     user_meta: dict[str, Any] | None = None,
@@ -1015,6 +1027,8 @@ async def handle_message(
     these, never the ingested *text*, which inlines turn-owned temp paths (dead
     after a restart) and extracted file contents. ``None`` means *text* was not
     ingested (button and interaction re-dispatches), so it is spooled as is.
+    *spool_attachment_names* is Slack's name for each of those files, which the
+    restart notice lists.
 
     *_compaction_replay* is set only by this function's own turn, when it re-runs a
     message whose previous attempt was abandoned after a transient compaction
@@ -1077,6 +1091,7 @@ async def handle_message(
             thread_id=reply_ts,
             message_id=msg_ts,
             attachments_dropped=spool_attachments,
+            attachment_names=spool_attachment_names,
         ),
         restricted=_is_slack_restricted(session_key),
     ):
@@ -1113,6 +1128,7 @@ async def handle_message(
         had_voice_input=had_voice_input,
         spool_text=spool_text,
         spool_attachments=spool_attachments,
+        spool_attachment_names=spool_attachment_names,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
         user_meta=user_meta,

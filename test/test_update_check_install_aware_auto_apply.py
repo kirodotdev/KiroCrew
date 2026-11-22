@@ -672,6 +672,34 @@ class TestAutoUpdateEffect:
         assert [r.levelno for r in lines] == [logging.INFO]
         assert "the security policy turns off unattended installs" in lines[0].getMessage()
 
+    @pytest.mark.parametrize(
+        "shape, told",
+        [
+            pytest.param({"managed_by": "kirocrew", "managed_venv": False}, True, id="pip-or-pipx"),
+            pytest.param({"managed_by": "kirocrew", "platform": "win32"}, True, id="windows"),
+            pytest.param(
+                {"managed_by": "kirocrew", "managed_venv": False, "blocked": "pinned"},
+                False,
+                id="pip-pinned-away",
+            ),
+        ],
+    )
+    def test_a_wheel_install_that_only_notifies_says_how_to_update(
+        self, monkeypatch, caplog, shape, told
+    ):
+        """In plain words, and through ``kirocrew update`` unless the source pin refuses it."""
+        caplog.set_level(logging.WARNING, logger=_GATEWAY_LOGGER)
+        self._shape(monkeypatch, shape)
+        self._run_one_cycle(shape, auto_update=True)
+
+        [line] = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == _GATEWAY_LOGGER and "notifying instead" in r.getMessage()
+        ]
+        assert ("run `kirocrew update` from your own terminal" in line) is told
+        assert "managed venv" not in line
+
     @staticmethod
     def _run_one_cycle(shape, *, auto_update):
         """One ``_check_for_updates`` with an update available; the orchestrator and the

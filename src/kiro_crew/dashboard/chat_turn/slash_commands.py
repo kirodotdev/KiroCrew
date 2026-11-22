@@ -62,6 +62,7 @@ if TYPE_CHECKING:
         logger,
         sel,
         select_provider_backend,
+        subagents_attached_async,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.prompt_assembly import _expand_prompt_mention_off_loop
@@ -76,7 +77,10 @@ if TYPE_CHECKING:
         _append_command_reply,
         _cleared_segment_text,
     )
-    from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.session_reset import (
+        _a_completion_is_queued,
+        _consume_pending_reset,
+    )
     from kiro_crew.dashboard.chat_turn.turn_admission import (
         _channels_judging_turn,
         _refuse_channel_turn,
@@ -206,6 +210,15 @@ async def _answer_slash_for_harness(
                 "no longer remembers them."
             )
         else:
+            discard_key = slot._pending_discard_conversation_key
+            if (
+                discard_key is not None
+                and _a_completion_is_queued(slot)
+                and not await subagents_attached_async(state, slot, discard_key, "clear_drop_plan")
+            ):
+                # Waiting only on a queued completion, which runs in the old conversation
+                # with its plan: the plan goes where the discard lands.
+                slot._pending_discard_drops_plan = True
             text = (
                 "Clear queued. The agent is busy right now, so your next reply "
                 "may still remember this conversation."

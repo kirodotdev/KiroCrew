@@ -99,8 +99,8 @@ class TestPromptAllowlist:
         assert slack.opened == [OWNER]  # the owner's DM, never the channel
         p = slack.prompt()
         assert p["channel"] == f"D-{OWNER}"
-        assert p["text"] == "<@U1> just joined <#C1>.\nAdd to allowlist?"
-        assert p["labels"] == ("Allow", "Deny")
+        assert p["text"] == "👋 <@U1> just joined <#C1>.\nAdd to allowlist?"
+        assert p["labels"] == ("✅ Allow", "🚫 Deny")
         assert p["actions"] == (ACTION_ALLOWLIST_APPROVE, ACTION_ALLOWLIST_DENY)
         # The router partitions on ":" into (user id, display name).
         assert p["values"] == ("U1:", "U1:")
@@ -112,8 +112,8 @@ class TestPromptAllowlist:
         slack = _Slack()
         await prompt_allowlist(slack, OWNER, "U1")  # type: ignore[arg-type]
         p = slack.prompt()
-        assert p["text"] == "<@U1> — allowlist requested.\nAdd to allowlist?"
-        assert p["labels"] == ("Allow", "Deny")
+        assert p["text"] == "👋 <@U1> — allowlist requested.\nAdd to allowlist?"
+        assert p["labels"] == ("✅ Allow", "🚫 Deny")
 
     @pytest.mark.asyncio
     async def test_a_manual_request_for_an_allowed_user_offers_keep_or_remove(
@@ -124,7 +124,7 @@ class TestPromptAllowlist:
         await prompt_allowlist(slack, OWNER, "U1")  # type: ignore[arg-type]
         p = slack.prompt()
         assert p["text"] == "<@U1> is currently on the allowlist.\nKeep or remove?"
-        assert p["labels"] == ("Keep", "Remove")
+        assert p["labels"] == ("✅ Keep", "🚫 Remove")
         assert p["actions"] == (ACTION_ALLOWLIST_APPROVE, ACTION_ALLOWLIST_DENY)
 
 
@@ -143,8 +143,8 @@ class TestPromptTrackChannel:
         await prompt_track_channel(slack, OWNER, "C1", "eng")  # type: ignore[arg-type]
         assert slack.opened == [OWNER]
         p = slack.prompt()
-        assert p["text"] == "Track <#C1> for new member allowlist prompts?"
-        assert p["labels"] == ("Track", "Ignore")
+        assert p["text"] == "📡 Track <#C1> for new member allowlist prompts?"
+        assert p["labels"] == ("✅ Track", "🚫 Ignore")
         assert p["actions"] == (ACTION_TRACK_APPROVE, ACTION_TRACK_DENY)
         assert p["values"] == ("C1:eng", "C1:eng")
         assert p["fallback"] == "Track channel — prompt"
@@ -155,8 +155,8 @@ class TestPromptTrackChannel:
         slack = _Slack()
         await prompt_track_channel(slack, OWNER, "C1")  # type: ignore[arg-type]
         p = slack.prompt()
-        assert p["text"] == "<#C1> is currently tracked.\nKeep tracking or remove?"
-        assert p["labels"] == ("Keep", "Remove")
+        assert p["text"] == "📡 <#C1> is currently tracked.\nKeep tracking or remove?"
+        assert p["labels"] == ("✅ Keep", "🚫 Remove")
         assert p["values"] == ("C1:", "C1:")
 
 

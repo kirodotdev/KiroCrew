@@ -84,6 +84,23 @@ describe('TrustAppModal desktop capabilities disclosure', () => {
   })
 })
 
+describe('TrustAppModal browser verbs disclosure', () => {
+  it('names each declared verb, says install approves none, and says the preview is off', () => {
+    const dialog = renderModal({ ...BASE, browser: ['act', 'view', 'inject'] })
+    expect(dialog.getByText(`${K}.browser_heading`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.browser_verb_view`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.browser_verb_act`)).toBeTruthy()
+    expect(dialog.queryByText(`${K}.browser_verb_read`)).toBeNull()
+    expect(dialog.getByText(`${K}.browser_note`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.browser_preview_off`)).toBeTruthy()
+  })
+
+  it('shows no such box when nothing it knows is declared', () => {
+    const dialog = renderModal({ ...BASE, browser: ['inject'] })
+    expect(dialog.queryByText(`${K}.browser_heading`)).toBeNull()
+  })
+})
+
 describe('useAppActions trust target', () => {
   function wrapper({ children }: { children: ReactNode }) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

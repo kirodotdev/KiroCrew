@@ -11,7 +11,6 @@ see :mod:`kiro_crew.cli_doctor_parts`.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,12 +23,14 @@ if TYPE_CHECKING:
         acp_id_correction,
         agent_spec_path,
         agent_state,
-        is_agent_spec_name,
         is_claude_code,
+        is_markdown_spec,
         is_registered_agent_name,
         is_sensitive_path,
+        iter_agent_spec_files_strict,
         kiro_agents_dir,
         normalize_agent_model,
+        plain_markdown_document,
         project_agent_files,
         project_agent_name,
         project_agents_dir,
@@ -65,7 +66,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     try:
         effective = resolve_effective_model(cfg)
     except Exception as exc:  # noqa: BLE001 -- diagnostics must not crash the report
-        print(f"  effective:   Warning: could not resolve ({exc})")
+        print(f"  effective:   ⚠️  could not resolve ({exc})")
         issues.append("effective model unresolvable")
         return
 
@@ -129,14 +130,14 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     if not default_is_text:
         bound = str(raw_default)
     if not default_is_text or not is_registered_agent_name(bound):
-        print(f"  bound agent: Warning: {render._safe_display(bound)} is not a valid agent name")
+        print(f"  bound agent: ⚠️  {render._safe_display(bound)} is not a valid agent name")
         issues.append("configured kiro_agent is not a valid agent name")
         bound = "kirocrew"
 
     default_spec = agents_dir / AGENT_FILENAME
     default_model, default_readable = _spec_model(default_spec)
     if not default_readable:
-        print(f"  user spec:   Warning: unreadable ({default_spec})")
+        print(f"  user spec:   ⚠️  unreadable ({default_spec})")
         issues.append("agent spec unreadable")
 
     bound_model = ""
@@ -216,7 +217,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         # simply gone still resolves by name, and every agent-less session --
         # a plain chat, a cron, a channel message, a subagent -- inherits it.
         print(
-            f"  bound spec:  Warning: no spec for {render._safe_display(bound)} under {render._safe_display(str(agents_dir))}"
+            f"  bound spec:  ⚠️  no spec for {render._safe_display(bound)} under {render._safe_display(str(agents_dir))}"
         )
         print("               Every new session that picks no Bot -- plain chats, crons,")
         print(
@@ -227,7 +228,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         issues.append("default custom agent has no installed spec")
     elif bound_spec_ambiguous:
         print(
-            f"  bound spec:  Warning: two specs under {render._safe_display(str(agents_dir))} declare {render._safe_display(bound)}"
+            f"  bound spec:  ⚠  two specs under {render._safe_display(str(agents_dir))} declare {render._safe_display(bound)}"
         )
         print(
             "               Sessions still start, but the model tier above cannot tell which file"
@@ -239,7 +240,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     shadowed = shadowed_markdown_specs(agents_dir)
     if shadowed:
         print(
-            f"  shadowed:    Warning: {len(shadowed)} markdown agent file(s) ignored beside a .json twin:"
+            f"  shadowed:    ⚠  {len(shadowed)} markdown agent file(s) ignored beside a .json twin:"
         )
         for hidden_md in shadowed:
             print(
@@ -255,12 +256,12 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
             # a value this section declined to attribute. Say that, rather than
             # accusing the tier list of being stale.
             print(
-                "  Warning: the resolver read a spec this report refused to follow, so the "
+                "  ⚠️  the resolver read a spec this report refused to follow, so the "
                 "deciding tier above is not attributed"
             )
         else:
             print(
-                f"  Warning: this report says {decided_value!r} but the resolver returned "
+                f"  ⚠️  this report says {decided_value!r} but the resolver returned "
                 f"{effective!r} — the precedence shown here is out of date"
             )
             issues.append("doctor model precedence disagrees with the resolver")
@@ -312,7 +313,7 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
                 shown = "(unreadable)"
             else:
                 shown = "(no model)"
-            print(f"  project spec: Warning: {render._safe_display(str(proj_spec))} -> {shown}")
+            print(f"  project spec: ⚠️  {render._safe_display(str(proj_spec))} -> {shown}")
             print("                kiro-cli loads this one first; not read above")
             issues.append("project-local agent spec shadows the user-level one")
 
@@ -327,22 +328,26 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
             "" if pinned_agent == "kirocrew" else f" --agent {render._safe_display(pinned_agent)}"
         )
         global_shown = render._safe_display(cfg.agent.model) if cfg.agent.model else "unset"
-        print(f"  Warning: the spec pin decides because the global is {global_shown}")
+        print(f"  ⚠️  the spec pin decides because the global is {global_shown}")
         print(f"      Fix: kirocrew agent reset-model{flag}   (clears the pin, tracks the default)")
 
 
 def _strict_agent_json_specs(directory: Path) -> list[Path]:
-    """Enumerate real spec candidates while preserving directory-read failures."""
+    """Enumerate the live spec files while preserving directory-read failures.
+
+    The roster's own listing (:func:`iter_agent_spec_files_strict`): a ``<stem>.md``
+    beside its ``<stem>.json`` twin is never read, so it is not a candidate, and
+    neither is a skill-view alias or an AppleDouble ``._`` sidecar.
+    """
     try:
-        with os.scandir(directory) as entries:
-            return sorted(
-                (
-                    Path(entry.path)
-                    for entry in entries
-                    if is_agent_spec_name(entry.name) and not entry.name.startswith("._")
-                ),
-                key=lambda path: path.stem,
-            )
+        return sorted(
+            (
+                path
+                for path in iter_agent_spec_files_strict(directory)
+                if not path.name.startswith("._")
+            ),
+            key=lambda path: path.stem,
+        )
     except (FileNotFoundError, NotADirectoryError):
         return []
 
@@ -402,6 +407,10 @@ def _agent_spec_model_problems(
         ):
             data = _read_agent_spec(path, operation="doctor", source="cli")
             if data is None:
+                # A markdown file with no opening fence is a plain document
+                # (a README, a prompt fragment), not a refused spec.
+                if is_markdown_spec(path) and plain_markdown_document(path):
+                    continue
                 return None
             model = normalize_agent_model(data.get("model"))
             correction = acp_id_correction(model)
@@ -431,6 +440,6 @@ def _format_model_pin_problem(name: str, pin: str, correction: str) -> tuple[str
     than a property of how far ``doctor()`` happens to get.
     """
     return (
-        f"  model pin:   Error:   {name!r}: {pin!r} is not a model kiro-cli serves",
+        f"  model pin:   ❌ {name!r}: {pin!r} is not a model kiro-cli serves",
         f"                  the registry maps that spelling to {correction!r}",
     )

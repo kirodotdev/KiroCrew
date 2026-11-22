@@ -21,6 +21,8 @@ if TYPE_CHECKING:
         COMPACT_ACCOUNT_CHANGED_TEXT,
         SESSIONS_INCLUDE_ENDED_ARGS,
         STOP_DECLINED_COMPACTING_TEXT,
+        ConfigReadError,
+        ConfigWriteRefused,
         ConversationLog,
         CronService,
         KiroCrewConfig,
@@ -50,6 +52,8 @@ if TYPE_CHECKING:
         compact_unsupported_backend,
         compact_unsupported_reply,
         compaction_in_flight,
+        config_local_path,
+        config_path,
         consume_stop_declined,
         cron_command_reply,
         decline_stop,
@@ -65,6 +69,8 @@ if TYPE_CHECKING:
         is_yolo_mode,
         logger,
         note_user_stop,
+        overlay_pins,
+        read_merged_config_files,
         redact_credentials,
         redact_exfiltration_urls,
         run_config_write,
@@ -74,6 +80,7 @@ if TYPE_CHECKING:
         slack_title_text,
         spawn_command_reply,
         task_command_reply,
+        update_config_locked,
         yolo_policy_permits,
     )
 
@@ -129,7 +136,7 @@ async def _handle_slash_command(
     # Catch-all: unrecognized ! command — post error instead of falling through to LLM
     await slack.post_message(
         channel,
-        f"Error: Unknown command `{cmd}`. Type `/kirocrew help` for available commands.",
+        f"❌ Unknown command `{cmd}`. Type `/kirocrew help` for available commands.",
         reply_ts,
     )
     return ""
@@ -168,7 +175,7 @@ async def _bang_yolo(
                 source="slack",
                 resources="yolo_off",
             )
-            await slack.post_message(channel, "YOLO mode disabled.", reply_ts)
+            await slack.post_message(channel, "🔒 YOLO mode disabled.", reply_ts)
         else:
             await slack.post_message(channel, "YOLO mode is already off.", reply_ts)
     elif len(parts) >= 2 and parts[1].lower() == "on":
@@ -198,10 +205,10 @@ async def _bang_yolo(
                 # (pushed when the ceiling was installed), so no thread.
                 if not yolo_policy_permits():
                     _outcome, _error = "approval_mode_denied_by_policy", ("mode_disabled_by_policy")
-                    _msg = "YOLO mode is disabled by your organization's policy."
+                    _msg = "🔒 YOLO mode is disabled by your organization's policy."
                 else:
                     _outcome, _error = "activation_failed", "audit_unavailable"
-                    _msg = "Error: Failed to activate YOLO mode (audit system unavailable)."
+                    _msg = "❌ Failed to activate YOLO mode (audit system unavailable)."
                 sel().log_api_access(
                     caller=user_id,
                     operation="slack.yolo_mode",
@@ -221,7 +228,7 @@ async def _bang_yolo(
                 )
                 await slack.post_message(
                     channel,
-                    f"YOLO mode enabled ({describe_new_grant(_result.ttl)}).",
+                    f"🔓 YOLO mode enabled ({describe_new_grant(_result.ttl)}).",
                     reply_ts,
                 )
         else:
@@ -244,7 +251,7 @@ async def _bang_yolo(
             )
             await slack.post_message(
                 channel,
-                f"YOLO mode renewed (auto-expires in {result.ttl // 60}min).",
+                f"🔓 YOLO mode renewed (auto-expires in {result.ttl // 60}min).",
                 reply_ts,
             )
         else:
@@ -253,9 +260,9 @@ async def _bang_yolo(
             )
     else:
         if yolo_active:
-            status = f"ON ({describe_grant_lifetime()})"
+            status = f"ON 🔓 ({describe_grant_lifetime()})"
         else:
-            status = "OFF"
+            status = "OFF 🔒"
         await slack.post_message(
             channel,
             f"YOLO mode: *{status}*. Use `!yolo on` / `!yolo off` / `!yolo renew`.",
@@ -335,10 +342,10 @@ async def _bang_stop(
     )
 
     async def _on_soft() -> None:
-        await slack.post_message(channel, "Execution stopped.", reply_ts)
+        await slack.post_message(channel, "⏹ Execution stopped.", reply_ts)
 
     async def _on_hard() -> None:
-        await slack.post_message(channel, "Execution stopped — session reset.", reply_ts)
+        await slack.post_message(channel, "⛔ Execution stopped — session reset.", reply_ts)
 
     # ``preserve_queue`` with the force: the hard reset pops the session and
     # its queue, which in a shared thread holds co-tenants' messages;
@@ -413,7 +420,7 @@ async def _bang_voice(
             outcome="voice_on",
             metadata={"user": user_id, "channel": channel},
         )
-        await slack.post_message(channel, f"Voice ON — *{v}* ({e})", reply_ts)
+        await slack.post_message(channel, f"\U0001f50a Voice ON — *{v}* ({e})", reply_ts)
     elif arg == "off":
         _vc.sessions.discard(session_key)
         for d in (_vc.voices, _vc.engines, _vc.rates, _vc.pitches):
@@ -426,10 +433,44 @@ async def _bang_voice(
             outcome="voice_off",
             metadata={"user": user_id, "channel": channel},
         )
-        await slack.post_message(channel, "Voice OFF.", reply_ts)
+        await slack.post_message(channel, "\U0001f507 Voice OFF.", reply_ts)
     elif arg == "global":
-        _vc.global_enabled = not _vc.global_enabled
-        state = "ON" if _vc.global_enabled else "OFF"
+        written: list[bool] = []
+
+        def _apply(data: dict) -> dict:
+            # Toggled from the file's value under the write lock, so two
+            # overlapping commands flip twice rather than write the same value.
+            vr = data.get("voice_reply")
+            if not isinstance(vr, dict):
+                vr = data["voice_reply"] = {}
+            vr["enabled"] = not bool(vr.get("enabled", False))
+            written.append(vr["enabled"])
+            return data
+
+        # Persist FIRST, as the Voice modal and the dashboard's settings PUT do, so
+        # the file stays the one source the live watcher re-reads and a restart
+        # keeps. A failed write leaves the live flag as it was.
+        try:
+            await run_config_write(update_config_locked, config_path(), mutate=_apply)
+        except (ConfigReadError, ConfigWriteRefused, OSError) as exc:
+            logger.warning("Refusing to toggle global voice: %s", exc)
+            await slack.post_message(
+                channel,
+                f"\u274c Voice global unchanged: the config was not saved ({exc}).",
+                reply_ts,
+            )
+            return ""
+        _vc.global_enabled = written[-1]
+        note = ""
+        if overlay_pins("voice_reply", "enabled"):
+            # Saved to config.json, but config.local.json's value is what applies.
+            _vc.global_enabled = bool(
+                read_merged_config_files(config_path(), config_local_path())
+                .get("voice_reply", {})
+                .get("enabled", False)
+            )
+            note = f" (saved {'on' if written[-1] else 'off'} to config.json; config.local.json sets voice_reply.enabled and takes precedence)"
+        state = "ON \U0001f50a" if _vc.global_enabled else "OFF \U0001f507"
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",
@@ -438,34 +479,34 @@ async def _bang_voice(
             outcome="voice_global_" + ("on" if _vc.global_enabled else "off"),
             metadata={"user": user_id, "channel": channel},
         )
-        await slack.post_message(channel, f"Voice global: *{state}*", reply_ts)
+        await slack.post_message(channel, f"Voice global: *{state}*{note}", reply_ts)
     elif arg == "engine" and val:
         eng = val.lower()
         if eng not in VALID_ENGINES:
             await slack.post_message(
                 channel,
-                f"Error: Invalid engine. Use: {', '.join(sorted(VALID_ENGINES))}",
+                f"\u274c Invalid engine. Use: {', '.join(sorted(VALID_ENGINES))}",
                 reply_ts,
             )
         else:
             _vc.engines[session_key] = eng
             _vc.sessions.add(session_key)
-            await slack.post_message(channel, f"Engine set to *{eng}*.", reply_ts)
+            await slack.post_message(channel, f"\U0001f50a Engine set to *{eng}*.", reply_ts)
     elif arg == "speed" and val:
         validated = _validate_rate(val)
         _vc.rates[session_key] = validated
         _vc.sessions.add(session_key)
-        await slack.post_message(channel, f"Speed set to *{validated}*.", reply_ts)
+        await slack.post_message(channel, f"\U0001f50a Speed set to *{validated}*.", reply_ts)
     elif arg == "pitch" and val:
         validated = _validate_pitch(val)
         _vc.pitches[session_key] = validated
         _vc.sessions.add(session_key)
-        await slack.post_message(channel, f"Pitch set to *{validated}*.", reply_ts)
+        await slack.post_message(channel, f"\U0001f50a Pitch set to *{validated}*.", reply_ts)
     elif arg and arg not in ("engine", "speed", "pitch"):
         voice_name = parts[1]  # preserve original case
         _vc.sessions.add(session_key)
         _vc.voices[session_key] = voice_name
-        await slack.post_message(channel, f"Voice set to *{voice_name}*.", reply_ts)
+        await slack.post_message(channel, f"\U0001f50a Voice set to *{voice_name}*.", reply_ts)
     else:
         on = session_key in _vc.sessions or _vc.global_enabled
         v = _vc.voices.get(session_key, _vc.default_voice)
@@ -474,7 +515,7 @@ async def _bang_voice(
         p = _vc.pitches.get(session_key, _vc.default_pitch)
         await slack.post_message(
             channel,
-            f"Voice: *{'ON' if on else 'OFF'}*\n"
+            f"\U0001f50a Voice: *{'ON' if on else 'OFF'}*\n"
             f"\u2022 Voice: *{v}* | Engine: *{e}*\n"
             f"\u2022 Speed: *{r}* | Pitch: *{p}*\n"
             "`!voice <name>` `!voice engine <neural|generative|long-form>` "
@@ -513,7 +554,7 @@ async def _bang_agent(
         try:
             await run_config_write(_set_default_agent, "")
         except ValueError as e:
-            await slack.post_message(channel, f"Error: {e}", reply_ts)
+            await slack.post_message(channel, f"❌ {e}", reply_ts)
             return ""
         sel().log_tool_invocation(
             session_key=session_key,
@@ -524,7 +565,7 @@ async def _bang_agent(
             metadata={"user": user_id, "channel": channel},
         )
         await sessions.remove(session_key)
-        await slack.post_message(channel, "Reset to default agent.", reply_ts)
+        await slack.post_message(channel, "🔄 Reset to default agent.", reply_ts)
         return ""
     resolved = await asyncio.to_thread(
         _resolve_agent_name, agent_name, _thread_projects.get(session_key)
@@ -532,13 +573,13 @@ async def _bang_agent(
     if not resolved:
         names = await asyncio.to_thread(_list_all_agent_names)
         await slack.post_message(
-            channel, f"Error: Unknown agent `{agent_name}`. Available: {names}", reply_ts
+            channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
         )
         return ""
     try:
         await run_config_write(_set_default_agent, resolved)
     except ValueError as e:
-        await slack.post_message(channel, f"Error: {e}", reply_ts)
+        await slack.post_message(channel, f"❌ {e}", reply_ts)
         return ""
     sel().log_tool_invocation(
         session_key=session_key,
@@ -549,7 +590,7 @@ async def _bang_agent(
         metadata={"agent": resolved, "user": user_id, "channel": channel},
     )
     await sessions.remove(session_key)
-    await slack.post_message(channel, f"Switched to agent: *{resolved}*", reply_ts)
+    await slack.post_message(channel, f"🔄 Switched to agent: *{resolved}*", reply_ts)
     return ""
 
 
@@ -583,9 +624,9 @@ async def _bang_dashboard(
 
     url = await send_dashboard_link(slack, user_id, ttl)
     if url:
-        await slack.post_message(channel, "Dashboard link sent via DM.", reply_ts)
+        await slack.post_message(channel, "🔗 Dashboard link sent via DM.", reply_ts)
     else:
-        await slack.post_message(channel, "Error: Failed to send dashboard link.", reply_ts)
+        await slack.post_message(channel, "❌ Failed to send dashboard link.", reply_ts)
     return ""
 
 
@@ -766,7 +807,7 @@ async def _bang_thread_agent(
         await sessions.remove(session_key)
         await slack.post_message(
             channel,
-            "Thread agent reset." if held else thread_override_slots.unheld_reset_text("agent"),
+            "🔄 Thread agent reset." if held else thread_override_slots.unheld_reset_text("agent"),
             reply_ts,
         )
         return ""
@@ -776,7 +817,7 @@ async def _bang_thread_agent(
     if not resolved:
         names = await asyncio.to_thread(_list_all_agent_names)
         await slack.post_message(
-            channel, f"Error: Unknown agent `{agent_name}`. Available: {names}", reply_ts
+            channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
         )
         return ""
     # A project agent's name is whatever its spec declares; keep it only within the
@@ -836,7 +877,7 @@ async def _bang_thread_agent(
         metadata={"agent": resolved, "user": user_id, "channel": channel, "scope": "thread"},
     )
     await sessions.remove(session_key)
-    await slack.post_message(channel, f"Thread agent: *{resolved}*", reply_ts)
+    await slack.post_message(channel, f"🔄 Thread agent: *{resolved}*", reply_ts)
     return ""
 
 
@@ -1030,7 +1071,7 @@ async def _bang_allowlist(
 ) -> str:
     await slack.post_message(
         channel,
-        "Blocked: Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack.",
+        "⛔ Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack.",
         reply_ts,
     )
     return ""
@@ -1057,9 +1098,7 @@ async def _bang_channel(
             resources=channel,
             error="not owner",
         )
-        await slack.post_message(
-            channel, "Blocked: Only the bot owner can use `!channel`.", reply_ts
-        )
+        await slack.post_message(channel, "⛔ Only the bot owner can use `!channel`.", reply_ts)
         return ""
     from kiro_crew.config.loader import _VALID_ACTIVATIONS
 
@@ -1104,7 +1143,7 @@ async def _bang_channel(
         try:
             await run_config_write(_persist_channel_config, channel, agent=agent_name)
         except ValueError as e:
-            await slack.post_message(channel, f"Error: {e}", reply_ts)
+            await slack.post_message(channel, f"❌ {e}", reply_ts)
             return ""
         _reload_orch_cfg()
         sel().log_api_access(
@@ -1130,7 +1169,7 @@ async def _bang_channel(
     try:
         await run_config_write(_persist_channel_config, channel, activation=subcmd)
     except ValueError as e:
-        await slack.post_message(channel, f"Error: {e}", reply_ts)
+        await slack.post_message(channel, f"❌ {e}", reply_ts)
         return ""
     _reload_orch_cfg()
     sel().log_api_access(
@@ -1179,7 +1218,7 @@ async def _bang_title(
             source="slack",
             resources=f"{channel}:{session_key}",
         )
-        await slack.post_message(channel, f"Thread title set: *{title_text[:80]}*", reply_ts)
+        await slack.post_message(channel, f"🏷️ Thread title set: *{title_text[:80]}*", reply_ts)
     else:
         await slack.post_message(
             channel, "Usage: `!title <text>` — set a title for this thread.", reply_ts
@@ -1211,7 +1250,7 @@ async def _handle_compact_command(
         elif sessions.has_session(session_key):
             await slack.post_message(
                 channel,
-                "Still working on your last message — try `!compact` once it finishes.",
+                "⏳ Still working on your last message — try `!compact` once it finishes.",
                 reply_ts,
             )
         else:
@@ -1259,7 +1298,7 @@ async def _handle_compact_command(
         # --- Phase 1: Pre-compaction UI (cosmetic — log failures, don't abort) ---
         try:
             await slack.add_reaction(channel, msg_ts, "recycle")
-            await slack.post_message(channel, "Compacting context…", reply_ts)
+            await slack.post_message(channel, "🔄 Compacting context…", reply_ts)
         except Exception:
             logger.debug("Pre-compact UI failed for %s", session_key, exc_info=True)
 
@@ -1280,23 +1319,19 @@ async def _handle_compact_command(
             if cr["type"] == "completed":
                 # ``summary`` is model-facing compacted context, not a
                 # user-facing receipt. Never publish its orchestration text.
-                result_text = "Context compacted."
+                result_text = "✅ Context compacted."
                 outcome = "completed"
             elif cr["type"] == "failed":
                 error = cr.get("summary", "")
-                result_text = (
-                    f"Error: Compaction failed: {error}" if error else "Error: Compaction failed."
-                )
+                result_text = f"❌ Compaction failed: {error}" if error else "❌ Compaction failed."
                 outcome = "failed"
             else:
-                result_text = "Warning: Compaction timed out."
+                result_text = "⚠️ Compaction timed out."
                 outcome = "timeout"
         except Exception:
             logger.warning("Compact command failed for %s", session_key, exc_info=True)
             try:
-                await slack.post_message(
-                    channel, "Error: Compaction failed unexpectedly.", reply_ts
-                )
+                await slack.post_message(channel, "❌ Compaction failed unexpectedly.", reply_ts)
             except Exception:
                 logger.debug("Failed to post compact error for %s", session_key, exc_info=True)
             # Drop the wedged native conversation, NOT the session's channel
@@ -1491,7 +1526,7 @@ async def _route_bang_command(
                 outcome="denied",
                 error=f"unauthorized user {user_id}",
             )
-            await slack.post_message(channel, "Blocked: Not authorized to compact.", reply_ts)
+            await slack.post_message(channel, "⛔ Not authorized to compact.", reply_ts)
             return True  # deny-by-default: do not fall through
 
     # ── /agent <name>: the thread's agent, switched by Crew ──
@@ -1511,7 +1546,7 @@ async def _route_bang_command(
                 resources="/agent",
                 error="unauthorized sender",
             )
-            await slack.post_message(channel, "Blocked: Owner-only command.", reply_ts)
+            await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
             return True
         await _bang_thread_agent(
             f"!ta {_agent_target}",
@@ -1557,7 +1592,7 @@ async def _route_bang_command(
                     resources=_cmd_word,
                     error="unauthorized sender",
                 )
-                await slack.post_message(channel, "Blocked: Not authorized.", reply_ts)
+                await slack.post_message(channel, "⛔ Not authorized.", reply_ts)
                 return True
         # All other ! commands are owner-only
         elif not is_owner(user_id):
@@ -1569,7 +1604,7 @@ async def _route_bang_command(
                 resources=_cmd_word,
                 error="unauthorized sender",
             )
-            await slack.post_message(channel, "Blocked: Owner-only command.", reply_ts)
+            await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
             return True
         else:
             reply = await _handle_slash_command(

@@ -237,7 +237,7 @@ def test_a_home_that_cannot_hold_files_names_who_owns_it(monkeypatch, capsys, tm
     err = capsys.readouterr().err
     if owner:
         assert found.explain() in err
-        assert err.index("Error: Cannot persist state: ") < err.index(found.explain())
+        assert err.index("❌ Cannot persist state: ") < err.index(found.explain())
     else:
         # This account's own read-only home: the refusal line already names the cause.
         assert found.explain() not in err
@@ -266,7 +266,7 @@ def test_doctor_is_quiet_when_this_account_owns_the_home(monkeypatch, capsys, tm
     issues: list[str] = []
     install._doctor_data_home_owner(issues)
     assert issues == []
-    assert "OK:" in capsys.readouterr().out
+    assert "✅" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

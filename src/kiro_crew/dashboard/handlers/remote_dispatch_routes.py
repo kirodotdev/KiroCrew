@@ -724,6 +724,11 @@ async def _create(
             # The latest decision did not reach the new worker; it holds the one
             # the create carried until the next decide.
             result["decision_error"] = payload["decision_error"]
+        # The bind's default-patrol outcome: that patrol's tick is what pulls this
+        # worker's reports, so the reply says whether one runs (RFC §2).
+        for name in ("patrol", "patrol_reason", "patrol_note"):
+            if isinstance(payload, dict) and isinstance(payload.get(name), str):
+                result[name] = payload[name]
     if fields["title"]:
         # The session exists from here on: a failed rename is reported beside its
         # key, never as a refusal that would hide a session the caller must close.

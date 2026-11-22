@@ -51,6 +51,7 @@ def _make_state(job: CronJob | None, *, is_running: bool = False):
     # rather than silently passing against a stale snapshot.
     state.crons.list_jobs.return_value = []
     state.crons.get_job_async = AsyncMock(return_value=job)
+    state.crons.get_history.return_value.get_job_history = AsyncMock(return_value=([], 0))
     state.crons.is_running.return_value = is_running
     state.crons.run_job = AsyncMock(return_value=True)
     # The route claims through the shared CronService.trigger_run; run the real

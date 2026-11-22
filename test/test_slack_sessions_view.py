@@ -541,24 +541,24 @@ class TestEndedRowRendering:
 
     def test_task_card_marks_an_ended_row(self):
         blocks = _build_sessions_blocks([self._row()])
-        assert "(ended)" in blocks[0]["title"]
+        assert "🛑" in blocks[0]["title"]
 
-    def test_task_card_keeps_idle_and_active_words(self):
+    def test_task_card_keeps_idle_and_active_glyphs(self):
         idle = _build_sessions_blocks([self._row(ended=False)])
         live = _build_sessions_blocks([self._row(ended=False, active=True)])
-        assert "(idle)" in idle[0]["title"]
-        assert "(active)" in live[0]["title"]
+        assert "⚫" in idle[0]["title"]
+        assert "🟢" in live[0]["title"]
 
     def test_home_tab_marks_an_ended_row(self):
         blocks = _build_sessions_blocks([self._row()], for_home_tab=True)
-        assert "(ended)" in blocks[0]["text"]["text"]
+        assert "🛑" in blocks[0]["text"]["text"]
 
     def test_rendering_tolerates_a_row_without_the_key(self):
         """Older collectors and monkeypatched ones return no ``ended`` key."""
         row = self._row()
         del row["ended"]
-        assert "(idle)" in _build_sessions_blocks([row])[0]["title"]
-        assert "(idle)" in _build_sessions_blocks([row], for_home_tab=True)[0]["text"]["text"]
+        assert "⚫" in _build_sessions_blocks([row])[0]["title"]
+        assert "⚫" in _build_sessions_blocks([row], for_home_tab=True)[0]["text"]["text"]
 
 
 class TestSessionsIncludeEndedArgument:
@@ -681,7 +681,7 @@ class TestBuildSessionsBlocks:
                 "running",
                 True,
                 "in_progress",
-                "(active)",
+                "🟢",
                 id="test_active_session_uses_in_progress_status",
             ),
             pytest.param(
@@ -689,7 +689,7 @@ class TestBuildSessionsBlocks:
                 "done",
                 False,
                 "complete",
-                "(idle)",
+                "⚫",
                 id="test_inactive_session_uses_complete_status",
             ),
         ],
@@ -895,7 +895,7 @@ class TestHandleSessionsCommandDelegation:
     @pytest.mark.asyncio
     async def test_active_marker_propagates_via_sessions_kwarg(self, tmp_path, monkeypatch):
         """The ``sessions=`` kwarg flows through to _collect_recent_sessions
-        so a card for a live session renders as ``in_progress`` (active)."""
+        so a card for a live session renders as ``in_progress`` (🟢)."""
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()
         monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
@@ -919,7 +919,7 @@ class TestHandleSessionsCommandDelegation:
         cards = [b for b in blocks if b.get("type") == "task_card"]
         assert len(cards) == 1
         assert cards[0]["status"] == "in_progress"
-        assert "(active)" in cards[0]["title"]
+        assert "🟢" in cards[0]["title"]
         sm.has_session.assert_called_with("dashboard:chat-1")
 
     @pytest.mark.asyncio

@@ -41,9 +41,13 @@ _TYPING_REFRESH_S = 4.0
 # thresholds as the Slack controller's soft/hard stalls.
 _SOFT_STALL_S = 15.0
 _HARD_STALL_S = 45.0
-_SOFT_STALL_MARK = "still working…"
-_HARD_STALL_MARK = "this is taking a while…"
+_SOFT_STALL_MARK = "🥱 still working…"
+_HARD_STALL_MARK = "😨 this is taking a while…"
 
+
+#: Context-usage gauge thresholds for the turn footer, and Slack's own: a shared
+#: reading of "how close is this conversation to needing /compact".
+_CTX_GAUGE = ((70, "🔴"), (50, "🟠"), (30, "🟡"), (0, "🟢"))
 
 #: The footer shows only when ACTIONABLE (a notable duration or context reading):
 #: Telegram has no small grey `context` block like Slack, and a quote bar under
@@ -51,10 +55,10 @@ _HARD_STALL_MARK = "this is taking a while…"
 _FOOTER_MIN_SECS = 10.0
 _FOOTER_MIN_CTX_PCT = 50
 
-#: The reasoning post's fixed wrapper (``<blockquote expandable>Thinking: …`` plus its
+#: The reasoning post's fixed wrapper (``<blockquote expandable>💭 …`` plus its
 #: closer). Subtracted from the render budget so the truncation can never cut
 #: inside the tags it has to leave balanced.
-_THINKING_SCAFFOLD = "<blockquote expandable>Thinking: </blockquote>"
+_THINKING_SCAFFOLD = "<blockquote expandable>💭 </blockquote>"
 
 
 # -- lifecycle ----------------------------------------------------------
@@ -165,7 +169,7 @@ async def on_thinking(self: TelegramRenderer, text: str) -> None:
 
 
 def _turn_footer(self: TelegramRenderer) -> str:
-    """``Finished in 12s · ctx 54%``, or ``""`` when neither is worth saying.
+    """``Finished in 12s · 🟠 ctx 54%``, or ``""`` when neither is worth saying.
 
     Two facts a user cannot get any other way on this channel: how long the
     turn took, and how close the conversation is to needing ``/compact``. Both
@@ -192,7 +196,8 @@ def _turn_footer(self: TelegramRenderer) -> str:
     footer = f"Finished in {duration}"
     if pct is None:
         return footer
-    return f"{footer} · ctx {pct}%"
+    icon = next(mark for floor, mark in _CTX_GAUGE if pct >= floor)
+    return f"{footer} · {icon} ctx {pct}%"
 
 
 def _thinking_budget(self: TelegramRenderer) -> int:
@@ -208,7 +213,7 @@ async def on_tool_call(
     tool_purpose: str = "",
 ) -> None:
     self._note_progress()
-    # Surface mid-turn tool activity as a transient "Running {tool}…" footer on
+    # Surface mid-turn tool activity as a transient "🔧 {tool}…" footer on
     # the live bubble (force=True so it shows immediately, not throttled).
     # We deliberately do NOT seal a message here: models interleave tool
     # calls mid-sentence, so sealing at a tool boundary chops a sentence
@@ -225,7 +230,7 @@ async def on_compaction(self: TelegramRenderer, context_usage_pct: float) -> Non
     try:
         await self._client.send_message(
             self._chat_id,
-            "Compacting context…",
+            "🗜️ Compacting context…",
             message_thread_id=self._thread_id,
         )
     except Exception:

@@ -177,6 +177,13 @@ Each ledger write is a `kirocrew.work.<action>` span. Rounds of one goal share
 `kirocrew.work.goal_id`, and each round links to the one before it. To get one
 trace per turn instead, set `"traces_conductor_mode": "turn"` in `telemetry`; the turns
 of one run then share `kirocrew.crew.root`, and one item's `kirocrew.work.item_id`.
+A turn the work-ledger watch wakes links to each worker report written on its board
+since the last such turn, and a report that never reached its item is a
+`kirocrew.work.report_undelivered` span. A whole-board `work_ledger_read` puts the
+open, stale, orphaned, pending-overdue and undelivered counts on the reading turn.
+Creating or forking a session from a traced turn is a `kirocrew.session.create` or `.fork` span, and a
+handoff, adopt or release is a `kirocrew.session.manager_change` or
+`kirocrew.session.parent_change` span; these carry keyed hashes of the session keys.
 No goal, title or report text is ever on a span.
 
 ## Reading one turn locally

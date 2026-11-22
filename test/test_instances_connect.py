@@ -9,9 +9,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from instances_helpers import _enable, _FakeTunnel, _patch_port_probe
 
 from kiro_crew.testing.wait import await_until
+
+pytestmark = pytest.mark.usefixtures("refused_peer_connects")
 
 
 class TestInstancesStartupHooks:
@@ -62,6 +65,38 @@ class TestInstancesStartupHooks:
         asyncio.run(app.on_cleanup.send(app))
         assert called.get("shutdown") is True
 
+    def test_no_instances_key_starts_manager_and_leaves_remote_dispatch_off(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+
+        from aiohttp import web
+
+        from kiro_crew.config import loader
+        from kiro_crew.dashboard.server import _register_instances_hooks
+        from kiro_crew.remote_dispatch import remote_dispatch_enabled
+        from kiro_crew.work_preview import remote_dispatch
+
+        # An untouched install: config.json names neither section.
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        (tmp_path / "config.json").write_text(json.dumps({}))
+        loader._invalidate_config_cache()
+        cfg = loader.KiroCrewConfig.load()
+        assert cfg.instances.enabled is True
+        assert cfg.work_ledger.remote_dispatch is False
+        assert remote_dispatch() is False
+        assert remote_dispatch_enabled() is False
+
+        app = web.Application()
+        state = self._state()
+        _register_instances_hooks(app, state, port=7777)
+        app.freeze()
+        asyncio.run(app.on_startup.send(app))
+        # Empty registry: the manager exists, but nothing was connected.
+        assert state.instances_manager is not None
+        assert state.instances_registry.list() == []
+        asyncio.run(app.on_cleanup.send(app))
+
     def test_disabled_skips_manager_creation(self, tmp_path, monkeypatch):
         from aiohttp import web
 
@@ -102,6 +137,7 @@ class TestPortMirror:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "TOK"
@@ -346,6 +382,7 @@ class TestLastError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "SECRET_TOK"
@@ -387,6 +424,7 @@ class TestLastError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             raise TokenMintError("nope")
@@ -411,6 +449,7 @@ class TestLastError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             calls["n"] += 1
@@ -437,6 +476,7 @@ class TestLastError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             raise TokenMintError("nope")
@@ -472,6 +512,7 @@ class TestStatusForRetainedError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "SECRET_TOK"
@@ -494,6 +535,7 @@ class TestStatusForRetainedError:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             raise TokenMintError("nope")
@@ -558,6 +600,7 @@ class TestStartupRevive:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             return "SECRET_TOK"
@@ -598,6 +641,7 @@ class TestStartupRevive:
             ttl="20h",
             remote_port=None,
             embed_parent_port=None,
+            embed_forward_port=None,
             timeout_secs=None,
         ):
             if "bad" in host:

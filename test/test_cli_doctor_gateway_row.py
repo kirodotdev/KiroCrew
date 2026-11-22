@@ -19,7 +19,7 @@ import urllib.request
 import pytest
 from loopback_servers import LoopbackHTTPServer
 
-from kiro_crew import loopback_http
+from kiro_crew import loopback_http, port_resolution
 from kiro_crew.doctor_checks import services
 from kiro_crew.doctor_checks.services import DashboardBinding
 from kiro_crew.service import live_target
@@ -42,7 +42,7 @@ class TestGatewayRowBusyVsDown:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "gateway:     Pending: busy (up but did not answer)" in out
+        assert "gateway:     ⏳ busy (up but did not answer)" in out
         assert "not running" not in out
         assert issues == []
 
@@ -58,7 +58,7 @@ class TestGatewayRowBusyVsDown:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "gateway:     Note:    not running" in out
+        assert "gateway:     ⏹  not running" in out
         assert "busy" not in out
 
     def test_connect_phase_timeout_reads_not_running(
@@ -74,7 +74,7 @@ class TestGatewayRowBusyVsDown:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "gateway:     Note:    not running" in out
+        assert "gateway:     ⏹  not running" in out
         assert "busy" not in out
 
 
@@ -131,8 +131,8 @@ class TestRunningVersionRow:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "gateway:     OK:      running (token auth enabled)" in out
-        assert "running:     OK:      1.2.3 (same as on disk)" in out
+        assert "gateway:     ✅ running (token auth enabled)" in out
+        assert "running:     ✅ 1.2.3 (same as on disk)" in out
         assert "http://127.0.0.1:5476/api/health" in probed
         assert issues == []
 
@@ -144,7 +144,7 @@ class TestRunningVersionRow:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "running:     Warning: 1.2.3, on disk 1.2.4 (restart needed)" in out
+        assert "running:     ⚠️  1.2.3, on disk 1.2.4 (restart needed)" in out
         assert "Fix: `kirocrew restart`" in out
         assert issues == ["gateway restart needed (running version differs from on-disk)"]
 
@@ -170,7 +170,7 @@ class TestRunningVersionRow:
         issues: list[str] = []
         services._doctor_gateway_reachability(_binding(), issues)
         out = capsys.readouterr().out
-        assert "running:     Warning: gateway version unknown (on disk 1.2.3)" in out
+        assert "running:     ⚠️  gateway version unknown (on disk 1.2.3)" in out
         assert issues == []
 
     def test_not_running_prints_no_version_row(
@@ -240,3 +240,39 @@ def test_running_version_ignores_a_configured_proxy(monkeypatch: pytest.MonkeyPa
     assert proxy_hits == []
     assert version == "1.2.3"
     assert gateway_hits == ["/api/health"]
+
+
+@pytest.mark.parametrize(
+    ("health", "selected", "line"),
+    [
+        (b'{"ok": true, "version": "1.2.3"}', "1.2.3", "aligned (1.2.3)"),
+        (
+            b'{"ok": true, "version": "1.2.3"}',
+            "1.2.4",
+            "version_skew: the gateway runs 1.2.3, 1.2.4 is selected;"
+            " restart the gateway to run it",
+        ),
+        (
+            urllib.error.URLError("refused"),
+            "1.2.3",
+            "unknown (the gateway did not report its version; try `kirocrew doctor`)",
+        ),
+        (
+            b'{"ok": true, "version": "1.2.3"}',
+            None,
+            "unknown (could not read the selected package's version; check the install)",
+        ),
+    ],
+    ids=["aligned", "skew", "no-gateway", "selected-unreadable"],
+)
+def test_bundle_version_alignment(
+    monkeypatch: pytest.MonkeyPatch, health: object, selected: str | None, line: str
+) -> None:
+    """``kirocrew doctor --bundle``'s ``version_alignment:`` line reads the ``running:``
+    row's two versions, on the port ``kirocrew status`` resolves."""
+    probed: list[str] = []
+    monkeypatch.setattr(port_resolution, "resolve_client_port", lambda cli_port: 5476)
+    _select(monkeypatch, selected)
+    _gateway_answers(monkeypatch, health, probed)
+    assert services._bundle_version_alignment() == line
+    assert probed == ["http://127.0.0.1:5476/api/health"]

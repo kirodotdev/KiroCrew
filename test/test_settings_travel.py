@@ -8,7 +8,7 @@ choice on the dashboard Settings page comes back. Before this, three things brok
   no setting was ever restored while the summary reported success;
 * neither the export nor the snapshot ``config`` component carried
   ``config.local.json``, ``ui-prefs.json`` or ``notification_settings.json``;
-* ``kirocrew restore --mode merge`` printed a bare "Done: config" over a merge that kept
+* ``kirocrew restore --mode merge`` printed a bare "✅ config" over a merge that kept
   every one of the destination's files.
 
 The dashboard Merge keeps main's never-overwrite rule, made honest: a settings
@@ -562,7 +562,7 @@ class TestCliMergeSaysWhatItKept:
         assert json.loads((dst / "config.json").read_text())["timezone"] == "UTC"
         assert "config.json: kept the existing file" in out
         assert "--mode replace --components config" in out
-        assert "Done: config" not in out
+        assert "✅ config" not in out
         # A file the destination lacked is still restored, and said so.
         assert "ui-prefs.json: restored (was missing)" in out
         assert json.loads((dst / "ui-prefs.json").read_text())["prefs"] == {"mc-nav": "x"}
@@ -591,7 +591,7 @@ class TestCliMergeSaysWhatItKept:
         assert not (dst / "config.local.json").exists()
         assert "config.local.json: not applied" in out
         assert "--mode replace --components config" in out
-        assert "Done: config" not in out
+        assert "✅ config" not in out
 
     @requires_symlinks
     def test_a_dangling_link_at_a_missing_settings_file_is_never_followed(
@@ -687,7 +687,7 @@ class TestCliMergeSaysWhatItKept:
         out = capsys.readouterr().out
         assert ret == 0
         assert "kept the existing file" not in out
-        assert "Done: config" in out
+        assert "✅ config" in out
 
     def test_host_runtime_state_is_not_reported_as_kept_settings(
         self, tmp_path, monkeypatch, capsys
@@ -715,7 +715,7 @@ class TestCliMergeSaysWhatItKept:
         out = capsys.readouterr().out
         assert ret == 0
         assert "project_dir" not in out
-        assert "Done: config" in out
+        assert "✅ config" in out
 
 
 class TestNestingBound:

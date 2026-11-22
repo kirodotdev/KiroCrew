@@ -9,6 +9,8 @@ every sweep and leak until reboot.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import ctypes
 import os
 import signal
 import sys
@@ -20,6 +22,7 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.acp import runtime as rt
+from kiro_crew.process_identity import ProcessHandle, process_survived
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -675,6 +678,11 @@ _ROOT_THAT_DIES_FIRST = (
 )
 
 
+#: One worker runs the tests that start a real interpreter tree: each kill ends its
+#: own tree, so the trees cannot be one module-scoped child, and cold-starting them on
+#: several workers at once stalls a shard.
+_REAL_TREE_GROUP = "acp_runtime_kill_real_tree"
+
 #: The liveness oracle's own reads, bound at import, before any fixture or test patch
 #: runs: whatever a test stubs on the kill path, the oracle still asks the kernel.
 _kernel_start_id = platform_compat.get_process_start_id
@@ -689,6 +697,7 @@ def _still_running(pid: int, start: str | None) -> bool:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX teardown; Windows drains by handle")
+@pytest.mark.xdist_group(name=_REAL_TREE_GROUP)
 @pytest.mark.asyncio
 async def test_kill_releases_stdin_so_the_tree_a_dead_root_left_reads_eof(monkeypatch):
     """A tree no signal reaches still ends when the kill releases the root's stdin.
@@ -736,3 +745,157 @@ async def test_kill_releases_stdin_so_the_tree_a_dead_root_left_reads_eof(monkey
         if _still_running(child, child_start):
             # The child still holds the group the root led, so its number is still ours.
             os.killpg(proc.pid, signal.SIGKILL)
+
+
+#: On SIGTERM, closes its stdio -- the pipes the root's transport waits on -- and
+#: holds its exit until a byte (or EOF) arrives on the gate fd in argv[1]: the agent
+#: below the sandbox launcher, whose exit closes those pipes before the init it was
+#: reparented to has reaped it.
+_AGENT_SLOW_TO_STOP = (
+    "import os, signal, sys\n"
+    "gate = int(sys.argv[1])\n"
+    "def _stop(*_):\n"
+    "    for fd in (0, 1, 2):\n"
+    "        os.close(fd)\n"
+    "    os.read(gate, 1)\n"
+    "    os._exit(0)\n"
+    "signal.signal(signal.SIGTERM, _stop)\n"
+    "print('ready', flush=True)\n"
+    "while True:\n"
+    "    signal.pause()\n"
+)
+#: The sandbox launcher's shape: forks that agent into its own process group and
+#: waits for it under the default SIGTERM disposition, so a group SIGTERM ends the
+#: launcher at once while the agent is still stopping.
+_LAUNCHER_ROOT = (
+    "import os, sys\n"
+    "pid = os.fork()\n"
+    "if pid == 0:\n"
+    f"    os.execv(sys.executable, [sys.executable, '-c', {_AGENT_SLOW_TO_STOP!r}, sys.argv[1]])\n"
+    "print(pid, flush=True)\n"
+    "os.waitpid(pid, 0)\n"
+)
+
+#: ``prctl`` option that makes a process the reaper of the orphans in its subtree.
+_PR_SET_CHILD_SUBREAPER = 36
+
+
+def _set_child_subreaper(on: bool) -> None:
+    """Make this process the reaper of its subtree's orphans (Linux), or stop being it.
+
+    The test that sets it reaps the one orphan its own tree leaves, so the group it
+    waits on empties without help from whatever init the host runs.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_SET_CHILD_SUBREAPER, int(on), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_CHILD_SUBREAPER)")
+
+
+def _reap_group(pgid: int) -> None:
+    """Reap each child of this process left in process group *pgid*, until none is left."""
+    with contextlib.suppress(ChildProcessError):
+        while True:
+            os.waitpid(-pgid, 0)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="the sandbox launcher that forks the agent is Linux's"
+)
+@pytest.mark.xdist_group(name=_REAL_TREE_GROUP)
+@pytest.mark.asyncio
+async def test_kill_waits_for_the_group_a_root_that_dies_at_once_leaves(monkeypatch):
+    """A root that dies on the SIGTERM at once does not end the kill for its group.
+
+    The sandbox launcher is that root: the group's SIGTERM ends it immediately, and
+    the agent it forked into the same group closes the root's pipes as it exits, so
+    the root's ``wait()`` returns while that agent is still in the group -- exiting,
+    or a zombie the init it was reparented to has not reaped yet. A kill that returns
+    there hands every check after it -- the descendant prune, a sub-agent's survivor
+    check -- a process the SIGTERM already ended, which they read as one that
+    survived the teardown and force-kill. The kill waits the group out for the rest
+    of the grace instead. The agent's exit is held on a gate the group probe opens,
+    so the wait is observed, not timed, and this test is the subreaper that reaps
+    the orphaned agent, so the group empties whatever init the host runs.
+    """
+    proc: asyncio.subprocess.Process | None = None
+    agent: int | None = None
+    agent_start: str | None = None
+    reaped: list[int] = []
+    subreaper = False
+    gate_w = -1
+    try:
+        _set_child_subreaper(True)
+        subreaper = True
+        gate_r, gate_w = os.pipe()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                _LAUNCHER_ROOT,
+                str(gate_r),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                start_new_session=True,
+                pass_fds=(gate_r,),
+            )
+        finally:
+            os.close(gate_r)
+        assert proc.stdout is not None
+        lines = [await asyncio.wait_for(proc.stdout.readline(), timeout=60) for _ in range(2)]
+        agent = int(next(line for line in lines if line.strip().isdigit()))
+        agent_start = _kernel_start_id(agent)
+        asked: list[bool] = []
+
+        def _pgroup_exists(pgid: int) -> bool:
+            if asked:
+                # The root is gone, so the agent is this subreaper's: reap it once it exits.
+                with contextlib.suppress(ChildProcessError):
+                    if os.waitpid(agent, os.WNOHANG)[0] == agent:
+                        reaped.append(agent)
+            alive = platform_compat.pgroup_exists(pgid)
+            if alive and not asked:
+                os.write(gate_w, b"x")  # the kill is waiting on the group: let the agent stop
+            asked.append(alive)
+            return alive
+
+        stub = rt.platform_compat
+        monkeypatch.setattr(stub, "kill_process_tree", platform_compat.kill_process_tree)
+        monkeypatch.setattr(stub, "pid_exists", platform_compat.pid_exists)
+        monkeypatch.setattr(stub, "pgroup_exists", _pgroup_exists, raising=False)
+        monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", 60.0)
+        monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+        monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+        r = _bare_runtime(pid=proc.pid)
+        r._process = proc
+        r._start_time = _kernel_start_id(proc.pid)
+        r._child_pids = {agent: (agent_start, b"python")}
+        # The handle a sub-agent reset takes of this runtime before it resets.
+        handle = ProcessHandle(
+            pid=proc.pid, start_id=r._start_time, pgid=proc.pid, child_pids=dict(r._child_pids)
+        )
+
+        await r.kill()
+
+        assert proc.returncode == -signal.SIGTERM
+        assert not process_survived(handle), "a reset's survivor check would force-kill it"
+        assert not _still_running(agent, agent_start), "kill() returned with the agent stopping"
+        assert asked and asked[-1] is False, asked
+        assert reaped == [agent], "the group emptied without this subreaper reaping the agent"
+        assert r._process_tree_confirmed_dead is True
+    finally:
+        try:
+            if gate_w >= 0:
+                os.close(gate_w)  # EOF releases an agent the kill never waited for
+            if proc is not None:
+                if proc.returncode is None or (
+                    agent is not None and _still_running(agent, agent_start)
+                ):
+                    # A member is still in the group, so its number is still the root's.
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                await asyncio.wait_for(proc.wait(), timeout=60)
+                # The root is reaped, so what is left of its group is this subreaper's.
+                await asyncio.wait_for(asyncio.to_thread(_reap_group, proc.pid), timeout=60)
+        finally:
+            if subreaper:
+                _set_child_subreaper(False)

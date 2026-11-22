@@ -38,6 +38,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { i18nT } from '../i18n/t'
+import { apiTransport } from '../api/apiTransport'
 
 const BASE = '/api/deploy'
 const _sk = { 'X-Session-Key': 'dashboard:ui' }
@@ -112,7 +113,7 @@ export type DeployPhase =
 interface Body { [k: string]: unknown }
 
 async function callDeploy(body: Body): Promise<{ status: number; data: Record<string, unknown> }> {
-  const r = await fetch(BASE + '/deploy', {
+  const r = await apiTransport.request(BASE + '/deploy', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ..._sk },
     body: JSON.stringify(body),

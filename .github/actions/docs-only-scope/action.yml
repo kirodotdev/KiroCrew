@@ -1,0 +1,42 @@
+name: Docs-only scope
+description: >-
+  Answer whether this pull request changes nothing but prose docs, from the
+  PR's own diff (merge base to head) as the compare REST endpoint lists it --
+  the same list PR Readiness reads, so a lane that skips here is a lane
+  readiness excuses. Needs `.github/scripts` checked out. Any failure answers
+  false, so the caller runs.
+
+# One REST request per call, and none at all for a PR with more files than the
+# script ever excuses. The rule itself lives in .github/scripts/docs_only.py.
+inputs:
+  token:
+    description: A token that can read this repository's contents.
+    required: true
+outputs:
+  docs_only:
+    description: "'true' or 'false'"
+    value: ${{ steps.scope.outputs.docs_only }}
+runs:
+  using: composite
+  steps:
+    - id: scope
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+      run: |
+        set -uo pipefail
+        script="$GITHUB_WORKSPACE/.github/scripts/docs_only.py"
+        if [ "$EVENT_NAME" != "pull_request" ] || [ -z "${CHANGED_FILES:-}" ] \
+          || [ "$CHANGED_FILES" -gt 250 ] 2>/dev/null; then
+          echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          echo "docs-only scope: false (not a pull request, or too many files to excuse)"
+          exit 0
+        fi
+        body="$(gh api "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA?per_page=300" 2>/dev/null || true)"
+        printf '%s' "$body" | python3 "$script" classify --expect-files "$CHANGED_FILES" >> "$GITHUB_OUTPUT" \
+          || echo "docs_only=false" >> "$GITHUB_OUTPUT"

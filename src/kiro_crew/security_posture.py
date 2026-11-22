@@ -72,6 +72,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # The on-demand channel SDK installer: `redact_url` cuts pip's output and
+        # the index it names to scheme and host before they reach the gateway log
+        # and the install error, so a mirror credential in a URL is never logged.
+        # It is not an agent-output egress path.
+        "sdk_extras.py",
         # Pure helper: `_run_apply_child` redacts the tail of the boot-time
         # `kirocrew update` child's output before it is stored as the armed update's
         # `pending_apply_error`. It emits nothing itself; the dashboard status route
@@ -87,6 +92,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The no-tools notice row's agent name, redacted before the row is handed to
         # `append_and_surface`; the transcript broadcast is the registered sink.
         "dashboard/agent_no_tools_notice.py",
+        # Pure derivation: `shape_snapshot` runs the page's `page_safe_for` on each
+        # bound field value before a widget block reads it, `redact_via_context` on
+        # each string before the sanitizer seam, and `page_safe_for` again on the
+        # finished body; it returns that body and emits nothing. The widget routes
+        # that serve the snapshot are the egress.
+        "dashboard/widget_snapshot.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.
@@ -144,6 +155,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # used solely to name the offending field in the refusal, never emitted as
         # content, so this classifies a name rather than being an output boundary.
         "artifact_store/dashboard_package.py",
+        # Validator only, the same ground: a dashboard package's `widgets` refusal
+        # quotes what the author wrote (an id, a field name, a tone key), so the
+        # refusal sentence is redacted before it is raised. Nothing it returns is
+        # content; it scrubs its own error text, not an egress payload.
+        "artifact_store/dashboard_widgets.py",
         # Drives the backup redaction pass and reports what it did, but applies no
         # redactor itself: the outbound bytes are rewritten in `snapshot_redact.py`,
         # which is the registered sink. What matches the call-site scan here are the
@@ -666,6 +682,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # bound for a third party -- so it is defensive input hygiene, not an egress
         # sink.
         "mcp_tools/browser.py",
+        # Inbound sanitization, same shape: the browser `read` op redacts the whole
+        # page text before paging it, so a credential cannot be split across two
+        # pages and slip past the shim's per-page redaction above.
+        "browser_harness/ops.py",
         # Comparison-only: applies the redactors to compute a match identity and
         # discards the result. The two files being merged can hold the same
         # message with and without redaction, so a raw comparison would keep both
@@ -917,6 +937,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/server_runtime/workflow_startup.py",
         "dashboard/handlers/sessions.py",
         "dashboard/handlers/sessions_parts/history_reads.py",
+        # Search all chats: the same redacted titles and excerpts on the same
+        # dashboard history surface as history_reads.py.
+        "dashboard/handlers/sessions_parts/message_search.py",
         "dashboard/handlers/sessions_parts/summaries.py",
         "dashboard/handlers/sessions_parts/tool_policy.py",
         "dashboard/handlers/sessions_parts/usage_scrape.py",
@@ -1146,6 +1169,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "cli_commands_cron.py",
         "cli_commands_eval.py",
         "cli_commands_learn.py",
+        # Operator's own terminal during `kirocrew cron history`: redacts a run's
+        # job name, summary, error and trace exactly as the dashboard history
+        # routes do, before printing the local run store to the operator who owns
+        # it. Same classification as `cli_commands_cron.py` above.
+        "cli_cron_history.py",
         # Slack sub-surfaces whose posted output is covered by the two Slack rows.
         "slack/events.py",
         "slack/events_home_tab.py",
@@ -1452,6 +1480,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # via to_dict() — already a registered sink.
         "hooks.py",
         "hook_runtime/script_hooks.py",
+        # Helper, not a boundary: ``hook_tool_input`` redacts each string value of a
+        # tool call's structured params to build the ``tool_input`` of the PreToolUse
+        # stdin payload. The callers that hand that payload to a hook process
+        # (``acp/client_tool_events.py``, ``dashboard/chat_turn/tool_approval.py``,
+        # ``subagent_manager/run_turn.py``, ``task_executor.py``) are already listed,
+        # and the hook process itself is the audience ``script_hooks.py`` serves, so
+        # the helper adds no transport or audience.
+        "hook_runtime/hook_dispatch.py",
         # Helper, not a boundary: `redact_oauth_client_secrets` /
         # `restore_redacted_oauth_client_secrets` are pure functions over an agent
         # spec dict that mask (and, on the write-back, un-mask) a pre-registered

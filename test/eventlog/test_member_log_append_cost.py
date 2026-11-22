@@ -114,3 +114,57 @@ def test_a_service_append_decodes_no_history(tmp_path, monkeypatch, decoded):
     assert decoded["records"] == 0, "the append or its fold re-read the member's history"
     open_slots = svc.snapshot("erin")["values"][types.PROJ_DRIVING]["open"]
     assert "one-more" in open_slots and len(open_slots) == HISTORY + 1
+
+
+def _service_with_history(tmp_path, monkeypatch, slug: str) -> MemberEventLogService:
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+    svc = MemberEventLogService(root)
+    svc.ensure(slug, slug.title())
+    for i in range(HISTORY):
+        svc.append(slug, types.SLOT_OPENED, {"slot_key": f"slot-{i}"})
+    return svc
+
+
+def test_a_closer_append_decodes_no_history(tmp_path, monkeypatch, decoded):
+    svc = _service_with_history(tmp_path, monkeypatch, "fay")
+    decoded["records"] = 0
+
+    wrote = svc.append_closer_if_still_applies(
+        "fay",
+        types.SLOT_CLOSED,
+        {"slot_key": "slot-0", "reason": "interrupted"},
+        still_applies=lambda values, _observed: "slot-0" in values[types.PROJ_DRIVING]["open"],
+    )
+
+    assert wrote is not None
+    assert decoded["records"] == 0, "the closer's fold re-read the member's history"
+    open_slots = svc.snapshot("fay")["values"][types.PROJ_DRIVING]["open"]
+    assert "slot-0" not in open_slots and len(open_slots) == HISTORY - 1
+
+
+def test_a_closer_still_folds_another_writers_event_first(tmp_path, monkeypatch):
+    """The closer's predicate must see an event another process committed."""
+    svc = _service_with_history(tmp_path, monkeypatch, "gus")
+    other = MemberLog("gus")  # stands in for the ``kirocrew-core`` process
+    other.append(types.SLOT_OPENED, {"slot_key": "theirs"})
+    seen: list[list[str]] = []
+
+    def still_applies(values, _observed):
+        seen.append(list(values[types.PROJ_DRIVING]["open"]))
+        return True
+
+    wrote = svc.append_closer_if_still_applies(
+        "gus",
+        types.SLOT_CLOSED,
+        {"slot_key": "theirs", "reason": "interrupted"},
+        still_applies=still_applies,
+    )
+
+    assert wrote is not None
+    assert seen and "theirs" in seen[-1], "the closer decided without the foreign event"
+    open_slots = svc.snapshot("gus")["values"][types.PROJ_DRIVING]["open"]
+    assert "theirs" not in open_slots and len(open_slots) == HISTORY

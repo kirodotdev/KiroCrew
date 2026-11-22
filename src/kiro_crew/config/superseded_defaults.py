@@ -143,6 +143,19 @@ def _overlay_stt_provider() -> object:
     return _ABSENT
 
 
+#: Rows a load could not judge because the edition had not been installed yet.
+#: Boot reloads the config once it is, so the row is judged then
+#: (``bootstrap._refresh_stt_for_edition``).
+_DEFERRED_ROWS: set[str] = set()
+
+
+def take_deferred_rows() -> set[str]:
+    """Return and forget the rows a pre-boot load left unjudged."""
+    rows = set(_DEFERRED_ROWS)
+    _DEFERRED_ROWS.clear()
+    return rows
+
+
 def _stt_resolves_auto_locally(base_data: dict) -> bool:
     """Whether the EFFECTIVE ``stt.provider`` runs ``"auto"`` as auto-detection.
 
@@ -158,12 +171,20 @@ def _stt_resolves_auto_locally(base_data: dict) -> bool:
     """
     # Imported at call time: config.sections is the whole schema and its
     # dependencies, and this module is otherwise import-light.
+    from kiro_crew import speech_providers
     from kiro_crew.config.sections import STT_PROVIDER_LOCAL, stt_provider_resolution
 
     provider = _overlay_stt_provider()
     if provider is _ABSENT:
         stt = base_data.get("stt")
         provider = stt.get("provider") if isinstance(stt, dict) else None
+    if provider is None and speech_providers.registry_pending():
+        # No provider stored, so the edition default picks it, and the edition is
+        # not installed yet: the CLI loads config once before boot. Judging now
+        # against the built-in default warns about a value the post-boot answer
+        # ('kirocrew config defaults') calls fine. Boot reloads and judges it.
+        _DEFERRED_ROWS.add("stt.language_code")
+        return False
     return stt_provider_resolution(provider) == STT_PROVIDER_LOCAL
 
 
@@ -281,8 +302,8 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#6651",
         new_default_display="unset (automatic: 25s desktop / 90s managed service)",
     ),
-    # 0 means as many panes as crews registered. A stored 5 evicts the 6th crew,
-    # which at the pane looks like a connection flapping on tab switch.
+    # 0 means automatic, which now also resolves to 5 (the five most recently
+    # opened Crews, SSH and relay together), so a stored 5 behaves the same.
     #
     # REPORT-ONLY: plausible values are about 1..10, so an operator with five crews
     # who types 5 stores exactly the old default.
@@ -291,7 +312,7 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         old_default=5,
         new_default=0,
         changed_in="#7248",
-        new_default_display="0 (automatic: as many as are registered)",
+        new_default_display="0 (automatic: the 5 most recently opened)",
     ),
     # A stored False withdraws session control from every ordinary agent. Crew
     # members and the owner-tab Conductor keep a creator-fenced dispatch bypass
@@ -1406,19 +1427,19 @@ def render_doctor_section(issues: list[str]) -> None:
     # must not hide what an earlier load removed from it. This is the surface
     # ``record_adoptions`` promises the record on.
     for dotted, removed in sorted(adopted_superseded().items()):
-        print(f"  adopted:     Note:    {adoption_summary(dotted, removed)}")
+        print(f"  adopted:     ℹ️  {adoption_summary(dotted, removed)}")
     path = config_path()
     try:
         raw = json.loads(read_config_text(path))
     except FileNotFoundError:
-        print("  drift:       OK:      no config file yet (current defaults apply)")
+        print("  drift:       ✅ no config file yet (current defaults apply)")
         return
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
-        print(f"  drift:       Warning: could not read {path}: {e}")
+        print(f"  drift:       ⚠️  could not read {path}: {e}")
         issues.append("stored defaults unreadable")
         return
     if not isinstance(raw, dict):
-        print(f"  drift:       Warning: {path} is not a JSON object")
+        print(f"  drift:       ⚠️  {path} is not a JSON object")
         issues.append("stored defaults unreadable")
         return
 
@@ -1429,18 +1450,18 @@ def render_doctor_section(issues: list[str]) -> None:
     drifted = superseded_default_drift(raw, acked={})
     coerced = coerced_value_drift(raw)
     if not drifted and not coerced:
-        print("  drift:       OK:      no stored value holds a superseded default")
+        print("  drift:       ✅ no stored value holds a superseded default")
         return
     unacked = 0
     for entry in drifted:
         if entry.dotted_key in acked:
-            print(f"  drift:       OK:      acknowledged as intentional: {drift_summary(entry)}")
+            print(f"  drift:       ✅ acknowledged as intentional: {drift_summary(entry)}")
         else:
             unacked += 1
-            print(f"  drift:       Note:    {drift_summary(entry)}")
+            print(f"  drift:       ℹ️  {drift_summary(entry)}")
     for centry, stored in coerced:
         unacked += 1
-        print(f"  coerced:     Note:    {coercion_summary(centry, stored)}")
+        print(f"  coerced:     ℹ️  {coercion_summary(centry, stored)}")
     if unacked:
         print("  fix:         kirocrew config defaults --adopt      (take the current defaults)")
         print("  keep:        kirocrew config defaults --keep       (affirm yours, stop reporting)")

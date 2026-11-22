@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         CHECK_UNCHECKED,
         EXTERNALLY_MANAGED_STAMPS,
         MANAGED_BY_COMMAND,
+        MANAGED_BY_KIROCREW,
         Any,
         AutoUpdateEffect,
         GatewayOrchestrator,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
         record_auto_update_effect,
         redact_log_via_context,
         shutdown_event,
+        work_holders,
     )
 
 
@@ -55,36 +57,47 @@ if TYPE_CHECKING:
 _UPDATE_STOP_GRACE_SECS = 3.0
 
 
-def _in_flight_work_counts(self: GatewayOrchestrator) -> tuple[int, int]:
-    """Return ``(turns, background)`` that a restart would interrupt.
+def _in_flight_work_census(self: GatewayOrchestrator) -> list[work_holders.Holder]:
+    """Everything a restart would interrupt, one holder per counted item.
 
+    The one definition ``_in_flight_work_counts`` sums: a holder says what kind
+    of work it is and, where the gateway keys it, which one and since when.
     Unknown provider state is classified as background so a mandatory
     cooperative turn drain never cancels work whose ownership is unclear.
     """
-    turns = 0
-    background = 0
+    Holder = work_holders.Holder
+    held: list[work_holders.Holder] = []
+
+    def unreadable(source: str) -> None:
+        held.append(Holder(work_holders.UNREADABLE, source))
+
     state = self.dashboard_state
+    slot_names = work_holders.slot_names(state)
     if state is not None:
         try:
-            for provider in state.sessions.active_providers():
+            providers = state.sessions.active_providers()
+            names = work_holders.provider_names(state.sessions, slot_names)
+            for provider in providers:
                 checker = getattr(provider, "has_active_turn", None)
                 if not callable(checker):
-                    background += 1
+                    unreadable("provider")
                     continue
                 try:
                     if checker():
-                        turns += 1
+                        held.append(
+                            Holder(work_holders.TURN, names.get(id(provider), ""), turn=True)
+                        )
                 except Exception:
                     logger.warning("in-flight count: provider turn state failed", exc_info=True)
-                    background += 1
+                    unreadable("provider")
         except Exception:
             logger.warning("in-flight count: active_providers() failed", exc_info=True)
-            background += 1
+            unreadable("providers")
 
         slots = getattr(state, "_slots", None)
         if isinstance(slots, dict):
             seen_slot_tasks: set[int] = set()
-            for slot in list(slots.values()):
+            for slot_key, slot in list(slots.items()):
                 task = getattr(slot, "task", None)
                 if task is not None:
                     marker = id(task)
@@ -93,45 +106,52 @@ def _in_flight_work_counts(self: GatewayOrchestrator) -> tuple[int, int]:
                     seen_slot_tasks.add(marker)
                     try:
                         if not task.done():
-                            turns += 1
+                            held.append(Holder(work_holders.TURN, str(slot_key), turn=True))
                     except Exception:
                         logger.warning("in-flight count: dashboard slot task failed", exc_info=True)
-                        background += 1
+                        unreadable("slot task")
 
         workflows = getattr(state, "workflow_service", None)
         if workflows is not None:
             try:
-                background += sum(
-                    1
+                held.extend(
+                    Holder(work_holders.WORKFLOW)
                     for run in workflows.list_runs()
                     if isinstance(run, dict) and run.get("status") == "running"
                 )
             except Exception:
                 logger.warning("in-flight count: workflow listing failed", exc_info=True)
-                background += 1
+                unreadable("workflows")
 
-    for task in list(self._session_tasks.values()):
+    for session_key, task in list(self._session_tasks.items()):
         if not task.done():
-            turns += 1
+            name = work_holders.session_name(session_key, slot_names)
+            held.append(Holder(work_holders.TURN, name, turn=True))
 
     sessions = self.sessions
     if sessions is not None:
         try:
-            background += max(0, int(sessions.inbound_callback_count))
+            callbacks = max(0, int(sessions.inbound_callback_count))
+            if callbacks:
+                held.append(Holder(work_holders.CALLBACK, count=callbacks))
         except Exception:
             logger.warning("in-flight count: inbound callback state failed", exc_info=True)
-            background += 1
+            unreadable("callbacks")
     try:
-        background += max(0, int(inbound_spool.pending_refusal_write_count()))
+        refusal_writes = max(0, int(inbound_spool.pending_refusal_write_count()))
+        if refusal_writes:
+            held.append(Holder(work_holders.REFUSAL_WRITE, count=refusal_writes))
     except Exception:
         logger.warning("in-flight count: refusal write state failed", exc_info=True)
-        background += 1
+        unreadable("refusal writes")
     # A managed-venv apply still building (an approved in-app one, say): a
     # restart now would cancel it and exec an older promotion over it. When
     # it promotes, its own restart path owns the exec.
     wheel_apply = self._wheel_apply_module()
     if wheel_apply is not None:
-        background += wheel_apply.applies_in_flight()
+        builds = wheel_apply.applies_in_flight()
+        if builds:
+            held.append(Holder(work_holders.UPDATE_BUILD, count=builds))
 
     seen_handler_tasks: set[int] = set()
     handler_owners: list[object] = [
@@ -154,30 +174,41 @@ def _in_flight_work_counts(self: GatewayOrchestrator) -> tuple[int, int]:
             seen_handler_tasks.add(marker)
             try:
                 if not task.done():
-                    background += 1
+                    held.append(Holder(work_holders.CHANNEL_HANDLER))
             except Exception:
                 logger.warning("in-flight count: channel handler state failed", exc_info=True)
-                background += 1
+                unreadable("channel handler")
 
     subagents = self.subagent_mgr
     if subagents is not None:
         try:
-            background += max(0, int(subagents.pending_work_count))
+            pending = max(0, int(subagents.pending_work_count))
+            if pending:
+                held.append(Holder(work_holders.SUBAGENT, count=pending))
         except Exception:
             logger.warning("in-flight count: subagent state failed", exc_info=True)
-            background += 1
+            unreadable("subagents")
 
-    background += len(self._running_script_ids)
+    held.extend(
+        work_holders.script_holder(self.cron_svc, job_id)
+        for job_id in list(self._running_script_ids)
+    )
 
     runner = self.task_runner
     if runner is not None:
         try:
             if runner.running:
-                background += 1
+                held.append(Holder(work_holders.TASK_RUNNER))
         except Exception:
             logger.warning("in-flight count: TaskRunner state failed", exc_info=True)
-            background += 1
-    return turns, background
+            unreadable("task runner")
+    return held
+
+
+def _in_flight_work_counts(self: GatewayOrchestrator) -> tuple[int, int]:
+    """Return ``(turns, background)`` that a restart would interrupt."""
+    # Unbound, so a stub ``self`` that carries only the fields the walk reads works.
+    return work_holders.counts(GatewayOrchestrator._in_flight_work_census(self))
 
 
 def _count_in_flight_work(self: GatewayOrchestrator) -> int:
@@ -550,7 +581,7 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
         if self.dashboard_state:
             self.dashboard_state.push_refresh("update_available")
     else:
-        print("Already on latest version")
+        print("👻 Already on latest version")
 
 
 async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
@@ -857,11 +888,20 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                     # provider path logs the same case at INFO.
                     logger.info("Auto-update is on, but %s — notifying instead", effect.reason)
                 elif cfg.auto_update and not installs:
+                    # `kirocrew update` knows a wheel install's shape: the in-place
+                    # upgrade for a plain pip environment, the installer for pipx. The
+                    # policy source pin refuses it too, so a pinned host gets no step.
+                    step = (
+                        "; to update it, run `kirocrew update` from your own terminal"
+                        if info.get("managed_by") == MANAGED_BY_KIROCREW and not effect.blocked
+                        else ""
+                    )
                     logger.warning(
                         "Auto-update is on, but this install (%s) cannot apply it "
-                        "unattended (%s) — notifying instead",
+                        "unattended (%s) — notifying instead%s",
                         info.get("managed_by") or "unknown",
                         effect.reason,
+                        step,
                     )
                 if self.dashboard_state:
                     self.dashboard_state.push_refresh("update_available")
@@ -871,7 +911,7 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
             # `handlers/updates_check.py` exists to prevent.
             logger.info("Update check did not complete (%s)", info.get("error_code"))
         elif info.get("check_status") == CHECK_SUCCEEDED:
-            print("Already on latest version")
+            print("👻 Already on latest version")
         else:
             # DEFERRED (a desktop bundle whose own updater owns this), or a
             # check that never ran. Neither carries an `error_code`, so keying

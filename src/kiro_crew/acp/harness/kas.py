@@ -39,6 +39,7 @@ from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
+from kiro_crew.acp import kas_build_default
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -58,6 +59,7 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
+from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
@@ -70,7 +72,11 @@ from kiro_crew.acp.kas_settings_mcp import (
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
 from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
-from kiro_crew.acp.kas_subagent_targets import _excluding_switched_off, project_subagent_targets
+from kiro_crew.acp.kas_subagent_targets import (
+    _excluding_switched_off,
+    deny_refused_targets,
+    project_subagent_targets,
+)
 from kiro_crew.acp.kas_tool_limits import (
     kas_globs,
     unmatched_disabled_globs,
@@ -236,7 +242,8 @@ def _bundle_route_selected() -> bool:
 def _runs_crew_engine_bundle(spawned_binary: str | None) -> bool:
     """Is *spawned_binary* inside one of Crew's own engine roots (the bundle's Node)?
 
-    The roots are the two :func:`kiro_crew.acp.kas_bundle.installed_bundle` reads:
+    The roots are the ones :func:`kiro_crew.acp.kas_bundle.installed_bundle` reads
+    (:func:`kiro_crew.acp.kas_bundle.engine_roots`): the package's ``_kas_engine``,
     the data home's ``engines/kas`` and the desktop app's staged copy. Positive
     identity only: a missing path, a kiro-cli relay or any failure is False.
     Blocking (resolves paths); call off the loop.
@@ -245,7 +252,7 @@ def _runs_crew_engine_bundle(spawned_binary: str | None) -> bool:
         return False
     from kiro_crew.acp import kas_bundle as kas_bundle_mod
 
-    roots = [kas_bundle_mod.kas_engines_root(), kas_bundle_mod.bundled_kas_root()]
+    roots = kas_bundle_mod.engine_roots()
     try:
         binary = Path(spawned_binary).resolve()
         return any(binary.is_relative_to(root.resolve()) for root in roots if root)
@@ -339,14 +346,16 @@ def _with_project_switch_offs(spec: dict[str, Any], project: dict[str, Any]) -> 
 def session_projects_folder_hooks(session_key: str) -> bool:
     """Whether a session keyed *session_key* projects a folder agent's own hooks.
 
-    False for a ``cron:``-keyed session, whose turns never fire them, so every
+    False for a ``cron:``-keyed session unless a person's turn claims it
+    (``kas_project_hooks.PERSON_TURN``): a scheduled turn never fires them, so every
     projection of that session (its own agent and each native sub-agent target)
-    keeps its auto-approvals; ``spec_hooks.kas_hook_checkout`` reads the same rule.
+    keeps its auto-approvals. The answer is recorded on the handle
+    (:meth:`KasHarness.record_session_projection`) for ``kas_hook_checkout``.
     """
     # Deferred: agent_sdk imports this package at load time.
-    from kiro_crew.agent_sdk.spec_hooks import CRON_SESSION_KEY_PREFIX
+    from kiro_crew.agent_sdk.kas_project_hooks import CRON_SESSION_KEY_PREFIX, PERSON_TURN
 
-    return not session_key.startswith(CRON_SESSION_KEY_PREFIX)
+    return not session_key.startswith(CRON_SESSION_KEY_PREFIX) or PERSON_TURN.get()
 
 
 def resolve_projected_spec(
@@ -511,8 +520,9 @@ def resolve_projected_spec(
         project = {**project, "prompt": kas_agents_mod._PROMPT_FILE_SCHEME + target.as_posix()}
     # ``systemPrompt`` is not dropped: it was carried as ``prompt`` above.
     honoured: tuple[str, ...] = PROJECT_SPEC_HONOURED_KEYS
-    # A cron session's projection (*project_hooks* false) keeps none: cron never
-    # fires a folder agent's own hooks, so none may withhold its auto-approvals.
+    # A scheduled-kind cron projection (*project_hooks* false) keeps none: a
+    # scheduled run never fires a folder agent's own hooks, so none may withhold
+    # its auto-approvals.
     if project_hooks and project.get("hooks"):
         from kiro_crew.project_hooks_consent import hooks_enabled
 
@@ -779,6 +789,13 @@ class KasHarness(MembershipHarness):
     #: kiro-cli a relay spawn ran under, set at each spawn; "" on Crew's own bundle,
     #: whose engine is the pinned one (``acp/kas_pin.py``).
     untested_version_notice = ""
+    #: The route the process this harness last spawned took, set at each spawn.
+    #: The sign-in messages for THIS runtime read it, never the process-wide
+    #: ``kas_route.last_spawn_route``, which another chat's spawn may have moved.
+    spawn_route: kas_route_mod.KasRoute | None = None
+    #: The notice that this chat runs on kiro-cli because the build default's first
+    #: move to Crew's engine failed (``kas_build_default``); "" otherwise.
+    engine_fallback_notice = ""
 
     # ── Seam 1: spawn ──
 
@@ -819,6 +836,7 @@ class KasHarness(MembershipHarness):
         self.spawn_sandbox_mode = ctx.sandbox_mode
         self.bundle_engine_version = ""
         self.untested_version_notice = ""
+        self.engine_fallback_notice = ""
         # The route reason of this spawn's bundle plan ("" on the relay): the
         # runtime reads it when the start fails (``runtime_spawn_entry``).
         self.spawn_route_reason = ""
@@ -830,6 +848,7 @@ class KasHarness(MembershipHarness):
         # chat placed as shared before a fallback never lands on a queueing engine.
         self.spawn_engine_shares_chats: bool | None = None
         self._sharing_preview_on = await asyncio.to_thread(_chat_sharing_preview_on)
+        preview_failed = False
         if await asyncio.to_thread(_bundle_route_selected):
             return await self._bundle_spawn_plan(
                 ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
@@ -857,12 +876,19 @@ class KasHarness(MembershipHarness):
                 return plan
             except AcpRuntimeError as exc:
                 self.bundle_engine_version = ""
+                preview_failed = True
                 kas_route_mod.note_preview_bundle_failed(str(exc))
                 logger.warning(
                     "chat-runtime-sharing: Crew's KAS engine could not start (%s); this "
                     "chat takes the default KAS route on its own process",
                     exc,
                 )
+
+        if not preview_failed:
+            # Rule 1b: a packaged build prefers Crew's engine (``kas_build_default``).
+            plan = await kas_build_default.build_default_plan(self, ctx)
+            if plan is not None:
+                return plan
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
         # Read only when the route is still open: a stored Kiro CLI pick, the
@@ -947,6 +973,7 @@ class KasHarness(MembershipHarness):
                 crew_auth=bool(host_auth),
             )
         kas_route_mod.note_spawn_route(relay)
+        self.spawn_route = relay
         # From the floor release an omitted --auth-method means cli, so a
         # Crew-owned spawn names client there and when the version is unknown.
         # Only a version known to be below the floor keeps the flag off, which
@@ -1004,6 +1031,7 @@ class KasHarness(MembershipHarness):
             argv=build_kas_argv(kas_bin, host_auth=host_auth, client_flag=client_flag),
             host_auth=host_auth,
             kiro_cli_internal_sandbox=kiro_cli_sandbox,
+            engine_is_child=True,
         )
 
     async def _bundle_spawn_plan(
@@ -1026,6 +1054,7 @@ class KasHarness(MembershipHarness):
         from kiro_crew.config.loader import KiroCrewConfig
 
         kas_route_mod.note_spawn_route(route)
+        self.spawn_route = route
         bundle = await asyncio.to_thread(kas_bundle_mod.installed_bundle)
         if bundle is None:
             base_url = await asyncio.to_thread(lambda: KiroCrewConfig.load().agent.kas_bundle_url)
@@ -1063,7 +1092,9 @@ class KasHarness(MembershipHarness):
             from kiro_crew.acp.chat_runtime_sharing import engine_shares_chats
 
             self.spawn_engine_shares_chats = engine_shares_chats(bundle.version)
-        argv = build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server))
+        argv = build_kas_bundle_argv(
+            str(bundle.node_bin), str(bundle.acp_server), environ=ctx.environ
+        )
         await asyncio.to_thread(ensure_engine_bundle_cache, argv)
         return SpawnPlan(
             argv=argv,
@@ -1125,6 +1156,8 @@ class KasHarness(MembershipHarness):
             strip_kiro_cli_api_key(env)
         engine_bundle = _runs_crew_engine_bundle(spawned_binary)
         if engine_bundle:
+            # The validated argv owns this endpoint, including after agent.env is merged.
+            env.pop(CLOUD_CONFIG_ENDPOINT_ENV, None)
             defer_mandatory_mcps_env(env)
             env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
@@ -1163,6 +1196,10 @@ class KasHarness(MembershipHarness):
         """
         handle.kas_auto_approved = kas_agents_mod.projected_auto_approved(
             custom_agents, active_agent
+        )
+        # The batch's kind, which every turn on this session then fires and checks.
+        handle.kas_folder_hooks_projected = session_projects_folder_hooks(
+            getattr(handle, "_session_key", "")
         )
         # The built-ins the batch kept at ``ask`` that the spec granted: the
         # session's permission requests for them are answered by Crew's gate
@@ -1220,6 +1257,7 @@ class KasHarness(MembershipHarness):
         handle.kas_agent_prompt_applied = self.agent_prompt_applied
         handle.kas_bundle_engine_version = self.bundle_engine_version
         handle.kas_untested_version_notice = self.untested_version_notice
+        handle.kas_engine_fallback_notice = self.engine_fallback_notice
 
     async def session_extras(
         self,
@@ -1349,9 +1387,13 @@ class KasHarness(MembershipHarness):
             else:
                 # A child a Bot started runs under the Bot's identity: its held
                 # limits ask here too (the worker's are applied in its own merge).
-                from kiro_crew.mate_held_rules import held_child_spec
+                from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
 
-                spec = held_child_spec(spec, session_key)
+                try:
+                    spec = held_child_spec(spec, session_key)
+                except HeldLimitsNotApplied as exc:
+                    # Refused, never started with its full pre-approvals.
+                    raise AcpAgentUnavailable(str(exc), agent=agent) from exc
             # KAS loads workspace steering itself, honouring each file's inclusion, from
             # the session's own folder (a subagent's may differ from the runtime's).
             steering_dir = session_cwd or work_dir
@@ -1527,6 +1569,8 @@ class KasHarness(MembershipHarness):
             # in the session's registry, which keeps no kiro-cli spec from disk.
             # A stub withdrawn above is off the session-level array, so a target
             # that enables that server keeps its own declaration of it.
+            gated: set[str] = set()
+            refused: set[str] = set()
             targets, targets_notice = project_subagent_targets(
                 agent,
                 spec,
@@ -1539,8 +1583,12 @@ class KasHarness(MembershipHarness):
                 settings_dir=session_cwd or work_dir,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 scope_muted=scope_muted,
+                folder_gated_out=gated,
+                refused_out=refused,
             )
-            custom_agents = [*custom_agents, *targets]
+            # A refused target the engine could still load from disk is denied, so
+            # the refusal the notice names holds.
+            custom_agents = [*deny_refused_targets(custom_agents, agent, refused), *targets]
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
@@ -1562,6 +1610,11 @@ class KasHarness(MembershipHarness):
             if self.agent_prompt_applied:
                 head = session_head.head_blocks(agent, spec, session_key, PROVIDER_LABEL_KAS)
                 custom_agents = session_head.with_head(custom_agents, head)
+            folder = session_cwd or work_dir
+            if gated or (folder and prompt_dir == paths_mod.project_agents_dir(folder)):
+                from kiro_crew.agent_sdk.kas_project_hooks import with_folder_pre_tool_mark
+
+                custom_agents = with_folder_pre_tool_mark(custom_agents, agent, spec, bool(gated))
             return custom_agents, snapshot, managed, apps, withdrawn, notice
 
         try:

@@ -423,9 +423,9 @@ class TestSpawnMemoryGuard:
         assert info is not None
         assert info.done is False and info.queued is True and info.error == ""
         assert info.queued_reason == "low_memory"
-        assert "2.5 GB available" in info.queued_reason_detail
-        assert "need 5.0 GB" in info.queued_reason_detail  # the 4.0 floor plus this start
-        assert "1.00 GB for this start" in info.queued_reason_detail
+        assert "2.5 GB free" in info.queued_reason_detail
+        assert "needs 5.0 GB" in info.queued_reason_detail  # the 4.0 floor plus this start
+        assert info.queued_reason_detail.endswith("; close other apps to free some")
         assert [p["_preassigned_id"] for p in mgr._queue] == [info.id]
         assert info.id not in mgr._agents and mgr._running_count == 0
         mock_sel.return_value.log_tool_invocation.assert_called_once()

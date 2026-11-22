@@ -821,6 +821,41 @@ def apply_worker_report(
         return {"item": item, "event": event}
 
 
+def apply_guard_report(slot_key: str, item_id: str, *, summary: Any) -> dict[str, Any] | None:
+    """The gateway's ``question`` report on a worker's item after the memory guard
+    stopped one of that worker's process trees (rfc-host-memory-guard.md §4.4).
+
+    ``status: question`` with no ``reason``: re-planning is the conductor's call, a
+    ``question`` always wakes it, and no person must act. The item's ``artifacts``,
+    ``pr`` and ``discussion`` are carried forward, so the worker's pointers survive;
+    ``wake_at`` is cleared as every non-progress report clears it. The worker's next
+    own report replaces this one. *slot_key* and *item_id* come from the worker's own
+    binding (:func:`read_binding`), resolved by the caller.
+    """
+    checked_summary = _require_text(summary, MAX_SUMMARY_CHARS, "summary")
+    checked_id = _require_item_id(item_id)
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
+        if item.status == "done" or item.reason is not None:
+            # A ``done`` waits on the conductor's acceptance, and a reason names who
+            # must act; a question here would replace either. None: nothing written.
+            return None
+        item.status = "question"
+        item.reason = None
+        item.wake_at = None
+        item.summary = checked_summary
+        item.last_report_at = _now_iso()
+        item.received_at = None
+        event = _commit_item_locked(slot_key, item, "report", checked_summary, status="question")
+        return {"item": item, "event": event}
+
+
 # Person writes
 
 

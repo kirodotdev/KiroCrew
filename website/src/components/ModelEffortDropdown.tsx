@@ -7,6 +7,7 @@ import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
 import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import EffortOffOnAutoNote from './EffortOffOnAutoNote'
 import SessionSwitchToggle from './SessionSwitchToggle'
+import { KiroCliModelsSignInNotice, type KiroCliSignIn } from './KiroCliSignInInTerminal'
 import { routeModelPickerKeys } from './modelPickerKeyRouting'
 
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -48,6 +49,10 @@ interface Props {
    *  refetch settles, so the Retry button disables and spins instead of
    *  sitting apparently dead under the unchanged error row. */
   retryingModels?: boolean
+  /** Set while the list is short because kiro-cli itself is signed out
+   *  (`/api/models` answered `kiro_prerequisite_required`): the picker says so
+   *  and its button signs kiro-cli in. Omit for no such row. */
+  kiroCliSignIn?: KiroCliSignIn
   filter: string
   setFilter: (v: string) => void
   onClose: () => void
@@ -117,7 +122,7 @@ export default function ModelEffortDropdown({
   modelVisibilityError = false, onRetryModelVisibility,
   defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
-  modelsFailed = false, modelsFailedMessage, onRetryModels, retryingModels = false,
+  modelsFailed = false, modelsFailedMessage, onRetryModels, retryingModels = false, kiroCliSignIn,
   writeEffort, onWriteError, ultracode, fastMode, fastUnavailable,
 }: Props) {
   const ime = useImeGuard()
@@ -197,6 +202,7 @@ export default function ModelEffortDropdown({
                 )}
               </div>
             )}
+            {kiroCliSignIn && <KiroCliModelsSignInNotice signIn={kiroCliSignIn} />}
             {/* Fade the list's bottom edge only while it has more rows below:
                 a row half-hidden under the effort block's border read as
                 overlap (see MORE_BELOW_MASK). */}

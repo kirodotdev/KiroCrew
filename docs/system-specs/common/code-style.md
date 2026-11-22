@@ -55,10 +55,9 @@ Other style rules:
 | Python version | >= 3.12; `from __future__ import annotations` for type hints |
 | Imports | `import logging` plus `logger = logging.getLogger(__name__)`; a split's owner names the original module instead ([Splitting a file](#splitting-a-file)) |
 | Async | `asyncio` throughout; `async def` for all I/O |
-| Module-global asyncio primitives | Never a bare `asyncio.Lock()`/`Event()`/`Queue()` at module scope — it binds to the import-time (or first-use) loop and raises `RuntimeError` from any other loop (Python 3.10+). Use `kiro_crew.loop_lock.LoopBoundLock` for locks, or create the primitive inside the coroutine. CI enforces this (`loop-bound-locks` gate). |
+| Module-global asyncio primitives | Never a bare `asyncio.Lock()`/`Event()`/`Queue()` at module scope — it binds to the import-time (or first-use) loop and raises `RuntimeError` from any other loop (Python 3.10+). Use `kiro_crew.loop_lock.LoopBoundLock` for locks, or create the primitive inside the coroutine. Fast Gate enforces this (`scripts/check_loop_bound_locks.py`). |
 | Dataclasses | `@dataclass` for data containers |
 | Product name | The product is **Kiro Crew**: two words, a space, capital `K`. Identifiers keep the spelling their own system gave them (the `kirodotdev/KiroCrew` repo slug, `KiroCrew.dmg` artifacts, the `KiroCrew Nightly` OS identifier, the `kirocrew` CLI, `KIROCREW_*` env vars, `kiro_crew` imports). CI gates the lines a change ADDS, so an existing spelling nearby does not exempt a new one; run `BRAND_BASE_REF=origin/main python3 scripts/check_brand_name.py` before pushing. |
-| Backend messages | Text the backend sends (CLI, chat apps, notices, tool replies, prompts) uses plain words such as `Error:`, `Warning:`, `Done`, not emoji or Slack `:shortcode:` emoji. A glyph that is data (a reaction name, a user-picked icon, text parsed from elsewhere) takes a trailing `# emoji-ok: <reason>` comment. An escape such as `"\u2705"` counts as the glyph. A moved line counts as added, so a file split clears or marks the glyphs it moves. CI gates added string lines: `BACKEND_EMOJI_BASE_REF=origin/main python3 scripts/check_backend_emoji.py`. |
 | Errors | ACP exceptions live in `acp/transport_errors.py` (re-exported by `acp/client.py`), `acp/session_handle_runtime_contract.py` (re-exported by `acp/session_handle.py`), and `acp/runtime.py` (the binding and session-start errors in `acp/runtime_session_setup.py` and `acp/runtime_session_create.py`, re-exported by it); return error strings at tool boundaries. See [error-handling](error-handling.md). |
 
 ## Comments explain the WHY
@@ -123,9 +122,9 @@ python3 scripts/local-gate.py
 The last line runs the tests related to your diff, not the full suite -- that is
 CI's job (`local-gate.py --full` exists for a human who wants it locally).
 
-`black --check` cannot be run bare: 1,420 files under `src/` and `test/` predate
-any enforcement, so a repo-wide run reformats ~95,800 lines. Those files are
-recorded in `.github/black-baseline.txt` and exempted; every other file must be
+`black --check` cannot be run bare: hundreds of files under `src/` and `test/`
+predate any enforcement, so a repo-wide run reformats far more than your change.
+Those files are recorded in `.github/black-baseline.txt` and exempted; every other file must be
 clean, and a file that *becomes* clean must be pruned from the list, so it only
 ever shrinks. Prune with `python3 scripts/check_black_formatting.py
 --update-baseline`; it refuses unless the installed black equals the
@@ -378,7 +377,7 @@ that code the mock or miss it; see
 A text-mode subprocess call (`text=True` / `universal_newlines=True`) without an
 explicit `encoding=` decodes the child's output with the locale's code page —
 UTF-8 on POSIX, the legacy ANSI code page on Windows, where any non-ASCII byte
-becomes mojibake (#3219). CI gates this with
+becomes mojibake. CI gates this with
 `scripts/check_subprocess_encoding.py` (AST-based, so multi-line calls are
 judged as one call), behind the shrink-only
 `.github/subprocess-encoding-baseline.txt`.
@@ -410,6 +409,7 @@ byte-order mark to the first field.
 
 Icons are `lucide-react` components with `className="lucide-inline"`. Never an
 emoji in the UI, never a hand-rolled SVG.
+Where emoji may stay outside the web UI: [the 2026-11-18 emoji decision](../../decisions/2026-11-18-emoji-are-replaced-only-in-the-web-ui.md).
 
 Never hardcode a user-facing English string, and never format a date, number or
 sort order without naming a locale. Both are CI-gated; see

@@ -20,9 +20,9 @@ from kiro_crew.messaging.transport import InboundMessage
 
 _ROUTE = ("direct", "7")
 _PICKED = "gpt-5.6-sol"
-_PICK_DEFERRED = f"Model set to {_PICKED} — it applies to your next message."
+_PICK_DEFERRED = f"✅ Model set to {_PICKED} — it applies to your next message."
 _RESUMED_UNCHANGED = (
-    "Warning: Couldn't switch this conversation to model-a — the resumed session was not changed."
+    "⚠️ Couldn't switch this conversation to model-a — the resumed session was not changed."
 )
 
 

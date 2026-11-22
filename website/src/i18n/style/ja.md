@@ -61,9 +61,11 @@ Put a half-width space between a Latin run and adjacent Japanese
 (`Kiro Crew を起動`, `MCP サーバー`), except where a Latin run that is NOT a
 do-not-translate term is the head of a compound the language has absorbed
 (`APIキー`). A do-not-translate term always takes the space: `i18n-translate.mjs
-verify` reads `MCPサーバー` as a dropped `MCP` and refuses the shard. Beyond that,
-this one is **review-only**: the boundary is a judgement call and a mechanical
-rule would fire on every absorbed compound.
+verify` reads `MCPサーバー` as a dropped `MCP` and refuses the shard.
+`jaStyle.test.ts` checks the space on both sides of `Kiro CLI` and
+`{{productName}}`. Beyond those two terms, this one is **review-only**: the
+boundary is a judgement call and a mechanical rule would fire on every absorbed
+compound.
 
 ---
 
@@ -93,8 +95,9 @@ reads as "light" or "right" access far sooner than "write".
 | write access | 書き込みアクセス | ライトアクセス |
 | present (attending) | 在席 | プレゼント |
 | open (a free slot) | 空き | 開く |
+| local (on this computer) | ローカル | 地元 |
 
-`jaStyle.test.ts` checks the `write access` and `present` rows only when the
+`jaStyle.test.ts` checks the `write access`, `present` and `local` rows only when the
 **English** carries the cue, so a legitimate `ライト` ("light theme") is never caught.
 The `open` / free-slot row is review-only.
 
@@ -168,9 +171,10 @@ copy must not add fragments: one key per sentence.
 | em dash kept where the English has one | `jaStyle.test.ts` |
 | interpolated values quoted with 「」 | `jaStyle.test.ts` |
 | no ideographic space | `jaStyle.test.ts` |
+| a space between `Kiro CLI` / `{{productName}}` and Japanese | `jaStyle.test.ts` |
 | no space inside a katakana compound | `jaStyle.test.ts` |
 | trailing long-vowel mark kept | `jaStyle.test.ts` |
-| `write access` and `present` use their context-specific terms | `jaStyle.test.ts` |
+| `write access`, `present` and `local` use their context-specific terms | `jaStyle.test.ts` |
 | no だ・である ending, no kanji auxiliaries | `jaStyle.test.ts` |
 | balanced brackets and quotes, incl. mixed width | `qa.test.ts` |
 | no full-width Latin or digits | `qa.test.ts` |
@@ -179,5 +183,5 @@ copy must not add fragments: one key per sentence.
 | correct CLDR plural categories (1: other) | `catalogParity.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 
-Everything in §1.1, the `open` row of §2.1, §3 and the rest of §4 is review-only —
-the judgements a human has to make.
+Everything in the rest of §1.1, the `open` row of §2.1, §3 and the rest of §4 is
+review-only — the judgements a human has to make.

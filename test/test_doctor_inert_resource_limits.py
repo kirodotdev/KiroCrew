@@ -44,7 +44,7 @@ def test_on_windows_each_set_inert_key_and_the_default_fd_cap_are_named(
     )
     lines = resources._windows_inert_limit_lines()
     text = "\n".join(lines)
-    assert "Warning:" in lines[0]
+    assert "⚠" in lines[0]
     for key in (
         "cpu_weight",
         "max_cpu_percent",
@@ -63,7 +63,7 @@ def test_an_fd_cap_turned_off_is_not_named(monkeypatch: pytest.MonkeyPatch) -> N
     # 0 leaves the inherited limit alone, so there is nothing Windows fails to do.
     _arrange(monkeypatch, windows=True, limits=ResourceLimitsConfig(max_open_files=0))
     assert resources._windows_inert_limit_lines() == [
-        "  inert limits:    OK:      no resource_limits key set that Windows ignores"
+        "  inert limits:    ✅ no resource_limits key set that Windows ignores"
     ]
 
 
@@ -80,7 +80,7 @@ def test_an_unreadable_config_degrades_to_a_line(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(cli_doctor, "KiroCrewConfig", SimpleNamespace(load=_boom))
     assert resources._windows_inert_limit_lines() == [
-        "  inert limits:    Warning: could not read resource_limits"
+        "  inert limits:    ⚠  could not read resource_limits"
     ]
 
 

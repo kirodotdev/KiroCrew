@@ -65,10 +65,10 @@ const EXTERNAL_URLS = Object.freeze([
 ]);
 
 // Editor deep links that open a file, locally or over SSH, after the user
-// confirms. Any other `vscode:` URL (an extension URI handler) stays blocked.
-// Matched on the raw string, for the same reason as EXTERNAL_URLS.
+// confirms. Any other `vscode:` or `kiro:` URL (an extension URI handler) stays
+// blocked. Matched on the raw string, for the same reason as EXTERNAL_URLS.
 const EDITOR_LINK_RE =
-  /^(vscode|vscode-insiders):\/\/(?:file(?:\/[A-Za-z]:)?|vscode-remote\/ssh-remote\+([^/]+))(\/[A-Za-z0-9._~@+%/-]*)(?::\d{1,7}){0,2}$/;
+  /^(vscode|vscode-insiders|kiro):\/\/(?:file(\/[A-Za-z]:)?|vscode-remote\/ssh-remote\+([^/]+))(\/[A-Za-z0-9._~@+%/-]*)(?::\d{1,7}){0,2}$/;
 
 /**
  * The editor and machine an editor link opens a file on, or null when `url` is
@@ -76,18 +76,22 @@ const EDITOR_LINK_RE =
  *
  * Accepts `vscode://file/<path>` and
  * `vscode://vscode-remote/ssh-remote+<host>/<path>`, each with an optional
- * `:line[:col]`, and the same for `vscode-insiders://`. A local file may start
+ * `:line[:col]`, and the same for `vscode-insiders://` and `kiro://` (Kiro is a
+ * VS Code build and reads the same authorities). A local file may start
  * with a Windows drive letter (`vscode://file/C:/<path>`). The host must be a DNS
- * name or SSH alias, and the decoded path must have no `..` segment.
+ * name or SSH alias, and the decoded path must have no `..` segment. A local
+ * path that starts with `//` and no drive letter names a share on another
+ * machine (`vscode://file//<host>/<share>/<path>`), so it comes back as `share`.
  *
  * @param {string} url the raw requested target
- * @returns {{scheme: string, host: string|null}|null} host is null for a local file
+ * @returns {{scheme: string, host: string|null, share: string|null}|null} host is
+ *   null for a local file; share is the decoded path of a share link, else null
  */
 function editorLinkTarget(url) {
   if (typeof url !== "string") return null;
   const match = EDITOR_LINK_RE.exec(url);
   if (!match) return null;
-  const [, scheme, host, rawPath] = match;
+  const [, scheme, drive, host, rawPath] = match;
   if (host !== undefined && !HOSTNAME_RE.test(host)) return null;
   let path;
   try {
@@ -96,16 +100,23 @@ function editorLinkTarget(url) {
     return null;
   }
   if (path.split("/").includes("..") || /[\u0000-\u001f\\]/.test(path)) return null;
-  return { scheme, host: host === undefined ? null : host.toLowerCase() };
+  const share = drive === undefined && host === undefined && path.startsWith("//");
+  return {
+    scheme,
+    host: host === undefined ? null : host.toLowerCase(),
+    share: share ? path : null,
+  };
 }
 
 function isEditorLink(url) {
   return editorLinkTarget(url) !== null;
 }
 
+// A share link is remembered by its own path, so a choice made for local files,
+// an SSH host or another share never opens it without asking.
 function editorTargetKey(url) {
   const target = editorLinkTarget(url);
-  return target === null ? null : `${target.scheme} ${target.host || ""}`;
+  return target === null ? null : `${target.scheme} ${target.share || target.host || ""}`;
 }
 
 // Web schemes the dashboard itself may navigate to.
@@ -227,9 +238,10 @@ function openExternalSafely(openExternal, url, log) {
  * @param {(url: string) => Promise<{open: boolean, remember?: boolean}>} [deps.confirmOpen]
  *   asks the user before a "confirm" verdict is handed to the OS; without it
  *   those are denied. `remember` skips the prompt for later links to the same
- *   editor and host.
- * @param {Set<string>} [deps.rememberedEditorTargets] the editor and host pairs
- *   the user chose not to be asked about again; share one across windows
+ *   editor and machine (for a share link, the same path).
+ * @param {Set<string>} [deps.rememberedEditorTargets] the editor and machine (or
+ *   share path) keys the user chose not to be asked about again; share one
+ *   across windows
  * @param {(msg: string) => void} [deps.log] diagnostic sink
  * @returns {(details: {url: string}) => {action: "allow"|"deny"}}
  */

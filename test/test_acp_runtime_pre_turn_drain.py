@@ -5,6 +5,7 @@ the session queue before a prompt starts.
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, call
 
 import pytest
@@ -68,18 +69,24 @@ async def test_pre_turn_drain_counts_discarded_frames_without_logging_content(ca
         assert _secret not in _drain_lines[0], f"{_secret!r} leaked into the drain warning"
 
 
-async def _drain_warning_lines(handle, caplog):
-    """Run one prompt through the pre-turn drain and return its warning lines."""
+async def _drain_records(handle, caplog, level=logging.WARNING):
+    """Run one prompt through the pre-turn drain and return the captured records."""
     import contextlib
-    import logging
 
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.session_handle"):
+    with caplog.at_level(level, logger="kiro_crew.acp.session_handle"):
         gen = handle.prompt("hi", timeout=0.2)
         with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
             await _bounded(gen.__anext__(), what="the first prompt event")
         await gen.aclose()
+    return caplog.records
+
+
+async def _drain_warning_lines(handle, caplog):
+    """Run one prompt through the pre-turn drain and return its warning lines."""
     return [
-        rec.getMessage() for rec in caplog.records if "pre-turn drain discarded" in rec.getMessage()
+        rec.getMessage()
+        for rec in await _drain_records(handle, caplog)
+        if "pre-turn drain discarded" in rec.getMessage()
     ]
 
 
@@ -509,6 +516,124 @@ async def test_pre_turn_drain_dedupes_stop_reasons_in_the_warning(caplog):
     assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
     assert "3 of them" in _drain_lines[0]
     assert _drain_lines[0].count("cancelled") == 1, _drain_lines[0]
+
+
+def _update(kind: object, **extra: object) -> JsonRpcMessage:
+    """A ``session/update`` notification for session ``sA`` of the given kind."""
+    return JsonRpcMessage.from_dict(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": "sA", "update": {"sessionUpdate": kind, **extra}},
+        }
+    )
+
+
+def _notice(method: str, **params: object) -> JsonRpcMessage:
+    """A backend extension notification (no ``id``)."""
+    return JsonRpcMessage.from_dict({"jsonrpc": "2.0", "method": method, "params": params})
+
+
+async def _drain_lines_at_debug(handle, caplog):
+    """Run one prompt through the pre-turn drain; return (warning lines, state lines)."""
+    lines = [
+        (rec.levelno, rec.getMessage())
+        for rec in await _drain_records(handle, caplog, logging.DEBUG)
+    ]
+    return (
+        [m for lvl, m in lines if "pre-turn drain discarded" in m and lvl >= logging.WARNING],
+        [m for lvl, m in lines if "between-turn state notification" in m],
+    )
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_logs_startup_state_notifications_at_debug(caplog):
+    """The frames KAS sends after ``session/new`` answers raise no WARNING.
+
+    They are what a fresh session's first prompt finds on its queue: MCP
+    status, tool lists, commands, config, context usage, a display error, and the
+    sessions list every queue receives. They report state, so they are counted at
+    DEBUG.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    for frame in (
+        _notice("_kiro/mcp/status", sessionId="sA", servers=[]),
+        _notice("_kiro/tools/didChange", sessionId="sA", tags=[]),
+        _notice("_kiro/sessions/changed", upserted=[], deleted=[]),
+        _update("available_commands_update", availableCommands=[]),
+        _update("config_option_update", configOptions=[]),
+        _update("session_info_update", _meta={"kiro": {"kind": "context_usage"}}),
+        _update("session_info_update", _meta={"kiro": {"kind": "display_error"}}),
+    ):
+        q["sA"].put_nowait(frame)
+
+    warnings, state = await _drain_lines_at_debug(handle, caplog)
+    assert warnings == [], f"state notifications raised the lost-frame warning: {warnings}"
+    assert len(state) == 1, state
+    assert "dropped 7 between-turn state notification(s)" in state[0], state[0]
+    levels = {r.levelno for r in caplog.records if "between-turn state" in r.getMessage()}
+    assert levels == {logging.DEBUG}, levels
+    assert handle._queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_still_warns_for_turn_frames_beside_state(caplog):
+    """Every frame the allowlist does not name stays in the WARNING count.
+
+    Turn content, a usage update, an unknown kind and a malformed kind on
+    ``session/update``, the same content on kiro-cli's ``_kiro.dev/session/update``
+    spelling, a steer, a sign-in link no turn holds, a usage report with credits,
+    KAS's turn-scoped ``session_info_update`` kinds, and a request on an allowed
+    kind are all counted; a non-string kind must not crash the drain.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    for frame in (
+        _notice("_kiro/mcp/status", sessionId="sA", servers=[]),
+        _update("agent_message_chunk", content={"type": "text", "text": "SECRETALPHA"}),
+        _update("usage_update", used=1),
+        _update("some_future_update"),
+        _update(["agent_message_chunk"]),
+        _notice(
+            "_kiro.dev/session/update",
+            sessionId="sA",
+            update={"sessionUpdate": "tool_call_chunk", "toolCallId": "t1"},
+        ),
+        _notice("_kiro.dev/mcp/oauth_request", sessionId="sA", serverName="srv", url="u"),
+        _update("steering_queued"),
+        _notice(
+            "_kiro.dev/metadata",
+            sessionId="sA",
+            meteringUsage=[{"unit": "credit", "value": 0.5}],
+        ),
+        _update("session_info_update", _meta={"kiro": {"kind": "turn_completion"}}),
+        _update("session_info_update", _meta={"kiro": {"kind": "steering_queued"}}),
+        _update("session_info_update", _meta={"kiro": {"kind": ["context_usage"]}}),
+        JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "session/update",
+                "params": {"update": {"sessionUpdate": "available_commands_update"}},
+            }
+        ),
+        _update("session_info_update", _meta={"kiro": {"kind": "context_usage"}}),
+    ):
+        q["sA"].put_nowait(frame)
+
+    warnings, state = await _drain_lines_at_debug(handle, caplog)
+    assert len(warnings) == 1, warnings
+    assert "discarded 12 leftover frame(s)" in warnings[0], warnings[0]
+    assert "SECRETALPHA" not in warnings[0]
+    assert len(state) == 1 and "dropped 2 between-turn" in state[0], state
+    assert handle.is_turn_active is False, "the drain left the handle turn-active"
 
 
 @pytest.mark.asyncio

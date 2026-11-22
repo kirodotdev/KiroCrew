@@ -357,6 +357,7 @@ async def test_only_a_model_turn_clears_the_persons_ask_on_the_board(turn, await
     item_id = _item()
     _bind(item_id)
     _report(item_id, "question", "pick a region", reason="needs_human")
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Pick a region")
     worker = SimpleNamespace(key="", linked_session_key="", running=turn, turn_running=turn)
     state = _state({WORKER: worker})
     state.workflow_service = SimpleNamespace(
@@ -493,6 +494,17 @@ async def test_a_report_the_harness_never_delivered_is_on_the_board_without_the_
     flag = body["items"][0]["report_undelivered"]
     assert set(flag) == {"tool", "at"} and flag["tool"] == "work_report"
     assert WORKER not in response.body.decode()
+
+
+@pytest.mark.asyncio
+async def test_a_hosted_discussion_reaches_the_board_row():
+    """The Board's "discussing" row reads `discussion` from this payload."""
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress", discussion={"phase": "talking", "round": 2, "agreed": ["ship A"]})
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    talk = body["items"][0]["discussion"]
+    assert (talk["phase"], talk["round"], talk["agreed"]) == ("talking", 2, ["ship A"])
 
 
 @pytest.mark.asyncio

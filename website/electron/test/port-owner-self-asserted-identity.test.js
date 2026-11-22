@@ -161,8 +161,8 @@ const IDENTITY_SITES = [
     times: 1,
   },
   {
-    what: "unresponsive holder: probe who holds the port that failed its health check",
-    code: 'const localOwner = await probeGatewayPortOwner(PORT);',
+    what: "unresponsive holder: probe who holds the port that failed its health check, keeping a foreign holder for the failure dialog",
+    code: 'const localOwner = await probeGatewayPortOwner(PORT, { holders });',
     times: 1,
   },
   {

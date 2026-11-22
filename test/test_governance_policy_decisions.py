@@ -163,7 +163,7 @@ class TestValidateReportsUngovernedCapabilities:
         body["agentcore"] = {"enabled": True, "posture": "workload"}
         out = self._validate(capsys, parse_policy(_policy_body(capabilities=body)))
         assert "UNGOVERNED" not in out
-        assert "valid" in out.splitlines()
+        assert "✅ valid" in out
 
     def test_policy_that_never_mentions_capabilities_reports_no_gap(self, capsys):
         """Silence about capabilities entirely is not a partial statement."""

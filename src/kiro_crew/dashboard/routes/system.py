@@ -127,6 +127,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/usage/series", handlers.api_usage_series)
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
     app.router.add_get("/api/telemetry/context-trace", handlers.api_context_trace)
+    app.router.add_get("/api/telemetry/prompt-as-sent", handlers.api_prompt_as_sent)
     app.router.add_get("/api/usage/turns", handlers.api_usage_turns)
     app.router.add_get("/api/wakatime/stats", handlers.api_wakatime_stats)
     app.router.add_get("/api/wakatime/export", handlers.api_wakatime_export)
@@ -138,6 +139,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/telemetry/collection", handlers.api_collection_status)
     # Owner-only, closed one-field body, no disk write (handlers/telemetry_ui_control.py).
     app.router.add_post("/api/telemetry/ui-control", handlers.api_ui_control_clicked)
+    # Owner-only, 256-byte closed body, no disk write (handlers/telemetry_app_view.py).
+    app.router.add_post("/api/telemetry/app-view", handlers.api_app_view)
     app.router.add_get("/api/tailnet/status", handlers.api_tailnet_status)
     # Mobile access: a LIVE probe (the status route above reports the startup
     # value) plus setup/publish/withdraw mutations and the QR mint. Registered
@@ -151,6 +154,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/sessions/restart", handlers.api_sessions_restart)
     # NOTE: /search must be registered before /{key} to avoid the path param catching "search"
     app.router.add_get("/api/sessions/search", handlers.api_sessions_search)
+    app.router.add_get("/api/sessions/search/messages", handlers.api_sessions_search_messages)
     app.router.add_post("/api/sessions/summarize", handlers.api_sessions_summarize)
     # Two segments, so /{key} (a single segment) cannot catch it — but registered
     # ahead of /{key} anyway, matching the ordering discipline the note above sets.

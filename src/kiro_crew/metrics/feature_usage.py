@@ -8,9 +8,25 @@ counter                                        one increment per
                                                memory (``path``: tool / context)
 ``kirocrew.lesson.injected``                   admitted turn composed with a lesson
                                                tier (``hit``: a lesson went in)
-``kirocrew.app.task.completed``                unit of work an app reports finished
 ``kirocrew.app.installed``                     first install of an app from a registry
                                                (``via``: store / default)
+``kirocrew.app.updated``                       registry install over an installed app
+``kirocrew.app.uninstalled``                   uninstall the person asked for
+                                               (``keep_data``)
+``kirocrew.app.session_started``               session start owned by an app
+                                               (``kind``: its ``session_kind``)
+
+
+``kirocrew.app.run_time``                      finished turn of an app's session,
+                                               adds its seconds (``duration``)
+``kirocrew.app.present``                       installed app, once per UTC day
+                                               (``status``, ``backend``)
+``kirocrew.app.opened``                        app page mounted or ``openCommand``
+                                               launched, owner views only
+                                               (``surface``)
+``kirocrew.app.foreground_time``               seconds an app page was visible,
+                                               owner views only (``surface``,
+                                               ``duration``)
 ``kirocrew.channel.message.received``          inbound channel message, once
                                                admission has decided
 ``kirocrew.ui.control.clicked``                click on an agent-rendered control
@@ -27,15 +43,14 @@ list names for it). ``test/metrics/test_feature_usage.py`` and
 query, result, lesson key, skill name the operator chose, app name a third party
 chose, channel or sender id, or control text is ever an attribute.
 
-**Skill and app ids are exported only for what Kiro Crew ships.** An operator's
-own skill can be named after what they work on, so a name outside
-:data:`SHIPPED_SKILL_IDS` is one bucket, ``custom``. The same holds for apps: an
-app that is not one of :data:`OFFICIAL_APP_IDS` (the shipped built-ins) is
-``private``. Both lists are in memory at import, so neither importing this module
-nor labelling a value reads the filesystem. :func:`app_public_id`, the label of
-``kirocrew.app.installed``, also names the apps installed from the store; it reads
-a set the gateway fills off the event loop, so labelling with it reads no file
-either.
+**Skill and app ids are exported only for what Kiro Crew ships or a store
+published.** An operator's own skill can be named after what they work on, so a
+name outside :data:`SHIPPED_SKILL_IDS` is one bucket, ``custom``. That list is in
+memory at import, so neither importing this module nor labelling a skill reads the
+filesystem. :func:`app_public_id`, the label of ``kirocrew.app.installed``, names
+the shipped built-ins and the apps installed from the store, and any other app is
+``private``; it and :func:`app_public_version`, their version, read a map the
+gateway fills off the event loop, so labelling with them reads no file either.
 
 **Recording never changes the result of what it measures.** Every function here
 swallows its own failures after a debug log, and each call site records only
@@ -47,9 +62,8 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import re
-
-from kiro_crew.apps.builtins import BUILTIN_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +72,14 @@ LESSON_INJECTED = "kirocrew.lesson.injected"
 #: The on-demand skill body load counter, emitted by ``skills_body_reads``. It
 #: carries the closed ``skill`` label from :func:`skill_label`.
 SKILL_LAZY_LOAD_COUNT = "kirocrew.skill.lazy_load.count"
-APP_TASK_COMPLETED = "kirocrew.app.task.completed"
 APP_INSTALLED = "kirocrew.app.installed"
+APP_UPDATED = "kirocrew.app.updated"
+APP_UNINSTALLED = "kirocrew.app.uninstalled"
+APP_SESSION_STARTED = "kirocrew.app.session_started"
+APP_RUN_TIME = "kirocrew.app.run_time"
+APP_PRESENT = "kirocrew.app.present"
+APP_OPENED = "kirocrew.app.opened"
+APP_FOREGROUND_TIME = "kirocrew.app.foreground_time"
 CHANNEL_MESSAGE_RECEIVED = "kirocrew.channel.message.received"
 UI_CONTROL_CLICKED = "kirocrew.ui.control.clicked"
 TIPS_FEEDBACK = "kirocrew.tips.feedback"
@@ -250,41 +270,28 @@ def skill_label(name: object) -> str:
     return OTHER
 
 
-# -- app.task.completed -------------------------------------------------------
+# -- app.installed ------------------------------------------------------------
 
-
-#: Every official app id: the apps the package ships, by their ``apps/builtins/``
-#: directory name. Those names are public, so sending one discloses nothing an
-#: operator chose; any other app reports :data:`APP_PRIVATE`. Read from
-#: ``BUILTIN_NAMES`` rather than spelled out here, so this module names no app;
-#: a test holds every ``record_app_task`` call in the package to an id in it.
-OFFICIAL_APP_IDS: frozenset[str] = frozenset(BUILTIN_NAMES)
 
 APP_PRIVATE = "private"
 
-APP_TASK_OUTCOME_VALUES: tuple[str, ...] = ("ok", "error", OTHER)
+
+#: Every app with a public id (:mod:`kiro_crew.apps.store_origin`), mapped to its
+#: version: the shipped built-ins by their ``app.json`` name, and the apps installed
+#: from the store. Filled off the event loop by :func:`refresh_public_app_ids`, one
+#: assignment per fill; empty until then, so every app is ``private`` before the
+#: first fill.
+_public_app_ids: dict[str, str] = {}
 
 
-def app_label(app: object) -> str:
-    """An official app id, else ``private``."""
-    if isinstance(app, str) and app in OFFICIAL_APP_IDS:
-        return app
-    return APP_PRIVATE
-
-
-#: Every app with a public id (:mod:`kiro_crew.apps.store_origin`): the shipped
-#: built-ins by their ``app.json`` name, and the apps installed from the store. Filled
-#: off the event loop by :func:`refresh_public_app_ids`; empty until then, so every
-#: app is ``private`` before the first fill.
-_public_app_ids: frozenset[str] = frozenset()
-
-
-def refresh_public_app_ids() -> None:
+def refresh_public_app_ids() -> dict[str, str] | None:
     """Re-read which apps have a public id. Reads the install records: call off the loop.
 
     The gateway runs it at boot and after every app lifecycle change
     (``slots_push.refresh_app_state``), and a registry install runs it before it
-    counts the install. Never raises; a failed read keeps the last set.
+    counts the install. Returns the map this call read, so a caller can label from
+    its own scan even when a concurrent refresh swaps in an older one. Never raises;
+    a failed read keeps the last set and returns ``None``.
 
     shortcut: only a gateway process fills the set, so a CLI process labels every
     app ``private``; fill it there too once a CLI path records an app metric.
@@ -293,22 +300,50 @@ def refresh_public_app_ids() -> None:
     try:
         from kiro_crew.apps.store_origin import public_app_ids
 
-        _public_app_ids = public_app_ids()
+        ids = public_app_ids()
     except Exception:
         logger.debug("public app ids refresh failed", exc_info=True)
+        return None
+    _public_app_ids = ids
+    return ids
 
 
-def app_public_id(app: object) -> str:
+def app_public_id(app: object, ids: dict[str, str] | None = None) -> str:
     """*app*'s public id: a shipped built-in's or a store install's name, else ``private``.
 
     Not a string is ``other``. Whether an install came from the store is read from
     its install record, so an app the store later delists keeps its id. Reads only
-    memory. Separate from :func:`app_label`, whose values
-    ``kirocrew.app.task.completed`` already sends and which stay as they are.
+    memory. *ids* is a map :func:`refresh_public_app_ids` returned; default the last
+    one filled.
     """
     if not isinstance(app, str):
         return OTHER
-    return app if app in _public_app_ids else APP_PRIVATE
+    return app if app in (_public_app_ids if ids is None else ids) else APP_PRIVATE
+
+
+#: A version an app with a public id sends as itself: three dot-separated numbers.
+#: ``SEMVER_RE`` (``apps/manifest_names.py``) lets any text follow ``-`` or ``+``,
+#: so a pre-release or build suffix is ``other``.
+_PUBLIC_VERSION = re.compile(r"^\d{1,4}\.\d{1,4}\.\d{1,4}$")
+
+
+def app_public_version(app: object, ids: dict[str, str] | None = None) -> str:
+    """*app*'s installed version, the ``entity_version`` label beside :func:`app_public_id`.
+
+    ``private`` whenever :func:`app_public_id` is ``private``, so a private app's
+    version never leaves the machine. For an app with a public id, its version when
+    it is ``N.N.N`` (at most four digits each, ``1.2.3``), else ``other``
+    (``1.2.3-beta``, ``1.2.3+build``, empty). Not a string is ``other``. Reads only
+    memory: *ids*, a map :func:`refresh_public_app_ids` returned, else the one it
+    last filled.
+    """
+    known = _public_app_ids if ids is None else ids
+    if not isinstance(app, str):
+        return OTHER
+    if app not in known:
+        return APP_PRIVATE
+    version = known.get(app)
+    return version if isinstance(version, str) and _PUBLIC_VERSION.match(version) else OTHER
 
 
 #: How an install was asked for: ``store`` from the store or a registry the owner
@@ -316,15 +351,224 @@ def app_public_id(app: object) -> str:
 APP_INSTALL_VIA_VALUES: tuple[str, ...] = ("store", "default", OTHER)
 
 
-def record_app_installed(app: object, via: object) -> None:
-    """*app* was installed for the first time, asked for *via* (``store`` / ``default``)."""
-    _emit(APP_INSTALLED, {"app": app_public_id(app), "via": _closed(via, APP_INSTALL_VIA_VALUES)})
+def record_app_installed(app: object, via: object, ids: dict[str, str] | None = None) -> None:
+    """*app* was installed for the first time, asked for *via* (``store`` / ``default``).
+
+    *ids* as in :func:`app_public_id`.
+    """
+    _emit(
+        APP_INSTALLED,
+        {
+            "app": app_public_id(app, ids),
+            "via": _closed(via, APP_INSTALL_VIA_VALUES),
+            "entity_version": app_public_version(app, ids),
+        },
+    )
 
 
-def record_app_task(app: object, outcome: object) -> None:
-    """One unit of work *app* finished with *outcome* (``ok`` / ``error``)."""
-    value = outcome if isinstance(outcome, str) and outcome in APP_TASK_OUTCOME_VALUES else OTHER
-    _emit(APP_TASK_COMPLETED, {"app": app_label(app), "outcome": value})
+def record_app_updated(app: object, via: object, ids: dict[str, str] | None = None) -> None:
+    """A registry install replaced an installed *app*; labelled with the new version.
+
+    *ids* as in :func:`app_public_id`.
+    """
+    _emit(
+        APP_UPDATED,
+        {
+            "app": app_public_id(app, ids),
+            "via": _closed(via, APP_INSTALL_VIA_VALUES),
+            "entity_version": app_public_version(app, ids),
+        },
+    )
+
+
+def record_app_uninstalled(public_id: object, public_version: object, *, keep_data: bool) -> None:
+    """An uninstall the person asked for committed.
+
+    *public_id* and *public_version* are :func:`app_public_id` and
+    :func:`app_public_version` of the app, read BEFORE its install record was
+    removed, so they name the version that went. Anything that is not a string
+    is ``other``.
+    """
+    _emit(
+        APP_UNINSTALLED,
+        {
+            "app": public_id if isinstance(public_id, str) else OTHER,
+            "entity_version": public_version if isinstance(public_version, str) else OTHER,
+            "keep_data": _bool(keep_data),
+        },
+    )
+
+
+def record_app_session_started(app: object, kind: object) -> None:
+    """A session owned by *app* started; *kind* is its ``session_kind``.
+
+    Called by ``record_session_started`` right after it counts
+    ``kirocrew.session.started``, only when the provider's ``owning_app`` (set by
+    session allocation from the caller's slot app, never from transcript
+    metadata) is not empty, so this never counts more than ``session.started``.
+    """
+    from kiro_crew.metrics.usage_attrs import SESSION_KIND_VALUES
+
+    _emit(
+        APP_SESSION_STARTED,
+        {
+            "app": app_public_id(app),
+            "entity_version": app_public_version(app),
+            "kind": _closed(kind, SESSION_KIND_VALUES),
+        },
+    )
+
+
+#: The ``duration`` label of an app's timed rows: the upper edge of the bucket the
+#: seconds fall in, ``gt_4h`` past four hours, ``other`` when there is no number.
+APP_DURATION_VALUES: tuple[str, ...] = (
+    "le_10s",
+    "le_1m",
+    "le_5m",
+    "le_15m",
+    "le_1h",
+    "le_4h",
+    "gt_4h",
+    OTHER,
+)
+
+
+def app_duration_bucket(seconds: object) -> str:
+    """The :data:`APP_DURATION_VALUES` bucket of *seconds*; each edge is in the lower bucket."""
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return OTHER
+    if not 0 < seconds < math.inf:
+        return OTHER
+    if seconds <= 10:
+        return "le_10s"
+    if seconds <= 60:
+        return "le_1m"
+    if seconds <= 300:
+        return "le_5m"
+    if seconds <= 900:
+        return "le_15m"
+    if seconds <= 3600:
+        return "le_1h"
+    if seconds <= 14400:
+        return "le_4h"
+    return "gt_4h"
+
+
+def record_app_run_time(owning_app: object, duration_ms: object) -> None:
+    """Add one finished turn's wall seconds, rounded up, to its app's run time.
+
+    *owning_app* is the trusted app of the session that ran the turn (the live
+    provider's ``owning_app``); empty or not a string records nothing, so a turn
+    outside an app adds nothing. A turn with no positive duration adds nothing
+    either: a 0 would read as a measured instant turn. The bucket is taken from the
+    rounded seconds, so the value and its ``duration`` agree. Never raises.
+    """
+    if not isinstance(owning_app, str) or not owning_app:
+        return
+    if isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float)):
+        return
+    if not 0 < duration_ms < math.inf:
+        return
+    try:
+        from kiro_crew.metrics.provider import get_recorder
+
+        seconds = math.ceil(duration_ms / 1000)
+        get_recorder().counter(
+            APP_RUN_TIME,
+            seconds,
+            unit="s",
+            attrs={
+                "app": app_public_id(owning_app),
+                "entity_version": app_public_version(owning_app),
+                "duration": app_duration_bucket(seconds),
+            },
+        )
+    except Exception:  # telemetry must never break the measured path
+        logger.debug("app run time emit failed", exc_info=True)
+
+
+#: Whether an installed app is enabled, on ``kirocrew.app.present``.
+APP_PRESENT_STATUS_VALUES: tuple[str, ...] = ("enabled", "disabled", OTHER)
+#: An installed app's backend process: ``none`` when its manifest runs none
+#: (no ``backend.entryPoint``), else ``running`` or ``stopped`` in this gateway.
+APP_PRESENT_BACKEND_VALUES: tuple[str, ...] = ("none", "running", "stopped", OTHER)
+
+
+def record_app_present(
+    app: object, status: object, backend: object, ids: dict[str, str] | None = None
+) -> None:
+    """*app* is installed today; the daily pass in :mod:`kiro_crew.metrics.app_present`.
+
+    *ids* as in :func:`app_public_id`.
+    """
+    _emit(
+        APP_PRESENT,
+        {
+            "app": app_public_id(app, ids),
+            "entity_version": app_public_version(app, ids),
+            "status": _closed(status, APP_PRESENT_STATUS_VALUES),
+            "backend": _closed(backend, APP_PRESENT_BACKEND_VALUES),
+        },
+    )
+
+
+# -- app.opened / app.foreground_time ------------------------------------------
+#
+# Both come from the owner's own dashboard tabs only, through the owner-gated
+# ``POST /api/telemetry/app-view`` (``dashboard/handlers/telemetry_app_view.py``).
+# They count owner views, unlike ``session.started`` and ``turn.completed``,
+# which count every session.
+
+#: Where an app was opened: its routed page, its pop-out window, or its
+#: ``openCommand`` launched from the Library (``desktop``).
+APP_OPENED_SURFACE_VALUES: tuple[str, ...] = ("desktop", "page", "popout", OTHER)
+
+#: Where a foreground span was measured. An ``openCommand`` app has no page here.
+APP_FOREGROUND_SURFACE_VALUES: tuple[str, ...] = ("page", "popout", OTHER)
+
+#: Longest foreground span counted, in seconds: a longer one is cut to this, so
+#: a tab left open across a weekend adds a day, not three.
+APP_FOREGROUND_MAX_SECONDS = 24 * 3600
+
+
+def record_app_opened(app: object, surface: object) -> None:
+    """The owner opened *app*'s page (``page`` / ``popout``) or launched it (``desktop``)."""
+    _emit(
+        APP_OPENED,
+        {
+            "app": app_public_id(app),
+            "entity_version": app_public_version(app),
+            "surface": _closed(surface, APP_OPENED_SURFACE_VALUES),
+        },
+    )
+
+
+def record_app_foreground(app: object, surface: object, seconds: int) -> None:
+    """*app*'s page was visible to the owner for *seconds* whole seconds.
+
+    Adds the seconds, cut to :data:`APP_FOREGROUND_MAX_SECONDS`, in the
+    :func:`app_duration_bucket` of what was added. A span under one second adds
+    nothing: it is a flicker, not a view. Never raises.
+    """
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 1:
+        return
+    seconds = min(seconds, APP_FOREGROUND_MAX_SECONDS)
+    try:
+        from kiro_crew.metrics.provider import get_recorder
+
+        get_recorder().counter(
+            APP_FOREGROUND_TIME,
+            seconds,
+            unit="s",
+            attrs={
+                "app": app_public_id(app),
+                "entity_version": app_public_version(app),
+                "surface": _closed(surface, APP_FOREGROUND_SURFACE_VALUES),
+                "duration": app_duration_bucket(seconds),
+            },
+        )
+    except Exception:  # telemetry must never break the measured path
+        logger.debug("feature counter emit failed for %s", APP_FOREGROUND_TIME, exc_info=True)
 
 
 # -- channel.message.received -------------------------------------------------
@@ -421,23 +665,34 @@ def shipped_curated_tip_ids() -> frozenset[str]:
     return frozenset(t["id"] for t in _load_curated_tips())
 
 
-def tip_feature_label(feature: object) -> str:
+def tip_feature_label(feature: object, edition_tip_ids: frozenset[str] = frozenset()) -> str:
     """*feature* when it names a shipped tip or doc, else ``other``.
 
     Kept when it is a doc in ``TIP_DOC_ALLOWLIST`` (the shipped, user-facing
-    feature docs) or the id of a tip shipped in ``tips_curated.json``. Both are
-    lists this package ships, so a kept value names nothing the user wrote.
+    feature docs), the id of a tip shipped in ``tips_curated.json``, or one of
+    *edition_tip_ids*, the fixed ids an edition pool lists for its own curated
+    tips (``TipsPool.metric_tip_ids``). All are lists a build ships, so a kept
+    value names nothing the user wrote.
     """
     from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 
     if not isinstance(feature, str) or not feature:
         return OTHER
-    if feature in TIP_DOC_ALLOWLIST or feature in shipped_curated_tip_ids():
+    if (
+        feature in TIP_DOC_ALLOWLIST
+        or feature in shipped_curated_tip_ids()
+        or feature in edition_tip_ids
+    ):
         return feature
     return OTHER
 
 
-def record_tip_feedback(action: object, source: object, feature: object) -> None:
+def record_tip_feedback(
+    action: object,
+    source: object,
+    feature: object,
+    edition_tip_ids: frozenset[str] = frozenset(),
+) -> None:
     """One saved tip reaction. Never raises."""
     try:
         _emit(
@@ -445,7 +700,7 @@ def record_tip_feedback(action: object, source: object, feature: object) -> None
             {
                 "action": _closed(action, TIP_ACTION_VALUES),
                 "source": _closed(source, TIP_SOURCE_VALUES),
-                "feature": tip_feature_label(feature),
+                "feature": tip_feature_label(feature, edition_tip_ids),
             },
         )
     except Exception:

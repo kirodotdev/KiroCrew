@@ -30,10 +30,10 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
 # The local editors the Markdown panel's "Open in <editor>" row can target
 # (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
 # that keeps the ``vscode-remote`` authority, so the row's link is
-# ``<id>://vscode-remote/ssh-remote+<host><absolute path>``. The dashboard's own list,
+# ``<id>://vscode-remote/ssh-remote+<host><absolute path>:1``. The dashboard's own list,
 # with each editor's name, is ``REMOTE_EDITORS`` in
 # ``website/src/utils/remoteEditorUrl.ts``; keep the two equal.
-REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode",)
+REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode", "kiro")
 # ``dashboard.remote_editor.host``: a DNS name or ``~/.ssh/config`` alias, the
 # grammar the desktop app's editor-link check takes (``HOSTNAME_RE`` in
 # ``website/electron/validation.js``). Nothing that adds URL structure after
@@ -52,6 +52,9 @@ REMOTE_EDITOR_HOST_PATTERN = (
 # the browser's copy as a cache of this section, and
 # test_feature_previews_config.py pins the two lists equal.
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
+    # Has server behavior: kiro_crew.apps.browser_sdk.preview_on gates ctx.browser
+    # and every permissions.browser verb.
+    "app_browser_sdk",
     "artifact_deploy",
     "bridge_approvals",
     "chat_runtime_sharing",
@@ -66,7 +69,11 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "remote_crew_chat",
     "session_environments",
     "session_harness",
+    "visual_refresh",
     "webhooks",
+    # Has server behavior: kiro_crew.widgets_preview gates `widgets` on
+    # dashboard_save (schema, tool and save route) and the guide agents read.
+    "widgets",
     "worker_grill",
 )
 
@@ -267,6 +274,15 @@ class DashboardConfig:
             "Repeat reads of one secret by one caller share a row per 10 minutes, which "
             "counts them. Off by default. Takes effect on the next read; no restart (within "
             "30 seconds in the MCP gateway process).",
+        ),
+    )
+    turn_cache_estimate: bool = field(
+        default=False,
+        metadata=_meta(
+            "Estimate cache rebuilds",
+            'Mark a reply in its footer as "Cache likely rebuilt" when the backend reports '
+            "no cache counts and the turn started after a pause longer than the model keeps "
+            "the conversation cached. Backends that report cache counts are unaffected.",
         ),
     )
     crewmate_threads: bool = field(
@@ -717,6 +733,18 @@ class DashboardConfig:
             "closed, and show it each time the panel opens. A panel opened for "
             "something specific, such as a file, still shows that. Works only "
             "while session summaries are on.",
+        ),
+    )
+    auto_open_conductor_board: bool = field(
+        default=True,
+        metadata=_meta(
+            "Auto-open the Board in the side panel",
+            "Open the right side panel on the Board tab the first time you open a "
+            "conductor mode chat. With this off, a conductor mode chat opens like "
+            "any other chat: its panel stays closed unless Keep the side panel "
+            "open is on, and the Board is still the panel's first tab. Turning "
+            "conductor mode on in a chat still opens the Board. This setting "
+            "does not apply on a phone.",
         ),
     )
     # Default TRUE: the chip strip shipped unconditionally before this switch

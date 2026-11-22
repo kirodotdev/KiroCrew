@@ -157,6 +157,7 @@ class AcpSessionHandle:
     wait_for_declared_mcp = _sh_mcp.wait_for_declared_mcp
     wait_mounted_mcp = _sh_mcp.wait_mounted_mcp
     _note_mcp_sign_in_status = _sh_mcp._note_mcp_sign_in_status
+    _probe_mcp_sign_in = _sh_mcp._probe_mcp_sign_in
     _offer_mcp_sign_in = _sh_mcp._offer_mcp_sign_in
     want_mcp_sign_in_named = _sh_mcp.want_mcp_sign_in_named
     _match_mcp_sign_in_ask = _sh_mcp._match_mcp_sign_in_ask
@@ -373,6 +374,11 @@ class AcpSessionHandle:
         # consumption report can never clear a pending entry whose row does
         # not exist yet. Matched by identity (``_release_proven_steers``).
         self._steers_accepted: list[str] = []
+        # The text of each codex steer of the running or last turn whose write
+        # may have reached the adapter with no answer read, or was answered
+        # ``injected`` after its turn ended, until the next turn starts. Read
+        # through ``held_steers_possibly_delivered``, as on ``AcpClient``.
+        self._held_steers_unanswered: set[str] = set()
         # goose's ``_goose/unstable/session/steer`` (``_steer_via_goose_request``):
         # the run id goose announced for the running prompt, and each accepted
         # steer's answer with its wrapped text, until goose echoes it.
@@ -452,6 +458,9 @@ class AcpSessionHandle:
         # roster: an MCP call on one of them gets the network silence bound
         # (``acp.tool_silence``), any other MCP call the stdio one.
         self._mcp_network_servers: frozenset[str] = frozenset()
+        # Each of those servers' declared url: the sign-in probe asks only a
+        # discovery row at that url (``_probe_mcp_sign_in``).
+        self._mcp_network_urls: dict[str, str] = {}
         # The calls this session's native sub-agents have open this turn, of any
         # kind (``_note_child_calls``), keyed by the child-scoped call and naming
         # the call's own id: while one is open, a sub-agent call is not judged by
@@ -480,6 +489,7 @@ class AcpSessionHandle:
             sample_min_secs=self._watchdog.wellness_sample_secs,
             cleanup_tenancy=lambda: self._runtime.session_tenancy(self._session_id),
             sandbox_wrapped_by_crew=lambda: self._runtime.sandbox_wrapped_by_crew,
+            engine_is_child=lambda: self._runtime.engine_is_child,
             server_launches=self._remote_flat_launches,
             attribution_launches=self._mcp_attribution_launches,
         )
@@ -801,6 +811,14 @@ class AcpSessionHandle:
         # See kiro_crew.acp.mcp_reattempt.
         self._mcp_reattempt_waiting: set[str] = set()
         self._mcp_reattempt_counts: dict[str, int] = {}
+        # Failed servers whose error is the SSE fallback's non-200 answer, each
+        # probed once for whether it wants a sign-in (``_probe_mcp_sign_in``), at most
+        # ``BUCKET_CAP`` names; those whose probe said so and that have not
+        # connected since; and those that connected or were disabled this session,
+        # whose probe answer is spent.
+        self._mcp_sign_in_probes: dict[str, asyncio.Task[bool]] = {}
+        self._mcp_sign_in_probed: set[str] = set()
+        self._mcp_sign_in_spent: set[str] = set()
         # What THIS session's MCP servers reported — parity with
         # AcpClient._mcp_report. The runtime creates it together with this
         # session's queue and folds each frame that names the session into it
@@ -875,6 +893,9 @@ class AcpSessionHandle:
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.
         self.kas_projected_agent: str = ""
+        # Whether that batch projects a folder agent's own hooks
+        # (``harness.kas.session_projects_folder_hooks``).
+        self.kas_folder_hooks_projected: bool = False
         # The agent batch this session registered, so a mode switch can answer
         # what the agent it moves to auto-approves.
         self.kas_registered_agents: list[dict[str, Any]] = []
@@ -894,6 +915,9 @@ class AcpSessionHandle:
         # The notice when the kiro-cli a relay KAS runs under is outside its tested
         # range (``KasHarness.untested_version_notice``); "" otherwise.
         self.kas_untested_version_notice: str = ""
+        # The notice that this chat runs on kiro-cli because the build default's
+        # first move to Crew's engine failed (``KasHarness.engine_fallback_notice``).
+        self.kas_engine_fallback_notice: str = ""
         # The notice naming the MCP servers this session's projection sent without
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.
@@ -1128,17 +1152,30 @@ class AcpSessionHandle:
     spec_write_cwd: str = ""
 
     # A turn the agent started on its own (``session_handle_agent_turns``): its
-    # first frame while no turn has read it, the chat's callback, and whether
-    # the running turn is one. Class defaults, so a host whose queue is plain
-    # never sets them and every read finds the default.
+    # first frame while no turn has read it, the chat's callback, whether the
+    # running turn is one, and the event a request wait that took that first
+    # frame sets once it has put the frame back. Class defaults, so a host whose
+    # queue is plain never sets them and every read finds the default.
     _agent_turn_start: JsonRpcMessage | None = None
     _on_agent_turn: Callable[[], None] | None = None
     _agent_turn_reading: bool = False
+    _agent_turn_hold_end: asyncio.Event | None = None
 
     @property
     def last_steer_monotonic(self) -> float:
         """Monotonic time of the last steer written to the backend (0.0 if none)."""
         return self._last_steer_monotonic
+
+    @property
+    def held_steers_possibly_delivered(self) -> frozenset[str]:
+        """Steer texts whose delivery remains unresolved (``AcpClient``'s twin).
+
+        A stalled write (``ambiguous_delivery``), no answer before the turn
+        ended or the bound passed, or ``injected`` after the turn ended may run
+        without being reported consumed. The dashboard reads this so it does
+        not run such a steer again. Reset when the next turn starts.
+        """
+        return frozenset(getattr(self, "_held_steers_unanswered", ()))
 
     @property
     def supports_steer(self) -> bool:

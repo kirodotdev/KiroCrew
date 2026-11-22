@@ -295,7 +295,14 @@ class GatewayClient:
             raise NoGateway(f"gateway on port {self.port} not reachable: {exc}") from None
 
     def call(self, method: str, path: str, body: dict | None = None, timeout: float = 60) -> Any:
-        """One owner request; JSON answer. Re-signs once when the session lapsed."""
+        """One owner request; JSON answer. Re-signs once when the session lapsed.
+
+        The session cookie lives as long as the one-minute sign-in token, so a run
+        longer than that re-signs on every lapse. The gateway answers a lapsed
+        credential on ``/api/`` with 403 and ``X-Auth-Required: true``, not 401. Its other
+        auth refusals carry the same header, so a real one costs one extra sign-in and is
+        then raised; a 403 without the header is raised at once.
+        """
         for attempt in (0, 1):
             url = self.base + path
             if not self._cookie:
@@ -318,7 +325,12 @@ class GatewayClient:
                     raw = resp.read()
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as exc:
-                if exc.code == 401 and attempt == 0:
+                lapsed = exc.code == 401 or (
+                    exc.code == 403
+                    and exc.headers is not None
+                    and exc.headers.get("X-Auth-Required") == "true"
+                )
+                if lapsed and attempt == 0:
                     self.sign_in()
                     continue
                 detail = exc.read(2000).decode(errors="replace")
@@ -637,11 +649,14 @@ def spend_slots(roots: set[str], since: float) -> set[str]:
 
 
 def ledger_asks(items: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Items the board reads as waiting on the person (``awaits_person``), or with a recorded ask."""
+    """Items the board reads as waiting on the person (``awaits_person``), or with the
+    conductor's current ask record (a ``human_approval`` item it asks about after a
+    ``done``). The board sends ``ask`` only while it is current, so an item whose newer
+    report the main chat is still checking is neither."""
     out = []
     for item in items:
         ask = item.get("ask")
-        if item.get("awaits_person") or (ask and item.get("state") == "open"):
+        if item.get("awaits_person") or (isinstance(ask, dict) and item.get("state") == "open"):
             text = (ask.get("what") or "") if isinstance(ask, dict) else ""
             out.append(
                 {

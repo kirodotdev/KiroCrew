@@ -1017,7 +1017,9 @@ class RunnerAdmission:
         instant; without one the row carries ``retry_at`` and :meth:`tick`
         wakes it. A terminal signal, a scope deadline or a cancel returns
         False: the row is already ``failed``/``cancelled`` and the step must
-        not retry.
+        not retry. So does a wait the store refused (the row is another
+        owner's or has ended): the caller's fenced terminal write settles the
+        handle.
 
         With the store reachable, a CALLER cancel delivered while the row is
         parked ends it: the awaiting coroutine IS this incarnation's only wake
@@ -1068,14 +1070,14 @@ class RunnerAdmission:
                     store_down = True
                 owns_dependency_wake = parked
             if store is None or not parked:
+                if store is not None and not store_down:
+                    # Refused: the row is another owner's or ended, so re-running
+                    # the call here could run it twice.
+                    await handle.reacquire_slot()
+                    return False
                 # Nothing persisted: honour the signal's own retry instant locally,
-                # with no store or with one that could not take the write. A wait
-                # the store refused (a fenced generation) keeps its immediate retry.
-                wait = (
-                    max(0.0, float(signal.retry_at or 0.0) - self.now())
-                    if store is None or store_down
-                    else 0.0
-                )
+                # with no store or with one that could not take the write.
+                wait = max(0.0, float(signal.retry_at or 0.0) - self.now())
                 if signal.retry_at is not None:
                     await self._sleep(wait)
                 await handle.reacquire_slot()

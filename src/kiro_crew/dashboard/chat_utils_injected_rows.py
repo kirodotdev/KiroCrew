@@ -399,6 +399,13 @@ CRON_NOTIFICATION_KIND = "cron_notification"
 #: into user-authored, persisted, channel-mirrored history).
 MCP_APP_MESSAGE_KIND = "mcp_app_message"
 
+#: A wake for an MCP resource subscription
+#: (``rfc-mcp-resource-subscriptions.md`` §4.9.2), queued behind a running turn by
+#: ``session_deliver``'s ``resource`` origin. System injection like the app
+#: message above: its URI is server-written, so it is never user speech and must
+#: never be mirrored to a linked channel as the person's words.
+RESOURCE_WAKE_KIND = "resource_wake"
+
 #: A runner notice re-routed into a crew member's own next turn — today the
 #: automation arm/revision/stop refusal (``session_directive_apply``). A member
 #: DM draws messages only and never replays a ``notice`` row to the model, so a
@@ -445,6 +452,7 @@ _SYSTEM_INJECTION_KINDS = SUBAGENT_DELIVERY_KINDS | frozenset(
     (
         CRON_NOTIFICATION_KIND,
         MCP_APP_MESSAGE_KIND,
+        RESOURCE_WAKE_KIND,
         AUTOMATION_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
         *GATEWAY_PROMPT_INJECT_KINDS,
@@ -464,6 +472,25 @@ def app_inject_row(label: str) -> tuple[str, str, dict]:
     travels in ``meta`` only, and is never re-derived from the banner text.
     """
     return "inject", "msg msg-inject", {"injectKind": "mcp_app", "appLabel": label}
+
+
+def resource_inject_row(server: str, subscription_id: str) -> tuple[str, str, dict]:
+    """The ONE builder for a resource-wake transcript row (both delivery paths).
+
+    The same shape as :func:`app_inject_row`, for the same reason: a plain CSS
+    ``cls`` and the identity in ``meta``, so an HTTP rebuild keeps ``injectKind``.
+    The chip names the server; the subscription id lets a queued wake be found
+    again to fold a later update into it.
+    """
+    return (
+        "inject",
+        "msg msg-inject",
+        {
+            "injectKind": "resource",
+            "resourceServer": server,
+            "resourceSubscription": subscription_id,
+        },
+    )
 
 
 def is_synthetic_recovery_item(item: dict) -> bool:
@@ -529,7 +556,7 @@ def is_synthetic_payload_item(item: dict) -> bool:
     if payload:
         return payload == RecoveryPayload.CONTINUATION
     kind = item.get("kind")
-    if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
+    if kind in (MCP_APP_MESSAGE_KIND, RESOURCE_WAKE_KIND) or kind in GATEWAY_PROMPT_INJECT_KINDS:
         return True
     return is_synthetic_recovery_item(item)
 
@@ -587,6 +614,10 @@ COMPOSER_SEND_META = "composer_send"
 #: ``nudge`` row instead of a ``user`` row, and the entry drains alone: merged,
 #: its text would be glued onto the human's own queued words in one row.
 AUTOMATION_STEER_META = "automation_steer"
+#: The wire mark (``queue_push`` meta and the slot-detail queue view) of a queue
+#: entry carrying :data:`AUTOMATION_STEER_META`, so the client never draws its
+#: card as the person's own words.
+AUTOMATION_STEER_WIRE_KEY = "automationSteer"
 
 
 def releases_past_subagent_hold(item: dict) -> bool:

@@ -108,9 +108,10 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        78,
+        79,
         "slash and text command replies: fixed status and help text, the"
-        " channel-agent link refusal, and the !channel config-save refusal",
+        " channel-agent link refusal, and the !channel and !voice global"
+        " config-save refusals",
     ),
     "slack/handler_runtime/delivery.py": (
         5,
@@ -152,9 +153,10 @@ BASELINE: dict[str, tuple[int, str]] = {
         "stop and reset notices, resume label, new-session greeting",
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
+    "slack/owner_claim.py": (1, "fixed welcome DM to a newly confirmed owner"),
     "slack/renderer.py": (
-        5,
-        "the channel renderer: placeholders, answer parts, fallback and notices",
+        2,
+        "the channel renderer: options fallback and notices",
     ),
     "slack/renderer_stream_debt.py": (
         1,

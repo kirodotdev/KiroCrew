@@ -93,7 +93,7 @@ def cmd_open(args) -> int:  # type: ignore[no-untyped-def]  # argparse.Namespace
     try:
         url = build_deep_link(session=getattr(args, "session", None))
     except DeepLinkError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"❌ {exc}", file=sys.stderr)
         return 2
     if getattr(args, "print_url", False):
         print(url)
@@ -102,7 +102,7 @@ def cmd_open(args) -> int:  # type: ignore[no-untyped-def]  # argparse.Namespace
     if ok:
         return 0
     print(
-        f"Error: Could not open {url} ({detail}). The kirocrew:// scheme is registered by the "
+        f"❌ Could not open {url} ({detail}). The kirocrew:// scheme is registered by the "
         "Kiro Crew desktop app's installer; with no desktop app installed, open the dashboard "
         "in a browser instead (`kirocrew token`).",
         file=sys.stderr,

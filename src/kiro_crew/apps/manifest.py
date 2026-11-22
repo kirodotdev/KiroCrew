@@ -274,6 +274,7 @@ def cron_permission_error(manifest: AppManifest) -> str:
 #:   verbs ``uninstall`` (whose ``uninstall/preview`` child is covered by the segment),
 #:   ``update``, ``enable``, ``disable``, ``open``, ``dev``, ``migrate-cleanup``,
 #:   ``bot-grants``
+#: * ``apps/routes_kiro.py`` -- ``kiro``
 #: * ``dashboard/routes/system.py`` -- ``token``
 #: * ``apps/job_routes.py`` -- ``_jobs``
 #: * ``apps/sel_routes.py`` -- ``_sel``
@@ -293,6 +294,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "disable",
         "enable",
         "frames",
+        "kiro",
         "manifest",
         "migrate-cleanup",
         "open",
@@ -695,14 +697,7 @@ class AppManifest:
 
         # UI overlay validation
         errors.extend(self.ui.frame_source_errors())
-        # Deferred: browser_sites stays off an MCP server's pre-list import budget.
-        from kiro_crew.apps.browser_sites import browser_site_errors  # noqa: PLC0415
-
-        errors.extend(
-            ["permissions.browserSites must be an array of strings"]
-            if self.permissions.bad_browser_sites
-            else browser_site_errors(self.permissions.browserSites)
-        )
+        errors.extend(self.permissions.list_errors())
         seen_overlay_ids: set[str] = set()
         for overlay in self.ui.overlays:
             if not overlay.id:

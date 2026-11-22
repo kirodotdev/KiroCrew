@@ -179,7 +179,7 @@ class TestStreaming:
         await r.on_turn_start()
         await r.on_tool_call("t1", "fs_read", tool_kind="read")
         # force-pushed frame carries the transient footer
-        assert any("正在运行：fs_read" in f["content"] for f in c.frames)
+        assert any("🔧 正在运行：fs_read" in f["content"] for f in c.frames)
 
     @pytest.mark.asyncio
     async def test_error_done_shows_error_text(self) -> None:
@@ -187,7 +187,7 @@ class TestStreaming:
         r = _renderer(c)
         await r.on_turn_start()
         await r.on_done(stop_reason="error")
-        assert c.frames[-1]["content"] == "出错了，请重试"
+        assert c.frames[-1]["content"] == "⚠️ 出错了，请重试"
         assert c.frames[-1]["finish"] is True
 
 
@@ -1060,7 +1060,7 @@ class TestInlineImages:
         await r.close()
 
         assert c.frames[-1]["content"] == "…"  # a picture-only reply still seals
-        assert c.pushed == [("Wei", f"警告：以下图片未能发送，文件仍在本机：\n- `{chart}`")]
+        assert c.pushed == [("Wei", f"⚠️ 以下图片未能发送，文件仍在本机：\n- `{chart}`")]
 
     @pytest.mark.asyncio
     async def test_a_picture_follows_the_whole_answer_including_its_overflow(

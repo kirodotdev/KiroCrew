@@ -31,6 +31,8 @@ kirocrew cron add "weekday-9am" "check tickets" --cron "0 9 * * MON-FRI" --appro
 kirocrew cron add "reminder" "call the vet" --at "tomorrow 9am"          # one-shot, deletes itself after firing
 kirocrew cron add "version-check" "" --every 3600 \
   --script ~/.kiro/crew/crons/check.py:run --no-persistent-session --minimal-context   # zero-token script job
+kirocrew cron add "board" "" --every 1800 --script ~/.kiro/crew/crons/board.py:run \
+  --agent <bot-name> --no-persistent-session --minimal-context   # script job bound to a Bot
 kirocrew cron add "disk" "" --every 600 --command "df -h /" --timeout 30 --timeout-secs 60  # zero-token command job
 kirocrew cron add "digest" "summarize the news" --every 86400 --folder "Veille"  # filed in a Schedule-page folder
 kirocrew cron update <job-id> --name "new name" --message "new prompt" --approval-mode auto
@@ -43,7 +45,9 @@ kirocrew cron remove <id>
 
 `--folder` takes a Schedule-page folder name or id, as the `cron_add` and `cron_update` tools do. A missing name is created, then the job is filed in it; an unknown id and a name several folders share are refused. The folder is created through the running gateway (the dashboard owns the folder list), so with no gateway running only an existing folder can be named. `cron list` shows each job's folder, and its `--folder` filter only reads: it never creates one. A job whose run is still going shows `[running since HH:MM UTC]`, because its last run time and status are written only when the run ends. The `cron_list` tool's `json` output carries the same `folder` field (`{id, name}`, or `null` when ungrouped).
 
-A `--script` file must already live under `~/.kiro/crew/crons/`; the CLI registers it, it does not copy it. `--script`/`--command` and `--agent` are mutually exclusive, as are `--every`/`--cron`/`--at`. Every refusal prints on stderr and exits non-zero with nothing written (2 for a flag-combination error, 1 for a validation, security or store refusal), so an installer can register a job headlessly.
+With `--script`, `--agent` must name a Bot. The job is then bound to that Bot, as a `cron_add` call with `member_id` binds one, so each `ctx.crew_log_append()` record lands on the Bot's Dashboard page with no model turn. A template name is refused with `--script`, and `--agent` is refused with `--command`. `cron list` shows the binding as `bot: <id>`.
+
+A `--script` file must already live under `~/.kiro/crew/crons/`; the CLI registers it, it does not copy it. `--script` and `--command` are mutually exclusive, as are `--every`/`--cron`/`--at`; `--agent` goes with `--script` only as a Bot name (above). Every refusal prints on stderr and exits non-zero with nothing written (2 for a flag-combination error, 1 for a validation, security or store refusal), so an installer can register a job headlessly.
 
 `cron update` changes a job in place, so its id and run history stay. It takes `--model`, `--timezone`, `--[no-]persistent-session`, `--[no-]minimal-context`, `--[no-]hide-in-chat` and `--[no-]silent`, with the meanings they have on `cron add`; a flag left out leaves its setting alone. `--model ""` clears the model override and `--timezone ""` puts the job back on the configured timezone.
 
@@ -232,12 +236,24 @@ A stateless job has no chat tab: its result reaches the bell, Slack and the job'
 cron_add(
     name="monthly-status",
     message="draft this month's status update; do not post it",
-    cron="0 9 8 * *",
+    cron_expr="0 9 8 * *",
     new_chat_per_run=true
 )
 ```
 
 It implies `persistent_session: false` when that is omitted, and `persistent_session: true` turns it off. It applies to a single-agent (message) job; a script, command or multi-agent job refuses it. `hide_in_chat` still wins, and a run whose result is a duplicate or that is `silent` opens no tab. A run's tab is kept like any other chat; a run that opened none is removed with the other stateless run transcripts after 7 days. It is for infrequent jobs, because every run keeps a tab: a schedule that can run twice within 24 hours is refused, on create and on an update that turns the switch on or changes the schedule.
+
+On the Schedule page the switch is **Start each run in a new chat** in the job form. Turn it on when you create the job. A job that already starts a fresh session every run can turn it on or off when you edit it; a job that keeps one session cannot, so create a new job for it.
+
+### A Fresh Tab After You Close It (`on_tab_close`)
+
+A job's tab, `Cron: <name>`, keeps the job's conversation. Close it and, by default (`on_tab_close: "resume"`), the next run reopens it with that history. Set `on_tab_close: "fresh"` for a report-style job whose tab you close because it grew too long: the next run reopens the tab empty and keeps posting there until you close it again.
+
+```
+cron_update(job_id="<id>", on_tab_close="fresh")
+```
+
+It changes only what the tab shows. Nothing is deleted: the job's agent keeps what `persistent_session` gives it, and a reply in the reopened tab still has the earlier runs as context. The earlier messages are not shown in the tab, and History does not list them as a chat of their own yet. It applies to the job's own tab (a persistent job that is not `hide_in_chat`), and only a run reopens the tab fresh, after you closed it yourself: a tab archived automatically because it sat idle comes back with its history. `cron_add`, `cron_update` and the REST routes take it; the CLI and the Schedule page do not yet.
 
 ## Skipping Dates
 
@@ -309,11 +325,14 @@ The CLI has no flag for this. `kirocrew cron add` leaves `strict_schedule` at it
 | Pause | Pause button | `cron pause <id>` | `kirocrew cron pause <id>` |
 | Resume | Resume button | `cron resume <id>` | `kirocrew cron resume <id>` |
 | Run now | Run button | — | `kirocrew cron trigger <id>` |
+| Past runs | Executions view | — | `kirocrew cron history <id>` / `--all` |
 | Delete | Delete button | `cron remove <id>` | `kirocrew cron remove <id>` |
 | Delete an installer's job | Delete button | — | `kirocrew cron remove --managed-by <key>` |
 | Adopt / release | — | — | `kirocrew cron adopt <id> --session-of <slot>` / `--release` |
 
 `kirocrew cron trigger <id>` exits 0 when the run starts, 75 when the job is already running (try again later), and 1 on any other failure.
+
+`kirocrew cron history <id>` prints the job's latest runs, newest first: start time, status, duration, run id and the first line of the error or result. `-n 50` sets how many (default 20), `--status error` keeps the runs that did not succeed, `--all` reads every job's runs, `--run <run-id>` prints one full record with its trace, and `--json` prints `{"runs": [...], "total": N}`. It is read-only and hides the same credentials the Schedule page hides. Inside an agent's sandbox the run store is not readable, so the command exits 1 there instead of reporting no runs.
 
 `kirocrew cron add --managed-by <key>` registers a job for an external installer. The key is unique across the store: a second add with the same key is refused, so a re-install runs `kirocrew cron remove --managed-by <key>` first and then adds again. `kirocrew cron list` prints the key as `managed by: <key>`.
 

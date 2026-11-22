@@ -106,9 +106,10 @@ class card_turn:
 
 #: The routes through which a running turn hands work to something that is NOT that turn:
 #: another session (create, fork, send, broadcast, continue, retry, revive), a workflow
-#: run, a task run, a cron job, a nudge loop or a monitor. Each starts a turn or an agent
-#: that reads the thread's trust, or one that nobody marked as a card's. Sub-agents are
-#: refused by the spawn gate itself (``subagent_manager/admission/gate.py``).
+#: run, a task run, a cron job, a nudge loop, a monitor or a resource subscription. Each
+#: starts a turn or an agent that reads the thread's trust, or one that nobody marked as
+#: a card's. Sub-agents are refused by the spawn gate itself
+#: (``subagent_manager/admission/gate.py``).
 #:
 #: Each shape is the path's segments after ``/api/``; ``None`` stands for any one
 #: non-empty segment (an id).
@@ -137,6 +138,7 @@ _DELEGATION_ROUTES: frozenset[tuple[str | None, ...]] = frozenset(
         ("monitors",),
         ("monitors", None),
         ("monitors", None, "restart"),
+        ("resource-subscriptions",),
     }
 )
 _DELEGATION_METHODS = frozenset({"POST", "PUT", "PATCH"})

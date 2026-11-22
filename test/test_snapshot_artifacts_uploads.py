@@ -555,9 +555,9 @@ class TestMergeDoesNotRestoreTheseComponents:
             snap.restore_main([str(bundle), "--mode", "merge", "--force", *unpinnable_argv()]) == 0
         )
         out = capsys.readouterr().out
-        assert "Done: artifacts" not in out, out
-        assert "Done: uploads" not in out, out
-        assert "Done: workspace" in out, out
+        assert "✅ artifacts" not in out, out
+        assert "✅ uploads" not in out, out
+        assert "✅ workspace" in out, out
 
     @pytest.mark.parametrize("selection", [("artifacts",), ("uploads",), ("artifacts", "uploads")])
     def test_a_merge_of_only_these_is_refused(self, selection, tmp_path, monkeypatch, capsys):
@@ -600,7 +600,7 @@ class TestMergeDoesNotRestoreTheseComponents:
 
     def test_the_declaration_matches_what_merge_does(self):
         routed = set(snap._REPLACE_ONLY_COMPONENTS)
-        assert routed == {"artifacts", "uploads"}
+        assert routed == {"artifacts", "uploads", "members"}
         assert routed <= set(snap._WHOLE_TREE_COMPONENTS), "a replace-only component is a tree"
         assert routed <= set(snap.COMPONENTS)
 

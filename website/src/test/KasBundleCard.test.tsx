@@ -1,10 +1,12 @@
 /**
- * KasBundleCard — Settings > Developer > Feature Previews: run KAS on Kiro Crew's own engine.
+ * KasBundleCard — Settings > Agent Harness > KAS: which engine KAS runs on.
  *
  * What is pinned:
- * - the switch can only be turned ON once the pinned engine is installed (an "on"
- *   with nothing installed refuses every KAS session), and OFF is always allowed;
- * - the switch writes `agent.kas_bundle` through the ordinary config PATCH;
+ * - the built-in engine can only be chosen once the pinned engine is installed (an
+ *   "on" with nothing installed refuses every KAS session), and Kiro CLI is always
+ *   allowed;
+ * - the choice writes `agent.kas_bundle` through the ordinary config PATCH;
+ * - unsaved, the choice shows what the build prefers (`engine_choice`);
  * - "Install" starts the gateway's install, and the card shows its progress from
  *   the status the server returns;
  * - an install failure renders the server's remedy text;
@@ -15,10 +17,8 @@
  *   so stale progress never reads as current;
  * - a status read that fails with nothing cached offers Retry, which re-reads;
  * - the copy the desktop app shipped (`installed.bundled`) is named as such;
- * - an installed engine under an OFF switch says it is not in use, and the note
- *   goes away once the switch is on;
  * - the installed line's tick is green only once the engine is what runs: muted
- *   with the switch off, muted again while a save waits for a restart.
+ *   on Kiro CLI, muted again while a save waits for a restart.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
@@ -68,8 +68,12 @@ const INSTALLED: KasBundleStatus = {
   installed: { version: '0.66.33', node_version: '22.23.3', bundled: false },
 }
 
-function toggle(): HTMLElement {
-  return screen.getByRole('switch')
+function builtin(): HTMLElement {
+  return screen.getByRole('radio', { name: 'Built-in harness' })
+}
+
+function kiroCli(): HTMLElement {
+  return screen.getByRole('radio', { name: 'Kiro CLI' })
 }
 
 describe('KasBundleCard', () => {
@@ -90,12 +94,13 @@ describe('KasBundleCard', () => {
     expect(note).not.toHaveTextContent('Kiro CLI')
   })
 
-  it('offers Install and holds the switch off while nothing is installed', async () => {
+  it('offers Install and holds the built-in engine off while nothing is installed', async () => {
     kasBundleStatus.mockResolvedValue(BASE)
     renderWithProviders(<KasBundleCard />)
     await screen.findByTestId('kas-bundle-install')
-    expect(screen.getByText('KAS engine 0.66.33 is not installed yet.')).toBeInTheDocument()
-    expect(toggle()).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('Built-in engine 0.66.33 is not installed yet.')).toBeInTheDocument()
+    expect(builtin()).toBeDisabled()
+    expect(kiroCli()).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByTestId('restart-badge')).toHaveAttribute('data-key', KAS_BUNDLE_CONFIG_KEY)
   })
 
@@ -105,9 +110,9 @@ describe('KasBundleCard', () => {
     renderWithProviders(<KasBundleCard />)
     expect(await screen.findByTestId('kas-bundle-host-unsupported')).toHaveTextContent(reason)
     expect(screen.queryByTestId('kas-bundle-install')).toBeNull()
-    expect(screen.queryByText('KAS engine 0.66.33 is not installed yet.')).toBeNull()
+    expect(screen.queryByText('Built-in engine 0.66.33 is not installed yet.')).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(toggle()).toHaveAttribute('aria-disabled', 'true')
+    expect(builtin()).toBeDisabled()
   })
 
   it('reports a refused install on such a host once, as an error, with no Install', async () => {
@@ -120,13 +125,13 @@ describe('KasBundleCard', () => {
     expect(screen.queryByTestId('kas-bundle-install')).toBeNull()
   })
 
-  it('lets the switch be turned on once installed, through the config PATCH', async () => {
+  it('lets the built-in engine be chosen once installed, through the config PATCH', async () => {
     kasBundleStatus.mockResolvedValue(INSTALLED)
     renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    await screen.findByText('Built-in engine 0.66.33')
     expect(screen.queryByTestId('kas-bundle-install')).toBeNull()
-    expect(toggle()).not.toHaveAttribute('aria-disabled')
-    fireEvent.click(toggle())
+    expect(builtin()).not.toBeDisabled()
+    fireEvent.click(builtin())
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true))
   })
 
@@ -138,34 +143,115 @@ describe('KasBundleCard', () => {
       installed: { version: '0.66.33', node_version: '22.23.3', bundled: true },
     })
     renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (included with the app)')
-    expect(screen.queryByText('KAS engine 0.66.33 (installed by you)')).toBeNull()
-    expect(toggle()).not.toHaveAttribute('aria-disabled')
+    await screen.findByText('Built-in engine 0.66.33 (included with the app)')
+    expect(screen.queryByText('Built-in engine 0.66.33')).toBeNull()
+    expect(builtin()).not.toBeDisabled()
   })
 
-  it('says an installed engine is not in use while the switch is off, and only then', async () => {
-    kasBundleStatus.mockResolvedValue(INSTALLED)
+  it("shows the build's own pick while nothing is saved, and saves that pick when pressed", async () => {
+    // A packaged build's pick is not the user's: pressing it saves it, so the
+    // choice holds after a sign-in. A saved choice pressed again sends nothing.
+    kasBundleStatus.mockResolvedValue({ ...INSTALLED, engine_choice: 'kiro_cli', choice_saved: false })
     const { unmount } = renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
-    expect(screen.getByTestId('kas-bundle-off-note')).toHaveTextContent(
-      'Off: KAS uses your Kiro CLI install. On: it uses the engine this release ships with.',
+    await screen.findByText('Built-in engine 0.66.33')
+    expect(kiroCli()).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('kas-bundle-installed-tick')).toHaveClass('text-muted')
+    fireEvent.click(kiroCli())
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', false))
+    unmount()
+    patchConfig.mockClear()
+    kasBundleStatus.mockResolvedValue({ ...INSTALLED, engine_choice: 'engine', choice_saved: true, enabled: true })
+    renderWithProviders(<KasBundleCard />)
+    await screen.findByText('Built-in engine 0.66.33')
+    expect(builtin()).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('kas-bundle-installed-tick')).toHaveClass('text-ok')
+    fireEvent.click(builtin())
+    expect(patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('saves Kiro Agent first when the saved harness is a Kiro CLI pick running on it', async () => {
+    // Saving only the engine would stop the Kiro CLI pick reaching Kiro Agent.
+    kasBundleStatus.mockResolvedValue({ ...INSTALLED, engine_choice: 'kiro_cli', choice_saved: false })
+    renderWithProviders(<KasBundleCard kiroPickRunsOnKas />)
+    await screen.findByText('Built-in engine 0.66.33')
+    fireEvent.click(builtin())
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true))
+    expect(patchConfig.mock.calls.map(c => c[0])).toEqual(['agent.acp_backend', 'agent.kas_bundle'])
+    expect(patchConfig).toHaveBeenNthCalledWith(1, 'agent.acp_backend', 'kas')
+    // Choosing Kiro CLI leaves the harness alone.
+    patchConfig.mockClear()
+    fireEvent.click(kiroCli())
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', false))
+    expect(patchConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('ticks the selected engine option, and only that one', async () => {
+    kasBundleStatus.mockResolvedValue({ ...INSTALLED, engine_choice: 'kiro_cli', choice_saved: false })
+    const { unmount } = renderWithProviders(<KasBundleCard />)
+    await screen.findByText('Built-in engine 0.66.33')
+    expect(screen.getAllByTestId('kas-engine-tick')).toHaveLength(1)
+    expect(kiroCli().contains(screen.getByTestId('kas-engine-tick'))).toBe(true)
+    unmount()
+    kasBundleStatus.mockResolvedValue({ ...INSTALLED, engine_choice: 'engine', choice_saved: true, enabled: true })
+    renderWithProviders(<KasBundleCard />)
+    await screen.findByText('Built-in engine 0.66.33')
+    expect(builtin().contains(screen.getByTestId('kas-engine-tick'))).toBe(true)
+  })
+
+  it('says why the recommended engine is not chosen while Kiro Crew is signed out', async () => {
+    kasBundleStatus.mockResolvedValue({
+      ...INSTALLED,
+      engine_choice: 'kiro_cli',
+      choice_saved: false,
+      sign_in_moves_to_engine: true,
+    })
+    const { unmount } = renderWithProviders(<KasBundleCard />)
+    expect(await screen.findByTestId('kas-bundle-sign-in-reason')).toHaveTextContent(
+      'Sign in to Kiro Crew to switch to the built-in engine.',
+    )
+    // One action: the Kiro account tab, where the sign-in choices sit in the card.
+    expect(screen.getByTestId('kas-bundle-sign-in-link')).toHaveAttribute(
+      'href',
+      expect.stringContaining('/settings/kiro-account'),
     )
     unmount()
-    kasBundleStatus.mockResolvedValue({ ...INSTALLED, enabled: true })
+    // A saved Kiro CLI choice is the user's own: no reason line.
+    kasBundleStatus.mockResolvedValue({
+      ...INSTALLED,
+      engine_choice: 'kiro_cli',
+      choice_saved: true,
+      sign_in_moves_to_engine: true,
+    })
     renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
-    expect(screen.queryByTestId('kas-bundle-off-note')).toBeNull()
+    await screen.findByText('Built-in engine 0.66.33')
+    expect(screen.queryByTestId('kas-bundle-sign-in-reason')).toBeNull()
+  })
+
+  it('names no route line for the build default: the choice already says it', async () => {
+    kasBundleStatus.mockResolvedValue({
+      ...INSTALLED,
+      engine_choice: 'engine',
+      route: { route: 'bundle', automatic: true, reason: 'build_default', summary: '' },
+    })
+    renderWithProviders(<KasBundleCard />)
+    await screen.findByText('Built-in engine 0.66.33')
+    expect(screen.queryByTestId('kas-bundle-route-auto')).toBeNull()
   })
 
   it('reports a saved switch as pending a restart, and only after the save', async () => {
     kasBundleStatus.mockResolvedValue(INSTALLED)
     renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    await screen.findByText('Built-in engine 0.66.33')
     expect(screen.queryByTestId('kas-bundle-restart-pending')).toBeNull()
-    fireEvent.click(toggle())
+    // A stable anchor, so a deep link waits for the lazy tab instead of dropping.
+    expect(document.querySelector('[data-setting-id="agent.engine"][data-setting-key="agent.kas_bundle"]')).not.toBeNull()
+    // The restart line beside the choice, until the pending notice takes over.
+    expect(screen.getByTestId('kas-bundle-restart-note')).toHaveTextContent('Chats switch after a restart.')
+    fireEvent.click(builtin())
     const pending = await screen.findByTestId('kas-bundle-restart-pending')
     expect(pending.textContent).toContain('Restart gateway')
     expect(pending).toHaveAttribute('role', 'status')
+    expect(screen.queryByTestId('kas-bundle-restart-note')).toBeNull()
   })
 
   it('greens the installed tick only once the engine is what runs', async () => {
@@ -173,61 +259,56 @@ describe('KasBundleCard', () => {
     // On, saved in this card but not yet restarted onto: muted again.
     kasBundleStatus.mockResolvedValue(INSTALLED)
     const { unmount } = renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    await screen.findByText('Built-in engine 0.66.33')
     expect(screen.getByTestId('kas-bundle-installed-tick')).toHaveClass('text-muted')
     unmount()
 
     kasBundleStatus.mockResolvedValue({ ...INSTALLED, enabled: true })
     const second = renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    await screen.findByText('Built-in engine 0.66.33')
     expect(screen.getByTestId('kas-bundle-installed-tick')).toHaveClass('text-ok')
     second.unmount()
 
     kasBundleStatus.mockResolvedValueOnce(INSTALLED)
     kasBundleStatus.mockResolvedValue({ ...INSTALLED, enabled: true })
     renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
-    fireEvent.click(toggle())
+    await screen.findByText('Built-in engine 0.66.33')
+    fireEvent.click(builtin())
     await screen.findByTestId('kas-bundle-restart-pending')
-    await waitFor(() => expect(screen.queryByTestId('kas-bundle-off-note')).toBeNull())
+    await waitFor(() => expect(builtin()).toHaveAttribute('aria-checked', 'true'))
     expect(screen.getByTestId('kas-bundle-installed-tick')).toHaveClass('text-muted')
-    // The generic pill is hidden in place, so the row (and the switch) keeps its width.
+    // The generic pill is hidden in place, so the row (and the choice) keeps its width.
     expect(screen.getByTestId('kas-bundle-restart-pill')).toHaveClass('invisible')
     expect(screen.getByTestId('restart-badge')).toBeInTheDocument()
   })
 
-  it('keeps the switch focusable and refuses a second press while its own save runs', async () => {
-    // A native disabled takes the pressed switch out of the tab order, dropping a
-    // keyboard user to the page while the save runs. aria-disabled plus a guard
-    // keep the tab stop and still refuse a second press.
+  it('keeps the pressed choice focusable and refuses a second press while its own save runs', async () => {
+    // A native disabled takes the pressed button out of the tab order, dropping a
+    // keyboard user to the page while the save runs; a guard refuses the second press.
     kasBundleStatus.mockResolvedValue(INSTALLED)
     let release: () => void = () => undefined
     patchConfig.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({}) }))
     renderWithProviders(<KasBundleCard />)
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
-    const sw = toggle()
-    sw.focus()
-    fireEvent.click(sw)
+    await screen.findByText('Built-in engine 0.66.33')
+    const button = builtin()
+    button.focus()
+    fireEvent.click(button)
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', true))
-    // Focusable and announced busy while the write runs, not taken out of the order.
-    expect(sw).toHaveAttribute('aria-disabled', 'true')
-    expect(sw).toHaveAttribute('aria-busy', 'true')
-    expect(sw).toHaveAttribute('tabindex', '0')
-    expect(sw).toHaveFocus()
-    // A second press is ignored, so only the first save ran.
-    fireEvent.click(sw)
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(kiroCli())
     expect(patchConfig.mock.calls.filter(c => c[0] === 'agent.kas_bundle')).toHaveLength(1)
     act(() => { release() })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-busy'))
+    await screen.findByTestId('kas-bundle-restart-pending')
   })
 
-  it('always lets an enabled switch be turned off, even with nothing installed', async () => {
+  it('always lets Kiro CLI be chosen, even with nothing installed', async () => {
     // A broken or removed install must never trap anyone on this route.
     kasBundleStatus.mockResolvedValue({ ...BASE, enabled: true })
     renderWithProviders(<KasBundleCard />)
     await screen.findByTestId('kas-bundle-install')
-    expect(toggle()).not.toHaveAttribute('aria-disabled')
-    fireEvent.click(toggle())
+    expect(kiroCli()).not.toBeDisabled()
+    fireEvent.click(kiroCli())
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', false))
   })
 
@@ -261,9 +342,9 @@ describe('KasBundleCard', () => {
     fireEvent.click(await screen.findByTestId('kas-bundle-install'))
     await waitFor(() => expect(kasBundleInstall).toHaveBeenCalledTimes(1))
     const live = await screen.findByRole('status')
-    expect(live.textContent).toContain('Installing KAS 0.66.33')
+    expect(live.textContent).toContain('Installing the built-in engine 0.66.33')
     expect(live.textContent).toContain('50')
-    expect(toggle()).toHaveAttribute('aria-disabled', 'true')
+    expect(builtin()).toBeDisabled()
   })
 
   it('reports a failed re-read beside the cached status instead of showing stale progress as current', async () => {
@@ -276,7 +357,7 @@ describe('KasBundleCard', () => {
     renderWithProviders(<KasBundleCard />)
     await screen.findByRole('status')
     // The install poll fires once a second while the server says installing.
-    await screen.findByText('Could not read the KAS engine status.', {}, { timeout: 5000 })
+    await screen.findByText("Could not read the built-in engine's status.", {}, { timeout: 5000 })
     expect(screen.getByTestId('kas-bundle-card')).toBeInTheDocument()
   })
 
@@ -284,9 +365,9 @@ describe('KasBundleCard', () => {
     kasBundleStatus.mockRejectedValueOnce(new Error('gateway gone'))
     kasBundleStatus.mockResolvedValue(INSTALLED)
     renderWithProviders(<KasBundleCard />)
-    await screen.findByText('Could not read the KAS engine status.')
+    await screen.findByText("Could not read the built-in engine's status.")
     fireEvent.click(screen.getByTestId('kas-bundle-retry'))
-    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    await screen.findByText('Built-in engine 0.66.33')
     expect(kasBundleStatus).toHaveBeenCalledTimes(2)
   })
 
@@ -297,9 +378,9 @@ describe('KasBundleCard', () => {
     try {
       renderWithProviders(<KasBundleCard />)
       await screen.findByTestId('kas-bundle-retry')
-      expect(screen.queryByText('Could not read the KAS engine status.')).toBeNull()
+      expect(screen.queryByText("Could not read the built-in engine's status.")).toBeNull()
       act(() => { setGatewayConnected(true) })
-      await screen.findByText('KAS engine 0.66.33 (installed by you)')
+      await screen.findByText('Built-in engine 0.66.33')
       expect(kasBundleStatus).toHaveBeenCalledTimes(2)
     } finally {
       __resetGatewayConnectedForTests()

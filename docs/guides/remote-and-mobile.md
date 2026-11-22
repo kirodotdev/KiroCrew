@@ -141,7 +141,7 @@ tmux survives an SSH disconnect but does **not** auto-restart on crash or
 auto-start on reboot. Move to [a real service](#3-keep-it-alive-as-a-service)
 once the smoke test passes, and **kill the tmux session first**: only one
 gateway can own the dashboard port, which defaults to `5476`
-(`config/loader_credentials.py` `_DEFAULT_PORT`, overridable with the `KIROCREW_PORT`
+(`src/kiro_crew/config/loader_credentials.py` `_DEFAULT_PORT`, overridable with the `KIROCREW_PORT`
 environment variable). Two gateways on one port means the second one fails to
 bind.
 
@@ -219,7 +219,7 @@ What NOT to carry over:
   copied.
 - `~/.kiro/crew/security_events.jsonl`: the tamper-evident SEL audit chain
   (`sel.py`); it belongs to the host that wrote it.
-- `~/.kiro/crew/.env`, `.local_secret`, `sel_hmac.key`: secrets. Re-enter
+- `~/.kiro/crew/.env`, `.local_secret`, `trust/sel_hmac.key`: secrets. Re-enter
   channel credentials from the dashboard (or use `kirocrew setup --slack` for
   Slack); the other two are regenerated.
 
@@ -369,10 +369,7 @@ the same and the difference is the whole security story:
   explicit allowlist and makes the phone session survive gateway restarts and
   application updates. Each request still has to resolve through the local
   Tailscale daemon as that allowed identity; persistence does not turn the QR
-  into a tailnet-wide bearer session. Users who set up phone access on an older
-  build migrate when they next choose **Show QR code** on the desktop. A session
-  already invalidated by the update that installed this migration cannot be
-  revived, so that upgrade requires one final scan; later updates do not.
+  into a tailnet-wide bearer session.
 
   The basic CLI equivalent is:
   ```bash
@@ -590,7 +587,7 @@ TLS on a public name and forwards to the loopback port.
 1. Serve the whole dashboard (page, API and WebSocket) from one host name, at
    the root path. The dashboard's Content-Security-Policy admits `'self'` for
    `connect-src`, so the browser accepts `wss://<that name>` sockets. It admits
-   no other public host, and no setting adds one. A split setup, with the
+   no other `wss://` host, and no setting adds one. A split setup, with the
    socket on a second host, is refused by the browser.
 2. Set `dashboard.url` to that public URL, as shown above, and restart. This
    adds the origin to the allowed-origin set, so the CSRF check, the
@@ -650,6 +647,13 @@ read-only.
 In the Chat composer, tap `+` to open the device's native Files picker and
 attach an image or a regular file. This direct touch path does not open the
 desktop-style command menu first.
+
+On a phone, Return starts a new line in the chat composers (the Chat page, a
+mate's chat, the side panel), in a mate thread reply and in Edit & Resend.
+Tap Send to send. A phone's on-screen keyboard has no Shift+Return, so a
+Return that sent would leave no way to write a second line. On a tablet or a
+desktop, **Settings → Chat → Composer → Send shortcut** decides what Return
+does.
 
 ### Session duration
 
@@ -722,9 +726,9 @@ opened with; a chain bound this way stops renewing if you later turn identity
 trust off, and a fresh `kirocrew token` link gets you going again.
 
 Chains persist in `~/.kiro/crew/refresh_chains.json` (mode `0600`) — including
-the device binding above — so they survive a gateway restart. On a gateway old enough to predate the feature,
-`GET /api/auth/me` returns 404; the frontend logs once and falls back to the
-20-hour URL-mint behaviour.
+the device binding above — so they survive a gateway restart. When
+`GET /api/auth/me` returns 404 (a gateway without refresh support), the
+frontend logs once and falls back to the 20-hour URL-mint behaviour.
 
 ### Install as an app (PWA)
 
@@ -781,7 +785,7 @@ Declined (handed straight to the network, never intercepted):
 | Path | Why it is not intercepted |
 |---|---|
 | any URL with a `token` query parameter (the `/?token=...` sign-in link) | Never answers from the cached shell and never caches it, so the gateway's token exchange always runs |
-| `/api`, `/apps/` | Gateway and app-backend responses must never be served stale |
+| `/api`, `/v1/`, `/apps/` | Gateway, Crew API and app-backend responses must never be served stale |
 | `/fonts/`, `/sprites/` | Cost looks, not boot — a failed font or sprite does not stop the page running, so it earns no retry |
 | `/logo.png`, `/static/` | Gateway-served brand assets; intercepting them strands a broken image across a gateway restart |
 | `/sandbox-doc/`, `/app-windows/`, navigations into a widget frame | One-shot credentialed URLs, standalone app-window documents, and the shell fallback must not render into a widget frame |
@@ -816,10 +820,9 @@ bugs:
   on iOS it needs iOS 18.4 or later and the app added to the Home Screen. With
   the toggle off, notifications need the app open. In page banners go through
   `ServiceWorkerRegistration.showNotification()`, which an installed iOS PWA
-  and Android Chrome require
-  ([issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828)).
+  and Android Chrome require.
 - **Pinch zoom is off.** The installed app behaves like an application, not a
-  web page: two-finger pinch and double-tap no longer scale the shell. **To
+  web page: two-finger pinch and double-tap do not scale the shell. **To
   magnify, use the OS display-zoom setting** (iOS: Settings → Display &
   Brightness → Display Zoom; Android: Settings → Display → Display size and
   text), which still enlarges everything; in a browser tab Safari's Aa
@@ -1001,10 +1004,10 @@ Without a key, the card links the admin console's Machines page, where you can
 share this machine by hand (**Share**). The direct link follows Tailscale's
 access rules.
 
-`dashboard.tailscale.allowed_logins` is not how you add people. The first time
-the gateway starts with this version it carries the logins and `tag:` entries
-already in that list over once. After
-that, editing the list changes nothing. A tagged device (a CI runner, a server)
+`dashboard.tailscale.allowed_logins` is not how you add people. At its first
+start under the Shared Crew preview, the gateway carries the logins and `tag:`
+entries already in that list over once. After that, adding a login admits
+nobody, and removing one removes that person at the next start. A tagged device (a CI runner, a server)
 gets in only when one of its tags was carried over that way.
 
 Removing the Tailscale API key and deleting every stored session cannot be
@@ -1231,8 +1234,10 @@ kirocrew service uninstall   # remove the unit / plist
 ```
 
 **Sudo scope on Linux:** the install shells out to `sudo install` (to place the
-unit as root-owned `0644`) and `sudo systemctl` (daemon-reload, enable,
-restart). No kirocrew, MCP, or LLM code path runs under sudo. Once started the
+unit as root-owned `0644`), `sudo systemctl` (daemon-reload, enable,
+restart) and, unless linger is already on or the host has no per-user
+manager, `sudo loginctl enable-linger` for your account. No kirocrew, MCP, or
+LLM code path runs under sudo. Once started the
 gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
 crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
 `LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend

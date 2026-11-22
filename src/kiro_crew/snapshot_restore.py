@@ -24,6 +24,7 @@ import os
 import shutil
 import stat as _stat
 from contextlib import ExitStack, closing
+from contextvars import ContextVar
 from datetime import timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, cast
@@ -49,6 +50,7 @@ from kiro_crew.snapshot_components import (
     _DERIVED_INDEXES,
     _FLAT_DOCUMENT_VALIDATORS,
     _JSON_OBJECT_LISTS,
+    _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
@@ -64,6 +66,10 @@ from kiro_crew.snapshot_components import (
     safe_tree_root,
 )
 from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+
+host_local_installable: ContextVar[frozenset[str]] = ContextVar(
+    "host_local_installable", default=frozenset()
+)
 
 
 def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
@@ -334,11 +340,25 @@ def _backup_and_copy(
     ``O_EXCL``, not by name through ``shutil.copy2``: a by-name write follows a data-home
     component swapped for a link, or a symlink left at the core file's name. A name still
     occupied after the backup move is refused instead of written through.
+
+    A component's ``host_local`` files are neither moved nor installed unless this
+    caller explicitly marks one installable for its checked import. The others name
+    paths on the machine that made the archive, so this install's copy stays.
     """
+    installable = host_local_installable.get()
+    host_local = frozenset(f for f in COMPONENTS[component].host_local if f not in installable)
+    for f in host_local:
+        if os.path.lexists(snap / f):
+            kept = "; this install's copy is kept" if os.path.lexists(mc / f) else ""
+            print(
+                f"  ↩  {f}: not restored (the backup's copy points at the machine "
+                f"that made it){kept}."
+            )
+    files = [f for f in CORE_FILES.get(component, ()) if f not in host_local]
     if not _facade()._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {component!r}"
     ):
-        for f in CORE_FILES.get(component, ()):
+        for f in files:
             # Validated before the live file is touched, and a symlink at the live name is
             # MOVED aside rather than skipped -- the same two properties the pinned branch
             # has. Skipping would skip both the backup AND the replacement, so the archive's
@@ -346,7 +366,7 @@ def _backup_and_copy(
             # Moving a symlink moves the link, never its target.
             if not (snap / f).is_file() or pinned_fs.is_reparse_point(snap / f):
                 if (snap / f).exists():
-                    print(f"Warning: Skipping symlinked file from snapshot: {snap / f}")
+                    print(f"⚠️  Skipping symlinked file from snapshot: {snap / f}")
                 continue
             # Past the skip, so this file WILL be mutated. Recorded now, before the move
             # below, so a crash mid-write still leaves the name known to have been reached
@@ -355,7 +375,7 @@ def _backup_and_copy(
                 installed.add(f)
             live = mc / f
             if live.is_symlink() or pinned_fs.is_reparse_point(live):
-                print(f"Warning: Moving symlinked core file aside during backup: {live}")
+                print(f"⚠️  Moving symlinked core file aside during backup: {live}")
                 shutil.move(str(live), str(backup / f))
             elif live.is_file():
                 shutil.move(str(live), str(backup / f))
@@ -388,7 +408,7 @@ def _backup_and_copy(
                 backup, what=f"pre-restore backup for {component!r}"
             )
             try:
-                for f in CORE_FILES.get(component, ()):
+                for f in files:
                     live = mc / f
                     # Checked BEFORE the live file is touched: the archive is untrusted, and
                     # finding a FIFO or directory only after the move would leave nothing
@@ -408,7 +428,7 @@ def _backup_and_copy(
                     # descriptors cannot be redirected by a swapped ancestor, and is atomic.
                     live_st = pinned_fs.stat_at(dst_fd, f)
                     if live_st is not None and _stat.S_ISLNK(live_st.st_mode):
-                        print(f"Warning: Moving symlinked core file aside during backup: {live}")
+                        print(f"⚠️  Moving symlinked core file aside during backup: {live}")
                         os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
                     elif live_st is not None and _stat.S_ISREG(live_st.st_mode):
                         os.rename(f, f, src_dir_fd=dst_fd, dst_dir_fd=backup_fd)
@@ -613,6 +633,8 @@ def _refuse_corrupt_source_databases(
         if not _want(components, component):
             continue
         for name in files:
+            if name in COMPONENTS[component].host_local:
+                continue  # never installed, so its bundle copy cannot refuse the restore
             src = snap / name
             if not src.exists() and not platform_compat.is_link_or_junction(src):
                 continue  # absent from a selective bundle; nothing to validate
@@ -847,7 +869,7 @@ def _discard_partial_rollback(*dirs: Path | None) -> None:
             pass
         except OSError:
             print(
-                f"  Warning: Partial rollback copy left at: {d}/ (nothing was changed; "
+                f"  ⚠️  Partial rollback copy left at: {d}/ (nothing was changed; "
                 "it is safe to delete)"
             )
 
@@ -863,11 +885,26 @@ def _do_replace(
     set known to be complete. The core-file swap must not run before phase one finishes.
     """
     facade = _facade()
+    # A tree whose root may be a supported link (`_LINKABLE_TREE_ROOTS`) and that this
+    # bundle does not carry is not restored by this run, so it is not this run's to vet or
+    # touch: a linked `members/` must not refuse a replace of everything else.
+    uncarried = [
+        c
+        for c in COMPONENTS
+        if _want(components, c)
+        and COMPONENTS[c].trees
+        and all(t in _LINKABLE_TREE_ROOTS for t in COMPONENTS[c].trees)
+        and not any((snap / t).is_dir() for t in COMPONENTS[c].trees)
+    ]
+    if uncarried:
+        components = [c for c in COMPONENTS if _want(components, c) and c not in uncarried]
+        for c in uncarried:
+            print(f"  {c}: not in this bundle, so the live folder is left as it is")
     # Before anything is created or copied: a destination tree root that does not resolve
     # inside the data home would have the restore write outside it.
     facade._refuse_unsafe_destination_roots(mc, components)
     backup = facade._allocate_rollback_dir(mc)
-    print("Replace mode — backing up current state...")
+    print("🔄 Replace mode — backing up current state...")
 
     # `memory` names two subtrees of workspace/ plus memory_stores/. When `workspace` is
     # also selected its own pass covers the two subtrees, and doing both would save the
@@ -893,7 +930,7 @@ def _do_replace(
                 # crew's private memory. Said out loud, because a replace that leaves one
                 # tree at the newer generation is a mixed result the operator should see.
                 print(
-                    f"  Note: {tree}/ is not carried by this archive (written before named "
+                    f"  ↩️  {tree}/ is not carried by this archive (written before named "
                     "memory stores were backed up) — the live named stores are left as "
                     "they are"
                 )
@@ -1062,7 +1099,7 @@ def _do_replace(
         backup.rmdir()
     except OSError:
         print(f"  Previous state saved to: {backup}/")
-    print("Done: Replace complete.")
+    print("✅ Replace complete.")
 
 
 def _component_payload_absent(snap: Path, component: str) -> bool:
@@ -1122,7 +1159,7 @@ def _drop_derived_indexes_absent_from_bundle(
             platform_compat.unlink_link_or_junction(live)
         else:
             shutil.move(str(live), str(backup / rel))
-        print(f"  Note: {rel} is not in the archive — moved aside so it can be rebuilt")
+        print(f"  ↩️  {rel} is not in the archive — moved aside so it can be rebuilt")
 
 
 def _rmtree_or_raise(path: Path) -> None:
@@ -1187,7 +1224,7 @@ def _do_replace_mutations(
             facade._backup_and_copy(
                 mc, backup, snap, comp, allow_unpinned=allow_unpinned, installed=installed
             )
-            print(f"  Done: {comp}")
+            print(f"  ✅ {comp}")
 
     if _want(components, "memory"):
         # After the copy, not before: the loop above is what installs the index when the
@@ -1215,7 +1252,7 @@ def _do_replace_mutations(
                     # document (a sandboxed run, an unreadable tree): its absence then says
                     # nothing about the live document, and removing that would lose it.
                     print(
-                        f"  Note: {dirname}: kept the live "
+                        f"  ↩️  {dirname}: kept the live "
                         f"{_safe_name(PurePosixPath(rel).name)}; this bundle did not carry it "
                         "(MANIFEST.json lists it as skipped)."
                     )
@@ -1246,7 +1283,7 @@ def _do_replace_mutations(
                     on_skip=pinned_fs.fatal_skip_reporter(f"restore of {dirname!r}"),
                 )
         if not kept_live:
-            print(f"  Done: {comp}")
+            print(f"  ✅ {comp}")
 
     # Scoped to memory's own trees as `_do_replace` selected them: the two workspace/
     # subtrees only when `workspace` is not also selected (that pass has already replaced
@@ -1285,7 +1322,7 @@ def _do_replace_mutations(
                 on_skip=pinned_fs.fatal_skip_reporter(f"restore of {tree!r}"),
             )
     if mem_roots:
-        print("  Done: memory trees")
+        print("  ✅ memory trees")
 
 
 def _restore_everything_from_rollback(
@@ -1334,11 +1371,11 @@ def _restore_everything_from_rollback(
     """
     facade = _facade()
     if not backup.is_dir():
-        print(f"Warning: No rollback directory at {backup}; nothing to put back.")
+        print(f"⚠️  No rollback directory at {backup}; nothing to put back.")
         # Reported as a failed revert, not as success with a warning: the caller's summary
         # line is what the operator acts on, and "put back" would be false here.
         return list(sorted(set(targets)))
-    print(f"Restoring the previous state from {backup} ...")
+    print(f"↩️  Restoring the previous state from {backup} ...")
     failed: list[str] = []
     locked_documents = {rel: tree for tree, rel in _LOCKED_DOCUMENT_TREES.items()}
     for rel in sorted(set(targets)):
@@ -1460,12 +1497,12 @@ def _restore_everything_from_rollback(
         except (OSError, pinned_fs.PinnedPathRefusal) as e:
             failed.append(f"{rel} ({e})")
     if failed:
-        print("Warning: Could not undo these: " + ", ".join(failed))
+        print("⚠️  Could not undo these: " + ", ".join(failed))
         locations = ", ".join(str(p) for p in (backup, store_backup) if p is not None)
         print(
             f"   The saved copies are still in {locations} — recover them by hand before "
             "re-running."
         )
     else:
-        print("Previous state restored.")
+        print("↩️  Previous state restored.")
     return failed

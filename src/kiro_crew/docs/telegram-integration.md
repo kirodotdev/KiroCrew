@@ -185,14 +185,14 @@ sent, decided by the file's leading bytes rather than its name, and only from
 inside the session's own working directory; anything refused keeps its original
 markdown so you can see what was skipped and why.
 
-While a reply is forming you get a live typing indicator and a `Running tool…` footer
+While a reply is forming you get a live typing indicator and a `🔧 tool…` footer
 naming what the agent is doing. If nothing moves for a while the footer says so
-(`still working…` at 15 seconds, `this is taking a while…` at 45), which is the one thing the typing indicator
+(`🥱` at 15 seconds, `😨` at 45), which is the one thing the typing indicator
 cannot tell you. A tool waiting on your approval is not a stall, so the mark
 stays away while a prompt is open.
 
 When a turn is worth commenting on, a quoted line under the answer reports it —
-`Finished in 1m 20s · ctx 54%`. It appears only past a threshold (10 seconds,
+`Finished in 1m 20s · 🟠 ctx 54%`. It appears only past a threshold (10 seconds,
 or 50% context): a footer under every single reply is one you learn to skip,
 including on the turn where the context warning finally matters.
 
@@ -205,6 +205,21 @@ With topics on in your private chat, a topic is a destination of its own:
 wherever a Telegram target id is accepted (for example, ask the agent to send a
 job's report there). Only a topic in the private chat of a user in
 `allowed_user_ids` is accepted.
+
+On the **Schedule** page, a job's **Telegram destination** sends what the job
+reports to your private chat or one of its topics. An agent job's results and
+every job's failure alerts go there in place of the chat that created the job and
+of your Slack DM, which gets them only if Telegram refuses the send. A script's
+`Report` and `Done` go there as well as to the dashboard chat that created the
+job. All of it still shows on the dashboard. A command job, or one that runs
+several crews in turn, reports only its failures. A
+script's own `ctx.notify(...)` and an agent's `send_message` still go where they
+are addressed. Editing the destination keeps the job's id, history
+and times. Telegram does not let the bot list your topics, so the list shows the
+topics that have a conversation open on the dashboard: create the topic in
+Telegram, send one message there, and it appears. A job has one destination, so
+picking one empties its Slack **Channel ID**, and filling in a Channel ID turns
+the Telegram destination off.
 
 Proactive messages (a cron's report, an agent's `send_message`) are plain text by
 default, so `**bold**` arrives with its asterisks. Pass `format="markdown"` to

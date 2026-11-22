@@ -321,6 +321,7 @@ class TestARedMacSuiteHoldsPublicationAndNeverABuild:
             [
                 "version",
                 "build-wheel",
+                "build-platform-wheels",
                 "build-desktop",
                 "build-windows",
                 "dependency-vulnerability-gate",

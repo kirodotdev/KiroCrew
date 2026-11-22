@@ -139,7 +139,7 @@ def _route(_args: argparse.Namespace) -> int:
         cfg = load_sign_in_owner_config()
     except ConfigUnreadable as exc:
         print(
-            f"Error: could not read the Kiro Crew config under {data_home()}: {exc}. Which program "
+            f"❌ could not read the Kiro Crew config under {data_home()}: {exc}. Which program "
             "owns the Kiro sign-in here is unknown; fix the config, then run this again.",
             file=sys.stderr,
         )
@@ -182,7 +182,7 @@ def _logout(_args: argparse.Namespace) -> int:
     try:
         asyncio.run(KasLoginService(store).logout(identity))
     except TokenStoreError as exc:
-        print(f"Error: sign-out did not complete: {exc}", file=sys.stderr)
+        print(f"❌ sign-out did not complete: {exc}", file=sys.stderr)
         return 1
     if token is None:
         print("Not signed in to Kiro Crew; nothing to sign out.")
@@ -206,7 +206,7 @@ def _login(args: argparse.Namespace) -> int:
         )
         return 0
     if args.provider == "idc" and not (args.start_url or "").strip():
-        print("Error: --provider idc requires --start-url", file=sys.stderr)
+        print("❌ --provider idc requires --start-url", file=sys.stderr)
         return 2
     # Only IdC consumes a start URL, and only the AWS providers (builder_id, idc)
     # consume a region: begin_device hardcodes the Builder ID URL for builder_id
@@ -215,13 +215,13 @@ def _login(args: argparse.Namespace) -> int:
     # silently dropping it or refusing a line that works today.
     if (args.start_url or "").strip() and args.provider != "idc":
         print(
-            f"Warning: ignoring --start-url: it is only used with --provider idc; "
+            f"⚠️  ignoring --start-url: it is only used with --provider idc; "
             f"signing in with {args.provider}",
             file=sys.stderr,
         )
     if (args.region or "").strip() and args.provider not in ("builder_id", "idc"):
         print(
-            f"Warning: ignoring --region: it is only used with --provider builder_id "
+            f"⚠️  ignoring --region: it is only used with --provider builder_id "
             f"or idc; signing in with {args.provider}",
             file=sys.stderr,
         )
@@ -262,7 +262,7 @@ def _unreachable(lead: str, exc: BaseException) -> str:
     else:
         why = f": {str(exc) or network_failure_cause(exc)}"
     return (
-        f"Error: {lead}{why}.\n"
+        f"❌ {lead}{why}.\n"
         "   Nothing was stored. Check your network connection, then run the command again."
     )
 
@@ -298,13 +298,13 @@ async def _run_device_login(
                 replaces=replaces,
             )
         except MissingStartUrlError:
-            print("Error: --provider idc requires --start-url", file=sys.stderr)
+            print("❌ --provider idc requires --start-url", file=sys.stderr)
             return 2
         except (InvalidRegionError, InvalidStartUrlError, StartUrlRejectedError) as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"❌ {exc}", file=sys.stderr)
             return 2
         except (BuilderIdAuthError, DeviceAuthError) as exc:
-            print(f"Error: the sign-in service refused to start a sign-in: {exc}", file=sys.stderr)
+            print(f"❌ the sign-in service refused to start a sign-in: {exc}", file=sys.stderr)
             return 1
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             print(_unreachable("could not reach the sign-in service", exc), file=sys.stderr)
@@ -332,7 +332,7 @@ async def _run_device_login(
                 return 1
             except (UnknownLoginError, SignedOutDuringLoginError):
                 print(
-                    "Error: this sign-in was cancelled by a sign-out before it was approved; "
+                    "❌ this sign-in was cancelled by a sign-out before it was approved; "
                     "nothing was stored.",
                     file=sys.stderr,
                 )
@@ -349,23 +349,23 @@ async def _run_device_login(
                 print(f"Signed in to Kiro Crew with {method}.", flush=True)
                 if result.get("code") == "previous_identity_not_removed":
                     print(
-                        "Warning: an earlier identity could not be removed from the vault; "
+                        "⚠ an earlier identity could not be removed from the vault; "
                         "run `kirocrew kas logout` and sign in again if the wrong account answers",
                         file=sys.stderr,
                     )
                 return 0
             if status == "expired":
                 print(
-                    "Error: the code expired before it was approved; run the command again.",
+                    "❌ the code expired before it was approved; run the command again.",
                     file=sys.stderr,
                 )
                 return 1
             code = result.get("code") or "error"
             plain = _FAILURE_TEXT.get(code)
             if plain:
-                print(f"Error: sign-in failed. {plain} Nothing was stored.", file=sys.stderr)
+                print(f"❌ sign-in failed. {plain} Nothing was stored.", file=sys.stderr)
             else:
-                print(f"Error: sign-in failed ({code}); nothing was stored.", file=sys.stderr)
+                print(f"❌ sign-in failed ({code}); nothing was stored.", file=sys.stderr)
             return 1
     finally:
         await service.close()

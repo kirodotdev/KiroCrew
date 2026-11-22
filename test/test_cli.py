@@ -89,7 +89,7 @@ class TestDoctor:
             _doctor()
         out = capsys.readouterr().out
         assert "kiro-cli 1.0.0" in out
-        assert out.endswith("Kiro Crew is ready!\n")
+        assert out.endswith("✅ Kiro Crew is ready!\n")
 
     @staticmethod
     def _stt_config(monkeypatch, **fields):
@@ -155,18 +155,13 @@ class TestDoctor:
             # Must NOT raise SystemExit(1): both STT gaps are notes on Windows.
             _doctor()
         out = capsys.readouterr().out
-        assert "  engine:      Warning: needs the voice extra" in out
-        assert "  ffmpeg:      Warning: not found" in out
-        assert out.endswith("Kiro Crew is ready!\n")
+        assert "  engine:      ⚠️  needs the voice extra" in out
+        assert "  ffmpeg:      ⚠️  not found" in out
+        assert out.endswith("✅ Kiro Crew is ready!\n")
 
     @pytest.mark.parametrize(
         "is_windows, bundled, expected_mark",
-        [
-            (False, False, "Warning:"),
-            (False, True, "Error:  "),
-            (True, False, "Warning:"),
-            (True, True, "Warning:"),
-        ],
+        [(False, False, "⚠️ "), (False, True, "❌"), (True, False, "⚠️ "), (True, True, "⚠️ ")],
         ids=["posix-source-note", "posix-desktop-fatal", "windows-note", "windows-desktop-note"],
     )
     def test_doctor_stt_marker_arms_match_platform(
@@ -342,8 +337,8 @@ class TestDoctor:
         ):
             _doctor()
         out = capsys.readouterr().out
-        assert "OK:      configured" in out
-        assert "  workspace:   OK:      allowed" in out
+        assert "✅ configured" in out
+        assert "  workspace:   ✅ allowed" in out
         mock_ve.assert_called_once()
 
     def test_doctor_slack_workspace_not_allowed_flags_issue(self, tmp_path, capsys):
@@ -373,7 +368,7 @@ class TestDoctor:
                 _doctor()
         assert exc.value.code == 1
         out = capsys.readouterr().out
-        assert "Error:   not in configured workspace allowlist" in out
+        assert "❌ not in configured workspace allowlist" in out
 
 
 # The _update tests simulate a source tree whose git calls are faked. The project

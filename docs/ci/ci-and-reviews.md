@@ -49,7 +49,10 @@ CI is a **fan-out of independent workflows that one aggregator folds into a sing
 verdict**, with two ordering edges inside it: the cheap blocking
 gates run in their own workflow, and both the expensive matrix and the fork
 reviewers wait for its verdict rather than racing it; then the two lint jobs
-run before the heavy jobs start (see [Lint first](#lint-first)).
+run before the heavy jobs start (see [Lint first](#lint-first)). A third edge
+is off unless a repository variable turns it on: the heavy jobs do not start on
+a head a blocking line reviewer has already BLOCKed (see
+[AI review hold](#ai-review-hold)).
 
 ```
 pull_request
@@ -227,26 +230,75 @@ Three structural facts explain most of the rest:
   merge queue off, the push run of `CI` runs the whole matrix and a red Linux or
   Windows shard there reaches nobody. `main-red-watch.yml` runs on
   `workflow_run: completed` of `CI`; for a push to `main` that ended `failure` or
-  `timed_out`, it reads the log of each failed job and takes the node ids and
-  message prefixes (first 80 characters) from pytest's short test summary
-  (`.github/scripts/main_red_nodeids.py`). It opens or updates one issue,
-  `Main is red: <first node id>`, under the `main-red` label (found by title
+  `timed_out`, it reads the check-run annotations of each failed job (first 20,
+  one read per job) and takes the node ids and message prefixes (first 80
+  characters) of the failing tests the rootdir `conftest.py` annotated there
+  (`.github/scripts/main_red_nodeids.py`). Annotations, not the log: the Actions
+  token's read of a job log fails in this repository, which left every red main
+  run unfiled, so the log is read only for a job whose annotations cannot be
+  read or, on a backend test job, name no test. A failed read says why in a
+  notice and in the job summary; a read the API rate limit refused is named as
+  that, with the reset time, and ends the reading. Every `gh` call of the step
+  goes through `.github/actions/gh-rate-limit` (below) with a 20-minute budget,
+  so a refused label call, issue lookup or job read waits for the reset and is
+  retried; a reset past the budget fails the call, and the run ends red having
+  written nothing or files what it had read. Nothing marks such a run. Every
+  red run that names a test reads the run list and replays the red verdict runs
+  directly before it that no issue's record holds (the open issue's, or with
+  none open the newest among the closed watcher issues, read from the labelled
+  list and from the 200 newest closed issues of any label, since an issue
+  closed while main was red leaves no green run), back to the first green run,
+  the last run a record holds, or 5 runs
+  (`.github/scripts/main_red_previous.py`, one job list and one annotation read
+  per failed job for each), under the same rules as a live run, so the issue
+  names the first red commit and the whole streak even when a watcher run was
+  lost to the rate limit or dropped from the queue. The replay opens no issue:
+  with none open, the run opens one only by the two rules below. A replay that
+  cannot read a run or the closed issues counts none. The annotations name at most 10
+  failing tests per job. With no issue open it files one only when a test is red
+  in two failed jobs of the run (the Linux and the Windows shard that both carry
+  it), so a test that fails once on one leg, which is as often a flake as a
+  break, opens nothing; that run ends with a warning naming the tests it saw red
+  in one job. A run that is red in one job only still opens the issue when the
+  previous push run of `CI` on `main` that reached a verdict was red on the same
+  test file (`.github/scripts/main_red_previous.py`): a break that shows on one
+  operating system or one shard is red in one job of every run. That look back
+  stores nothing; it reads the run list, the previous run's jobs and the
+  annotations of its failed jobs, only on such a run, and a read that fails
+  opens nothing. An open issue is updated by every red run that names a test. It
+  opens or updates one issue,
+  `ci: Main is red: <first node id>`, in the shape of the CI failure issue form
+  (`.github/ISSUE_TEMPLATE/ci_failure.yml`: its `ci: ` title prefix, its `bug`
+  and `area: ci` labels, created when the repository lacks one and left off
+  rather than lose the issue, one section per form field in the form's order, and
+  `_No response_` where the run knows nothing), under the `main-red` label (found by title
   prefix if the label cannot be created), holding that set, the first-red SHA and
   the streak. A run that names no node id (a Fast Gate barrier timeout, a Coverage
-  Gate failure) writes nothing, and a cancelled run never reaches the job. The
+  Gate failure) writes nothing and says so in a warning with what it read, a run none of whose failed jobs could be read
+  fails the watcher, and a cancelled run never reaches the job. A cancelled push
+  run on `main` is a pending one that a later push replaced before its tests
+  started; the running one is never cancelled, so `main` gets a test verdict
+  from each run that finishes, about one every 50 minutes, and the issue opens
+  with the first of those that is red on a test. The
   body's `Fix in progress:` line is rewritten on every main run from the open pull
-  requests that cross-reference the issue, so a second author sees that a fix
+  requests whose body declares the issue (`Fixes #<issue>`, read with the same
+  reference grammar as the Issue Gate; a comment that only cites the issue does
+  not count), so a second author sees that a fix
   exists and can put `Fixes #<issue>` in their own. A later push run, or a
   successful re-run of the last red one, comments and closes the issue only if
   it ran the full backend suite (the `Backend Tests` shards' coverage upload ran,
   which `ci.yml` skips on a frontend-only or leaf-only scope). It is warn only: it
   writes an issue, comments on no pull request, assigns and mentions no one but
-  the author of a cross-referencing fix. It holds `actions: read`,
-  `contents: read` and `issues: write`, and `test/test_main_red_watch.py` pins the
-  name, the gate and the parsing, and runs the step with `gh` stubbed.
+  the author of such a fix. It holds `actions: read`,
+  `checks: read`, `contents: read` and `issues: write`.
+  `test/test_main_red_watch.py` pins the name, the gate and the log parsing, and
+  runs the step with `gh` stubbed; `test/test_main_red_annotations.py` pins the
+  annotation parsing against rows the API returned for red shards on `main`, and
+  `test/test_main_red_issue_form.py` fails when the form and the issue differ.
 - **A failed pull request run names the tests that are red on main.** While a
   `Main is red:` issue is open, `main-red-pr-notice.yml` reads the failed jobs of
-  a same-repository pull request's `CI` run (target `main`). If one of its
+  a same-repository pull request's `CI` run (target `main`), from their
+  annotations as the watcher does. If one of its
   failing test ids is also in the issue's set, it writes one comment, found by a
   hidden marker and edited in place, listing which failures are the same as main
   and which are the author's. A failure counts as the same only when the message
@@ -255,10 +307,68 @@ Three structural facts explain most of the rest:
   cannot show is the
   author's, and a failing check that names no test is always the author's. It is
   a comment: no status, label, assignee or mention, `continue-on-error`, and the
-  same three permissions as `main-red-watch.yml`. It reads only an issue the
+  same four permissions as `main-red-watch.yml`. It reads only an issue the
   Actions token filed and only that issue's checked state record; the fix line is
   rebuilt from the issue timeline, not copied from the editable body.
   `test/test_main_red_pr_notice.py` runs the step with `gh` stubbed.
+- **Three pull requests that fail one test the same way open a `Main may be red:`
+  issue.** The `Main is red:` issue comes only after a push run on `main` ends,
+  about an hour after the commit that broke it. When a same-repository pull
+  request's `CI` run (target `main`) ends `failure` and names a failing test,
+  `main-red-suspect.yml` reads the newest failed runs of other pull requests and,
+  when the same node id fails with the same message start (80 characters) on 3
+  pull requests, whether or not the run that started it is one of them, files one
+  `ci: Main may be red: <node id>` issue under the `main-red-suspected` label
+  (`.github/scripts/main_red_suspect.py`). The 3 must have different authors and
+  runs started by different accounts, each failing on its current head, none
+  changing the test's file (an unreadable or cut list counts as changing it),
+  with a plain `test/...py::name` or `src/...py::name` id; a fork's pull request
+  is never counted. Every set of 3 among the runs read is tried, so the order
+  of the run list decides nothing. The issue lists the tests, the 3 pull
+  requests and the one of their bases that the other two contain. It is a notice and never a skip:
+  `scripts/ci_main_red_skip.py` and `main-red-pr-notice.yml` read only the issue
+  the watcher's `pick_issue` returns, and a suspected issue has another title
+  prefix, another record marker and another label, so only a red push run on
+  `main` can deselect a test. A push run on `main` closes the suspected issue:
+  a red one once the `Main is red:` issue names the test (that issue tracks it),
+  a green one that ran the full backend suite and contains the recorded base
+  (main was green), and a test closed that way is not suspected again for 24
+  hours, so a flaky test does not file one issue per flake. At most 3 are open
+  at once and a test is in one of them only. It reads nothing more while a `Main is red:` issue is open, reads at
+  most the newest 10 other failed pull request runs of the last 3 hours, reads
+  no other run when fewer than 1,500 API requests are left for the token, and
+  cannot fail a job. A pull request that fails a suspected test is told so in
+  one comment per suspected issue: the 3 the issue names when it is filed, and
+  any other once its failed run is among the newest 10 a later run reads (so a
+  queued run that a newer one replaced is still told), when that run is on its current head, fails
+  the test with the same message start, the pull request does not change the
+  test's file and its base contains the issue's recorded base. The comment is a
+  hint that the same test fails on other pull requests, with the issue link, and
+  says the pull request's own change may still be the cause; it is never edited,
+  changes no check, label or assignee, and a fork's pull request never gets one. It holds `actions: read`,
+  `checks: read`, `contents: read`, `pull-requests: read` and `issues: write`.
+  `test/test_main_red_suspect.py` and `test/test_main_red_suspect_notice.py` pin
+  each rule with `gh` faked (`test/main_red_suspect_fake.py`).
+- **A pull request does not run the tests that are red on main.** The `changes`
+  job of `ci.yml` reads the open `Main is red:` issue once per run
+  (`scripts/ci_main_red_skip.py decide`), and every `Backend Tests` shard, Linux
+  and Windows, loads the same file as a pytest plugin that deselects exactly the
+  node ids in the issue's state record and lists them, with the issue link, in
+  the shard's job summary. Only an open issue with the `main-red` label and the
+  GitHub Actions bot as author counts. A node id that is not a plain
+  `test/...py::name` or `src/...py::name` id, or that sits in a test file the
+  pull request changes, still runs. More than 50 ids deselects nothing. A push,
+  merge group or `release/**` run, a `main-red-fix` or `ci-full-run` label, a
+  pull request body that names the issue (`#N` or its URL), and any failure to
+  read or parse the issue all run every test. The read uses the job's token,
+  which draws on the rate limit every workflow in the repository shares. When
+  the API refuses it for a rate limit (`Retry-After`, `X-RateLimit-Remaining: 0`,
+  a 429, or a body that says so), the step reads once without the token, which
+  costs no wait, and only then sleeps for the reset, for at most 300 s in total
+  and not at all when the reset is further away than that. A 403 that names no
+  rate limit is a permission error and is not retried. The `Main-red skip:` line
+  of the step says which of these happened. `test/test_ci_main_red_skip.py`
+  pins each case.
 - **Do not merge a feature PR past a non-green `PR Readiness`.** The ruleset's
   bypass actors can, and a `pending` readiness is not a judgement about a red
   lane: it skips lanes that have not reported yet. #11947 merged 14 s after its
@@ -458,7 +568,8 @@ fleet, so one `gh` call made while it is spent fails the run, although the limit
 resets within the hour. The same holds for an event-triggered check that fails
 closed and is recomputed only by the PR's next event: Fork PR Description and
 Sensitive Change Review install the wrapper too, from their default-branch
-checkout. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
+checkout. So does the main-red watcher, whose lost run leaves a red main
+unrecorded until the next run of main ends. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
 PATH for the rest of the job: it retries only a call whose error names a rate
 limit, at most twice, waiting for the earliest reported reset (60 s for a
 secondary limit) inside one job-wide budget (`max-wait`, 20 minutes by default).
@@ -468,6 +579,167 @@ for the budget, or is listed in `test/test_scheduled_gh_rate_limit.py` with the
 reason a failed run costs nothing the next tick does not re-cover (frequent
 sweeps, full re-derivations, and a job whose model step can write to the
 runner's disk). That test fails for a new scheduled `gh` job that does neither.
+
+A job whose API calls are made inside a third-party action cannot be wrapped:
+the action calls from its own process. For those the same action installs
+`gh-rate-limit-wait [floor]`. It reads the REST (`core`) bucket from
+`/rate_limit` and, when fewer than `floor` requests remain, sleeps until the
+reset out of the same job-wide `max-wait` budget. It prints `waited` or `ready`
+and exits non-zero only when the reset is past the budget, with an `::error::`
+that names the rate limit as CI infrastructure, not the code under test. It
+retries nothing and reports nothing for the action it guards. A job runs it
+before the action. Where the action can be run again in the same job, the job
+runs it once more after a failed attempt: `waited` means the pool was spent and
+has reset, `ready` means quota remained and the fixed pause applies. Two jobs
+use it, both with a floor of 100 requests and a 30-minute budget:
+
+- **CodeQL** (`codeql.yml`). Two requests fail this job on a spent pool, and
+  each is handled where it is made.
+  The first is the analysis key. Before any upload the action post-processes
+  the results, and `getAnalysisKey` asks the API which workflow file the run
+  belongs to (`GET actions/runs/<id>`, then the workflow). That happens inside
+  `analyze` for every value of `upload:`, unless `init` already stored the
+  answer -- and on a spent pool `init`'s requests fail without failing the
+  step, so `analyze` asks, and fails right after `Adding fingerprints to SARIF
+  file`. The key is `<workflow path>:<job id>` and never changes, so the job
+  sets `CODEQL_ACTION_ANALYSIS_KEY` to `.github/workflows/codeql.yml:analyze`,
+  the variable the action reads before it asks; `analyze` then makes no
+  request it cannot do without. A wrong value would file the results under
+  another configuration, so `test/test_gh_rate_limit_wait.py` holds it to the
+  file's path and the job's id.
+  The second is the results upload, at the end of a scan that can run past 20
+  minutes, so a wait before the scan would not help. `analyze` runs with
+  `upload: failure-only` and the upload is a separate `upload-sarif` step,
+  right after the wait. There is one upload per job: the action refuses a
+  second upload of one category in the same job before it sends a request
+  (`validateUniqueCategory`), so a failed upload fails the job and is not
+  repeated. The job is green only when the upload succeeded.
+- **Dependency License Gate** (`dependency-review.yml`). It waits before the
+  first review, and the pause before the retry is the wait for the reset when
+  the pool is spent (the fixed 60 s otherwise). When both reviews failed and the
+  pool is spent, the verdict step fails as "could not run" naming the rate
+  limit. It does not probe then, because a probe that waited for the reset
+  would answer and the job would call a rate-limited retry a license finding.
+  A retry that did read the dependency graph and reported a license it does
+  not accept (its `invalid-license-changes` output) is the action's license
+  verdict whatever the pool reads by then.
+
+What this does not cover: a pool that empties between the wait and the action's
+own request still fails that attempt (the CodeQL job then fails as before; the
+license gate's retry is its second attempt), and a request the action makes
+with quota left but refused for another reason fails as before. The wait reads
+only the REST bucket, so a spent GraphQL bucket or a secondary limit inside the
+action is not waited for. Neither job can pass, skip or report success without
+the action having run.
+`test/test_gh_rate_limit_wait.py` runs the command and both jobs' steps.
+
+### Scheduled workflows: the red-cause census
+
+A red check should mean the pull request's own change broke something.
+`ci-red-census.yml` keeps the three numbers for that goal readable: the share of
+red PR pushes with a job red from a broken main, the share of red jobs caused
+by the API rate limit, and backend shard reds from flaky tests or
+infrastructure per day. It has two jobs, both on a standard hosted runner and
+both with `read` permissions only; it opens no issue and posts no comment.
+
+- **`day`, every night at 07:17 UTC**: runs
+  `scripts/ci_red_cause_census.py --last-days 1`, which gives every red job of
+  yesterday (UTC) one cause, writes the day's summary and the script's call
+  counts to the job summary, and uploads `red-jobs.csv`, `ci-pushes.csv`,
+  `summary.md`, `summary.json` and the printed output as the artifact
+  `ci-red-census-day`, kept 90 days.
+- **`week`, on Sunday after that night's read**: runs
+  `scripts/ci_red_census_week.py`, which takes the day its own run has just
+  read with `actions/download-artifact` and the six days before it from the
+  stored artifacts, adds them up, writes the week's summary to the job summary and
+  uploads the same four files as `ci-red-census-week`, kept 90 days. It reads
+  no run, so it spends no GraphQL point.
+
+A dispatch takes `day` (a UTC day to read in place of yesterday) and `week`
+(also add up the seven days ending there).
+
+**Why a day a night.** GitHub lists a workflow's runs newest first, with no
+date filter in GraphQL, so reading a window pages through every run created
+since. Read the next morning, a weekday costs its own runs: about 3,000 points
+and 25 minutes. Read at the end of the week, the same seven days are about
+21,000 points in one sitting, which either takes most of a bucket or keeps a
+runner asleep between hours. REST can filter runs by date, but it draws on the
+shared 15,000 requests an hour the section above is about, returns at most
+1,000 runs a search, and carries no count of a run's red jobs.
+
+**The budget.** The census reads by GraphQL with the job's `GITHUB_TOKEN`. That
+token has a GraphQL primary limit of its own, apart from the REST one, and
+every workflow of the repository shares it. Its size is read, not assumed:
+this repository's Actions token has 10,000 points an hour, where
+[GitHub's page](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit)
+gives 1,000 or 15,000 for `GITHUB_TOKEN`.
+
+The step before the census runs `scripts/ci_red_census_budget.py`. It reads the
+bucket from `/rate_limit`, which costs nothing, and sizes the census's two
+limits to it:
+
+| Limit | Rule | On 10,000 points | What it bounds |
+|---|---|---|---|
+| reserve (`--reserve-points`) | half the bucket, plus 120 | 5,120 | The census stops, and says Partial, before a call that would start with less: other workflows keep half of every hour's bucket |
+| most (`--max-points`) | two fifths of the bucket, less 120 | 3,880 | The most one run spends. A weekday is about 3,000 |
+
+The 120 points are one call for each of the 4 workers at about 30 points, the
+dearest query: the census checks its budget before a call and learns the cost
+after it, so the calls already sent when it stops land past the line.
+
+The step refuses, the census is not started and the job fails when the read
+would not fit: two fifths of the bucket hold less than a weekday (any bucket
+under 7,800 points an hour), what is left above the reserve holds less than a
+weekday (other jobs spent this hour's bucket), or the bucket cannot be read.
+The census step takes both numbers from that step and starts nothing without
+them. `--gh-timeout-seconds 900` gives one `gh` call the 600 seconds the `gh`
+wrapper may sleep inside it on a spent limit and 300 for the call itself: the
+wrapper charges a sleep before it starts, so a call ended mid-sleep would have
+spent the wait budget and read nothing.
+
+The census never waits for a bucket: a job that sleeps holds a
+runner. A `schedule` event carries no inputs and no `repository` object, so
+an empty `day` means yesterday and the default branch falls back to
+`github.ref_name`; a test evaluates every step's `env:` under both events.
+
+**The hour.** Counted by the hour on one weekday, runs created were under 2,500
+an hour only from 05:00 to 09:00 UTC and fewest at 07:00. Seven hours after
+midnight also lets a job re-run to green that night count as flaky. The minute
+is off the top of the hour, when GitHub delays scheduled runs most.
+
+**Exit codes.** Both scripts exit 0 when everything asked for was read and 3
+when it was not: a census the budget ended early, or a week with a day missing
+or partial. On 3 the job stays green with a warning. The week's summary says in
+its first line how many of the seven days it covers, names each day that is
+missing or partial, says what to do about it, and divides its per-day number by
+the days it has. Any other exit fails the job, and
+`scheduled-failure-watch.yml` files it.
+
+**Filling a day in.** GitHub may delay or drop a scheduled run, and nothing
+re-reads a missed night by itself. Run the workflow by hand with `day` set to
+the missing day (yesterday and the day before fit one run's budget), then once
+more with `week` ticked and `day` set to the last day of that week.
+
+**What adding days up does and does not do.** A run belongs to the day it was
+created, so no run is in two days. A push that was red on two days is one red
+push (rows are added up by head SHA), and a push `CI` ran for on two days is
+one push (each day keeps its pushes in `ci-pushes.csv`, not a count). A job
+re-run to green after its day was read stays under the cause it had then. The
+Actions token cannot read a job log here, so the numbers are from annotations
+alone and `log_unread` says how many red jobs that affects.
+
+**Untrusted input.** A job's name is whatever a pull request's workflow called
+it: names reach the CSV only, with control characters replaced, never a job
+summary. Any run, a pull request's included, can upload an artifact named like
+a day's, so `week` opens only artifacts of this workflow's own scheduled or
+dispatched runs on the default branch of this repository, reads the day from
+the window in the artifact's own `summary.json`, and treats a file that is not
+what the census writes as a missing day.
+
+`test/test_ci_red_census_workflow.py` pins the triggers, the permissions, the
+budget against the bucket, each deadline against the wait inside it and each
+step's handling of every exit code; `test/test_ci_red_census_week.py` holds the
+sum to what one census of all seven days gives.
 
 ### A red that is not your diff: external, or self-inflicted?
 
@@ -492,9 +764,16 @@ A second identical failure counts as evidence, not bad luck.
 
 ### Code ownership
 
-`.github/CODEOWNERS` assigns every repository path to
+`.github/CODEOWNERS` assigns repository paths to
 `@kirodotdev/kirocrew-pr-review` and `@KiroCrewCaptain` (the maintainers'
-automation account) through a single wildcard rule naming both, so an approval from either satisfies the ruleset's code owner review. GitHub reads that
+automation account) through a wildcard rule naming both, so an approval from either satisfies the ruleset's code owner review.
+Later rules with no owners leave the prose docs unowned (`docs/**/*.md`,
+`src/kiro_crew/docs/**/*.md`, `website/docs/**/*.md`, the root `README.md` and
+`CONTRIBUTING.md`), so a PR that changes only those needs no code owner review. Two
+directories are owned again by both: `docs/request-for-change/` (RFCs) and
+`docs/decisions/` (decision records), because they record product decisions. The
+last matching rule wins. Agent instructions (`AGENTS.md`, `skills/`,
+`.github/review-prompts/`, `.kiro/`) and `CHANGELOG.md` stay owned. GitHub reads that
 file to request reviews; the file
 itself establishes no approval count and enforces no branch protection, so a tier, a
 required number of reviewers, or a designated-maintainer requirement cannot be
@@ -558,7 +837,7 @@ See [oss-fork-boundaries](../system-specs/oss-fork-boundaries.md).
 
 | Job | What it enforces |
 |---|---|
-| `source-gates` | The sixteen stdlib-only gates in the step table below, run as consecutive steps of one job: one checkout, one pinned Python setup, and a few seconds of work per gate. One job rather than sixteen because, as separate jobs, ~70% of their job-seconds went to runner acquisition and checkout while each held a runner slot of its own on every push, and the two ratchet jobs beside it are the long pole of the run, so the sequence adds no wall clock to the verdict `await-fast-gate` and the fork reviewers wait on. Every gate step carries `if: ${{ !cancelled() }}`, so a red gate does not hide the gates after it: the job fails, and every failing gate is named in the same run |
+| `source-gates` | The fifteen stdlib-only gates in the step table below, run as consecutive steps of one job: one checkout, one pinned Python setup, and a few seconds of work per gate. One job rather than fifteen because, as separate jobs, ~70% of their job-seconds went to runner acquisition and checkout while each held a runner slot of its own on every push, and the two ratchet jobs beside it are the long pole of the run, so the sequence adds no wall clock to the verdict `await-fast-gate` and the fork reviewers wait on. Every gate step carries `if: ${{ !cancelled() }}`, so a red gate does not hide the gates after it: the job fails, and every failing gate is named in the same run |
 | `static-ratchets` | The seven source-only exact-set / exact-count ratchets (error codes, crew-log `exc_info` sites, PID readers, fleet-routing parity, security posture, backend cards, fold catalogue), run with `-n 4 --no-cov`. They also stay in the backend shards; this job only returns the verdict in about a minute instead of after a 20-40 min shard |
 | `flake-pattern-ratchet` | `test/test_flake_pattern_ratchet.py`, its detector and base-resolver self-tests first. Holds every test file a change touches to its own count of flake-shaped sites at the change's merge-base (see the [Determinism contract](../system-specs/common/testing-conventions.md#determinism-contract-read-this-first)). The ratchet also runs in the backend shards (depth-2 checkout), but that verdict arrives after a 20-40 min shard and a shard with an unreadable base warns `compared nothing` and passes. This job checks out depth 2 so the merge commit's first parent, the base this tree was merged onto, is readable to the ratchet's own resolver, answers in about a minute ahead of the matrix, and turns a `compared nothing` run into a red: a gate that compared nothing is not a pass. The job's last step, `scripts/net_strict_changed.py`, runs only the test files the change adds or changes with `KIROCREW_NET_STRICT=1` and writes any that reach past loopback to a report file under `$RUNNER_TEMP` (the step runs as the unprivileged user, which cannot write `$GITHUB_STEP_SUMMARY`); the next step publishes the file to the job summary under the runner identity. It is warn-only (`continue-on-error`), skips when no test file changed, ignores deleted files, and hands the file names to pytest as an argument list |
 
@@ -571,7 +850,6 @@ description.
 | `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Hashing the ~26MB tree takes seconds, so it is always-on like every step of this job |
 | `brand-lint` | `scripts/check_brand_name.py`, self-test first. Fails on a newly added line that joins the two words of the product name. Diff-scoped: the tree still carries thousands of pre-convention prose lines, so a whole-tree gate would charge that backlog to whoever pushed next; the whole-tree count is still printed as a non-failing report |
 | `comment-history-lint` | `scripts/check_comment_history.py`, self-test first. Fails when an added Python comment or docstring narrates change history (PR/issue ids, commit SHAs, dated incidents, review rounds, or past-tense change markers) instead of explaining current behavior. Diff-scoped; whole-tree runs report the backlog without enforcing it |
-| `backend-emoji-lint` | `scripts/check_backend_emoji.py`, self-test first. Fails when an added Python string under `src/kiro_crew` (docstrings included; not comments, tests, `apps/builtins/` or `_vendor/`) carries an emoji or pictograph glyph, or a Slack `:shortcode:` such as `:white_check_mark:`. Strings are found with `tokenize`. A line whose glyph is data (a reaction name, a user-picked icon, text parsed from elsewhere) takes a trailing `# emoji-ok: <reason>` comment. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `focus-cue-lint` | `scripts/check_focus_cue.py`, self-test first. Fails when a change writes the `className` of an element that then has no visible focus cue. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `emoji-icon-lint` | `scripts/check_emoji_icons.py`, self-test first. Fails when an added code line under `website/src` (not a comment, a test file or one of the `no-emoji-as-icons` exceptions in `website/AUTOSDE.yaml`) carries an emoji or pictograph glyph such as `✅ ⚠ ● ▸ ✕`; arrows, the middle dot, the bullet `•` and keyboard glyphs are typography and pass, so a `•` drawn as a status mark is caught only by review. A line that only matches text the gateway writes (a leading tool glyph, a notice prefix) takes an `emoji-ok: <whose text>` comment. Diff-scoped for the same reason as `brand-lint`, and reports whole-tree |
 | `feature-map-lint` | `scripts/check_feature_map.py`, self-test first. Fails when a file is ADDED or DELETED under `website/src/pages/` or `src/kiro_crew/dashboard/handlers/`, or a `<Route>` entry arrives or leaves `website/src/App.tsx`, while `docs/feature-map/README.md` stays untouched. The blocking root AUTOSDE rule `feature-map-correctness` is the semantic half: it verifies changed rows against the code, rejects unrelated or cosmetic map churn, and checks that the map's net diff matches the PR's stated scope. Structural on purpose: an edit to an existing page changes a feature's behavior, which the map does not describe, so an edit-only diff never fires — a gate demanding a map review on every UI fix produces a map nobody reads. Fails OPEN on an unreadable diff, unlike the other gates here: this one guards a documentation habit, not an invariant a bad line carries into `main` forever |
@@ -613,6 +891,26 @@ Three checks skip a doc whose genre names things that do not exist yet
 names a file or a symbol precisely BECAUSE it is not there yet. `fenced-path` also
 skips the packaged user docs under `src/kiro_crew/docs/`, where a task-spec path is
 a template for the reader's own project rather than a file in this checkout.
+
+`dead-identifier` has two more exemptions. A doc anywhere else that specifies
+something not built yet puts a `Status: planned` line in its first twelve lines;
+only this check honours it, so the paths such a doc cites into today's code are
+still checked. A name defined outside this repository (a vendor API, another
+harness, an OS facility) goes in `.github/docs-lint-external-identifiers.txt`,
+under a comment naming its source. Never list a name this repo defines: the list
+would hide its rename. docs-lint holds the list to that rule: a listed name the code
+now defines is a `dead-identifier` finding against the list file, and unlike a doc's
+dead identifier it fails the run without `--strict-identifiers`, until the line is
+deleted.
+
+A name one doc owns is declared in that doc, on its own line outside a fence:
+`<!-- docs-lint: defines a, b -->` for keys the doc defines itself (an output
+schema it specifies, fields an agent writes into free-form notes), and
+`<!-- docs-lint: wrong-on-purpose a -->` for a name it cites so a reader avoids it
+(a retired task type, a deliberate typo). The comment does not render on GitHub,
+covers only that doc, and only `dead-identifier` reads it. It is held to the same
+rule as the external list: a declared name the code defines, or one the doc no
+longer cites in a code span, fails the run until the name leaves the comment.
 
 The builtin app tree is the mirror image of that exemption: it keeps every fact
 check and every link check, and drops only the two CURATION rules, reachability and
@@ -675,7 +973,8 @@ pushes whose red jobs included a lint job.
 - **Coverage Gate names lint.** It fails closed on skipped shards, and now reads
   `backend-lint` and `frontend-lint` first: when either failed or was cancelled it
   fails with "lint did not pass ... Fix 'Backend Lint & Type Check' / 'Frontend Lint
-  & Type Check' first" instead of blaming a skipped shard.
+  & Type Check' first" instead of blaming a skipped shard. It names an
+  [AI review hold](#ai-review-hold) the same way.
 - **Not behind lint:** `lockfile-engines-floor` and `cfn-lint` (10-minute checks,
   so waiting for lint would delay their verdict for no saving), `metrics-schema-history`
   (a stdlib check that takes seconds), `changes`,
@@ -694,6 +993,42 @@ pushes whose red jobs included a lint job.
   during `uv pip install`) holds every heavy job until a re-run, as a red Fast Gate
   does.
 
+### Docs-only pull requests
+
+A pull request whose every changed path is a prose doc skips the expensive lanes
+and still gets a green `PR Readiness`. Prose docs are exactly `docs/**/*.md`,
+`src/kiro_crew/docs/**/*.md`, `website/docs/**/*.md`, the root `README.md` and
+the root `CONTRIBUTING.md`. Anything else, a script or an image under `docs/`
+included, runs everything. A rename counts both paths. One script,
+`.github/scripts/docs_only.py`, decides it for every workflow below.
+
+| What | On a docs-only pull request |
+|---|---|
+| Fast Gate (`docs-lint` included), Internal Content Scan, PR Hygiene, PR Policy, Issue Gate, Code Review, Sensitive Change Review | run as usual |
+| Opus 5.5, GPT 6.1, Design, UX, First Principles, Security Scope Review | run as usual: they are about 1-2% of a docs PR's runner-minutes, and Opus and GPT enforce blocking rules that judge prose (`recorded-decisions-are-not-regressions`, `feature-map-correctness`) that nothing else checks |
+| `ci.yml`: `backend-lint`, `backend-ratchets`, `lint-gate` and every job behind `lint-gate` (test shards, Windows, IPv6, sandbox, E2E, integration, Electron, bundle size, boot matrix) | skip |
+| `ci.yml`: `docs-contract-tests` ("Docs Contract Tests") | runs instead: every backend test file and frontend spec that names a changed doc, carries any `.md` string literal (a `*.md` glob, a `.md` suffix filter, a doc name), names `source_corpus`, or imports a helper module that does, under every `testpaths` root of `setup.cfg`; tests red on `main` are deselected as in Backend Tests. The backend half runs as 3 whole-file shards (`scripts.ci_file_shards`, the list passed as `--file-shard-targets`, never on pytest's argv), so the job shows as "Docs Contract Tests (1)" to "(3)". Shard 1 also runs the frontend specs and the whole Electron shell suite, about a minute, because its specs read docs by computed paths |
+| `ci.yml`: Coverage Gate | passes with "coverage not measured"; fails if a test job ran anyway |
+| `build.yml`: Build Wheel, Build Desktop | skip |
+| `codeql.yml`: Analyze | skips |
+
+- **Why docs are not test-free.** Many backend test files and frontend specs read
+  a doc as data and pin it to the code; the selector picks about 1,700 and 260 of
+  them for almost any doc. That is why the `changes`
+  filter still counts docs as `backend`, and why `docs-contract-tests` runs them.
+  Its selector is over-broad on purpose. The `push` run on `main` still runs the
+  full matrix, so a reader it misses goes red there.
+- **Readiness.** Every skip is a job-level or step-level skip inside a workflow
+  that still starts, never a workflow-level `paths-ignore`: a required check that
+  never starts blocks the merge forever. CI and Build complete `success`. CodeQL is the one lane
+  `pr-readiness.yml` must excuse: no results check is owed, so it lists
+  "CodeQL (docs-only PR)" as not eligible. It decides that with the default
+  branch's copy of the script, over the `compare` listing of the PR's own diff,
+  and keeps the lane on any read or parse failure.
+- **Opt out.** The `ci-full-run` label (on the next push) runs the whole `ci.yml`
+  matrix. A merge group and a push always run everything.
+- **Not covered.** Fork pull requests keep their Stage-2 review lanes.
+
 The test jobs install with `uv pip install -e ... --group dev` and no lock
 file, so a transitive dev dependency can change between two runs of the same
 commit. One that starts publishing a `pytest11` entry point is imported by
@@ -709,11 +1044,13 @@ yet decided: install from a committed constraints file, or set
 |---|---|
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes, and one whose conclusion is a decided non-success. It has two wait budgets. A wait it can see moving gets 2100s (`TOTAL_BUDGET`): a listed gate run that is `pending`, `queued` or `in_progress`, and a spent rate limit whose reset falls inside that time. On a push to `main` a gate run often sits `pending` behind the previous one in its concurrency group and then passes, or is evicted by the next push and ends `cancelled` (below), so a shorter ceiling reported green commits red. A wait with no news gets 720s (`STALL_BUDGET`): failed listing reads in a row, retried after 10s and doubling to 60s, and a fork run awaiting approval. `action_required` is not a decided conclusion: GitHub reports a fork run still awaiting maintainer approval as `completed`/`action_required`, so the barrier polls it as pending under the 720s budget rather than letting approval order decide whether the matrix runs. A listing read that errors is not a run that never appeared: the error is logged, it never spends the appear budget, and the barrier fails closed at the 720s budget with a message saying the code was never judged. Every budget that runs out says `CI infrastructure, not a test failure` in its error, so a reader knows to re-run rather than to fix code. The job's `timeout-minutes` (40) covers the long budget plus the cancel wait, and is no longer than `changes` plus `backend-lint` (15 + 25), so `ci.yml`'s longest `needs` chain, which `merge-queue-readiness.yml` budgets for, does not grow. A run still reading `in_progress` at 720s, and again at 2100s, on its first attempt is checked against its own jobs first (a rerun's job list leaves out the jobs it did not rerun, so a later attempt fails closed): GitHub can lag minutes behind finished jobs when it rolls them up into the run, so when every job of the attempt is `completed` with `success` or `skipped`, at least one is `success`, and the newest finished at least 60s ago, the barrier releases the matrix with a warning naming the lag; anything else, including an unreadable jobs list, still fails closed. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One exception concludes `cancelled` rather than `failure`: on a push to `main`, a Fast Gate run evicted from its concurrency group before it started judged nothing, so when the barrier proves that (the run's attempt has no jobs, and another Fast Gate push run on the branch started between its creation and its cancellation) it waits up to 150s while `cancel-superseded-run` cancels the CI run, the outcome a CI run evicted from its own group gets. It never releases the matrix on that path, and a failed read, an unproven eviction or a cancel that does not land still fails closed. It holds only `actions: read`. One extra ~1-minute job buys the whole matrix the right to not start |
-| `lint-gate` | "Lint Gate". Aggregates `backend-lint` and `frontend-lint` for the heavy jobs (see [Lint first](#lint-first)). Runs when both ended `success` or `skipped`; SKIPPED when either failed or was cancelled, so the lint job is the one red and the heavy jobs skip behind it |
+| `lint-gate` | "Lint Gate". Aggregates `backend-lint` and `frontend-lint` for the heavy jobs (see [Lint first](#lint-first)). Runs when both ended `success` or `skipped`; SKIPPED when either failed or was cancelled, so the lint job is the one red and the heavy jobs skip behind it. Also SKIPPED when `ai-block-hold` reports a hold, and on a [docs-only pull request](#docs-only-pull-requests) |
+| `docs-contract-tests` | "Docs Contract Tests", a 3-shard matrix. Runs only on a [docs-only pull request](#docs-only-pull-requests): the tests that read the changed docs, in place of the matrix |
+| `ai-block-hold` | "AI Review Hold". Skipped unless the repository variable `CI_AI_BLOCK_HOLD` is `shadow` or `enforce`, and only on a same-repository pull request. After the lint jobs pass it reads, once, the `Opus 5.5 Review` and `GPT 6.1 Review` check-runs already published for the head; in `enforce` it fails with the `hold` output when one of them is a BLOCK, and `lint-gate` skips. It holds `checks: read` and `contents: read`. See [AI review hold](#ai-review-hold) |
 | `cancel-superseded-run` | "Cancel Superseded Run". Runs only on a push to `main` (and not on a queue-landed push, like the barrier), beside `await-fast-gate` rather than behind it. It runs the barrier's script as a probe and, only when that proves this commit's Fast Gate run was evicted before it started, makes the workflow's one write: `POST /actions/runs/{run_id}/cancel` on its own run, so the run concludes `cancelled` instead of `failure`. Any other outcome cancels nothing and exits 0, leaving the verdict to the barrier. It is the only job in `ci.yml` with `actions: write`; pull requests and merge groups never start it. Nothing needs it, so it cannot release the matrix, and a cancelled run is never a green one |
-| `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml`. Black here and the four scope-resolving gates in `backend-ratchets` read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
-| `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, an explicit xdist worker count within each (`-n "$WORKERS"`: one per 2 GiB after 2 GiB for the host, capped at the core count, so 6 on the 15 GiB fleet runner; the memory budget behind `-n auto` reserves 5 GiB a worker for a full-suite collection (it granted a file shard 4 when it reserved 3); the job logs its peak memory); 60-minute job budget on CodeBuild, 70 off the fleet where the shards run four-wide, both including coverage upload, with the 120-second per-test timeout retained. A test still running 30 seconds past its own pytest-timeout has every thread's stack dumped to the log (`scripts/ci_faulthandler_budget.py`, `--faulthandler-grace=30`), so a hang that timeout's `SIGALRM` could not end names its frame. The dump never fires inside a test's budget: faulthandler walks threads without the GIL, and a walk of a thread still running Python can segfault the worker. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback. Installs the `voice`, `desktop` and `otlp` extras, as `backend-test-windows` and `platform-tests.yml` do, so the `requires_otlp` wire tests run instead of skipping |
-| `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; an explicit xdist worker count within each (`-n "$WORKERS"`: one per 3 GiB after 2 GiB for the host, capped at the core count, so 4 on the 15 GiB fleet runner and on a 4-core hosted runner; the job logs its peak memory); `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
+| `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml`. Black here and the four scope-resolving gates in `backend-ratchets` read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics. `flake8` and `mypy` run side by side in one step, "Lint and type check (flake8 and mypy, side by side)", after the mypy cache restore: both are started together, each exit status is read from its own PID, and the step fails when either is non-zero, a tool killed by a signal included. Each tool writes to its own file under `$RUNNER_TEMP/backend-lint`, printed after both finish as a `flake8` log group then a `mypy` one, each titled with how many seconds into the step that tool finished (the step lasts only as long as the slower one), followed by an error line titled `Lint (flake8)` or `Type check (mypy)` for each tool that failed; a step interrupted by the job timeout or a cancellation prints what each had written so far. The main-only mypy cache save is the next step, so it runs only when both passed |
+| `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, an explicit xdist worker count within each (`-n "$WORKERS"`: one per 2 GiB after 2 GiB for the host, capped at the core count, so 6 on the 15 GiB fleet runner; the memory budget behind `-n auto` reserves 5 GiB a worker for a full-suite collection (it granted a file shard 4 when it reserved 3); the job logs its peak memory); 60-minute job budget on CodeBuild, 70 off the fleet where the shards run four-wide, both including coverage upload, with the 120-second per-test timeout retained. The full-suite run passes `--cov-report=`, so a shard writes its coverage data file and prints no terminal coverage table (the table cost 227-326 s a shard after the last test); the report is `coverage-combine`'s. A test still running 30 seconds past its own pytest-timeout has every thread's stack dumped to the log (`scripts/ci_faulthandler_budget.py`, `--faulthandler-grace=30`), so a hang that timeout's `SIGALRM` could not end names its frame. The dump never fires inside a test's budget: faulthandler walks threads without the GIL, and a walk of a thread still running Python can segfault the worker. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback. Installs the `voice`, `desktop` and `otlp` extras, as `backend-test-windows` and `platform-tests.yml` do, so the `requires_otlp` wire tests run instead of skipping |
+| `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; an explicit xdist worker count within each (`-n "$WORKERS"`: one per 2 GiB after 2 GiB for the host, capped at the core count, so 6 on the 16 GiB fleet runner and 4 on a 4-core hosted runner; the shards are CPU-bound, and 6 workers peaked at 9,858-11,234 of 16,111 MiB; the job logs its peak memory); `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
 | `backend-test-ipv6` | Five native IPv6 cases on hosted Linux and Windows; fail-closed report check, Linux full-run coverage merged with the ordinary shards |
 | `backend-test-kernel-lock-owner` | Runs the two strict live-holder/orphan flock cases on an uncontainerized hosted VM (the `kirocrew-runners` group here, `ubuntu-latest` in a fork) with `KIROCREW_LOCK_OWNER_STRICT=1`; full-scope coverage is merged with the shard and IPv6 artifacts. **Skipped on a frontend-only diff** (`only_frontend`); Coverage Gate accepts `skipped` in that case |
 | `pod-boot-windows` | Boots a real worktree Pod under Windows Task Scheduler and pins three canary tests. A PR carrying `ci:pod-scenarios` before its next push also runs the 55-test Pod scenario suite against a built SPA |
@@ -722,10 +1059,10 @@ yet decided: install from a committed constraints file, or set
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those assertions (the `~/.kiro/crew` keystone among them) actually execute. **Skipped on a frontend-only diff** (`only_frontend`) |
 | `backend-test-crew-container` | "Backend Tests (crew container)". The only lane that runs the crew container image's suite (`aws_control/crew/runtime/container_tests/`). It is separate from the shards because it installs the image's own runtime pins (`container/requirements.txt`: fastapi, uvicorn, httpx, boto3), which that file's header forbids becoming dependencies of the application, and the shards' environment IS the application's, so there the suite's conftest collects nothing. Sets `CREW_CONTAINER_TESTS_REQUIRED=1`, which turns every reason that conftest would decline to collect into a hard error and checks the collection against the tree: every module and every named test the source declares must yield an item, and the total must be at or above `_MIN_COLLECTED` and no more than `_FLOOR_MARGIN` above it. A declared module or test name that stops yielding an item reds on its own name, with no number involved; the count is what catches a test whose parametrize cases drain while its name is still collected. `_MIN_COLLECTED`'s own comment states what that does and does not catch, and is the only place that bound is spelled out. **Skipped on a frontend-only diff** (`only_frontend`) |
 | `real-adapter-contract` | "Real Adapter Contract Tests". The one lane that INSTALLS the adapters the codex and opencode projections were measured against — `@agentclientprotocol/codex-acp` and `opencode-ai`, `npm ci` from the locked manifest in `test/real_adapters/` (its own manifest, not the product's; Dependabot bumps it weekly so drift shows up in the bump PR) — so the four contract tests that drive a real adapter execute instead of skipping. Everywhere else they skip, which left the element shape, the child environment, the refused transports and the eviction verb resting on one local run. Selects them by the `real_adapter` marker, so one added later is included rather than left out of a list. Sets `KIROCREW_E2E_REQUIRE=1` — the repository's existing "this job declared its preconditions must hold" switch, shared with the E2E suites — which turns an absent adapter into a failure, and then asserts on the junit report that at least the known contracts ran and none was skipped, so a broken install cannot report a green lane that measured nothing. The codex inner-sandbox tests decide which result to require from an up-front host probe, never from the step's output: codex's own bubblewrap preflight (`bwrap --unshare-user --unshare-net --ro-bind / / /bin/true`), run with the bubblewrap codex picks (the first `bwrap` on PATH, else the one it bundles). Crew's own userns probe answers only when that preflight gives no verdict, because AppArmor judges each binary by its own profile: on an `ubuntu-26.04` image Crew's probe is refused while codex's sandbox runs every step. A runner whose preflight is refused loopback or uid-map setup must show codex's fail-closed `bwrap:` refusal; any other runner must run the step. It also runs the harness probe (`test/test_real_adapter_harness_probe.py`): claude, codex, opencode, goose, pi, DeepSeek Harness and Strands, each through Crew's own session code against a loopback model, checked against `test/real_adapters/harness_probe/expectations.json` for literal-env mounts, `${VAR}` expansion, the harness's own user/project MCP config leaking in, and the bytes of Crew's tool specs on a request. goose comes from a pinned release checked by sha256 (`goose.json`), Strands' Python project from a hash-locked `strands-requirements.txt`. A probe check that matches its expectation and records a known defect is xfail with its tracking issue; the junit check accepts that xfail from that one module only |
-| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks |
+| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block). **CodeBuild-hosted runner** (pilot, below) except for forks. Each uses a sparse checkout of only what it reads: `src/`, `setup.cfg` and `pyproject.toml` for the combine; the gate script, `.github/coverage-baselines/` and `pyproject.toml` for the gate. A measured file outside the combine list fails `coverage xml` and `coverage report` with "No source for code"; `test/test_ci_coverage_sparse_checkout.py` holds both lists against what the jobs read |
 | `frontend-lint` | `tsc -p tsconfig.app.json` and `eslint` under a hard-zero warning ceiling. These two are the whole job: a type error or a lint failure makes a test result meaningless, so they are what `lint-gate` waits on. The frontend ratchets run in `frontend-ratchets` |
 | `frontend-ratchets` | "Frontend Ratchets & i18n". `jscpd`, `npm run i18n:check`, the find_ui index freshness check and the find_ui goldens that need the real generator, the phantom-classes and `ui/` restyle ratchets, and `scripts/check_file_line_cap.py` on a full-history checkout (its only home on a frontend-only diff, where `backend-ratchets` is skipped). Carries `frontend-lint`'s surface condition verbatim and is NOT in `lint-gate`'s `needs:` — a failure here reds the pull request alongside the heavy matrix rather than skipping it |
-| `backend-ratchets` | "Backend Ratchets & Boundaries". The baselined ratchets that judge a CHANGE rather than a build: `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, and no blocking fs call there (`os.stat` / `listdir` / `walk`, `os.path.realpath` / `exists`, bare `open()`, zero-argument `.resolve()` / `.stat()` / `.exists()` and kin, zero-argument `.read_text()` / `.read_bytes()` / `.open()`, one-argument `.write_text()` / `.write_bytes()`) outside `.github/sync-io-in-async-fs-baseline.txt`; each ledger can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory — and `scripts/check_file_line_cap.py` (self-test first) — no tracked code file over 2,000 lines outside `.github/file-line-cap-baseline.txt`, which can only shrink; a file the change does not touch is reported as main drift, not failed; plus `scripts/check_acp_frame_host_data.py`, `scripts/check_agent_sdk_boundary.py` and `scripts/check_lockdown_before_publish.py`. Full-history checkout, because four of them scope themselves by ancestry through `scripts/ratchet_scope.py`. Stdlib only, so no dependency install. Carries `backend-lint`'s surface condition verbatim and is likewise NOT in `lint-gate`'s `needs:` |
+| `backend-ratchets` | "Backend Ratchets & Boundaries". The baselined ratchets that judge a CHANGE rather than a build: `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, and no blocking fs call there (`os.stat` / `listdir` / `walk`, `os.path.realpath` / `exists`, bare `open()`, zero-argument `.resolve()` / `.stat()` / `.exists()` and kin, zero-argument `.read_text()` / `.read_bytes()` / `.open()`, one-argument `.write_text()` / `.write_bytes()`) outside `.github/sync-io-in-async-fs-baseline.txt`; each ledger can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory — and `scripts/check_file_line_cap.py` (self-test first) — no tracked code file over 2,000 lines outside `.github/file-line-cap-baseline.txt`, which can only shrink; a file the change does not touch is reported as main drift, not failed; plus `scripts/check_acp_frame_host_data.py`, `scripts/check_agent_sdk_boundary.py` and `scripts/check_lockdown_before_publish.py`. On a pull request it also runs `scripts/ci_guard_tier_membership.py`: the guard tier (`scripts/ci_test_map.py guard-tier`) of the merge commit against the tier of its first parent. A file that joins is listed in the job summary; a file that leaves while it still exists fails unless it carries a `# guard-tier: not a member -- <reason>` line of its own, and a tier member carrying that line fails too. Both sides come from the pull request and its own base, so no other change can alter the verdict. Full-history checkout, because four of them scope themselves by ancestry through `scripts/ratchet_scope.py`. Stdlib only, so no dependency install. Carries `backend-lint`'s surface condition verbatim and is likewise NOT in `lint-gate`'s `needs:` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`). NOT diff-gated: the test suite reads `packaging/` paths and `src/kiro_crew/` files classified as backend by the catch-all filter, so any `only_backend` gate would skip it on exactly the backend-only diffs that can break it |
 | `electron-test-windows` | Runs the native Windows port-owner identity tests against real NTFS junction and `Win32_Process` behavior, and `find-bin-real-ssh.test.js`, which resolves the in-box OpenSSH client through the kernel's real `\SystemRoot` link; no npm install is needed because the tested modules use Node's standard library only. NOT diff-gated for the same reason as `electron-test` |
 | `frontend-test` | `vitest run --coverage`. **CodeBuild-hosted runner, `instance-size:large`** (pilot, below) except for forks. A test file a dead fork never started is run once on its own and must pass; its blob joins the merge, and only then are the worker-exit errors dropped from the shard blob. Any other failure, or a failing re-run, stays red (procedure and limits: [website/docs/testing.md, CI gates](../../website/docs/testing.md#ci-gates)). A failed or recovered shard also prints `free -m` and any kernel OOM-kill line ("Kernel log on a failed or recovered shard"), because Vitest 4's "Worker exited unexpectedly" names no signal (#23640). A clean kernel log does not rule out a native crash: Node re-raises SIGSEGV from its own handler, so the kernel logs no `segfault at` line for it |
@@ -737,7 +1074,7 @@ yet decided: install from a committed constraints file, or set
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, plus a ceiling on the first-load total (`FIRST_LOAD_BUDGET_BYTES`: raw bytes of the `main` entry and every chunk it statically imports), and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
 | `i18n-render` | "i18n Render Gate (en-XA, head vs base)". Runs `npm run i18n:render` in `website/`: builds the SPA in DEV mode for HEAD and for the base commit, renders every surface under the `en-XA` pseudolocale in Chromium and fails on any per-surface increase. No gateway, no token, no backend. Default-size Linux runner, skipped on a backend-only diff. Its own job because the ~13 minutes of CPU it takes on a hosted 4-vCPU runner starved the `e2e` Playwright suite past its ceiling on fork PRs. Details: [i18n-gates.md](i18n-gates.md) |
-| `e2e` | Runs `python scripts/ci_e2e_parallel.py`, which awaits `python setup.py test_e2e` and the dedicated Memory UI pytest command in parallel. **CodeBuild-hosted large runner where eligible**, behind the same `run-as-runner` boundary as the backend shards. The suite's disposable gateway takes `agent.sandbox_allow_unsandboxed_exec` (seeded in `test/test_playwright_e2e.py`) because the fleet container refuses `CLONE_NEWUSER` at the runtime policy level and the agent binary is a stdlib echo stub; a sandboxed spawn doing real work stays proven by `e2e-private-namespace` and `e2e-boot-matrix`. Details: [e2e-gate.md](e2e-gate.md) |
+| `e2e` | A matrix of shards, "E2E (stub ACP backend, offline, i/K)", each with its own gateway and one Playwright worker. Every leg runs `python scripts/ci_e2e_parallel.py`: leg 1 awaits `python setup.py test_e2e` and the dedicated Memory UI pytest command in parallel and also runs the asserting harness steps, the other legs run `test_e2e` alone. `test_e2e` takes the leg's part of the suite from `KIROCREW_E2E_SHARD` and fails unless the K shards divide the suite exactly and the leg ran exactly its own list. **CodeBuild-hosted large runner where eligible**, behind the same `run-as-runner` boundary as the backend shards. The suite's disposable gateway takes `agent.sandbox_allow_unsandboxed_exec` (seeded in `test/test_playwright_e2e.py`) because the fleet container refuses `CLONE_NEWUSER` at the runtime policy level and the agent binary is a stdlib echo stub; a sandboxed spawn doing real work stays proven by `e2e-private-namespace` and `e2e-boot-matrix`. Details: [e2e-gate.md](e2e-gate.md) |
 | `e2e-private-namespace` | "E2E (private member namespace, hosted)". The one E2E step the fleet cannot host: `test/e2e/test_private_workflow_memory.py` runs a Crew Member's private workflow MCP inside the member sandbox, which needs `unshare --map-root-user`. Hosted off the fleet (the `kirocrew-runners` group here, `ubuntu-latest` in a fork), clears the AppArmor userns restriction first, no SPA or browser |
 | `integration` | "Integration (in-process gateway)". The middle layer: `test/integration/` boots the real `GatewayOrchestrator.run()` inside the pytest process on a scratch `KIROCREW_HOME` with the packaged fake ACP backend and talks HTTP to the port it bound, so one test can assert across a restart, across two concurrent requests on one event loop, or on a file the boot itself wrote. Opt-in by `KIROCREW_INTEGRATION=1`, so the unit shards collect and skip it; Linux only. Gated on ROUTE coverage -- `scripts/check_integration_route_coverage.py` reports the share of registered dashboard routes the suite requested (`--min` is a ratchet kept a little under what `main` measures) and the report is uploaded as the `integration-route-coverage` artifact. Details: `docs/system-specs/common/testing-conventions.md`, "The integration layer" |
 | `wheel-engine-real-venv` | "Wheel Engine (real venv build)". Runs the one `real_venv`-marked test (`test/test_wheel_engine_lifecycle.py::TestBuildChildEnvironment::test_build_and_verify_a_real_shadow_venv`) on `ubuntu-latest`; the shards deselect that marker |
@@ -749,6 +1086,68 @@ fail-closed execution). It is on the gate path because it is
 for the dependency install it needs, which `backend-ratchets` does not. The Agent
 SDK boundary check in `backend-ratchets` is the fourth shrink-only, diff-scoped
 baseline gate, beside the subprocess-encoding, sync-IO and file line cap gates.
+
+### AI review hold
+
+**Off by default.** With the repository variable `CI_AI_BLOCK_HOLD` unset, the
+`ai-block-hold` job is skipped and `ci.yml` behaves exactly as described above.
+
+| `CI_AI_BLOCK_HOLD` | What the job does |
+|---|---|
+| unset, or any other value | Skipped. No read, no change |
+| `shadow` | Reads the verdicts, writes what it would have held to the job summary and a `::notice::`, and releases the heavy jobs |
+| `enforce` | Fails when a blocking line reviewer has published BLOCK for the head; `lint-gate` and every heavy job behind it skip |
+
+**Why.** `Opus 5.5 Review` and `GPT 6.1 Review` run beside `ci.yml` and usually
+answer first: in a sample of 152 pushes on the 40 pull requests merged on
+2026-11-17 they published at a median 4.0 to 4.2 minutes after the push (p90 9.3
+to 9.6), and `lint-gate` released the heavy jobs at a median 8.0. An AI lane was
+the first red check on 52 of those pushes, and 51 of the 52 heads were then
+replaced by a new push. Jobs that started after that red was already published
+used 20.7% of the sample's vCPU-minutes (job duration times the runner's vCPU
+count; the Windows runner is assumed to be 8 vCPU), and 11.4% on the 25 pushes
+that had no other red. Those shares are upper bounds from one day of merged
+pull requests, and on 26 of the 51 pushes the head also had a deterministic red
+(a test or a gate) that a held run does not show the author until the next push.
+
+- **It reads what is published and never waits.** `ai-block-hold` starts when
+  the lint jobs and the barrier have passed, the last moment before the heavy
+  jobs, and makes one check-runs read per lane for the head. A lane with no
+  check-run, or one still queued or running, releases the heavy jobs. So the
+  hold adds one small job to the path and no wait for a reviewer.
+- **A BLOCK is the lane's own gate annotation, not a red check.** A lane also
+  ends `failure` when its review did not complete (no reviewed marker, a model
+  or runner error, a spent turn budget). The script holds only when every
+  check-run of the lane on the head is `completed` / `failure` and carries the
+  error annotation its gate step prints on a BLOCK for that exact head
+  (`... review flagged a blocking issue on <sha>`). A cancelled or skipped
+  check-run judged nothing and is left out; a head often carries one beside
+  the run that did the review. `test/test_ai_block_hold.py` fails if either
+  review workflow stops printing those words or renames its check.
+- **It fails open.** A read that errors or cannot be parsed counts as not
+  blocking, with a `::warning::`. `lint-gate` keys on the job's `hold` output
+  and not on its result, so a runner fault or a timeout in the job releases the
+  heavy jobs too (the failed job still reds the run until it is re-run).
+- **Budget.** At most four GETs per run (two listings, plus one annotations
+  read per failed lane), no loop and no retry, from the `github.token` pool
+  that `pr-readiness.yml` shares.
+- **A held head is red, never green.** `AI Review Hold` fails with an error
+  naming the lane and the head, the job summary says the head has no test
+  verdict, and Coverage Gate fails closed and names the hold. `PR Readiness`
+  reads the `CI` run's `failure` as a blocker on top of the red review lane.
+- **Getting out.** Push a fix: the new head gets a new run. Or, when the lane
+  turns green for the same head, by a passing re-run or a recorded
+  [`/ai-review override`](#human-override), choose "Re-run failed jobs" on the
+  `CI` run: `ai-block-hold` re-reads, finds no BLOCK and the heavy jobs start.
+  Nothing re-runs `CI` for you after an override, and until someone does
+  readiness stays `action required` on the failed `CI` run.
+- **Scope.** Same-repository pull requests only. A fork's reviewers start after
+  Fast Gate completes and publish through the `fork-*` lanes, and a merge group
+  and a push are not reviewed, so the job is skipped there. Design, UX, First
+  Principles and Security Scope Review are not read: a `failure` there does not
+  always mean a verdict, and they were not measured.
+- **Revert.** Unset the variable. To remove the edge, drop `ai-block-hold` from
+  `lint-gate`'s `needs:` and its `if:`, and from Coverage Gate.
 
 ### The find_ui index is strict only where the PR caused it, and at release
 
@@ -789,7 +1188,8 @@ The Linux, Windows and macOS matrices assign whole files before pytest imports
 their items. `scripts/ci_file_shards.py` is an opt-in pytest plugin, loaded only by
 those matrix commands. It uses SHA-256 of the root-relative POSIX path to choose
 one of `SHARD_COUNT` owners. Each xdist worker reaches the same assignment.
-Adding a file does not move existing files between shards.
+Adding a file does not move existing files between shards, except within a
+`--file-shard-targets` list (below).
 
 Pytest still walks its configured roots, applies its filename patterns and
 platform-specific conftest ignores, and creates its normal file collectors.
@@ -803,6 +1203,12 @@ list and the leaf-test corpus gates reach pytest as a file named by
 roots as usual and skips every path that is not a listed file or a directory
 above one. Passed as arguments, pytest walks each file's directory once per
 argument, and the ~1,200 reduced-scope files took up to an hour to collect.
+The listed files are spread across the shards by measured time, not by hash or
+pins ([testing-conventions § Shard balance](../system-specs/common/testing-conventions.md#shard-balance)).
+That placement needs every shard of a run to hold the same list, so the `changes`
+job names each list's SHA-256 once per run and every shard passes it as
+`--file-shard-targets-sha256`: a shard whose list differs fails before
+collecting, and does not fall back to the full suite.
 Leaf-test corpus-gate passes load the file-sharding plugin (the same one as the
 full and reduced paths) so the ~814 gates are split across the matrix shards.
 Changed-file repetitions remain unsharded: each matrix job repeats every changed
@@ -817,6 +1223,37 @@ failure report during replacement. This is fail-fast diagnosis, not successful
 coverage or a repair of the crashing test. Periodic console records and best-effort
 JSONL artifacts preserve evidence; job-level cancellation can prevent uploads.
 Healthy selection, per-test timeouts and coverage selectors are unchanged.
+
+On the full suite, the step before `Run tests` in both jobs runs
+`scripts/ci_rewrite_prewarm.py` (an experiment, #39368). Every xdist worker
+collects the whole shard and, on a fresh runner, rewrites the asserts of each
+test file because no cached pyc exists. The step writes those pycs once, one
+process per core, with pytest's own rewrite functions, under the cache root the
+rootdir conftest sets (`sys.pycache_prefix`), for the test files the shard owns
+and every `conftest.py` (the two loaded before the conftest redirects
+bytecode, the rootdir one and `test/conftest.py`, are still read from the
+in-tree `__pycache__` by a process that starts without the redirect). It parses and compiles source and imports no test
+module, conftest or `kiro_crew`, which is what separates it from the serial
+`--collect-only` prewarm that measured slower. On Windows the step passes
+`--compile-product` and then also compiles every `*.py` under the ini's
+`pythonpath` (`src`) with `py_compile`, to the ordinary import cache under that
+root. The redirected root is empty on a fresh runner, so without this each
+worker compiles every product module it imports while it collects (about 3,900
+for one shard), and all workers compile the same ones at the same time. The
+Linux step does not pass it: on CI a Windows worker's collection got about 16%
+shorter (65 s against 77 s) and a Linux worker's did not change (129 s both),
+because the Linux shards run under the coverage tracer, which costs far more
+than compiling does. Third-party and standard-library modules are left to the
+workers on both: a shard imports about a sixth of the installed ones, so
+compiling them all costs about what it saves. It does not choose what a shard
+collects: pytest's discovery and the plugin still do. It is best effort: it
+exits 0 whatever happens, a file it did not cache is rewritten by pytest, and
+the reduced and leaf scopes skip it. Bytecode is never restored from
+`actions/cache` or committed. The step prints its file count and elapsed
+seconds, and on Windows a second line for the product modules.
+`test/test_ci_rewrite_prewarm.py` proves pytest reads the prewarmed pyc, that an
+import reads a compiled product module without compiling it again, and pins
+the cache root against the conftest's.
 
 The root conftest's import-time telemetry guard fails the offending module's
 collection report on every worker, so pytest/xdist fails the job even when the
@@ -1565,7 +2002,10 @@ constant, so it needs no edit.
 somewhere the group does not exist.** `client-py.yml`'s `test`,
 `crew-image-build.yml`'s `build` and `fork-pr-label.yml`'s `label` use
 `runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}`
-rather than `group:`. A fork running its own copy of one of these files on
+rather than `group:`. In `client-py.yml` that expression sits behind
+`matrix.runner ||`, which only the Python 3.9 entry sets, to `ubuntu-24.04`:
+actions/setup-python has no 3.9 build for the ubuntu-26.04 image the label and
+`ubuntu-latest` boot. A fork running its own copy of one of these files on
 `push`, `schedule` or `workflow_dispatch` cannot reach an organization runner
 group; a job asking for a label no runner it can see carries waits out
 GitHub's pending
@@ -1744,7 +2184,8 @@ what starts them:
   `sensitive-change-review-comment.yml`'s `rerun`, which a review starts too
   (above)
 - another workflow completing: `main-red-watch.yml`'s `watch`,
-  `main-red-pr-notice.yml`'s `notice`, `main-macos-failure-watch.yml`'s `page`
+  `main-red-pr-notice.yml`'s `notice`, `main-red-suspect.yml`'s `suspect`,
+  `main-macos-failure-watch.yml`'s `page`
   and `scheduled-failure-watch.yml`'s `surface`
 - a call from `nightly.yml`, `release.yml` or `release-lts.yml`:
   `publish-cli.yml`'s `publish-cli`, `publish-docker.yml`'s `publish-docker`,
@@ -2697,6 +3138,37 @@ and runs the 24.04 build. The real fix is to bump Playwright from 1.58.2 to a
 release with a native ubuntu26.04 host entry (1.65.1 has one), then remove the
 guard and its test together.
 
+### A job that installs the project's wheel pins its Python
+
+Every workflow job that `pip install`s this project (the built wheel, or `.`)
+selects its interpreter first with the SHA-pinned `actions/setup-python` and an
+explicit `python-version`, then runs pip, `venv` and the scripts from that
+interpreter. It never uses the runner image's own `python3`. That interpreter moves
+with the image, and the wheel's pins are resolved against it. When
+`kirocrew-linux-4-core` moved to ubuntu 26.04, its `python3` became 3.14. The
+only cp314 x86_64 wheel of `pysqlite3-binary` is `0.5.4.post2`, which
+`setup.cfg` excludes (#32424). So the platform-wheel gate that #39770 added to
+`publish-cli.yml` without `setup-python` failed on the scheduled nightly with
+`No matching distribution found for pysqlite3-binary!=0.5.4.post2,>=0.5.4`
+(#40371, fixed by #40354). Use the version the lane that built the wheel uses
+(`build-wheel.yml`, `build-platform-wheels.yml`: `3.12`). A stdlib-only step that
+installs nothing may still use the image's `python3`.
+
+### A change to a nightly-only or release-only workflow says how it was verified
+
+PR CI never runs the jobs that only the nightly schedule, a release push or a
+manual dispatch reach: `nightly.yml`, `publish-cli.yml`, `release.yml`,
+`release-lts.yml` and the reusable workflows only they call. A green PR therefore
+proves nothing about a job added or changed there, and the first run is the
+scheduled nightly, after merge. A PR that adds or changes such a job says in its
+description how the changed job was exercised: a test that extracts and runs the
+`run:` block, the exact local reproduction of the step against the same
+interpreter and inputs, or, for a workflow that publishes nothing, a
+`workflow_dispatch` run of the branch (link it). Never dispatch a publishing
+workflow from a branch to prove a change. If none
+of these was possible, the description says so. A change that only edits
+comments or a guard already covered by a test needs no extra proof.
+
 ## `build.yml`: the artifacts still build
 
 PR-time proof only, no publishing.
@@ -2930,10 +3402,9 @@ tier from the Captain's scan soon after it is filed. One that sits with no tier,
 or a `tier:T3` / `tier:T4` one that sits in `pending-triage`, is a defect in the
 Captain or its hand-off, to be reported as such; it is never a reason to pick the
 issue up unsized, and the gate deliberately has no "silence means yes"
-fallback. Nothing in this repository alarms on that overdue state yet -- the
-crew runs outside `.github/`, and an in-repo overdue sweep is a separate
-change, filed as [#16308](https://github.com/kirodotdev/KiroCrew/issues/16308).
-Until it lands, a stalled crew is visible as PRs red on "no tier label" or
+fallback. Nothing in this repository alarms on that overdue state: the
+crew runs outside `.github/`, and no in-repo overdue sweep is planned. A
+stalled crew is visible as PRs red on "no tier label" or
 "still waiting for a person"; the maintainer's per-PR fallback is the
 `issue-gate: waived` label, and a run of those waivers is the signal to go fix
 the crew, not to loosen the gate. The cost this puts on a drive-by contributor
@@ -3176,7 +3647,10 @@ every PR with "Dependency review is not supported on this repository", so a fail
 review is retried once after 60s; when the retry fails too, the job probes
 `dependency-graph/compare` for the PR's range and fails either as the action's
 license verdict (the API answers) or as "could not run" naming the API's answer
-(it does not). Both fail closed; only the message differs.
+(it does not). Both fail closed; only the message differs. A spent API rate
+limit produces the same "not supported" words, so the job waits for the reset
+before each attempt: see
+[a spent API rate limit](#scheduled-workflows-a-spent-api-rate-limit).
 
 **`docker-smoke.yml`** is paths-filtered to the container surface (`docker/**` plus
 the source files the container contract spans: the bind override in
@@ -3720,11 +4194,9 @@ define the guard as a `guarded_comment_upsert` bash function that
 `test_ai_review_workflows_comment_writes.py` pins byte-identical across every lane, so the
 invariant cannot drift lane by lane.
 
-`codex-review.yml` joined them in #8462. It used to carry #8342's own inline
-preserve-and-prepend shape — the one site left with a read-modify-write window
-on the slot, and a position-blind notice strip under which a bare quoted
-begin marker inside preserved review prose deleted up to three lines of a
-verdict. Its posting step now defines the same function and calls it with
+`codex-review.yml` is one of them: its posting step defines the same function
+(an inline preserve-and-prepend there would leave a read-modify-write window on
+the slot) and calls it with
 `[GPT-REVIEWED]`, or `[GPT-OVERRIDE]` for an accepted human override. What
 stays lane-specific is the exit: the GPT lane is fail-closed and its gate reads
 the captured review text rather than the PR, so after the function returns the
@@ -3732,7 +4204,7 @@ step reads its `publication` output back and exits non-zero when a body stamped
 for this head reached neither `published` nor `superseded`. A body with no stamp
 for this head — an incomplete or refused run — leaves an existing comment
 untouched, as in every other guarded lane, and the gate fails it closed on its
-own evidence; it no longer prepends a staleness notice to the standing verdict.
+own evidence; it prepends no staleness notice to the standing verdict.
 
 One lane stays outside that function, and the exclusion is deliberate:
 
@@ -4541,7 +5013,9 @@ status plus one `readiness:` label**.
   its previous head, and a draft PR is not scanned until it is ready for review.
   GitHub rejects its uploads while default setup is on, so its jobs are
   skipped until an admin has turned default setup off and set the repository
-  variable `CODEQL_ADVANCED_SETUP` to `true`.
+  variable `CODEQL_ADVANCED_SETUP` to `true`. The results upload is its own
+  step and waits for a spent API rate limit to reset: see
+  [a spent API rate limit](#scheduled-workflows-a-spent-api-rate-limit).
 - **The aggregator reads CodeQL from either setup** (#20576). It first resolves
   the analysis run by `path == "dynamic/github-code-scanning/codeql"` (default
   setup); only when the head has no such run does it read this PR's
@@ -4590,7 +5064,7 @@ status plus one `readiness:` label**.
   tokens) and folds each violation of the one-lane / one-rationale-per-finding
   rule into its blocking list. That is the only enforcement point that binds a
   writer who never runs the kirocrew-prepare-pr loop, which is what a blanket
-  single-rationale record used to escape through (#6658). The rule keeps ONE
+  single-rationale record would otherwise escape through. The rule keeps ONE
   implementation: the readiness step calls the same script the local gate does
   rather than re-reading the marker grammar in shell. A record set it cannot read
   is `pending`, never red — a transient comments-API failure must not fail the
@@ -4888,6 +5362,49 @@ Two subtleties:
 
   Each run ends with a `pr-readiness: core rate limit -- N/M remaining` log line
   (`GET /rate_limit` is free) so the pool's draw can be measured rather than estimated.
+
+  **Reads can use a pool of their own.** When the repository secret
+  `PR_READINESS_READ_TOKEN` is set, this workflow and `pr-readiness-sweep.yml`
+  make their reads with that token instead of `GITHUB_TOKEN`, so lane traffic
+  on the shared pool cannot starve the verdict. The first step after the retry
+  helper, `Select the token pool for reads` (identical in both workflows), asks
+  that token for `/rate_limit` and logs
+  `readiness reads: token pool -- readiness (PR_READINESS_READ_TOKEN), N/M remaining`.
+  With the secret unset it logs `token pool -- shared (GITHUB_TOKEN)`, and
+  nothing else changes. A token that is refused (expired, revoked) or has fewer
+  than `READ_POOL_FLOOR` (50) requests left raises a `::warning::` and the run
+  reads with `GITHUB_TOKEN`, so a bad secret degrades to the shared pool and
+  never stops the required check. Only counts are logged, never the token, and
+  the secret reaches a step only through its `env`. In `pr-readiness.yml` every
+  `gh_retry` call (all of them reads) takes the selected pool, and the run's
+  last step adds a
+  `pr-readiness: readiness pool rate limit -- N/M remaining` line. In the sweep
+  the scan, the comment and status reads and the active-dispatch listing take
+  it. Three things stay on `GITHUB_TOKEN` on purpose:
+
+  - **Every write** (the status, labels, the sweep's dispatch and republish). A
+    write made with any other token starts workflow runs of its own: a label
+    change would re-run every workflow that listens for `labeled`.
+  - **Every collaborator-permission read**: the one behind "changes requested"
+    and the ones the disposition and supersession evaluators (`pr_status.py`)
+    make for each record's author, so both evaluator steps run on
+    `GITHUB_TOKEN` whole. The answer depends on what the asking token may see.
+    A token refused that read makes a reviewer read as "not a collaborator" and
+    a disposition author as a non-writer, which drops the block or the record
+    and can publish a green the PR has not earned.
+  - **The sweep's reserve.** It still reads the shared pool, with the same
+    `RATE_RESERVE_PERCENT` and `DISPATCH_COST`: the dispatch and the recompute's
+    writes draw on that pool.
+
+  The token must be able to read this public repository's pull requests,
+  reviews, issue comments, labels, commit statuses, check runs, workflow runs
+  and file contents, over REST and GraphQL. It needs no write access and no
+  access to collaborator permissions, because no read that depends on them is
+  made with it. A fine-grained personal access token has a 5,000-request hourly
+  pool of its owner's, which the selection falls back from when it runs low.
+  `test/test_readiness_read_token.py` pins the selection, the fallback, that no
+  write goes through the read token, and that the step is identical in both
+  workflows.
   Screening events before the evaluation was measured and then withdrawn: settling an
   event skips the publish, and the publish is the only write that corrects an isolated,
   never-cancelled publisher's stale success, so every screened shape moved that write

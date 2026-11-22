@@ -241,7 +241,7 @@ vi.mock('../../components/ChatPane', async () => {
     // Mount count: the New crewmate card must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
-      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'} data-push-to-talk={rest.pushToTalk ? '1' : '0'}>
+      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'} data-push-to-talk={rest.pushToTalk ? '1' : '0'} data-find-in-chat={rest.findInChat ? '1' : '0'}>
         {slotKey}
         {/* A static opening card is gone: no host may pass one. */}
         {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
@@ -879,6 +879,8 @@ describe('MembersPage thread', () => {
     // The DM is the page's only composer, so it owns the "Start Dictation
     // with a Key" binding the main chat owns there (#24967).
     expect(pane).toHaveAttribute('data-push-to-talk', '1')
+    // ...and ⌘F / Ctrl+F opens Find in chat over it, on the same terms (#39585).
+    expect(pane).toHaveAttribute('data-find-in-chat', '1')
     // The pin is an invariant of every member thread, so the header does NOT
     // announce it — no chip, no term for a state that cannot be otherwise.
     expect(screen.queryByTestId('member-pin-chip')).toBeNull()

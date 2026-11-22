@@ -43,22 +43,7 @@ import pytest
 
 from kiro_crew.apps import registry
 from kiro_crew.apps.manifest import AppManifest
-from kiro_crew.apps.registry_pipeline import (
-    caches,
-    catalog,
-    checkout,
-    git_targets,
-    indexes,
-    install,
-    install_clone,
-    install_desktop_gate,
-    install_rollback,
-    manifests,
-    recovery,
-    sources,
-    store_art,
-    subprocess_env,
-)
+from kiro_crew.apps.registry_pipeline import caches, sources, subprocess_env
 
 # One group per file, the shape every tree-scan file takes: the cases below parse
 # the facade's and every owner's source.
@@ -68,22 +53,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PIPELINE_DIR = _REPO_ROOT / "src/kiro_crew/apps/registry_pipeline"
 _PIPELINE_PACKAGE = "kiro_crew.apps.registry_pipeline"
 
-#: The owners in the facade's declared layer order, lowest first.
-PARTS: tuple[ModuleType, ...] = (
-    subprocess_env,
-    git_targets,
-    caches,
-    sources,
-    recovery,
-    checkout,
-    store_art,
-    indexes,
-    manifests,
-    catalog,
-    install_desktop_gate,
-    install_rollback,
-    install_clone,
-    install,
+#: The owners in the facade's declared layer order, lowest first. Read from the
+#: facade, so adding an owner needs no edit here; the package-membership check below
+#: still fails when an owner on disk is missing from that order.
+PARTS: tuple[ModuleType, ...] = tuple(
+    importlib.import_module(name) for name in registry._PART_MODULES
 )
 
 #: The registry's module-level surface: every name the one-module ``registry.py``
@@ -280,6 +254,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "annotations",
     "anonymous_git_env",
     "app_admission_denied",
+    "app_backend_secret_mask_targets",
     "app_execution_denied",
     "app_name_error",
     "app_source_dir",
@@ -461,7 +436,8 @@ class TestTheSurfaceSurvivesTheSplit(composition_contract_checks.TheFrozenInvent
     def test_the_part_order_is_the_facades_and_covers_the_package(self) -> None:
         # The facade resolves a read from the first owner in this order that holds the
         # name, so an owner missing from it is one whose names the facade cannot reach.
-        assert registry._PART_MODULES == tuple(part.__name__ for part in PARTS)
+        assert PARTS, "the facade declares no owners"
+        assert len(set(registry._PART_MODULES)) == len(registry._PART_MODULES)
         on_disk = {path.stem for path in _PIPELINE_DIR.glob("*.py") if path.stem != "__init__"}
         assert on_disk == {part.__name__.rpartition(".")[2] for part in PARTS}
 

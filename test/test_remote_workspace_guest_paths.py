@@ -402,7 +402,7 @@ def test_classify_mints_guest_items_only_for_tagged_arguments():
     assert not any(isinstance(item, GuestPath) for _, item in plain)
     # An unverifiable spelling keeps its literal pair and adds the marker beside it.
     odd = classify_tool_args("edit", GuestPathParams({"path": "$X/y"}, root=ROOT))
-    assert [type(item) for _, item in odd] == [GuestPath, str]
+    assert [type(item) for _, item in odd] == [GuestPath, matching._Marker]
 
 
 def test_a_guest_item_never_dedupes_into_a_plain_twin():

@@ -73,7 +73,7 @@ class TestRouteMessageStopCommand:
         with patch("kiro_crew.slack.events.is_allowed_user", side_effect=[True, False]):
             with patch("kiro_crew.slack.events.is_owner", return_value=False):
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
-        orch.slack.post_message.assert_awaited_with("D1", "Blocked: Not authorized.", "100.0")
+        orch.slack.post_message.assert_awaited_with("D1", "⛔ Not authorized.", "100.0")
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "unauthorized sender"
         assert _audit_rows(_real_sel, "slack.stop_command") == [
             ("U_OWNER", "denied", "unauthorized sender")
@@ -109,8 +109,8 @@ class TestRouteMessageStopCommand:
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         posted = [c[0][1] for c in orch.slack.post_message.await_args_list]
-        assert "Execution stopped." in posted
-        assert "Execution stopped — session reset." in posted
+        assert "⏹ Execution stopped." in posted
+        assert "⛔ Execution stopped — session reset." in posted
         assert active.cancelled()
         assert _mock_sel.log_tool_invocation.call_args.kwargs["outcome"] == "soft"
 
@@ -132,13 +132,13 @@ class TestRouteMessageStopCommand:
 
         async def _fake_restart(o, caller, args, respond):
             captured.append(caller)
-            await respond("Restarting gateway…")
+            await respond("♻️ Restarting gateway…")
 
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events._handle_restart", new=_fake_restart):
                 await ev._route_message(orch, _event(text="!restart"), ev.SeenCache())
         assert captured == ["U_OWNER"]
-        orch.slack.post_message.assert_awaited_with("D1", "Restarting gateway…", "100.0")
+        orch.slack.post_message.assert_awaited_with("D1", "♻️ Restarting gateway…", "100.0")
 
 
 class TestRouteMessageQueueing:
@@ -376,13 +376,14 @@ class TestRouteMessageAttachments:
         """The shutdown spool must not quote temp paths or file bodies.
 
         The turn's text is the ingested form; the spool gets what the user typed
-        (mention stripped, before transcription) and how many files it carried.
+        (mention stripped, before transcription), how many files it carried and
+        Slack's name for each ("" for the one Slack did not name).
         """
         orch = _make_orch(use_transport=use_transport)
         img = tmp_path / "shot.png"
         img.write_bytes(b"\x89PNG")
         files = [
-            {"mimetype": "image/png", "url_private": "https://x.invalid/a.png"},
+            {"name": "shot.png", "mimetype": "image/png", "url_private": "https://x.invalid/a.png"},
             {"mimetype": "text/plain", "url_private": "https://x.invalid/b.txt"},
         ]
         target = "handle_message_transport" if use_transport else "handle_message"
@@ -405,6 +406,7 @@ class TestRouteMessageAttachments:
         assert str(img) in hm.await_args[0][3]
         assert hm.await_args.kwargs["spool_text"] == "look"
         assert hm.await_args.kwargs["spool_attachments"] == 2
+        assert hm.await_args.kwargs["spool_attachment_names"] == ("shot.png", "")
 
     @pytest.mark.asyncio
     async def test_busy_session_queues_the_pre_ingestion_message(self, tmp_path):
@@ -413,7 +415,9 @@ class TestRouteMessageAttachments:
         orch.sessions.enqueue = MagicMock(return_value=True)
         img = tmp_path / "shot.png"
         img.write_bytes(b"\x89PNG")
-        files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
+        files = [
+            {"name": "shot.png", "mimetype": "image/png", "url_private": "https://x.invalid/a.png"}
+        ]
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.stt_available", return_value=False):
                 with patch(
@@ -425,6 +429,7 @@ class TestRouteMessageAttachments:
         kw = orch.sessions.enqueue.call_args.kwargs
         assert kw["spool_text"] == "look"
         assert kw["spool_attachments"] == 1
+        assert kw["spool_attachment_names"] == ("shot.png",)
 
     @pytest.mark.asyncio
     async def test_no_recoverable_text_cleans_up_temp_images(self, tmp_path):
@@ -1006,13 +1011,19 @@ class TestDispatchQueued:
     @pytest.mark.parametrize("use_transport", [False, True])
     async def test_pre_ingestion_message_travels_to_the_handler(self, use_transport):
         orch = _make_orch(use_transport=use_transport)
-        kwargs = {"channel": "D1", "spool_text": "look", "spool_attachments": 1}
+        kwargs = {
+            "channel": "D1",
+            "spool_text": "look",
+            "spool_attachments": 1,
+            "spool_attachment_names": ("shot.png",),
+        }
         target = "handle_message_transport" if use_transport else "handle_message"
         with patch(f"kiro_crew.slack.events.{target}", new_callable=AsyncMock) as hm:
             with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
                 await ev._dispatch_queued(orch, "100.0", "101.0", "look\n/tmp/x.png", kwargs)
         assert hm.await_args.kwargs["spool_text"] == "look"
         assert hm.await_args.kwargs["spool_attachments"] == 1
+        assert hm.await_args.kwargs["spool_attachment_names"] == ("shot.png",)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("use_transport", [False, True])

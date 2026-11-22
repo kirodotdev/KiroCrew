@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Awaitable
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import aiohttp
 
@@ -641,6 +641,8 @@ class KiroCrewClient:
         slot_id: str = "",
         *,
         pattern: str = "",
+        request_mid: str = "",
+        instance: str = "",
     ) -> None:
         """Resolve a pending tool approval.
 
@@ -665,15 +667,41 @@ class KiroCrewClient:
         one session the app may control is refused; pass *slot_id* to name it.
         Any refusal other than the missing grant is the 404 an unknown id also
         gets, raised as ``ErrorCode.NOT_FOUND``.
+
+        A request id recurs, so a decide that names only the id resolves
+        whichever request holds it when the call lands, possibly not the one
+        the caller saw. Pass the request's target to decide only that request:
+
+        - *request_mid* (needs *slot_id*), for a chat runner's request: the
+          ``meta.mid`` of its permission row in the slot history
+          (:meth:`get_slot_history`). Sent on the slot route as
+          ``origin: "native"`` with ``request_mid``.
+        - *instance*, for a request from :meth:`list_approvals`: the record's
+          ``instance``, with its ``slot`` as *slot_id* (empty for a slotless
+          record). Sent as ``POST /api/approvals/{id}/{action}?origin=coordinator``
+          with ``slot`` and ``instance``; the actions are those of the route
+          without a slot.
+
+        Passing both, or *request_mid* without *slot_id*, raises
+        ``ErrorCode.VALIDATION_ERROR`` before any request. Without either the
+        call sends the bare id, the form a later Gateway refuses.
+        A target that no longer names a pending request is the same 404.
         """
         if not request_id:
             raise KiroCrewError(ErrorCode.VALIDATION_ERROR, "request_id is required")
+        if request_mid and instance:
+            raise KiroCrewError(
+                ErrorCode.VALIDATION_ERROR,
+                "pass request_mid or instance, not both",
+            )
+        if request_mid and not slot_id:
+            raise KiroCrewError(ErrorCode.VALIDATION_ERROR, "request_mid needs slot_id")
         if action in ("trust_command", "trust_base") and not pattern:
             raise KiroCrewError(
                 ErrorCode.VALIDATION_ERROR,
                 f"pattern is required for {action}",
             )
-        if slot_id:
+        if slot_id and not instance:
             # The slot route denies any action it does not recognise, so the
             # global spellings must be translated rather than passed through.
             slot_action = {"approve": "approved", "reject": "rejected"}.get(action, action)
@@ -683,6 +711,9 @@ class KiroCrewClient:
                     f"action must be one of {sorted(_SLOT_APPROVAL_ACTIONS)} with a slot_id",
                 )
             body = {"action": slot_action, "request_id": request_id}
+            if request_mid:
+                body["origin"] = "native"
+                body["request_mid"] = request_mid
             if pattern:
                 body["pattern"] = pattern
             await self._post(
@@ -694,10 +725,16 @@ class KiroCrewClient:
         if http_action not in _GLOBAL_APPROVAL_ACTIONS:
             raise KiroCrewError(
                 ErrorCode.VALIDATION_ERROR,
-                f"action must be one of {sorted(_GLOBAL_APPROVAL_ACTIONS)} without a slot_id",
+                f"action must be one of {sorted(_GLOBAL_APPROVAL_ACTIONS)}"
+                + (" with an instance" if instance else " without a slot_id"),
             )
+        qs = ""
+        if instance:
+            # The route reads the target from the query string.
+            target = {"origin": "coordinator", "slot": slot_id, "instance": instance}
+            qs = "?" + urlencode(target)
         await self._post(
-            f"/api/approvals/{quote(request_id, safe='')}/{quote(http_action, safe='')}"
+            f"/api/approvals/{quote(request_id, safe='')}/{quote(http_action, safe='')}{qs}"
         )
 
     async def set_approval_mode(self, mode: str, slot_id: str = "") -> None:

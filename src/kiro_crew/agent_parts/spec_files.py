@@ -227,7 +227,17 @@ def _atomic_json_write_unguarded(path: Path, data: dict) -> None:
     the Windows rename retry below are exactly what must not be duplicated.
     Private and NOT a general escape hatch -- a new caller of this instead of
     the guarded primitive is how the guard gets bypassed by accident.
+
+    A spec that already holds these exact bytes, as a single-link owner-only
+    file, is left as it is. Every rebuild rewrites ``kirocrew.json``, and the
+    worker records that file's inode in ``agent_model_state.json``, a file each
+    sandboxed spawn pins; a new inode for unchanged bytes made that record, and
+    so the pinned file, change on every rebuild.
     """
+    from kiro_crew.unchanged_file import already_holds  # noqa: PLC0415  kept with the call
+
+    if already_holds(path, (json.dumps(data, indent=2) + "\n").encode("utf-8")):
+        return
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:

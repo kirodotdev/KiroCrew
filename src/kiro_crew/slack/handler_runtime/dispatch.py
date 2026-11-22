@@ -207,7 +207,7 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
         return False
 
     logger.info(
-        "handle_message: thread_ts=%s msg_ts=%s → session_key=%s channel=%s",
+        "🔍 handle_message: thread_ts=%s msg_ts=%s → session_key=%s channel=%s",
         thread_ts,
         msg_ts,
         session_key,

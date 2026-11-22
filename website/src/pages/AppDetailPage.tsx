@@ -28,7 +28,7 @@ import TrustAppModal, {
   APP_EXECUTION_DENIED, DESKTOP_BUILD_STEP_UNSUPPORTED, isSessionApprovalConsentRequiredError,
   isTrustDeniedError, localOnlyTrustRepository, SESSION_APPROVAL_CONSENT_REQUIRED, useTrustGate,
 } from '../components/appstore/TrustAppModal'
-import { isRegistrySourced } from '../components/appstore/types'
+import { isMarketSourced, isRegistrySourced } from '../components/appstore/types'
 import { desktopRequestOf } from '../components/appstore/desktopRequest'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
 import AppSource from '../components/appstore/AppSource'
@@ -67,7 +67,7 @@ import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetai
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
+import { BrowserVerbsBox, BrowserVerbsStaged, KiroOperationsBox, StagedCodeList, ChatLaunchBox, ChatSlotsBox, DesktopCapabilitiesBox, DesktopCapabilitiesStaged, HiddenSessionsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, WorkerAutoApproveStaged, browserVerbLine, knownBrowserVerbs, knownDesktopCapabilities, reachVerbs } from './AppDetailGrantBoxes'
 import { trustGrants } from '../components/appstore/trustGrants'
 import { stagedGrantsOf } from './appDetailPageStagedGrants'
 // The page's parts live in sibling owners that never import this module:
@@ -108,6 +108,7 @@ export default function AppDetailPage() {
    * Stays until the next action, which is the user's chance to act on it.
    */
   const [backendRefusedMsg, setBackendRefusedMsg] = useState('')
+  // A fresh install and a widening update set this same flag, so the copy must hold for both.
   const reconsentMsg = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
     : ''
@@ -115,11 +116,13 @@ export default function AppDetailPage() {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, hasStagedGrants: hasOtherStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, stagedBrowserSites, stagedKiroOperations, stagedBrowser, hasStagedGrants: hasOtherStagedGrants, firstKiroApproval: firstKiroOnly,
   } = stagedGrantsOf(app)
   // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
   const stagedBots = stagedBotScopes(app)
   const hasStagedGrants = hasOtherStagedGrants || stagedBots.length > 0
+  const firstKiroApproval = firstKiroOnly && stagedBots.length === 0
+  const reconsentInGrantsBox = !!reconsentMsg && !!app?.installed && !app.enabled && hasStagedGrants
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -352,6 +355,8 @@ export default function AppDetailPage() {
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
+            kiroOperationsGrant: installed.kiroOperationsGrant,
+            browserGrant: installed.browserGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -480,6 +485,8 @@ export default function AppDetailPage() {
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
             frameSourcesGrant: installed.frameSourcesGrant,
             browserSitesGrant: installed.browserSitesGrant,
+            kiroOperationsGrant: installed.kiroOperationsGrant,
+            browserGrant: installed.browserGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -540,6 +547,7 @@ export default function AppDetailPage() {
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
     // A directory install with no registry update pending is this page's Sync (a
     // re-copy). Everything else runs the streaming registry install, as Update does.
+    if (stateAction === 'update' && isMarketSourced(app)) return
     if (stateAction === 'update' && app.installed && !isRegistrySourced(app) && !app.updateAvailable) {
       handleAction('update')
       return
@@ -927,7 +935,8 @@ export default function AppDetailPage() {
   // UX gate only: the marker is client-side, so nothing security-relevant may
   // rest on it (see PlatformConfig.requiresDesktopApp in manifest.py).
   const desktopOnly = needsDesktopApp(app)
-  const canUpdate = app.lifecycle === 'gateway'
+  // A Kiro Space install has no update path yet: no Sync, no Update.
+  const canUpdate = app.lifecycle === 'gateway' && !isMarketSourced(app)
   const canUninstall = app.lifecycle !== 'locked'
   // Resource lists, derived once. `manifest` is absent for a registry-only app,
   // and `normalizeInstalledApp` fills the lists for an installed one — so the
@@ -1098,8 +1107,8 @@ export default function AppDetailPage() {
         {/* Re-consent after an update that widened the session-approval grant.
             Warn-styled like the PR's other session-approval surfaces -- the text
             says "it is now disabled", so a green box would contradict it. Cleared
-            when the user enables the app again (the action the notice asks for). */}
-        {reconsentMsg && (
+            when the user enables the app again; heads the grants box when that one shows. */}
+        {reconsentMsg && !reconsentInGrantsBox && (
           <div
             role="status"
             className="mb-4 flex items-start gap-2 rounded-lg border border-warn/30 bg-warn-subtle p-3 animate-rise"
@@ -1128,10 +1137,11 @@ export default function AppDetailPage() {
             <div className="text-text text-sm flex-1 min-w-0 grid gap-2">
               <span>
                 {app.enabled
-                  ? i18nT('pages.appDetailPage.grants_reconsent_notice', { name: appDisplayName(app) })
+                  ? i18nT(firstKiroApproval ? 'pages.appDetailPage.kiro_operations_first_notice' : 'pages.appDetailPage.grants_reconsent_notice', { name: appDisplayName(app) })
+                  : reconsentInGrantsBox ? reconsentMsg
                   : i18nT('pages.appDetailPage.grants_reconsent_notice_disabled', { name: appDisplayName(app) })}
               </span>
-              {app.enabled && (
+              {app.enabled && !firstKiroApproval && (
                 <span className="text-[13px] text-text">{i18nT('pages.appDetailPage.grants_reconsent_keep', { name: appDisplayName(app) })}</span>
               )}
               {stagedApi.length > 0 && (
@@ -1208,16 +1218,8 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
-              {stagedBrowserSites.length > 0 && (
-                <div>
-                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_browser_sites')}</div>
-                  <div className="flex flex-wrap gap-1 mt-1" data-testid="staged-browser-sites">
-                    {stagedBrowserSites.map(o => (
-                      <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <StagedCodeList label={i18nT('pages.appDetailPage.grants_reconsent_browser_sites')} entries={stagedBrowserSites} testId="staged-browser-sites" />
+              <StagedCodeList label={i18nT('pages.appDetailPage.grants_reconsent_kiro_operations')} entries={stagedKiroOperations} testId="staged-kiro-operations" />
               {stagedComposerActions.length > 0 && (
                 <div>
                   <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_composer_actions')}</div>
@@ -1242,6 +1244,7 @@ export default function AppDetailPage() {
               {stagedWorkerAutoApprove && <WorkerAutoApproveStaged />}
               <UserSessionReachStaged staged={stagedUserSessionReach} />
               <DesktopCapabilitiesStaged staged={stagedDesktopCapabilities} />
+              <BrowserVerbsStaged staged={stagedBrowser} />
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -1254,7 +1257,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites], { style: 'narrow' })
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources, ...stagedBrowserSites, ...stagedKiroOperations, ...stagedBrowser.map(v => browserVerbLine(v).replace(/\.$/, ''))], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1273,6 +1276,8 @@ export default function AppDetailPage() {
                     desktopCapabilities: stagedDesktopCapabilities,
                     frameSources: stagedFrameSources,
                     browserSites: stagedBrowserSites,
+                    kiroOperations: stagedKiroOperations,
+                    browser: stagedBrowser,
                   })
                   setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'enable'))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
@@ -1288,7 +1293,7 @@ export default function AppDetailPage() {
               }}
               disabled={actionBusy}
             >
-              {i18nT('pages.appDetailPage.approve_new_permissions')}
+              {i18nT(firstKiroApproval ? 'pages.appDetailPage.approve_kiro_operations' : 'pages.appDetailPage.approve_new_permissions')}
             </Btn>
             )}
           </div>
@@ -1824,6 +1829,8 @@ export default function AppDetailPage() {
                 <ChatLaunchBox declared={app.manifest.permissions.chatLaunch} />
                 <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
                 <DesktopCapabilitiesBox declared={knownDesktopCapabilities(app.manifest.permissions.desktopCapabilities)} staged={stagedDesktopCapabilities} />
+                <BrowserVerbsBox declared={knownBrowserVerbs(app.manifest.permissions.browser)} staged={stagedBrowser} preview={app.browserGrant?.preview} />
+                <KiroOperationsBox grant={app.kiroOperationsGrant} />
                 {app.manifest.permissions.webhookSource === true && <WebhookSourceBox source={app.name} />}
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}

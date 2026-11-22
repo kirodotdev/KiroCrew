@@ -341,6 +341,11 @@ export interface ChatState {
    *  onto a session this tab saw closed (#14762). Cleared by the next
    *  `switchSlot.pending` or the notice's dismiss. */
   switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport } | null
+  /** The key whose last open failed transiently and stayed selected with an
+   *  empty pane (`switchSlot.rejected`), until a load of it lands. Unlike
+   *  `switchSlotGone` a notice dismiss does not clear it: the sidebar row reads
+   *  it so a click on that open chat retries instead of toggling the panel. */
+  slotOpenFailed: string | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean
@@ -807,6 +812,7 @@ export const initialState: ChatState = {
   slotSwitchLatestRequestId: null,
   slotSwitchOrigin: null,
   switchSlotGone: null,
+  slotOpenFailed: null,
   loadingOlder: false,
   slotOlderError: false,
   lastChunkSeq: undefined,

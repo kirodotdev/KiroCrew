@@ -356,8 +356,7 @@ class TestNewestHumanTurn:
         # _ChatSlot.enqueue_or_run_prompt appends ("user", prompt, "msg msg-u")
         # for an Issue Radar wake -- identical in role AND presentation class to a
         # typed message, so only the absent marker tells them apart. Counting it
-        # would let a background session displace the human-active ones, which is
-        # the exact failure this change exists to remove.
+        # would let a background session displace the human-active ones.
         rows = [
             _human(_iso(1_000_000), "mine"),
             {"role": "user", "content": "wake", "cls": "msg msg-u", "ts": _iso(1_000_900)},

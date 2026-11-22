@@ -350,7 +350,7 @@ def _rt(root: int, owner: str = "gateway", cpu: float | None = 1.0, age: float |
 
 def test_no_runtime_is_one_line() -> None:
     assert resources._acp_runtime_lines(resources._AcpCensus([]), 1.0) == [
-        "  runtimes:    OK:      none running"
+        "  runtimes:    ✅ none running"
     ]
 
 
@@ -360,7 +360,7 @@ def test_a_quiet_host_reads_green() -> None:
     )
     assert lines == [
         "  runtimes:    2 alive: 2 owned by the running gateway",
-        "  cpu:         OK:      none at or above 25% of a core (all 2 backends: 5% of a core over 1.0s)",
+        "  cpu:         ✅ none at or above 25% of a core (all 2 backends: 5% of a core over 1.0s)",
     ]
 
 
@@ -380,13 +380,13 @@ def test_hot_and_unowned_runtimes_are_named_by_pid() -> None:
         == "  runtimes:    3 alive: 1 owned by the running gateway, 2 no running gateway owns"
     )
     assert lines[1] == (
-        "  cpu:         Warning: 2 at or above 25% of a core (all 3 backends: 93% of a core over 1.0s)"
+        "  cpu:         ⚠️  2 at or above 25% of a core (all 3 backends: 93% of a core over 1.0s)"
     )
     assert lines[2] == "               pid 20: 61%, up 28.3h, no running gateway owns it"
     assert lines[3] == "               pid 30: 30%, up 1.0h, no running gateway owns it"
     assert "check the session before ending it" in lines[6]
     assert lines[7:] == [
-        "  no owner:    Warning: 2 no running gateway owns, so no turn can be in flight on them",
+        "  no owner:    ⚠️  2 no running gateway owns, so no turn can be in flight on them",
         "               pids 20, 30",
     ]
 
@@ -406,17 +406,17 @@ def test_an_unknown_owner_is_said_so() -> None:
 def test_a_cut_read_is_said_out_loud() -> None:
     census = resources._AcpCensus([], unread=7, capped_trees=1, capped_procs=9)
     assert resources._acp_runtime_lines(census, 1.0) == [
-        "  runtimes:    OK:      none running",
-        "  read cap:    Warning: 7 processes past the first 65536 were not read; a runtime among"
+        "  runtimes:    ✅ none running",
+        "  read cap:    ⚠️  7 processes past the first 65536 were not read; a runtime among"
         " them is not counted",
-        "  tree cap:    Warning: 1 runtime(s) hold more than 4096 processes; 9 past the cap were"
+        "  tree cap:    ⚠️  1 runtime(s) hold more than 4096 processes; 9 past the cap were"
         " not walked",
     ]
 
 
 def test_no_rate_is_said_so() -> None:
     lines = resources._acp_runtime_lines(resources._AcpCensus([_rt(10, cpu=None)]), 1.0)
-    assert lines[1].startswith("  cpu:         Note:    could not take a rate")
+    assert lines[1].startswith("  cpu:         ⏹ could not take a rate")
 
 
 def test_unowned_runtimes_show_their_memory() -> None:
@@ -493,7 +493,7 @@ def test_off_linux_the_section_is_one_line(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert (
         out
-        == "\nACP Runtimes\n  runtimes:    Note:    not measured (darwin — the census reads Linux procfs)\n"
+        == "\nACP Runtimes\n  runtimes:    ⏹ not measured (darwin — the census reads Linux procfs)\n"
     )
     assert issues == []
 
@@ -586,7 +586,7 @@ def test_a_scope_the_cleanup_keeps_is_listed_with_its_stop_command(
     resources._doctor_acp_runtimes([])
 
     out = capsys.readouterr().out
-    assert "kept scopes: Warning: 2 runtime scope(s) no session tracks" in out
+    assert "kept scopes: ⚠️  2 runtime scope(s) no session tracks" in out
     assert "kirocrew-rt-left.scope: up 3.0h, 700 MiB, 55 tasks, no agent runtime left" in out
     assert "kirocrew-rt-daemon.scope: up 3.0h, ? MiB, ? tasks, it holds a process Kiro" in out
     assert "systemctl --user stop kirocrew-rt-left.scope" in out

@@ -300,11 +300,24 @@ def _actual_type_name(value: object) -> str:
 #:   absent, drop a stored ``false``. Preserved, ``_coerced_section`` records
 #:   ``mcp_gateway`` as degraded and both gates read it as off.
 #:
+#: * ``tunnel.relay_enabled``: unset (the default) hosts a Crew that has a team
+#:   key or a workload identity, so repairing a quoted ``"false"`` to absent would
+#:   turn such a Crew ON. Preserved, the value is not a boolean, and the section
+#:   builder (``section_builders._relay_enabled``) reads anything but a boolean or
+#:   ``null`` as off, which is the gate every relay reader asks.
+#:
+#: * ``tunnel.relay_lease_region``: a value the person did not give (absent, null,
+#:   empty or blank) leases from us-east-1; any value they gave must be a known
+#:   Region, or the relay refuses and sends nothing. So a given bad value is preserved,
+#:   never repaired to ``""``: the section builder passes it through and
+#:   ``RelaySettings.validate`` refuses it, naming the setting.
+#:
 #: Exact-match only: this is a per-path judgment, not a subtree rule. The
-#: registry is only half of a fix — a preserved value changes nothing unless
-#: the loader RECORDS the degradation and a gate reads
-#: ``KiroCrewConfig.degraded_sections``. Both halves exist for every path
-#: listed here; adding a path without them just keeps evidence nobody reads.
+#: registry is only half of a fix — a preserved value changes nothing unless a
+#: gate reads it: for most paths the loader RECORDS the degradation and a gate
+#: reads ``KiroCrewConfig.degraded_sections``; for ``tunnel.relay_enabled`` and
+#: ``tunnel.relay_lease_region`` the section builder and its reader are the gate
+#: (bullets above). Adding a path without a gate just keeps evidence nobody reads.
 _FAIL_CLOSED_PATHS = frozenset(
     {
         "agent",
@@ -317,6 +330,8 @@ _FAIL_CLOSED_PATHS = frozenset(
         "hooks",
         "hooks.confirm_tools",
         "mcp_gateway",
+        "tunnel.relay_enabled",
+        "tunnel.relay_lease_region",
     }
 )
 

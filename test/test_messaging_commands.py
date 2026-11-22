@@ -155,7 +155,7 @@ class TestStopRunningTurn:
 
     def test_the_queue_is_dropped_and_the_receipt_finalized_in_place(self) -> None:
         # The receipt is the durable record that a held message was accepted, so
-        # it is EDITED to "Cancelled" rather than deleted.
+        # it is EDITED to "🛑 Cancelled" rather than deleted.
         queue, surface = ReceiptQueue(), _Surface()
         sessions = _Sessions(busy=True, provider=_Provider(), queue=queue)
         _stop(sessions, queue, surface)
@@ -167,7 +167,7 @@ class TestStopRunningTurn:
         """The drain takes the same lock across dequeue + flip.
 
         Splitting the two would let a drain observe an already-emptied queue while
-        its bubble still said "Queued", orphaning it.
+        its bubble still said "⏳ Queued", orphaning it.
         """
         queue, surface = ReceiptQueue(), _Surface()
         sessions = _Sessions(busy=True, provider=_Provider(), queue=queue)
@@ -266,7 +266,7 @@ class TestRunYoloCommand:
             run_yolo_command("on", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
         )
         assert grant.is_active() is True
-        assert reply.startswith("YOLO ON (")
+        assert reply.startswith("🟢 YOLO ON (")
         assert "Denied-by-policy tools are still blocked." in reply
         assert audit.rows == [
             {
@@ -287,7 +287,7 @@ class TestRunYoloCommand:
                 "on", source="teams", caller="u@example.com", phrasing=YOLO_PHRASING_MARKDOWN
             )
         )
-        assert reply.startswith("YOLO is already ON (")
+        assert reply.startswith("🟢 YOLO is already ON (")
         assert audit.rows[0]["operation"] == "teams.yolo_mode"
         assert audit.rows[0]["source"] == "teams"
 
@@ -296,7 +296,7 @@ class TestRunYoloCommand:
         reply = asyncio.run(
             run_yolo_command("off", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
         )
-        assert reply == "YOLO OFF — tools ask for approval again."
+        assert reply == "🔴 YOLO OFF — tools ask for approval again."
         assert grant.is_active() is False
         assert audit.rows[0]["resources"] == "yolo_off"
 
@@ -309,8 +309,8 @@ class TestRunYoloCommand:
         coded = asyncio.run(
             run_yolo_command("renew", source="teams", caller="u", phrasing=YOLO_PHRASING_MARKDOWN)
         )
-        assert plain == "YOLO is not active — use /yolo on first."
-        assert coded == "YOLO is not active — use `/yolo on` first."
+        assert plain == "🔴 YOLO is not active — use /yolo on first."
+        assert coded == "🔴 YOLO is not active — use `/yolo on` first."
         assert grant.is_active() is False
 
     def test_a_failed_activation_is_audited_as_denied(
@@ -328,7 +328,7 @@ class TestRunYoloCommand:
         reply = asyncio.run(
             run_yolo_command("on", source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
         )
-        assert reply == "Error: Couldn't turn YOLO on (audit system unavailable)."
+        assert reply == "❌ Couldn't turn YOLO on (audit system unavailable)."
         assert audit.rows[0]["outcome"] == "denied"
 
     @pytest.mark.parametrize("arg", ["", "maybe", "   "])
@@ -340,7 +340,7 @@ class TestRunYoloCommand:
         reply = asyncio.run(
             run_yolo_command(arg, source="telegram", caller="7", phrasing=YOLO_PHRASING_PLAIN)
         )
-        assert reply == "YOLO is OFF.\nUsage: /yolo on | off | renew"
+        assert reply == "YOLO is OFF 🔴.\nUsage: /yolo on | off | renew"
         assert grant.is_active() is False
         assert audit.rows == []
 
@@ -349,7 +349,7 @@ class TestRunYoloCommand:
         reply = asyncio.run(
             run_yolo_command("", source="teams", caller="u", phrasing=YOLO_PHRASING_MARKDOWN)
         )
-        assert reply.startswith("YOLO is ON (")
+        assert reply.startswith("YOLO is ON 🟢 (")
         assert reply.endswith("Usage: `/yolo on` | `off` | `renew`")
 
     def test_the_mutators_run_off_the_event_loop(
@@ -707,15 +707,13 @@ class TestSpawn:
             id="r1", done=True, error="spawn refused: gateway admission is closed"
         )
         reply = await spawn_task_reply("do it", manager) or ""
-        assert reply.startswith(
-            "Warning: Subagent `r1` was not started: gateway admission is closed"
-        )
+        assert reply.startswith("⚠️ Subagent `r1` was not started: gateway admission is closed")
         assert "spawn refused" not in reply and "Spawned" not in reply
         manager.spawn.return_value = SimpleNamespace(
             id="r2", done=True, error="never started: waiting for memory (pressure)"
         )
         reply = await spawn_task_reply("do it", manager) or ""
-        assert reply.startswith("Warning: Subagent `r2` was not started: waiting for memory")
+        assert reply.startswith("⚠️ Subagent `r2` was not started: waiting for memory")
 
     @pytest.mark.asyncio
     async def test_a_spawn_stopped_before_it_started_is_not_announced(self) -> None:
@@ -726,7 +724,7 @@ class TestSpawn:
             id="s1", queued=True, done=True, user_stopped=True, error=""
         )
         reply = await spawn_task_reply("do it", manager) or ""
-        assert reply == "Warning: Subagent `s1` was stopped before it started; nothing ran."
+        assert reply == "⚠️ Subagent `s1` was stopped before it started; nothing ran."
 
     @pytest.mark.asyncio
     async def test_an_empty_argument_declines(self) -> None:
@@ -778,7 +776,7 @@ class TestCron:
         svc = MagicMock()
         svc.list_jobs.return_value = [_job("j1", enabled=False)]
         out = await cron_command_reply("cron list", svc) or ""
-        assert "paused" in out and "`j1`" in out
+        assert "⏸️" in out and "`j1`" in out
         # include_disabled is what makes a paused job visible enough to resume.
         assert svc.list_jobs.call_args.kwargs == {"include_disabled": True}
 
@@ -790,7 +788,7 @@ class TestCron:
 
     @pytest.mark.parametrize(
         "verb,enabled,mark",
-        [("pause", False, "Paused"), ("resume", True, "Resumed")],
+        [("pause", False, "⏸️"), ("resume", True, "▶️")],
     )
     @pytest.mark.asyncio
     async def test_pause_and_resume_pass_the_right_enabled_flag(
@@ -855,7 +853,7 @@ class TestCron:
             one_out = await cron_command_reply("cron remove j1", svc, source="telegram", caller="7")
 
         assert "Removed 1 cron job(s)" in (all_out or "") and "`j1`" in (all_out or "")
-        assert one_out == "Removed cron job `j1`"
+        assert one_out == "✅ Removed cron job `j1`"
         svc.remove_jobs.assert_awaited_once_with(["j1"], actor="7", source="telegram")
         svc.remove_job_async.assert_awaited_once_with("j1", actor="7", source="telegram")
         mock_sel.return_value.log_api_access.assert_not_called()
@@ -1287,8 +1285,7 @@ class TestCompactUnsupportedBackend:
         assert "kas" in reply
         assert "automatically" in reply
         # Informational, never an error.
-        assert reply.startswith("Note: ")
-        assert "Error:" not in reply and "Warning:" not in reply
+        assert "❌" not in reply and "⚠️" not in reply
 
 
 @pytest.mark.asyncio

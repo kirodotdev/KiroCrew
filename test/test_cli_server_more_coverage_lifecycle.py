@@ -97,7 +97,7 @@ class TestStopViaService:
         assert "Stopped kirocrew service, but pid 4242 still holds" in out
         assert "`kirocrew stop` again" in out
         assert cli_server._manual_stop_command(4242) in out
-        assert "Done: " not in out
+        assert "✅" not in out
 
     def test_a_launchd_stop_does_not_read_the_lock(self, monkeypatch, sel_rec, capsys) -> None:
         """``bootout`` returns before the agent's gateway exits, so its lock may still
@@ -115,7 +115,7 @@ class TestStopViaService:
         monkeypatch.setattr(cli_server, "lock_holder", unreachable)
         monkeypatch.setattr(cli_server, "_stop_mcp_gateway_daemon", lambda: stopped.append(True))
         cli_server._stop(None)
-        assert "Done: Stopped kirocrew service" in capsys.readouterr().out
+        assert "✅ Stopped kirocrew service" in capsys.readouterr().out
         assert stopped == [True]
 
     def test_explicit_port_bypasses_the_service(self, monkeypatch, sel_rec, capsys) -> None:
@@ -432,7 +432,7 @@ class TestStopOnWindows:
         monkeypatch.setattr(os, "kill", denied)
         with pytest.raises(SystemExit):
             cli_server._stop(None)
-        assert "Error: No permission to stop pid 4242 — try: sudo kirocrew stop\n" in (
+        assert "❌ No permission to stop pid 4242 — try: sudo kirocrew stop\n" in (
             capsys.readouterr().out
         )
 

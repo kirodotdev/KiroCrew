@@ -268,6 +268,18 @@ def _interactive_approval(
                 approval_slot = ""
         else:
             approval_slot = ""
+        # A nested run's prompt is shown in the tab of the chat its spawn tree
+        # started from, while Trust below is still read from ``approval_slot``.
+        prompt_slot = approval_slot
+        if parent_session_key.startswith("subagent:") and self.dashboard_state is not None:
+            from kiro_crew.dashboard.handlers.files import _subagent_parent_session_key
+
+            prompt_slot = (
+                dashboard_slot_key(
+                    _subagent_parent_session_key(self.dashboard_state, parent_session_key)
+                )
+                or approval_slot
+            )
 
         # Per-source auto-approve (e.g. cron, taskrunner, subagent)
         if source in self._cfg.hooks.get("auto_approve_sources", []) and not _held_call:
@@ -558,7 +570,7 @@ def _interactive_approval(
                     )
                 title_safe, _ = redact_exfiltration_urls(event.title)
                 title_safe, _ = redact_credentials(title_safe)
-                fallback = f"[{source}] Approve: {title_safe}?"
+                fallback = f"🔐 [{source}] Approve: {title_safe}?"
                 if requester_safe:
                     fallback += f" ({requester_safe})"
                 approval_ts = await self.slack.post_blocks(
@@ -586,7 +598,7 @@ def _interactive_approval(
                             event.title,
                             tool_input=event.tool_input,
                             tool_purpose=event.tool_purpose,
-                            slot=approval_slot,
+                            slot=prompt_slot,
                             is_background=is_background,
                             **_person_only,
                         )
@@ -645,10 +657,10 @@ def _interactive_approval(
 
                 # Clean up Slack message
                 try:
-                    status = "Approved" if outcome == "approved" else "Rejected"
+                    status = "✅ Approved" if outcome == "approved" else "🚫 Rejected"
                     # The answered card keeps who asked: it is the record the
                     # user scrolls back to.
-                    resolved = f"*{title_safe}* — {status}"
+                    resolved = f"🔐 *{title_safe}* — {status}"
                     if requester_md:
                         resolved += f"\n{requester_md}"
                     await self.slack.update_message(channel, approval_ts, text=resolved)
@@ -680,7 +692,7 @@ def _interactive_approval(
                 event.title,
                 tool_input=event.tool_input,
                 tool_purpose=event.tool_purpose,
-                slot=approval_slot,
+                slot=prompt_slot,
                 is_background=is_background,
                 **_person_only,
                 on_host_decision=(
