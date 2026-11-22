@@ -1683,10 +1683,13 @@ field as text (` [<data-dashboard-missing-label>]` for a field marked
 `data-dashboard-missing`, else ` [<data-dashboard-out-of-date-label>]`), because the frame
 draws those marks with CSS and `innerText` leaves CSS content out; the document is the
 run's throwaway copy and the picture is already taken, so the write changes neither the
-picture nor a person's tab. It returns `document.body.innerText` cut to `MAX_TEXT_CHARS`
-(6000) characters and its full length, both counted in code points (`Array.from`), as
-Python counts them.
-`dashboard_page_image.read_text` trusts nothing the page returns: it cuts again, keeps a
+picture nor a person's tab. It returns the whole of `document.body.innerText` and its
+length, both counted in code points (`Array.from`), as Python counts them; over
+`MAX_READ_CHARS` (200000, so the reply fits the run's 4 MiB message cap) it returns no
+text. The text is never cut before it is redacted, since a cut first can keep part of a secret: `_run_package_page` redacts the
+whole text, then cuts it to `MAX_TEXT_CHARS` (6000).
+`dashboard_page_image.read_text` trusts nothing the page returns: it reads a text over
+`MAX_READ_CHARS` as no text, keeps a
 `length` only when it is a whole number no smaller than the text, drops lone surrogates,
 and reads an `exceptionDetails` or a non-object value as no text; a failed call is no text
 and leaves the verdict and the picture alone. The text (`Verification.text`, never in

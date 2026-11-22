@@ -222,3 +222,33 @@ def test_contain_path_accepts_a_base_spelled_in_another_case(tmp_path):
     base.mkdir()
     contained = request_state.contain_path(str(base).upper(), "r-2.json")
     assert contained.name == "r-2.json"
+
+
+# --- Node toolchain lookup ---
+
+
+def _node_runtime(listed: tuple[str, ...], *, is_posix: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        Path=Path, IS_POSIX=is_posix, _NODE_BIN_DIRS=listed, _nvm_version_bin_dirs=lambda: []
+    )
+
+
+def test_windows_node_lookup_skips_the_drive_less_posix_dirs(monkeypatch, tmp_path):
+    """Windows resolves ``/usr/bin`` against the current drive, a folder any
+    local account can create; the ``~`` entries are real Windows homes."""
+    rooted = tmp_path / "rooted"
+    rooted.mkdir()
+    (tmp_path / ".bun" / "bin").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # `as_posix()` keeps the rooted spelling a drive-less `/...` would have.
+    rooted_entry = "/" + rooted.as_posix().lstrip("/")
+    listed = (rooted_entry, "~/.bun/bin")
+    bun = Path("~/.bun/bin").expanduser()
+
+    assert dev_preview.node_bin_dirs(_node_runtime(listed, is_posix=False)) == [bun]
+
+    if os.name != "nt":
+        # Off Windows the same rooted entry is a real folder and stays first.
+        posix = _node_runtime(listed, is_posix=True)
+        assert dev_preview.node_bin_dirs(posix) == [Path(rooted_entry), bun]

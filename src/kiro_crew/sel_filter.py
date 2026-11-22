@@ -92,8 +92,13 @@ def render_jsonl(rows: list[dict]) -> str:
 def _cell(value: Any) -> str:
     """One CSV cell: no control characters, a lone surrogate escaped, inert in a spreadsheet."""
     if isinstance(value, (dict, list)):
-        value = json.dumps(value, sort_keys=True)
-    text = value if isinstance(value, str) else ("" if value is None else str(value))
+        text = json.dumps(value, sort_keys=True)
+    elif isinstance(value, str):
+        text = value
+    elif value is None:
+        text = ""
+    else:
+        text = str(value)
     text = strip_control_characters(text).encode("utf-8", "backslashreplace").decode("utf-8")
     return "'" + text if text.startswith(_FORMULA_STARTS) else text
 
