@@ -1042,8 +1042,12 @@ def package_write_refusal(request: Any, content: Any, stored_content: Any = None
     # THE PERSON at the dashboard, who owns every page on their own machine and whom
     # the artifact routes have already owner-gated. Reached only after the app check
     # above, which is what makes this a positive identification of the person rather
-    # than "whoever sent no secret".
-    if request.headers.get("X-Internal-Secret") is None:
+    # than "whoever sent no secret". An agent-socket call carries no secret either;
+    # token auth marks it ``internal_auth``, so that is checked too.
+    if (
+        request.headers.get("X-Internal-Secret") is None
+        and request.get("internal_auth") is not True
+    ):
         return ""
     crew, slot = writing_caller(request)
     # BOTH BINDINGS ARE AUTHORIZED, and the STORED one first. Checking only the
