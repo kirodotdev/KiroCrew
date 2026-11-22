@@ -22137,6 +22137,7 @@
         "checking_against_default_no_region": "Mit deinen Standard-AWS-Anmeldedaten geprüft, ohne festgelegte Region.",
         "checking_against_no_region": "Mit Profil {{profile}} geprüft, ohne festgelegte Region.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "Karte ausblenden",
         "code_ready": "Dein Anmeldecode ist bereit",
         "code_ready_for": "Der Anmeldecode für {{name}} ist bereit",
         "confirm_cancel_remove": "Ja, „{{tag}}“ entfernen",

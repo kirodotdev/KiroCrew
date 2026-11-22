@@ -21587,6 +21587,7 @@
         "checking_against_default_no_region": "已使用默认 AWS 凭证检查，未设置区域。",
         "checking_against_no_region": "已按配置文件 {{profile}} 检查，未设置区域。",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "隐藏卡片",
         "code_ready": "你的登录验证码已就绪",
         "code_ready_for": "{{name}} 的登录验证码已就绪",
         "confirm_cancel_remove": "是，删除 “{{tag}}”",

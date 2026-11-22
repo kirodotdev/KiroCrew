@@ -22137,6 +22137,7 @@
         "checking_against_default_no_region": "तुम्हारे डिफ़ॉल्ट AWS क्रेडेंशियल्स से जाँचा गया, कोई रीजन सेट नहीं है।",
         "checking_against_no_region": "प्रोफ़ाइल {{profile}} से जाँचा गया, कोई रीजन सेट नहीं है।",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "कार्ड छिपाओ",
         "code_ready": "तुम्हारा साइन-इन कोड तैयार है",
         "code_ready_for": "{{name}} का साइन-इन कोड तैयार है",
         "confirm_cancel_remove": "हाँ, “{{tag}}” हटाओ",

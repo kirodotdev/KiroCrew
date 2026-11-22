@@ -22687,6 +22687,7 @@
         "checking_against_default_no_region": "Verificado com suas credenciais padrão da AWS, sem região definida.",
         "checking_against_no_region": "Verificado com o perfil {{profile}}, sem região definida.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "Ocultar cartão",
         "code_ready": "Seu código de login está pronto",
         "code_ready_for": "O código de login de {{name}} está pronto",
         "confirm_cancel_remove": "Sim, remover “{{tag}}”",

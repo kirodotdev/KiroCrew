@@ -21587,6 +21587,7 @@
         "checking_against_default_no_region": "既定の AWS 認証情報で確認しました。リージョンは未設定です。",
         "checking_against_no_region": "プロファイル {{profile}} で確認しました。リージョンは未設定です。",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "カードを隠す",
         "code_ready": "サインインコードの準備ができました",
         "code_ready_for": "{{name}} のサインインコードの準備ができました",
         "confirm_cancel_remove": "はい、「{{tag}}」 を削除",

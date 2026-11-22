@@ -21587,6 +21587,7 @@
         "checking_against_default_no_region": "기본 AWS 자격 증명으로 확인했습니다. 리전은 설정되지 않았습니다.",
         "checking_against_no_region": "프로필 {{profile}}(으)로 확인했습니다. 리전은 설정되지 않았습니다.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "카드 숨기기",
         "code_ready": "로그인 코드가 준비되었습니다",
         "code_ready_for": "{{name}}의 로그인 코드가 준비되었습니다",
         "confirm_cancel_remove": "예, ‘{{tag}}’ 제거",

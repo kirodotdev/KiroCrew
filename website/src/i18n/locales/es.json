@@ -22687,6 +22687,7 @@
         "checking_against_default_no_region": "Comprobado con tus credenciales de AWS predeterminadas, sin región definida.",
         "checking_against_no_region": "Comprobado con el perfil {{profile}}, sin región definida.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "Ocultar tarjeta",
         "code_ready": "Tu código de inicio de sesión está listo",
         "code_ready_for": "El código de inicio de sesión de {{name}} está listo",
         "confirm_cancel_remove": "Sí, eliminar “{{tag}}”",
