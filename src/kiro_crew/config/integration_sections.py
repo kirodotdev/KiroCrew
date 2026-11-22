@@ -1158,6 +1158,83 @@ class InstancesConfig:
             tags=["remote-crew", "managed-environment"],
         ),
     )
+    managed_env_start_url: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Sign-in Start URL",
+            "IAM Identity Center start URL whose Crew sign-in (Settings > Kiro account) the "
+            "managed-environment lane uses. Only that sign-in's token is sent to the service "
+            "endpoint. Signing in on this start URL turns off chat with the agent on this "
+            "computer while that sign-in is active. Empty (the default): the lane is signed out.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_profile_arn: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Kiro Profile",
+            "Kiro profile ARN pinned on the sign-in above, so that sign-in asks no control "
+            "plane for a profile, and sent with every call. Empty (the default): the lane "
+            "is signed out.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_ssh_region: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment SSH Region",
+            "AWS Region the Session Manager plugin is started in when ssh reaches a "
+            "managed environment. Empty (the default): a connect is refused and names "
+            "this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Endpoint",
+            "HTTPS runtime endpoint the Crew on a new managed environment runs its engine "
+            "against. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_control_plane_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Control Plane",
+            "HTTPS control-plane endpoint for the engine of the Crew on a new managed "
+            "environment. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_kas_region: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Engine Region",
+            "Region the two engine endpoints above serve. Empty (the default): a launch is "
+            "refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_token_path: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Machine Token File",
+            "Absolute path, on the managed environment, of the machine token file its "
+            "image keeps fresh. Empty (the default): a launch is refused and names this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
+    managed_env_box_env_drop: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Managed Environment Variables to Clear",
+            "Environment variable names the managed environment's image sets (its own "
+            "credentials or the machine token's variable) that are cleared before Crew "
+            "starts there. Empty by default.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.warm_set_cap < 0:

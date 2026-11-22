@@ -1047,6 +1047,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Messages.app through the operator's own Full Disk Access and
         # Automation grants, which a scrubbed-env sandbox strips.
         "imessage/rpc.py::start",
+        # The managed-environment lane's ssh: `ssh -T -o ... crew-sbx-<id> sh -s`, a
+        # fixed argv whose one variable, the alias, is checked against the lane's
+        # `crew-sbx-<id>` shape first; the script travels on stdin and is rendered by
+        # the lane from its closed list (managed_env/install.py, machine.py). No agent
+        # input reaches it, and it must reach the operator's ssh config and plugin.
+        "managed_env/remote.py::_default_runner",
         "mcp_gateway/backend.py::spawn_backend",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), used here only to drive the one-shot

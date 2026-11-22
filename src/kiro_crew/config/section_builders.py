@@ -671,6 +671,16 @@ def _build_instances_config(
         recover_backoff_max_secs=section.read("recover_backoff_max_secs", _safe_float),
         probe_failure_threshold=section.read("probe_failure_threshold", _safe_int),
         managed_env_endpoint=section.read("managed_env_endpoint", _safe_str),
+        managed_env_start_url=section.read("managed_env_start_url", _safe_str),
+        managed_env_profile_arn=section.read("managed_env_profile_arn", _safe_str),
+        managed_env_ssh_region=section.read("managed_env_ssh_region", _safe_str),
+        managed_env_kas_endpoint=section.read("managed_env_kas_endpoint", _safe_str),
+        managed_env_kas_control_plane_endpoint=section.read(
+            "managed_env_kas_control_plane_endpoint", _safe_str
+        ),
+        managed_env_kas_region=section.read("managed_env_kas_region", _safe_str),
+        managed_env_box_token_path=section.read("managed_env_box_token_path", _safe_str),
+        managed_env_box_env_drop=_name_list(section.get("managed_env_box_env_drop")),
     )
 
 

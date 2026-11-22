@@ -382,6 +382,9 @@ from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and imp
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
 )
+from conftest_resets_managed_env import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_managed_env_shared_client,
+)
 from conftest_resets_mcp import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_kas_env_left_out_marks,
     _reset_managed_server_tool_spellings,
