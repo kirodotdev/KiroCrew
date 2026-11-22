@@ -297,6 +297,33 @@ Bot's saved spec and its worker-dispatch tools. A save accepts only those.
 Each choice says when the Bot's workers cannot start on it. A pin
 saved by hand to a harness not on that list still shows, marked unavailable.
 
+### Gemini with a Google AI Pro or Ultra subscription
+
+To use Gemini models with your Google AI Pro or Ultra subscription, without a
+separate API key, select the `antigravity` backend. The Antigravity runtime signs
+in with your Google account itself:
+
+1. Install the Google Antigravity ACP 1.4.4 archive the backend card names. Kiro
+   Crew refuses other versions.
+2. Set `agent.acp_backend` to `antigravity`.
+3. In a terminal on the gateway host, set `auth.type` to `oauth-personal` in
+   `~/.gemini/antigravity-acp/settings.json` (under `$GEMINI_HOME` when that is
+   set).
+4. Start a new chat. The runtime opens Google sign-in in the browser. Sign in
+   with the account that has the subscription.
+
+New chats, cron jobs and subagents started from the gateway default run on the
+selected backend; a Bot with its own harness pin and an existing chat keep
+theirs. The runtime keeps its token in its own profile
+(`antigravity-acp/acp_token.json`), and Kiro Crew never stores it. The sandbox
+leaves that file readable to the Antigravity runtime, so a shell the model
+spawns inside it can read the token too.
+
+If you have a Gemini API key instead, Antigravity reads `GEMINI_API_KEY` from its
+launch environment. The `strands` backend's `google` provider is the other
+key-based route: see the `agent.strands_provider`, `agent.strands_model` and
+`agent.strands_env` rows under [Key Settings](#key-settings).
+
 ## Key Settings
 
 ```json
@@ -384,7 +411,7 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `agent.kas_persist_mcp_sign_in` | Keep a remote MCP server's OAuth sign-in across `kas` sessions, subagents, crons and gateway restarts. Kiro Crew stores the server's client registration and tokens in a dedicated encrypted vault under the data home (`kas/mcp-grants/`); it is not the Secrets vault, is not listed there, cannot be granted to a cron, and the agent cannot read it. `false` keeps each sign-in in the engine's memory, so every new session asks again. Only a JSON `true` turns it on; any other stored value, or a config file that cannot be read, keeps sign-ins in memory. The vault belongs to the gateway, so every session on it, a Shared Crew collaborator's included, reuses the sign-in, as with the `kiro` backend's own sign-in cache. An install that stored the old default `false` is moved to the new default once, at its next config load; a `false` set after that is kept. To forget stored sign-ins: set the key to `false`, stop the gateway, delete `kas/mcp-grants/` under the data home, and start it again. Takes effect when a KAS process starts. Also set in Settings → Connections → **Remember MCP sign-ins across sessions** | `true` |
 | `agent.kas_repair_kiro_cli_extract` | When a `kas` start through kiro-cli's relay exits with `failed to canonicalize KAS server path` (kiro-cli's unpacked engine under its data directory's `kas/<version>` is incomplete, for example after a home directory was copied to another machine), move that directory out of `kas/` to `<version>.kas-broken-<UTC time>` in kiro-cli's data directory (kiro-cli deletes untracked entries inside `kas/`) and start once more, so kiro-cli unpacks a fresh copy. Nothing is deleted; a moved `<version>.kas-broken-*` copy is never used again and can be deleted by hand. A directory changed in the last minute, or reached through a link, is left alone. With `false`, or when the second start fails the same way, the start fails with one message naming the directory and the `mv` command, and the warm pool stops respawning until the directory is moved | `true` |
 | `agent.kas_refuse_plain_http_mcp_headers` | On the `kas` backend, stop relaying an MCP server's `headers` to a plain `http://` url on another host, so they are never sent unencrypted. The server then does not run, and the session-start notice names it. Off by default: Kiro Crew's local bridge sends the headers to that url, as before. Only a JSON `true` turns it on. Read when a session starts | `false` |
-| `agent.kas_fail_closed_web_fetch_blocked` | On the `kas` backend, a `toolsSettings.web_fetch.blocked` entry KAS cannot apply (one naming a scheme or path, other regex syntax, or one too long) makes that agent refuse every web fetch until the entry is fixed, and the session-start notice says so. Off by default: such an entry is named in the notice and refuses nothing. Only a JSON `true` turns it on. Read when a session starts; on while `config.json` or `config.local.json` cannot be read or the `agent` section is discarded, so a broken config does not drop it | `false` |
+| `agent.kas_fail_closed_web_fetch_blocked` | On the `kas` backend, a `toolsSettings.web_fetch.blocked` entry KAS cannot apply (one naming a scheme or path, other regex syntax, or one too long) makes that agent refuse every web fetch until the entry is fixed, and the session-start notice says so. Off by default: a plain-URL entry (a URL, or a URL followed by `.*`) is applied by Kiro Crew's own gate, which refuses a fetch it matches; any other such entry is named in the notice and refuses nothing. Only a JSON `true` turns it on. Read when a session starts; on while `config.json` or `config.local.json` cannot be read or the `agent` section is discarded, so a broken config does not drop it | `false` |
 | `agent.kas_bundle_url` | `https://` base `kirocrew kas install` fetches the engine manifest from (`<base>/kas/<version>/manifest.json`). Every artifact is sha256-pinned by the manifest and the manifest by the release, so this chooses where the pinned build is fetched from, never what is trusted. Non-https values fall back to the default | the project's release bucket |
 | `agent.kas_sso_start_url` | The IAM Identity Center access portal URL the Company SSO sign-in form starts filled in with. The form stays editable, and the URL this browser last submitted still comes first. Empty uses the edition's default (the public build has none). A URL sign-in would refuse is ignored. Set it with `kirocrew config set agent.kas_sso_start_url <url>` | `""` |
 | `agent.kas_sso_region` | The AWS region the Company SSO sign-in form starts filled in with, used only together with `agent.kas_sso_start_url` | `""` |

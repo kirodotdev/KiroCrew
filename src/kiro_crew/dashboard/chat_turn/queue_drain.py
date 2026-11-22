@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY, batch_prompt_on_channel
 from kiro_crew.dashboard.chat_delivery import (
     BACKGROUND_START_TASKS,
+    MIRROR_REPLY_ONLY_META_KEY,
     START_BACKGROUND_META_KEY,
 )
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -1360,8 +1361,9 @@ async def _start_next_queued_turn(
     _commands_off = bool(_drained_meta.pop(COMMANDS_OFF_META_KEY, False)) or any(
         (item.get("meta") or {}).get(COMMANDS_OFF_META_KEY) is True for item in consumed
     )
-    # Start plumbing too, read per entry below; it says nothing about the row.
+    # Start and mirror plumbing too, read per entry below; neither says anything about the row.
     _drained_meta.pop(START_BACKGROUND_META_KEY, None)
+    _drained_meta.pop(MIRROR_REPLY_ONLY_META_KEY, None)
     if "quote" in _drained_meta:
         # The row's quote record follows the row's text: as typed only when
         # every consumed entry is the human's own (`deliver_as_typed`), else
@@ -1576,6 +1578,11 @@ async def _start_next_queued_turn(
         (item.get("meta") or {}).get(START_BACKGROUND_META_KEY) is True for item in consumed
     ):
         _run_kwargs["_turn_start_background"] = True
+    # Likewise a Heartbeat wake's retry mirrors only its reply, as the wake did.
+    if consumed and all(
+        (item.get("meta") or {}).get(MIRROR_REPLY_ONLY_META_KEY) is True for item in consumed
+    ):
+        _run_kwargs["_mirror_reply_only"] = True
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:

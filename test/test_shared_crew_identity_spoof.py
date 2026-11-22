@@ -218,6 +218,25 @@ def test_daemon_owned_socket_is_proven(fake_proc):
     assert tailnet_proxy_proof.loopback_client_is_daemon(PEER, GW) is True
 
 
+def test_a_row_the_first_pass_skipped_is_still_proven(fake_proc, monkeypatch):
+    # A paged /proc/net/tcp read can skip a live row while other sockets close;
+    # the next pass sees it.
+    _fake_proc(fake_proc, tcp=_ROW.format(uid=0))
+    tcp_reads = []
+
+    class _FirstPassSkipsTheRow(type(fake_proc)):
+        def read_text(self, *args, **kwargs):
+            text = super().read_text(*args, **kwargs)
+            if self.name == "tcp":
+                tcp_reads.append(self)
+                if len(tcp_reads) == 1:
+                    return _HEAD + "\n"
+            return text
+
+    monkeypatch.setattr(tailnet_proxy_proof, "_PROC", _FirstPassSkipsTheRow(fake_proc))
+    assert tailnet_proxy_proof.loopback_client_is_daemon(PEER, GW) is True
+
+
 def test_mapped_ipv6_socket_is_proven(fake_proc):
     _fake_proc(fake_proc, tcp6=_ROW6.format(uid=0))
     assert tailnet_proxy_proof.loopback_client_is_daemon(("::ffff:127.0.0.1", 50123), GW)

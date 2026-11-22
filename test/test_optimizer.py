@@ -527,6 +527,74 @@ class TestOptimizerEndpoint:
         _args, kwargs = mock_sessions.discard_conversation.await_args
         assert kwargs.get("replay") is False
 
+    @pytest.mark.asyncio
+    async def test_the_session_start_runs_outside_the_30s_budget(self, monkeypatch):
+        """Starting the session does not spend the 30s budget.
+
+        Under load a cold start alone can outlast the budget, and a budget that
+        covered it would cancel the start and hand the draft back unchanged. The
+        handler's ``asyncio`` is swapped for one whose ``wait_for`` records while
+        it runs, and the session start and the stream read that record, so the
+        test needs no wall-clock race.
+        """
+        import asyncio
+
+        from kiro_crew.dashboard.handlers import optimizer
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+
+        budget = {"running": False}
+
+        class _BudgetWatchingAsyncio:
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+            @staticmethod
+            async def wait_for(awaitable, timeout):
+                budget["running"] = True
+                try:
+                    return await asyncio.wait_for(awaitable, timeout)
+                finally:
+                    budget["running"] = False
+
+        monkeypatch.setattr(optimizer, "asyncio", _BudgetWatchingAsyncio())
+
+        mock_client = AsyncMock()
+        under_budget: dict[str, bool] = {}
+
+        async def fake_stream(prompt):
+            del prompt
+            under_budget["stream"] = budget["running"]
+            yield MagicMock(kind=EVENT_TEXT_CHUNK, text="Refactor the parser module.")
+            yield MagicMock(kind=EVENT_COMPLETE)
+
+        mock_client.stream = fake_stream
+
+        async def start(*args, **kwargs):
+            del args, kwargs
+            under_budget["start"] = budget["running"]
+            return mock_client, True, False
+
+        mock_sessions = MagicMock()
+        mock_sessions.get_or_create = AsyncMock(side_effect=start)
+        mock_sessions.release = MagicMock()
+        mock_sessions.discard_conversation = AsyncMock(return_value=True)
+
+        mock_state = MagicMock()
+        mock_state.sessions = mock_sessions
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"prompt": "refactor the parser", "context": ""})
+        request.app = _ready_app(mock_state)
+
+        resp = await handle_optimize(request)
+
+        assert under_budget == {"start": False, "stream": True}
+        assert json.loads(resp.body) == {
+            "optimized": "Refactor the parser module.",
+            "changed": True,
+        }
+        mock_sessions.release.assert_called_once_with("_optimizer")
+
 
 def _paste_mock_state(captured_prompt, reply_text):
     """Build a mocked DashboardState whose optimizer session streams reply_text

@@ -303,6 +303,7 @@ from kiro_crew.dashboard.handlers.kiro_vault_identity import (
 from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _REASON_ACCOUNT_UNPROVEN,
     _REASON_API_KEY,
+    _REASON_PLAN_WITHOUT_LIMIT,
     _REASON_SIGNIN_REQUIRED,
     _WHOAMI_DIFFERENT,
     _WHOAMI_SAME,
@@ -311,6 +312,7 @@ from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _credential_rejected,
     _fetch_whoami,
     _fetch_whoami_or_none,
+    _identity_matches_account,
     _kiro_api_key_configured,
     _normalize_text_usage,
     _parse_usage,
@@ -614,7 +616,8 @@ def _cache_vault_failure(
 
     Keeps a prior reading (dimmed ``stale``) only when it was published for this
     same vault identity; anything else reports unavailable, with ``reason`` when
-    the failure is auth-class.
+    the failure is auth-class or the plan has no limit (published under
+    ``vault_fp``: it describes that account, see :func:`_names_account`).
 
     ``stamp`` is the vault's write stamp taken before the attempt. A
     ``signin_required`` marker records it, so the poll can tell that the vault
@@ -633,7 +636,7 @@ def _cache_vault_failure(
     unavailable: dict[str, object] = {"available": False}
     if reason is not None:
         unavailable["reason"] = reason
-    _publish_usage(unavailable)
+    _publish_usage(unavailable, vault_fp=vault_fp if _names_account(unavailable) else "")
     if reason == _REASON_SIGNIN_REQUIRED and stamp is not None:
         _vault_signin_marker = (unavailable, stamp)
 
@@ -733,13 +736,22 @@ async def _vault_fingerprint() -> str:
     return await asyncio.to_thread(vault_identity_fingerprint)
 
 
+def _names_account(payload: dict[str, object]) -> bool:
+    """True for a payload about one account: a reading, or the no-limit marker."""
+    return (
+        payload.get("credits_plan") is not None
+        or payload.get("reason") == _REASON_PLAN_WITHOUT_LIMIT
+    )
+
+
 async def _cached_reading_is_foreign(payload: dict[str, object], payload_fp: str) -> bool:
     """True when ``payload`` is a reading NOT published for the current Crew sign-in.
 
     The timed refresh would replace it within ``_USAGE_REFRESH_SECS``, but until
-    then a sign-in switch A -> B would serve A's credits under B. Only a cached
-    READING counts: an unavailable marker names no account, and treating it as
-    foreign would turn a persistent failure into an API call on every poll.
+    then a sign-in switch A -> B would serve A's credits under B. Only a payload
+    that names an account counts (:func:`_names_account`): any other unavailable
+    marker names none, and treating it as foreign would turn a persistent failure
+    into an API call on every poll.
 
     Judges the SNAPSHOT the caller is about to serve -- the payload and the
     fingerprint it was published under, captured together before any await --
@@ -753,7 +765,7 @@ async def _cached_reading_is_foreign(payload: dict[str, object], payload_fp: str
     while signed out, and an empty current fingerprint must not match the empty
     one a kiro-cli reading carries and keep kiro-cli's account on screen.
     """
-    if payload.get("credits_plan") is None:
+    if not _names_account(payload):
         return False
     if not payload_fp:
         return True
@@ -789,7 +801,7 @@ async def _reading_not_servable(
     """
     if vault_owned:
         return "foreign" if await _cached_reading_is_foreign(payload, payload_fp) else ""
-    if payload.get("credits_plan") is not None and payload_fp:
+    if _names_account(payload) and payload_fp:
         return "vault_unowned"
     return ""
 
@@ -916,7 +928,9 @@ async def _refresh_from_vault() -> None:
         )
         return
     no_credential = result.auth_state == kiro_usage_api.AUTH_NO_CREDENTIAL
-    _cache_vault_failure(before, _REASON_SIGNIN_REQUIRED if no_credential else None, stamp=stamp)
+    # The fingerprint check above proved the vault account unchanged across the read.
+    reason = _REASON_PLAN_WITHOUT_LIMIT if result.plan_without_limit else None
+    _cache_vault_failure(before, _REASON_SIGNIN_REQUIRED if no_credential else reason, stamp=stamp)
 
 
 def _publish_account_unproven(
@@ -1028,32 +1042,6 @@ async def fetch_local_identity() -> dict[str, object] | None:
     return await _fetch_whoami_or_none(kiro_bin)
 
 
-def _identity_matches_account(api_arn: object, identity: dict[str, object]) -> bool:
-    """True only when ``identity`` provably describes the account billed for the credits.
-
-    ``fetch_usage_limits`` tries several candidate credentials (IDE cache first,
-    then the kiro-cli store) and keeps whichever the API accepted, while
-    ``kiro-cli whoami`` always reports kiro-cli's own identity. With two
-    different accounts signed in those are different accounts — showing one's
-    email above the other's overage would misattribute a bill.
-
-    The ONLY accepted proof is a matching profile ARN on both sides. In
-    particular, "there was just one credential we could read" is NOT proof:
-    kiro-cli may authenticate from a store this module does not enumerate (e.g.
-    a platform-specific app-data path), so a lone readable credential does not
-    establish that whoami used it.
-
-    Consequence: accounts with no profile ARN at all (individual / Builder ID)
-    cannot be proven THIS way. Under-reporting an identity is a cosmetic gap;
-    mislabelling whose overage bill this is, is not. That is why the ARN match is
-    required here -- but it is not the only same-account proof available: see
-    :func:`_arnless_email_fields`, which carries the email proof the ARN check
-    structurally cannot apply to an account that has no ARN.
-    """
-    whoami_arn = identity.get("_profile_arn")
-    return isinstance(api_arn, str) and isinstance(whoami_arn, str) and api_arn == whoami_arn
-
-
 def _arnless_email_fields(
     api_arn: object, api_email: object, identity: dict[str, object]
 ) -> dict[str, object]:
@@ -1088,7 +1076,7 @@ def _arnless_email_fields(
 
     Returns exactly ``email`` and the ``account_type`` the provider badge renders
     from (never ``start_url`` or the private ``_profile_arn``), or ``{}`` to
-    attach nothing -- when the account has an ARN (handled above), when whoami
+    attach nothing -- when the account has an ARN (:func:`_identity_matches_account`), when whoami
     carries no e-mail, when the API returned no billed e-mail, or when the two
     differ. An ARN-less reading that attaches nothing still publishes its numbers
     alone, exactly as before this change.
@@ -1550,6 +1538,15 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         # source when the API path is unavailable (no readable token / non-Kiro
         # build). It stops once it has failed enough times to look broken; that
         # check is before the spawn, so a parked scrape costs nothing at all.
+
+        def _reason_for(adjacent: dict[str, object], adjacent_user_id: str | None) -> str | None:
+            # The API answered about the TOP identity's account; a reason that
+            # describes that account may name only one proven still signed in.
+            same = _whoami_agreement(identity, adjacent) == _WHOAMI_SAME and (
+                api_user_id is None or adjacent_user_id == api_user_id
+            )
+            return _unavailable_reason(api_result, same_account=same)
+
         if _scrape_in_backoff():
             # Judged against a whoami resolved HERE, not the top-of-refresh one:
             # the API attempt sits between them and a profile switch can land
@@ -1558,13 +1555,14 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
             # TOP identity, so they ride the unavailable marker only when this
             # whoami and the top one prove the same account.
             parked_identity = (await _adjacent_identity()) or {}
+            parked_user_id = await _adjacent_user_id()
             if _whoami_agreement(identity, parked_identity) != _WHOAMI_SAME:
                 api_usage = None
             _cache_without_scrape(
                 api_usage,
                 parked_identity,
-                reason=_unavailable_reason(api_result),
-                user_id=await _adjacent_user_id(),
+                reason=_reason_for(parked_identity, parked_user_id),
+                user_id=parked_user_id,
                 rejected=_credential_rejected(api_result),
             )
             return _SKIPPED_SCRAPE_PARKED
@@ -1586,13 +1584,14 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
             # Same outcome as a parked scrape, judged the same way against an
             # adjacent whoami, but not reported as parked: nothing will lift it.
             no_scrape_identity = (await _adjacent_identity()) or {}
+            no_scrape_user_id = await _adjacent_user_id()
             if _whoami_agreement(identity, no_scrape_identity) != _WHOAMI_SAME:
                 api_usage = None
             _cache_without_scrape(
                 api_usage,
                 no_scrape_identity,
-                reason=_unavailable_reason(api_result),
-                user_id=await _adjacent_user_id(),
+                reason=_reason_for(no_scrape_identity, no_scrape_user_id),
+                user_id=no_scrape_user_id,
                 rejected=_credential_rejected(api_result),
             )
             return None
@@ -1701,7 +1700,7 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         _record_scrape_outcome(False)
         _cache_transient_failure(
             after,
-            reason=_unavailable_reason(api_result),
+            reason=_reason_for(after, after_user_id),
             user_id=after_user_id,
             rejected=_credential_rejected(api_result),
         )

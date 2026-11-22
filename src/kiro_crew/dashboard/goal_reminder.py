@@ -50,6 +50,8 @@ monitor loop drives the thread (:func:`_monitor_loop_drives`). While a
 milestones card of the crewmate's waits on the user, the wake proposes no new
 milestones (:func:`milestones_card_waiting`). Only the owner's route and an
 applied card write the switch, so the crewmate cannot turn its own heartbeat on.
+A thread or channel linked to the chat gets only a wake's final reply, so a
+quiet wake posts nothing there (``mirror_reply_only``).
 
 A check-in that fires with the thread closed, a turn already running, its switch
 off or no goal left does nothing that time.
@@ -853,7 +855,11 @@ async def fire(state: Any, job: Any) -> str:
     if again is not slot:
         return "skipped: the Bot's thread is not open"
     dispatch_hidden_turn(
-        state, slot, with_language(prompt, language, in_thread=True), human_seen=False
+        state,
+        slot,
+        with_language(prompt, language, in_thread=True),
+        human_seen=False,
+        mirror_reply_only=cadence == member_goals.CADENCE_HEARTBEAT,
     )
     return "started"
 

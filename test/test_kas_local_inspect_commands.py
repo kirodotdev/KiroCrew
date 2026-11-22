@@ -636,6 +636,17 @@ class TestUsage:
         _assert_local(state, calls)
         assert "sign in again" in _reply(slot)
 
+    @pytest.mark.asyncio
+    async def test_a_plan_without_a_limit_says_so(self, tmp_path, usage_cache) -> None:
+        state, slot, _client, calls = _live(tmp_path)
+        usage_cache({"available": False, "reason": "plan_without_limit"})
+
+        await _run_chat(state, slot, "/usage")
+
+        _assert_local(state, calls)
+        assert "no credit limit for the signed-in account" in _reply(slot), _reply(slot)
+        assert "Try `/usage` again" not in _reply(slot)
+
 
 class TestHelp:
     @pytest.mark.asyncio

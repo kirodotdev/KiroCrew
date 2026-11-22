@@ -343,13 +343,23 @@ describe('ArtifactDetailPage anchored comments', () => {
     // not annotatable, so the bridge's selection must not open the composer.
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'widget', content: '<p>widget body</p>' }))
     vi.mocked(api).artifactVersion = vi.fn().mockResolvedValue(mkArtifact({ kind: 'widget', version: 1, content: '<p>old widget body</p>' }))
-    vi.mocked(api.sandboxDocUrl).mockResolvedValue({ url: '/sandbox-doc/test/tok' })
+    // Each version's document is minted separately, so the v1 frame carries its
+    // own url: that url on the <iframe> is the signal the snapshot frame exists.
+    vi.mocked(api.sandboxDocUrl).mockImplementation(async (html: string) => (
+      { url: html.includes('old widget body') ? '/sandbox-doc/test/v1' : '/sandbox-doc/test/tok' }
+    ))
     const { container } = renderPage()
     await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     fireEvent.click(screen.getByRole('combobox', { name: /Version/i }))
     fireEvent.click(await screen.findByRole('option', { name: 'v1' }))
     await waitFor(() => expect(screen.getByRole('button', { description: /revert to v1/i })).toBeInTheDocument())
-    const frame = container.querySelector('iframe') as HTMLIFrameElement
+    // The snapshot body mounts with no document and renders its <iframe> only
+    // once the v1 mint settles, after the header's revert button is already up.
+    const frame = await waitFor(() => {
+      const node = container.querySelector('iframe')
+      expect(node?.getAttribute('src')).toBe('/sandbox-doc/test/v1')
+      return node as HTMLIFrameElement
+    })
     const source = { postMessage: vi.fn() }
     Object.defineProperty(frame, 'contentWindow', { value: source, configurable: true })
     act(() => { window.dispatchEvent(new MessageEvent('message', {
