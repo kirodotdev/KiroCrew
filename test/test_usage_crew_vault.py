@@ -185,6 +185,14 @@ class TestRefreshFromVault:
         resolve.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_plan_without_a_limit_reports_it(self):
+        result = api.UsageResult(None, api.AUTH_OTHER, plan_without_limit=True)
+        await _run(_vault(result=result))
+        assert sessions_mod._usage_cache == {"available": False, "reason": "plan_without_limit"}
+        # It describes that account, so it is published under its fingerprint.
+        assert sessions_mod._usage_cache_vault_fp == _FP_A
+
+    @pytest.mark.asyncio
     async def test_empty_vault_credential_reports_signin(self):
         resolve = await _run(_vault(result=api.UsageResult(None, api.AUTH_NO_CREDENTIAL)))
         assert sessions_mod._usage_cache == {"available": False, "reason": "signin_required"}
@@ -511,6 +519,25 @@ class TestUsageGateBypass:
             await await_until(
                 asyncio.gather(*request.app["state"]._background_tasks), what="usage refresh"
             )
+        assert json.loads(resp.body) == {"usage": {}}
+        fetch.assert_awaited_once_with(vault_owned=True)
+
+    @pytest.mark.asyncio
+    async def test_a_no_limit_marker_for_another_identity_is_never_served(self):
+        # A's plan has no limit; the Crew sign-in switches to B inside the
+        # refresh interval. The GET must not tell B that its plan has none: it
+        # serves B as loading, like any other reading of another identity.
+        sessions_mod._usage_cache_ts = 10**12  # fresh: the timer would not refresh
+        sessions_mod._usage_cache = {"available": False, "reason": "plan_without_limit"}
+        sessions_mod._usage_cache_vault_fp = _FP_A
+        fetch = AsyncMock(return_value=None)
+        with (
+            patch.object(sessions_mod, "_vault_owns_usage", AsyncMock(return_value=True)),
+            patch("kiro_crew.auth.bridge.vault_identity_fingerprint", return_value=_FP_B),
+            patch.object(sessions_mod, "_fetch_usage_bg", fetch),
+        ):
+            resp = await sessions_mod.api_sessions_usage(_request())
+            await asyncio.sleep(0)
         assert json.loads(resp.body) == {"usage": {}}
         fetch.assert_awaited_once_with(vault_owned=True)
 

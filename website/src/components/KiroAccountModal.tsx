@@ -34,10 +34,11 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
  * the fetch itself failed with nothing cached, `'signin-required'`
  * when no live Kiro credential could be read, `'signin-rejected'` when the
  * usage API refused the one that was, `'api-key'` when the sessions run on a
- * `KIRO_API_KEY` and so spend credits kiro-cli's login does not own, or
- * `'config-unreadable'` when the
- * gateway holds no reading AND the config read that decides whether this is a
- * Kiro harness at all failed -- so nothing can be shown as a fact, and the read
+ * `KIRO_API_KEY` and so spend credits kiro-cli's login does not own, `'no-limit'`
+ * when the usage service reports no credit limit for the account (so there is no
+ * balance to show), or `'config-unreadable'` when the gateway holds no reading
+ * AND the config read that decides whether this is a Kiro harness at all
+ * failed -- so nothing can be shown as a fact, and the read
  * is retried from here. `null` is the ONLY value that means "still loading" —
  * the others have nothing more to wait for, so spinning on them would repeat
  * the defect this distinction exists to remove.
@@ -51,6 +52,7 @@ export type KiroAccountUsage =
   | 'signin-required'
   | 'signin-rejected'
   | 'api-key'
+  | 'no-limit'
   | 'config-unreadable'
 
 /** True only for an actual reading, so the sentinels cannot reach a field access. */
@@ -406,9 +408,9 @@ function useUsageRefresh() {
         setNotice({ kind: 'parked', minutes: Math.max(1, Math.ceil(secs / 60)) })
         return
       }
-      if (isAccountOnly(parsed)) {
-        // The sign-in has no balance to show. That state carries its own
-        // notice and offers no Refresh, so the outcome adds nothing to it.
+      if (isAccountOnly(parsed) || parsed === 'no-limit') {
+        // The sign-in (or its plan) has no balance to show. That state carries
+        // its own notice and offers no Refresh, so the outcome adds nothing to it.
         return
       }
       if (!isUsageReading(parsed)) {
@@ -678,6 +680,17 @@ export function CreditUsage({
         {i18nT('components.kiroAccountModal.credit_usage_sign_in_type', {
           provider: accountProviderLabel(usage.accountType) || providerLabelFromWire('externalidp'),
         })}
+      </div>
+    )
+  }
+  // A plan that reports no credit limit has no balance, and re-reading it
+  // answers the same: a configuration the account is in, like the state above,
+  // so the same passive notice and no Refresh.
+  if (usage === 'no-limit') {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
+        <Info className="lucide-inline shrink-0" aria-hidden="true" />{' '}
+        {i18nT('components.kiroAccountModal.credit_usage_no_limit')}
       </div>
     )
   }
