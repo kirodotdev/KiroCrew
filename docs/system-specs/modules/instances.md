@@ -1461,7 +1461,12 @@ aws-cli v1 is Python; the ssh children keep them, since a `ProxyCommand` can run
 any program of the user's and stripping there would change more than `aws`. When
 the proxy still cannot find its program, the tunnel and mint errors say so and
 name the `PATH` the child was given, instead of the "connection closed" that ssh
-prints afterwards reading as a network drop. When that program is a refused
+prints afterwards reading as a network drop. "Cannot find" means ssh exited 255
+and its stderr holds a phrase in `token_mint.PROXY_TOOL_MISSING_SIGNALS`: the SSM
+plugin's "not installed" wording, a POSIX shell's "not found", or Windows
+OpenSSH's `posix_spawnp: No such file or directory` (it starts a `ProxyCommand`
+without a shell). Its `CreateProcessW failed error:2` line is not used, because
+`error:2` also begins unrelated codes such as `error:225`. When that program is a refused
 `session-manager-plugin`, they name its file, the refusal and the fix instead
 (`cloud.ssm.session_manager_plugin_unavailable_message`). For any other
 missing program, a refused plugin or `aws` is named when it is what hid that
