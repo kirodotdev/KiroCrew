@@ -1069,3 +1069,37 @@ def test_the_same_proposal_after_the_waiting_card_expired_is_a_new_card():
     clock.now = first["expires_at"] + 1
     again = _propose(store)
     assert again["id"] != first["id"]
+
+
+def test_a_waiting_card_whose_same_change_is_made_expires_without_a_report():
+    """A failed card's retry applied its change: the failed twin, and any pending
+    twin, stop waiting on the person, and the agent hears only the apply."""
+    store = CardStore(None, clock=Clock())
+    failed = _propose(store)
+    store.begin_step(failed, revision=1, op="apply", index=0)
+    store.record_failure(failed, op="apply", index=0, status=400, body={"code": "x"})
+    assert store.take_unreported(SLOT)[0]["status"] == "failed"
+    applied = _propose(store)
+    pending = _propose(store, params={"path": "chat.verbosity", "value": "detailed"})
+    params = {"path": "chat.verbosity", "value": "ultra-brief"}
+    other_slot = store.propose(
+        slot_key=SLOT + "-other",
+        session_key="other",
+        kind="setting.change",
+        params=params,
+        reason="r",
+        preview=catalog.build_preview("setting.change", params, {"value": "standard"}, {}),
+        before={"value": "standard"},
+        context={},
+    )
+    store.begin_step(applied, revision=1, op="apply", index=0)
+    store.record_success(applied, op="apply", index=0, evidence={})
+    store.complete_apply(applied, after={"value": "ultra-brief"}, undo=[], undo_reason=None)
+    expired = store.expire_made(SLOT, "setting.change", applied["params"])
+    assert [rec["id"] for rec, _snap in expired] == [failed["id"]]
+    assert failed["status"] == "expired" and applied["status"] == "applied"
+    assert pending["status"] == "pending" and other_slot["status"] == "pending"
+    assert [o["id"] for o in store.take_unreported(SLOT)] == [applied["id"]]
+    twin = _propose(store)
+    assert store.expire_made(SLOT, "setting.change", twin["params"])[0][0] is twin
+    assert twin["status"] == "expired" and store.take_unreported(SLOT) == []

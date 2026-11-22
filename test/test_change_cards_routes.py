@@ -228,6 +228,61 @@ def test_a_repeated_proposal_of_a_card_being_applied_writes_no_row(world, tmp_pa
     assert len(rows) == 1
 
 
+def test_a_proposal_already_in_effect_expires_the_callers_waiting_twin(world, tmp_path):
+    """The values were set another way while the card waited: the repeat is
+    answered ``no_change``, and the waiting card stops asking."""
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        first = await _propose_setting(c)
+        world.config["chat.verbosity"] = "ultra-brief"
+        again = await c.post(
+            "/api/cards/agent/propose",
+            json={
+                "kind": "setting.change",
+                "params": {"path": "chat.verbosity", "value": "ultra-brief"},
+            },
+            headers=AGENT,
+        )
+        return first, again.status, await again.json(), c.server.app["state"].frames
+
+    first, status, body, frames = _run(world, store, go)
+    assert status == 400 and body["code"] == "no_change"
+    assert store.get(first["id"])["status"] == "expired"
+    assert store.take_unreported(SLOT) == []
+    assert frames[-1][1]["card"]["id"] == first["id"]
+    assert frames[-1][1]["card"]["status"] == "expired"
+
+
+def test_a_proposal_already_in_effect_is_answered_no_change_when_the_store_is_unreadable(
+    world, tmp_path, monkeypatch
+):
+    store = CardStore(tmp_path / "c.json")
+
+    def unreadable(_path):
+        raise OSError("store unreadable")
+
+    monkeypatch.setattr(cards, "_read_store", unreadable)
+    world.config["chat.verbosity"] = "ultra-brief"
+
+    async def go(c):
+        with pytest.raises(cards.CardError) as warm:
+            await store.warm()
+        r = await c.post(
+            "/api/cards/agent/propose",
+            json={
+                "kind": "setting.change",
+                "params": {"path": "chat.verbosity", "value": "ultra-brief"},
+            },
+            headers=AGENT,
+        )
+        return warm.value.code, r.status, await r.json()
+
+    warm_code, status, body = _run(world, store, go)
+    assert warm_code == "store_unavailable"
+    assert status == 400 and body["code"] == "no_change"
+
+
 def test_an_internal_or_app_caller_can_never_apply_a_card(world, tmp_path):
     store = CardStore(tmp_path / "c.json")
 

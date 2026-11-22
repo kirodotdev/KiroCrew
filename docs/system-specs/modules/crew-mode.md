@@ -3616,7 +3616,11 @@ either ends the walk, so every question asked before it clears. It reads the
 same rows and parser the sidebar's question badge reads
 (`slot.sidebar_messages`, the bounded tail a restored thread holds before its
 window loads) and the change-card store, so a gateway wake, which writes no row
-and presses no card, keeps an item, and so does a card that only expired.
+and presses no card, keeps an item, and so does a card that only expired. A
+waiting card expires and leaves the list when another card in the thread applies
+the same change, or a repeated proposal finds it already made (history.md "Card
+rows"); a failed card that expires this way stops counting as the person's
+answer, as it does at its 24 h expiry.
 
 **A Bot's own record as folds.** Two facts a page about a Bot's
 work needs are recorded into its own DM session log by the gateway, as
