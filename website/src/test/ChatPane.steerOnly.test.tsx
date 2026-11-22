@@ -262,6 +262,36 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
     expect(vi.mocked(api.sendChat).mock.calls[0][5]).toBe(true)
   })
 
+  it('a send from an idle pane would start a turn, so Stop may cancel it', async () => {
+    const sendTurn = vi.spyOn(transport, 'sendTurn')
+    try {
+      renderPane('pane-idle-send', { running: false })
+      const idleBox = await composer()
+      fireEvent.change(idleBox, { target: { value: 'start a turn' } })
+      fireEvent.keyDown(idleBox, { key: 'Enter', code: 'Enter' })
+      await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1))
+      expect(sendTurn.mock.calls[0][0]).toMatchObject({ slot: 'pane-idle-send', cancelOnStop: true })
+    } finally {
+      sendTurn.mockRestore()
+    }
+  })
+
+  it('a follow-up queued behind a running turn is not one Stop may cancel', async () => {
+    const sendTurn = vi.spyOn(transport, 'sendTurn')
+    try {
+      renderPane('pane-running-send', { running: true })
+      const box = await composer()
+      fireEvent.change(box, { target: { value: 'after that, this' } })
+      // The split's alternate action queues instead of steering.
+      fireEvent.keyDown(box, { key: 'Enter', code: 'Enter', ctrlKey: true, metaKey: true })
+      await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1))
+      expect(sendTurn.mock.calls[0][0].steer).toBeUndefined()
+      expect(sendTurn.mock.calls[0][0].cancelOnStop).toBe(false)
+    } finally {
+      sendTurn.mockRestore()
+    }
+  })
+
   it('a refused steer drops the bubble, reports on this pane, and hands the text back', async () => {
     vi.mocked(api.sendChat).mockResolvedValue({ ok: false, status: 409, json: () => Promise.resolve({ error: 'slot agent mismatch' }) } as unknown as Response)
     const { store } = renderPane('member-refused', { running: true, busyMode: 'steer-only' })

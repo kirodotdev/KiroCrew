@@ -362,7 +362,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // server holds the message, so only they let a restored draft's stash
     // entry go. This pane's recovery lives in component state, so a refusal
     // or an unconfirmed send must leave that entry stored for a reload to find.
-    return sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}) }).then((receipt) => {
+    return sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}), cancelOnStop: !running && !paneSlot?.running }).then((receipt) => {
       // Read before the rulings below settle the bubble: an echo that already
       // proved this send landed outranks a lost or refused answer.
       onOutcome?.(paneSendOutcome(receipt.status, selectSendConfirmed(store.getState(), slotKey, sendId) || (!!crewmate && selectSendAccepted(store.getState(), slotKey, sendId))))
@@ -462,7 +462,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
       return delivered
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, running, paneSlot?.running, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the

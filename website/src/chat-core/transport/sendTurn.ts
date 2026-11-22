@@ -215,6 +215,47 @@ export interface SendTurnOptions {
   race?: SendRaceFields
   /** Which fetch seam carries the POST. Defaults to the dashboard client. */
   wire?: SendWire
+  /** This send would start a turn on an idle slot, so Stop on that slot may
+   *  cancel it while its POST is unanswered. Only the dashboard wire honours
+   *  it; a send on a running slot leaves it unset, so Stop keeps the follow-up
+   *  the gateway queues. */
+  cancelOnStop?: boolean
+}
+
+/** Each slot's sends that would start a turn (`cancelOnStop`) and whose POST
+ *  has not been answered yet, so Stop can cancel them. A follow-up sent while
+ *  a turn runs is not listed: the gateway queues it and Stop keeps the queue.
+ *  A send on another wire (Side Chat, an app embed) belongs to a different
+ *  conversation with its own stop, so it is not listed either. A send leaves
+ *  the set once its response headers arrive: from then on the gateway holds
+ *  it, and aborting the body read would only turn a real receipt into
+ *  `response-late`. */
+const pendingSends = new Map<string, Set<AbortController>>()
+
+/** Abort every unanswered send on `slot`. Called by Stop, so a message still
+ *  waiting on the network cannot start the turn the user just stopped. An
+ *  aborted send settles as `response-late`: a POST that already left the
+ *  browser may still reach the gateway. Says whether a send on the slot was
+ *  aborted, now or by an earlier Stop whose answer never settled it. */
+export function abortPendingSends(slot: string): boolean {
+  const sends = pendingSends.get(slot)
+  if (sends) {
+    pendingSends.delete(slot)
+    for (const c of sends) c.abort()
+    if (sends.size > 0) cancelledSends.add(slot)
+  }
+  return cancelledSends.has(slot)
+}
+
+/** Slots whose send a Stop cancelled and no `not running` answer has settled
+ *  yet. A Stop request that fails keeps this, so the retry still knows the
+ *  cancelled send owns the slot's pending mark. A new cancellable send on the
+ *  slot supersedes it. */
+const cancelledSends = new Set<string>()
+
+/** A `not running` answer settled the cancelled send's pending mark. */
+export function settleCancelledSends(slot: string): void {
+  cancelledSends.delete(slot)
 }
 
 /**
@@ -236,6 +277,17 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
   const wire = opts.wire ?? dashboardSendWire
   // The old note goes on submit, so this send's own failure frame stays.
   if (opts.slot) clearCrewSteerNotice(opts.slot)
+  const slotSends = opts.slot && opts.cancelOnStop && !opts.wire ? pendingSends.get(opts.slot) ?? new Set<AbortController>() : null
+  if (opts.slot && slotSends) {
+    cancelledSends.delete(opts.slot)
+    slotSends.add(controller)
+    pendingSends.set(opts.slot, slotSends)
+  }
+  const answered = () => {
+    if (!opts.slot || !slotSends) return
+    slotSends.delete(controller)
+    if (slotSends.size === 0 && pendingSends.get(opts.slot) === slotSends) pendingSends.delete(opts.slot)
+  }
   try {
     const r = await wire(
       {
@@ -249,6 +301,7 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
       },
       controller.signal,
     )
+    answered()
     const { body, outcome } = await readSendReceipt(r)
     if (outcome === 'refused') return { status: 'refused', body, reason: typeof body.error === 'string' ? body.error : undefined }
     // readSendReceipt deliberately converts an unreadable accepted body into
@@ -273,6 +326,7 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
     if (e instanceof DOMException && e.name === 'AbortError') return { status: 'response-late', body: {} }
     return { status: 'transport-error', body: {} }
   } finally {
+    answered()
     clearTimeout(timeout)
   }
 }

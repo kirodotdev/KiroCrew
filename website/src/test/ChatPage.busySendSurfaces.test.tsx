@@ -26,6 +26,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer, { sseDisconnected } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import * as transport from '../chat-core/transport/sendTurn'
 import { __resetComposerSendHoldsForTests, holdComposerSend } from '../utils/composerSendHolds'
 
 vi.mock('react-virtuoso', () => ({
@@ -228,6 +229,22 @@ describe('comment Submit follows the busy-send mode', { timeout: 20_000 }, () =>
     await renderChat({ subagentsRunning: false, turnRunning: true })
     expect(await submitComments()).toBe(true)
     expect(steerArgOf(sendChat.mock.calls[0])).toBeFalsy()
+  })
+
+  it('lets Stop cancel only the idle send, not the one queued behind a running turn', async () => {
+    const sendTurn = vi.spyOn(transport, 'sendTurn')
+    await renderChat({ subagentsRunning: false, turnRunning: false })
+    expect(await submitComments()).toBe(true)
+    expect(sendTurn.mock.calls[0][0].cancelOnStop).toBe(true)
+  })
+
+  it('keeps a send queued behind a running turn out of Stop\'s reach', async () => {
+    setMode('queue')
+    sendChat.mockResolvedValue(queued())
+    const sendTurn = vi.spyOn(transport, 'sendTurn')
+    await renderChat({ subagentsRunning: false, turnRunning: true })
+    expect(await submitComments()).toBe(true)
+    expect(sendTurn.mock.calls[0][0].cancelOnStop).toBe(false)
   })
 
   it('carries steer=auto in Auto mode', async () => {

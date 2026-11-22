@@ -857,6 +857,8 @@ export function useComposerSend({
       steer: sendNow ? undefined : steerNow,
       colorTheme: colorThemeRef.current,
       race: { baseRevision, sendNow, idempotencyKey: sendIdempotencyKey(sendId) },
+      // On a busy slot the gateway queues this send, and Stop keeps the queue.
+      cancelOnStop: !_busy,
     })
     const { body } = receipt
     // - `transport-error`: the fetch rejected. Restore and report only when
