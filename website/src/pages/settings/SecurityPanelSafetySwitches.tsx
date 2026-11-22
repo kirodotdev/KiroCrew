@@ -88,7 +88,7 @@ function SafetySwitchesCard() {
 
   // What every row shows under its toggle. The toggles themselves are written
   // out per row, so the settings registry reads their literal labels.
-  const rowExtras = (key: SafetySwitchKey, shown: Shown, restartNote: ReactNode = null) => (
+  const rowExtras = (key: SafetySwitchKey, shown: Shown, note: ReactNode = null) => (
     <>
       {readOnly && (
         // A disabled row is dimmed; this line, outside it, keeps on and off apart.
@@ -109,7 +109,7 @@ function SafetySwitchesCard() {
           </span>
         </div>
       )}
-      {restartNote}
+      {note}
       {failedKey === key && (
         <ErrorNotice
           variant="inline"
@@ -168,7 +168,14 @@ function SafetySwitchesCard() {
                 disabled={readOnly || busy}
                 onChange={on => send(PROTECT, on)}
               />
-              {rowExtras(PROTECT, protect)}
+              {rowExtras(PROTECT, protect, (
+                // The fence covers the agent's file-edit tools only, so the
+                // terminal caveat gets a line of its own.
+                <div data-testid="safety-switch-terminal-note" className="flex items-start gap-2 text-[11px] text-muted leading-relaxed">
+                  <Info size={12} className="shrink-0 mt-px" />
+                  <span>{i18nT('pages.settings.securityPanel.safetySwitches.protect_terminal_note')}</span>
+                </div>
+              ))}
             </div>
           )}
           {honour && (

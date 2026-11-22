@@ -2655,14 +2655,19 @@ every dashboard session already reads; that view holds saved values, so each row
 "Saved: on" or "Saved: off" and never claims the state in force. The card shows
 `mcp.protect_kiro_permission_rules` as
 "Stop the agent from editing its own permission rules" and `mcp.honour_auto_approve` as
-the inverse toggle "Ask me before running tools an MCP server pre-approves" (on means the key
-is `false`), so on is the stricter position for both. What each switch covers is exactly what the
+the inverse toggle "Ask me before running tools set to auto-approve in a tool server's settings"
+(on means the key is `false`), so on is the stricter position for both. What each switch covers is exactly what the
 paragraphs above state, and the card's help text says the same: the protect fence refuses
 the agent's file-edit tools only (a shell command can still write the rule files, which have
-no OS sandbox seal), and turning `mcp.honour_auto_approve` off drops only `autoApprove`
+no OS sandbox seal; that caveat is a line of its own under the protect toggle), and turning
+`mcp.honour_auto_approve` off drops only `autoApprove`
 lists on MCP server entries, so a kiro-cli permission rule with `effect: allow`, and an
 "Always allow" tool grant made on the MCP Servers page or an approval card, still runs
-its tool without asking. The keys stay `READONLY_REASONS` (`safety`) on the
+its tool without asking. When the config read is degraded, a row whose safe position is in force
+over another saved value says it stays on until the settings read in full, and the section
+notice names `config.json` and `config.local.json` and a restart as the fix: a malformed `mcp`
+section stays degraded for the life of the process (`config.resolution._OBSERVED_DEGRADED_SECTIONS`),
+and the agent's sandbox, when on, mounts both files read-only. The keys stay `READONLY_REASONS` (`safety`) on the
 Advanced page, which links each row here, so neither the generic PATCH nor a change card can
 write them. Known limit, the same as the redaction switch: the owner gate is an identity check,
 and every change leaves an SEL record. Pinned by `test/test_safety_switches_routes.py` and
