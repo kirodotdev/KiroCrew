@@ -49,6 +49,8 @@ _TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln"
 _NOT_INSTALLED = (
     "Error: session-manager-plugin is not installed. Please run the setup command first"
 )
+# Windows OpenSSH's stderr when the program a ProxyCommand names is not found.
+_WINDOWS_SPAWN_ENOENT = "CreateProcessW failed error:2\nposix_spawnp: No such file or directory"
 
 # What OpenSSH does with `ProxyCommand /abs/path/connect-helper %h`: it runs the
 # proxy under its own PATH, and the proxy looks the plugin up by name. On
@@ -303,6 +305,23 @@ async def test_mint_does_not_blame_the_proxycommand_for_a_remote_command_not_fou
     assert "exited 127" in str(ei.value)
 
 
+@pytest.mark.asyncio
+async def test_mint_names_the_path_searched_when_windows_openssh_cannot_spawn_the_proxy(
+    monkeypatch,
+):
+    """Windows OpenSSH starts a ProxyCommand without a shell, so no shell wording."""
+
+    async def exec_windows_ssh(*_argv, **_kw):
+        return _FakeSshProcess(_WINDOWS_SPAWN_ENOENT, 255)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_windows_ssh)
+    with pytest.raises(token_mint.TokenMintError) as ei:
+        await token_mint.mint_remote_token("ds-abc", timeout_secs=FALLBACK_TIMEOUT_SECS)
+    msg = str(ei.value)
+    assert "ProxyCommand runs was not found on the PATH" in msg
+    assert "CreateProcessW failed error:2" in msg  # raw cause kept
+
+
 def test_tunnel_classifies_a_missing_proxy_tool_before_the_transport_drop():
     """ssh's trailing "Connection closed by remote host" must not win.
 
@@ -328,6 +347,7 @@ def test_tunnel_classifies_a_missing_proxy_tool_before_the_transport_drop():
         "/bin/bash: line 1: exec: connect-helper: not found",
         "sh: 1: exec: aws: not found",
         "SessionManagerPlugin is not found. Please refer to SessionManager Documentation here",
+        _WINDOWS_SPAWN_ENOENT.replace("\n", "\r\n"),
     ],
 )
 def test_tunnel_recognises_each_shells_missing_program_wording(line):
@@ -335,6 +355,14 @@ def test_tunnel_recognises_each_shells_missing_program_wording(line):
     t._child_path = "/usr/bin:/bin"
     t._stderr_buf = f"{line}\n"
     assert "ProxyCommand runs was not found" in t._exit_error(255)
+
+
+def test_tunnel_does_not_blame_a_missing_program_for_another_windows_spawn_error():
+    """error:225 (a blocked binary) shares the prefix of error:2 but is not "not found"."""
+    t = _SshTunnel("ds-1", "ds-abc", 1, 2)
+    t._child_path = "/usr/bin:/bin"
+    t._stderr_buf = "CreateProcessW failed error:225\r\n"
+    assert "ProxyCommand" not in t._exit_error(255)
 
 
 def test_tunnel_only_blames_the_proxycommand_for_an_ssh_level_failure():
