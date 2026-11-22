@@ -934,7 +934,7 @@ def test_a_windows_only_failure_outside_windows_run_is_a_windows_miss_and_inside
     assert all(r["os"] == "windows" for r in rows(tmp_path) if r["kind"].startswith("windows_"))
     text = summary(tmp_path)
     assert "Windows misses caused by the diff: 1; on fork runs, not counted: 0." in text
-    assert "| #7 | aaaaaaaaaaaa | 1 | test/test_win.py | os |  |  |" in text
+    assert "| #7 | aaaaaaaaaaaa | 1 | test/test_win.py | os | shadow |  |  |" in text
     assert "Windows-only failures: 2; os: 1; timing: 1; unclear: 0." in text
     # The Linux numbers hold the Linux failure alone.
     assert "Misses caused by the diff: 0." in text and "| A | 1 | 1 | 0 |" in text
@@ -1007,6 +1007,7 @@ def test_a_full_windows_run_beside_selected_linux_shards_is_still_a_windows_tria
         ("AttributeError: module 'os' has no attribute 'getuid'", "os"),
         ("FileNotFoundError: npm.CMD", "os"),
         ("Failed: Timeout >120.0s", "timing"),
+        ("AssertionError: async_wait_until(done) still false after 5.00s", "timing"),
         ("[gw3] node down: Not properly terminated", "timing"),
         ("assert 1 == 2", "unclear"),
     ],
@@ -1034,6 +1035,37 @@ def test_each_trial_carries_its_source_and_a_push_counts_without_a_verdict(
     assert {r["run"] for r in rows(tmp_path, "run")} == {1, 2}
     assert [r["miss"] for r in rows(tmp_path, "windows_failure")] == [False, False]
     assert "Windows trials: 4; shadow: 0; sample: 1; label: 1; push: 2." in summary(tmp_path)
+    # None of the four ran under a `select` Windows verdict.
+    assert "Windows trials that can show a miss (a `select` Windows verdict): 0." in summary(
+        tmp_path
+    )
+
+
+def test_a_miss_names_the_source_of_its_trial(gh: FakeGh, tmp_path: Path) -> None:
+    for run_id, source in enumerate(("sample", "label"), 1):
+        block = {"verdict": "select", "run": [], "source": source}
+        win_run(
+            gh, run_id, run_id, [f"test/test_{source}.py"], verdict={**VERDICT, "windows": block}
+        )
+
+    assert run_main(tmp_path) == 0
+
+    text = summary(tmp_path)
+    for run_id, source in enumerate(("sample", "label"), 1):
+        line = (
+            f"| #{run_id} | aaaaaaaaaaaa | {run_id} | test/test_{source}.py | unclear | {source} |"
+        )
+        assert line in text
+    assert "Windows trials that can show a miss (a `select` Windows verdict): 2." in text
+
+
+def test_a_cancelled_run_is_excluded_as_cancelled(gh: FakeGh, tmp_path: Path) -> None:
+    push = gh.add(1, None, [[]], verdict=None, branch="main")
+    push.update(event="push", conclusion="cancelled")
+
+    assert run_main(tmp_path) == 0
+
+    assert [r["reason"] for r in rows(tmp_path, "windows_skip")] == [ledger.RUN_CANCELLED]
 
 
 def test_without_windows_no_windows_job_or_push_run_is_read(gh: FakeGh, tmp_path: Path) -> None:
@@ -1120,8 +1152,19 @@ def test_a_pr_backlog_past_the_limit_still_reads_the_newer_push_runs(
         {"verdict": "full", "source": "push"},
     ],
 )
-def test_a_windows_block_of_the_wrong_shape_refuses_the_verdict(block: object) -> None:
-    assert ledger.parse_verdict(json.dumps({**VERDICT, "windows": block})) is None
+def test_a_windows_block_of_the_wrong_shape_excludes_the_windows_half_alone(
+    block: object, gh: FakeGh, tmp_path: Path
+) -> None:
+    win_run(
+        gh, 1, 7, ["test/test_win.py"], ("test/test_a.py",), verdict={**VERDICT, "windows": block}
+    )
+
+    assert run_main(tmp_path) == 0
+
+    # The Linux observation stands, with its miss; no Windows trial or failure is recorded.
+    assert [r["kind"] for r in rows(tmp_path)] == ["run", "failure", "windows_skip"]
+    assert [r["miss"] for r in rows(tmp_path, "failure")] == [True]
+    assert [r["reason"] for r in rows(tmp_path, "windows_skip")] == [ledger.BAD_WINDOWS_BLOCK]
 
 
 NOW = datetime(2026, 11, 20, tzinfo=timezone.utc)
@@ -1133,18 +1176,23 @@ def _at(days_ago: float, **row: Any) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    "trials, ago, ok",
+    "trials, full, ago, ok",
     [
-        (20, [], True),
-        (20, [1, 2], False),
-        (20, [15, 0], True),
-        (19, [], False),
+        (20, 0, [], True),
+        (20, 0, [1, 2], False),
+        (20, 0, [15, 0], True),
+        (19, 0, [], False),
+        # Trials under a `full` verdict cannot show a miss: they do not make up the minimum.
+        (19, 30, [], False),
+        (20, 30, [], True),
     ],
 )
 def test_windows_selection_turns_off_on_the_bar_or_too_few_trials(
-    trials: int, ago: list[float], ok: bool
+    trials: int, full: int, ago: list[float], ok: bool
 ) -> None:
-    held = [_at(1, kind="windows_run") for _ in range(trials)] + [_at(15, kind="windows_run")]
+    held = [_at(1, kind="windows_run", verdict="select") for _ in range(trials)]
+    held += [_at(1, kind="windows_run", verdict="full") for _ in range(full)]
+    held += [_at(15, kind="windows_run", verdict="select")]
     misses = [_at(days, miss=True, diff_caused=True) for days in ago]
     misses += [_at(0, miss=True, diff_caused=False), _at(0, miss=True, diff_caused=True, fork=True)]
 
@@ -1154,7 +1202,8 @@ def test_windows_selection_turns_off_on_the_bar_or_too_few_trials(
         "windows_selection_ok": ok,
         "window_days": 14,
         "diff_caused_windows_misses": len([d for d in ago if d <= 14]),
-        "trials": trials,
+        "trials": trials + full,
+        "trials_that_can_miss": trials,
         "bar": 2,
     }
 

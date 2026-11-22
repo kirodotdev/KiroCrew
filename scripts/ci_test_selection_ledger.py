@@ -81,7 +81,10 @@ labelled `os`, `timing` or `unclear` from its messages; outside the verdict's
 `trial` is `push` for a push run, else the block's `source` (`shadow` when it
 names none). `shared` reads Linux and Windows failures alike; every Windows
 number is reported apart from the Linux ones, ending in one JSON status line
-(`windows_status`) that turns Windows selection off.
+(`windows_status`) that turns Windows selection off. Only a trial under a
+`select` Windows verdict can show a miss, so the status counts those apart
+(`trials_that_can_miss`) and holds them to the same minimum. A `windows` block
+of the wrong shape excludes the Windows half alone; the Linux half still counts.
 
 Exit codes: 0 the proposal was written; 2 nothing was recorded (a ledger line of
 the wrong shape, or `gh` failed before the first row); 3 the rates are withheld.
@@ -135,13 +138,16 @@ EXIT_WITHHELD = 3
 WINDOWS_BACKEND_JOB = re.compile(r"Backend Tests \(Windows\)(?: \(\d+\))?")
 LANES = {"Linux": shadow.LINUX_BACKEND_JOB, "Windows": WINDOWS_BACKEND_JOB}
 NO_WINDOWS_BLOCK = "the verdict has no windows block"
+BAD_WINDOWS_BLOCK = "the verdict's windows block is invalid"
+RUN_CANCELLED = "the run was cancelled"
 # A push runs the full Windows suite and selects nothing: a trial that cannot miss.
 PUSH_BLOCK = {"verdict": "full", "run": frozenset(), "source": "push"}
 TRIAL_SOURCES = ("shadow", "sample", "label", "push")
 WINDOWS_LABELS = ("os", "timing", "unclear")
 # Windows selection stays on while fewer than WINDOWS_MISS_BAR diff-caused
 # Windows misses fall in the last WINDOWS_STATUS_DAYS days, and only with at
-# least WINDOWS_MIN_TRIALS full-Windows trials there to say so.
+# least WINDOWS_MIN_TRIALS full-Windows trials there to say so, as many of
+# them under a `select` Windows verdict: no other trial can show a miss.
 WINDOWS_STATUS_DAYS = 14
 WINDOWS_MISS_BAR = 2
 WINDOWS_MIN_TRIALS = 20
@@ -153,7 +159,9 @@ _OS_FAILURE = re.compile(
     re.IGNORECASE,
 )
 _TIMING_FAILURE = re.compile(
-    r"timeout|timed out|node down|not properly terminated|worker .{0,40}crashed", re.IGNORECASE
+    r"timeout|timed out|still false after|node down|not properly terminated"
+    r"|worker .{0,40}crashed",
+    re.IGNORECASE,
 )
 
 _TIER = re.compile(r"[A-Za-z0-9_-]{1,20}")
@@ -181,7 +189,10 @@ def _files(value: object) -> set[str] | None:
 
 
 def parse_verdict(text: str) -> Row | None:
-    """A verdict's `verdict`, `tiers` and `would_skip`, None unless each has its fixed shape."""
+    """A verdict's `verdict`, `tiers` and `would_skip`, None unless each has its fixed shape.
+
+    `windows` is the parsed block, or the reason the run has no Windows half.
+    """
     try:
         doc = json.loads(text)
     except (ValueError, RecursionError):
@@ -197,11 +208,9 @@ def parse_verdict(text: str) -> Row | None:
         if not isinstance(tier, str) or not _TIER.fullmatch(tier) or files is None:
             return None
         tiers[tier] = files
-    windows = doc.get("windows")
-    if windows is not None:
-        windows = parse_windows(windows)
-        if windows is None:
-            return None
+    windows: Row | str = NO_WINDOWS_BLOCK
+    if doc.get("windows") is not None:
+        windows = parse_windows(doc["windows"]) or BAD_WINDOWS_BLOCK
     return {"verdict": doc["verdict"], "tiers": tiers, "would_skip": skip, "windows": windows}
 
 
@@ -426,7 +435,7 @@ def _noting(
 def windows_rows(
     run: Row,
     key: Row,
-    block: Row | None,
+    block: Row | str,
     linux: dict[str, bool] | str,
     read: tuple[Path, Callable[[str], dict[str, str]], Listing],
     main_red: set[str],
@@ -434,9 +443,10 @@ def windows_rows(
     """The Windows rows of one run attempt; None when `gh` could not read its Windows shards."""
     base = {**key, "os": "windows"}
     if isinstance(linux, str):
-        return [{"kind": "windows_skip", **base, "reason": f"Linux: {linux}"}]
-    if block is None:
-        return [{"kind": "windows_skip", **base, "reason": NO_WINDOWS_BLOCK}]
+        reason = RUN_CANCELLED if run.get("conclusion") == "cancelled" else f"Linux: {linux}"
+        return [{"kind": "windows_skip", **base, "reason": reason}]
+    if isinstance(block, str):
+        return [{"kind": "windows_skip", **base, "reason": block}]
     root, parse, listing = read
     notes: dict[str, list[str]] = {}
     seen = read_run(run, root, _noting(parse, notes), listing, "Windows")
@@ -563,7 +573,7 @@ def collect(
         if seen == NO_VERDICT and args.verdict_dir:
             continue  # not scored offline: nothing was fetched, so nothing is recorded
         named = red_files if key["run"] >= red_since else set()
-        fresh: list[Row] | None = []
+        fresh: list[Row] = []
         if isinstance(seen, str) and not push:
             fresh = [{**excluded, "reason": seen}]
         elif isinstance(seen, dict) and verdict is not None and not push:
@@ -579,11 +589,11 @@ def collect(
                     run, key, verdict["windows"], linux, (root, parse, listing), named
                 )
             win_unread = more is None
-            if fresh is not None and more is not None:
+            if more is not None:
                 fresh += more
         else:
             win_unread = False
-        if seen is None or fresh is None or (win_unread and not need_linux):
+        if seen is None or (win_unread and not need_linux):
             print(f"run {key['run']}: gh could not read it; a later pass will", file=sys.stderr)
             continue
         if win_unread:
@@ -882,15 +892,17 @@ def windows_status(rows: list[Row], failures: list[Row], now: datetime) -> Row:
     def recent(row: Row) -> bool:
         return (now - _when(row)).total_seconds() <= WINDOWS_STATUS_DAYS * 86400
 
-    trials = sum(1 for r in rows if r["kind"] == "windows_run" and not r["fork"] and recent(r))
+    trials = [r for r in rows if r["kind"] == "windows_run" and not r["fork"] and recent(r)]
+    can_miss = sum(1 for r in trials if r["verdict"] == "select")
     misses = sum(
         1 for r in failures if r["miss"] and r["diff_caused"] and not r["fork"] and recent(r)
     )
     return {
-        "windows_selection_ok": misses < WINDOWS_MISS_BAR and trials >= WINDOWS_MIN_TRIALS,
+        "windows_selection_ok": misses < WINDOWS_MISS_BAR and can_miss >= WINDOWS_MIN_TRIALS,
         "window_days": WINDOWS_STATUS_DAYS,
         "diff_caused_windows_misses": misses,
-        "trials": trials,
+        "trials": len(trials),
+        "trials_that_can_miss": can_miss,
         "bar": WINDOWS_MISS_BAR,
     }
 
@@ -901,6 +913,8 @@ def summarize_windows(rows: list[Row], failures: list[Row], status: Row) -> str:
     days = [_when(row) for row in trials]
     span = (max(days) - min(days)).total_seconds() / 86400 if days else 0.0
     sources = Counter(row["trial"] for row in trials)
+    can_miss = sum(1 for row in trials if row["verdict"] == "select")
+    source_of = {row["run"]: row["trial"] for row in rows if row["kind"] == "windows_run"}
     skipped = Counter(row["reason"] for row in rows if row["kind"] == "windows_skip")
     labels = Counter(row["label"] for row in failures if not row["fork"])
     lines = [
@@ -909,6 +923,7 @@ def summarize_windows(rows: list[Row], failures: list[Row], status: Row) -> str:
         f"Windows trials: {len(trials)}"
         + "".join(f"; {source}: {sources[source]}" for source in TRIAL_SOURCES)
         + f". Days of data: {span:.1f}.",
+        f"Windows trials that can show a miss (a `select` Windows verdict): {can_miss}.",
         f"Windows runs excluded: {sum(skipped.values())}"
         + "".join(f"; {cell(reason)}: {n}" for reason, n in sorted(skipped.items()))
         + ".",
@@ -932,12 +947,13 @@ def summarize_windows(rows: list[Row], failures: list[Row], status: Row) -> str:
                 [
                     *_where(row),
                     row["label"],
+                    source_of.get(row["run"], ""),
                     "fork" if row["fork"] else "",
                     ", ".join(k for k in ("rerun_green", "main_red", "shared") if row[k]),
                 ]
                 for row in picked
             ]
-            head = ["PR", "Head", "Run", "File", "Label", "Fork", "Not diff-caused"]
+            head = ["PR", "Head", "Run", "File", "Label", "Source", "Fork", "Not diff-caused"]
             lines += ["", *_table(head, body)]
     return "\n".join(lines + ["", json.dumps(status, sort_keys=True)])
 
