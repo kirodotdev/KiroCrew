@@ -16,7 +16,7 @@ import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessa
 import { confirmedDelivered } from '../../../utils/sendDelivery'
 import { warnDeliveryUnconfirmed } from '../../../utils/deliveryWarning'
 import { announceIfRemovedSendDelivered } from '../../../components/useDeliveryWarningStrip'
-import { mintSendId, sendTurn } from '../../../chat-core/transport/sendTurn'
+import { holdForStop, mintSendId, sendTurn } from '../../../chat-core/transport/sendTurn'
 import { prependQuote, type MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { isEmptyTurn, buildOutgoingTurn } from '../../../chat-core/composer/outgoingTurn'
 import { storeSentPastes } from '../../../chat-core/composer/composerPastes'
@@ -828,6 +828,10 @@ export function useComposerSend({
     // session (a follow-up Start) must not scroll the one on screen.
     if (loadChatConfig().scrollOnSend) setTimeout(() => { if (!slot || store.getState().chat.activeSlot === slot) scrollBottom() }, SCROLL_AFTER_RENDER_MS)
     if (slot) dispatch(startLocalTurn(slot))
+    // Stop shows from here on, so a turn-starting send is cancellable from here
+    // too, through the revision wait below. On a busy slot the gateway queues
+    // this send, and Stop keeps the queue.
+    const stopHold = slot && !_busy ? holdForStop(slot) : undefined
     const sendEpoch = slot ? selectSlotRunEpoch(store.getState(), slot) : 0
     // Only this unconfirmed send owns the optimistic running flag. Once a live
     // frame or a slots broadcast has taken the turn over (the epoch moved or
@@ -857,8 +861,7 @@ export function useComposerSend({
       steer: sendNow ? undefined : steerNow,
       colorTheme: colorThemeRef.current,
       race: { baseRevision, sendNow, idempotencyKey: sendIdempotencyKey(sendId) },
-      // On a busy slot the gateway queues this send, and Stop keeps the queue.
-      cancelOnStop: !_busy,
+      stopHold,
     })
     const { body } = receipt
     // - `transport-error`: the fetch rejected. Restore and report only when

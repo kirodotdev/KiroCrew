@@ -9,7 +9,7 @@ import { readPaneDraft, writePaneDraft } from '../utils/chatPaneDrafts'
 import { expandAll as expandPasteTokens, carryPastes, type PasteBlock } from '../utils/pasteTokens'
 import { prependQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
-import { sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
+import { holdForStop, sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTurn'
@@ -362,7 +362,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // server holds the message, so only they let a restored draft's stash
     // entry go. This pane's recovery lives in component state, so a refusal
     // or an unconfirmed send must leave that entry stored for a reload to find.
-    return sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}), cancelOnStop: !running && !paneSlot?.running }).then((receipt) => {
+    return sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}), stopHold: !running && !paneSlot?.running ? holdForStop(slotKey) : undefined }).then((receipt) => {
       // Read before the rulings below settle the bubble: an echo that already
       // proved this send landed outranks a lost or refused answer.
       onOutcome?.(paneSendOutcome(receipt.status, selectSendConfirmed(store.getState(), slotKey, sendId) || (!!crewmate && selectSendAccepted(store.getState(), slotKey, sendId))))

@@ -27,6 +27,7 @@ import chatReducer from '../store/chatSlice'
 import dashboardReducer, { sseDisconnected } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import * as transport from '../chat-core/transport/sendTurn'
+import * as revisionSeed from '../hooks/sharedCrew/sendRevisionSeed'
 import { __resetComposerSendHoldsForTests, holdComposerSend } from '../utils/composerSendHolds'
 
 vi.mock('react-virtuoso', () => ({
@@ -235,7 +236,15 @@ describe('comment Submit follows the busy-send mode', { timeout: 20_000 }, () =>
     const sendTurn = vi.spyOn(transport, 'sendTurn')
     await renderChat({ subagentsRunning: false, turnRunning: false })
     expect(await submitComments()).toBe(true)
-    expect(sendTurn.mock.calls[0][0].cancelOnStop).toBe(true)
+    expect(sendTurn.mock.calls[0][0].stopHold).toBeInstanceOf(AbortController)
+  })
+
+  it('holds the idle send for Stop before it waits for the session revision', async () => {
+    const hold = vi.spyOn(transport, 'holdForStop')
+    const revision = vi.spyOn(revisionSeed, 'baseRevisionForPress')
+    await renderChat({ subagentsRunning: false, turnRunning: false })
+    expect(await submitComments()).toBe(true)
+    expect(hold.mock.invocationCallOrder[0]).toBeLessThan(revision.mock.invocationCallOrder[0])
   })
 
   it('keeps a send queued behind a running turn out of Stop\'s reach', async () => {
@@ -244,7 +253,7 @@ describe('comment Submit follows the busy-send mode', { timeout: 20_000 }, () =>
     const sendTurn = vi.spyOn(transport, 'sendTurn')
     await renderChat({ subagentsRunning: false, turnRunning: true })
     expect(await submitComments()).toBe(true)
-    expect(sendTurn.mock.calls[0][0].cancelOnStop).toBe(false)
+    expect(sendTurn.mock.calls[0][0].stopHold).toBeUndefined()
   })
 
   it('carries steer=auto in Auto mode', async () => {

@@ -215,14 +215,15 @@ export interface SendTurnOptions {
   race?: SendRaceFields
   /** Which fetch seam carries the POST. Defaults to the dashboard client. */
   wire?: SendWire
-  /** This send would start a turn on an idle slot, so Stop on that slot may
-   *  cancel it while its POST is unanswered. Only the dashboard wire honours
-   *  it; a send on a running slot leaves it unset, so Stop keeps the follow-up
-   *  the gateway queues. */
-  cancelOnStop?: boolean
+  /** The `holdForStop` controller of a send that would start a turn on an
+   *  idle slot. A Stop on that slot aborts it until the POST is answered,
+   *  including a press that lands before this send is called. A send on a
+   *  running slot leaves it unset, so Stop keeps the follow-up the gateway
+   *  queues. */
+  stopHold?: AbortController
 }
 
-/** Each slot's sends that would start a turn (`cancelOnStop`) and whose POST
+/** Each slot's sends that would start a turn (`holdForStop`) and whose POST
  *  has not been answered yet, so Stop can cancel them. A follow-up sent while
  *  a turn runs is not listed: the gateway queues it and Stop keeps the queue.
  *  A send on another wire (Side Chat, an app embed) belongs to a different
@@ -258,6 +259,20 @@ export function settleCancelledSends(slot: string): void {
   cancelledSends.delete(slot)
 }
 
+/** Register a send that would start a turn on `slot` the moment the surface
+ *  shows its Stop, before any wait that comes ahead of the POST. Pass the
+ *  result to `sendTurn` as `stopHold`; a Stop pressed in between aborts it and
+ *  `sendTurn` then issues no POST. Only dashboard-wire sends hold: a Side Chat
+ *  or app-embed send belongs to a conversation with its own stop. */
+export function holdForStop(slot: string): AbortController {
+  const controller = new AbortController()
+  cancelledSends.delete(slot)
+  const sends = pendingSends.get(slot) ?? new Set<AbortController>()
+  sends.add(controller)
+  pendingSends.set(slot, sends)
+  return controller
+}
+
 /**
  * The one send implementation (chat-core transport layer).
  *
@@ -272,23 +287,23 @@ export function settleCancelledSends(slot: string): void {
  * Never rejects: every outcome, including transport failure, is a receipt.
  */
 export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
-  const controller = new AbortController()
+  const { stopHold } = opts
+  const controller = stopHold ?? new AbortController()
   const timeout = setTimeout(() => controller.abort(), SEND_ABORT_MS)
   const wire = opts.wire ?? dashboardSendWire
   // The old note goes on submit, so this send's own failure frame stays.
   if (opts.slot) clearCrewSteerNotice(opts.slot)
-  const slotSends = opts.slot && opts.cancelOnStop && !opts.wire ? pendingSends.get(opts.slot) ?? new Set<AbortController>() : null
-  if (opts.slot && slotSends) {
-    cancelledSends.delete(opts.slot)
-    slotSends.add(controller)
-    pendingSends.set(opts.slot, slotSends)
-  }
   const answered = () => {
-    if (!opts.slot || !slotSends) return
-    slotSends.delete(controller)
-    if (slotSends.size === 0 && pendingSends.get(opts.slot) === slotSends) pendingSends.delete(opts.slot)
+    if (!opts.slot || !stopHold) return
+    const sends = pendingSends.get(opts.slot)
+    if (!sends) return
+    sends.delete(stopHold)
+    if (sends.size === 0) pendingSends.delete(opts.slot)
   }
   try {
+    // A Stop pressed before this call cancelled the send: nothing leaves the
+    // browser, and the receipt is the one an in-flight cancel gets.
+    if (controller.signal.aborted) return { status: 'response-late', body: {} }
     const r = await wire(
       {
         message: opts.message,

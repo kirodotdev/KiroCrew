@@ -270,7 +270,8 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
       fireEvent.change(idleBox, { target: { value: 'start a turn' } })
       fireEvent.keyDown(idleBox, { key: 'Enter', code: 'Enter' })
       await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1))
-      expect(sendTurn.mock.calls[0][0]).toMatchObject({ slot: 'pane-idle-send', cancelOnStop: true })
+      expect(sendTurn.mock.calls[0][0]).toMatchObject({ slot: 'pane-idle-send' })
+      expect(sendTurn.mock.calls[0][0].stopHold).toBeInstanceOf(AbortController)
     } finally {
       sendTurn.mockRestore()
     }
@@ -286,7 +287,7 @@ describe('ChatPane busyMode="steer-only" (Crew Members DM thread)', () => {
       fireEvent.keyDown(box, { key: 'Enter', code: 'Enter', ctrlKey: true, metaKey: true })
       await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1))
       expect(sendTurn.mock.calls[0][0].steer).toBeUndefined()
-      expect(sendTurn.mock.calls[0][0].cancelOnStop).toBe(false)
+      expect(sendTurn.mock.calls[0][0].stopHold).toBeUndefined()
     } finally {
       sendTurn.mockRestore()
     }
