@@ -702,10 +702,13 @@ export function InAppUpdateFlow({
               testId="arm-copy-error"
             />
           )}
+          {/* `error`, not `failureReason`: React Query clears the reason when each
+              poll starts and keeps the error until the next answer. */}
           {armPollFailing && (
             <ErrorNotice
               variant="inline"
               message={i18nT('pages.settings.aboutPanel.arm_status_poll_failing')}
+              report={reportForError(armStatusQuery.error)}
               askAgent={askAgent}
               onHandoff={onHandoff}
               testId="arm-poll-error"
@@ -787,21 +790,22 @@ export function AgentUpdateRequestCard({
   foundVersion?: string
   busy: boolean
   /**
-   * A failure the PANEL owns and the card must show: the request poll failing
-   * repeatedly, or the download the card started being refused. The card's own
-   * Decline failure is tracked inside.
+   * A failure the PANEL owns and the card must show, with the failed request's
+   * report when there is one: the request poll failing repeatedly, or the
+   * download the card started being refused. The card's own Decline failure is
+   * tracked inside.
    */
-  panelError?: string
+  panelError?: { message: string; report?: ErrorReport }
   onInstall: () => void
   onDeclined: () => void
 }) {
-  const [error, setError] = useState('')
+  const [error, setError] = useState<{ message: string; report?: ErrorReport }>({ message: '' })
   const decline = useMutation({
     // Bound to the request this card RENDERED: a stale click must not remove a
     // newer request the user has not seen.
     mutationFn: () => api.dismissUpdateArm(request.request_id || ''),
-    onSuccess: () => { setError(''); onDeclined() },
-    onError: () => setError(i18nT('pages.settings.aboutPanel.agent_request_decline_failed')),
+    onSuccess: () => { setError({ message: '' }); onDeclined() },
+    onError: (e: unknown) => setError({ message: i18nT('pages.settings.aboutPanel.agent_request_decline_failed'), report: reportForError(e) }),
   })
   // Anchor a deadline on each poll answer and tick locally, so the countdown
   // moves every second instead of jumping with the 5s poll.
@@ -845,7 +849,7 @@ export function AgentUpdateRequestCard({
         {askedAt && !isNaN(askedAt.getTime()) ? ` · ${fmtRelative(askedAt)}` : ''}
       </span>
       {panelError && (
-        <ErrorNotice message={panelError} askAgent testId="agent-update-request-panel-error" />
+        <ErrorNotice message={panelError.message} report={panelError.report} askAgent testId="agent-update-request-panel-error" />
       )}
       {differs && (
         <span className="text-[12px] text-muted" data-testid="agent-update-request-differs">
@@ -859,7 +863,7 @@ export function AgentUpdateRequestCard({
           })}
         </span>
       )}
-      <ErrorNotice message={error} askAgent testId="agent-update-request-error" />
+      <ErrorNotice message={error.message} report={error.report} askAgent testId="agent-update-request-error" />
       <div className="flex items-center gap-2">
         {/* The button names the version it will actually deliver. When the feed
             offers something other than what was requested, "Install & restart"
