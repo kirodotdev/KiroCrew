@@ -679,6 +679,23 @@ async def _reclaim_orphan_forwarder(
     live_pids = {t.pid for t in self._tunnels.values() if t.pid}
     if pid in live_pids:
         return
+    if not await asyncio.to_thread(platform_compat.pid_exists, pid):
+        logger.info(
+            "Clearing recorded %s forwarder pid %d for %s: no process has that "
+            "pid, so nothing is left to reclaim",
+            params.method,
+            pid,
+            inst.id,
+        )
+        await self._persist_hint(
+            self._registry.update,
+            inst.id,
+            forwarder_pid=_NO_FORWARDER_PID,
+            forwarder_start="",
+            forwarder_sig="",
+            forwarder_argv_sig="",
+        )
+        return
     orphaned, ppid = await asyncio.to_thread(_forwarder_orphan_state, pid, start)
     if not orphaned:
         logger.info(
