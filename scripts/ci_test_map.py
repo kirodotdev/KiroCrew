@@ -29,7 +29,11 @@ to the test files that touched it.
 The map
 -------
     {"schema": 1, "commit": SHA, "tests": {test file: node ids run},
-     "files": {executed file: [index into sorted(tests)]}}
+     "files": {executed file: [index into sorted(tests)]},
+     "os_sensitive": {src file: tier}, "windows_targeting": [test file, ...]}
+
+The last two are computed from the tree `--root` names at build time, and are
+absent when they cannot be built (`scripts/ci_test_os_tables.py`).
 
 Paths are repository-relative POSIX paths. Files are the unit CI shards and
 runs, so a node id counts for its test FILE.
@@ -71,6 +75,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import importlib
 import json
 import subprocess
 import sys
@@ -78,6 +83,12 @@ import zlib
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
+
+# The sibling under the same package this module was loaded from: `scripts.` in
+# the tests, top-level when run as a script, so no path edit and no second copy.
+_os_tables_module = importlib.import_module(
+    f"{__package__ + '.' if __package__ else ''}ci_test_os_tables"
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = 1
@@ -377,12 +388,17 @@ def _cmd_bundle(args: argparse.Namespace) -> int:
 
 def _cmd_build(args: argparse.Namespace) -> int:
     doc = merge_parts(read_parts(Path(args.parts)), args.commit)
+    doc.update(_os_tables_module.os_tables(Path(args.root).resolve()))
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
     Path(args.out).write_text(text + "\n", encoding="utf-8")
     nodes = sum(doc["tests"].values())
     print(
         f"map: {len(doc['files'])} executed files, {len(doc['tests'])} test files, "
         f"{nodes} test node ids, {len(text.encode()) / 1e6:.2f} MB"
+    )
+    print(
+        f"os tables: {len(doc.get('os_sensitive', {}))} os-sensitive src files, "
+        f"{len(doc.get('windows_targeting', []))} windows-targeting test files"
     )
     if not doc["files"]:
         print("::error::the parts recorded no executed file")
