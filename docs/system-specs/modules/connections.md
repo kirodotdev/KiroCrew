@@ -1728,7 +1728,10 @@ a client exists the card is an instruction, not an offer: `/api/connections/stat
 marks the row `needsClientConfig` (only while no grant is held), and the card
 renders the sixth state `needs-configuration` — a lock badge, the Documentation
 link, and a **Set up <provider>** button that opens the card's OAuth app in place
-of Connect. What the setup involves (a guided settings page, nothing changes
+of Connect. A Connect that still reaches the mint route (a stale tab, the agent's
+connect card) gets 409 `client_not_configured`, whose text names each half still
+missing (`Client ID`, `Client secret`).
+What the setup involves (a guided settings page, nothing changes
 until saved, removable later, registers an app and enters its client ID and
 secret) is the row's pre-action caveat, so it sits behind the amber triangle
 beside that route, never as a band — see [What a card shows
