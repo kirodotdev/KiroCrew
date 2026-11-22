@@ -221,7 +221,9 @@ def captured_sel_events(monkeypatch):
         def log(self, event) -> None:
             events.append(event)
 
-    monkeypatch.setattr(security, "SecurityEventLog", lambda: _Capture())
+    from kiro_crew.security import deny_gate
+
+    monkeypatch.setattr(deny_gate, "sel", lambda: _Capture())
     return events
 
 

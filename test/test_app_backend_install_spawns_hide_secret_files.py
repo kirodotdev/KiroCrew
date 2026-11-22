@@ -126,6 +126,8 @@ class TestTheNpmInstallEnvHoldsNoBackendOnlySecret:
         monkeypatch.setattr(bmod, "_find_node_binary", lambda: "/usr/bin/node")
         monkeypatch.setattr(bmod, "_find_npm_binary", lambda: "/usr/bin/npm")
         monkeypatch.setattr(bmod, "_loopback_gateway_origin", lambda: "http://127.0.0.1:4321")
+        # The origin (and so its proof) is injected only for an owner-enabled app.
+        monkeypatch.setattr("kiro_crew.apps.host_exec_grants.host_exec_granted", lambda _n: True)
         monkeypatch.setattr(token_auth, "replace_legacy_app_secret", lambda _name: "s3cret")
         install_envs: list[dict[str, str]] = []
 

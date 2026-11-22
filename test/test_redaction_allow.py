@@ -105,7 +105,7 @@ def test_a_dropped_entry_left_in_the_file_is_logged_and_audited_once(
 ) -> None:
     import json
 
-    from kiro_crew.security import exfil
+    from kiro_crew.security import exfil_oauth
 
     logged: list = []
 
@@ -113,7 +113,7 @@ def test_a_dropped_entry_left_in_the_file_is_logged_and_audited_once(
         def log(self, event) -> None:
             logged.append(event)
 
-    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
+    monkeypatch.setattr(exfil_oauth, "sel", lambda: _Log())
     monkeypatch.setattr(redaction_allow, "_DROPS_REPORTED", set())
     _store.parent.mkdir(parents=True)
     _store.write_text(json.dumps({"ws1": ["10.0.0.5", "api.localhost", 7, "git.example.com"]}))
@@ -138,7 +138,7 @@ def test_a_dropped_entry_left_in_the_file_is_logged_and_audited_once(
 def test_rendering_an_allowed_link_live_is_audited_once_per_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from kiro_crew.security import exfil
+    from kiro_crew.security import exfil_oauth
 
     logged: list = []
 
@@ -146,7 +146,7 @@ def test_rendering_an_allowed_link_live_is_audited_once_per_host(
         def log(self, event) -> None:
             logged.append(event)
 
-    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
+    monkeypatch.setattr(exfil_oauth, "sel", lambda: _Log())
     monkeypatch.setattr(blocked_links, "_ALLOWED_HOST_AUDITED", set())
     url = "https://wiki.example.org/page?state=" + "a" * 260
     assert _urls(scoped_blocked_links(url)) == [url]
@@ -183,7 +183,7 @@ def test_a_render_whose_snapshot_predates_a_revoke_is_not_remembered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A render in flight across a revoke must not hide the first use after a re-allow."""
-    from kiro_crew.security import exfil
+    from kiro_crew.security import exfil_oauth
 
     logged: list = []
 
@@ -191,7 +191,7 @@ def test_a_render_whose_snapshot_predates_a_revoke_is_not_remembered(
         def log(self, event) -> None:
             logged.append(event)
 
-    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
+    monkeypatch.setattr(exfil_oauth, "sel", lambda: _Log())
     monkeypatch.setattr(blocked_links, "_ALLOWED_HOST_AUDITED", set())
     url = "https://wiki.example.org/page?state=" + "a" * 260
     assert redaction_allow.allow_host("ws1", "wiki.example.org")
@@ -218,7 +218,7 @@ def test_a_render_whose_snapshot_predates_a_revoke_is_not_remembered(
 
 
 def test_the_audit_memo_stops_growing_at_its_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
-    from kiro_crew.security import exfil
+    from kiro_crew.security import exfil_oauth
 
     logged: list = []
 
@@ -226,7 +226,7 @@ def test_the_audit_memo_stops_growing_at_its_ceiling(monkeypatch: pytest.MonkeyP
         def log(self, event) -> None:
             logged.append(event)
 
-    monkeypatch.setattr(exfil, "SecurityEventLog", _Log)
+    monkeypatch.setattr(exfil_oauth, "sel", lambda: _Log())
     full = {("ws1", "a.example.org"), ("ws1", "b.example.org")}
     monkeypatch.setattr(blocked_links, "_ALLOWED_HOST_AUDITED", set(full))
     monkeypatch.setattr(blocked_links, "_ALLOWED_HOST_AUDITED_MAX", 2)
@@ -245,7 +245,7 @@ def test_a_render_audit_waits_for_a_revoke_holding_the_memo(
     """A revoke iterates the memo; a render adding to it mid-iteration would raise."""
     import threading
 
-    from kiro_crew.security import exfil
+    from kiro_crew.security import exfil_oauth
 
     class _Quiet:
         def log(self, event) -> None:
@@ -265,7 +265,7 @@ def test_a_render_audit_waits_for_a_revoke_holding_the_memo(
             real.release()
 
     lost_run_ceiling = 10.0
-    monkeypatch.setattr(exfil, "SecurityEventLog", _Quiet)
+    monkeypatch.setattr(exfil_oauth, "sel", lambda: _Quiet())
     monkeypatch.setattr(blocked_links, "_ALLOWED_HOST_AUDITED", set())
     monkeypatch.setattr(blocked_links, "_ALLOWED_HOST_AUDIT_LOCK", _Signalling())
     worker = threading.Thread(
@@ -285,13 +285,13 @@ def test_a_render_audit_waits_for_a_revoke_holding_the_memo(
 
 
 def test_a_failing_audit_does_not_change_the_decision(monkeypatch: pytest.MonkeyPatch) -> None:
-    from kiro_crew.security import exfil
+    from kiro_crew.security import exfil_oauth
 
     class _Broken:
         def log(self, event) -> None:
             raise OSError("disk full")
 
-    monkeypatch.setattr(exfil, "SecurityEventLog", _Broken)
+    monkeypatch.setattr(exfil_oauth, "sel", lambda: _Broken())
     monkeypatch.setattr(blocked_links, "_ALLOWED_HOST_AUDITED", set())
     url = "https://wiki.example.org/page?state=" + "a" * 260
     with allowed_link_hosts(frozenset({"wiki.example.org"})):

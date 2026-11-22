@@ -270,8 +270,25 @@ def _reclaim_lost_leases() -> None:
             lease._drop("slot removed")
 
 
+def _audit_new_patterns(
+    app: str, key: str, slot: Any, patterns: frozenset[str], ttl: float
+) -> bool:
+    """Audit the patterns the slot does not trust yet; False when there are none or it failed.
+
+    Blocking (a critical write), so an async caller runs it with ``asyncio.to_thread``.
+    """
+    existing = getattr(slot, "_trusted_patterns", None)
+    added = patterns - (existing if isinstance(existing, set) else set())
+    return bool(added) and _audit_patterns_fail_closed(app, key, len(added), ttl)
+
+
 def _grant_trust(
-    lease: WorkerSlotLease, slot: Any, trust: bool, patterns: frozenset[str], ttl: float
+    lease: WorkerSlotLease,
+    slot: Any,
+    trust: bool,
+    patterns: frozenset[str],
+    ttl: float,
+    patterns_audited: bool,
 ) -> None:
     app, key = lease.app, lease.key
     if trust and not getattr(slot, "_trust", False):
@@ -298,7 +315,7 @@ def _grant_trust(
         existing = set()
         slot._trusted_patterns = existing
     added = frozenset(patterns - existing)
-    if added and _audit_patterns_fail_closed(app, key, len(added), ttl):
+    if added and patterns_audited:
         existing.update(added)
         lease._granted_patterns = added
     if lease._scope or lease._granted_patterns:
@@ -377,6 +394,7 @@ async def acquire_worker_slot(
     await _reserve(app, key, timeout)
     cond = _registry.condition()
     lease: WorkerSlotLease | None = None
+    reserved = ""
     try:
         slot = state.get_or_create_slot(name=key, agent=agent, app=app, model=model)
         owner = str(getattr(slot, "_app", "") or "")
@@ -391,19 +409,28 @@ async def acquire_worker_slot(
             )
         # The registry may fold the requested name; the folded key is the identity.
         canonical = str(getattr(slot, "key", key) or key)
-        if canonical != key and (
-            canonical in _registry.leases or _registry.pending.get(canonical, app) != app
-        ):
-            raise ValueError(f"slot {canonical!r} is already leased")
+        if canonical != key:
+            # Reserve the folded key before anything else: another acquire may hold it
+            # (leased, or in flight while it audits), and this one must neither stamp its
+            # slot nor overwrite its lease.
+            async with cond:
+                if canonical in _registry.leases or canonical in _registry.pending:
+                    raise ValueError(f"slot {canonical!r} is already leased")
+                _registry.pending[canonical] = app
+                reserved = canonical
         slot._app = app
         slot.project = project
         lease = WorkerSlotLease(
             app=app, key=canonical, slot=slot, _state=state, _audit=AuditSDK(app)
         )
         if trust or patterns:
-            _grant_trust(lease, slot, trust, patterns, ttl)
+            audited = await asyncio.to_thread(
+                _audit_new_patterns, app, canonical, slot, patterns, ttl
+            )
+            _grant_trust(lease, slot, trust, patterns, ttl, audited)
         async with cond:
             _registry.pending.pop(key, None)
+            _registry.pending.pop(canonical, None)
             _registry.leases[canonical] = lease
         push = getattr(state, "push_slots_update", None)
         if callable(push):
@@ -414,5 +441,7 @@ async def acquire_worker_slot(
             lease._withdraw_trust("acquire failed")
         async with cond:
             _registry.pending.pop(key, None)
+            if reserved:
+                _registry.pending.pop(reserved, None)
             cond.notify_all()
         raise

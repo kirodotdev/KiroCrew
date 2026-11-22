@@ -515,6 +515,85 @@ async def test_a_folded_key_cannot_alias_a_held_lease():
     await first.release()
 
 
+class _FoldingState(_State):
+    """A registry that folds a bare name into the ``dashboard:`` form, as the real one does."""
+
+    def get_or_create_slot(self, name, agent="", app="", model=""):
+        return super().get_or_create_slot(
+            name if name.startswith("dashboard:") else f"dashboard:{name}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_folded_key_is_refused_while_the_first_acquire_audits(_env):
+    """Limit 2: the second acquire folds to the key the first holds mid-audit, and is refused."""
+    import threading
+
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
+
+    entered, release = threading.Event(), threading.Event()
+
+    def _held_audit(*_args) -> bool:
+        entered.set()
+        release.wait(FALLBACK_TIMEOUT_SECS)
+        return True
+
+    set_worker_slot_limit("demo", 2)
+    state = _FoldingState()
+    with mock.patch.object(worker_slots, "_audit_new_patterns", _held_audit):
+        first = asyncio.ensure_future(
+            acquire_worker_slot(
+                state, "demo", "dashboard:job", project="/first", trusted_patterns=["npm test"]
+            )
+        )
+        await async_wait_until(entered.is_set)
+        with pytest.raises(ValueError, match="already leased"):
+            await acquire_worker_slot(state, "demo", "job", project="/second")
+        slot = state.slots["dashboard:job"]
+        assert slot.project == "/first"  # the refused acquire stamped nothing
+        release.set()
+        lease = await first
+
+    assert list(worker_slots._registry.leases) == ["dashboard:job"]
+    assert worker_slots._registry.leases["dashboard:job"] is lease
+    assert worker_slots._registry.pending == {}
+    assert slot.project == "/first"
+    await lease.release()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_held_audit_leaves_no_reservation(_env):
+    """Both the asked key and the folded key are freed, and the slot can be acquired again."""
+    import threading
+
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
+
+    entered, release = threading.Event(), threading.Event()
+
+    def _held_audit(*_args) -> bool:
+        entered.set()
+        release.wait(FALLBACK_TIMEOUT_SECS)
+        return True
+
+    state = _FoldingState()
+    with mock.patch.object(worker_slots, "_audit_new_patterns", _held_audit):
+        task = asyncio.ensure_future(
+            acquire_worker_slot(state, "demo", "job", project="/w", trusted_patterns=["npm test"])
+        )
+        await async_wait_until(entered.is_set)
+        assert set(worker_slots._registry.pending) == {"job", "dashboard:job"}  # both held
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+
+    assert worker_slots._registry.pending == {}
+    assert worker_slots._registry.leases == {}
+    again = await acquire_worker_slot(state, "demo", "job", project="/w")
+    assert list(worker_slots._registry.leases) == ["dashboard:job"]
+    await again.release()
+
+
 @pytest.mark.asyncio
 async def test_a_deleted_slot_frees_its_lease_for_the_next_acquire(_env):
     state = _State()
