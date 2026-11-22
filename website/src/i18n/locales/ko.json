@@ -21796,6 +21796,7 @@
         "your_code": "내 코드: {{code}}",
         "reported_host": "{{host}}(스스로 보고)",
         "reported_host_hint": "이 크루가 이 머신에 있다고 보고합니다. 이 대시보드는 경로가 없어 직접 연결하지 않으며, 연결은 중개 크루를 거칩니다.",
+        "restart_clears_draft": "다시 시작하면 저장하지 않은 크루 양식이 지워집니다.",
         "results_stale": "이 확인 이후 프로필 또는 리전이 변경되었습니다. 업데이트하려면 다시 확인하세요.",
         "crew_enabled": "연결: 켜짐",
         "crew_disabled": "연결: 꺼짐",

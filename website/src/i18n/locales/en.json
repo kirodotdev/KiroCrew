@@ -12078,6 +12078,7 @@
         "your_code": "Your code: {{code}}",
         "reported_host": "{{host}} (reported)",
         "reported_host_hint": "This crew reports being on this machine. This dashboard has no route to it and never dials it — the connection rides the crew that reaches it.",
+        "restart_clears_draft": "Restarting clears your unsaved crew form.",
         "results_stale": "The profile or Region changed since this check. Re-check to update.",
         "crew_enabled": "Connections: On",
         "crew_disabled": "Connections: Off",

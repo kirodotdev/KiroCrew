@@ -22896,6 +22896,7 @@
         "your_code": "Seu código: {{code}}",
         "reported_host": "{{host}} (declarado)",
         "reported_host_hint": "Esta equipe declara estar nesta máquina. Este painel não tem rota até ela e nunca a disca — a conexão passa pela equipe que a alcança.",
+        "restart_clears_draft": "Reiniciar apaga o formulário da crew que você não salvou.",
         "results_stale": "O perfil ou a região mudou desde esta verificação. Verifique de novo para atualizar.",
         "crew_enabled": "Conexões: ligadas",
         "crew_disabled": "Conexões: desligadas",
