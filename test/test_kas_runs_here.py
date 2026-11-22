@@ -181,6 +181,9 @@ _CLAUDE = {"acp_backend": "claude", "member_acp_backend": "claude"}
         (_CLAUDE, {"nova": "kiro"}, True),
         (_CLAUDE, {"nova": "kas"}, True),
         (_CLAUDE, {"nova": "codex"}, False),
+        # A Bot pinned to a harness Bots cannot run on lands on KAS: the relay runs kiro-cli.
+        (_CLAUDE, {"nova": "goose"}, True),
+        ({**_CLAUDE, "kas_bundle": True}, {"nova": "goose"}, False),
         # A failover chain counts only while it is enabled.
         ({**_CLAUDE, "acp_failover": {"enabled": True, "chain": ["codex", "kiro"]}}, None, True),
         ({**_CLAUDE, "acp_failover": {"enabled": False, "chain": ["kiro"]}}, None, False),

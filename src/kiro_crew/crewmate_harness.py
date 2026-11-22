@@ -289,8 +289,9 @@ def kiro_cli_runs_anywhere(config: Any) -> bool:
     The main and crewmate backends, a Bot's own pin, and the members of an enabled
     ``agent.acp_failover`` chain. A choice runs kiro-cli when it is Kiro CLI, or KAS
     served through kiro-cli's relay (``agent.kas_bundle`` off). A stored value is
-    read as written, so a pin that would land elsewhere still counts: the answer
-    errs toward keeping kiro-cli maintained. Never raises on a missing field.
+    read as written, so a pin that would land elsewhere still counts, and a Bot that
+    :func:`kas_runs_here` moves onto KAS counts too: the answer errs toward keeping
+    kiro-cli maintained. Never raises on a missing field.
     """
     from kiro_crew.acp_failover import failover_policy
 
@@ -307,10 +308,14 @@ def kiro_cli_runs_anywhere(config: Any) -> bool:
     policy = failover_policy(getattr(agent, "acp_failover", {}))
     if policy.enabled:
         chosen.extend(_backends.backend_from_stored(name) for name in policy.chain)
-    return any(
+    if any(
         backend == _backends.ACP_BACKEND_KIRO or (relay and backend == _backends.ACP_BACKEND_KAS)
         for backend in chosen
-    )
+    ):
+        return True
+    # A Bot that lands on KAS without choosing it (a worker spec KAS must carry, a pin
+    # to a harness Bots cannot run on) still runs through kiro-cli's relay.
+    return relay and kas_runs_here(config)
 
 
 def _note_pin_fallback(crew: str, pinned: str, landed: str) -> None:
