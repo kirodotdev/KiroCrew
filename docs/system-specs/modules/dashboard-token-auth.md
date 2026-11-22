@@ -442,9 +442,14 @@ Request flow:
    stays open until the owner accepts the risk in writing. The grant is the owner's:
    `PUT /api/apps/<name>/dashboard-proxy` with `{"confirm": true}`, offered only
    for an app the gateway recorded as installed from a registry, with text naming
-   the registry and source and saying the app gets full dashboard control
-   including running agents, minus credential and admin routes, with terminal and
-   approvals local-only and admin done locally. It is stored in `member-records/app-dashboard-proxy/` (masked in every
+   the registry and source and saying plainly what the access is: the app reads the
+   dashboard and chats and can stop a running chat turn, and it cannot send chat
+   messages, change settings, credentials, apps, terminal or approvals (the same
+   words as the card on the app's page and the confirm). Chat is read-only on
+   purpose: a message sent through the tunnel would run an agent as the owner, and
+   that agent can do whatever the owner's agents can do, so such a grant would not
+   be a secret boundary. A delegated send stays refused until the owner approves
+   that exposure by name. It is stored in `member-records/app-dashboard-proxy/` (masked in every
    sandbox mode), never pre-granted, counts only while the owner-enable marker
    stands and the owner has not disabled the app, and is removed on a disable and
    an uninstall. It reaches a backend at its next start.
@@ -477,11 +482,23 @@ Request flow:
    A READ reaches it only when `dashboard/delegated_route_tags.py` tags the route
    `allow`; a WRITE (any method but GET and HEAD) only when
    `delegated_scope.ALLOW_WRITES` lists it (the tag table holds reads only; writes
-   are deny by default). On `POST /api/chat/slots` and `POST /api/chat` the body may
-   set only the fields in `delegated_scope.BODY_FIELDS`, and a send whose message
-   opens with `/` is refused, so no mode, agent, model, project or chat command rides
-   along (`delegated_scope.body_refusal`: `enforce_delegated` reads a send's body,
-   the slot-create handler checks a create's). A GET that returns a stored credential (`/api/mcp/custom/<name>`,
+   are deny by default). The list holds the token's own refresh and logout, the
+   token's own app routes, slot stop and interrupt, and three UI-order saves; it
+   holds no route that can start an agent turn, queue or edit a message, or run a
+   tool (`POST /api/chat` and `POST /api/chat/slots` are refused, and
+   `test_allow_writes_is_exactly_the_reviewed_set` pins the set, so a new row needs
+   a security review first). A GET that serves host file content, lists a directory
+   outside the app (`/api/file-read`, `/api/file-raw`, `/api/file-download`,
+   `/api/browse-files`, `/api/project/*`, `/api/outbox/<file>`), or exports the
+   install or the memory (`/api/portability/export`, `/api/memory/provider/export`)
+   is `deny`; one that is allowed anyway sits in
+   `delegated_scope.CONTENT_READ_REVIEWED` with a reason, and the route walk fails on
+   any other. A delegated request is never the owner's own view:
+   `is_host_owner_dashboard_request` answers False for it, so every redaction seam
+   redacts in full, and `GET /api/mcp` masks launch arguments like headers.
+   `/api/apps/<name>/config` and `/manifest` are the token's own app only. Each
+   refusal and each allowed write leaves a SEL row (`delegated_scope`) that names the
+   app and the route template, never the raw path. A GET that returns a stored credential (`/api/mcp/custom/<name>`,
    `/api/connections/mint`, `/api/config/kirocrew`, `/api/webhooks`, the channel
    `/config` reads) is `deny`. The credential set
    (`/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`,

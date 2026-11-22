@@ -961,8 +961,17 @@ def is_host_owner_dashboard_request(request: web.Request) -> bool:
 
     The machine owner and nobody else. Ask :func:`is_owner_dashboard_request`
     to gate a route; this form only tells the owner apart from a teammate who
-    already passed that gate.
+    already passed that gate. A delegated (``via_app``) token passes that gate as the
+    owner but is never the owner's own view, so every redaction seam that asks this
+    form redacts for it in full.
     """
+    if request.get("via_app"):
+        return False
+    return _is_local_owner_identity(request)
+
+
+def _is_local_owner_identity(request: web.Request) -> bool:
+    """The configured or implicit local owner subject, a delegated token included."""
     state = request.app["state"]
     owner_id = str(getattr(state, "owner_id", "") or "")
     caller = str(request.get("user") or "")
@@ -981,6 +990,8 @@ def is_owner_dashboard_request(request: web.Request) -> bool:
     (:mod:`kiro_crew.shared_crew.teammate_access`).
     """
     if is_host_owner_dashboard_request(request):
+        return True
+    if request.get("via_app") and _is_local_owner_identity(request):
         return True
     from kiro_crew.shared_crew.teammate_access import teammate_passes_owner_gate
 

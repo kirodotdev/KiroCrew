@@ -246,12 +246,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    # A delegated (``via_app``) token creates a plain slot: no mode, agent, model or project.
-    from kiro_crew.dashboard.delegated_scope import body_refusal
-
-    delegated_refusal = body_refusal(request, body)
-    if delegated_refusal is not None:
-        return delegated_refusal
     # A session on a connected crew is created ON that crew and opened here
     # through its window; this hub never mints or adopts a relay binding.
     # Refused before anything is read or written, so a stale client cannot stamp

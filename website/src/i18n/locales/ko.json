@@ -12052,7 +12052,7 @@
       "dashboard_access_restart": "앱 다시 시작",
       "dashboard_access_restarted": "앱을 다시 시작했습니다.",
       "dashboard_access_restart_failed": "앱이 다시 시작되지 않았습니다. 위의 상태를 확인하세요.",
-      "dashboard_access_scope": "이 접근 권한으로 앱은 대시보드와 채팅을 읽고, 사용자로서 에이전트를 실행하는 채팅 메시지를 보낼 수 있습니다. 설정, 자격 증명, 앱, 터미널, 승인은 변경할 수 없습니다. 앱을 끄면 이 접근 권한이 제거됩니다.",
+      "dashboard_access_scope": "이 접근 권한으로 앱은 대시보드와 채팅을 읽고, 실행 중인 채팅 턴을 중지할 수 있습니다. 채팅 메시지 전송, 설정, 자격 증명, 앱, 터미널, 승인 변경은 할 수 없습니다. 앱을 끄면 이 접근 권한이 제거됩니다.",
       "dashboard_access_load_failed": "이 앱의 대시보드 접근 권한을 불러오지 못했습니다.",
       "grants_reconsent_link_hosts": "링크 호스트: 앱의 호버 카드가 채팅 메시지에서 이 사이트로 가는 링크를 볼 수 있게 합니다.",
       "grants_reconsent_link_patterns": "텍스트 패턴: 앱의 호버 카드가 이 패턴과 일치하는 채팅 텍스트를 볼 수 있게 합니다.",

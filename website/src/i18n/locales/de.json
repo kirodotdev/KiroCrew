@@ -12325,7 +12325,7 @@
       "dashboard_access_restart": "App neu starten",
       "dashboard_access_restarted": "App neu gestartet.",
       "dashboard_access_restart_failed": "Die App wurde nicht wieder gestartet. Prüfe ihren Status oben.",
-      "dashboard_access_scope": "Mit diesem Zugriff kann die App dein Dashboard und deine Chats lesen und Chat-Nachrichten senden, die Agenten als du ausführen. Sie kann keine Einstellungen, Zugangsdaten, Apps, das Terminal oder Genehmigungen ändern. Wird die App ausgeschaltet, endet dieser Zugriff.",
+      "dashboard_access_scope": "Mit diesem Zugriff kann die App dein Dashboard und deine Chats lesen und einen laufenden Chat-Durchlauf stoppen. Sie kann keine Chat-Nachrichten senden und keine Einstellungen, Zugangsdaten, Apps, das Terminal oder Genehmigungen ändern. Wird die App ausgeschaltet, endet dieser Zugriff.",
       "dashboard_access_load_failed": "Der Dashboard-Zugriff dieser App konnte nicht geladen werden.",
       "grants_reconsent_link_hosts": "Link-Hosts: erlaubt den Hover-Karten der App, Links zu diesen Seiten in Chat-Nachrichten zu sehen.",
       "grants_reconsent_link_patterns": "Textmuster: erlaubt den Hover-Karten der App, Chat-Text zu sehen, auf den diese Muster passen.",

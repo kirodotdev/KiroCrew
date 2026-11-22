@@ -249,7 +249,7 @@ def prompt_text(app_name: str) -> dict[str, str] | None:
         "text": (
             f"Allow {app_name} {version} (registry {registry}, source {source}) "
             "to use this dashboard on your behalf? It can read your dashboard and chats "
-            "and send chat messages that run agents as you. It cannot change settings, "
+            "and stop a running chat turn. It cannot send chat messages, change settings, "
             "credentials, apps, terminal or approvals. Turning the app off removes this access."
         ),
     }

@@ -230,112 +230,6 @@ def test_a_write_method_is_refused_on_a_read_route_for_every_concrete_method():
     assert allowed("GET", "/api/status") is True
 
 
-class _BodyReq(dict):
-    """A request as the body gate sees it: the canonical path and the delegated mark."""
-
-    def __init__(self, canonical: str, via_app: str = _APP) -> None:
-        super().__init__(via_app=via_app)
-        self.method = "POST"
-        self.match_info = type(
-            "M",
-            (),
-            {"route": type("R", (), {"resource": type("Res", (), {"canonical": canonical})()})()},
-        )()
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        {"name": "x"},
-        {"name": "x", "title": "t", "folder_id": "f", "memory_mode": "incognito"},
-        {},
-    ],
-)
-def test_a_slot_create_with_only_plain_fields_passes_the_body_gate(sel_rows, body):
-    from kiro_crew.dashboard.delegated_scope import body_refusal
-
-    assert body_refusal(_BodyReq("/api/chat/slots"), body) is None
-
-
-@pytest.mark.parametrize(
-    "field",
-    [
-        "mode",
-        "agent",
-        "agent_kind",
-        "app_agent_owner",
-        "model",
-        "project_from_slot",
-        "work_item",
-        "instance_id",
-        "artifact",
-        "embed_app",
-        "app_launch",
-        "a_field_nobody_knows",
-    ],
-)
-def test_a_slot_create_that_sets_anything_else_is_refused(sel_rows, field):
-    from kiro_crew.dashboard.delegated_scope import body_refusal
-
-    refused = body_refusal(_BodyReq("/api/chat/slots"), {"name": "x", field: "yolo"})
-    assert refused is not None and refused.status == 403
-    assert field in sel_rows[0]["resources"]
-
-
-@pytest.mark.parametrize(
-    "message",
-    ["/trust all", "/mcp add evil", "  /agent switch x", "/approval yolo", "/compact"],
-)
-def test_a_send_that_opens_with_a_slash_is_refused(sel_rows, message):
-    from kiro_crew.dashboard.delegated_scope import body_refusal
-
-    refused = body_refusal(_BodyReq("/api/chat"), {"message": message, "slot": "s"})
-    assert refused is not None and refused.status == 403
-
-
-@pytest.mark.parametrize(
-    "field",
-    ["agent", "mode", "color_theme", "banner", "theme_consent", "memory_mode", "steer", "meta"],
-)
-def test_a_send_that_sets_anything_beyond_the_message_is_refused(sel_rows, field):
-    from kiro_crew.dashboard.delegated_scope import body_refusal
-
-    refused = body_refusal(_BodyReq("/api/chat"), {"message": "hi", field: "x"})
-    assert refused is not None and refused.status == 403
-
-
-def test_a_plain_send_passes_and_other_routes_and_tokens_are_not_gated(sel_rows):
-    from kiro_crew.dashboard.delegated_scope import body_refusal
-
-    assert (
-        body_refusal(_BodyReq("/api/chat"), {"message": "hello /not/a/command", "slot": "s"})
-        is None
-    )
-    assert body_refusal(_BodyReq("/api/chat"), {"message": "hi", "send_now": True}) is None
-    assert body_refusal(_BodyReq("/api/chat/pinned-order"), {"anything": 1}) is None
-    assert (
-        body_refusal(_BodyReq("/api/chat", via_app=""), {"message": "/trust", "agent": "a"}) is None
-    )
-
-
-@pytest.mark.asyncio
-async def test_the_slot_create_route_refuses_a_mode_for_a_delegated_token(state, granted):
-    async with _serve(state) as client:
-        resp = await client.post("/api/chat/slots", params=_delegated(), json={"mode": "yolo"})
-        assert resp.status == 403, await resp.text()
-        assert (await resp.json())["code"] == _REFUSED_CODE
-
-
-@pytest.mark.asyncio
-async def test_the_send_route_refuses_a_slash_command_for_a_delegated_token(state, granted):
-    async with _serve(state) as client:
-        resp = await client.post(
-            "/api/chat", params=_delegated(), json={"message": "/trust all", "slot": "s"}
-        )
-        assert resp.status == 403, await resp.text()
-        assert (await resp.json())["code"] == _REFUSED_CODE
-
-
 class _Match(dict):
     def __init__(self, canonical: str, name: str) -> None:
         super().__init__(name=name)
@@ -443,3 +337,109 @@ async def test_a_cookie_fails_after_the_gateway_secret_rotates(state, real_grant
         assert (await client.get("/api/version", params=old)).status == 200
         dashboard_proxy.set_gateway_secret("another-gateway-secret-in-words")
         assert (await client.get("/api/version")).status == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,body",
+    [("/api/chat", {"message": "hello", "slot": "s"}), ("/api/chat/slots", {"name": "x"})],
+)
+async def test_chat_is_read_only_through_the_tunnel(state, granted, path, body):
+    """A message or a new slot starts work that runs as the owner: refused, plain body or not."""
+    async with _serve(state) as client:
+        resp = await client.post(path, params=_delegated(), json=body)
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/file-read?path=/etc/hostname",
+        "/api/file-raw?path=/etc/hostname",
+        "/api/file-download?path=/etc/hostname",
+        "/api/browse-files?path=/",
+        "/api/portability/export",
+        "/api/memory/provider/export",
+    ],
+)
+async def test_a_delegated_token_cannot_read_host_files_or_a_whole_export(state, granted, path):
+    async with _serve(state) as client:
+        resp = await client.get(path, params=_delegated())
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+def _owner_request(**claims):
+    from types import SimpleNamespace
+
+    class _Req(dict):
+        app = {"state": SimpleNamespace(owner_id="")}
+
+    return _Req(user="local-app", app="", **claims)
+
+
+def test_a_delegated_request_is_never_the_owners_own_view():
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_host_owner_dashboard_request,
+        is_owner_dashboard_request,
+        owner_view_for_request,
+    )
+
+    owner = _owner_request()
+    assert is_host_owner_dashboard_request(owner) and owner_view_for_request(owner)
+    delegated = _owner_request(via_app=_APP)
+    assert not is_host_owner_dashboard_request(delegated)
+    assert not owner_view_for_request(delegated)
+    # The owner gate is unchanged: the token still reads what the owner reads, redacted.
+    assert is_owner_dashboard_request(delegated)
+
+
+def test_a_delegated_request_is_read_by_the_redaction_audience_as_a_non_owner():
+    from kiro_crew import redaction_seams
+    from kiro_crew.dashboard.redaction_audience import request_audience
+
+    assert request_audience(_owner_request()) == redaction_seams.OWNER_DASHBOARD
+    assert request_audience(_owner_request(via_app=_APP)) == redaction_seams.NON_OWNER
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tail", ["config", "manifest"])
+async def test_a_delegated_token_cannot_read_another_apps_config_or_manifest(
+    state, granted, sel_rows, tail
+):
+    async with _serve(state) as client:
+        resp = await client.get(f"/api/apps/other-app/{tail}", params=_delegated())
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+        own = await client.get(f"/api/apps/{_APP}/{tail}", params=_delegated())
+        assert own.status != 403 or (await own.json()).get("code") != _REFUSED_CODE
+    assert [r["resources"] for r in sel_rows if "other-app" in r["resources"]]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_row_names_the_route_template_not_the_raw_path(
+    granted, sel_rows, monkeypatch
+):
+    """The frame token sits in the raw path of /app-frame/...; it must not reach the log."""
+    from kiro_crew.dashboard import token_auth_tokens
+    from kiro_crew.dashboard.delegated_scope import enforce_delegated
+
+    monkeypatch.setattr(token_auth_tokens, "token_via_app_unverified", lambda _t: _APP)
+    canonical = "/app-frame/{name}/{point}/{point_id}/{frame_id}/{token}"
+    raw = "/app-frame/other-app/p/1/f/FRAMETOKEN123"
+    refused = await enforce_delegated(_FakeReq(canonical, "other-app"), raw)
+    assert refused is not None and refused.status == 403
+    resources = sel_rows[0]["resources"]
+    assert "FRAMETOKEN123" not in resources and canonical in resources
+
+
+@pytest.mark.asyncio
+async def test_an_allowed_delegated_write_leaves_a_row_naming_the_app(state, granted, sel_rows):
+    async with _serve(state) as client:
+        await client.post("/api/chat/pinned-order", params=_delegated(), json={})
+    rows = [r for r in sel_rows if r.get("operation") == "delegated_scope"]
+    assert len(rows) == 1
+    assert rows[0]["caller"] == _APP and rows[0]["outcome"] == "allowed"
+    assert rows[0]["resources"] == "POST /api/chat/pinned-order"
