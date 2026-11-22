@@ -31,11 +31,12 @@
      a leading Simplified Chinese face would force Japanese (and other untagged
      CJK) through the wrong glyph forms. html:lang(zh-CN/ja/ko) below swap
      isolated regional faces for that UI language. A bare :lang(zh) is avoided
-     — it also matches zh-TW/zh-HK. They lead each stack; unicode-range is what
-     makes leading safe. 'KC Straight Quotes' leads every sans variant for the
-     same reason, fixing the straight-quote glyph (#6374) in every UI language.
-     It is sans-only: the mono stacks resolve to JetBrains Mono, whose straight
-     quotes are already correct. */
+     — it also matches zh-TW/zh-HK. They lead each stack except the rich-text
+     composer's copies in chat-transcript.css (see font-faces.css); unicode-range
+     is what makes leading safe. 'KC Straight Quotes' leads every sans variant
+     for the same reason, fixing the straight-quote glyph (#6374) in every UI
+     language. It is sans-only: the mono stacks resolve to JetBrains Mono, whose
+     straight quotes are already correct. */
   --script-fallbacks:'KC Straight Quotes','KC Kana Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Kana Mono Fallback','KC Kana Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   /* An installed theme pack fills --theme-font-sans / --theme-font-mono with its

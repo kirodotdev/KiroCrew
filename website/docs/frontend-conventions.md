@@ -975,8 +975,9 @@ files own it:
   - `chat-transcript.css` owns what a chat message paints and how it streams in.
     Strays: the composer's prompt-optimize overlay and approval glow, the update
     card's indeterminate progress bar, `.animate-shimmer`, the custom-font
-    ligature toggle, the Kiro-theme overrides of nav, session-row and shell
-    chrome, and the workspace-tree token mapping.
+    ligature toggle, the rich-text composer's font stacks, the Kiro-theme
+    overrides of nav, session-row and shell chrome, and the workspace-tree token
+    mapping.
   - `scrollbars-and-touch-hit.css` owns the horizontal edge-fade mask for code
     and diff blocks and the 44px touch hit areas. Strays: the send-button sweep (`.btn-sweep`), the card
     hover glow (`.card-glow`) and the stat top-line accent (`.stat-accent`).
