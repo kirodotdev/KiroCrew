@@ -48,25 +48,18 @@ def cased_view(text: str) -> "str | None":
     bash compares a body's lines with its tag case-sensitively, and the floors read a
     lower-cased copy of the command, so the tag and the closing lines are read on the
     submitted text at the same offsets. Outside a gate call *text* is its own case.
-    Inside one the case is known only when *text* is found in the command as submitted
-    in one spelling: not when nothing was kept (lower-casing changed the length), when
-    *text* was derived (escapes decoded), or when a lower-case decoy holds it too.
+    Inside one the case is known only when *text* IS the command as submitted (or
+    as folded), so the walk reads the submitted text at its own offsets. Any other
+    text, such as a slice, or a payload with its quotes or escapes removed, may match
+    a lower-case decoy elsewhere in the command, so its case is unknown (None).
     """
     memo = _CALL_VIEWS.get()
     if memo is None:
         return text
     key = ("heredoc_cased_view", text)
     if key not in memo:
-        seen: "set[str | None]" = set()
-        word, found = text.lower(), 0
-        for form, low in memo.get(_SUBMITTED, ()):
-            at = low.find(word)
-            while at >= 0 and len(seen) < 2 and found < 64:  # bounded: unknown past it
-                seen.add(form[at : at + len(text)])
-                at, found = low.find(word, at + 1), found + 1
-            if at >= 0:
-                seen.add(None)  # stopped early: more spellings may follow
-        memo[key] = seen.pop() if len(seen) == 1 else None
+        word = text.lower()
+        memo[key] = next((form for form, low in memo.get(_SUBMITTED, ()) if low == word), None)
     return memo[key]  # type: ignore[no-any-return]
 
 

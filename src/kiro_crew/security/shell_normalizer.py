@@ -1026,20 +1026,19 @@ def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
 
 
 def _heredoc_line_pieces(command: str) -> "list[str]":
-    """*command* cut before each heredoc body and where its closing line ends, with each
-    live newline read as `` ; ``, in one walk.
+    """*command* cut before each heredoc body and where its closing line starts and
+    ends, with each live newline read as `` ; ``, in one walk.
 
     The quote walk starts unquoted after a body (:func:`_iter_shell_chars`), and shlex
-    reads each piece on its own, so a lone ``'`` or ``"`` in a body reaches neither
-    the line before it nor the lines after it. The body is still a piece: a shell fed
-    it is judged as before.
+    reads each piece on its own, so a lone ``'`` or ``"`` in a body or in its closing
+    line reaches no other piece. A shell fed the body is judged as before.
     """
-    bodies: "list[tuple[int, int]]" = []
+    bodies: "list[tuple[int, int, int]]" = []
     pieces: "list[str]" = []
     out: "list[str]" = []
-    cut = 0  # the next cut is bodies[cut // 2][cut % 2]
+    cut = 0  # the next cut is bodies[cut // 3][cut % 3]
     for step in _iter_shell_chars(command, bodies=bodies):
-        while cut < 2 * len(bodies) and step.offset >= bodies[cut // 2][cut % 2]:
+        while cut < 3 * len(bodies) and step.offset >= bodies[cut // 3][cut % 3]:
             pieces.append("".join(out))
             out, cut = [], cut + 1
         out.append(" ; " if step.active and step.char == "\n" else step.text)

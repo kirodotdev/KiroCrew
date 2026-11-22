@@ -587,7 +587,7 @@ def _iter_shell_chars(
     ansi: bool = False,
     start: int = 0,
     *,
-    bodies: "list[tuple[int, int]] | None" = None,
+    bodies: "list[tuple[int, int, int]] | None" = None,
     plain: bool = False,
 ) -> "Iterator[_ShellChar]":
     """THE shell quote/escape state machine. Every reading of shell quoting walks
@@ -609,7 +609,7 @@ def _iter_shell_chars(
 
     *state* and *ansi* resume a walk, so a quoted word spanning whitespace is read
     without desyncing; *start* resumes it at that offset of *text* without copying
-    the rest. *bodies*, when given, receives ``(start, end)`` of each closed body.
+    the rest. *bodies*, when given, receives ``(start, end, tail)`` of each closed body.
     *plain* reads quotes only, for the heredoc reader's own walk.
     """
     i = start
@@ -623,13 +623,13 @@ def _iter_shell_chars(
         reader = heredoc_stream(text, start, state, ansi, docs)
     reach, end, told = start - 1, 0, len(docs)
     if bodies is not None:
-        bodies += [(doc.start, doc.tail) for doc in docs if doc.tail < n]
+        bodies += [(doc.start, doc.end, doc.tail) for doc in docs if doc.end < n]
     while i < n:
         while reader is not None and reach < i:  # the reader stays just ahead of the walk
             reach = next(reader, n)
             reader = None if reach >= n else reader
             if bodies is not None:
-                bodies += [(doc.start, doc.tail) for doc in docs[told:] if doc.tail < n]
+                bodies += [(doc.start, doc.end, doc.tail) for doc in docs[told:] if doc.end < n]
                 told = len(docs)
         while end < len(docs) and i >= docs[end].tail:
             state, ansi, dollar_run = 0, False, 0

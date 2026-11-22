@@ -1131,9 +1131,10 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   lower-cased copy, so `is_denied` keeps the command as submitted for its call
   (`keep_submitted_case`, in the call memo) and the reader reads the tag and the
   closing lines on that text at the same offsets (`cased_view`; a character such as
-  `İ` that lower-cases to two is kept in its lower-cased form). When the case is
-  unknown, as for a payload with its escapes removed or a text the command holds in
-  two cases (a lower-case copy before the real one), a tag with letters opens a body
+  `İ` that lower-cases to two is kept in its lower-cased form). The case is known
+  only for the whole command as submitted or folded. For any other text, such as a
+  slice or a payload with its quotes or escapes removed (which could match a
+  lower-case copy elsewhere in the command), the case is unknown, and a tag with letters opens a body
   only when one line alone can close it: bash then either closes it there or nowhere.
   With a second candidate line, and for a tag word that holds `$(`, `${`, `$[`, `$$`
   or a backtick (bash keeps those in the word as written), no body opens, and the
@@ -2820,9 +2821,13 @@ this, the `$(…)` close (`_matching_close_paren`) and backtick close
 reads a heredoc there the same way, so a quote in its body does not hide the `)`
 that closes the substitution. The body search reads raw lines and never the
 substitution close, and each walk reads each body once, so the cost stays linear in
-the text. `_self_tokens` tokenizes the text in pieces cut before each body and
-where its closing line ends (`shell_normalizer._heredoc_line_pieces`, in the same
-walk), so `shlex` does not pair a quote in a body with one outside it. The ssh
+the text. `_self_tokens` tokenizes the text in pieces cut before each body, where
+its closing line starts and where that line ends
+(`shell_normalizer._heredoc_line_pieces`, in the same walk), so `shlex` does not
+pair a quote in a body with one outside it. The closing line is a piece of its own
+and never part of the body's piece, for every tag: bash feeds a shell only the lines
+before it, and a closing line that holds a quote character would otherwise leave
+the body's piece with an open quote that `shlex` cannot split. The ssh
 floor's separator mask reads the same bodies (`heredoc_body_spans`): it keeps a
 body's line breaks and starts fresh after its closing line.
 The existing deny catalog, nested-payload checks and real self-kill checks

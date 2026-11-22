@@ -319,8 +319,9 @@ def test_ssh_to_another_host_after_quoted_body_is_allowed(monkeypatch):
     [
         # A body that opens inside a double quote is not cut: the walk crosses it.
         ("echo \"$(cat <<'E{i}'\nit's\nE{i}\n)\"\n", 0),
-        # A body inside an unquoted substitution is cut where it starts and ends.
-        ("x=$(cat <<'E{i}'\nit's\nE{i}\n)\n", 2),
+        # A body inside an unquoted substitution is cut where it starts, where its
+        # closing line starts and where that line ends.
+        ("x=$(cat <<'E{i}'\nit's\nE{i}\n)\n", 3),
     ],
 )
 def test_heredoc_pieces_walk_the_text_once(line, cuts):
@@ -341,7 +342,8 @@ def test_heredoc_pieces_walk_the_text_once(line, cuts):
 
     pieces = shell_normalizer._heredoc_line_pieces(Counted(command))
     assert "".join(pieces).replace(" ; ", "\n") == command
-    assert len(pieces) == 400 * cuts + 3
+    assert len(pieces) == 400 * cuts + 4
+    assert pieces[-2] == "A"  # the closing line is a piece of its own
     assert pieces[-1] == " ; ls ; "
     assert reads
     # The walk, body search included, reads each character a bounded number of
@@ -445,6 +447,15 @@ def test_closing_line_matches_tag_case(cmd, rule):
         (f"bash -c \"cat <<EOF\n'\n\\x65of\n'\nEOF\n{_RESTART}\n# '\"", "self-protection-restart"),
     ]
     + [
+        # A payload with its quotes removed must not take its case from a lower-case
+        # copy of it elsewhere in the command (here inside the ``echo``).
+        (
+            f'echo \'cat <<EOF\n"\nEOF\n"\nEOF\n{_RESTART}\n# "\' ; '
+            f'bash -c "cat <<EOF\n\\"\neof\n\\"\nEOF\n{_RESTART}\n# \\""',
+            "self-protection-restart",
+        ),
+    ]
+    + [
         # bash keeps ``$(x)`` and ``$$`` in the tag word as written.
         (f"cat <<{tag}\n'\n{decoy}\n'\n{close}\n{command}\n# '", rule)
         for tag, decoy, close in (("$(x)", "$", "$(x)"), ("$$'\\x41'", "$A", "$$\\x41"))
@@ -473,3 +484,47 @@ def test_a_tag_read_unlike_bash_opens_no_body(cmd, rule):
 )
 def test_comment_shift_and_cased_tag_allow_ordinary_next_lines(cmd):
     assert _floor(cmd) is None
+
+
+# A heredoc whose TAG holds a quote character (``<<'"'``) feeds its body to the inner
+# ``bash``, which runs it. The closing line is no part of that body: when the piece
+# shlex read for the body kept it, its lone ``"`` left the piece with an open quote,
+# so shlex split it on whitespace, left ``kiro'crew'`` unrecognized, and the
+# self-restart went through while bash ran it. Every tag spelling and every end of
+# text is covered, for the restart floor and the ssh floor alike.
+_Q = "'"
+_RESTART_Q = f"kiro{_Q}crew{_Q} restart"
+_SSH_Q = f"s{_Q}s{_Q}h -p 22 localhost id"
+_QUOTE_TAGS = [
+    ("<<'\"'", '"'),
+    ('<<"\'"', "'"),
+    ('<<\\"', '"'),
+    ("<<\\'", "'"),
+    ("<<-'\"'", '\t"'),
+    ("<<'a\"'", 'a"'),
+]
+_ENDS = ['\n# "\n', "\n# '\n", "\n", ""]
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        f'bash <<\'"\'\n{_RESTART_Q}\n"\n# "\n',
+        f"bash <<'\"'\n{_RESTART_Q}\n\"\n",
+        f"bash <<'\"'\n{_RESTART_Q}\n\"",
+        *(f"bash {tag}\n{_RESTART_Q}\n{close}{end}" for tag, close in _QUOTE_TAGS for end in _ENDS),
+    ],
+)
+def test_quote_char_tag_body_run_by_shell_is_refused(cmd):
+    head = _floor(cmd)
+    by_pattern = {r.pattern: r.id for r in security.BUILTIN_DENIED_RULES}
+    assert by_pattern.get(head, head) == "self-protection-restart"
+
+
+@pytest.mark.parametrize(
+    "cmd", [f"sh -s {tag}\n{_SSH_Q}\n{close}{end}" for tag, close in _QUOTE_TAGS for end in _ENDS]
+)
+def test_quote_char_tag_ssh_body_run_by_shell_is_refused(cmd):
+    head = _floor(cmd)
+    by_pattern = {r.pattern: r.id for r in security.BUILTIN_DENIED_RULES}
+    assert by_pattern.get(head, head) == "sandbox-escape-ssh-self"
