@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { calendarDays, filterDay, TokenDailyChart } from '../pages/overview/TokenDailyChart'
 
 const ALL = '__all__'
@@ -212,6 +212,90 @@ describe('TokenDailyChart figures for assistive technology', () => {
     const { container } = render(<TokenDailyChart history={days} />)
     const tooltip = container.querySelector('.pointer-events-none')
     expect(tooltip?.getAttribute('aria-hidden')).toBe('true')
+  })
+})
+
+// The bars took no focus and each day's tooltip opened only under a pointer, so a
+// keyboard user never saw a day's figures. The bar row is one slider: the keys
+// step the selected day, its value text reads that day's figures, and under
+// keyboard focus only the selected day's tooltip is shown (the CSS itself is
+// checked in a real browser; jsdom compiles none, so this reads the classes).
+describe('TokenDailyChart keyboard path', () => {
+  it('is one tab stop whose keys step the day and pick the one tooltip shown', () => {
+    const days = [
+      { ...sampleDay, date: '2026-05-13' },
+      { ...sampleDay, date: '2026-05-16', costUsd: 0.07 },
+    ]
+    const { container } = render(<TokenDailyChart history={days} endDate="2026-05-16" />)
+    const slider = screen.getByRole('slider', { name: 'Daily Token Usage' })
+    expect(slider.getAttribute('tabindex')).toBe('0')
+    expect(slider.querySelectorAll('[tabindex], button, a, input')).toHaveLength(0)
+    const tooltips = () => Array.from(container.querySelectorAll('.pointer-events-none'))
+    const shown = () => tooltips().flatMap((t, i) => (t.className.includes('group-focus-visible/days:block') ? [i] : []))
+    const press = (key: string) => fireEvent.keyDown(slider, { key })
+    const at = () => Number(slider.getAttribute('aria-valuenow'))
+
+    act(() => slider.focus())
+    expect(at()).toBe(13)
+    expect(slider.getAttribute('aria-valuetext')).toContain('2026-05-16')
+    expect(slider.getAttribute('aria-valuetext')).toContain('$0.07')
+    expect(shown()).toEqual([13])
+    // Every other tooltip is hidden under keyboard focus, over the pointer's hover.
+    for (const t of tooltips().slice(0, 13)) {
+      expect(t.className).toContain('hidden [.group:hover_&]:block')
+      expect(t.className).toContain('group-focus-visible/days:hidden!')
+    }
+
+    const steps: Array<[string, number]> = [
+      ['ArrowLeft', 12], ['ArrowDown', 11], ['ArrowUp', 12], ['ArrowRight', 13], ['ArrowRight', 13],
+      ['Home', 0], ['ArrowLeft', 0], ['End', 13], ['ArrowLeft', 12], ['ArrowLeft', 11], ['ArrowLeft', 10],
+    ]
+    for (const [key, want] of steps) {
+      press(key)
+      expect([key, at()]).toEqual([key, want])
+      expect(shown()).toEqual([want])
+    }
+    expect(slider.getAttribute('aria-valuetext')).toContain('2026-05-13')
+    expect(slider.getAttribute('aria-valuetext')).toContain('$0.05')
+
+    press('Escape')
+    expect(shown()).toEqual([])
+    expect(screen.getAllByRole('listitem')).toHaveLength(14)
+  })
+
+  // Centred on its bar, an end day's tooltip would cross the card's
+  // `overflow-hidden` edge, and the keyboard lands on the last day. Under keyboard
+  // focus its anchor and shift are both the day's share of the row: left-aligned on
+  // the first day, right-aligned on the last, centred on a lone bar. A pointer's
+  // stays centred on its bar.
+  it('keeps the keyboard-selected tooltip inside the card, the pointer one centred', () => {
+    const tooltipsOf = (container: HTMLElement) => Array.from(container.querySelectorAll<HTMLElement>('.pointer-events-none'))
+    const place = (t: HTMLElement) => [t.style.getPropertyValue('--slide'), t.style.getPropertyValue('--shift')]
+    const { container, unmount } = render(<TokenDailyChart history={[sampleDay]} endDate="2026-05-16" />)
+    const tooltips = tooltipsOf(container)
+    expect(tooltips).toHaveLength(14)
+    for (const t of tooltips) {
+      const classes = t.className.split(/\s+/)
+      expect(classes).toEqual(expect.arrayContaining([
+        'left-1/2', '-translate-x-1/2',
+        'group-focus-visible/days:left-[var(--slide)]', 'group-focus-visible/days:translate-x-[var(--shift)]',
+      ]))
+      expect(t.style.left).toBe('')
+      expect(t.style.transform).toBe('')
+    }
+    expect(place(tooltips[0])).toEqual(['0%', '0%'])
+    expect(place(tooltips[13])).toEqual(['100%', '-100%'])
+    const [slide, shift] = place(tooltips[6])
+    expect(slide).toMatch(/%$/)
+    expect(shift).toMatch(/%$/)
+    expect(parseFloat(slide)).toBeCloseTo(600 / 13)
+    expect(parseFloat(shift)).toBeCloseTo(-600 / 13)
+    unmount()
+
+    // An unparsable day takes the fallback, which draws one bar per entry.
+    const lone = tooltipsOf(render(<TokenDailyChart history={[{ ...sampleDay, date: '2026-02-31' }]} />).container)
+    expect(lone).toHaveLength(1)
+    expect(place(lone[0])).toEqual(['50%', '-50%'])
   })
 })
 
