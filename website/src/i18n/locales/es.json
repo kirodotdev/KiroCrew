@@ -8483,7 +8483,7 @@
       "agent_ready_to_use": "{{name}} está instalado y listo para usar.",
       "sandbox_blocked_agent_detail": "{{productName}} ejecuta {{name}} dentro de un sandbox que mantiene tus credenciales fuera de su alcance. Este host no puede proporcionar ese sandbox ahora, así que {{name}} sigue sin estar disponible hasta que pueda.",
       "workload_pod_no_sandbox": "Este host no puede crear un sandbox, como en un pod Restricted de Kubernetes. Para que el contenedor sea el único límite, establece esto y reinicia {{productName}}.",
-      "container_boundary_guide": "Un pod de Crew de equipo: el contenedor es el límite",
+      "container_boundary_guide": "Un pod de Crew compartida: el contenedor es el límite",
       "sandbox_off_agent_detail": "{{productName}} ejecuta {{name}} dentro de un sandbox que mantiene tus credenciales fuera de su alcance, pero el sandbox está desactivado en la configuración de {{productName}} (agent.sandbox). Vuelve a activarlo para usar {{name}}.",
       "use_agent": "Usar {{name}}",
       "switching_agent": "Cambiando…",
@@ -8931,11 +8931,11 @@
         "moved_to_history_idle_body_many": "Se archivaron en el Historial {{count}} sesiones inactivas durante más de {{days}} día(s) para no superar el límite de {{limit}} sesiones. Abre el Historial para reanudar una.",
         "moved_to_history_idle_body_other": "Se archivaron en el Historial {{count}} sesiones inactivas durante más de {{days}} día(s) para no superar el límite de {{limit}} sesiones. Abre el Historial para reanudar una.",
         "relay_crew_added_title": "Te añadieron a {{name}}",
-        "relay_crew_added_body": "Ábrelo desde Crews de equipo en el selector de crew.",
-        "relay_crews_available_title_one": "Tienes acceso a {{count}} crew de equipo",
-        "relay_crews_available_title_many": "Tienes acceso a {{count}} crews de equipo",
-        "relay_crews_available_title_other": "Tienes acceso a {{count}} crews de equipo",
-        "relay_crews_available_body": "Ábrelos desde Crews de equipo en el selector de crew."
+        "relay_crew_added_body": "Ábrela desde Crews remotas en el selector de crew.",
+        "relay_crews_available_title_one": "Tienes acceso a {{count}} Crew compartida",
+        "relay_crews_available_title_many": "Tienes acceso a {{count}} Crews compartidas",
+        "relay_crews_available_title_other": "Tienes acceso a {{count}} Crews compartidas",
+        "relay_crews_available_body": "Ábrelas desde Crews remotas en el selector de crew."
       },
       "notificationBanner": {
         "dismiss_notification": "Descartar notificación",
@@ -21252,7 +21252,7 @@
         "channel_tip_terminal": "Cuando el shell de una pestaña de terminal sale con un error o se cierra a la fuerza. La pestaña se cierra, así que el código de salida se guarda aquí.",
         "channel_memory": "Fallos repetidos",
         "channel_tip_memory": "Una vez por semana, cuando un fallo de herramienta del agente se siguió repitiendo. Solo si activaste el aviso semanal en Memoria.",
-        "channel_tip_relay": "Una vez por crew, cuando un crew de equipo que puedes abrir a través del relay aparece por primera vez en tu lista."
+        "channel_tip_relay": "Una vez por crew, cuando una Crew compartida que puedes abrir a través del relay aparece por primera vez en tu lista."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

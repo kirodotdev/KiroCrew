@@ -8483,7 +8483,7 @@
       "agent_ready_to_use": "{{name}} est installé et prêt à l’emploi.",
       "sandbox_blocked_agent_detail": "{{productName}} exécute {{name}} dans un bac à sable qui garde tes identifiants hors de sa portée. Cet hôte ne peut pas fournir ce bac à sable pour le moment, donc {{name}} reste indisponible jusqu’à ce qu’il le puisse.",
       "workload_pod_no_sandbox": "Cet hôte ne peut pas créer de bac à sable, comme dans un pod Kubernetes Restricted. Pour que le conteneur soit la seule frontière, définis ceci et redémarre {{productName}}.",
-      "container_boundary_guide": "Un pod de Crew d'équipe : le conteneur est la frontière",
+      "container_boundary_guide": "Un pod de Crew partagée : le conteneur est la frontière",
       "sandbox_off_agent_detail": "{{productName}} exécute {{name}} dans un bac à sable qui garde tes identifiants hors de sa portée, mais le bac à sable est désactivé dans les paramètres de {{productName}} (agent.sandbox). Réactive-le pour utiliser {{name}}.",
       "use_agent": "Utiliser {{name}}",
       "switching_agent": "Changement en cours…",
@@ -8931,11 +8931,11 @@
         "moved_to_history_idle_body_many": "{{count}} sessions inactives depuis plus de {{days}} jour(s) ont été archivées dans l’Historique pour rester sous la limite de {{limit}} sessions. Ouvre l’Historique pour en reprendre une.",
         "moved_to_history_idle_body_other": "{{count}} sessions inactives depuis plus de {{days}} jour(s) ont été archivées dans l’Historique pour rester sous la limite de {{limit}} sessions. Ouvre l’Historique pour en reprendre une.",
         "relay_crew_added_title": "Tu as été ajouté à {{name}}",
-        "relay_crew_added_body": "Ouvre-la depuis Crews d’équipe, dans le sélecteur de crew.",
-        "relay_crews_available_title_one": "Tu as accès à {{count}} crew d’équipe",
-        "relay_crews_available_title_many": "Tu as accès à {{count}} crews d’équipe",
-        "relay_crews_available_title_other": "Tu as accès à {{count}} crews d’équipe",
-        "relay_crews_available_body": "Ouvre-les depuis Crews d’équipe, dans le sélecteur de crew."
+        "relay_crew_added_body": "Ouvre-la depuis Crews distantes, dans le sélecteur de crew.",
+        "relay_crews_available_title_one": "Tu as accès à {{count}} Crew partagée",
+        "relay_crews_available_title_many": "Tu as accès à {{count}} Crews partagées",
+        "relay_crews_available_title_other": "Tu as accès à {{count}} Crews partagées",
+        "relay_crews_available_body": "Ouvre-les depuis Crews distantes, dans le sélecteur de crew."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",
@@ -21252,7 +21252,7 @@
         "channel_tip_terminal": "Quand le shell d'un onglet de terminal se termine avec une erreur ou est tué. L'onglet se ferme, donc le code de sortie est conservé ici.",
         "channel_memory": "Échecs répétés",
         "channel_tip_memory": "Une fois par semaine, quand un échec d’outil de l’agent est revenu sans cesse. Seulement si tu as activé la note hebdomadaire dans Mémoire.",
-        "channel_tip_relay": "Une fois par crew, quand une crew d’équipe que tu peux ouvrir via le relais apparaît pour la première fois dans ta liste."
+        "channel_tip_relay": "Une fois par crew, quand une Crew partagée que tu peux ouvrir via le relais apparaît pour la première fois dans ta liste."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Enregistrer les métriques de performance sur cette machine uniquement.",

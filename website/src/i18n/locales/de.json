@@ -8273,7 +8273,7 @@
       "agent_ready_to_use": "{{name}} ist installiert und einsatzbereit.",
       "sandbox_blocked_agent_detail": "{{productName}} führt {{name}} in einer Sandbox aus, die deine Anmeldedaten außerhalb seiner Reichweite hält. Dieser Host kann diese Sandbox gerade nicht bereitstellen, daher bleibt {{name}} nicht verfügbar, bis er es kann.",
       "workload_pod_no_sandbox": "Dieser Host kann keine Sandbox aufbauen, etwa in einem Kubernetes-Restricted-Pod. Damit der Container die einzige Grenze ist, setze dies und starte {{productName}} neu.",
-      "container_boundary_guide": "Ein Team-Crew-Pod: Der Container ist die Grenze",
+      "container_boundary_guide": "Ein Pod einer geteilten Crew: Der Container ist die Grenze",
       "sandbox_off_agent_detail": "{{productName}} führt {{name}} in einer Sandbox aus, die deine Anmeldedaten außerhalb seiner Reichweite hält, aber die Sandbox ist in den Einstellungen von {{productName}} ausgeschaltet (agent.sandbox). Schalte sie wieder ein, um {{name}} zu verwenden.",
       "use_agent": "{{name}} verwenden",
       "switching_agent": "Wird gewechselt…",
@@ -8719,10 +8719,10 @@
         "moved_to_history_idle_body_one": "{{count}} Sitzung, die über {{days}} Tag(e) inaktiv war, wurde im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um sie fortzusetzen.",
         "moved_to_history_idle_body_other": "{{count}} Sitzungen, die über {{days}} Tag(e) inaktiv waren, wurden im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um eine davon fortzusetzen.",
         "relay_crew_added_title": "Du wurdest zu {{name}} hinzugefügt",
-        "relay_crew_added_body": "Öffne sie im Crew-Wechsler unter Team-Crews.",
-        "relay_crews_available_title_one": "Du hast Zugriff auf {{count}} Team-Crew",
-        "relay_crews_available_title_other": "Du hast Zugriff auf {{count}} Team-Crews",
-        "relay_crews_available_body": "Öffne sie im Crew-Wechsler unter Team-Crews."
+        "relay_crew_added_body": "Öffne sie im Crew-Wechsler unter Remote-Crews.",
+        "relay_crews_available_title_one": "Du hast Zugriff auf {{count}} geteilte Crew",
+        "relay_crews_available_title_other": "Du hast Zugriff auf {{count}} geteilte Crews",
+        "relay_crews_available_body": "Öffne sie im Crew-Wechsler unter Remote-Crews."
       },
       "notificationBanner": {
         "dismiss_notification": "Benachrichtigung schließen",
@@ -20722,7 +20722,7 @@
         "channel_tip_terminal": "Wenn die Shell eines Terminal-Tabs mit einem Fehler endet oder abgebrochen wird. Der Tab schließt sich, daher wird der Exit-Code hier aufbewahrt.",
         "channel_memory": "Wiederholte Fehler",
         "channel_tip_memory": "Einmal pro Woche, wenn ein Tool-Fehler des Agenten immer wiederkam. Nur wenn du den wöchentlichen Hinweis unter Gedächtnis eingeschaltet hast.",
-        "channel_tip_relay": "Einmal pro Crew, wenn eine Team-Crew, die du über das Relay öffnen kannst, zum ersten Mal in deiner Liste erscheint."
+        "channel_tip_relay": "Einmal pro Crew, wenn eine geteilte Crew, die du über das Relay öffnen kannst, zum ersten Mal in deiner Liste erscheint."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken nur auf diesem Rechner aufzeichnen.",

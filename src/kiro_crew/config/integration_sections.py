@@ -1277,14 +1277,14 @@ class TunnelConfig:
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
             "the caller named by the relay. Unset (the default) turns it on for a Crew "
             "on a personal sign-in (Relay Lease Credential empty or kiro-sign-in, no "
-            "Relay Lease Token Type, no workload identity), and for a team Crew (Relay "
+            "Relay Lease Token Type, no workload identity), and for a Shared Crew (Relay "
             "Lease Token Type API_KEY) or a host with a workload identity whose Relay "
             "Lease Credential names its credential; kirocrew remote-control off turns "
             "it off. True "
             "is on and false is off, whatever the Crew's credential. It holds a lease (from Relay "
             "Lease Service URL, or the built-in one when that is empty) on Relay Lease "
             "Credential, or on a personal Crew's own Kiro sign-in when that is empty. A "
-            "team Crew (Relay Lease Token Type API_KEY) or a host with a workload identity "
+            "Shared Crew (Relay Lease Token Type API_KEY) or a host with a workload identity "
             "connects only when Relay Lease Credential names its credential: without it no "
             "relay client starts and the tunnel status names the missing setting. While "
             "it is off, "
@@ -1314,7 +1314,7 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Lease Region",
             "The built-in lease service's Region for a Crew on a stored credential, such "
-            "as a team Crew's crew API key, which names no Region. Empty (the default) "
+            "as a Shared Crew's crew API key, which names no Region. Empty (the default) "
             "uses us-east-1; a Crew registered in another Region must name it, with "
             "kirocrew config set tunnel.relay_lease_region <Region>. Ignored "
             "on the Kiro sign-in. A workload identity's JWT-SVID lease uses it too.",
@@ -1332,7 +1332,7 @@ class TunnelConfig:
             "Center or your organization's identity provider), refreshed automatically. "
             "Empty (the default) uses that sign-in too, on a personal Crew: one with no "
             "Relay Lease Token Type, on a host with no agent workload identity. "
-            "A team Crew must name its crew API key here. "
+            "A Shared Crew on the Kiro relay must name its crew API key here. "
             "Never the credential itself; it is read for each call and never logged.",
             restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
@@ -1345,7 +1345,7 @@ class TunnelConfig:
             "Relay Lease Token Type",
             "The TokenType the Crew sends with its lease credential. Empty (the "
             "default) sends none, for an IAM Identity Center sign-in. EXTERNAL_IDP for "
-            "a token from an outside identity provider, API_KEY for a team Crew's crew "
+            "a token from an outside identity provider, API_KEY for a Shared Crew's crew "
             "API key. Must be empty with kiro-sign-in, which sends the type its sign-in "
             "needs. Any other value keeps Remote Control from starting.",
             restart=True,
