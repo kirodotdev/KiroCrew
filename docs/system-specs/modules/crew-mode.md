@@ -5867,10 +5867,11 @@ kiro-cli that lacks its engine.
   argument, so the gate only ever sees a confirmed pin and never raises
   (harness-parity H17, the one exception to H3). Displays that name the pin as
   stored read `crewmate_stored_pin`, which never raises.
-- **A `kiro` pin on a v3 kiro-cli.** A stored `kiro` pin moves onto KAS under the
-  same rule as a stored `agent.acp_backend: kiro` (`CrewBackendPin.resolve` calls
-  `kiro_cli_pick_backend()` when `agent.kas_bundle` is off), for the DM chat and
-  the workers alike, while the stored value still reads `kiro`
+- **A `kiro` pin on a v3 kiro-cli.** A stored `kiro` pin moves onto KAS on
+  kiro-cli's help verdict, without the v3 start a stored `agent.acp_backend: kiro`
+  waits for (`CrewBackendPin.resolve` calls `kiro_cli_listed_backend()` when
+  `agent.kas_bundle` is off), for the DM chat and the workers alike, while the
+  stored value still reads `kiro`
   (`docs/decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md`).
 - **Save time.** `PUT /api/agents/{name}` accepts `acp_backend` only as `""` or a
   harness in `crewmate_harness.crewmate_harnesses(config)`: selectable now
@@ -5878,7 +5879,7 @@ kiro-cli that lacks its engine.
   AND in `ACP_BACKENDS_MEMBER_CAPABILITIES` ∩ `ACP_BACKENDS_MEMBER_DISPATCH` ∩
   `ACP_BACKENDS_MATE_WORKER_KIT` (RFC O6 and 5.4: KAS, Claude Code, Codex, Pi; never
   deepseek), judged on the runtime the pin resolves to (so `kiro` counts as KAS only where
-  `kiro_cli_pick_backend()` moves it there), and that this host's session start
+  `kiro_cli_listed_backend()` moves it there), and that this host's session start
   does not refuse (`tool_gate.sandbox_floor_refusal`: an enforced harness whose
   credential mask cannot apply here is refused with the launch's own sentence).
   A stored pin outside that list is

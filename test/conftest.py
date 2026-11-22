@@ -670,6 +670,9 @@ def _fresh_host_unservable_backends(_floor_monkeypatch):
     _floor_monkeypatch.setattr(backends, "_selectable", set(backends._selectable))
     _floor_monkeypatch.setattr(backends, "_host_unservable", dict(backends._host_unservable))
     _floor_monkeypatch.setattr(backends, "_kiro_cli_offers_kas", False)
+    # ``raising=False``: a tree with the production change reverted (prove.py) has no
+    # such flag, and the guard must not turn every test there into a setup error.
+    _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_started", False, raising=False)
     _floor_monkeypatch.setattr(backends, "_kiro_cli_kas_probed", False)
     # The gateway floor asks again about an unknown Kiro CLI pick after minutes; a
     # test that drives the floor opts into those asks with delays of its own.

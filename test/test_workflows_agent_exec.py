@@ -257,11 +257,11 @@ async def test_step_backend_reaches_get_or_create_as_override() -> None:
 
 
 async def test_step_backend_kiro_follows_a_kiro_cli_pick_onto_kas(monkeypatch) -> None:
-    """backend='kiro' runs where a saved Kiro CLI pick runs: on KAS once this host
-    confirmed kiro-cli offers its v3 engine, as spawn_run(backend='kiro') does."""
+    """backend='kiro' runs where spawn_run(backend='kiro') runs: on KAS once this process
+    recorded that kiro-cli's help names its v3 engine."""
     from kiro_crew.agent_sdk import backends
 
-    monkeypatch.setattr(backends, "kiro_cli_pick_backend", lambda: backends.ACP_BACKEND_KAS)
+    monkeypatch.setattr(backends, "kiro_cli_listed_backend", lambda: backends.ACP_BACKEND_KAS)
     monkeypatch.setattr(
         agent_exec,
         "selectable_backends",
