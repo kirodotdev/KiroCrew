@@ -297,6 +297,33 @@ Bot's saved spec and its worker-dispatch tools. A save accepts only those.
 Each choice says when the Bot's workers cannot start on it. A pin
 saved by hand to a harness not on that list still shows, marked unavailable.
 
+### Gemini with a Google AI Pro or Ultra subscription
+
+To use Gemini models with your Google AI Pro or Ultra subscription, without a
+separate API key, select the `antigravity` backend. The Antigravity runtime signs
+in with your Google account itself:
+
+1. Install the Google Antigravity ACP 1.4.4 archive the backend card names. Kiro
+   Crew refuses other versions.
+2. Set `agent.acp_backend` to `antigravity`.
+3. In a terminal on the gateway host, set `auth.type` to `oauth-personal` in
+   `~/.gemini/antigravity-acp/settings.json` (under `$GEMINI_HOME` when that is
+   set).
+4. Start a new chat. The runtime opens Google sign-in in the browser. Sign in
+   with the account that has the subscription.
+
+New chats, cron jobs and subagents started from the gateway default run on the
+selected backend; a Bot with its own harness pin and an existing chat keep
+theirs. The runtime keeps its token in its own profile
+(`antigravity-acp/acp_token.json`), and Kiro Crew never stores it. The sandbox
+leaves that file readable to the Antigravity runtime, so a shell the model
+spawns inside it can read the token too.
+
+If you have a Gemini API key instead, Antigravity reads `GEMINI_API_KEY` from its
+launch environment. The `strands` backend's `google` provider is the other
+key-based route: see the `agent.strands_provider`, `agent.strands_model` and
+`agent.strands_env` rows under [Key Settings](#key-settings).
+
 ## Key Settings
 
 ```json
