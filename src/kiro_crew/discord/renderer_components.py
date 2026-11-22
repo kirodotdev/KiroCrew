@@ -1,9 +1,11 @@
 """Discord message components: the button rows a turn and the dispatcher post.
 
 The button styles, Discord's layout limits (five buttons to a row, five rows to a
-message, an 80-character label) and the two row builders: ``build_option_components``
-for an answer's ``[OPTIONS:]`` choices and ``build_model_components`` for the ``!model``
-picker. The renderer, the dispatcher's model picker and its spawn-approval prompt all
+message, an 80-character label) and the row builders: ``build_option_components``
+for an answer's ``[OPTIONS:]`` choices, ``build_model_components`` for the ``!model``
+picker and ``build_stop_components`` for the Stop button on a streaming reply, with the
+registry of the turns a Stop button may still cancel. The renderer, the dispatcher's
+model picker and its spawn-approval prompt all
 build their buttons from here, so new component payloads go here.
 :mod:`kiro_crew.discord.renderer` imports these and stays their import path and patch
 surface.
@@ -12,6 +14,7 @@ surface.
 from __future__ import annotations
 
 import hashlib
+import secrets
 import threading
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -154,3 +157,65 @@ def build_model_components(choices: Sequence[tuple[str, str]], current: str) -> 
     if row:
         rows.append({"type": 1, "components": row})
     return rows
+
+
+#: Stop button custom_id prefix: ``x:<nonce>``. Distinct from ``s:``, ``a:``, ``m:``
+#: and ``opt:`` so the dispatcher's prefix routing cannot read one as another.
+STOP_PREFIX = "x:"
+
+#: The turns a Stop button may still cancel: nonce -> (session key, channel id, the
+#: task holding the turn). One nonce per turn, minted with the turn's first streamed
+#: bubble and retired when the turn finalizes, BEFORE its session is released.
+#: Discord replays old buttons indefinitely, so a Stop left on a bubble whose
+#: retirement edit failed (or one from before a restart, when this map is empty)
+#: names no entry here and stops nothing. Bounded like ``_FULL_CHOICES``: a renderer
+#: that is never closed cannot grow it.
+#: process-cache-ok: keyed by a random per-turn nonce, so no later test can read an
+#: entry an earlier one left; the cap only ever evicts the oldest.
+_STOP_TURNS: OrderedDict[str, tuple[str, str, object]] = OrderedDict()
+_STOP_TURNS_MAX = 1024
+_STOP_TURNS_LOCK = threading.Lock()
+
+
+def register_stop_turn(session_key: str, channel_id: str, owner: object) -> str:
+    """Mint the nonce a turn's Stop button carries.
+
+    Bound to the turn's session, its channel and *owner*, the task holding the
+    turn, so a press can check that the session is still held by that turn.
+    """
+    nonce = secrets.token_hex(8)
+    with _STOP_TURNS_LOCK:
+        _STOP_TURNS[nonce] = (session_key, channel_id, owner)
+        while len(_STOP_TURNS) > _STOP_TURNS_MAX:
+            _STOP_TURNS.popitem(last=False)
+    return nonce
+
+
+def retire_stop_turn(nonce: str) -> None:
+    """Retire a turn's Stop nonce; every button carrying it now stops nothing."""
+    if nonce:
+        with _STOP_TURNS_LOCK:
+            _STOP_TURNS.pop(nonce, None)
+
+
+def stop_turn_target(nonce: str) -> tuple[str, str, object] | None:
+    """``(session key, channel id, owner task)`` of the turn *nonce* names, or ``None``."""
+    with _STOP_TURNS_LOCK:
+        return _STOP_TURNS.get(nonce)
+
+
+def build_stop_components(nonce: str) -> list[dict]:
+    """One action row holding the Stop button for the turn *nonce* names."""
+    return [
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2,
+                    "style": _STYLE_DANGER,
+                    "label": "⏹ Stop",
+                    "custom_id": f"{STOP_PREFIX}{nonce}",
+                }
+            ],
+        }
+    ]

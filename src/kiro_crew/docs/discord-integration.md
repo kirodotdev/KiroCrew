@@ -207,7 +207,7 @@ works, including before the `applications.commands` scope is installed.
 | `!sessions` / `!session` | In a DM, pick a recent dashboard or same-DM session and continue it here (owner only) |
 | `!bot [name]` / `!bots` | In a DM, talk to one of your Bots here, in its own thread (owner only) |
 | `!link` / `!unlink` | Resume or stop mirroring dashboard replies here (on by default) |
-| `!stop` / `!cancel` | Stop the current reply and clear its queue |
+| `!stop` / `!cancel` | Stop the current reply and clear your queued messages (the reply's ⏹ Stop button does the same) |
 | `!help` | Show commands |
 
 `!queue <msg>` and `!steer <msg>` control a reply that is already running. They
@@ -299,7 +299,11 @@ never listed, and session titles plus replayed messages are scrubbed of
 credentials, inside URLs too, before they reach Discord.
 
 While a reply is running, prefix a message with `!steer` to fold it into the
-running turn or `!queue` to answer it afterward. `[OPTIONS:]` choices render as
+running turn or `!queue` to answer it afterward. The reply being written carries a
+⏹ Stop button that does what `!stop` does, for anyone who could send `!stop` there; it
+goes away when the reply finishes, and a press on an old one stops nothing. The button
+arrives with the reply's first text or tool line, so while the agent is still thinking
+before either, send `!stop`. `[OPTIONS:]` choices render as
 buttons, and interactive tool approvals render as Approve/Deny buttons. A
 sub-agent spawn started from Discord asks for approval the same way, with
 Approve/Deny buttons in the DM or thread it came from; there is no Trust button,

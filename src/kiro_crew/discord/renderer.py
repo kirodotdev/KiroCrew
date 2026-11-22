@@ -6,7 +6,9 @@ the base :class:`Renderer`'s ``dispatch``) onto Discord's REST API:
 * ``on_turn_start`` -- typing indicator loop (Discord's lasts ~10s per trigger)
   plus the status ladder's first reaction on the user's own message.
 * ``on_text_chunk`` -- throttled in-place ``edit_message`` streaming, with any
-  trailing ``[OPTIONS:]`` markup held back from the visible stream.
+  trailing ``[OPTIONS:]`` markup held back from the visible stream. The bubble
+  being streamed carries a ⏹ Stop button (``x:<nonce>``); every seal and the
+  final edit replace it, and ``on_done`` retires its nonce.
 * ``on_thinking`` -- a ``-# 💭`` subtext note, only when ``discord.show_thinking``
   is on; off (the default) reasoning is never accumulated.
 * ``on_tool_call`` -- a transient ``🔧 {tool}…`` footer on live frames.
@@ -90,6 +92,9 @@ from kiro_crew.discord.renderer_components import (
     _STYLE_DANGER,
     _STYLE_SUCCESS,
     build_option_components,
+    build_stop_components,
+    register_stop_turn,
+    retire_stop_turn,
 )
 from kiro_crew.discord.renderer_text import (
     _as_subtext,
@@ -254,6 +259,11 @@ class DiscordRenderer(Renderer):
         # message being edited (None -> next render sends a new one), the last
         # text pushed (skip no-op edits), and the edit throttle timestamp.
         self._stream_mid: str | None = None
+        # The turn's Stop button: the nonce its custom_id carries (minted with the
+        # first streamed bubble, retired when the turn finalizes) and the one
+        # message whose last confirmed state still shows it.
+        self._stop_nonce = ""
+        self._stop_mid: str | None = None
         self._shown = ""
         # The message the reader last saw, whole, so the next thing shown can be
         # graded against it. A rotation seals a bubble whose tail is a credential
@@ -657,9 +667,15 @@ class DiscordRenderer(Renderer):
             predecessor = self._seam_predecessor()
             graded = self._seam_safe(text)
             self._shown = graded
-            mid = await self._client.send_message(self._channel_id, graded)
+            # The Stop button rides on the bubble being streamed, and only on it:
+            # later live edits pass no components, which keeps it, and every seal
+            # or finalize edit replaces it.
+            stop = await self._stop_components()
+            mid = await self._client.send_message(self._channel_id, graded, components=stop)
             if mid is not None:
                 self._stream_mid = mid
+                if stop is not None:
+                    self._stop_mid = mid
                 # The delivered frame is the predecessor the NEXT fresh message
                 # grades against, so record ``graded`` -- not the note -- and then
                 # clear the hold. Recording the note would leave ``_sent_tail``
@@ -851,6 +867,45 @@ class DiscordRenderer(Renderer):
         """
         self._sent_tail = text
 
+    async def _stop_components(self) -> list[dict] | None:
+        """The Stop row for a fresh live bubble, or ``None`` when it gets none.
+
+        Only a turn that holds its session gets one: ``bind_context_source`` runs
+        once the session is acquired, so a hook auto-reply (which acquires nothing
+        and may stream beside another turn on the same key) never offers a Stop that
+        would cancel that other turn. The nonce is minted once per turn; a
+        finalized turn mints nothing.
+
+        A bubble still showing Stop is cleared before a new one gets it, so at most
+        one message carries the button: that bubble's seal edit failed and its text
+        went out as a fresh send instead.
+        """
+        if self._finalized or self._context_source is None or not self._session_key:
+            return None
+        if not self._stop_nonce:
+            # The driver streams in the task that claimed the session, so this is
+            # the task the session manager names as the turn's holder.
+            self._stop_nonce = register_stop_turn(
+                self._session_key, self._channel_id, asyncio.current_task()
+            )
+        await self._clear_stop_button()
+        return build_stop_components(self._stop_nonce)
+
+    async def _clear_stop_button(self) -> None:
+        """Best-effort: take the Stop button off the message still showing it.
+
+        Only reached for a bubble whose seal or finalize edit did not land, since a
+        landed one replaced the button. Harmless when it fails too: the nonce is
+        retired at turn end, so a press on a leftover button stops nothing.
+        """
+        mid, self._stop_mid = self._stop_mid, None
+        if mid is None:
+            return
+        try:
+            await self._client.edit_message_components(self._channel_id, mid, [])
+        except Exception:
+            logger.debug("discord: clearing a leftover Stop button failed", exc_info=True)
+
     async def _land_sealed(
         self,
         text: str,
@@ -870,14 +925,27 @@ class DiscordRenderer(Renderer):
                 # gets; without it the seal ships ungraded text and restores the
                 # credential span the fresh-send grade repaired.
                 edited = self._seam_against(self._bubble_above, text)
+                # A sealed bubble has stopped streaming, so its components are
+                # REPLACED -- the options, or ``[]`` -- never left as they were:
+                # ``None`` would keep the live Stop button, and adding a Stop row
+                # beside five option rows would have Discord refuse the whole edit.
                 edit_outcome = await self._client.edit_message_with_files_outcome(
-                    self._channel_id, self._stream_mid, edited, files, components=components
+                    self._channel_id,
+                    self._stream_mid,
+                    edited,
+                    files,
+                    components=[] if components is None else components,
                 )
                 if edit_outcome == EDIT_OK:
+                    if self._stop_mid == self._stream_mid:
+                        self._stop_mid = None
                     self._seals_landed += 1
                     self._tally_redactions(edited)
                     self._record_sent(edited)
                     return True
+                if edit_outcome == EDIT_GONE and self._stop_mid == self._stream_mid:
+                    # Deleted, so nothing is left to clear.
+                    self._stop_mid = None
                 # The edit did not land: fall through to a fresh send.
                 self._stream_mid = None
             # Any fresh send lands BELOW the message the reader currently sees --
@@ -1271,6 +1339,11 @@ class DiscordRenderer(Renderer):
         if self._finalized:
             return
         self._finalized = True
+        # The turn is over, so its Stop button stops nothing from here on -- least
+        # of all the next turn on this session, which can start once the dispatcher
+        # releases it after ``close()``. Retired before the first await, so no
+        # raise or cancellation in the finalization below can skip it.
+        retire_stop_turn(self._stop_nonce)
         self._stop_typing()
         ok = stop_reason != "error"
         if self._ladder is not None:
@@ -1362,12 +1435,15 @@ class DiscordRenderer(Renderer):
             # failed to send report as delivered, which is the exact
             # succeeded-with-no-reply case `delivery_failed` exists to catch.
             self._seals_attempted += 1
+            # ``[]`` without options: ``None`` would keep the live Stop button.
             landed = self._stream_mid is not None and await self._client.edit_message(
                 self._channel_id,
                 self._stream_mid,
                 placeholder,
-                components=components,
+                components=[] if components is None else components,
             )
+            if landed and self._stop_mid == self._stream_mid:
+                self._stop_mid = None
             # An edit that did not land falls through to a fresh send, as
             # `_land_sealed` does: otherwise the live "🔧 tool…" frame is the
             # turn's last word and the notice or option buttons never appear.
@@ -1409,15 +1485,22 @@ class DiscordRenderer(Renderer):
 
     async def close(self) -> None:
         """Idempotent teardown: stop the typing indicator, finalize the turn if
-        it never reached on_done, and drain the status ladder.
+        it never reached on_done, take off a Stop button no finalize edit
+        replaced, and drain the status ladder.
 
         The ladder is closed LAST and awaited: its debounce and stall timers are
         loop callbacks and its emoji edits are tasks, so a turn torn down by an
         exception would otherwise leave both running against a finished turn.
         """
         self._stop_typing()
-        if not self._finalized:
-            await self.on_done(stop_reason="error")
+        try:
+            if not self._finalized:
+                await self.on_done(stop_reason="error")
+        finally:
+            # Every finalize edit that landed replaced the Stop button; this takes
+            # it off a bubble whose edit did not, or that a silent close or a
+            # raising finalize left in place. Its nonce is already retired.
+            await self._clear_stop_button()
         ladder, self._ladder = self._ladder, None
         if ladder is not None:
             await ladder.close()
@@ -1501,12 +1584,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FULL_CHOICES_MAX,
         _MAX_ACTION_ROWS,
         _MAX_BUTTONS,
+        _STOP_TURNS,
+        _STOP_TURNS_LOCK,
+        _STOP_TURNS_MAX,
         _STYLE_PRIMARY,
         _STYLE_SECONDARY,
+        STOP_PREFIX,
         _choice_ref,
         _remember_full_choice,
         build_model_components,
         full_choice_text,
+        stop_turn_target,
     )
     from kiro_crew.discord.renderer_status import (  # noqa: F401
         _TYPING_REFRESH_S,
