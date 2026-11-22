@@ -1,21 +1,46 @@
 """The floor's patcher fixture writes an outer variable back only when the test changed it.
 
-``_floor_monkeypatch`` remembers four variables of the worker's own environment
-before a test and puts them back after its undo. These tests run one cycle of
-the real fixture on a private mapping that counts its writes, so no real
-environment variable is touched.
+``_floor_monkeypatch`` remembers some variables of the worker's own environment
+before a test and puts them back after its undo. These tests read which
+variables from the fixture itself, then run one cycle of the real fixture per
+variable on a private mapping that counts its writes, so no real environment
+variable is touched.
 """
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
+import textwrap
 
 import pytest
 from host_isolation_floor_helpers import _root
 
-_OUTER = ("KIROCREW_SANDBOX_ACTIVE", "KIROCREW_SANDBOX_LEVEL", "PYTHONUTF8", "PYTHONIOENCODING")
-#: What the worker holds before the test: two set, two absent.
-_HELD = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+def _fixture_function():
+    definition = _root._floor_monkeypatch
+    return getattr(definition, "__wrapped__", definition)
+
+
+def _remembered_names() -> tuple[str, ...]:
+    """The variable names the fixture snapshots before the test, read from its body.
+
+    The fixture builds one mapping with ``os.environ.get(name)`` for each name of a
+    literal tuple. Every string constant of the first such mapping is a name.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_fixture_function())))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.DictComp) and "environ" in ast.unparse(node.value):
+            return tuple(
+                constant.value
+                for constant in ast.walk(node.generators[0].iter)
+                if isinstance(constant, ast.Constant) and isinstance(constant.value, str)
+            )
+    return ()
+
+
+_REMEMBERED = _remembered_names()
 
 
 class _CountingEnviron(dict):
@@ -39,12 +64,15 @@ class _CountingEnviron(dict):
         return super().pop(name, *default)
 
 
-def _writes_at_teardown(monkeypatch, change) -> tuple[list[tuple[str, str]], dict[str, str]]:
-    """Run one fixture cycle around *change*; return the teardown's writes and the end state."""
-    env = _CountingEnviron(_HELD, UNRELATED="kept")
+def _teardown(monkeypatch, before: dict[str, str], change) -> tuple[list, dict[str, str]]:
+    """One fixture cycle around *change*, starting from *before*.
+
+    Returns the writes the teardown made and the environment it left. *change*
+    edits the mapping the way a test would, without being counted.
+    """
+    env = _CountingEnviron(before)
     monkeypatch.setattr(os, "environ", env)
-    definition = _root._floor_monkeypatch
-    cycle = getattr(definition, "__wrapped__", definition)()
+    cycle = _fixture_function()()
     next(cycle)
     change(env)
     env.writes.clear()
@@ -53,85 +81,76 @@ def _writes_at_teardown(monkeypatch, change) -> tuple[list[tuple[str, str]], dic
     return env.writes, dict(env)
 
 
-def _nothing(env) -> None:
+def _leave_alone(env, name) -> None:
     return None
 
 
-def _changes_a_set_one(env) -> None:
-    dict.__setitem__(env, "PYTHONUTF8", "0")
+def _set_another_value(env, name) -> None:
+    dict.__setitem__(env, name, "left-by-the-test")
 
 
-def _deletes_a_set_one(env) -> None:
-    dict.__delitem__(env, "PYTHONIOENCODING")
+def _set_empty(env, name) -> None:
+    dict.__setitem__(env, name, "")
 
 
-def _creates_an_absent_one(env) -> None:
-    dict.__setitem__(env, "KIROCREW_SANDBOX_ACTIVE", "1")
+def _delete(env, name) -> None:
+    dict.pop(env, name, None)
 
 
-def _empties_a_set_one(env) -> None:
-    dict.__setitem__(env, "PYTHONUTF8", "")
+def test_the_fixture_remembers_at_least_one_variable():
+    """Everything below is per remembered variable, so none would test nothing."""
+    assert _REMEMBERED
+    assert all(name and name == name.strip() for name in _REMEMBERED)
 
 
-def _changes_all_four(env) -> None:
-    dict.__setitem__(env, "KIROCREW_SANDBOX_ACTIVE", "1")
-    dict.__setitem__(env, "KIROCREW_SANDBOX_LEVEL", "strict")
-    dict.__setitem__(env, "PYTHONUTF8", "0")
-    dict.__delitem__(env, "PYTHONIOENCODING")
-
-
-@pytest.mark.parametrize(
-    ("change", "expected"),
-    [
-        (_nothing, []),
-        (_changes_a_set_one, [("set", "PYTHONUTF8")]),
-        (_deletes_a_set_one, [("set", "PYTHONIOENCODING")]),
-        (_creates_an_absent_one, [("delete", "KIROCREW_SANDBOX_ACTIVE")]),
-        (_empties_a_set_one, [("set", "PYTHONUTF8")]),
-        (
-            _changes_all_four,
-            [
-                ("delete", "KIROCREW_SANDBOX_ACTIVE"),
-                ("delete", "KIROCREW_SANDBOX_LEVEL"),
-                ("set", "PYTHONUTF8"),
-                ("set", "PYTHONIOENCODING"),
-            ],
-        ),
-    ],
-    ids=lambda value: value.__name__.strip("_") if callable(value) else None,
-)
-def test_the_teardown_writes_one_outer_variable_for_each_the_test_changed(
-    monkeypatch, change, expected
+@pytest.mark.parametrize("name", _REMEMBERED)
+@pytest.mark.parametrize("held", ["a-value", ""], ids=["held", "held-empty"])
+def test_a_variable_the_worker_holds_costs_a_write_only_if_the_test_changed_it(
+    monkeypatch, name, held
 ):
-    """No write for a variable the test left as it was, one for each it changed, and
-    the worker's environment is what it was before the test either way."""
-    writes, after = _writes_at_teardown(monkeypatch, change)
-    assert after == {**_HELD, "UNRELATED": "kept"}
-    assert writes == expected
+    """Held and left alone: no write. Held and changed, emptied or deleted: one
+    assignment of that variable, and its value is back. Empty is a value too."""
+    before = {name: held, "UNRELATED": "kept"}
+
+    writes, after = _teardown(monkeypatch, before, lambda env: _leave_alone(env, name))
+    assert (writes, after) == ([], before)
+
+    for change in (_set_another_value, _set_empty, _delete):
+        writes, after = _teardown(monkeypatch, before, lambda env: change(env, name))
+        changed = change is not _set_empty or held != ""
+        assert writes == ([("set", name)] if changed else [])
+        assert after == before
 
 
-def test_an_outer_variable_the_worker_holds_empty_is_put_back_empty(monkeypatch):
-    """Empty is a value: a variable held as ``""`` is neither removed nor rewritten
-    when the test left it alone, and comes back as ``""`` when the test changed it."""
-    monkeypatch.setitem(_HELD, "PYTHONUTF8", "")
+@pytest.mark.parametrize("name", _REMEMBERED)
+def test_a_variable_the_worker_does_not_hold_is_removed_only_if_the_test_created_it(
+    monkeypatch, name
+):
+    """Absent and left alone: no write. Absent and created, with a value or empty:
+    one removal of that variable."""
+    before = {"UNRELATED": "kept"}
 
-    writes, after = _writes_at_teardown(monkeypatch, _nothing)
-    assert after["PYTHONUTF8"] == ""
-    assert writes == []
+    writes, after = _teardown(monkeypatch, before, lambda env: _leave_alone(env, name))
+    assert (writes, after) == ([], before)
 
-    writes, after = _writes_at_teardown(monkeypatch, _changes_a_set_one)
-    assert after["PYTHONUTF8"] == ""
-    assert writes == [("set", "PYTHONUTF8")]
+    for change in (_set_another_value, _set_empty):
+        writes, after = _teardown(monkeypatch, before, lambda env: change(env, name))
+        assert writes == [("delete", name)]
+        assert after == before
 
 
-def test_the_four_outer_variables_are_the_ones_the_fixture_remembers():
-    """The names this file counts are the names in the fixture, so a fifth added
-    there without a case here is seen."""
-    import inspect
+def test_every_remembered_variable_changed_at_once_costs_one_write_each(monkeypatch):
+    """Half held and changed, half absent and created: one write per variable, an
+    assignment for a held one and a removal for an absent one."""
+    held = {name: "a-value" for name in _REMEMBERED[::2]}
+    before = {**held, "UNRELATED": "kept"}
 
-    definition = _root._floor_monkeypatch
-    source = inspect.getsource(getattr(definition, "__wrapped__", definition))
-    start = source.index("cli_process_environment = {")
-    block = source[start : source.index("}", start)]
-    named = tuple(part for part in block.split('"')[1::2])
-    assert named == _OUTER
+    def change(env) -> None:
+        for name in _REMEMBERED:
+            _set_another_value(env, name)
+
+    writes, after = _teardown(monkeypatch, before, change)
+    assert after == before
+    assert sorted(writes) == sorted(
+        ("set" if name in held else "delete", name) for name in _REMEMBERED
+    )
