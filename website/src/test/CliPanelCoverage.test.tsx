@@ -156,11 +156,13 @@ const registry = vi.hoisted(() => ({
   displaced: { value: false },
   invalidCwd: { value: false },
   wrongMachine: { value: false },
+  atLimit: { value: false },
   useTerminalConnStatus: vi.fn<() => 'connected' | 'reconnecting' | 'disconnected' | undefined>(),
   useTerminalManualRetry: vi.fn<() => boolean>(),
   useTerminalDisplaced: vi.fn<() => boolean>(),
   useTerminalInvalidCwd: vi.fn<() => boolean>(),
   useTerminalWrongMachine: vi.fn<() => boolean>(),
+  useTerminalAtLimit: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string, manual?: boolean, cwd?: string) => void>(),
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
@@ -168,6 +170,7 @@ registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.va
 registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
 registry.useTerminalInvalidCwd.mockImplementation(() => registry.invalidCwd.value)
 registry.useTerminalWrongMachine.mockImplementation(() => registry.wrongMachine.value)
+registry.useTerminalAtLimit.mockImplementation(() => registry.atLimit.value)
 vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
@@ -334,6 +337,7 @@ beforeEach(() => {
   registry.displaced.value = false
   registry.invalidCwd.value = false
   registry.wrongMachine.value = false
+  registry.atLimit.value = false
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
   xt.FakeSearchAddon.instances = []
@@ -695,6 +699,18 @@ describe('CliPanel disconnected banner', () => {
     // Every redial meets the same refusal, so no Reconnect; the hand-off stays.
     expect(screen.queryByRole('button', { name: RECONNECT_LABEL })).toBeNull()
     expect(within(banner).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+  })
+
+  it('names the gateway terminal limit and offers Reconnect for after one closes', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.atLimit.value = true
+    const { sessionId } = mount({ cwd: '/w' })
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.at_limit_message'))
+    expect(screen.queryByText(DISCONNECTED_LABEL)).toBeNull()
+    // Close another terminal, then Reconnect.
+    fireEvent.click(screen.getByRole('button', { name: RECONNECT_LABEL }))
+    expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
   })
 
   it('shows the localized invalid-cwd error immediately and allows explicit recovery', () => {

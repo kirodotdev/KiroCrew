@@ -130,18 +130,26 @@ class TestApiTerminalWs:
 
     @pytest.mark.asyncio
     async def test_rejects_when_max_sessions_reached(self):
+        # The refusal rides an accepted socket (a browser cannot read a refused
+        # handshake), carries its code, and reserves nothing.
         registry = {"s1": _make_session(), "s2": _make_session(), "s3": _make_session()}
         req = _make_request(registry=registry, session_id="new")
+        refusal_ws = MagicMock()
+        refusal_ws.prepare = AsyncMock()
+        close = AsyncMock()
         with (
             patch.object(terminal, "_sel") as mock_sel,
             patch.object(
                 terminal, "_get_config", return_value={"enabled": True, "max_sessions": 3}
             ),
+            patch.object(terminal.web, "WebSocketResponse", return_value=refusal_ws),
+            patch.object(terminal, "_close_terminal_ws_bounded", close),
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_ws(req)
-        assert isinstance(resp, web.Response)
-        assert resp.status == 409
+        assert resp is refusal_ws
+        assert close.await_args.kwargs["error_code"] == "terminal_max_sessions"
+        assert set(registry) == {"s1", "s2", "s3"}
 
     @pytest.mark.asyncio
     async def test_at_the_cap_the_slot_changes_hands_before_any_await(self):
