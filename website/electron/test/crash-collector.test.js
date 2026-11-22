@@ -424,6 +424,19 @@ describe("classifyMinidump", () => {
     assert.equal(verdict.reason, "not-a-crash");
   });
 
+  it("rejects Crashpad's Windows snapshot code 0x517a7ed, which is DumpWithoutCrash and not a crash", () => {
+    // A Windows snapshot of our own executable is not a crash; a real Windows
+    // exception on the same module is.
+    const exe = `C:\\Program Files\\${APP}\\${APP}.exe`;
+    assert.deepEqual(classifyMinidump(parsed({ exceptionCode: 0x517a7ed, mainModule: exe }), APP), {
+      crash: false,
+      readable: true,
+      reason: "not-a-crash",
+      deletable: true,
+    });
+    assert.equal(classifyMinidump(parsed({ exceptionCode: 0xc0000005, mainModule: exe }), APP).crash, true);
+  });
+
   it("leaves an own dump pending when the exception code could not be read", () => {
     // exceptionCode null = the stream was absent or too short to read, not a
     // parsed 0. Reading that as code 0 would write our own crash off as
