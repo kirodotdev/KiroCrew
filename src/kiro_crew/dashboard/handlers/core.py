@@ -476,7 +476,7 @@ async def api_ready(request: web.Request) -> web.Response:
     # readiness is not a prerequisite for serving the dashboard — a signed-out
     # user is meant to get in and see the reauthentication banner — and gating
     # this endpoint on it would only delay first paint. (It would also not do
-    # what it looks like: the desktop splash polls /api/status and accepts any
+    # what it looks like: the desktop splash polls /api/live and accepts any
     # status < 500, so a 503 here is invisible to it.)
     # Require the literal bool set at the final startup boundary. This stays
     # fail-closed for partial/mocked state objects and cannot become truthy just

@@ -5987,7 +5987,7 @@ Two layers close that window:
   nothing at all.
   `/api/ready` likewise does **not** gate on Kiro state — that would only delay
   first paint (and would not do what it appears to: the desktop splash polls
-  `/api/status` and accepts any status `< 500`). `warm_up()` stays
+  `/api/live` and accepts any status `< 500`). `warm_up()` stays
   fire-and-forget and failure-contained, and its task is cancelled by the service
   shutdown hook; it yields `_WARM_UP_DELAY_SECS` first because its `kiro-cli`
   spawn racing the concurrent app-backend spawns measurably lengthened and
