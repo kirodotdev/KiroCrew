@@ -70,11 +70,17 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 again for all four: the ssh-to-self floor's substitution-body check lives in
 #: its own module, ``kiro_crew.security.argv_floor_ssh_bodies``, which the deny floor that
 #: every listing already loads imports.
+#: Raised by 3 for all four servers by the git/tar self-target floor: ``argv_floor``
+#: imports every owner when ``kiro_crew.security`` loads so a patch through the facade reaches
+#: each holder of a name, and the floor adds three owner modules -- ``argv_floor_git_tar`` (the
+#: floor), ``argv_floor_tar`` (the line-cap split of its tar grammar) and
+#: ``argv_floor_ssh_operand`` (the line-cap split of the ssh operand reader). The security
+#: package loads before the list, so the owners cannot move behind it; nothing else loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 488,
-    "mcp-cron": 359,
-    "mcp-guide": 353,
-    "mcp-mate": 354,
+    "mcp-core": 491,
+    "mcp-cron": 362,
+    "mcp-guide": 356,
+    "mcp-mate": 357,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

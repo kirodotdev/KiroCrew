@@ -263,13 +263,19 @@ def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = N
     executed: set[int] = set()
     case_patterns, arm_bodies = _case_arm_pattern_indices(tokens)
     for command in _split_commands_indexed(tokens):
+        command = _without_redirections(command)
         words = [word for _, word in command]
         # A word cut off a glued separator (``-H;``) keeps its lowered reading.
         options = None
         if cased is not None:
             options = [cased[j] if cased[j].lower() == word else word for j, word in command]
-        # A case arm body's first word (``x) s?h …``) starts a command too.
-        for start in [0] + [k for k, (j, _) in enumerate(command) if k and j in arm_bodies]:
+        # A case arm body's first word (``x) s?h …``, or ``x) >f s?h``) starts a command too.
+        bodies = [
+            k
+            for k in range(1, len(command))
+            if arm_bodies.intersection(range(command[k - 1][0] + 1, command[k][0] + 1))
+        ]
+        for start in [0] + bodies:
             found = _program_index(words[start:], None if options is None else options[start:])
             if found is None or words[start + found].endswith(")"):
                 continue
@@ -356,6 +362,27 @@ def _file_operand_indices(tokens: "list[str]", cased: "list[str] | None" = None)
             if not words[k].startswith("-"):
                 operands.add(command[k][0])
     return operands
+
+
+def _without_redirections(command: "list[tuple[int, str]]") -> "list[tuple[int, str]]":
+    """*command* without its redirection words (``>/dev/null``, ``2>&1``, ``> f``).
+
+    Bash removes a redirection, and a target written as its own word, before it
+    finds the program, so ``>/dev/null export A=x`` runs ``export``.  A redirect
+    glued after a word (``ssh>/tmp/x``) keeps that word.
+    """
+    out: list[tuple[int, str]] = []
+    skip_target = False
+    for index, word in command:
+        if skip_target:
+            skip_target = False
+            continue
+        is_redirection, consumes_next = _shell._push_token_redirection(word)
+        if is_redirection:
+            skip_target = consumes_next
+            continue
+        out.append((index, word))
+    return out
 
 
 def _case_arm_pattern_indices(tokens: "list[str]") -> "tuple[set[int], set[int]]":

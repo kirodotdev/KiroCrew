@@ -456,6 +456,47 @@ class TestSelfFloorShortCircuit:
         assert security._is_credential_mint(reach)
 
 
+class TestGitTarParallelGuardIsLinear:
+    """The git/tar floor's parallel-input guard must stay LINEAR in git-verb count.
+
+    ``_git_tar_read`` loops over every git/tar verb position (``starts``) and tested, per
+    position, ``any(map(_is_parallel, command[found:start]))`` -- re-scanning the slice
+    from the first verb to this one on every iteration.  A command of ``git status`` then
+    thousands of ``git`` words makes ``starts`` O(n) and each scan O(n), so the floor did
+    about n^2/2 ``_is_parallel`` calls on the gateway event loop for an ALLOW verdict, a
+    repeatable stall.  The first ``parallel`` index at or after ``found`` is now found
+    once and the guard is O(1).  The verdict is pinned alongside the cost, since a
+    rewrite that changed which verbs enter the parallel branch would change what the
+    floor denies.
+    """
+
+    @staticmethod
+    def _build(n: int) -> str:
+        # Many ``git`` verbs in ONE command (no separators), under the char and word
+        # caps, so the floor reads every ``start`` rather than refusing the input.
+        return "git status " + "git " * n
+
+    def test_the_repeated_git_verb_scan_is_linear(self):
+        assert is_denied(self._build(400)) is None  # first-call work is spent here
+        sizes = (800, 1600, 2400)
+
+        def work_of(n: int) -> int:
+            command = self._build(n)
+            verdicts: "list[str | None]" = []
+            work = _interpreter_work(lambda: verdicts.append(is_denied(command)))
+            assert verdicts == [None], (n, verdicts)  # benign repeated git: ALLOW
+            return work
+
+        work = [work_of(n) for n in sizes]
+        assert _linear_work(work), f"{work} instructions at sizes {sizes}"
+
+    def test_a_real_self_dial_among_many_git_verbs_is_still_denied(self):
+        # The optimization must not drop a refusal: a self-dial after the repeated
+        # verbs is still caught, as is a bare one.
+        assert is_denied("git status " + "git " * 50 + "clone localhost:x") is not None
+        assert is_denied("git clone localhost:x") is not None
+
+
 class TestSelfModuleIndexIsLinear:
     """The self-protection floor's module-flag scan must stay LINEAR in token count.
 
