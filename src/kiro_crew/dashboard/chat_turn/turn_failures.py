@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.dashboard.chat_delivery import attachment_meta
 from kiro_crew.dashboard.chat_utils import MODEL_UNAVAILABLE_KIND, TRANSIENT_RETRY_KIND
+from kiro_crew.dashboard.chat_utils_injected_rows import AUTH_REQUIRED_KIND, KIRO_CLI_SIGN_IN_KIND
 from kiro_crew.dashboard.host_sandbox_refusal import host_sandbox_refusal
 from kiro_crew.dashboard.host_sandbox_refusal import row_meta as host_sandbox_row_meta
 from kiro_crew.dashboard.host_sandbox_refusal import row_text as host_sandbox_row_text
@@ -453,8 +454,14 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # The turn ended on a terminal provider/runtime error the user
         # must act on (a 5xx/throttle timeout, an unentitled model, a
         # malformed-request rejection). Ring the bell so an operator in
-        # another session is not left to find the inline card.
-        turn.died_notice = "chat_stopped_error"
+        # another session is not left to find the inline card. A row the
+        # sign-in fix is offered on rings the ``AcpAuthRequired`` arm's
+        # signed-out note, not an unexplained error.
+        turn.died_notice = (
+            "chat_stopped_signed_out"
+            if (_unentitled_meta or {}).get("kind") in (AUTH_REQUIRED_KIND, KIRO_CLI_SIGN_IN_KIND)
+            else "chat_stopped_error"
+        )
         # Record a STRUCTURAL terminal outcome for this slot's last turn,
         # but ONLY for a self-driven nudge fire (``_directive_self_wake``).
         # A malformed-request rejection is deterministic in the payload's
