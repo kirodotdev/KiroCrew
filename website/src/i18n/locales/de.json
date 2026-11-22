@@ -12325,6 +12325,8 @@
       "dashboard_access_restart": "App neu starten",
       "dashboard_access_restarted": "App neu gestartet.",
       "dashboard_access_restart_failed": "Die App wurde nicht wieder gestartet. Prüfe ihren Status oben.",
+      "dashboard_access_scope": "Mit diesem Zugriff kann die App deine Chats und Sitzungen lesen, Nachrichten senden, Chats starten und beenden und ihr eigenes Backend nutzen. Sie kann keine Dateien, Einstellungen, Freigaben oder Zugangsdaten ändern. Wird die App ausgeschaltet, endet dieser Zugriff.",
+      "dashboard_access_load_failed": "Der Dashboard-Zugriff dieser App konnte nicht geladen werden.",
       "grants_reconsent_link_hosts": "Link-Hosts: erlaubt den Hover-Karten der App, Links zu diesen Seiten in Chat-Nachrichten zu sehen.",
       "grants_reconsent_link_patterns": "Textmuster: erlaubt den Hover-Karten der App, Chat-Text zu sehen, auf den diese Muster passen.",
       "grants_reconsent_link_full_url": "Vollständige Linkadressen: Die Hover-Karten der App sehen auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",

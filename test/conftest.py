@@ -347,6 +347,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _reset_cjk_segmenter,
     _reset_create_rate_limit_buckets,
     _reset_crewmate_worker_slots,
+    _reset_dashboard_proxy_state,
     _reset_degraded_config_observations,
     _reset_env_boot_record_and_ownership,
     _reset_live_execution_records,

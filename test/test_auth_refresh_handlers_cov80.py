@@ -578,6 +578,41 @@ async def test_require_peer_rotation_preserves_signed_device_on_both_cookies(
 
 
 @pytest.mark.asyncio
+async def test_a_delegated_chain_rotates_only_under_the_grant_it_was_opened_under(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard.token_auth_tokens import token_via_grant_unverified
+
+    live = {"claim": "claim-of-grant-one"}
+    monkeypatch.setattr(
+        dashboard_proxy, "grant_current", lambda _app, claim: claim == live["claim"]
+    )
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "owner", via_app="tunnel-like", via_grant="claim-of-grant-one"
+    )
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+    assert (
+        token_via_grant_unverified(response.cookies[f"mc_token_{PORT}"].value)
+        == "claim-of-grant-one"
+    )
+    assert rt.refresh_token_via_grant(response.cookies[refresh_cookie_name(str(PORT))].value) == (
+        "claim-of-grant-one"
+    )
+    # The owner revoked and granted again: the chain opened under grant one is over.
+    live["claim"] = "claim-of-grant-two"
+    old, _c, _j, _e = generate_refresh_token(
+        "owner", via_app="tunnel-like", via_grant="claim-of-grant-one"
+    )
+    ended = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): old}))
+    assert ended.status == 401
+    assert _body(ended)["code"] == "delegated_grant_ended"
+
+
+@pytest.mark.asyncio
 async def test_require_peer_rotation_rejects_another_allowed_node_without_consuming(
     state: RefreshStateManager,
     audit: list,

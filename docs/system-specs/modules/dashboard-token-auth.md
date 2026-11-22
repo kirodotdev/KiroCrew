@@ -467,8 +467,19 @@ Request flow:
    **What a `via_app` token reaches.** `dashboard/delegated_scope.py` runs after
    authentication: every request re-reads the grant and the enable marker for
    the app (off the loop), so a disable or an uninstall ends the token at once,
-   and the refresh chain stops rotating. A route reaches it only when
-   `dashboard/delegated_route_tags.py` tags it `allow`; the credential set
+   and the refresh chain stops rotating. The token and its refresh chain carry
+   `via_grant`, an HMAC of the gateway secret and the id of the grant they were
+   minted under (`dashboard_proxy.grant_claim`); each grant has a new id, so a
+   revoke, disable, uninstall, reinstall or gateway-secret change leaves an old
+   cookie matching no grant, even after the app is granted again. Provenance and
+   the grant identity come from the gateway's sealed install record under
+   `member-records/app-dashboard-proxy/`, never from `apps/<name>/installed.json`.
+   A READ reaches it only when `dashboard/delegated_route_tags.py` tags the route
+   `allow`; a WRITE (any method but GET and HEAD) only when
+   `delegated_scope.ALLOW_WRITES` lists it, whatever the tag says (writes are deny
+   by default). A GET that returns a stored credential (`/api/mcp/custom/<name>`,
+   `/api/connections/mint`, `/api/config/kirocrew`, `/api/webhooks`, the channel
+   `/config` reads) is `deny`. The credential set
    (`/api/token/local`, `/api/auth/mobile-link`, `/api/tailnet/mobile/qr`,
    `/api/apps/<name>/token`, `/api/apps/register`, `/api/webhooks/tokens`,
    `/api/relay-viewer*`, the host-grant paths) and every control-plane write

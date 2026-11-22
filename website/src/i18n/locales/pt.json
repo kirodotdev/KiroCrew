@@ -12598,6 +12598,8 @@
       "dashboard_access_restart": "Reiniciar app",
       "dashboard_access_restarted": "App reiniciado.",
       "dashboard_access_restart_failed": "O app não iniciou de novo. Verifique o status dele acima.",
+      "dashboard_access_scope": "Com este acesso, o app pode ler seus chats e sessões, enviar mensagens, iniciar e parar chats e usar o próprio backend. Ele não pode alterar arquivos, configurações, permissões nem credenciais. Desativar o app remove este acesso.",
+      "dashboard_access_load_failed": "Não foi possível carregar o acesso ao painel deste app.",
       "grants_reconsent_link_hosts": "Hosts de links: permite que os cartões do app vejam links para estes sites nas mensagens do chat.",
       "grants_reconsent_link_patterns": "Padrões de texto: permite que os cartões do app vejam o texto do chat que corresponde a estes padrões.",
       "grants_reconsent_link_full_url": "Endereços de link completos: os cartões do app também veem a parte de um link depois de ? ou #, que pode conter um código de login.",

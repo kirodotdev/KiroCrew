@@ -1,11 +1,14 @@
 """The delegated-token scope: one explicit ``allow`` / ``deny`` tag per dashboard route.
 
 A token minted through the ``dashboard_proxy`` grant carries ``via_app=<app>`` (see
-``dashboard/delegated_scope.py``). It is an owner token for everything an owner may
-drive from a browser (chat, sessions, running agents, files) and for nothing that
-mints, moves or widens a credential, or changes the control plane: grant approvals,
-app install / enable / disable / register, the owner-enable marker, sandbox,
-approval-mode and sign-in settings, restart and upgrade, ``/v1/crew/owner/*``.
+``dashboard/delegated_scope.py``). It READS what an owner reads from a browser (chat,
+sessions, running agents) and nothing that mints, moves or widens a credential, returns a
+stored credential, or changes the control plane: grant approvals, app install / enable /
+disable / register, the owner-enable marker, sandbox, approval-mode and sign-in settings,
+restart and upgrade, ``/v1/crew/owner/*``.
+
+An ``allow`` on a write method (anything but GET and HEAD) is documentation only: a write
+is open to a delegated token only where ``delegated_scope.ALLOW_WRITES`` lists it.
 
 Keys are the route's canonical path (aiohttp ``resource.canonical``); each value maps
 every registered method of the path to its tag, and ``HEAD`` follows ``GET``. A route
@@ -614,7 +617,7 @@ ROUTE_TAGS: dict[str, dict[str, str]] = {
     "/api/cloud/{tag}/stop": {"POST": "deny"},
     "/api/computer-use/config": {"GET": "allow", "PUT": "deny"},
     "/api/config/default-agent": {"GET": "allow", "PUT": "deny"},
-    "/api/config/kirocrew": {"GET": "allow", "PATCH": "deny", "PUT": "deny"},
+    "/api/config/kirocrew": {"GET": "deny", "PATCH": "deny", "PUT": "deny"},
     "/api/config/schema": {"GET": "allow"},
     "/api/config/stt": {"GET": "allow", "PUT": "deny"},
     "/api/config/theme": {"GET": "allow", "PUT": "deny"},
@@ -624,7 +627,7 @@ ROUTE_TAGS: dict[str, dict[str, str]] = {
     "/api/connected-computers/devices/{device_id}/revoke": {"POST": "deny"},
     "/api/connections/cancel": {"POST": "deny"},
     "/api/connections/disconnect": {"POST": "deny"},
-    "/api/connections/mint": {"GET": "allow", "POST": "deny"},
+    "/api/connections/mint": {"GET": "deny", "POST": "deny"},
     "/api/connections/oauth-clients": {"GET": "allow"},
     "/api/connections/oauth-clients/{slug}": {"DELETE": "deny", "PUT": "deny"},
     "/api/connections/oauth/callback": {"GET": "allow"},
@@ -651,14 +654,14 @@ ROUTE_TAGS: dict[str, dict[str, str]] = {
     "/api/diagnostics/collect": {"POST": "deny"},
     "/api/diagnostics/download/{filename}": {"GET": "allow"},
     "/api/directory-upload": {"POST": "allow"},
-    "/api/discord/config": {"GET": "allow", "PUT": "deny"},
+    "/api/discord/config": {"GET": "deny", "PUT": "deny"},
     "/api/effort-levels": {"GET": "allow"},
     "/api/favorite-projects": {"DELETE": "allow", "GET": "allow", "POST": "allow"},
     "/api/feature-videos/feedback": {"POST": "allow"},
     "/api/feature-videos/fetch-all": {"POST": "allow"},
     "/api/feature-videos/library": {"GET": "allow"},
     "/api/feature-videos/status": {"GET": "allow"},
-    "/api/feishu/config": {"GET": "allow", "PUT": "deny"},
+    "/api/feishu/config": {"GET": "deny", "PUT": "deny"},
     "/api/feishu/sdk/install": {"POST": "deny"},
     "/api/file-diff": {"GET": "allow"},
     "/api/file-download": {"GET": "allow"},
@@ -731,7 +734,7 @@ ROUTE_TAGS: dict[str, dict[str, str]] = {
     "/api/mcp/active": {"GET": "allow"},
     "/api/mcp/apply": {"POST": "deny"},
     "/api/mcp/custom": {"POST": "deny"},
-    "/api/mcp/custom/{name}": {"GET": "allow", "PUT": "deny"},
+    "/api/mcp/custom/{name}": {"GET": "deny", "PUT": "deny"},
     "/api/mcp/discover": {"GET": "allow"},
     "/api/mcp/discover/detail": {"GET": "allow"},
     "/api/mcp/discover/install": {"POST": "deny"},
@@ -966,7 +969,7 @@ ROUTE_TAGS: dict[str, dict[str, str]] = {
     "/api/skills/{name}/-/tree": {"GET": "allow"},
     "/api/slack/channels": {"GET": "allow"},
     "/api/slack/code-channel-agents": {"GET": "allow"},
-    "/api/slack/config": {"GET": "allow", "PUT": "deny"},
+    "/api/slack/config": {"GET": "deny", "PUT": "deny"},
     "/api/slack/manifest": {"GET": "allow"},
     "/api/slack/manifest/status": {"GET": "allow"},
     "/api/slack/owner-claim": {"GET": "deny"},
@@ -1048,9 +1051,9 @@ ROUTE_TAGS: dict[str, dict[str, str]] = {
     "/api/tasks/{task_id}/cancel": {"POST": "allow"},
     "/api/tasks/{task_id}/timeline": {"GET": "allow"},
     "/api/teams": {"GET": "allow", "POST": "deny"},
-    "/api/teams/config": {"GET": "allow", "PUT": "deny"},
+    "/api/teams/config": {"GET": "deny", "PUT": "deny"},
     "/api/teams/{id}": {"DELETE": "deny", "PUT": "deny"},
-    "/api/telegram/config": {"GET": "allow", "PUT": "deny"},
+    "/api/telegram/config": {"GET": "deny", "PUT": "deny"},
     "/api/telemetry/app-view": {"POST": "deny"},
     "/api/telemetry/beacon": {"GET": "allow"},
     "/api/telemetry/collection": {"GET": "allow"},
@@ -1105,14 +1108,14 @@ ROUTE_TAGS: dict[str, dict[str, str]] = {
     "/api/wakatime/oauth/disconnect": {"POST": "deny"},
     "/api/wakatime/oauth/status": {"GET": "allow"},
     "/api/wakatime/stats": {"GET": "allow"},
-    "/api/webex/config": {"GET": "allow", "PUT": "deny"},
-    "/api/webhooks": {"GET": "allow"},
+    "/api/webex/config": {"GET": "deny", "PUT": "deny"},
+    "/api/webhooks": {"GET": "deny"},
     "/api/webhooks/contexts/{hook_id}": {"DELETE": "deny"},
     "/api/webhooks/switch": {"POST": "deny"},
     "/api/webhooks/test": {"POST": "deny"},
     "/api/webhooks/tokens": {"POST": "deny"},
     "/api/webhooks/tokens/{token_id}": {"DELETE": "deny", "PATCH": "deny"},
-    "/api/wecom/config": {"GET": "allow", "PUT": "deny"},
+    "/api/wecom/config": {"GET": "deny", "PUT": "deny"},
     "/api/workspaces": {"GET": "allow", "POST": "allow"},
     "/api/workspaces/{name}": {"DELETE": "allow", "PUT": "allow"},
     "/api/worktree/create": {"POST": "allow"},
@@ -1141,3 +1144,70 @@ ROUTE_TAGS: dict[str, dict[str, str]] = {
     "/v1/crew/owner/grants/{grant_id}": {"DELETE": "deny"},
     "/{name}": {"GET": "allow"},
 }
+
+#: The MCP tool routes (``server_runtime/mcp_routes.py``): plumbing for agents and the CLI,
+#: not for a dashboard page. Every method of a route under one of these path prefixes (whole
+#: segments) is ``deny`` unless ``ROUTE_TAGS`` names that exact route.
+MCP_TOOL_PREFIXES: tuple[str, ...] = (
+    "/api/agent-ask",
+    "/api/agent-panel",
+    "/api/agents/detail/{name}/mcp-additions",
+    "/api/app-tools",
+    "/api/artifact-downloads",
+    "/api/artifact-folders",
+    "/api/artifacts",
+    "/api/ask-question",
+    "/api/autonudge",
+    "/api/browser",
+    "/api/cards",
+    "/api/chat/slots/{slot}/crew-timeline",
+    "/api/chat/slots/{slot}/crew-workers",
+    "/api/chat/slots/{slot}/dashboard",
+    "/api/chat/slots/{slot}/terminal-run",
+    "/api/computer-use",
+    "/api/connection-proxy",
+    "/api/crew-board",
+    "/api/crew-sessions",
+    "/api/cron-folders",
+    "/api/crons",
+    "/api/delete-message",
+    "/api/guide",
+    "/api/lessons",
+    "/api/mcp-apps",
+    "/api/mediated-secret-capability",
+    "/api/mediated-secret-request",
+    "/api/member-records",
+    "/api/member/self",
+    "/api/members",
+    "/api/monitor-contract",
+    "/api/monitors",
+    "/api/notifications/agent",
+    "/api/notifications/clear",
+    "/api/notifications/own",
+    "/api/notifications/push",
+    "/api/remote-artifacts",
+    "/api/resource-subscriptions",
+    "/api/sandbox-doc",
+    "/api/search/segment",
+    "/api/send-message",
+    "/api/session-control",
+    "/api/session-directive",
+    "/api/session-keepalive",
+    "/api/session-ledger",
+    "/api/session-tool-policy",
+    "/api/slack-history",
+    "/api/slack-profile",
+    "/api/slack/code-channel",
+    "/api/spawn",
+    "/api/taskrunner",
+    "/api/update-message",
+    "/api/work-ledger",
+    "/api/workflows",
+    "/artifact-app",
+    "/sandbox-doc",
+)
+
+
+def under_mcp_tool_prefix(canonical: str) -> bool:
+    """Whether *canonical* is, or sits below, one of :data:`MCP_TOOL_PREFIXES`."""
+    return any(canonical == p or canonical.startswith(p + "/") for p in MCP_TOOL_PREFIXES)

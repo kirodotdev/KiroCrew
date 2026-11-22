@@ -30,8 +30,11 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from kiro_crew import member_records
@@ -107,11 +110,75 @@ def _path(app_name: str, suffix: str) -> Path:
     return target
 
 
-def _installed(app_name: str) -> Any:
-    # Deferred: ``apps.manager_records`` imports the grant revokers that import this module.
-    from kiro_crew.apps.manager_records import _read_installed
+_INSTALL_SUFFIX = ".install.json"
+_INSTALL_FIELDS = (
+    "installedAt",
+    "version",
+    "origin",
+    "sourceRegistry",
+    "sourceUrl",
+    "sourceCommit",
+    "sourceSigner",
+)
 
-    return _read_installed(app_name)
+
+def record_install(
+    app_name: str,
+    *,
+    version: str,
+    registry: str,
+    url: str,
+    commit: str = "",
+    signer: str = "",
+) -> bool:
+    """Seal the gateway's own record of a registry install of *app_name*.
+
+    Called by the install path (``set_app_provenance``) with what the gateway resolved.
+    ``apps/<app>/installed.json`` is writable from the sandbox, so provenance, the offer
+    and the grant identity are read from this record only. Every call is a new install:
+    it carries a fresh ``installedAt`` stamp, which a grant given for another install lacks.
+    """
+    stamp = f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}#{secrets.token_hex(8)}"
+    body = {
+        "app": app_name,
+        "installedAt": stamp,
+        "version": version,
+        "origin": "registry",
+        "sourceRegistry": registry,
+        "sourceUrl": url,
+        "sourceCommit": commit,
+        "sourceSigner": signer,
+    }
+    try:
+        path = _path(app_name, _INSTALL_SUFFIX)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(path, json.dumps(body) + "\n", fsync=True)
+    except (OSError, ValueError):
+        logger.warning("could not seal the install record for %r", app_name)
+        return False
+    return True
+
+
+def forget_install(app_name: str) -> None:
+    """Remove the sealed install record (uninstall). A no-op when none exists."""
+    try:
+        _path(app_name, _INSTALL_SUFFIX).unlink()
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        logger.warning("could not remove the install record for %r", app_name)
+
+
+def _installed(app_name: str) -> Any:
+    """The sealed install record as an object with the install fields, or ``None``."""
+    try:
+        raw = read_bytes_with_retry(_path(app_name, _INSTALL_SUFFIX), max_bytes=_RECORD_MAX_BYTES)
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("app") != app_name:
+        return None
+    return SimpleNamespace(**{k: str(data.get(k, "")) for k in _INSTALL_FIELDS})
 
 
 def install_identity(app_name: str) -> str | None:
@@ -144,9 +211,10 @@ def install_identity(app_name: str) -> str | None:
 def registry_verified(app_name: str) -> bool:
     """Whether the gateway recorded a registry install for *app_name*.
 
-    The provenance (``set_app_provenance``) is written by the gateway's own install path:
-    the install came from a registry, with the source it resolved to and the registry or
-    signer that admitted it. Never the app's manifest, which the app wrote.
+    The record is sealed under ``member-records/`` by the gateway's own install path
+    (:func:`record_install`, from ``set_app_provenance``): the install came from a registry,
+    with the source it resolved to and the registry or signer that admitted it. Never the
+    app's manifest or its ``installed.json``, which the app can write.
     """
     try:
         rec = _installed(app_name)
@@ -178,11 +246,10 @@ def prompt_text(app_name: str) -> dict[str, str] | None:
         "registry": registry,
         "source": source,
         "version": version,
+        # What the grant lets it do is the scope line the dashboard shows after this text.
         "text": (
-            f"Allow {app_name} {version} (registry {registry}, source {source}) to control "
-            "this dashboard? It gets full dashboard control, including running agents, "
-            "except credential and admin routes. Terminal and approvals are local-only, "
-            "and admin is done locally."
+            f"Allow {app_name} {version} (registry {registry}, source {source}) "
+            "to use this dashboard on your behalf?"
         ),
     }
 
@@ -195,7 +262,7 @@ def _marker_state(app_name: str) -> tuple[bool, bool]:
     return host_exec_granted(app_name), not owner_disabled(app_name)
 
 
-def _stored_identity(app_name: str) -> str | None:
+def _stored_field(app_name: str, field: str) -> str | None:
     try:
         raw = read_bytes_with_retry(_path(app_name, ".json"), max_bytes=_RECORD_MAX_BYTES)
         data = json.loads(raw.decode("utf-8"))
@@ -203,8 +270,36 @@ def _stored_identity(app_name: str) -> str | None:
         return None
     if not isinstance(data, dict) or data.get("app") != app_name:
         return None
-    identity = data.get("identity")
-    return identity if isinstance(identity, str) and identity else None
+    value = data.get(field)
+    return value if isinstance(value, str) and value else None
+
+
+def _stored_identity(app_name: str) -> str | None:
+    return _stored_field(app_name, "identity")
+
+
+def _stored_grant_id(app_name: str) -> str | None:
+    return _stored_field(app_name, "grant_id")
+
+
+def grant_claim(app_name: str) -> str:
+    """The value a delegated token and its refresh chain carry for the grant held now.
+
+    ``HMAC(local secret, app + grant id)``: ``""`` while the app holds no grant. Each
+    grant has a new id, so a token from before a revoke, a disable, an uninstall or a
+    reinstall never matches the next grant, and a new gateway secret ends every one.
+    """
+    secret, grant_id = _secret(), _stored_grant_id(app_name)
+    if not secret or not grant_id or not granted(app_name):
+        return ""
+    message = b"\0".join((b"dashboard-grant", app_name.encode(), grant_id.encode()))
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def grant_current(app_name: str, claim: str) -> bool:
+    """Whether *claim* is :func:`grant_claim` of the grant this app holds right now."""
+    current = grant_claim(app_name)
+    return bool(claim and current and hmac.compare_digest(current, claim))
 
 
 def granted(app_name: str) -> bool:
@@ -240,7 +335,8 @@ def grant(app_name: str) -> tuple[bool, str]:
     try:
         path = _path(app_name, ".json")
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(path, json.dumps({"app": app_name, "identity": identity}) + "\n", fsync=True)
+        body = {"app": app_name, "identity": identity, "grant_id": secrets.token_hex(16)}
+        atomic_write(path, json.dumps(body) + "\n", fsync=True)
     except (OSError, ValueError):
         logger.warning("could not record the dashboard_proxy grant for %r", app_name)
         return False, "write-failed"

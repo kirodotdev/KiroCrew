@@ -12598,6 +12598,8 @@
       "dashboard_access_restart": "Riavvia app",
       "dashboard_access_restarted": "App riavviata.",
       "dashboard_access_restart_failed": "L'app non si è riavviata. Controlla il suo stato qui sopra.",
+      "dashboard_access_scope": "Con questo accesso l'app può leggere le tue chat e sessioni, inviare messaggi, avviare e fermare chat e usare il proprio backend. Non può modificare file, impostazioni, autorizzazioni o credenziali. Disattivando l'app questo accesso viene rimosso.",
+      "dashboard_access_load_failed": "Impossibile caricare l'accesso alla dashboard di questa app.",
       "grants_reconsent_link_hosts": "Host dei link: consente alle schede dell’app di vedere i link a questi siti nei messaggi della chat.",
       "grants_reconsent_link_patterns": "Modelli di testo: consente alle schede dell’app di vedere il testo della chat che corrisponde a questi modelli.",
       "grants_reconsent_link_full_url": "Indirizzi completi dei link: le schede dell’app vedono anche la parte di un link dopo ? o #, che può contenere un codice di accesso.",

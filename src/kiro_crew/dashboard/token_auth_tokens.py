@@ -928,6 +928,20 @@ def token_via_app_unverified(token: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def token_via_grant_unverified(token: str) -> str:
+    """The ``via_grant`` claim (the grant a delegated token was minted under), or ``""``.
+
+    Same read-only, validate-first contract as :func:`token_via_app_unverified`. A delegated
+    token with no claim answers ``""``, which matches no grant, so it is refused.
+    """
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    value = data.get("via_grant") if isinstance(data, dict) else None
+    return value if isinstance(value, str) else ""
+
+
 def token_owner_minted_unverified(token: str) -> bool:
     """Whether a token carries the owner-mint claim.
 

@@ -5520,6 +5520,8 @@
       "dashboard_access_restart": "Restart app",
       "dashboard_access_restarted": "App restarted.",
       "dashboard_access_restart_failed": "The app did not start again. Check its status above.",
+      "dashboard_access_scope": "With this access the app can read your chats and sessions, send messages, start and stop chats, and use its own backend. It cannot change files, settings, grants or credentials. Turning the app off removes this access.",
+      "dashboard_access_load_failed": "Could not load the dashboard access for this app.",
       "grants_reconsent_link_hosts": "Link hosts: lets the app's hover cards see links to these sites in chat messages.",
       "grants_reconsent_link_patterns": "Text patterns: lets the app's hover cards see chat text these patterns match.",
       "grants_reconsent_link_full_url": "Whole link addresses: the app's hover cards also see the part of a link after ? or #, which can hold a sign-in code.",

@@ -209,9 +209,7 @@ def test_a_delegated_token_may_write_only_where_allow_writes_says() -> None:
     walked = set(_write_routes())
     open_writes = sorted(f"{m} {p}" for m, p in walked if write_allowed(m, p))
     listed = sorted(
-        f"{m} {p}"
-        for m, p in walked
-        if (m, p) in ALLOW_WRITES or ("*", p) in ALLOW_WRITES
+        f"{m} {p}" for m, p in walked if (m, p) in ALLOW_WRITES or ("*", p) in ALLOW_WRITES
     )
     assert open_writes == listed
     assert not write_allowed("POST", "/api/file-write")

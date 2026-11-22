@@ -41,7 +41,9 @@ def granted(monkeypatch) -> dict:
     from kiro_crew.apps import dashboard_proxy
 
     flag = {"on": True}
-    monkeypatch.setattr(dashboard_proxy, "granted", lambda name: flag["on"] and name == _APP)
+    monkeypatch.setattr(
+        dashboard_proxy, "grant_current", lambda name, _claim: flag["on"] and name == _APP
+    )
     return flag
 
 
@@ -61,13 +63,11 @@ async def _serve(state, *extra_routes):
 
 
 def _delegated() -> dict[str, str]:
+    from kiro_crew.apps import dashboard_proxy
     from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
 
-    from kiro_crew.apps import dashboard_proxy
-
     # What ``/api/token/local`` puts in the token: the app and the grant it was minted under.
-    claim = getattr(dashboard_proxy, "grant_claim", lambda _app: "")(_APP)
-    extra = {"via_app": _APP, **({"via_grant": claim} if claim else {})}
+    extra = {"via_app": _APP, "via_grant": dashboard_proxy.grant_claim(_APP)}
     token = token_auth.generate_token("local-app", extra=owner_mint_extra(extra))
     return {"token": token}
 

@@ -187,6 +187,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         revoke_host_exec(name)
         # And its worker auto-approve grants, so none outlives the app.
         revoke_worker_auto_approve(name)
+        # And the sealed install record, so a later app of this name starts with none.
+        from kiro_crew.apps.dashboard_proxy import forget_install
+
+        forget_install(name)
     except Exception as exc:  # noqa: BLE001 - refuse rather than half-uninstall
         logger.warning("trust-grant cleanup on uninstall of %r failed", name, exc_info=True)
         # The app stays installed: put back the approvals a removal took.

@@ -56,11 +56,36 @@ describe('AppDetailDashboardAccess', () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
     await waitFor(() => expect(api.grantAppDashboardAccess).toHaveBeenCalledWith('tunnel'))
-    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ body: OFFER.text }))
+    expect(confirmMock).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining(`${OFFER.text} With this access the app can read`) }),
+    )
+    expect(confirmMock.mock.calls[0][0].body).toContain('Turning the app off removes this access.')
     expect(await screen.findByText('Dashboard access is on for this app.')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Restart app' }))
     await waitFor(() => expect(api.restartAppForDashboardAccess).toHaveBeenCalledWith('tunnel'))
     expect(await screen.findByRole('status')).toHaveTextContent('App restarted.')
+  })
+
+  it('says on the card what the access can do and that turning the app off removes it', async () => {
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    const scope = await screen.findByTestId('dashboard-access-scope')
+    expect(scope).toHaveTextContent('cannot change files, settings, grants or credentials')
+    expect(scope).toHaveTextContent('Turning the app off removes this access.')
+  })
+
+  it('shows the same scope line while the access is on', async () => {
+    api.getAppDashboardAccess.mockResolvedValue({ ...OFFERED, granted: true })
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    expect(await screen.findByTestId('dashboard-access-scope')).toHaveTextContent('Turning the app off removes this access.')
+  })
+
+  it('renders a failed load, with the agent hand-off, instead of nothing', async () => {
+    api.getAppDashboardAccess.mockRejectedValue(new Error('boom'))
+    render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
+    expect(await screen.findByTestId('dashboard-access-load-failed')).toHaveTextContent(
+      'Could not load the dashboard access for this app.',
+    )
+    expect(screen.queryByRole('button', { name: 'Allow dashboard access' })).toBeNull()
   })
 
   it('grants nothing when the owner declines the confirm', async () => {

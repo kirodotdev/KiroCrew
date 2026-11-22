@@ -59,6 +59,7 @@ def world(monkeypatch):
         dashboard_proxy, "_marker_state", lambda _n: (state["granted"], state["granted"])
     )
     monkeypatch.setattr(dashboard_proxy, "_stored_identity", lambda _n: "pkg-one-v1")
+    monkeypatch.setattr(dashboard_proxy, "_stored_grant_id", lambda _n: "grant-one")
     return state
 
 
@@ -83,7 +84,9 @@ async def test_the_real_secret_from_a_host_process_still_mints(world, minted, fa
 async def test_leg_two_mints_for_the_apps_own_backend(world, minted, fake_sel):
     resp = await _mint(dashboard_proxy.stand_in_value(_APP))
     assert resp.status == 200
-    assert minted["extra"] == {"owner_mint": "1", "via_app": _APP}
+    claim = dashboard_proxy.grant_claim(_APP)
+    assert claim, "the token names the grant it was minted under"
+    assert minted["extra"] == {"owner_mint": "1", "via_app": _APP, "via_grant": claim}
     row = fake_sel.log_api_access.call_args.kwargs
     assert row["resources"] == f"token-issued app={_APP} basis=spawned-app via=delegated"
     for call in fake_sel.log_api_access.call_args_list:

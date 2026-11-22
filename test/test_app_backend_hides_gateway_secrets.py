@@ -48,6 +48,13 @@ def _install(tmp_path) -> None:
     install_app(src)
 
 
+def _seal_registry_install(dashboard_proxy) -> None:
+    """The gateway's sealed record of a registry install, which an install path writes."""
+    assert dashboard_proxy.record_install(
+        _APP, version="1.0.0", registry="crew-tunnels", url="https://example.invalid/t.git"
+    )
+
+
 def _spy_spawn(monkeypatch) -> dict:
     import kiro_crew.apps.backend as bmod
 
@@ -107,7 +114,7 @@ def test_a_granted_app_gets_its_derived_value_over_each_masked_path(app_env, tmp
     seen = _spy_spawn(monkeypatch)
     _install(tmp_path)
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _name: True)
+    _seal_registry_install(dashboard_proxy)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     assert dashboard_proxy.grant(_APP)[0] is True
@@ -139,7 +146,7 @@ def test_a_second_app_does_not_get_the_first_apps_value(app_env, tmp_path, monke
     _install(tmp_path)
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
     first = dashboard_proxy.stand_in_value(_APP)
-    monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _name: True)
+    _seal_registry_install(dashboard_proxy)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     dashboard_proxy.grant(_APP)
@@ -154,7 +161,7 @@ def test_the_grant_ends_with_the_app(app_env, tmp_path, monkeypatch, what):
 
     _install(tmp_path)
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
-    monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _name: True)
+    _seal_registry_install(dashboard_proxy)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     dashboard_proxy.grant(_APP)

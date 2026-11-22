@@ -107,6 +107,7 @@ from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export t
     required_peer_key_unverified,
     requires_verified_peer_unverified,
     token_via_app_unverified,
+    token_via_grant_unverified,
     validate_token_with_app,
     validate_token_with_app_off_loop,
 )
@@ -1055,6 +1056,7 @@ def token_auth_middleware(
             _no_refresh = False
             _owner_minted = False
             _via_app = ""
+            _via_grant = ""
             _session_peer_key = ""
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
@@ -1064,6 +1066,7 @@ def token_auth_middleware(
                 # A delegated token's scope must survive the exchange and every rotation:
                 # a session that dropped it would be a plain owner session.
                 _via_app = token_via_app_unverified(token)
+                _via_grant = token_via_grant_unverified(token)
                 _link_nonce = str(data.get("nonce", ""))
                 # Carry the multi-instance frame-ancestors claim (the embedding
                 # parent dashboard's port) THROUGH the exchange. The framed
@@ -1158,6 +1161,7 @@ def token_auth_middleware(
                     _carried[OWNER_MINT_CLAIM] = "1"
                 if _via_app:
                     _carried["via_app"] = _via_app
+                    _carried["via_grant"] = _via_grant
                 if app_name:
                     # An app session keeps the issue time of the app token it was
                     # exchanged from: a request whose token passed the check just
@@ -1424,6 +1428,7 @@ def token_auth_middleware(
                         peer_key=_refresh_peer_key,
                         owner_mint=_owner_minted,
                         via_app=_via_app,
+                        via_grant=_via_grant,
                         embed_parent_port=_embed_parent_port,
                         embed_forward_port=_embed_forward_port,
                     )

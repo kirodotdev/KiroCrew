@@ -808,4 +808,11 @@ def set_app_provenance(
             sourceSigner=signer,
         ),
     )
+    # The gateway's own copy, sealed outside ``apps/<name>/`` (which the app can write):
+    # the ``dashboard_proxy`` offer and grant read provenance from it, never from the file.
+    from kiro_crew.apps import dashboard_proxy
+
+    dashboard_proxy.record_install(
+        name, version=meta.version, registry=registry, url=url, commit=commit, signer=signer
+    )
     return True

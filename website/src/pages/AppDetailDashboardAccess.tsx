@@ -32,14 +32,28 @@ export default function AppDetailDashboardAccess({ appName }: { appName: string 
   useEffect(() => { setRestartAsked(false); setNotice(''); setError('') }, [appName])
 
   const data = access.data
+  if (!data && access.isError) {
+    return (
+      <Card data-testid="app-dashboard-access">
+        <CardTitle>{i18nT('pages.appDetailPage.dashboard_access_title')}</CardTitle>
+        <ErrorNotice
+          message={i18nT('pages.appDetailPage.dashboard_access_load_failed')}
+          variant="inline"
+          askAgent
+          testId="dashboard-access-load-failed"
+        />
+      </Card>
+    )
+  }
   if (!data || (!data.granted && !data.offer && !data.needs_access)) return null
 
+  const scope = i18nT('pages.appDetailPage.dashboard_access_scope')
   const store = (next: AppDashboardAccess) => queryClient.setQueryData(queryKey, next)
   const allow = async () => {
     if (!data.offer) return
     const ok = await confirm({
       title: i18nT('pages.appDetailPage.dashboard_access_confirm_title'),
-      body: data.offer.text,
+      body: `${data.offer.text} ${scope}`,
       confirmLabel: i18nT('pages.appDetailPage.dashboard_access_allow'),
       danger: false,
       primary: true,
@@ -80,9 +94,13 @@ export default function AppDetailDashboardAccess({ appName }: { appName: string 
           {i18nT('pages.appDetailPage.dashboard_access_unsupported')}
         </div>
       ) : data.granted ? (
-        <div className="mt-2 text-[13px] text-text">{i18nT('pages.appDetailPage.dashboard_access_on')}</div>
+        <>
+          <div className="mt-2 text-[13px] text-text">{i18nT('pages.appDetailPage.dashboard_access_on')}</div>
+          <div className="mt-1 text-[12px] text-muted" data-testid="dashboard-access-scope">{scope}</div>
+        </>
       ) : (
         <>
+          <div className="mt-1 text-[12px] text-muted" data-testid="dashboard-access-scope">{scope}</div>
           {data.needs_access && (
             <div className="mt-2 text-[13px] text-warn" role="status" data-testid="dashboard-access-needed">
               {i18nT('pages.appDetailPage.dashboard_access_needed')}
@@ -100,7 +118,7 @@ export default function AppDetailDashboardAccess({ appName }: { appName: string 
         </div>
       )}
       {notice && <div className="mt-2 text-[12px] text-ok-text" role="status">{notice}</div>}
-      {error && <ErrorNotice message={error} variant="inline" />}
+      {error && <ErrorNotice message={error} variant="inline" askAgent />}
       {confirmDialog}
     </Card>
   )

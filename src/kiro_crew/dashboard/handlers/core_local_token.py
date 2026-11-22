@@ -186,6 +186,15 @@ async def api_token_local(request: web.Request) -> web.Response:
         # app is named in ``via_app``, never in ``app``: an ``app`` claim would put the
         # token under app scope, which is not what this grant is.
         extra["via_app"] = via_app
+        # And the id of the grant it was minted under: the token ends with that grant.
+        from kiro_crew.apps import dashboard_proxy
+
+        grant_claim = await asyncio.to_thread(dashboard_proxy.grant_claim, via_app)
+        if not grant_claim:
+            return web.json_response(
+                {"error": "invalid secret", "code": "invalid_secret"}, status=403
+            )
+        extra["via_grant"] = grant_claim
     token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=owner_mint_extra(extra))
     # The provenance gate knows WHICH app's backend owns the calling process, so
     # the audit row names it: a token minted by an app is attributed to that app,
