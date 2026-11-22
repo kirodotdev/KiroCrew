@@ -129,6 +129,11 @@ before installation completes stops any partially enabled gateway and safely
 reruns the idempotent install. Once `signal-complete` exists, later host reboots
 skip bootstrap and only the normal gateway service starts.
 
+The script writes `kcfetch.sh` and the gateway unit through unquoted heredocs, so
+their variables expand at write time. Their bodies therefore carry no backtick:
+bash would run the quoted word as a command while writing the file, comment lines
+included (`test_cloud_ec2_heredoc.py`).
+
 The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry. This installs the existing `voice` extra (`boto3` and
 `amazon-transcribe`) before the gateway first imports its Transcribe provider;
