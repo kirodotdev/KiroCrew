@@ -8443,7 +8443,7 @@
       "your_crew_is_almost_ready": "Votre équipe est presque prête.",
       "your_kiro_cli_is_out_of_date": "Votre Kiro CLI est obsolète",
       "attempt_failed_remedy": "Corrigez la cause indiquée ci-dessus (souvent un problème de permissions ou d’installation), puis appuyez sur « {{action}} » pour réessayer. Si l’échec persiste, réinstallez Kiro CLI.",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI est l’agent par défaut et n’est pas encore installé sur cet hôte.",
+      "kiro_cli_is_not_installed_yet": "Kiro CLI n’est pas encore installé sur cet hôte.",
       "install_kiro_cli_run_on_host": "Exécute ceci sur l’hôte de la passerelle {{platform}} pour l’installer.",
       "install_kiro_cli_run_for_platform": "Exécute la commande correspondant à la plateforme de l’hôte de la passerelle pour l’installer.",
       "install_command_macos_linux": "macOS et Linux (et autres systèmes de type Unix)",

@@ -8023,7 +8023,7 @@
       "your_crew_is_almost_ready": "クルーの準備がほぼ完了しました。",
       "your_kiro_cli_is_out_of_date": "お使いの Kiro CLI は古くなっています",
       "attempt_failed_remedy": "上記の原因（多くは権限またはインストールの問題）を解決してから、「{{action}}」を押して再試行してください。それでも失敗する場合は Kiro CLI を再インストールしてください。",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI はデフォルトのエージェントですが、このホストにはまだインストールされていません。",
+      "kiro_cli_is_not_installed_yet": "Kiro CLI はこのホストにまだインストールされていません。",
       "install_kiro_cli_run_on_host": "{{platform}} のゲートウェイホストで次のコマンドを実行してインストールします。",
       "install_kiro_cli_run_for_platform": "ゲートウェイホストのプラットフォームに合ったコマンドを実行してインストールします。",
       "install_command_macos_linux": "macOS と Linux（およびその他の Unix 系システム）",

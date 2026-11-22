@@ -8233,7 +8233,7 @@
       "your_crew_is_almost_ready": "तुम्हारा क्रू लगभग तैयार है।",
       "your_kiro_cli_is_out_of_date": "तुम्हारा Kiro CLI पुराना हो चुका है",
       "attempt_failed_remedy": "ऊपर बताए गए कारण को ठीक करो (अक्सर अनुमति या इंस्टॉल की समस्या), फिर “{{action}}” दबाकर फिर से कोशिश करो। अगर फिर भी विफल हो, तो Kiro CLI दोबारा इंस्टॉल करो।",
-      "kiro_cli_is_not_installed_yet": "Kiro CLI डिफ़ॉल्ट एजेंट है और इस होस्ट पर अभी इंस्टॉल नहीं है।",
+      "kiro_cli_is_not_installed_yet": "Kiro CLI इस होस्ट पर अभी इंस्टॉल नहीं है।",
       "install_kiro_cli_run_on_host": "इसे इंस्टॉल करने के लिए {{platform}} गेटवे होस्ट पर यह चलाओ।",
       "install_kiro_cli_run_for_platform": "इसे इंस्टॉल करने के लिए गेटवे होस्ट के प्लेटफ़ॉर्म वाला कमांड चलाओ।",
       "install_command_macos_linux": "macOS और Linux (और अन्य Unix-जैसे सिस्टम)",
