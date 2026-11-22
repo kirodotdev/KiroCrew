@@ -414,7 +414,7 @@ export default function BrowserView({
     return (
       <div
         ref={setRootEl}
-        className={`flex flex-col min-h-0 rounded-md border border-border bg-card ${className ?? ''}`}
+        className={`flex flex-col min-h-0 min-w-0 rounded-md border border-border bg-card ${className ?? ''}`}
         data-testid="app-browser-view"
         data-state={state}
       >
@@ -479,7 +479,7 @@ export default function BrowserView({
 
   return (
     <div
-      className={`flex flex-col min-h-0 ${className ?? ''}`}
+      className={`flex flex-col min-h-0 min-w-0 ${className ?? ''}`}
       ref={setRootEl}
       data-testid="app-browser-view"
       data-state={turn.state}
