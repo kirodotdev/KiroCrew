@@ -683,7 +683,7 @@ def apply_kas_cli_floor(
         confirm_kiro_cli_offers_kas,
         kiro_cli_pick_backend,
     )
-    from kiro_crew.crewmate_harness import bots_may_run_on_kas
+    from kiro_crew.crewmate_harness import bots_may_run_on_kas, bots_pinned_to_kiro_cli
 
     agent = cfg.agent
     named = ACP_BACKEND_KAS in (agent.acp_backend, agent.member_acp_backend)
@@ -693,7 +693,9 @@ def apply_kas_cli_floor(
     # rule, so such a Bot does not start KAS before this probe lands.
     kas_roles = named or bots_may_run_on_kas(cfg)
     kiro_pick = kiro_selected and agent.acp_backend == ACP_BACKEND_KIRO
-    if not (kas_roles or kiro_pick):
+    # A Bot's stored Kiro CLI pin loads as a stored pick does, so it needs the same start.
+    kiro_pinned = bool(bots_pinned_to_kiro_cli(cfg))
+    if not (kas_roles or kiro_pick or kiro_pinned):
         return None
     if agent.kas_bundle:
         # The bundle route spawns Kiro Crew's own engine and never runs kiro-cli,
@@ -708,23 +710,32 @@ def apply_kas_cli_floor(
     offers_kas, reason = kas_engine_verdict()
     start_unknown = False
     from_help = True
+    start_proven = False
     if offers_kas:
-        # The help lists v3 even where kiro-cli then refuses to run it. The user's
-        # own pick moves only on proof the engine runs here (one start per kiro-cli
-        # install, kept in the data home); without a pick, a refusal already on
-        # record for this kiro-cli is enough, and nothing is started for it.
-        started, refusal = kas_engine_start_verdict(start=kiro_pick)
+        # The help lists v3 even where kiro-cli then refuses to run it. A Kiro CLI
+        # pick moves only on proof the engine runs here (one start per kiro-cli
+        # install, kept in the data home). That start runs without a pick too, so
+        # the Agent Harness panel's Kiro CLI row reads proof, not help, and a pick
+        # saved later loads as the next boot would load it.
+        started, refusal = kas_engine_start_verdict()
+        start_proven = started is True
         if kiro_pick or started is False:
             offers_kas, reason = started, refusal
             start_unknown = started is None
             from_help = False
     if offers_kas:
-        # Positive evidence only: from here a Kiro CLI pick moves to the KAS path
-        # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
-        # process, so the verdict is recorded whatever the boot backend was.
-        confirm_kiro_cli_offers_kas()
+        # From here a Kiro CLI pick moves to the KAS path (``KIRO_SELECTION_BACKEND``),
+        # including one the user makes later in this process. Recorded only on the
+        # proof a stored pick needs at boot, so a pick saved later loads as the next
+        # boot would load it; an unknown start leaves that pick's verdict open, for
+        # the gateway to ask when the pick is saved (``process_entry``).
+        if start_proven:
+            confirm_kiro_cli_offers_kas()
         if kiro_pick:
             agent.acp_backend = kiro_cli_pick_backend()
+        return None
+    if not (kas_roles or kiro_pick):
+        # Only a Bot's Kiro CLI pin was asked: it stays on kiro-cli's v2 launch.
         return None
     if reason is None:
         if not kiro_pick:

@@ -194,7 +194,22 @@ chosen KAS falls back before the first chat. A help probe that names v3 and a st
 config-watcher cycle (`_reconcile_live_config_with_kiro_verdict`) before the floor
 task ends, so `SessionManager` rebuilds its provider factory from a fresh load; a probe that ran without v3, or a start kiro-cli refused, logs a notice that the pick stays on
 kiro-cli's v2 engine and names `kiro-cli update`; an unknown probe or start, or the
-bundle route, leaves the pick on kiro-cli. The probe runs the binary a session spawn runs
+bundle route, leaves the pick on kiro-cli. Without a stored pick a help probe that
+names v3 runs the same one start (or reads its record), and only a start that ran
+confirms v3, so a Kiro CLI pick saved later in the process loads as the next boot
+would load it, and the Agent Harness panel's Kiro CLI row (`kiro_cli_runs_on_kas`)
+reads that proof rather than help. A refused start there is a gap like any other. The
+floor task's `agent.acp_backend` subscription asks for such a saved pick: while the
+pick's verdict is open (`kiro_cli_pick_verdict_open`) and the documents store the
+Kiro CLI pick, it runs the floor for the pick alone off-loop, then the same
+reconcile, so the pick moves onto KAS without a restart exactly when a boot with it
+stored would have moved it, and otherwise stays on the v2 launch it already runs.
+An unknown verdict is asked again on the boot's `KIRO_PICK_VERDICT_RETRY_SECS`
+schedule while the pick or a Bot's Kiro CLI pin is still stored. A Bot's stored
+Kiro CLI pin (`kiro`) loads as a stored pick does, so the floor runs the same start
+for it at boot, and saving one (the subscription also hears `agents`) asks too; a
+refused start for a pin alone leaves it on kiro-cli and marks nothing.
+Sessions started before that verdict lands run the v2 launch. The probe runs the binary a session spawn runs
 (`agent_sdk.drivers.acp.kiro_cli_spawn_binary`, the same `_resolve_kiro_bin` with
 its `PATH` search and executable-trust check), so a kiro-cli reachable only through
 `PATH` is judged like any other. When that binary is the pinned install, the plain

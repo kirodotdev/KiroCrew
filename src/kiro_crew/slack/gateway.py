@@ -55,6 +55,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -1275,6 +1276,8 @@ _SLICE_LIMITS_TASK: "asyncio.Task[None] | None" = None
 
 # Strong reference to the background KAS kiro-cli floor check, for the same reason.
 _KAS_CLI_FLOOR_TASK: "asyncio.Task[None] | None" = None
+# That floor's saved-pick subscription; the next floor cancels it.
+_KAS_CLI_FLOOR_PICK_SUB: "live.Subscription | None" = None
 
 
 # Strong ref to the fire-and-forget agents-dir janitor sweep launched at boot

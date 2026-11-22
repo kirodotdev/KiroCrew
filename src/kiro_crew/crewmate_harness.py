@@ -245,6 +245,21 @@ def bots_may_run_on_kas(config: Any) -> bool:
     return False
 
 
+def bots_pinned_to_kiro_cli(config: Any) -> dict[str, Any]:
+    """The ``config.agents`` records that store a Kiro CLI pin (``kiro``). In memory.
+
+    Such a pin moves onto KAS on the start proof a stored main pick needs
+    (:meth:`CrewBackendPin.resolve`), so the kiro-cli floor runs that start for it.
+    """
+    agents = getattr(config, "agents", {}) or {}
+    return {
+        str(crew): agents[crew]
+        for crew in list(agents)
+        if (pin := crewmate_pin_for(config, str(crew))) is not None
+        and _backends.backend_from_stored(pin.stored) == _backends.ACP_BACKEND_KIRO
+    }
+
+
 def kas_runs_here(config: Any) -> bool:
     """Whether a session here runs on KAS, and so signs in with the Kiro sign-in. In memory.
 
