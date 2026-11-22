@@ -631,6 +631,14 @@ CREATED the target does not change, so `session_fork`, `session_rename` and
 sessions against the creator's memory. The target moves under `to` in the
 sidebar, and its transcript gets one note saying who manages it now.
 
+Pass `bind: true` to also give `to` the right to bind the target to its
+work-ledger items, which by default stays with the creator. Only the session that
+holds that right may pass it (`not_bind_holder` otherwise), and a target that
+conducts its own ledger moves only under a session whose ledger sits above it
+(`depth_exceeded`). Your own open item for the target is then closed as
+abandoned, unless it waits on a person, and from then on you cannot bind it. A
+later handoff without `bind` gives the right back to the creator.
+
 The new manager cannot hand the session back to the one that gave it. `to` must
 be a session the caller manages, and the giver manages the new manager, not the
 other way round, so the call is refused `not_creator`. A fenced
@@ -646,6 +654,8 @@ manages itself.
 | `self_manager` | `to` is the target itself. |
 | `already_manager` | `to` already manages the target. |
 | `would_cycle` | The target manages `to`, directly or up the line, so the handoff would make a loop. |
+| `not_bind_holder` | HTTP 403. You passed `bind: true` but do not hold the right to bind the target. |
+| `depth_exceeded` | HTTP 409. With `bind: true`: the target conducts a ledger that `to`'s own ledger is not above. |
 | `handoff_write_failed` | HTTP 500: the new manager could not be saved, so nothing changed. |
 
 With `agent.session_manager_chain` on (off by default), a session also reaches the
