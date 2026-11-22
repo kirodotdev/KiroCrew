@@ -1216,6 +1216,67 @@ async def test_the_row_says_the_mint_refuses_slack_whether_or_not_a_grant_is_hel
     assert (code, body.get("code"), started) == (409, "crew_sign_in_required", [])
 
 
+def _owner_recorded_slack(tmp_path, monkeypatch, url: str) -> None:
+    """:func:`_configured_slack` at *url*, recorded by the owner, with no Slack app saved."""
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+
+    _configured_slack(tmp_path, monkeypatch, {"name": SLUG, "url": url, "headers": {}})
+    (tmp_path / "home" / "config.json").write_text(
+        json.dumps({CONFIG_ROOT_KEY: {CONFIG_SERVERS_KEY: {SLUG: {"url": url}}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("granted", [True, False], ids=["grant-held", "no-grant"])
+async def test_an_owner_slack_entry_at_the_exact_url_says_the_mint_refuses(
+    tmp_path, monkeypatch, granted
+):
+    """The owner's own header-less entry at Slack's exact url: the card yields to it.
+
+    ``owns`` is False, so the mint refuses. The card's Connect cannot change
+    that, because writing the registry url leaves the entry the owner's. So the
+    row carries ``crewMintRefused`` and the card offers no Reconnect. Saving an
+    OAuth app takes the slug back, so without a grant the setup steps stay.
+    """
+    from kiro_crew.connections import status
+
+    _owner_recorded_slack(tmp_path, monkeypatch, SLACK_URL)
+    if granted:
+        monkeypatch.setattr(
+            status, "_grant_presence_maps", lambda providers, kas: ({SLUG: True}, {SLUG: True})
+        )
+    assert crew_oauth.manages(SLUG) and not crew_oauth.owns(SLUG)
+
+    slack = {s["slug"]: s for s in await status.collect_connection_statuses()}[SLUG]
+    assert slack.get("crewMintRefused") == "not_owned"
+    assert "crewSignInNotOwned" not in slack
+    assert slack.get("needsClientConfig") is (None if granted else True)
+    code, body, started = await _mint_slack(monkeypatch)
+    assert (code, body.get("code"), started) == (409, "crew_sign_in_required", [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", _url_variants(SLACK_URL), ids=["trailing-slash", "upper-case"])
+async def test_an_owner_slack_entry_at_a_url_variant_is_not_marked_refused(
+    tmp_path, monkeypatch, variant
+):
+    """Control: at a url variant the card's Connect writes the registry url first.
+
+    The entry then stops being the owner's recorded server, so the row keeps
+    Connect and carries no ``not_owned`` mark.
+    """
+    from kiro_crew.connections import status
+
+    _owner_recorded_slack(tmp_path, monkeypatch, variant)
+    assert crew_oauth.manages(SLUG) and not crew_oauth.owns(SLUG)
+
+    slack = {s["slug"]: s for s in await status.collect_connection_statuses()}[SLUG]
+    assert slack.get("crewMintRefused") != "not_owned"
+    assert "crewSignInNotOwned" not in slack
+
+
 @pytest.mark.parametrize("header", ["Authorization", "x-api-key"])
 def test_a_row_with_its_own_credential_header_never_needs_crew_sign_in(
     tmp_path, monkeypatch, header
