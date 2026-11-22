@@ -32,6 +32,7 @@ from kiro_crew.agent_discovery import (  # noqa: F401
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS  # noqa: F401
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
+from kiro_crew.agent_sdk.kas_model_catalog import config_options_refuse_auto  # noqa: F401
 from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
 from kiro_crew.agent_switch_command import switch_announcement  # noqa: F401
 from kiro_crew.approval_mode_policy import (  # noqa: F401
@@ -348,6 +349,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     close_slot,
 )
 from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
+    _auto_repick_moves_session,
     _broadcast_context_reset,
     _is_jev_route_pick,
     _model_rejected_reason,
@@ -710,6 +712,7 @@ from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # no
 from kiro_crew.llm_helpers import (  # noqa: F401
     pick_epoch_host,
     provider_model_pin_refused,
+    provider_raw_model,
     slot_switch_session_lock,
 )
 from kiro_crew.memory_startup import (  # noqa: F401

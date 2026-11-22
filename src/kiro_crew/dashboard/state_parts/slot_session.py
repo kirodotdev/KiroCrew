@@ -26,7 +26,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
 ``_summary_turn_mark``, ``_tab_id``, ``_telemetry_notice_shown``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
-``_title_retry_pending``, ``_title_task``, ``_titled``,
+``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_pick_gen``,
 ``_welcome_preview``, ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``backend``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
@@ -433,6 +433,11 @@ def init_session_fields(self: _ChatSlot) -> None:
     # generation as a person's pick (the Issue Radar crew's triage model
     # switch) skips a generation that equals this one.
     self._model_runtime_pick_gen = None
+    # The pick generation the slot's last turn ran under, stamped by
+    # ``_settle_session_model``: a generation past it is a pick made since the
+    # session last ran a turn. Both start at 0, so after a restart the slot's
+    # stored model counts as an older value until a pick moves the generation.
+    self._turn_pick_gen = 0
     # A save thread records a stricter folded line mode for loop-side adoption.
     self._pending_memory_mode = None
     self._app = ""  # App identity tag (App Kit §5.2)

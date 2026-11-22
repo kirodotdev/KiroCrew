@@ -216,6 +216,48 @@ def record_catalog(resp: dict[str, Any], backend: str, *, identity: object) -> b
     return False
 
 
+def config_options_refuse_auto(config_options: Any) -> bool:
+    """Whether a KAS session's stored ``configOptions`` select leaves ``auto`` out.
+
+    :func:`kiro_crew.acp.session_handle_model_selection.kas_select_refuses_auto` over
+    the select's ids, for the dashboard's live Auto pick, which holds the stored
+    options rather than the handle. A reopened chat's one-entry select is not the
+    account's list, so it refuses nothing (``select_lists_only_its_current_model``).
+    """
+    # Lazy for the same import-order reason as ``catalog_rows_from_session``.
+    from kiro_crew.acp.session_handle_model_selection import (
+        kas_select_refuses_auto,
+        model_select_envelope,
+        select_lists_only_its_current_model,
+    )
+
+    if not isinstance(config_options, list):
+        return False
+    select = model_select_envelope({"configOptions": config_options})
+    if select is None or select_lists_only_its_current_model(select):
+        return False
+    return kas_select_refuses_auto([m["modelId"] for m in select["availableModels"]])
+
+
+def session_lists_auto(session: object) -> bool:
+    """Whether the ids a KAS ``set_model("auto")`` on *session* is judged by list ``auto``.
+
+    *session* is the dashboard provider's session client: on KAS the
+    ``AcpSessionProvider`` around the session handle, whose ``kas_auto_judged_ids``
+    reads the handle's
+    :func:`kiro_crew.acp.session_handle_model_selection.kas_auto_judged_ids` (the
+    session's full select, else the catalog recorded for its account). Known
+    means they name a concrete model too, the rule that judges the pick; False
+    when they are not known, or when *session* carries no such ids (the
+    placeholder client before the session starts). For the turn's settle step,
+    which moves a session onto an Auto set before it last ran only on this ground.
+    """
+    ids = getattr(session, "kas_auto_judged_ids", None)
+    if not isinstance(ids, list):
+        return False
+    return "auto" in ids and any(m != "auto" for m in ids)
+
+
 def recorded_catalog_snapshot(identity: str) -> list[dict[str, Any]] | None:
     """A copy of the last recorded select's rows, if they belong to *identity*.
 
