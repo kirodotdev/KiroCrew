@@ -1667,8 +1667,7 @@ async def _settle_delivered_terminal(self: AutoNudgeService, loop: NudgeLoop) ->
     try:
         monitor = loop.monitor
         pending = monitor.terminal_delivered if monitor is not None else ""
-        settle_now = bool(monitor is not None and pending and loop.id in self._loops)
-        if not settle_now or monitor is None:
+        if monitor is None or not pending or loop.id not in self._loops:
             return
         reprobe = await self._terminal_still_holds(loop, monitor)
         # Entered with no await after the re-probe returns: the drain covers the
