@@ -157,8 +157,12 @@ itself and removing Crew's copy would not hold. Folder steering takes no
 switch-off on any harness, because a harness may load a folder file itself (Codex
 and kiro-cli load the project `AGENTS.md`); those rows read `none` too, and a
 file KAS or kiro-cli loads reads `unavailable`. #34598 tracks offering it where
-one harness can say exactly which files it loads. A member
-chat's envelope is not filtered: its rows stay `briefing`.
+one harness can say exactly which files it loads. A crewmate's
+essentials envelope is not filtered: every chat whose turns carry it (the
+crewmate's DM, an ordinary chat that picks the crewmate, or the crewmate's
+worker or delegate) keeps its rows `briefing`. The route reads that from the
+turn's owner (`resolve_turn_owner`'s record, else the chat's crewmate pick), not
+from the slot's mode.
 
 Then the per-turn blocks of §2 follow, and the user's own text is last. This
 build happens *after* the user's message arrives, so it lands directly on

@@ -267,7 +267,7 @@ def test_a_folder_document_the_section_cap_leaves_out_is_not_included(home, tmp_
     from kiro_crew import context as ctx
     from kiro_crew.folder_steering import SteeringCollection
 
-    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: "kirocrew")
+    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: ("kirocrew", False))
     root = tmp_path / "standards"
     cap = ctx._resolve_caps(None).steering
     # The collection is stubbed: this pins the section-cap verdicts, not the collector.
@@ -315,7 +315,7 @@ def test_the_folder_skips_what_the_launch_record_delivers(home, tmp_path, monkey
 
     monkeypatch.setattr(ctx.acp_driver, "inherits_default_resources", lambda _p: False)
     monkeypatch.setattr(ctx, "collect_folder_steering", collect)
-    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: "kirocrew")
+    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: ("kirocrew", False))
     launched = (str(tmp_path / "standards" / "a.md"),)
     chat_steering._plan_blocking(
         _ChatSlot("main"), "main", None, (str(tmp_path),), PROVIDER_ACP, False, launched
@@ -373,7 +373,9 @@ def _config(monkeypatch, backend: str, kiro_agent: str = "kirocrew") -> None:
     monkeypatch.setattr(
         selection,
         "resolve_session_agent_bindings",
-        lambda *_a, **_k: SimpleNamespace(kiro_agent=kiro_agent),
+        lambda *_a, **_k: SimpleNamespace(
+            kiro_agent=kiro_agent, execution_context=None, selection_kind="", resolved_alias=""
+        ),
     )
 
 
@@ -511,7 +513,7 @@ def test_a_stored_switch_off_does_not_change_the_cap_on_a_harness_that_ignores_i
     from kiro_crew.folder_steering import SteeringCollection
 
     monkeypatch.setattr(ctx.acp_driver, "inherits_default_resources", lambda _p: False)
-    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: "kirocrew")
+    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: ("kirocrew", False))
     root = tmp_path / "standards"
     cap = ctx._resolve_caps(None).steering
     documents = [(str(root / "a.md"), "a" * (cap + 500)), (str(root / "b.md"), "small")]
