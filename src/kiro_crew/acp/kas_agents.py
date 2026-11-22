@@ -87,6 +87,7 @@ from kiro_crew.acp.kas_agents_mcp_servers import (  # noqa: F401 - re-exported
     NOT_RUN_INSECURE_URL,
     NOT_RUN_REGISTRY,
     NOT_RUN_REGISTRY_IF_GOVERNED,
+    NOT_RUN_SCOPE_MUTED,
     WithheldOut,
     _project_mcp_servers,
 )

@@ -3312,7 +3312,12 @@ spec the same way kiro-cli v2 does where the wire allows it:
   code) the session's own entry declares too is left out of the target's entry:
   only the session's own copy is launched with the session's identity, hoisted
   into that array (`hoist_servers_for_session`), and a second declaration of the
-  name in the target's entry would launch without it.
+  name in the target's entry would launch without it. A server only a config
+  scope switches off, which the agent's own `tools` names
+  (`rewriter_spec._named_in_tools`), is recorded as `NOT_RUN_SCOPE_MUTED` for the
+  session-start notice (`kas_withheld_notice`), the session agent's and each
+  target's alike, so the chat names it instead of leaving its tools to go
+  missing unexplained.
   A `*` pattern is matched against the agents the spawn gate offers, and at most
   `MAX_SUBAGENT_TARGETS` (8) are registered. One session start reads each file
   its targets share once: inside `build_reuse.one_build`, opened around
