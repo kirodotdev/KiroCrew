@@ -14282,6 +14282,7 @@
         "crew_name_undispatchable": "Le nom de crew de ce fil ne peut pas être utilisé. Renomme ou recrée le Bot.",
         "code_channel_worktree_not_ready": "Le worktree de ce canal de code n’est pas encore prêt, le message n’a donc pas été exécuté. Renvoie-le dans un instant.",
         "remote_crew_read_only": "Ce chat s’est exécuté sur une crew distante et il est maintenant en lecture seule. Ouvre la session de la crew pour continuer.",
+        "cron_run_read_only": "La transcription de cette exécution cron peut être lue ici, mais pas recevoir de réponse. Démarre un nouveau chat pour y donner suite.",
         "archive_failed_turn_cancelled": "L’archivage de cet onglet a échoué après l’annulation de son tour en cours. L’onglet a été conservé, mais ce tour ne s’est pas terminé — renvoie ton message pour continuer.",
         "kas_signed_out": "Tu n’es pas connecté à Kiro. Connecte-toi dans Paramètres → Compte Kiro, puis renvoie ton message.",
         "windows_spawn_blocked": "Windows n’a pas pu démarrer le programme de l’agent ({{binary}}). AppLocker, un produit EDR ou une stratégie de groupe sur cet ordinateur l’a probablement bloqué. Demande à ton administrateur informatique d’autoriser ce fichier, puis lance une nouvelle discussion.",

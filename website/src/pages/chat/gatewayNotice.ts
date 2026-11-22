@@ -118,6 +118,7 @@ const NOTICE_FAMILIES = {
   crew_name_undispatchable: { role: 'error', card: 'error' },
   code_channel_worktree_not_ready: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
+  cron_run_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
   queued_message_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
   send_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
@@ -217,6 +218,7 @@ const COPY_KEY = {
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   code_channel_worktree_not_ready: 'pages.chat.gatewayNotice.code_channel_worktree_not_ready',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
+  cron_run_read_only: 'pages.chat.gatewayNotice.cron_run_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
   queued_message_dropped: 'pages.chat.gatewayNotice.queued_message_dropped',
   send_dropped: 'pages.chat.gatewayNotice.send_dropped',
@@ -566,6 +568,10 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^This chat ran on a remote crew and is read-only now\. Open the crew's own session to keep going\.$/u,
     token: 'remote_crew_read_only',
+  },
+  {
+    re: /^This cron run's transcript can be read here but not replied to\. Start a new chat to follow up on it\.$/u,
+    token: 'cron_run_read_only',
   },
   {
     re: /^⚠\uFE0F? Archiving this tab failed after its running turn was cancelled\. The tab was kept, but that turn did not finish -- re-send to continue\.$/u,

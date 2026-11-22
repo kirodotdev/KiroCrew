@@ -344,6 +344,8 @@ class _ChatSlot:
         "executor",
         "instance_id",
         "remote_slot",
+        # A cron run's transcript reopened from History with nothing to save to.
+        "cron_run_read_only",
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
         "_restored_turn_marker",
@@ -474,6 +476,7 @@ class _ChatSlot:
     executor: str
     instance_id: str
     remote_slot: str
+    cron_run_read_only: bool
     created_at: str
     _titled: bool
     _title_origin: str
