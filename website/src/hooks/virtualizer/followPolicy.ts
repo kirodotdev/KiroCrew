@@ -1218,14 +1218,18 @@ export function useFollowPlacementPins<T>(ctx: {
   leadingOffset: (el: HTMLElement) => number
   itemsRef: Ref<T[]>
   getKeyRef: Ref<(item: T, index: number) => string>
+  getStableIdRef: Ref<((item: T, index: number) => string) | undefined>
   setWindowRange: SetWindowRange
-  /** Moves a host's retained range (a native selection's rows) with the
-   *  bulk-prepend re-base below; see WindowState. */
+  /** Moves a host's retained range (a native selection's rows) by the
+   *  measured displacement of its rows; see WindowState. */
   shiftRetainedRange: (delta: number) => void
   follow: Pick<FollowState, 'stickRef' | 'lastHardInputAtRef' | 'pinCascadeUntilRef' | 'writeScrollTop'>
   pinning: Pick<Pinning, 'pinAuto' | 'forcePin'>
 }): void {
-  const { itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, setWindowRange, shiftRetainedRange } = ctx
+  const {
+    itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, getStableIdRef,
+    setWindowRange, shiftRetainedRange,
+  } = ctx
   const { stickRef, lastHardInputAtRef, pinCascadeUntilRef, writeScrollTop } = ctx.follow
   const { pinAuto, forcePin } = ctx.pinning
 
@@ -1267,15 +1271,27 @@ export function useFollowPlacementPins<T>(ctx: {
   // bulk hydration REPLACE (thin optimistic list swapped for the full
   // conversation): a prepend keeps the tail item, a replace does not.
   const prevTailKeyRef = useRef<{ session: string; key: string } | null>(null)
+  // First-row identity of the previous commit, session-scoped. Where that row
+  // lands is how far a growth with an unchanged tail moved the rows above the
+  // tail: a front prepend moves it down by the page, growth at the live tail (a
+  // thinking row spliced in before the streaming reply) leaves it at 0. The
+  // stable id survives a page that joins the top turn and renames its lead.
+  const prevFirstIdRef = useRef<{ session: string; id: string } | null>(null)
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
     const growth = itemCount - prevItemCountRef.current
     prevItemCountRef.current = itemCount
-    const tail = itemCount > 0 ? itemsRef.current[itemCount - 1] : undefined
+    const items = itemsRef.current
+    const tail = itemCount > 0 ? items[itemCount - 1] : undefined
     const tailKey = tail !== undefined ? getKeyRef.current(tail, itemCount - 1) : null
+    const first = itemCount > 0 ? items[0] : undefined
+    const stableId = getStableIdRef.current
+    const firstId = first !== undefined ? (stableId ? stableId(first, 0) : getKeyRef.current(first, 0)) : null
     const prevTail = prevTailKeyRef.current
+    const prevFirst = prevFirstIdRef.current
     prevTailKeyRef.current = tailKey !== null ? { session: sessionId, key: tailKey } : null
+    prevFirstIdRef.current = firstId !== null ? { session: sessionId, id: firstId } : null
     if (growth <= 0) return
     // BULK growth while followed is history hydration, not streaming: the
     // slot-detail fetch resolving and REPLACING a thin optimistic list (e.g.
@@ -1321,8 +1337,11 @@ export function useFollowPlacementPins<T>(ctx: {
       // NOT-STICK is owned by the part-1/part-2 anchor machinery -- doing
       // it here too double-shifted the window (anti-loop test pins this).
       if (stickRef.current) {
-        // A retained range names rows, so it moves with them (see WindowState).
-        shiftRetainedRange(growth)
+        const firstDisplacement = prevFirst?.session === sessionId
+          ? items.findIndex((item, index) => (stableId ? stableId(item, index) : getKeyRef.current(item, index)) === prevFirst.id)
+          : -1
+        // A retained range names rows, so move it only when those rows moved.
+        if (firstDisplacement > 0) shiftRetainedRange(firstDisplacement)
         setWindowRange((r) => ({
           start: Math.min(itemCount, r.start + growth),
           end: Math.min(itemCount, r.end + growth),

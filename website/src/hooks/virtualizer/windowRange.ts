@@ -96,13 +96,13 @@ export interface WindowState {
   setWindowRange: SetWindowRange
   retainRange: (range: RetainedVirtualRange | null) => void
   /** Move the retained range by `delta` rows. A retained range names ROWS (a
-   *  native selection's), and a landed older page renumbers every row, so
-   *  every owner that re-bases the numeric window by a displacement moves the
-   *  range by the same one (shiftCompensation part 1, follow's bulk-prepend
-   *  re-base), at commit. Left where it was, it holds the older rows that took
-   *  its numbers, a page more per landing, and under a displacement that moves
-   *  rows UP it lets the rows under the selection unmount, which re-roots the
-   *  selection. */
+   *  native selection's), and a landed older page renumbers every row, so each
+   *  owner that lands one moves the range by those rows' displacement, at
+   *  commit: the anchored landing by its anchor's measured displacement, the
+   *  arithmetic fallback and follow by where the old first row landed (the
+   *  fallback by the inserted count when that row did not survive). Left
+   *  where it was, the range holds whichever rows took its numbers and can
+   *  let the rows under the selection unmount, which re-roots the selection. */
   shiftRetainedRange: (delta: number) => void
   /** The range `setWindowRange(next)` commits: `next` widened to keep any
    *  retained range mounted. A render-phase writer compares against this, not

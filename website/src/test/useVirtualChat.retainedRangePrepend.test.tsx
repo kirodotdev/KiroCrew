@@ -10,10 +10,9 @@
  * rows mounted, one more page of them per landing while the selection was held,
  * and under a displacement that moves rows UP it let the rows under the
  * selection unmount, which re-roots the selection. The hook now moves the
- * retained range by the same displacement it re-bases the window with, in each
- * of the three owners that re-base it: the anchored landing (part 1), the
- * anchor-miss arithmetic fallback, and follow's bulk prepend under a reader
- * pinned to the bottom.
+ * retained range by the rows' displacement in each of the three landing
+ * owners: the anchored landing (part 1), the anchor-miss arithmetic fallback,
+ * and follow's bulk prepend under a reader pinned to the bottom.
  *
  * Layout is the same deterministic engine the prependAnchor suite uses.
  */
@@ -24,7 +23,9 @@ import { type RefObject } from 'react'
 
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 
-interface Item { id: string }
+/** `sid` is a row's stable id where a case gives it one: a top turn a page
+ *  joins changes its key (its lead) but keeps its tail message. */
+interface Item { id: string; sid?: string }
 const getKey = (it: Item) => it.id
 const mkItems = (n: number, prefix = 'm'): Item[] =>
   Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}` }))
@@ -42,13 +43,14 @@ function rect(top: number, height: number): DOMRect {
 
 type RetainRange = ReturnType<typeof useVirtualChat<Item>>['retainRange']
 
-function Harness({ items, scrollerRef, retainRef }: {
+function Harness({ items, scrollerRef, retainRef, stable = false }: {
   items: Item[]
   scrollerRef: RefObject<HTMLDivElement | null>
   retainRef: { current: RetainRange | null }
+  stable?: boolean
 }) {
   const v = useVirtualChat<Item>({
-    items, sessionId: 'retained-prepend', getKey, overscan: 2,
+    items, sessionId: 'retained-prepend', getKey, getStableId: stable ? (it) => it.sid ?? it.id : undefined, overscan: 2,
     externalScrollerRef: scrollerRef, estimatedHeight: REAL_H,
   })
   retainRef.current = v.retainRange
@@ -142,12 +144,13 @@ describe('useVirtualChat: a retained range follows its rows across a prepend', (
   const flushFrames = () => act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
 
   /** 30 rows in a scroller whose height follows its children, so a follow pin
-   *  has a real bottom to land on. The caller places the reader. */
-  function mount() {
+   *  has a real bottom to land on. The caller places the reader. `stable`
+   *  hands the hook a stable row id, as the chat page does. */
+  function mount(stable = false) {
     const scrollerRef: RefObject<HTMLDivElement | null> = { current: null }
     const retainRef: { current: RetainRange | null } = { current: null }
     let scrollTop = 0
-    const view = rtlRender(<Harness items={mkItems(30)} scrollerRef={scrollerRef} retainRef={retainRef} />)
+    const view = rtlRender(<Harness items={mkItems(30)} scrollerRef={scrollerRef} retainRef={retainRef} stable={stable} />)
     const el = scrollerRef.current!
     Object.defineProperty(el, 'scrollTop', {
       configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v },
@@ -164,7 +167,7 @@ describe('useVirtualChat: a retained range follows its rows across a prepend', (
     installFakeLayout(el)
     flushFrames()
     const land = (items: Item[]) => {
-      act(() => { view.rerender(<Harness items={items} scrollerRef={scrollerRef} retainRef={retainRef} />) })
+      act(() => { view.rerender(<Harness items={items} scrollerRef={scrollerRef} retainRef={retainRef} stable={stable} />) })
       flushFrames()
     }
     const setScrollTop = (v: number) => { scrollTop = v }
@@ -217,6 +220,37 @@ describe('useVirtualChat: a retained range follows its rows across a prepend', (
     expect(mounted[0]).toBe('m2')
   })
 
+  it('moves the range by the page only when the live tail grows in the same render (arithmetic fallback)', () => {
+    const { el, retain, land, setScrollTop } = mount()
+    act(() => { setScrollTop(2160); el.dispatchEvent(new Event('scroll')) })
+    flushFrames()
+    retain(2, 4)
+    setScrollTop(5000)
+    // The older page and a row spliced in before the streaming reply land in
+    // one render: the count grows by 11, the rows under the selection by 10.
+    land([...mkItems(OLDER, 'p'), ...mkItems(29), { id: 'thinking' }, { id: 'm29' }])
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    flushFrames()
+
+    const mounted = mountedKeys(el)
+    expect(mounted).toEqual(expect.arrayContaining(['m2', 'm3']))
+    expect(mounted).not.toContain('p2')
+    expect(mounted[0]).toBe('m2')
+  })
+
+  it('keeps the retained rows in place when growth lands at the live tail', () => {
+    const { el, retain, land } = mount()
+    expect(mountedKeys(el)).toEqual(expect.arrayContaining(['m28', 'm29']))
+    retain(2, 4)
+    expect(mountedKeys(el)[0]).toBe('m2')
+
+    land([...mkItems(29), { id: 'thinking' }, { id: 'm29' }])
+
+    const mounted = mountedKeys(el)
+    expect(mounted).toEqual(expect.arrayContaining(['m2', 'm3']))
+    expect(mounted[0]).toBe('m2')
+  })
+
   it('moves the range with a bulk prepend under a reader pinned to the bottom (follow re-base)', () => {
     const { el, retain, land } = mount()
     // Following the tail: rows 28 and 29 are the last two, on screen.
@@ -238,6 +272,21 @@ describe('useVirtualChat: a retained range follows its rows across a prepend', (
     expect(mounted).toEqual(expect.arrayContaining(['m2', 'm3', 'm28', 'm29']))
     expect(mounted).not.toContain('p2')
     expect(mounted).not.toContain('p3')
+    expect(mounted[0]).toBe('m2')
+  })
+
+  it('moves the range by the page when the landing re-keys the top row and its stable id survives (follow re-base)', () => {
+    const { el, retain, land } = mount(true)
+    retain(2, 4)
+    // The page joins the top turn and renames its lead, so m0's key changes
+    // while its stable id, the turn's tail message, does not.
+    land([...mkItems(OLDER, 'p'), { id: 'm0-led', sid: 'm0' }, ...mkItems(30).slice(1)])
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    flushFrames()
+
+    const mounted = mountedKeys(el)
+    expect(mounted).toEqual(expect.arrayContaining(['m2', 'm3']))
+    expect(mounted).not.toContain('p2')
     expect(mounted[0]).toBe('m2')
   })
 })
