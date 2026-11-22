@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew import kiro_on_kas_notice as notice
+from kiro_crew.agent_sdk import backend_install
 from kiro_crew.agent_sdk import backends as registry
 from kiro_crew.config import loader, loader_document
 
@@ -183,6 +184,33 @@ def test_a_kiro_cli_pick_stays_on_kiro_cli_when_kas_is_unservable(home, monkeypa
     _stored(monkeypatch, False)
     registry.mark_backend_unservable(KAS, "this kiro-cli has no --agent-engine flag")
     assert notice.kiro_cli_runs_on_kas() is False
+
+
+@pytest.mark.parametrize(
+    ("installed", "restart_required", "offered"),
+    [
+        (backend_install.INSTALLED, False, True),
+        # A probe that could not decide does not block a spawn either.
+        (backend_install.UNKNOWN, False, True),
+        (backend_install.MISSING, False, False),
+        (backend_install.INSTALLED, True, False),
+    ],
+)
+def test_kas_is_offered_when_installed_with_no_restart_pending(
+    home, monkeypatch, installed, restart_required, offered
+):
+    state = backend_install.BackendInstallState(
+        KAS, "kas", installed, restart_required=restart_required
+    )
+    monkeypatch.setattr(backend_install, "probe_backend", lambda backend: {KAS: state}[backend])
+    assert notice.kas_backend_offered() is offered
+
+
+def test_kas_is_not_offered_when_policy_denies_it(home, monkeypatch):
+    state = backend_install.BackendInstallState(KAS, "kas", backend_install.INSTALLED)
+    monkeypatch.setattr(backend_install, "probe_backend", lambda backend: {KAS: state}[backend])
+    registry.apply_selectable_denials({KAS})
+    assert notice.kas_backend_offered() is False
 
 
 def test_the_panel_row_flag_reads_the_same_answer(home, monkeypatch):
