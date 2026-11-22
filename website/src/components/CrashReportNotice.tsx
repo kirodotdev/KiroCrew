@@ -21,8 +21,11 @@
  * crash produces `newCount: 0` and nothing renders anyway.
  *
  * The renderer is told the count and when the newest crash happened, so a
- * weeks-old crash does not read like one that just occurred. Paths, file names,
- * module names and exception codes stay in the main process (see
+ * weeks-old crash does not read like one that just occurred, plus, on a launch
+ * whose Chromium file log is off, a cause code from a closed set (see
+ * `initNativeLogging` in electron/native-logging.js) that the banner turns into
+ * a translated sentence saying chromium.log is from an earlier session. Paths,
+ * file names, module names and exception codes stay in the main process (see
  * `crashNoticeSummary` in electron/crash-collector.js) — the reveal action is a
  * main-process gesture that names no path, so this component never holds one.
  */
@@ -48,6 +51,7 @@ const REASK_DELAYS_MS = [15_000, 45_000, 120_000, 300_000, 600_000] as const
 export default function CrashReportNotice() {
   const [count, setCount] = useState(0)
   const [lastCrashAt, setLastCrashAt] = useState<Date | null>(null)
+  const [nativeLogOff, setNativeLogOff] = useState<NativeLogOffCause | null>(null)
   const [dismissed, setDismissed] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
   const [reportOpen, setReportOpen] = useState(false)
@@ -90,6 +94,7 @@ export default function CrashReportNotice() {
         // An older shell sends no time; a missing or malformed one hides the
         // line rather than printing the formatter's "—".
         setLastCrashAt(toDate(summary.lastCrashAt))
+        setNativeLogOff(isNativeLogOffCause(summary.nativeLogOff) ? summary.nativeLogOff : null)
       })
       .catch(() => {
         const delay = REASK_DELAYS_MS[attempt]
@@ -100,6 +105,8 @@ export default function CrashReportNotice() {
   }, [])
 
   if (dismissed || count < 1) return null
+
+  const nativeLogOffMessage = nativeLogOff ? nativeLogOffText(nativeLogOff) : null
 
   // Two rows, so each holds at most two controls (the two-buttons-per-row
   // cap counts the icon-only dismiss too). Row one is the message: icon, text,
@@ -130,6 +137,19 @@ export default function CrashReportNotice() {
           {lastCrashAt && (
             <div className="text-[13px] text-muted mt-1" data-testid="crash-notice-latest">
               {i18nT('components.crashNotice.latest_crash', { date: fmtDateTime(lastCrashAt) })}
+            </div>
+          )}
+          {/* Status about the attachment, not an error: the crash already
+              happened and was recorded, and nothing the user asked for failed.
+              The line only says the chromium.log they attach is from an earlier
+              session; for most causes (`in_use`, `no_access`, `unreadable`,
+              `other`) the user cannot act on it, so it informs in the muted
+              register with no "Ask the agent"
+              (docs/decisions/2026-11-07-the-crash-notice-says-the-file-log-is-off-as-a-muted-line.md),
+              after the "Latest crash" line, as the 2026-11-14 crash notice entry orders them. */}
+          {nativeLogOffMessage && (
+            <div className="text-[12px] text-muted mt-1" data-testid="crash-notice-native-log-off">
+              {nativeLogOffMessage}
             </div>
           )}
         </div>
@@ -184,4 +204,24 @@ export default function CrashReportNotice() {
       />
     </div>
   )
+}
+
+type NativeLogOffCause = 'disk_full' | 'no_access' | 'in_use' | 'unreadable' | 'other'
+
+const NATIVE_LOG_OFF_CAUSES: readonly NativeLogOffCause[] = ['disk_full', 'no_access', 'in_use', 'unreadable', 'other']
+
+function isNativeLogOffCause(value: unknown): value is NativeLogOffCause {
+  return typeof value === 'string' && (NATIVE_LOG_OFF_CAUSES as readonly string[]).includes(value)
+}
+
+// One whole sentence per cause, so each catalog phrases the cause in its own
+// grammar instead of splicing a fragment into a frame.
+function nativeLogOffText(cause: NativeLogOffCause): string {
+  switch (cause) {
+    case 'disk_full': return i18nT('components.crashNotice.native_log_off_disk_full')
+    case 'no_access': return i18nT('components.crashNotice.native_log_off_no_access')
+    case 'in_use': return i18nT('components.crashNotice.native_log_off_in_use')
+    case 'unreadable': return i18nT('components.crashNotice.native_log_off_unreadable')
+    default: return i18nT('components.crashNotice.native_log_off_other')
+  }
 }
