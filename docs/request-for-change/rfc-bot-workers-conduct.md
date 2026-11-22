@@ -262,23 +262,32 @@ catalogs are translated in the same commit and `en-XA` regenerated, per
 
 ### 5.2 Which sessions conduct: marked at create by the Bot's thread, switch read at start
 
-The lineage is recorded **once per create, in `session_create`, when the caller
-is the Bot's own thread** (`members.is_member_session_key` on the caller's slot
-key, the same test the restore feeder below applies to the verified
-`created_by`): the child is marked *thread-born*. The switch itself is read at each
-marked worker's session start (below), never stored on the mark, so a worker
-minted while the switch was off conducts at its next start once it is on, the
-same way after a resume as after a restart. The mark is a members-level
+The lineage is recorded **once per create or fork, when the caller is the Bot's
+own thread** (a `session_create` or a `session_fork`;
+`members.is_member_session_key` on the caller's slot key, the same test the
+restore feeder below applies to the verified `created_by`): the child is marked
+*thread-born*. The switch itself is read at each marked worker's session start
+(below), never stored on the mark, so a worker minted while the switch was off
+conducts at its next start once it is on, the same way when the reload below
+resumes it as after a gateway restart. The mark is a members-level
 in-memory registry beside the backend-pick table
 (`members_parts/member_sessions.py`, `_SESSION_BACKEND_PICKS`, written at mint by
 `session_create.create_session` through `members.note_session_backend_pick` and
-at restore by `metadata_codec._read_backend`), fed the same two ways:
+at restore by `metadata_codec._read_backend`), fed three ways:
 
-- at mint, right where the backend pick is noted;
+- at mint, right where the backend pick is noted, by `session_create` and by
+  `session_fork`, from the caller's key: the thread's fork of its worker is
+  thread-born, and any other caller's fork is plain;
 - at restore, from the slot's verified `created_by`
   (`metadata_codec._read_created_by`): a worker slot whose verified creator is a
   member DM key (`members.is_member_session_key`) is thread-born. An unverified
-  creator (`UNVERIFIED_CREATOR`) is not, so a restart fails closed.
+  creator (`UNVERIFIED_CREATOR`) is not, so a restart fails closed;
+- at a revive, from the same verified creator `session_revive` restores, so a
+  revived worker is thread-born whether or not the gateway restarted since it
+  was archived.
+
+A History resume restores no creator, so it drops the mark: the worker it
+reopens is plain whether or not the gateway restarted in between.
 
 A session conducts when all three hold at its start: it is a crewmate worker this
 process knows (`members.is_crewmate_worker_session`, filled from the attested
@@ -286,8 +295,9 @@ execution record), it is thread-born, and its Bot's record has `worker_conducts`
 **now** (a cached `KiroCrewConfig.load()`, failing closed on an unreadable or
 degraded config, the way `caller_access.member_dispatch_enabled` does). Reading
 the switch again at every session start means a change to it takes effect at
-each worker's next start, including a resume; nothing about a running worker
-changes mid-turn.
+each worker's next start, including when the reload below resumes it; nothing
+about a running worker changes mid-turn, except the bound of 4 (§5.5), which
+starts the moment the switch is on, even for a worker that is already running.
 
 Turning the switch off reloads the Bot's workers so that start comes soon, the
 way a change to the Bot's policy reloads them
@@ -309,8 +319,8 @@ whatever `work_ledger.max_depth` says (§5.5).
 
 | piece | where it is decided | what |
 |---|---|---|
-| session control | the two composers that mount it for the thread, through the one branch each already has: `runtime_session_create.create_session` (and the load path, so a `session/load` keeps it), which the provider keys for both populations as `acp_runtime_start._member_session_key` keys the thread (`members.mounts_session_control(key)`: a member DM key, or `members.conducting_worker_session(key)`); and the client array composer in `acp/client_mcp_array.py`, which reads the same predicate. A session that is neither a thread nor a conducting worker is keyed on neither path and enters the branch on neither (harness parity H13). | `members.member_dispatch_session_server(session_key, token)`: the same entry, identity env (`KIROCREW_SESSION_KEY`, the signed session token, `KIROCREW_BOUND_PORT`) and withholds (`ACP_BACKENDS_MEMBER_DISPATCH`, the server's `disabled` switch-off) as the thread. The crew **panel** (`runtime_session_setup._mount_member_panel`, and the client composer's `_append_member_panel_server`) keeps its own thread-only test (`members.is_member_session_key`) and is never mounted for a worker. |
-| KAS grants for it | `runtime_session_create.create_session` hands `kas_agents.to_client_custom_agent` the same `member_dispatch` flag it hands for the thread (it already follows the mount and its withhold), and the projection picks the grant set by the session's population: `members.conducting_worker_session(session_key)` takes the conductor-mode set below, every other mounted session the thread's `agent._MEMBER_DASHBOARD_GRANTS` | `@kirocrew-dashboard` joins `tools`; `agent._CONDUCTOR_DASHBOARD_GRANTS` (`session_create`, `session_read_message`, `session_status`) join the ceiling-filtered `allowedTools` — the verbs conductor mode already grants its conductors, and no more. The seed and the close of a child go through `session_send` / `session_close`, which stay gated and are approved without a prompt only for a session the caller itself created: the own-child exemption (`tool_approval._conductor_own_child_call`, switched by `agent.conductor_own_child_verbs`, vouched lineage through `tool_approval._vouched_creator_of`) today admits a caller by `slot.agent` (`kirocrew-conductor`, `kirocrew-team-lead`), so it admits a conducting worker too, by the same predicate and never by the worker template's name; every other target and verb (`session_stop`, `session_retry`, `session_broadcast`, `work_dispatch`) prompts, exactly as for a conductor-mode conductor. The protocol needs no verb beyond these: restarting a stalled child (`session_stop`) is a gated step in conductor mode too. |
+| session control | the two composers that mount it for the thread, through the one branch each already has: `runtime_session_create.create_session` (and the load path, so a `session/load` keeps it), which the provider keys for both populations as `acp_runtime_start._member_session_key` keys the thread (`members.mounts_session_control(key)`: a member DM key, or `members.conducting_worker_session(key)`), read off the event loop through the cached config load the worker's spec reads, so the mount and the spec agree; and the client array composer in `acp/client_mcp_array.py`, which reads the same predicate. A session that is neither a thread nor a conducting worker is keyed on neither path and enters the branch on neither (harness parity H13). | `members.member_dispatch_session_server(session_key, token)`: the same entry, identity env (`KIROCREW_SESSION_KEY`, the signed session token, `KIROCREW_BOUND_PORT`) and withholds (`ACP_BACKENDS_MEMBER_DISPATCH`, the server's `disabled` switch-off) as the thread. The crew **panel** (`runtime_session_setup._mount_member_panel`, and the client composer's `_append_member_panel_server`) keeps its own thread-only test (`members.is_member_session_key`) and is never mounted for a worker. |
+| KAS grants for it | `runtime_session_create.create_session` hands `kas_agents.to_client_custom_agent` the same `member_dispatch` flag it hands for the thread (it already follows the mount and its withhold), and the projection picks the grant set by the session's population: a mounted thread-born worker of the Bot (`members.is_thread_born_crewmate_worker(session_key)`; its start took the mount only because the switch was on, and the switch is not read a second time, so a save between the mount and the projection cannot widen its set) takes the conductor-mode set below, every other mounted session the thread's `agent._MEMBER_DASHBOARD_GRANTS` | `@kirocrew-dashboard` joins `tools`; `agent._CONDUCTOR_DASHBOARD_GRANTS` (`session_create`, `session_read_message`, `session_status`) join the ceiling-filtered `allowedTools` — the verbs conductor mode already grants its conductors, and no more. The seed and the close of a child go through `session_send` / `session_close`, which stay gated and are approved without a prompt only for a session the caller itself created: the own-child exemption (`tool_approval._conductor_own_child_call`, switched by `agent.conductor_own_child_verbs`, vouched lineage through `tool_approval._vouched_creator_of`) today admits a caller by `slot.agent` (`kirocrew-conductor`, `kirocrew-team-lead`), so it admits a conducting worker too, by the same kit test (`mate_worker_conducts.holds_conducting_kit`) and never by the worker template's name; every other target and verb (`session_stop`, `session_retry`, `session_broadcast`, `work_dispatch`) prompts, exactly as for a conductor-mode conductor. The protocol needs no verb beyond these: restarting a stalled child (`session_stop`) is a gated step in conductor mode too. |
 | ledger grants | the per-session worker projection every reader uses, `mate_worker.worker_session_spec` (the seam that resolves the session's Bot and calls `resolve_worker_spec`), when `members.conducting_worker_session(key)` holds (marked, known as the Bot's worker, switch on) | `allowedTools` += `agent._LEDGER_CONDUCTOR_WORK_GRANTS` (`work_ledger_read`, `work_ledger_record`, `work_ask_record`, `work_ledger_rebuild`, `accept_eval`; `work_brief` and `work_report` are already granted), through `sanitize_agent_config_governance` as every other grant, so a withheld verb stays mounted and prompts. `agent._WORKER_EXCLUDED_GRANTS` (cron authoring) stay withheld. `kirocrew-work` is already a base server. |
 | prompt | the same projection; a new piece `worker.conducts` in `crewmate_prompts.json`, rendered from `agent._LEDGER_CONDUCTOR_RULES` placeholders exactly as `conductor.patrol` is (`context_assembly.member.ledger_rules_block`) | You may split your item into independently acceptable sub-items. Read the `goal-conductor` skill first ("When a conductor dispatched you"); the dispatch order is `work_ledger_record action=create`, `session_create` (pass no `agent`: every child is your Bot's own worker; the goal-conductor skill's "never leave `agent` unset" rule is for `kirocrew-conductor`, whose inherited agent cannot write files, while your create is forced onto your Bot's worker whatever `agent` says), `bind`, then the seed. Your Bot has one worktree per repository and every worker of it runs there: give changes in one repository to one child at a time; children that only read may share it. A child's turn end does not wake you: patrol with `monitor_start` and `work_ledger_read`; verify with `accept_eval`. A `depth_exceeded` on your first `goal` or `create` means you are at the last conducting level: do the item yourself and say so in a `progress` report. Your `work_report` to your Bot is unchanged (`done` only when every sub-item is accepted). If `session_create` is not in your tool list, this Bot's harness could not carry it: work the item yourself and say so. A patrol wake with no news ends with `nothing_to_do` and no text. |
 | skills | the same projection | `kirocrew-mate-worker` is a whole-catalog template: a spec with no `skill://` entry inherits every skill (`agent_discovery.agent_skill_globs` with `inherit_defaults`; [memory-skills-hooks.md](../system-specs/modules/memory-skills-hooks.md), "KAS skill scope"), so `goal-conductor` is already reachable and a mapping would narrow the worker to that one skill. The `skill://` URI for `goal-conductor` is added only when the merged spec already carries a mapping (a Bot whose file maps skills), the case where the pointer would otherwise be false. |
@@ -327,9 +337,12 @@ sub-tasks (the spawn refusal is the conductor chat's,
 
 `session_create._dispatching_crewmate` answers the Bot's record for one more
 caller: a `template` caller that `mate_worker.is_own_worker_execution` accepts
-and that is a marked conducting worker. Its two readers then answer as for the
-thread: `_hands_off_to_own_worker` forces the child onto `kirocrew-mate-worker`
-as a template on the Bot's store with its `member_id`, whatever `agent` the
+and that holds the conducting kit (`mate_worker_conducts.holds_conducting_kit`:
+its thread-born mark and the session-control mount its running handle took at
+start), so the answer lasts until that session next starts (§5.2). Its two
+readers then answer as for the thread: `_hands_off_to_own_worker` forces the
+child onto `kirocrew-mate-worker` as a template on the Bot's store with its
+`member_id`, whatever `agent` the
 model names (naming another Bot keeps that Bot's refusing resolution, as today),
 and `_conducts_for_a_worker` files the child in the Bot's home folder
 (`mate_folders.mate_home_filing`). From that one answer the existing code gives
@@ -391,7 +404,8 @@ three verbs that ask the Bot's limit today, `session_create`, `session_revive`
 and `session_fork`, each through `bot_worker_cap.worker_cap_refusal`, ask a
 Phase 1 helper instead, `mate_worker_conducts.effective_worker_cap_refusal`:
 for a Bot with the switch on and no limit set (and, until it restarts, for a
-conducting worker that started while it was on, §5.2) it calls the existing
+create, revive or fork whose caller holds the conducting kit,
+`holds_conducting_kit`, §5.2) it calls the existing
 `bot_worker_cap.bot_worker_cap_refusal(state, member_id, cap)` with that
 constant, and in every other case it is `bot_worker_cap.worker_cap_refusal`
 itself, so nothing in `bot_worker_cap.py` changes (§4) and a Bot with the
@@ -413,8 +427,15 @@ A Bot's thread opens in `trust` when its Profile never chose a posture
 its workers are seeded from the same Profile at mint and at every restore
 (`profile_worker` in `session_create.create_session`, read through
 `crewmate_approval.crewmate_name_for`). With the switch on, a conducting
-worker's children are own workers (§5.4) and take the same Profile seed. So the
-posture of the whole tree is the Profile's, set by the owner, read again at
+worker's children are own workers (§5.4) and take the same Profile seed. A fork
+the thread makes of its worker follows main's trust rule while the switch is
+off: it copies its caller's trust (`trust_carries`). With the switch on, the
+thread's fork starts untrusted and takes the Bot's Profile mode on its first
+turn, as a created worker does. When a thread-born worker first starts with the
+conducting kit, including after the reload that follows turning the switch on,
+its posture becomes the stricter of its current posture and the Bot's Profile
+mode, so a copied trust never outlives the switch and nothing is ever raised. So
+the posture of the whole tree is the Profile's, set by the owner, read again at
 every restore; nothing in this RFC changes who approves: a prompt in any session
 of the tree is answered by the person, where a worker's prompts are answered
 today (the Bot's Sessions tab and the Crew panel's approve route). A conducting
@@ -466,12 +487,13 @@ behaviour does not read twelve catalog files, and the setting is reachable from
 day one through `config.json` and `PUT /api/agents/<name>`.
 
 **Phase 1 — backend (one PR, `Part of #N`).** The field, the API, the mark and
-its two feeders, the predicate and the two mounts, the KAS grant set, the
+its three feeders, the predicate and the two mounts, the KAS grant set, the
 projection's grants and prompt piece, the `_dispatching_crewmate` extension,
 the own-child exemption's second identity (`tool_approval._conductor_own_child_call`
 admits a conducting worker beside the two conductor agents), the effective
 `Workers at once` limit and the `max_workers` description that names it
-(§5.5), the workers' reload when the switch changes (§5.2), and the docs:
+(§5.5), the workers' reload when the switch changes (§5.2), the fork's posture
+rule (§5.6), and the docs:
 [crew-mode.md](../system-specs/modules/crew-mode.md) ("Conductor and worker",
 "The two workers stay in step"),
 [session-control.md](../system-specs/modules/session-control.md) ("What a
@@ -501,11 +523,19 @@ on main:
 5. A conducting worker's `session_send` / `session_close` into a child it
    created runs without a prompt while `agent.conductor_own_child_verbs` is on,
    and prompts for any other target, for `session_stop`, and with the switch
-   off; an unmarked worker on the same template never gets the exemption.
+   off once the worker has restarted (§5.2); an unmarked worker on the same
+   template never gets the exemption.
 6. The piece renders every shared rule the team lead carries, names only shared
    rules and copies no charter sentence (`test_mate_conductor_parity.py`).
 7. A gateway restarted with a marked worker open re-marks it from its verified
-   `created_by`; an unverified creator re-marks nothing.
+   `created_by`, and a `session_revive` of an archived marked worker re-marks it
+   from the same verified creator, whether or not the gateway restarted in
+   between; an unverified creator re-marks nothing on either path. A
+   `session_fork` is marked by the rule a create follows: the thread's fork of
+   its worker is thread-born at the fork, after a restart and after a revive,
+   and a conducting worker's fork is plain at all three. A History resume
+   reopens a marked worker plain, whether or not the gateway restarted in
+   between.
 8. With the switch on and `max_workers` 0, a `session_create` (from the thread
    or a conducting worker), `session_revive` or `session_fork` that would open
    the Bot's fifth worker is refused `bot_worker_cap_reached`; with the switch
@@ -515,7 +545,14 @@ on main:
    (`crewmate_worker_reload.schedule_reload_workers`): an idle worker restarts
    at once and a busy one at its turn end, each on its conversation; until then
    a running worker keeps everything it started with, the parts read per call
-   included.
+   included, except the bound of 4, which holds for every create from the
+   moment the switch is on (§5.5): turning the switch on tightens at once, and
+   turning it off loosens only at each worker's restart.
+10. With the switch on, the thread's fork of its worker starts untrusted and
+    takes the Profile mode on its first turn, and with it off a fork copies its
+    caller's trust as today; a thread-born worker's first start with the
+    conducting kit leaves it at the stricter of its posture and the Profile
+    mode.
 
 **Phase 2 — the switch on the Profile tab (one PR, `Closes #N`).** The row in
 `website/src/pages/members/CrewProfileSettings.tsx` on the `dynamic_capabilities`
@@ -620,7 +657,8 @@ is an RFC and not a fix.
   already admits, and only when the owner opts in per Bot.
 - A conducting worker reads untrusted content (web pages, repository text, the
   output of the Bot's own MCP servers) and can now open sessions without a
-  prompt; the tree's posture is the Profile's, `trust` when unset. The unit of
+  prompt; the tree's posture is the Profile's, `trust` when unset, and a trust
+  a fork copied from the thread never outlives the switch (§5.6). The unit of
   consent is the owner's per-Bot switch, and `agent.conductor_own_child_verbs`
   off returns every seed and close to a prompt. The 2026-11-04 decision keeps
   conductors free of user servers so that a conductor stays simple; a conducting
@@ -632,8 +670,9 @@ is an RFC and not a fix.
   `session_close` into a session the caller created by vouched lineage, which
   the operator can switch off (`agent.conductor_own_child_verbs`). Every grant
   crosses the governance ceiling; a withheld verb prompts; a conducting worker
-  is admitted to the exemption by the conducting predicate, never by its template's name, so an
-  unmarked worker on the same template keeps prompting.
+  is admitted to the exemption by holding the conducting kit (§5.3), never by
+  its template's name, so an unmarked worker on the same template keeps
+  prompting.
 - Spend: an unattended worker can now start further unattended sessions. With
   no Bot-wide limit, today's defaults would let the thread open 50 workers and
   each conducting worker 50 children (`session.max_per_creator`), 2,550 worker
