@@ -7135,7 +7135,17 @@ landed. A refused wake-delivered `monitor_stop` / `autonudge_stop`
 (the wake's loop is no longer this session's monitor, or the row was paused or
 stopped by a person and is retained) uses the same helper with a third prefix
 (`⚠️ Automation loop NOT stopped: <reason>`): nothing was armed and nothing was
-revised, and the loop the refusal names is untouched.
+revised, and the loop the refusal names is untouched. A person-only directive
+(`USER_ORIGIN_DIRECTIVES`) the user-origin gate refuses on a turn the applier
+reads (a cron `ctx.notify` wake, a sub-agent result, a loop's own wake) uses the
+same helper with a fourth prefix (`⚠️ NOT applied: this turn was started by
+<origin>, so its <kind> call was refused ...`, the origin named as for a refused
+arm): its tool answered "requested" too, so without the row the person read only
+the agent's claim of a tag, title or project change that never landed (issue
+#36233). The returned text stays the gate's own. On a crewmate's DM or a
+crewmate's worker session the helper also queues the row's text for that
+agent's next turn, as it does for a refused arm, and stamps no wake provenance
+on it; in any other chat the row is for the person, the model never reads it.
 `BUSY` persists a short retry for the existing claim without probing or entering
 the model, and the retry checks the runtime budget again before dispatch so an
 expired claim cannot start another turn; `DISPATCHED` persists a bounded

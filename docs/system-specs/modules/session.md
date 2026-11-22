@@ -1803,7 +1803,7 @@ against sweep completeness, and are torn down at `close_all`.
   by role: the ladder's own cards — the continue and give-up rungs and the
   post-compaction resume — carry `meta.kind = "empty_turn"`
   (`chat_utils.EMPTY_TURN_NOTICE_KIND`), and the automation arm/revision/stop
-  refusal carries `meta.kind = "arm_refusal"`
+  refusal (and a person-only directive's refusal) carries `meta.kind = "arm_refusal"`
   (`session_directive_apply.ARM_REFUSAL_NOTICE_KIND`); both are the runtime
   talking about its own machinery, so a person reading a Bot has nothing to
   do with them. Every notice OUTSIDE that allowlist still draws, because it
