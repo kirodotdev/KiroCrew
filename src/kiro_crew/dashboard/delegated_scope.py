@@ -28,6 +28,11 @@ VIA_APP_CLAIM = "via_app"
 REFUSED_CODE = "delegated_credential_refused"
 
 
+#: Allowed routes that reach an app's backend by ``{name}``: a delegated token may use
+#: only the app it was minted for, never another installed app.
+_OWN_APP_ONLY = frozenset({"/apps/{name}/api/{path}", "/app-frame-fetch/{name}/{path}"})
+
+
 def route_tag(method: str, canonical: str) -> str | None:
     """``"allow"``, ``"deny"``, or ``None`` for a route (or method) no tag names."""
     entry = ROUTE_TAGS.get(canonical)
@@ -73,5 +78,7 @@ async def enforce_delegated(request: web.Request, path: str) -> web.Response | N
     canonical = resource.canonical if resource is not None else ""
     if route_tag(request.method, canonical) != "allow":
         return _refuse(request, via_app, path, "untagged-or-denied")
+    if canonical in _OWN_APP_ONLY and request.match_info.get("name") != via_app:
+        return _refuse(request, via_app, path, "other-app")
     request["via_app"] = via_app
     return None

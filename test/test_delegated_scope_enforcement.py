@@ -124,3 +124,107 @@ async def test_the_token_ends_the_moment_the_owner_disables_the_app(state, grant
         resp = await client.get("/api/version")
         assert resp.status == 403
         assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+class _SelRecorder:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def log_api_access(self, **row) -> None:
+        self.rows.append(row)
+
+
+@pytest.fixture
+def sel_rows(monkeypatch) -> list[dict]:
+    rec = _SelRecorder()
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: rec)
+    return rec.rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["/apps/other-app/api"])
+@pytest.mark.parametrize("method", ["GET", "POST"])
+async def test_a_delegated_token_cannot_reach_another_apps_backend(
+    state, granted, sel_rows, prefix, method
+):
+    async with _serve(state) as client:
+        resp = await client.request(method, f"{prefix}/x", params=_delegated(), json={})
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+    assert [r["caller"] for r in sel_rows] == [_APP]
+    assert sel_rows[0]["outcome"] == "denied"
+    assert "other-app" in sel_rows[0]["resources"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", [f"/apps/{_APP}/api"])
+async def test_a_delegated_token_still_reaches_its_own_apps_route(state, granted, sel_rows, prefix):
+    async with _serve(state) as client:
+        resp = await client.get(f"{prefix}/x", params=_delegated())
+        body = await resp.text()
+        assert "delegated_credential_refused" not in body, body
+    assert sel_rows == []
+
+
+def test_a_delegated_request_never_carries_the_owner_session_principal():
+    from kiro_crew.apps.proxy_auth import PRINCIPAL_NONE, PRINCIPAL_OWNER_SESSION
+    from kiro_crew.apps.routes_proxy import _proxy_principal
+
+    class _Req(dict):
+        pass
+
+    owner = _Req(is_dashboard_user=True, auth_from_query_token=False, user="owner")
+    delegated = _Req(owner, via_app=_APP)
+    from kiro_crew.dashboard.handlers import source_providers
+
+    orig = source_providers.is_owner_dashboard_request
+    source_providers.is_owner_dashboard_request = lambda _r: True
+    try:
+        assert _proxy_principal(owner)[0] == PRINCIPAL_OWNER_SESSION
+        assert _proxy_principal(delegated) == (PRINCIPAL_NONE, "")
+    finally:
+        source_providers.is_owner_dashboard_request = orig
+
+
+def test_a_deny_star_row_stays_deny_for_every_concrete_method():
+    from kiro_crew.dashboard.delegated_route_tags import ROUTE_TAGS
+    from kiro_crew.dashboard.delegated_scope import route_tag
+
+    stars = [c for c, t in ROUTE_TAGS.items() if t.get("*") == "deny"]
+    assert stars
+    for canonical in stars:
+        for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            assert route_tag(method, canonical) != "allow", f"{method} {canonical}"
+
+
+class _Match(dict):
+    def __init__(self, canonical: str, name: str) -> None:
+        super().__init__(name=name)
+        self.route = type("R", (), {"resource": type("Res", (), {"canonical": canonical})()})()
+
+
+class _FakeReq(dict):
+    method = "POST"
+
+    def __init__(self, canonical: str, name: str) -> None:
+        super().__init__(auth_token="t")
+        self.match_info = _Match(canonical, name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("canonical", ["/apps/{name}/api/{path}", "/app-frame-fetch/{name}/{path}"])
+async def test_enforce_delegated_allows_only_the_tokens_own_app_on_both_proxy_routes(
+    granted, sel_rows, monkeypatch, canonical
+):
+    # /app-frame-fetch/ skips token auth today (its capability is the credential), so the
+    # scope check is driven directly: it must hold if that route ever sees a delegated token.
+    from kiro_crew.dashboard import token_auth_tokens
+    from kiro_crew.dashboard.delegated_scope import enforce_delegated
+
+    monkeypatch.setattr(token_auth_tokens, "token_via_app_unverified", lambda _t: _APP)
+    other = await enforce_delegated(_FakeReq(canonical, "other-app"), "/x")
+    assert other is not None and other.status == 403
+    assert len(sel_rows) == 1 and "other-app" in sel_rows[0]["resources"]
+    own = _FakeReq(canonical, _APP)
+    assert await enforce_delegated(own, "/x") is None
+    assert own["via_app"] == _APP
