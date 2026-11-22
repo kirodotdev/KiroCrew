@@ -1,7 +1,7 @@
 ---
 name: browser-auth
 description: Browse a site that needs a logged-in session. The agent never types a password; the user takes over the live browser view in the chat, signs in, and hands it back. Use when a page is behind a login wall, a CAPTCHA or a two-factor prompt.
-triggers: login required, behind a login wall, authenticated browsing, session expired, sign in to browse, take over to sign in, captcha, two-factor, 2fa code
+triggers: login required, behind a login wall, authenticated browsing, captcha, two-factor, 2fa code
 ---
 
 # Browser Auth: browsing what needs a login
