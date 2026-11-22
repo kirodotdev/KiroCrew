@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint
+from kiro_crew.env import pinned_gateway_spec_path
 from kiro_crew.mcp_gateway import socketsec
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import identity as _identity
@@ -61,7 +62,8 @@ def _pong_payload() -> dict[str, Any]:
     owner tell whether its ``owner-port`` announce landed, and
     ``owner_port_unverifiable`` that the daemon binds pooled control-plane backends
     from its environment and refuses the announce; ``start_time`` is the
-    identity a pinned kill must match. Every field is
+    identity a pinned kill must match; ``gateway_path`` is the gateway ``PATH``
+    part this daemon folds launch approvals against. Every field is
     additive: an older manager reads ``type`` and ``targets`` and ignores the
     rest, and an older daemon omits the new ones, which the manager treats as
     unverifiable rather than as a match.
@@ -80,6 +82,9 @@ def _pong_payload() -> dict[str, Any]:
         # signal this pid pins the signal on the process that ANSWERED, not on
         # whatever holds the number by the time the signal is sent.
         "start_time": facade._OWN_START_TIME,
+        # The gateway PATH part this daemon folds launch approvals against, so
+        # a gateway pinned to another part replaces it instead of adopting it.
+        "gateway_path": pinned_gateway_spec_path(),
     }
 
 
@@ -147,6 +152,10 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
     # caller is running this very code, so there is nothing to gain.
     caller_fp = frame.get("caller_fingerprint")
     stale_code = isinstance(caller_fp, str) and bool(caller_fp) and caller_fp != code_fingerprint()
+    # Same code, another gateway PATH part: every launch the caller approves
+    # would fold differently here, so this daemon yields as for other code.
+    caller_part = frame.get("caller_gateway_path")
+    stale_part = isinstance(caller_part, str) and caller_part != pinned_gateway_spec_path()
     # Third ground: this daemon's own gateway has exited. The caller may CLAIM
     # it (``orphaned``), but the daemon decides from its own record -- a live
     # owner means the claim is false and nothing here yields. An orphan is
@@ -157,7 +166,7 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
         and facade._OWNER_PID > 0
         and not facade._pid_exists(facade._OWNER_PID)
     )
-    yield_regardless = stale_code or orphaned
+    yield_regardless = stale_code or stale_part or orphaned
     need = frame.get("need")
     if need is None and yield_regardless:
         need = []
@@ -188,6 +197,8 @@ def _apply_stand_down(frame: dict[str, Any], stop_event: Optional[asyncio.Event]
         grounds.append(f"cannot resolve {', '.join(missing)}")
     if stale_code:
         grounds.append(f"runs code {code_fingerprint()} while the caller runs {caller_fp}")
+    if stale_part:
+        grounds.append("folds launch approvals against another gateway PATH part")
     if orphaned:
         grounds.append(f"is owned by gateway pid {facade._OWNER_PID}, which has exited")
     logger.warning(
