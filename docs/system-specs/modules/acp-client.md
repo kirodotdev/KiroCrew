@@ -2245,7 +2245,11 @@ The details below describe the Kiro and Claude paths implemented directly here:
     file's content. Off the event loop a read may pause for a
     retry, so `session_mcp.native_settings_sources` brackets each pass with every
     file's identity and keeps a pass only when no file was replaced or rewritten
-    while it ran; after `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
+    while it ran. On POSIX the descriptor each first identity was read from stays
+    open until the second is taken (`safe_file_identity(hold=...)`), because a
+    filesystem may give a freed inode's number to the next file it creates, and a
+    swap and swap-back in one timestamp tick would otherwise sample equal to the
+    file the pass started on; after `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
     set is treated as unreadable, the same as a refused read. When the settings
     are unreadable every identity element is withheld and a WARNING names the
     agent: its unpooled Kiro Crew servers mounted from the spec then refuse calls

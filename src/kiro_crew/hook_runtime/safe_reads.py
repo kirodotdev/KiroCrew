@@ -6,6 +6,7 @@ Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import errno
 import os
@@ -310,7 +311,9 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         os.close(fd)
 
 
-def safe_file_identity(raw: str) -> tuple[int, int, int, int] | None:
+def safe_file_identity(
+    raw: str, *, hold: contextlib.ExitStack | None = None
+) -> tuple[int, int, int, int] | None:
     """``(st_dev, st_ino, st_mtime_ns, st_size)`` of a file, through the same gate as a read.
 
     Every call screens the path afresh with :func:`validate_file_path` -- no
@@ -321,6 +324,15 @@ def safe_file_identity(raw: str) -> tuple[int, int, int, int] | None:
     name-based ``stat`` that would follow a junction to an attacker-chosen UNC
     target. The descriptor must still be the regular file the screen
     validated, exactly as :func:`safe_read_file_bytes` requires before it reads.
+
+    With *hold* on POSIX, that descriptor stays open and its close goes onto
+    *hold*. A POSIX filesystem may give a freed inode's number to the next file
+    it creates, and a save in the same timestamp tick with the same size then
+    yields an EQUAL identity for a different file; an open descriptor keeps the
+    inode allocated, so no file that replaces this one can share its number
+    while *hold* lives. Windows ignores *hold*: its file ids carry a sequence
+    number that moves when a record is reused, and an open handle there can
+    make a writer's replace of the file fail.
 
     Returns ``None`` when the file does not exist. Raises ``PermissionError``
     when the path is refused or the opened descriptor does not match it, and
@@ -339,13 +351,18 @@ def safe_file_identity(raw: str) -> tuple[int, int, int, int] | None:
         fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except FileNotFoundError:
         return None
+    held = False
     try:
         if not _opened_file_matches_validated_path(fd, path):
             raise PermissionError("Blocked: opened file no longer matches safe path")
         st = os.fstat(fd)
+        if hold is not None and platform_compat.IS_POSIX:
+            hold.callback(os.close, fd)
+            held = True
         return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
     finally:
-        os.close(fd)
+        if not held:
+            os.close(fd)
 
 
 def safe_read_file_bytes_with_identity(
