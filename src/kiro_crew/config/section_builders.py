@@ -658,6 +658,7 @@ def _build_instances_config(
         max_recovery_attempts=section.read("max_recovery_attempts", _safe_int),
         recover_backoff_max_secs=section.read("recover_backoff_max_secs", _safe_float),
         probe_failure_threshold=section.read("probe_failure_threshold", _safe_int),
+        managed_env_endpoint=section.read("managed_env_endpoint", _safe_str),
     )
 
 

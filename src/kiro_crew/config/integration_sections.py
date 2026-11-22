@@ -1143,6 +1143,19 @@ class InstancesConfig:
             "(zombie) tunnel is torn down to trigger self-heal.",
         ),
     )
+    # The managed-environment lane (``kiro_crew.managed_env``), read only while the
+    # ``crew_client`` feature preview is on. Every value is empty by default and nothing
+    # is guessed: a step that needs a missing value is refused and names the key.
+    managed_env_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "Managed Environment Service Endpoint",
+            "HTTPS base URL of the Kiro web service that lists, creates and connects your "
+            "managed environments. Empty (the default): every call is refused and names "
+            "this key.",
+            tags=["remote-crew", "managed-environment"],
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.warm_set_cap < 0:
