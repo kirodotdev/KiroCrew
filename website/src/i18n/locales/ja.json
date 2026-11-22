@@ -8057,7 +8057,7 @@
       "agent_ready_to_use": "{{name}} はインストール済みで、すぐに使用できます。",
       "sandbox_blocked_agent_detail": "{{productName}} は {{name}} を、認証情報に手が届かないサンドボックス内で実行します。このホストは現在そのサンドボックスを用意できないため、用意できるまで {{name}} は利用できません。",
       "workload_pod_no_sandbox": "このホストではサンドボックスを作れません（Kubernetes の Restricted Pod など）。コンテナを唯一の境界にするには、これを設定して {{productName}} を再起動してください。",
-      "container_boundary_guide": "チーム Crew の Pod: コンテナが境界",
+      "container_boundary_guide": "共有 Crew の Pod: コンテナが境界",
       "sandbox_off_agent_detail": "{{productName}} は {{name}} を、認証情報に手が届かないサンドボックス内で実行しますが、{{productName}} の設定（agent.sandbox）でサンドボックスがオフになっています。{{name}} を使用するには、サンドボックスをオンに戻してください。",
       "use_agent": "{{name}} を使用",
       "switching_agent": "切り替え中…",
@@ -8498,9 +8498,9 @@
         "moved_to_history_startup_body_other": "開いておくセッションを最大 {{limit}} 件に保つため、起動時に古いタブ {{count}} 件を履歴に残しました。履歴を開くと再開できます。",
         "moved_to_history_idle_body_other": "{{limit}} セッションの上限を超えないよう、{{days}} 日を超えて操作のなかったセッション {{count}} 件を履歴にアーカイブしました。履歴を開くと再開できます。",
         "relay_crew_added_title": "{{name}} に追加されました",
-        "relay_crew_added_body": "クルーの切り替えメニューの「チームクルー」から開けます。",
-        "relay_crews_available_title_other": "{{count}} 個のチームクルーにアクセスできます",
-        "relay_crews_available_body": "クルーの切り替えメニューの「チームクルー」から開けます。"
+        "relay_crew_added_body": "クルーの切り替えメニューの「リモート Crew」から開けます。",
+        "relay_crews_available_title_other": "{{count}} 個の共有 Crew にアクセスできます",
+        "relay_crews_available_body": "クルーの切り替えメニューの「リモート Crew」から開けます。"
       },
       "notificationBanner": {
         "dismiss_notification": "通知を閉じる",
@@ -20179,7 +20179,7 @@
         "channel_tip_terminal": "ターミナルタブのシェルがエラーで終了したとき、または強制終了されたときに通知します。タブは閉じるため、終了コードはここに残ります。",
         "channel_memory": "繰り返しの失敗",
         "channel_tip_memory": "エージェントのツールの失敗が繰り返されたとき、週に1回。メモリーで週1回のお知らせをオンにした場合のみ。",
-        "channel_tip_relay": "リレー経由で開けるチームクルーが初めてリストに表示されたとき、クルーごとに1回。"
+        "channel_tip_relay": "リレー経由で開ける共有 Crew が初めてリストに表示されたとき、クルーごとに1回。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンだけでパフォーマンスメトリクスを記録します。",

@@ -8057,7 +8057,7 @@
       "agent_ready_to_use": "{{name}} 已安装，可以使用。",
       "sandbox_blocked_agent_detail": "{{productName}} 只会在沙箱中运行 {{name}}，让它触及不到你的凭据。此主机目前无法提供该沙箱，因此在它能够提供之前 {{name}} 将一直不可用。",
       "workload_pod_no_sandbox": "这台主机无法创建沙箱，例如 Kubernetes Restricted Pod。要让容器成为唯一的边界，请设置这一项并重启 {{productName}}。",
-      "container_boundary_guide": "团队 Crew Pod：容器即边界",
+      "container_boundary_guide": "共享 Crew Pod：容器即边界",
       "sandbox_off_agent_detail": "{{productName}} 只会在沙箱中运行 {{name}}，让它触及不到你的凭据，但沙箱已在 {{productName}} 的设置（agent.sandbox）中关闭。重新开启沙箱即可使用 {{name}}。",
       "use_agent": "使用 {{name}}",
       "switching_agent": "正在切换…",
@@ -8498,9 +8498,9 @@
         "moved_to_history_startup_body_other": "为使打开的会话不超过 {{limit}} 个，启动时有 {{count}} 个较早打开的标签页留在了历史记录中。打开历史记录即可恢复。",
         "moved_to_history_idle_body_other": "为保持在 {{limit}} 个会话的上限以内，已将 {{count}} 个闲置超过 {{days}} 天的会话归档到历史记录。打开历史记录即可恢复。",
         "relay_crew_added_title": "你已被添加到 {{name}}",
-        "relay_crew_added_body": "可在 Crew 切换器的“团队 Crew”中打开。",
-        "relay_crews_available_title_other": "你可以访问 {{count}} 个团队 Crew",
-        "relay_crews_available_body": "可在 Crew 切换器的“团队 Crew”中打开。"
+        "relay_crew_added_body": "可在 Crew 切换器的“远程 Crew”中打开。",
+        "relay_crews_available_title_other": "你可以访问 {{count}} 个共享 Crew",
+        "relay_crews_available_body": "可在 Crew 切换器的“远程 Crew”中打开。"
       },
       "notificationBanner": {
         "dismiss_notification": "关闭通知",
@@ -20179,7 +20179,7 @@
         "channel_tip_terminal": "当终端标签页的 shell 以错误退出或被强制终止时。标签页会关闭，因此退出代码保留在这里。",
         "channel_memory": "重复失败",
         "channel_tip_memory": "每周一次，当智能体的某个工具失败反复出现时。仅在你在“记忆”中开启每周提醒后。",
-        "channel_tip_relay": "当你可通过中继打开的团队 Crew 首次出现在列表中时，每个 Crew 一次。"
+        "channel_tip_relay": "当你可通过中继打开的共享 Crew 首次出现在列表中时，每个 Crew 一次。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

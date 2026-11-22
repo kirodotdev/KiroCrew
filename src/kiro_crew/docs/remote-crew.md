@@ -343,10 +343,10 @@ few seconds), every 15 seconds while a listed Crew isn't online, and about once
 a minute otherwise, and it never carries an access token. The control plane can
 itself take a minute or two after a host connects to report its tunnel
 connected, so a Crew can read offline for that long whatever the dashboard
-does. The group appears once your account has at least one Team Crew, or when
+does. The group appears once your relay list has at least one Crew, or when
 the gateway names the account the list was read for.
 
-With such an account and no Team Crews, the group still shows, with the empty
+With such an account and an empty list, the group still shows, with the empty
 text.
 
 **Settings → Remote Crew** shows the same list in a **Shared Crews** card, read
@@ -362,7 +362,7 @@ row opens the Crew as the switcher does. A **Set up a new Shared Crew** card
 under it links to the AWS Management Console, where an admin creates Shared
 Crews. Both cards are hidden while no list is loaded.
 
-When a list read finds a **Team** Crew you haven't been told about, the bell says
+When a list read finds a **Shared** Crew you haven't been told about, the bell says
 "You've been added to <name>", with **Open**, and the switcher's caret and that
 Crew's row show a dot until you open the Crew or open the switcher. Two or more
 new Crews in one read, which is what a first sign-in with several already granted
@@ -370,7 +370,7 @@ looks like, get one note with the count instead. Each Crew is announced once: th
 Crews already announced are kept on this computer's gateway, in
 `relay-viewer-crews.json` under the data home, so a new window doesn't announce
 them again. A failed read, or the feature turned off, never announces anything,
-and a Crew that leaves the list isn't announced as lost. Mute the **Team Crews**
+and a Crew that leaves the list isn't announced as lost. Mute the **Remote Crews**
 channel in Settings › Notifications to stop the notes. You only learn of a Crew
 here once Kiro Crew is installed and you've signed in; telling someone sooner is
 for whoever grants the access.
@@ -509,8 +509,8 @@ can't recover from by itself, such as a relay that refuses this version. A Crew
 you turned on with `remote-control on` shows every reason on the Overview page's
 Tunnel tile.
 
-A team Crew leases with its crew API key. Store the key under **Settings →
-Secrets**, then name it:
+A Shared Crew on the Kiro relay leases with its crew API key. Store the key under
+**Settings → Secrets**, then name it:
 
 ```bash
 kirocrew config set tunnel.relay_lease_credential secret://<name>
@@ -537,17 +537,17 @@ its JWT-SVID file or a crew key; the profile ARN does not pick the Region.
 A value the person did not give (absent, null, empty or blank) leases from us-east-1;
 any value they gave must be a known Region, or the relay refuses and sends nothing.
 
-A team Crew with its key set hosts by default after the next restart, with no
+A Shared Crew with its key set hosts by default after the next restart, with no
 `remote-control on`: setting the key is the choice to host. A host with a workload
 identity whose `tunnel.relay_lease_credential` names its credential does too. The
 first time such a Crew connects, the log and the bell say once that people the relay
-lets open it can now reach it. Without the key, a team Crew does not connect, and
+lets open it can now reach it. Without the key, a Shared Crew does not connect, and
 the tunnel status names `tunnel.relay_lease_credential`. A host with a workload
 identity never falls back to the sign-in.
-A team Crew pod under the Restricted Pod Security Standard has no inner sandbox;
+A Shared Crew pod under the Restricted Pod Security Standard has no inner sandbox;
 set `agent.sandbox_allow_unsandboxed_exec=true` and the container is the only
 boundary; `agent.sandbox_allow_no_isolation=true` quiets the per-process warning
-(see the Docker guide, "A team Crew pod: the container is the boundary").
+(see the Docker guide, "A Shared Crew pod: the container is the boundary").
 
 `kirocrew remote-control off` turns hosting off and stops the relay within a few
 seconds, with no restart. It writes `tunnel.relay_enabled: false`, which wins over

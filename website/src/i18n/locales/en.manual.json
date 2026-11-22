@@ -3113,7 +3113,7 @@
       "agent_ready_to_use": "{{name}} is installed and ready to use.",
       "sandbox_blocked_agent_detail": "{{productName}} runs {{name}} inside a sandbox that keeps your credentials out of its reach. This host cannot provide that sandbox right now, so {{name}} stays unavailable until it can.",
       "workload_pod_no_sandbox": "This host can't build a sandbox, as in a Kubernetes Restricted pod. To make the container the only boundary, set this and restart {{productName}}.",
-      "container_boundary_guide": "A team Crew pod: the container is the boundary",
+      "container_boundary_guide": "A Shared Crew pod: the container is the boundary",
       "sandbox_off_agent_detail": "{{productName}} runs {{name}} inside a sandbox that keeps your credentials out of its reach, but the sandbox is turned off in {{productName}}'s settings (agent.sandbox). Turn it back on to use {{name}}.",
       "use_agent": "Use {{name}}",
       "switching_agent": "Switching…",
@@ -3357,10 +3357,10 @@
         "moved_to_history_idle_body_one": "Archived {{count}} session idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume it.",
         "moved_to_history_idle_body_other": "Archived {{count}} sessions idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume one.",
         "relay_crew_added_title": "You've been added to {{name}}",
-        "relay_crew_added_body": "Open it from Team Crews in the Crew switcher.",
-        "relay_crews_available_title_one": "You have access to {{count}} Team Crew",
-        "relay_crews_available_title_other": "You have access to {{count}} Team Crews",
-        "relay_crews_available_body": "Open them from Team Crews in the Crew switcher."
+        "relay_crew_added_body": "Open it from Remote Crews in the Crew switcher.",
+        "relay_crews_available_title_one": "You have access to {{count}} Shared Crew",
+        "relay_crews_available_title_other": "You have access to {{count}} Shared Crews",
+        "relay_crews_available_body": "Open them from Remote Crews in the Crew switcher."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",
@@ -10127,7 +10127,7 @@
         "channel_tip_turn": "When a chat stops with an error you need to act on, such as a provider outage or rate limit, a refused reply, or a lost connection. Chats an app runs are not included.",
         "channel_memory": "Repeated failures",
         "channel_tip_memory": "Once a week, when an agent tool failure kept coming back. Only if you turned on the weekly note in Memory.",
-        "channel_tip_relay": "Once per Crew, when a Team Crew you can open through the relay first shows up in your list."
+        "channel_tip_relay": "Once per Crew, when a Shared Crew you can open through the relay first shows up in your list."
       },
       "securityPanel": {
         "configPending": {
