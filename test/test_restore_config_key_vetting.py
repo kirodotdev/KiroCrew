@@ -9,6 +9,7 @@ restore refuse before anything is changed.
 from __future__ import annotations
 
 import json
+import sys
 import tarfile
 from pathlib import Path
 
@@ -93,7 +94,65 @@ def test_a_key_with_dots_spaces_or_cjk_still_restores(home, tmp_path, capsys):
 
 
 @pytest.mark.parametrize(
-    "workspace_dir", ["../../outside", "..\\outside", "../a\x00b", "~\x00/../x"]
+    "workspace_dir",
+    [
+        "../../outside",
+        "..\\outside",
+        "../a\x00b",
+        "~\x00/../x",
+        r"C:..\x",
+        "D:x",
+        pytest.param(
+            "~nosuchuser_zz/x",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows expands ~name, so the runtime does not fail on it",
+            ),
+        ),
+        pytest.param(
+            "./~nosuchuser_zz/x",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows expands ~name, so the runtime does not fail on it",
+            ),
+        ),
+        pytest.param(
+            "\\\\/../../x",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads a leading double backslash as a UNC root, not judged",
+            ),
+        ),
+        ".. /x",
+        pytest.param(
+            "C:/x/../../../etc",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads C:/ as an absolute path, which is not judged",
+            ),
+        ),
+        pytest.param(
+            r"\x/../../../../../../etc",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads a leading backslash as an absolute path, which is not judged",
+            ),
+        ),
+        pytest.param(
+            r"workspace/a\b/../../..",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads both spellings as the same path, which stays inside",
+            ),
+        ),
+        pytest.param(
+            r"a\b/../../x",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads both spellings as the same path, which stays inside",
+            ),
+        ),
+    ],
 )
 def test_a_workspace_folder_outside_the_roots_refuses_the_whole_restore(
     home, tmp_path, capsys, workspace_dir
