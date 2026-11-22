@@ -563,7 +563,7 @@ describe('outdated status hint (#15516)', () => {
   // A row reads "Outdated" for two reasons that need different actions: the
   // last result aged past the probe TTL (refresh re-probes it), or the server
   // crossed the consecutive-failure threshold and every probe pass now skips it
-  // (refresh does nothing until Reset count; the Failing badge says so). The reporter of #15516 saw only
+  // (refresh does nothing until Retry server; the Quarantined badge says so). The reporter of #15516 saw only
   // "Outdated" and had to find agent.mcp_quarantine_after_failures by hand.
   async function outdatedTip(row: McpServer): Promise<string> {
     mockApi.mcpServers.mockResolvedValue([row])
@@ -578,34 +578,39 @@ describe('outdated status hint (#15516)', () => {
     const text = await outdatedTip({ ...server('alpha'), status: 'outdated' })
     expect(text).toMatch(/30 minutes/)
     expect(text).toMatch(/refresh button/)
-    expect(text).not.toMatch(/Reset count/)
+    expect(text).not.toMatch(/Retry server/)
   })
 
-  it('a quarantined row leaves the explanation to its Failing badge', async () => {
+  it('a quarantined row leaves the explanation to its Quarantined badge', async () => {
     // The exact row shape probe_all returns for an excluded server: status
     // outdated, no error, plus the quarantine annotation. The aged-reading hint
     // would send the reader to a refresh that cannot work, and a second copy of
-    // the Failing tip would compete with it, so the Outdated badge has no tip.
+    // the Quarantined tip would compete with it, so the Outdated badge has no tip.
     mockApi.mcpServers.mockResolvedValue([
       { ...server('airbnb'), status: 'outdated', error: '', probeFailures: 3, probeFailing: true },
     ])
     renderTab()
     const badge = await screen.findByText('Outdated')
     expect(within(badge.parentElement!).queryByRole('button', { name: 'More information' })).toBeNull()
-    expect(screen.getByText('Failing')).toBeInTheDocument()
+    expect(screen.getByText('Quarantined')).toBeInTheDocument()
   })
 
-  it('the Failing note no longer claims nothing changed', async () => {
+  it('the Quarantined note says what stopped and how to undo it', async () => {
     mockApi.mcpServers.mockResolvedValue([
       { ...server('airbnb'), status: 'outdated', error: '', probeFailures: 3, probeFailing: true },
     ])
     renderTab()
-    const badge = await screen.findByText('Failing')
+    const badge = await screen.findByText('Quarantined')
     fireEvent.click(within(badge.parentElement!).getByRole('button', { name: 'More information' }))
     const text = (await screen.findByRole('tooltip')).textContent ?? ''
-    expect(text).toContain('3 consecutive probes failed')
+    expect(text).toContain('3 probes in a row failed')
     expect(text).toMatch(/stopped probing/)
-    expect(text).toMatch(/Reset count/)
+    // The reporter could not tell the quarantine outlives a gateway restart.
+    expect(text).toMatch(/restart/)
+    // The tip adds only what the badge and the button beside it cannot say:
+    // fix the cause before retrying. It does not repeat either label.
+    expect(text).toMatch(/Fix the cause first/)
+    expect(text).not.toMatch(/Retry server|quarantined/)
     expect(text).not.toMatch(/not a change/)
   })
 })
@@ -645,7 +650,7 @@ describe('probe-failure count', () => {
   it('a quarantined server is labelled, alongside its real probe status', async () => {
     mockApi.mcpServers.mockResolvedValue([failing()])
     renderTab()
-    await waitFor(() => expect(screen.getByText('Failing')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Quarantined')).toBeInTheDocument())
     // The status badge is NOT replaced: "error" is still the true reading, and
     // the error detail under it is keyed on that status.
     expect(screen.getByText('Error')).toBeInTheDocument()
@@ -654,7 +659,7 @@ describe('probe-failure count', () => {
   it('the label explains itself with the failure count via a focusable InfoTip', async () => {
     mockApi.mcpServers.mockResolvedValue([failing()])
     renderTab()
-    const badge = await screen.findByText('Failing')
+    const badge = await screen.findByText('Quarantined')
     // The count rides a focusable InfoTip, not a hover-only title (#8359).
     const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
     fireEvent.click(trigger)
@@ -665,8 +670,8 @@ describe('probe-failure count', () => {
     mockApi.mcpServers.mockResolvedValue([server('alpha')])
     renderTab()
     await waitFor(() => expect(screen.getByText('Online')).toBeInTheDocument())
-    expect(screen.queryByText('Failing')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Reset count/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Quarantined')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Retry server/ })).not.toBeInTheDocument()
   })
 
   it('a failing server below the threshold is not labelled yet', async () => {
@@ -677,34 +682,55 @@ describe('probe-failure count', () => {
     ])
     renderTab()
     await waitFor(() => expect(screen.getByText('Error')).toBeInTheDocument())
-    expect(screen.queryByText('Failing')).not.toBeInTheDocument()
+    expect(screen.queryByText('Quarantined')).not.toBeInTheDocument()
   })
 
-  it('Remount releases the server and refetches', async () => {
+  it('Retry server clears the quarantine, then probes that server again', async () => {
     mockApi.mcpServers.mockResolvedValue([failing()])
     mockApi.mcpResetProbeFailures.mockResolvedValue({ ok: true, name: 'airbnb', released: true })
+    // The fresh probe is the backend's own reading of the server, so the badge
+    // goes away because the server answered, not because the click happened.
+    mockApi.mcpProbe.mockResolvedValue([server('airbnb')])
     renderTab()
-    const btn = await screen.findByRole('button', { name: /Reset count/ })
-
-    // After the release the server comes back healthy — asserted through a
-    // refetch rather than an optimistic local edit, because the badge must
-    // disappear only if the backend really remounted it.
+    const btn = await screen.findByRole('button', { name: /Retry server/ })
+    // The probe also rewrites the backend's cached row, so a refetch after it
+    // reads the healthy row too.
     mockApi.mcpServers.mockResolvedValue([server('airbnb')])
     fireEvent.click(btn)
 
-    await waitFor(() => expect(mockApi.mcpResetProbeFailures).toHaveBeenCalledWith('airbnb'))
-    await waitFor(() => expect(screen.queryByText('Failing')).not.toBeInTheDocument())
+    await waitFor(() => expect(mockApi.mcpProbe).toHaveBeenCalled())
+    // One click does both steps, in order: the reporter of the Slack thread had
+    // to find a second control (the refresh button) after the first.
+    expect(mockApi.mcpResetProbeFailures).toHaveBeenCalledWith('airbnb')
+    expect(mockApi.mcpResetProbeFailures.mock.invocationCallOrder[0])
+      .toBeLessThan(mockApi.mcpProbe.mock.invocationCallOrder[0])
+    await waitFor(() => expect(screen.queryByText('Quarantined')).not.toBeInTheDocument())
+    expect(screen.getByText('Online')).toBeInTheDocument()
   })
 
   it('a failed release leaves the label in place', async () => {
     mockApi.mcpServers.mockResolvedValue([failing()])
     mockApi.mcpResetProbeFailures.mockRejectedValue(new Error('rebuild failed'))
     renderTab()
-    const btn = await screen.findByRole('button', { name: /Reset count/ })
+    const btn = await screen.findByRole('button', { name: /Retry server/ })
     fireEvent.click(btn)
     await waitFor(() => expect(mockApi.mcpResetProbeFailures).toHaveBeenCalled())
+    // A release that failed is not followed by a probe that could hide it.
+    expect(mockApi.mcpProbe).not.toHaveBeenCalled()
+    // And the failure is said on the row, not swallowed.
+    expect(await screen.findByTestId('mcp-retry-server-failed')).toHaveTextContent(/Couldn't retry the server/)
     // Still there: the row reflects the server, not the click.
-    expect(screen.getByText('Failing')).toBeInTheDocument()
+    expect(screen.getByText('Quarantined')).toBeInTheDocument()
+  })
+
+  it('a probe that fails after the clear is said on the row', async () => {
+    mockApi.mcpServers.mockResolvedValue([failing()])
+    mockApi.mcpResetProbeFailures.mockResolvedValue({ ok: true, name: 'airbnb', released: true })
+    mockApi.mcpProbe.mockRejectedValue(new Error('MCP config is busy; retry'))
+    renderTab()
+    fireEvent.click(await screen.findByRole('button', { name: /Retry server/ }))
+    await waitFor(() => expect(mockApi.mcpProbe).toHaveBeenCalled())
+    expect(await screen.findByTestId('mcp-retry-server-failed')).toHaveTextContent(/last check/)
   })
 })
 
@@ -1077,12 +1103,12 @@ describe('McpTab badge hints are keyboard/AT-reachable (#8359)', () => {
     expect((await screen.findByRole('tooltip')).textContent).toBeTruthy()
   })
 
-  it('the "Failing" badge explains itself via a focusable InfoTip, not a badge title', async () => {
+  it('the "Quarantined" badge explains itself via a focusable InfoTip, not a badge title', async () => {
     mockApi.mcpServers.mockResolvedValue([
       { ...server('airbnb'), status: 'error', error: 'timeout', probeFailures: 3, probeFailing: true },
     ])
     renderTab()
-    const badge = await screen.findByText('Failing')
+    const badge = await screen.findByText('Quarantined')
     expect(badge).not.toHaveAttribute('title')
     const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
     fireEvent.click(trigger)
