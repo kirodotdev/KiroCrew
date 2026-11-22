@@ -61,10 +61,13 @@ from kiro_crew.validation_parts.input_bounds import (
 #: membership check into a log line or an error message.
 _BACKEND_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# A sub-agent brief (spawn_run's task and tasks[].task, spawn_continue's task,
+# spawn_steer's message) is a task spec, so it takes the task-spec bound, and
+# ``mcp_tools/spawn_parts/schemas.py`` advertises that bound as its maxLength.
 SPAWN_RUN_TASK_ITEM_SCHEMA = ToolSchema(
     tool_name="spawn_run.tasks[]",
     fields=[
-        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("task", str, required=True, max_len=MAX_LONG_STRING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("reasoning_effort", str, allowed=EFFORT_VALUES),
         FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
@@ -84,13 +87,13 @@ SPAWN_BATCH_MEMBERS_MAX = 128
 SPAWN_RUN_SCHEMA = ToolSchema(
     tool_name="spawn_run",
     fields=[
-        FieldSpec("task", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("task", str, max_len=MAX_LONG_STRING),
         FieldSpec(
             "tasks",
             list,
             max_items=SPAWN_BATCH_MEMBERS_MAX,
             item_type=(str, dict),
-            item_max_len=MAX_MEDIUM_STRING,
+            item_max_len=MAX_LONG_STRING,
             item_schema=SPAWN_RUN_TASK_ITEM_SCHEMA,
         ),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
@@ -177,7 +180,7 @@ SPAWN_CONTINUE_SCHEMA = ToolSchema(
     tool_name="spawn_continue",
     fields=[
         FieldSpec("conversation", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("task", str, required=True, max_len=MAX_LONG_STRING),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
         FieldSpec("max_turns", int, min_val=0, max_val=SUBAGENT_MAX_TURNS_CEILING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
@@ -188,7 +191,7 @@ SPAWN_STEER_SCHEMA = ToolSchema(
     tool_name="spawn_steer",
     fields=[
         FieldSpec("agent_id", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("message", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("message", str, required=True, max_len=MAX_LONG_STRING),
         FieldSpec("mode", str, pattern=re.compile(r"^(interrupt|follow_up)$")),
     ],
 )

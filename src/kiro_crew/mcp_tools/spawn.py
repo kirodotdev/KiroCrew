@@ -963,6 +963,7 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why  # noqa: F401
     from kiro_crew.mcp_tools.spawn_parts.schemas import (  # noqa: F401
+        _BRIEF_LIMIT,
         _CORE,
         _MAX_ROSTER_NAMES,
         _SPAWN,
@@ -1026,6 +1027,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
+        MAX_LONG_STRING,
         MAX_MEDIUM_STRING,
         MAX_RESPONSE_LEN,
         MAX_SHORT_STRING,

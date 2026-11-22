@@ -40,11 +40,17 @@ from kiro_crew.mcp_core_parts.identity import _resolve_session_key
 from kiro_crew.mcp_listing_relay import built_for_a_tool_server
 from kiro_crew.mcp_tools.catalog import loaded_binding
 from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS
+from kiro_crew.validation import MAX_LONG_STRING
 
 # Roster carried in the spawn_run parameter descriptions. Kept small on purpose:
 # a tool description is always-on context in every session, so this buys
 # self-correction for a few dozen characters, not a full agent listing.
 _MAX_ROSTER_NAMES = 8
+
+# The bound the validator holds every brief field to (``core_agent_schemas``), named
+# as learn_add names its own: the model cannot measure its text, so it is told the
+# bound before it writes, not by a refusal.
+_BRIEF_LIMIT = f" HARD LIMIT: {MAX_LONG_STRING} characters; put a longer brief in a file."
 
 #: The import path and patch surface of the identity resolver and the agent scan. Importing
 #: it loads every tool handler, so the two names are read from it only once it is loaded.
@@ -384,18 +390,27 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "properties": {
                     "task": {
                         "type": "string",
+                        "maxLength": MAX_LONG_STRING,
                         "description": (
                             "A bounded assignment with goal, ready inputs, ownership, "
                             "verifiable outputs and stop conditions. Never forward the whole "
                             "request to an equivalent worker merely to wait and relay."
+                            + _BRIEF_LIMIT
                         ),
                     },
                     "tasks": {
                         "type": "array",
                         "items": {
                             "type": ["string", "object"],
+                            # maxLength binds the string arm only; the object arm's
+                            # bound is on its task property.
+                            "maxLength": MAX_LONG_STRING,
                             "properties": {
-                                "task": {"type": "string"},
+                                "task": {
+                                    "type": "string",
+                                    "maxLength": MAX_LONG_STRING,
+                                    "description": "The task brief." + _BRIEF_LIMIT,
+                                },
                                 "model": {"type": "string"},
                                 "reasoning_effort": {"type": "string"},
                                 "backend": {"type": "string"},
@@ -581,7 +596,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     },
                     "task": {
                         "type": "string",
-                        "description": "Follow-up task/instruction for the subagent",
+                        "maxLength": MAX_LONG_STRING,
+                        "description": (
+                            "Follow-up task/instruction for the subagent." + _BRIEF_LIMIT
+                        ),
                     },
                     "agent": {"type": "string", "description": "Agent name override"},
                     "max_turns": {
@@ -619,7 +637,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     },
                     "message": {
                         "type": "string",
-                        "description": "Instruction to inject into the running turn",
+                        "maxLength": MAX_LONG_STRING,
+                        "description": (
+                            "Instruction to inject into the running turn." + _BRIEF_LIMIT
+                        ),
                     },
                     "mode": {
                         "type": "string",
