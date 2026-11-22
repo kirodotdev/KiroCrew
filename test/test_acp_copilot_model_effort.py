@@ -107,7 +107,7 @@ def test_session_new_advertises_a_model_and_an_effort_select() -> None:
 def test_the_client_reads_the_advertised_models(tmp_path) -> None:
     client = AcpClient(work_dir=tmp_path, acp_backend=COPILOT)
     client._capture_available_models(_answer(2)["result"])
-    assert client._advertised_model_ids() == [START, SWITCHED]
+    assert client._advertised_model_ids() == [START, START + "[1m]", SWITCHED, SWITCHED + "[1m]"]
 
 
 def test_the_provider_reads_the_advertised_effort_levels(tmp_path) -> None:

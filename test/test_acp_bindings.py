@@ -95,6 +95,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "cancel": ("function", True, "c25facc6ab96", "acp_turns"),
     "capabilities": ("property", False, "83534fc4b1b5", "acp"),
     "capability_projection_gaps": ("property", False, "9d5ab4ea1828", "acp"),
+    "changes_context_tier": ("function", False, "fa34fb34dc41", "acp_model_effort"),
     "change_effort": ("function", True, "581451d2b011", "acp_model_effort"),
     "child_fidelity_aware": ("property", False, "a6632a57e602", "acp"),
     "cleanup_session": ("function", True, "c284282f8a1d", "acp_lifecycle"),

@@ -13,7 +13,8 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``,
 ``_cancelled``, ``_capability_projection_gaps``, ``_channel_id``, ``_child_pids``,
 ``_confirmed_capability_session``, ``_consult_future``, ``_copilot_mcp_config_path``,
 ``_crew_bridge_snapshots``, ``_fork_request``, ``_kill_sent``, ``_last_activity``,
-``_last_stop_reason``, ``_liveness_oracle``, ``_loaded_capability_template``,
+``_last_stop_reason``, ``_launched_long_context``, ``_liveness_oracle``,
+``_loaded_capability_template``,
 ``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_mcp_report_frame_floor``,
 ``_member_stub_allowlist``, ``_mimocode_governed_stop``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``, ``_pid``,
@@ -662,6 +663,8 @@ def _reset_state(self: AcpClient) -> None:
     # (a spawn error after resolve_spawn wrote it): same shape, one unlink.
     copilot_config = getattr(self, "_copilot_mcp_config_path", "")
     self._copilot_mcp_config_path = ""
+    # No process serves a context tier now; the next spawn records its own.
+    self._launched_long_context = False
     if copilot_config:
         try:
             os.remove(copilot_config)
