@@ -637,7 +637,10 @@ already landed.
   `aes128gcm` with `cryptography`. Its session resolves through
   `PublicAddressResolver`, which drops every address
   `link_unfurl.address_is_not_public` rejects. A 404 or 410 removes the
-  subscription.
+  subscription. The VAPID `sub` is the project's `https:` page, since Apple's
+  push service refuses a `localhost` contact with 403 `BadJwtToken`. Any other
+  non-2xx answer is logged with up to the first 256 bytes of the push
+  service's response, which names the reason.
 - **Stores.** The subscriptions (`push_store.py`) and the VAPID keypair
   (`vapid_keys.py`) live in the `web-push` directory of the data home, which is
   pre-created and masked in every sandbox and fenced from agents
