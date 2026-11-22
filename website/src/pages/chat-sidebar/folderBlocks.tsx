@@ -40,7 +40,7 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 /** The folder block renderers for one shell render. */
 export function createFolderBlocks(shell: SidebarScope & LaneRows) {
   const { activeDrag, armHold, boardLaneActive, connected, createChatInFolder, deleteFolderWithConfirm,
-    disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare,
+    disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare, folderModeCompare,
     folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderNameMatchIds,
     folderReorderable, folderSortMode, folderSubtrees, folders, foldersHoldingSessions, foldersWithActiveSubtree, heldLane,
     hiddenByContainer, hideEmptyFolderBody, hideEmptyFolders, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
@@ -99,10 +99,11 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     return sidebarRows.folderTree.rowsIn(folderId).find(r => r.key === key) ?? null
   }
 
-  // The pinned folder each folder above a pin names in its locked Hide item.
+  // The pinned folder each folder above a pin names in its locked Hide item, in
+  // the mode's order (not the unread-first one), as the filter menu names it.
   const pinnedDescendantOf = pinnedFolderAncestors.size === 0
     ? new Map<string, ChatFolder>()
-    : computeFirstPinnedDescendant(folders, folderCompare)
+    : computeFirstPinnedDescendant(folders, folderModeCompare)
 
   const toggleListFolderCollapse = (folder: ChatFolder, from: HTMLElement) => {
     if (folder.collapsed) disarmHold()
