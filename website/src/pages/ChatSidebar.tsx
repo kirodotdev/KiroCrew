@@ -468,15 +468,23 @@ function ChatSidebar({
     () => (foldersUnreadFirst ? unreadFolderLatest(folders, localSlots, slotFolders, unreadSet) : null),
     [foldersUnreadFirst, folders, localSlots, slotFolders, unreadSet])
   // Whether the pointer is over the sessions list (set by the list root below).
+  // Only the hold below reads it, so it is set only while the option is on: with
+  // the option off a hover re-renders nothing. The ref tracks the pointer either
+  // way, so turning the option on from the menu (inside the list) holds at once.
   const [listHovered, setListHovered] = useState(false)
+  const pointerInListRef = useRef(false)
+  useEffect(() => { if (foldersUnreadFirst) setListHovered(pointerInListRef.current) }, [foldersUnreadFirst])
   // A chat turning unread must not re-sort the folders under the pointer, while
   // the pointer is over the list or a dnd-kit / native board-card drag runs: keep
   // the snapshot taken when that began and pick up the live one once it ends.
-  // Turning the option on or off is never held back.
+  // Turning the option on or off is never held back. The snapshot is what the
+  // last commit drew, recorded after it commits, so a render React throws away
+  // cannot move it.
   const unreadFrozen = listHovered || dragFrozen || nativeSessionDrag !== null
-  const frozenUnreadRef = useRef(liveUnreadLatest)
-  if (!unreadFrozen || (frozenUnreadRef.current === null) !== (liveUnreadLatest === null)) frozenUnreadRef.current = liveUnreadLatest
-  const unreadLatest = unreadFrozen ? frozenUnreadRef.current : liveUnreadLatest
+  const drawnUnreadRef = useRef(liveUnreadLatest)
+  const drawnUnread = drawnUnreadRef.current
+  const unreadLatest = unreadFrozen && (drawnUnread === null) === (liveUnreadLatest === null) ? drawnUnread : liveUnreadLatest
+  useEffect(() => { drawnUnreadRef.current = unreadLatest }, [unreadLatest])
   const folderCompare = useMemo(
     () => (unreadLatest ? unreadFirstComparator(folderModeCompare, unreadLatest) : folderModeCompare),
     [unreadLatest, folderModeCompare])
@@ -1052,7 +1060,7 @@ function ChatSidebar({
     <>
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="slot-rename-status">{renameAnnouncement}</span>
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
-      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerEnter={() => setListHovered(true)} onPointerLeave={() => { releaseHoverPin(); setListHovered(false) }} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
+      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerEnter={() => { pointerInListRef.current = true; if (foldersUnreadFirst) setListHovered(true) }} onPointerLeave={() => { pointerInListRef.current = false; releaseHoverPin(); if (foldersUnreadFirst || listHovered) setListHovered(false) }} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />
