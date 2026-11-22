@@ -96,8 +96,10 @@ def check_memory_available(
 ) -> tuple[bool, float]:
     """Check if enough memory is available to spawn a subagent.
 
-    Reads /proc/meminfo MemAvailable with a plain ``open`` and compares
-    against *min_gb*. The read deliberately does NOT go through
+    Reads /proc/meminfo MemAvailable with a plain ``open`` and compares the
+    figure it returns (rounded to two decimals) against *min_gb*, so a caller
+    that compares that figure against the same bar gets the verdict's answer.
+    The read deliberately does NOT go through
     ``hooks.safe_read_file``: that gate polices agent-supplied paths, and
     this path is a fixed module constant that no caller overrides in
     production, so the gate adds no protection here — while a gate refusal
@@ -130,7 +132,7 @@ def check_memory_available(
             avail = _host_available_gb()
         else:
             avail = -1.0
-        return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
+        return (True, -1.0) if avail < 0 else (round(avail, 2) >= min_gb, round(avail, 2))
     avail = -1.0
     try:
         with open(path, encoding="utf-8") as handle:
@@ -150,7 +152,7 @@ def check_memory_available(
         )
         if cgroup_gb >= 0:
             avail = cgroup_gb if avail < 0 else min(avail, cgroup_gb)
-    return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
+    return (True, -1.0) if avail < 0 else (round(avail, 2) >= min_gb, round(avail, 2))
 
 
 # RSS, CPU and both counts come from one shared walker,

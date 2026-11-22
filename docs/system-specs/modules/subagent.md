@@ -439,6 +439,11 @@ floor, the reserve and the host reading together (no read is taken, so an
 unanswered one cannot hold a start back). When enabled, the per-spawn guard adds
 `_startup_memory_reserve_gb` to it, so a start is admitted only if
 `available − Σ outstanding start prices − price(this start) ≥ spawn_min_memory_gb`.
+`available` counts at two decimals: `check_memory_available` rounds its reading
+before it compares, and the gate's inline path takes that verdict while its
+off-loop path, the dedicated top-up, the memory wake and the `resource_status`
+floor line compare the rounded figure it returns, so they all decide alike; a
+reading within 0.005 GB of the bar counts as the figure it rounds to.
 Below that a spawn waits in the queue (`low_memory`), durable or not; a capacity
 verdict never fails it, but the wait is bounded by `agent.subagent_queue_max_wait_secs`
 (§ Durable task queue, "A memory deferral has a max wait"). The governance, cwd and memory-identity checks that run
