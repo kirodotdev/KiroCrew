@@ -653,7 +653,8 @@ def test_the_team_lead_check_sees_a_lost_rule(
 SKILL_POINTERS: dict[str, str] = {
     "dependent_calls": "your prompt's rule on dependent calls",
     "goal_plan": "the five parts your prompt's goal-plan rule names",
-    "own_files": "your prompt's rules on one owner per shared file",
+    "own_files": "your prompt's rules on one owner per shared artifact",
+    "split_items": "split only as your prompt's split rule says",
     "item_budget": "your prompt's item-budget rule",
     "bind_before_seed": "bind before you seed, as your prompt's rule says",
     "send_files": "as your prompt's send-files rule says",
