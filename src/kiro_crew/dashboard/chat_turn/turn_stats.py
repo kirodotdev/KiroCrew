@@ -505,7 +505,7 @@ def _emit_turn_metric(
 
     ``trigger`` is who started the turn (:func:`_dashboard_turn_trigger`).
     ``owning_app`` is the turn's live client's ``owning_app``, for
-    ``kirocrew.app.run_time``.
+    ``kirocrew.app.run_time`` and ``kirocrew.app.credits``.
 
     ``harness`` labels the duration and usage samples (see
     :func:`kiro_crew.metrics.turns.emit_turn_duration`); the caller resolves it
@@ -553,6 +553,7 @@ def _emit_turn_metric(
         model=model,
         provider=provider,
         harness=harness,
+        owning_app=owning_app,
     )
 
 
