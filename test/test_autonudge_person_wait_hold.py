@@ -139,6 +139,50 @@ async def test_an_all_person_wait_ledger_holds_the_loop(svc, _nosleep, ledger):
 
 
 @pytest.mark.asyncio
+async def test_every_held_tick_announces_the_deadline_it_sets(svc, _nosleep, ledger):
+    """The dashboard reads a passed deadline as due and disables Nudge now, so each
+    held tick's re-arm must reach it, the first one's included."""
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    frames: list[tuple[str, float]] = []
+    svc.subscribe(lambda ev, lp: frames.append((ev, lp.next_due_ts)))
+
+    for _ in range(2):
+        frames.clear()
+        await _tick(svc, loop)
+        deadline = svc._loops[loop.id].next_due_ts
+        assert deadline > 0
+        assert frames and frames[-1] == ("updated", deadline), "the moved deadline is sent"
+    assert len(fired) == 1
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_release_announces_its_held_re_arm(svc, _nosleep, ledger, monkeypatch):
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert svc._loops[loop.id].waiting_on_person is True
+
+    async def _refuse(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _refuse)
+    frames: list[tuple[str, float]] = []
+    svc.subscribe(lambda ev, lp: frames.append((ev, lp.next_due_ts)))
+    ledger["fp"] = "fp-b"
+    await _tick(svc, loop)
+
+    refreshed = svc._loops[loop.id]
+    assert refreshed.waiting_on_person is True, "the store still says held"
+    assert frames and frames[-1] == ("updated", refreshed.next_due_ts)
+    assert len(fired) == 1
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
 async def test_a_new_report_releases_the_hold(svc, _nosleep, ledger):
     ledger["fp"] = "fp-a"
     fired: list = []
