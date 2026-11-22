@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, type MutableRefObject, type RefObject } from 'react'
 import { useMessageSearch } from './useMessageSearch'
-import { buildMessageToDisplayIdx } from '../pages/chat/groupDisplayItems'
 import { useNavToDisplayIndex, type NavToDisplayIndexOptions } from '../pages/chat/useNavToDisplayIndex'
 import { scrollToDisplayIndexIn } from '../pages/chat/useScrollManager'
 import type { DisplayItem } from '../pages/chat/types'
@@ -26,15 +25,18 @@ interface ChatPaneFindOptions {
  * row (`useNavToDisplayIndex`), which mounts a row scrolled out of the window
  * and waits for it to settle. The browser's own find cannot reach such a row,
  * because it is not in the page at all.
+ *
+ * The reader moves once per find action (the search's `reveal`), as in the
+ * Sessions chat (`useTranscriptJumps`): rows arriving, which renumber the
+ * current match, and streamed text move nobody.
  */
 export function useChatPaneFind({ enabled, messages, slotKey, displayItemsRef, listRef, scrollerRef }: ChatPaneFindOptions) {
   const search = useMessageSearch(messages, slotKey, enabled)
-  const highlight = useMemo(() => ({
-    term: search.term,
-    caseSensitive: search.caseSensitive,
-    currentMessageIdx: search.currentMessageIdx,
-    currentOccurrenceIdx: search.currentOccurrenceIdx,
-  }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx])
+  const { term, caseSensitive, currentMessageIdx, currentOccurrenceIdx, currentRowKey, reveal, revealLedger } = search
+  const highlight = useMemo(
+    () => ({ term, caseSensitive, currentMessageIdx, currentOccurrenceIdx, reveal, revealLedger }),
+    [term, caseSensitive, currentMessageIdx, currentOccurrenceIdx, reveal, revealLedger],
+  )
 
   const mountIndex = useCallback(
     (index: number, opts?: { unionOnly?: boolean }) => listRef.current?.mountIndex(index, opts) ?? false,
@@ -44,42 +46,37 @@ export function useChatPaneFind({ enabled, messages, slotKey, displayItemsRef, l
     (index: number, opts?: NavToDisplayIndexOptions) => scrollToDisplayIndexIn(scrollerRef.current, index, opts),
     [scrollerRef],
   )
-  const { navToDisplayIndex } = useNavToDisplayIndex({ scrollerRef, mountIndex, scrollToDisplayIndex })
+  const { navToMessage, rowOfMessage } = useNavToDisplayIndex({ scrollerRef, displayItemsRef, mountIndex, scrollToDisplayIndex })
 
   // Stepping through matches quickly snaps instead of gliding, as in the
   // Sessions chat (`useTranscriptJumps`).
   const lastStepAtRef = useRef(0)
-  const lastNavigationRef = useRef<{
-    term: string
-    messageIdx: number
-    matchIdx: number
-    matches: typeof search.matches
-  } | null>(null)
+  // The find action this effect last answered, and the message it was for.
+  const answeredRevealRef = useRef(0)
+  const revealedRowRef = useRef<string | null>(null)
+  // A layout effect, so the row poll it starts claims the scroll before the
+  // message's own passive occurrence poll, which then takes it over.
   useLayoutEffect(() => {
-    if (search.currentMessageIdx < 0) { lastNavigationRef.current = null; return }
-    const last = lastNavigationRef.current
-    if (last?.term === search.term && last.messageIdx === search.currentMessageIdx && last.matchIdx === search.currentIdx) {
-      last.matches = search.matches
-      return
-    }
-    // A new term still exposes the old matches until its debounce finishes.
-    // Once it lands, jump again even if both indices stayed the same; streamed
-    // messages with the same term and indices must not pull the reader back.
-    if (last && last.term !== search.term && last.matches === search.matches) return
-    const di = buildMessageToDisplayIdx(displayItemsRef.current).get(search.currentMessageIdx)
-    if (di === undefined) return
-    const sameMatch = last?.messageIdx === search.currentMessageIdx && last.matchIdx === search.currentIdx
-    lastNavigationRef.current = { term: search.term, messageIdx: search.currentMessageIdx, matchIdx: search.currentIdx, matches: search.matches }
-    // Only the term changed and its row is mounted: the message's own
-    // occurrence poll is already centring the new word, as in the Sessions
-    // chat, whose jump keys on the indices alone. A row jump would take scroll
-    // ownership from that poll and centre the whole row instead.
-    if (sameMatch && scrollerRef.current?.querySelector(`[data-display-index="${di}"]`)) return
+    if (!reveal || reveal === answeredRevealRef.current) return
+    answeredRevealRef.current = reveal
+    // By the message's key, not its object: the store copies a message when it
+    // updates it, and the same message must still count as the same one.
+    const stayed = currentRowKey !== null && currentRowKey === revealedRowRef.current
+    revealedRowRef.current = currentRowKey
+    const target = currentMessageIdx < 0 ? undefined : messages[currentMessageIdx]
+    const di = target ? rowOfMessage(target) : -1
+    // Nowhere to move to: the action is spent, so the row cannot use it later,
+    // when the reader's own scroll brings it into the window.
+    if (!target || di < 0) { revealLedger.consume(reveal); return }
+    // A step inside the message the last action was for, whose row is in the
+    // window: the message's own occurrence poll is already centering it, and a
+    // row jump would take the scroll from that poll and center the whole row.
+    if (stayed && scrollerRef.current?.querySelector(`[data-display-index="${di}"]`)) return
     const now = performance.now()
     const behavior = pickSearchScrollBehavior(now, lastStepAtRef.current)
     lastStepAtRef.current = now
-    navToDisplayIndex(di, { behavior, align: 'center' })
-  }, [search.term, search.matches, search.currentMessageIdx, search.currentIdx, displayItemsRef, scrollerRef, navToDisplayIndex])
+    navToMessage(target, { behavior, align: 'center' })
+  }, [reveal, currentMessageIdx, currentRowKey, revealLedger, messages, rowOfMessage, navToMessage, scrollerRef])
 
   return { search, highlight }
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useMessageSearch } from '../hooks/useMessageSearch'
+import { CONVERGE_MAX_MS } from '../utils/searchScroll'
 import type { ChatMessage } from '../types'
 
 const msg = (role: string, content: string): ChatMessage => ({ role, content, cls: '' })
@@ -294,6 +295,12 @@ describe('useMessageSearch', () => {
 })
 
 describe('useMessageSearch keyboard shortcuts', () => {
+  // Escape closes the bar, and close() hands focus to the composer one frame
+  // later. On fake timers that frame belongs to this suite's clock, which each
+  // test restores, so it never lands in a later test that mounts a composer.
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
   it('Cmd+F opens search', () => {
     const { result } = renderHook(() => useMessageSearch(messages, 'slot-1'))
     act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true })) })
@@ -502,5 +509,215 @@ describe('useMessageSearch over a superseded steer whose successor is cut off', 
     act(() => { result.current.open(); result.current.setTerm('logs') })
     act(() => { vi.advanceTimersByTime(50) })
     expect(result.current.matches).toEqual([{ msgIdx: 0, occ: 0 }])
+  })
+})
+
+/* The current match is the match itself, named by its row's key: rows arriving
+ * or leaving around it never turn it into another match, and only a find action
+ * hands out a `reveal`, the number the hosts and rows move the reader by. */
+describe('the current match while rows arrive and leave', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  // Server rows carry a `ts`, the key the transcript keys its rows by.
+  const row = (minute: number, role: 'user' | 'assistant', content: string, meta?: Record<string, unknown>): ChatMessage => ({
+    role, content, cls: '', ts: `2026-11-20T10:${String(minute).padStart(2, '0')}:00Z`, ...(meta ? { meta } : {}),
+  })
+
+  function searchOver(initial: ChatMessage[], term: string) {
+    const hook = renderHook(({ msgs }) => useMessageSearch(msgs, 'slot-1'), { initialProps: { msgs: initial } })
+    act(() => hook.result.current.setTerm(term))
+    act(() => { vi.advanceTimersByTime(50) })
+    return hook
+  }
+
+  it('an older page landing above keeps the same match current, from the render that draws the page, with no find action', () => {
+    const newer = [row(10, 'user', 'deploy the API'), row(11, 'assistant', 'deployed at noon')]
+    const older = [row(1, 'user', 'can we deploy friday?'), row(2, 'assistant', 'deploy is frozen')]
+    const { result, rerender } = searchOver(newer, 'deploy')
+    act(() => result.current.next())
+    expect(result.current.currentMessageIdx).toBe(1)
+    const reveal = result.current.reveal
+    const rowKey = result.current.currentRowKey
+
+    rerender({ msgs: [...older, ...newer] })
+    // Before the search runs again, the match already names its row's new index.
+    expect(result.current.currentMessageIdx).toBe(3)
+    expect(result.current.currentOccurrenceIdx).toBe(0)
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.matches).toEqual([
+      { msgIdx: 0, occ: 0 }, { msgIdx: 1, occ: 0 }, { msgIdx: 2, occ: 0 }, { msgIdx: 3, occ: 0 },
+    ])
+    expect(result.current.currentIdx).toBe(3)
+    expect(result.current.currentMessageIdx).toBe(3)
+    expect(rowKey).toBeTruthy()
+    expect(result.current.currentRowKey).toBe(rowKey)
+    expect(reveal).toBeGreaterThan(0)
+    expect(result.current.reveal).toBe(reveal)
+  })
+
+  it('a row appended below that hides a steer above keeps the current match, and so does a plain reply', () => {
+    const msgs = [
+      row(1, 'user', 'check the deploy log'),
+      row(2, 'assistant', 'the deploy log is clean'),
+      row(3, 'user', 'deploy now', { steer: true, steerState: 'superseded', mid: 'm-steer', supersededBy: 'm-next' }),
+      row(4, 'assistant', 'the deploy finished'),
+    ]
+    const { result, rerender } = searchOver(msgs, 'deploy')
+    act(() => result.current.goTo(3))
+    expect(result.current.currentMessageIdx).toBe(3)
+    const reveal = result.current.reveal
+
+    // The steer's own turn writes its row, so the steer is no longer drawn.
+    const withSuccessor = [...msgs, row(5, 'user', 'deploy now', { mid: 'm-next' })]
+    rerender({ msgs: withSuccessor })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.matches.map(m => m.msgIdx)).toEqual([0, 1, 3, 4])
+    expect(result.current.currentMessageIdx).toBe(3)
+    expect(result.current.currentIdx).toBe(2)
+
+    rerender({ msgs: [...withSuccessor, row(6, 'assistant', 'deploy is live')] })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.matches).toHaveLength(5)
+    expect(result.current.currentMessageIdx).toBe(3)
+    expect(result.current.reveal).toBe(reveal)
+  })
+
+  it('rows that share a timestamp keep their own matches across a page landing', () => {
+    // A coarse clock stamps two rows alike; their order tells them apart.
+    const pair = [row(5, 'user', 'alpha'), row(5, 'assistant', 'alpha')]
+    const { result, rerender } = searchOver(pair, 'alpha')
+    expect(result.current.currentMessageIdx).toBe(0)
+    rerender({ msgs: [row(1, 'user', 'alpha'), ...pair] })
+    expect(result.current.currentMessageIdx).toBe(1)
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.matches).toEqual([{ msgIdx: 0, occ: 0 }, { msgIdx: 1, occ: 0 }, { msgIdx: 2, occ: 0 }])
+    expect(result.current.currentMessageIdx).toBe(1)
+    act(() => result.current.next())
+    expect(result.current.currentMessageIdx).toBe(2)
+  })
+
+  it('a current match whose row leaves hands over to the next one, or to the one before when it was last, moving nobody', () => {
+    const a = row(1, 'user', 'alpha')
+    const b = row(2, 'assistant', 'alpha beta')
+    const c = row(3, 'user', 'alpha gamma')
+    const { result, rerender } = searchOver([a, b, c], 'alpha')
+    act(() => result.current.goTo(1))
+    rerender({ msgs: [a, c] })
+    // In the render without the row, before the search runs again.
+    expect(result.current.matches).toEqual([{ msgIdx: 0, occ: 0 }, { msgIdx: 1, occ: 0 }])
+    expect(result.current.currentIdx).toBe(1)
+    expect(result.current.currentMessageIdx).toBe(1)
+    expect(result.current.reveal).toBe(0)
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.currentMessageIdx).toBe(1)
+    expect(result.current.reveal).toBe(0)
+
+    act(() => result.current.goTo(1))
+    expect(result.current.reveal).toBeGreaterThan(0)
+    rerender({ msgs: [a] })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.currentIdx).toBe(0)
+    expect(result.current.currentMessageIdx).toBe(0)
+    expect(result.current.reveal).toBe(0)
+  })
+
+  it('a step right after a row left counts only the matches still in the list', () => {
+    const a = row(1, 'user', 'alpha')
+    const b = row(2, 'assistant', 'alpha beta')
+    const c = row(3, 'user', 'alpha gamma')
+    const { result, rerender } = searchOver([a, b, c], 'alpha')
+    rerender({ msgs: [a, c] })
+    act(() => result.current.next())
+    expect(result.current.currentMessageIdx).toBe(1)
+    expect(result.current.reveal).toBeGreaterThan(0)
+  })
+
+  it('a new term or case carries the match number and moves the reader to it', () => {
+    const { result } = searchOver([row(1, 'user', 'alpha one'), row(2, 'assistant', 'alpha two'), row(3, 'user', 'alpha three')], 'alpha')
+    const typed = result.current.reveal
+    expect(typed).toBeGreaterThan(0)
+    act(() => result.current.goTo(1))
+    const stepped = result.current.reveal
+    expect(stepped).toBeGreaterThan(typed)
+    act(() => result.current.setTerm('alph'))
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.currentIdx).toBe(1)
+    expect(result.current.reveal).toBeGreaterThan(stepped)
+    act(() => result.current.setTerm('three'))
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.currentIdx).toBe(0)
+    expect(result.current.currentMessageIdx).toBe(2)
+    const narrowed = result.current.reveal
+    act(() => result.current.toggleCaseSensitive())
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.currentMessageIdx).toBe(2)
+    expect(result.current.reveal).toBeGreaterThan(narrowed)
+  })
+
+  it('the first matches arriving with new rows become current without moving the reader', () => {
+    const { result, rerender } = searchOver([row(5, 'user', 'nothing here')], 'zeta')
+    expect(result.current.matches).toEqual([])
+    rerender({ msgs: [row(1, 'assistant', 'zeta release notes'), row(5, 'user', 'nothing here')] })
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.currentIdx).toBe(0)
+    expect(result.current.currentMessageIdx).toBe(0)
+    expect(result.current.reveal).toBe(0)
+  })
+
+  it('every step is a find action of its own, Enter on the only match included', () => {
+    const { result } = searchOver([row(1, 'user', 'only once')], 'once')
+    const seen = [result.current.reveal]
+    act(() => result.current.next())
+    seen.push(result.current.reveal)
+    act(() => result.current.prev())
+    seen.push(result.current.reveal)
+    act(() => result.current.goTo(0))
+    seen.push(result.current.reveal)
+    expect(result.current.currentMessageIdx).toBe(0)
+    expect(seen.every((n, i) => i === 0 ? n > 0 : n > seen[i - 1])).toBe(true)
+  })
+
+  it('a find action stays pending until a row has used it, and an old one never comes back', () => {
+    const { result } = searchOver([row(1, 'user', 'alpha'), row(2, 'user', 'alpha')], 'alpha')
+    const { revealLedger } = result.current
+    const typed = result.current.reveal
+    expect(revealLedger.pending(typed)).toBe(true)
+    revealLedger.consume(typed)
+    expect(revealLedger.pending(typed)).toBe(false)
+    act(() => result.current.next())
+    expect(revealLedger.pending(result.current.reveal)).toBe(true)
+    expect(revealLedger.pending(0)).toBe(false)
+    // A close and a new search hand out a number never handed out before.
+    const last = result.current.reveal
+    act(() => result.current.close())
+    expect(result.current.reveal).toBe(0)
+    act(() => result.current.setTerm('alpha'))
+    act(() => { vi.advanceTimersByTime(50) })
+    expect(result.current.reveal).toBeGreaterThan(last)
+    expect(result.current.revealLedger).toBe(revealLedger)
+  })
+
+  it('a find action is pending for one converge backstop at most, and only while it is the latest', () => {
+    let now = 1_000
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now)
+    try {
+      const { result } = searchOver([row(1, 'user', 'alpha'), row(2, 'user', 'alpha')], 'alpha')
+      const { revealLedger } = result.current
+      const typed = result.current.reveal
+      expect(revealLedger.pending(typed)).toBe(true)
+      act(() => result.current.next())
+      // A newer action takes its place, used or not.
+      expect(revealLedger.pending(typed)).toBe(false)
+      const stepped = result.current.reveal
+      now += CONVERGE_MAX_MS - 1
+      expect(revealLedger.pending(stepped)).toBe(true)
+      // A row that mounts this late (it unmounted before its first scroll, or no
+      // host could move to it) must not move the reader.
+      now += 1
+      expect(revealLedger.pending(stepped)).toBe(false)
+    } finally {
+      clock.mockRestore()
+    }
   })
 })

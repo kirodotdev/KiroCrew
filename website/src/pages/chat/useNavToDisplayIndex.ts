@@ -1,12 +1,18 @@
 import { type RefObject, useCallback, useEffect, useRef } from 'react'
 
 import { attachUserScrollIntent, glideOnceStep, pollRowSettled } from '../../utils/searchScroll'
+import { leadMessage, rowOfMessage as rowOfMessageIn } from '../../chat-core/transcript/rowKeys'
+import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
+import type { DisplayItem } from './types'
+import type { ChatMessage } from '../../types'
 
 export type NavToDisplayIndexOptions = { behavior?: ScrollBehavior; align?: ScrollLogicalPosition; offset?: number }
 
 interface UseNavToDisplayIndexOptions {
   /** The transcript scroll container. Rows inside it carry `data-display-index`. */
   scrollerRef: RefObject<HTMLDivElement | null>
+  /** The rows on screen, in the order of their `data-display-index`. */
+  displayItemsRef: RefObject<readonly DisplayItem[]>
   /** The virtualizer's `mountIndex`: mounts a row (replacing the window for a
    *  far row) and reports whether the jump was far. */
   mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
@@ -20,11 +26,25 @@ interface UseNavToDisplayIndexOptions {
  * mounts the row first through the virtualizer, then scrolls once the row is
  * in the DOM and keeps it in place until its height settles.
  *
+ * A jump aims at a MESSAGE (`navToMessage`) and finds the row that draws it
+ * again on every frame (`rowOfMessage`). A display index is good for the rows
+ * of one render only: a page of older history that lands while the poll is
+ * still running renumbers every row, and the index then names an older
+ * message. `navToDisplayIndex` is the jump for a caller that holds a row of
+ * the rows on screen (the turn minimap): it aims at that row's first message.
+ *
  * `navScrollRafRef` / `navPollCancelRef` are returned so another jump on the
  * same scroller (the pinned-prompt glide) can cancel and own the same handles.
  */
-export function useNavToDisplayIndex({ scrollerRef, mountIndex, scrollToDisplayIndex }: UseNavToDisplayIndexOptions) {
-  // Navigate to a (possibly off-window) display index: mount it first via the
+export function useNavToDisplayIndex({ scrollerRef, displayItemsRef, mountIndex, scrollToDisplayIndex }: UseNavToDisplayIndexOptions) {
+  // The row identity rule the transcript keys its rows by.
+  const msgKey = useStableMessageKey()
+  /** The display index of the row on screen that draws `m`, or -1. */
+  const rowOf = useCallback(
+    (m: ChatMessage) => rowOfMessageIn(displayItemsRef.current ?? [], m, msgKey),
+    [displayItemsRef, msgKey],
+  )
+  // Navigate to a (possibly off-window) message: mount its row first via the
   // virtualizer so the DOM-based scroll can find it, then scroll next frame.
   // Tracks the in-flight row-mount poll (below) so a newer navigation cancels
   // the previous one. Without this, an earlier far-jump loop whose target
@@ -35,16 +55,20 @@ export function useNavToDisplayIndex({ scrollerRef, mountIndex, scrollToDisplayI
   // Cancel handle for the in-flight settle poll, so a newer navigation or an
   // unmount terminates it rather than letting it run to the wall-clock backstop.
   const navPollCancelRef = useRef<(() => void) | null>(null)
-  const navToDisplayIndex = useCallback((
-    idx: number,
+  /** Scroll to the row that draws `target`. False, and nothing moves, when no
+   *  row on screen draws it. */
+  const navToMessage = useCallback((
+    target: ChatMessage,
     opts?: NavToDisplayIndexOptions,
-  ) => {
+  ): boolean => {
+    const first = rowOf(target)
+    if (first < 0) return false
     cancelAnimationFrame(navScrollRafRef.current)
     // Signal WidgetFrames that a jump is starting so the span of widgets
     // mountIndex is about to union doesn't all build their iframes in one
     // frame (see PROGRAMMATIC_BUILD_DELAY_MS in WidgetFrame).
     window.dispatchEvent(new Event('mc-chat-scroll-jump'))
-    const jumpedFar = mountIndex(idx)
+    const jumpedFar = mountIndex(first)
     // A FAR jump replaces the window, so the rows between the old viewport and
     // the target are NOT mounted — a smooth glide would scrub the scroller
     // through blank spacer (the "occasional flicker" on the ↑/jump pills when
@@ -68,8 +92,14 @@ export function useNavToDisplayIndex({ scrollerRef, mountIndex, scrollToDisplayI
     // we never teleport to top (the "far jump jumps to top, second click works"
     // bug). navScrollRafRef holds the in-flight frame so a newer navigation
     // cancels this loop (rapid stepping / click-then-click).
-    const rowEl = (): HTMLElement | null =>
-      (scrollerRef.current?.querySelector(`[data-display-index="${idx}"]`) as HTMLElement | null) ?? null
+    // The row is found again each frame, and the step scrolls to the row the
+    // same frame's measure found.
+    let row = first
+    const rowEl = (): HTMLElement | null => {
+      row = rowOf(target)
+      if (row < 0) return null
+      return (scrollerRef.current?.querySelector(`[data-display-index="${row}"]`) as HTMLElement | null) ?? null
+    }
     navPollCancelRef.current?.()
     // The poll re-scrolls every frame for up to CONVERGE_MAX_MS (~2s). If the
     // user tries to scroll during that window, continuing to step would drag
@@ -85,6 +115,11 @@ export function useNavToDisplayIndex({ scrollerRef, mountIndex, scrollToDisplayI
     navPollCancelRef.current = pollRowSettled({
       measure: () => {
         const el = rowEl()
+        // The row is gone again before the first step scrolled to it: a landing
+        // that commits in the same frame recomputes the window from the scroll
+        // position the jump has not moved yet, and unmounts a far row. Mount it
+        // again; once the step has scrolled, the window follows the scroll.
+        if (!el && row >= 0) mountIndex(row)
         return el ? el.getBoundingClientRect().height : null
       },
       // Only the FIRST step may glide — see glideOnceStep. Re-issuing a smooth
@@ -92,7 +127,7 @@ export function useNavToDisplayIndex({ scrollerRef, mountIndex, scrollToDisplayI
       // through the quiet window would leave a NEAR jump stuttering until the
       // poll ends (the same restart trap removed from the streaming pin).
       step: glideOnceStep(
-        (b) => { scrollToDisplayIndex(idx, { ...opts, behavior: b }) },
+        (b) => { scrollToDisplayIndex(row, { ...opts, behavior: b }) },
         behavior,
       ),
       raf: (cb) => (navScrollRafRef.current = requestAnimationFrame(cb)),
@@ -102,7 +137,15 @@ export function useNavToDisplayIndex({ scrollerRef, mountIndex, scrollToDisplayI
           : Date.now(),
       onEnd: () => { detachUserScroll(); navPollCancelRef.current = null },
     })
-  }, [scrollToDisplayIndex, scrollerRef, mountIndex])
+    return true
+  }, [scrollToDisplayIndex, scrollerRef, mountIndex, rowOf])
+  /** Scroll to display row `idx` of the rows on screen: the jump aims at the
+   *  first message that row draws. */
+  const navToDisplayIndex = useCallback((idx: number, opts?: NavToDisplayIndexOptions) => {
+    const item = displayItemsRef.current?.[idx]
+    const lead = item ? leadMessage(item) : null
+    if (lead) navToMessage(lead, opts)
+  }, [displayItemsRef, navToMessage])
   // Ends the in-flight navigation's settle poll, for a scroll that takes over
   // from it: a fold that opened under a jump target scrolls to the row itself,
   // and the poll re-centering the whole turn would undo that.
@@ -120,5 +163,5 @@ export function useNavToDisplayIndex({ scrollerRef, mountIndex, scrollToDisplayI
     cancelAnimationFrame(navScrollRafRef.current)
   }, [])
 
-  return { navToDisplayIndex, cancelNavScroll, navScrollRafRef, navPollCancelRef }
+  return { navToMessage, navToDisplayIndex, rowOfMessage: rowOf, cancelNavScroll, navScrollRafRef, navPollCancelRef }
 }
