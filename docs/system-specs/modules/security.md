@@ -4008,6 +4008,12 @@ kiro-cli's scratch directory: one process can serve several sessions, so even th
 runtime's own log can carry conversation the caller cannot claim.
 The protocol logs explain a rejected turn without carrying the
 conversation, so `read_kiro_cli_logs` reads those and names neither of the other two.
+kiro-cli 3.x also writes a per-process `mcp.log` to `<kiro home>/logs/<stamp>-<pid>/`, and
+the source list takes that `mcp.log` from the three newest such folders that hold
+a non-empty one (`diagnostics_kiro_home_logs.py`), and nothing else there (`kiro.log`,
+`powers.log`). Measured on kiro-cli 3.5.0, that `mcp.log` holds one JSON event per line,
+which counts as a record by its `timestamp` field, and a tool call appears only as an
+`mcp.callTool.ok` record of ids, with no arguments or result.
 
 That content property belongs to a component this repository neither builds nor pins, so a
 channel carries a **fail-closed tripwire** rather than a standing assumption.

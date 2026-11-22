@@ -247,6 +247,12 @@ which inside a spawned process is `<scratch dir>\kiro-log\logs\`. The
 diagnostics bundle probes both the flat and the `logs` level.
 See `agent_scratch.cap_kiro_cli_logs`.
 
+kiro-cli 3.x also writes each process's `kiro.log`, `mcp.log` and `powers.log` to
+`~/.kiro/logs/<UTC stamp>-<pid>/` (`$KIRO_HOME/logs/` when that is set; earlier 3.x
+builds name the folder `<UTC stamp>` alone). The diagnostics bundle and the
+`kiro_cli_logs` tool read `mcp.log` from the three newest of those folders that hold
+a non-empty one, after the `kiro-log` copy.
+
 ```bash
 KIRO_LOG_LEVEL=debug kiro-cli acp
 KIRO_CHAT_LOG_FILE=/path/to/custom.log kiro-cli acp
