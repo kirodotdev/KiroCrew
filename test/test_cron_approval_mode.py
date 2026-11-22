@@ -72,7 +72,8 @@ class TestCronApprovalModeGateway:
         gw.sessions.cancel_current = AsyncMock()
         gw.ctx_builder.build_message = MagicMock(return_value=("msg", None))
         gw.ctx_builder.hooks = MagicMock()
-        gw._interactive_approval = MagicMock(return_value="interactive_cb")
+        # The prompt nobody answers: a call that reaches it is declined.
+        gw._interactive_approval = MagicMock(return_value=AsyncMock(return_value=False))
 
         captured = {}
 
@@ -124,6 +125,21 @@ class TestCronApprovalModeGateway:
         captured = self._run_cron_callback("")
         assert captured["approval_policy"] == ToolApprovalPolicy.HOOK_BASED
         assert captured["on_tool_approval"] is not None
+
+    def test_a_bots_grant_runs_the_turn_auto_and_rechecks_each_call(self) -> None:
+        """A job whose Bot grant holds (``owner_grant``) runs as an ``auto`` job does."""
+        holds = {"now": True}
+        with patch(
+            "kiro_crew.cron_service.owner_grant.owner_grant_holds",
+            lambda job, execution, config: holds["now"],
+        ):
+            captured = self._run_cron_callback("")
+            assert captured["approval_policy"] == ToolApprovalPolicy.AUTO_APPROVE
+            approve = captured["on_tool_approval"]
+            assert asyncio.run(approve(MagicMock())) is True
+            # The Bot's Profile is lowered mid-turn: the next call goes to the prompt.
+            holds["now"] = False
+            assert asyncio.run(approve(MagicMock())) is False
 
 
 class TestCronApprovalModeExtraEnv:
@@ -204,6 +220,13 @@ class TestCronApprovalModeExtraEnv:
 
     def test_empty_mode_does_not_inject_env_var(self) -> None:
         captured = self._run_cron_callback_capture_get_or_create("")
+        assert captured["extra_env"] is None
+
+    def test_a_bots_grant_stays_off_the_session_and_its_spawns(self) -> None:
+        """Only the turn's own calls carry it: no child gets a grant a Profile change misses."""
+        with patch("kiro_crew.cron_service.owner_grant.owner_grant_holds", lambda *a: True):
+            captured = self._run_cron_callback_capture_get_or_create("")
+        assert captured["approval_policy"] == ""
         assert captured["extra_env"] is None
 
     def test_auto_mode_preserves_existing_job_env(self) -> None:
