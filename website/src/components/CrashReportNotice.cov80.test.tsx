@@ -3,7 +3,7 @@ import { renderWithProviders } from '../test/helpers'
 import CrashReportNotice from './CrashReportNotice'
 import { fmtDateTime } from '../i18n/format'
 
-type Summary = { newCount: number; lastCrashAt?: string | null }
+type Summary = { newCount: number; lastCrashAt?: string | null; nativeLogOff?: string }
 
 const get = vi.fn<[], Promise<Summary>>()
 const reveal = vi.fn<[], Promise<{ ok: boolean; error?: string }>>()
@@ -179,6 +179,58 @@ describe('CrashReportNotice', () => {
       'The app closed unexpectedly. New crash records saved on this machine: 2.',
     )
     expect(reveal).not.toHaveBeenCalled()
+  })
+
+  // When Chromium's file log is off this launch, the chromium.log the user is
+  // asked to attach is from an earlier session. Nothing the user asked for
+  // failed, so it is a muted status line under the count and the time (no
+  // role="alert", no agent hand-off), in plain words for the cause code; the
+  // report note stays count-only, as the 2026-11-14 decision keeps it.
+  it('says chromium.log is from an earlier session, as a muted status line', async () => {
+    get.mockResolvedValue(summary({ nativeLogOff: 'disk_full' }))
+    renderWithProviders(<CrashReportNotice />)
+    const banner = await screen.findByRole('status')
+    const line = screen.getByTestId('crash-notice-native-log-off')
+    expect(banner).toContainElement(line)
+    // After the "Latest crash" line, the order the 2026-11-14 decision sets.
+    expect(screen.getByTestId('crash-notice-latest').compareDocumentPosition(line))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(line).not.toHaveAttribute('role')
+    expect(line).toHaveClass('text-muted')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+    expect(line).toHaveTextContent(/chromium\.log is from an earlier session/i)
+    expect(line).toHaveTextContent(/because the disk is full\./i)
+    expect(line).not.toHaveTextContent(/may not be current|ENOSPC|disk_full/i)
+    fireEvent.click(screen.getByRole('button', { name: /report issue/i }))
+    const dialog = await screen.findByRole('dialog')
+    const note = within(dialog).getByRole('textbox', { name: /what happened/i }) as HTMLTextAreaElement
+    expect(note.value).toBe('The app closed unexpectedly. New crash records saved on this machine: 2.')
+  })
+
+  it.each([
+    ['no_access', /isn't allowed to move the old file/i],
+    ['in_use', /another program has the old file open/i],
+    ['unreadable', /old file couldn't be read/i],
+    ['other', /old file couldn't be moved aside/i],
+  ] as const)('phrases the %s cause in plain words', async (cause, text) => {
+    get.mockResolvedValue(summary({ nativeLogOff: cause }))
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.getByTestId('crash-notice-native-log-off')).toHaveTextContent(text)
+  })
+
+  it('ignores a native-log value that is not a known cause code', async () => {
+    get.mockResolvedValue(summary({ nativeLogOff: 'chromium.log could not be rotated (rotate failed (ENOSPC))' }))
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.queryByTestId('crash-notice-native-log-off')).not.toBeInTheDocument()
+  })
+
+  it('says nothing about native logging when the sink is armed', async () => {
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    expect(screen.queryByTestId('crash-notice-native-log-off')).not.toBeInTheDocument()
   })
 
   it('keeps the crash banner when the report dialog is cancelled', async () => {
