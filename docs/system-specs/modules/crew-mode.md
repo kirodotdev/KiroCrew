@@ -3380,7 +3380,9 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   the same skips (thread cannot be loaded, a turn running
   or queued, switch off, no goal), checking the thread again after the
   off-loop tools check, and dispatches one hidden turn
-  (`mate_welcome.dispatch_hidden_turn`, `human_seen=False`)
+  (`mate_welcome.dispatch_hidden_turn`, `human_seen=False`,
+  `mirror_reply_only=True`: a thread or channel linked to the chat gets only the
+  wake's final reply, so a quiet wake posts nothing there)
   built by `goal_reminder.heartbeat_prompt` from the current record. Right
   under the progress block, the prompt asks for `nothing_to_do` at once, with
   no text before it, when nothing can move forward. The rest of the prompt
