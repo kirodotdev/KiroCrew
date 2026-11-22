@@ -316,6 +316,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.user_role",
         "dashboard.user_role_other",
         "dashboard.user_technical_level",
+        "dashboard.warm_task_brief",
         "decisions.bucket",
         "decisions.model_route.complex",
         "decisions.model_route.medium",

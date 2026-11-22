@@ -1461,6 +1461,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         cautious_boot=section.read("cautious_boot", _safe_bool),
         auto_open_browser=section.get("auto_open_browser"),
         prevent_sleep=section.read("prevent_sleep", _safe_bool),
+        warm_task_brief=section.read("warm_task_brief", _safe_bool),
         quick_send=section.get("quick_send"),
         model_picker_configured=(
             section.read("model_picker_configured", _safe_bool)

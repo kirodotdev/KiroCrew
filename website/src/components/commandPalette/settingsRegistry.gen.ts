@@ -1981,6 +1981,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.since-you-left-briefs",
+    "label": "Since you left briefs",
+    "labelKey": "pages.settings.chatPanel.warm_task_brief",
+    "description": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief.",
+    "hint": "Off: a return posts no brief. Takes effect on your next return.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.warm_task_brief"
+  },
+  {
     "id": "chat.soft-stop-budget-seconds",
     "label": "Soft-stop budget (seconds)",
     "labelKey": "pages.settings.chatPanel.soft_stop_budget_seconds",

@@ -1140,6 +1140,15 @@
       "hint": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run"
     },
     {
+      "id": "chat.since-you-left-briefs",
+      "label": "Since you left briefs",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.warm_task_brief",
+      "description": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief.",
+      "hint": "Off: a return posts no brief. Takes effect on your next return.",
+      "configKey": "dashboard.warm_task_brief"
+    },
+    {
       "id": "chat.soft-stop-budget-seconds",
       "label": "Soft-stop budget (seconds)",
       "tab": "chat",

@@ -10526,6 +10526,7 @@
         "tail_fork_enabled": false,
         "auto_open_browser": true,
         "prevent_sleep": false,
+        "warm_task_brief": true,
         "quick_send": false,
         "model_picker_configured": false,
         "model_picker_hidden_models": [],
@@ -11661,6 +11662,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.warm_task_brief",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Since You Left Briefs",
+      "help": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief of its work. Off: a return posts no brief. Takes effect on the next return; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.quick_send",

@@ -630,6 +630,37 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('shows Since you left briefs right after Session summaries, on by default, and PATCHes it off', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Since you left briefs')
+    const switches = screen.getAllByRole('switch')
+    expect(switches.indexOf(sw)).toBe(switches.indexOf(screen.getByRole('switch', { name: 'Session summaries' })) + 1)
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(document.querySelector('[data-setting-key="dashboard.warm_task_brief"]')).toContainElement(sw)
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('dashboard.warm_task_brief', false)
+    )
+  })
+
+  it('reflects a stored-off Since you left briefs flag and turns it back on', async () => {
+    seedMc({ dashboard: { warm_task_brief: false } })
+    wrap('sessions')
+    const sw = await settledSwitch('Since you left briefs')
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('dashboard.warm_task_brief', true)
+    )
+  })
+
+  it('surfaces a failed Since you left briefs write', async () => {
+    rejectOnce(patchConfigMock)
+    wrap('sessions')
+    fireEvent.click(await settledSwitch('Since you left briefs'))
+    expect(await screen.findByText(/Failed to save Since you left briefs setting/)).toBeInTheDocument()
+  })
+
   it('persists the folder-suggestions toggle', async () => {
     wrap('sessions')
     fireEvent.click(await settledSwitch('Folder suggestions'))
