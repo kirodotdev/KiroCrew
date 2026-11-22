@@ -128,6 +128,10 @@ READONLY_REASONS: dict[str, str] = {
     "wakatime.send_heartbeats": WHY_SHARE,
     # Lets memory and knowledge text leave this machine for a remote Ollama host.
     "memory.ollama_allow_remote": WHY_SHARE,
+    # On, every request to that host is signed with the AWS credentials the
+    # default chain or memory.ollama_aws_profile resolves; `kirocrew config set`
+    # writes it.
+    "memory.ollama_auth": WHY_SIGN_IN,
     # On, each turn's spans go to the collector the config or the gateway's
     # environment names (tracing/otlp.py:206-237); this route refuses the same
     # for telemetry.enabled (core_config_patch.py:664-690).

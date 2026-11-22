@@ -3597,7 +3597,9 @@ The schema is the source of truth: a key needs a restart exactly when
 namespace whose per-conversation generation counters are seeded at boot, so a live
 flip could resume a stale session persisted under the other namespace),
 `memory.embedding_provider`, `memory.embedding_dim`, `memory.ollama_url`,
-`memory.ollama_model`, `memory.ollama_allow_remote`, `memory.embed_model_path`,
+`memory.ollama_model`, `memory.ollama_allow_remote`, `memory.ollama_auth`,
+`memory.ollama_aws_region`, `memory.ollama_aws_service`,
+`memory.ollama_aws_profile`, `memory.embed_model_path`,
 `memory.embed_model_id`,
 `knowledge.extraction_effort`, most of `mcp_gateway.*` (every field except
 `enabled`, `apps_enabled` and `resolve_once_refresh_hours`),

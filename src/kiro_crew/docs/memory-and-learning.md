@@ -305,7 +305,7 @@ model's context instead of failing it.
   or from the profile named in `memory.ollama_aws_profile`; config stores only
   names. `memory.ollama_aws_service` defaults to `execute-api` (API Gateway).
   A request that cannot be signed is not sent. Signing needs botocore
-  (`pip install 'boto3>=1.34,<2'` in a source install).
+  (`pip install "boto3>=1.34,<2"` in a source install).
 - **When the server is down, memory falls back to keyword search**, and picks
   vectors up again once the server answers. The log warns once per outage.
 - **The width must match.** If the model returns vectors of another width,

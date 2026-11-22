@@ -27,6 +27,7 @@ sent.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.util
 import ipaddress
@@ -50,6 +51,7 @@ from kiro_crew.config.memory_sections import (
     OLLAMA_DEFAULT_URL,
     OLLAMA_HTTP_PROVIDER,
 )
+from kiro_crew.constants import AWS_PROFILE_NAME_RE
 from kiro_crew.embeddings_llama import EmbeddingBackend
 from kiro_crew.embeddings_settings import (
     _DEFAULT_DIM,
@@ -73,11 +75,13 @@ _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _READY_TTL_OK_SECS = 30.0
 _READY_TTL_FAIL_SECS = 5.0
 _PROBE_TIMEOUT_SECS = 5.0
-#: A region, service or profile name: what AWS allows in each, with no separator
-#: a signature scope or a profile lookup could misread.
+#: A region or service name: what AWS allows in each, with no separator a
+#: signature scope could misread. Profile names use ``AWS_PROFILE_NAME_RE``.
 _AWS_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: Statuses that can mean the signing credentials went stale on disk.
 _AUTH_REJECTED = (401, 403)
+#: The port a scheme implies, which the signed ``Host`` header leaves out.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 @dataclass(frozen=True)
@@ -167,10 +171,10 @@ def _auth_settings(memory: dict, environ: "dict[str, str]") -> _AuthSettings:
         error = "memory.ollama_aws_region is not a valid region name"
     elif not _AWS_NAME.fullmatch(service):
         error = "memory.ollama_aws_service is not a valid service name"
-    elif profile and not _AWS_NAME.fullmatch(profile):
+    elif profile and not AWS_PROFILE_NAME_RE.match(profile):
         error = "memory.ollama_aws_profile is not a valid profile name"
     elif importlib.util.find_spec("botocore") is None:
-        error = "memory.ollama_auth 'aws_sigv4' needs botocore (pip install 'boto3>=1.34,<2')"
+        error = "memory.ollama_auth 'aws_sigv4' needs botocore (pip install \"boto3>=1.34,<2\")"
     return _AuthSettings(auth, region, service, profile, error)
 
 
@@ -244,6 +248,22 @@ class _SigningError(Exception):
     """A request could not be signed, so it is not sent."""
 
 
+def _host_header(url: str) -> str:
+    """The ``Host`` value SigV4 canonicalizes: lowercase, no userinfo, no default port.
+
+    Sent explicitly so the wire carries the value that was signed. Left to urllib,
+    ``Host`` would be the URL's netloc as written, so ``https://h:443/`` would send
+    ``h:443`` while botocore signed ``h``, and IAM would refuse the signature.
+    """
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""  # lowercased, brackets and userinfo stripped
+    if ":" in host:  # a bare IPv6 address; the header needs its brackets back
+        host = f"[{host}]"
+    if parts.port is not None and parts.port != _DEFAULT_PORTS.get(parts.scheme):
+        host = f"{host}:{parts.port}"
+    return host
+
+
 class _SigV4Signer:
     """Signs requests with AWS Signature Version 4 through botocore.
 
@@ -290,9 +310,15 @@ class _SigV4Signer:
             credentials = self._load_credentials()
             if credentials is None:
                 raise _SigningError("no AWS credentials were found")
-            request = request_mod.AWSRequest(
-                method=method, url=url, data=body, headers=dict(headers)
-            )
+            signed = dict(headers)
+            # botocore signs a Host header that is present and otherwise derives one
+            # it never sends; setting it here makes the wire value the signed one.
+            signed["Host"] = _host_header(url)
+            if body is not None:
+                # A Lambda function URL refuses a signed POST without this header;
+                # botocore hashes the payload but does not send the hash.
+                signed["X-Amz-Content-Sha256"] = hashlib.sha256(body).hexdigest()
+            request = request_mod.AWSRequest(method=method, url=url, data=body, headers=signed)
             signer = auth_mod.SigV4Auth(
                 credentials.get_frozen_credentials(), self._service, self._region
             )

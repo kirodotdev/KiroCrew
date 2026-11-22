@@ -187,7 +187,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         verify_vendored_libs,
     )
     from kiro_crew.embeddings_ollama import (  # noqa: F401
+        _AUTH_REJECTED,
+        _AWS_NAME,
         _BATCH_SIZE,
+        _DEFAULT_PORTS,
         _MAX_RESPONSE_BYTES,
         _PROBE_TIMEOUT_SECS,
         _READY_TTL_FAIL_SECS,
@@ -195,10 +198,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _REQUEST_TIMEOUT_SECS,
         OllamaHttpEmbedder,
         OllamaSettings,
+        _auth_settings,
+        _AuthSettings,
         _build_opener,
         _finite_vector,
+        _host_header,
         _is_loopback_host,
+        _raw_str,
         _RefuseRedirects,
+        _SigningError,
+        _SigV4Signer,
         _url_error,
         build_ollama_backend,
         ollama_backend_selected,
@@ -348,6 +357,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.config.paths import (  # noqa: F401
         config_dir,
+    )
+    from kiro_crew.constants import (  # noqa: F401
+        AWS_PROFILE_NAME_RE,
     )
     from kiro_crew.cpu_affinity import (  # noqa: F401
         affinity_cpu_count,
