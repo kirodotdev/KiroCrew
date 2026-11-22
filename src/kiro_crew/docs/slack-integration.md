@@ -172,6 +172,14 @@ there, each top-level DM message still starts its own thread session.
 Off by default, because turning it on routes your next DM to a different session
 than the previous one. Existing threads keep working either way.
 
+A button on the bot's Home tab whose `action_id` starts with `options_choice_`
+followed by a name rather than a bare number and does not contain `_done_`, and
+whose `value` starts with `action::`, starts a new thread in your DM with the
+bot, with the button's label as its first message. Such a turn does not join the
+DM's one session when `slack.dm_single_session` is on, and `!stop` or Slack's Stop
+button in its thread still stops it. A Home tab button is never marked as clicked,
+so each click starts another thread.
+
 ## Auto-connect new dashboard sessions
 
 Every dashboard session can be mirrored into a Slack thread from its session

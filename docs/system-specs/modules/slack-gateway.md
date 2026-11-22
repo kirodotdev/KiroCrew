@@ -565,7 +565,7 @@ Agent submission, which `init()` registers.
 | `slack/events_slash.py` | `/kirocrew` and its sub-commands: `SLASH_REGISTRY`, the handlers, `_handle_slash` |
 | `slack/events_home_tab.py` | The App Home tab (`_publish_home_tab`) |
 | `slack/events_voice.py` | Voice memo download, transcription and the no-words note |
-| `slack/events_inbound.py` | The inbound-event checks the listener and the router share: `SeenCache`, the trusted-bot turn ledger, thread-follow admission, the single-session DM check, `message_deleted` handling |
+| `slack/events_inbound.py` | The inbound-event checks the listener and the router share: `SeenCache`, the trusted-bot turn ledger, thread-follow admission, the single-session DM check and the key a Stop there addresses, `message_deleted` handling |
 | `slack/interactions_context.py` | What every handler shares: `_orch`, `VIEW_REGISTRY`, `ack_button` and the cron/subagent acks, the tracked-channel scope probe |
 | `slack/interactions_modals.py` | View submissions, the Forward to Agent shortcut, the config-panel and voice-config modals |
 | `slack/interactions_settings.py` | Channels modal, user and channel pickers, default-agent selector, allowlist and track-channel approvals |
@@ -1256,7 +1256,11 @@ false in flat mode, so `!temporary` / `!incognito` register no thread while stil
 confirming in place. A thread already claimed by its own per-thread session — the
 shape this feature replaces, e.g. from before the flag was on — is ignored so it
 cannot pull the turn back out of the merged conversation; any OTHER owner (a
-dashboard send-to-Slack) still wins.
+dashboard send-to-Slack) still wins. A Stop (`!stop` or the native Stop) typed or
+pressed in a thread whose own `slack:<thread_ts>` session holds a turn — a button
+click's turn runs there, outside the merged conversation — addresses that thread as
+it does with the flag off (`_dm_stop_flat_key`); a rename there still resolves to
+the DM's one session.
 Group channels and group DMs (`mpim`) are excluded — a thread there is
 a deliberate scope boundary, and an `mpim` is shared with other people. The key
 keeps the two-segment `slack:<scope>` shape on purpose, so callers that treat a
@@ -1688,16 +1692,16 @@ Beyond the reply-finalization path in `handler_runtime/delivery.py`, two other S
 
 ### Inline action values (`action::`)
 
-`action::` is an inline-action **value** protocol inside legacy OPTIONS controls, not a general Block Kit routing protocol. `slack.interactions.dispatch` calls `_handle_options` only for action IDs carrying `OPTIONS_ACTION_PREFIX`, which `slack.format` defines for OPTIONS choices; every other action ID reaches the tool-approval fallback when the interaction supplies a channel and message. `test_unknown_action_id_falls_through_to_tool_approval` locks that fallback.
+`action::` is an inline-action **value** protocol inside legacy OPTIONS controls, not a general Block Kit routing protocol. Its source surfaces are a message card and the App Home tab. `slack.interactions.dispatch` calls `_handle_options` only for action IDs carrying `OPTIONS_ACTION_PREFIX`, which `slack.format` defines for OPTIONS choices; every other action ID reaches the tool-approval fallback when the interaction supplies a channel and message. `test_unknown_action_id_falls_through_to_tool_approval` locks that fallback. A Home-tab click (`view.type == "home"`) on an element of the action-button shape described below is matched before the dispatcher's OPTIONS gate, by `_is_home_tab_action_button`, and routed by `_handle_home_tab_action` into the clicker's DM with the bot; this is a contract for owner-built Home views ([decision](../../decisions/2026-11-14-a-slack-home-tab-action-button-starts-a-new-thread-in-the-owners-dm.md)). Every other Home-tab click keeps its path: a numbered OPTIONS button, **Choose several…**, the `_done_` marker and an `action::` action ID stay no-ops there, because the payload carries no channel and no message.
 
-Two gates run before any handler: `is_allowed_user(user_id)` on the dispatcher, and `channel_inbound_permitted("slack")` for OPTIONS interactions. Both are load-bearing because the action value becomes agent-visible context and a routed turn.
+Two gates run before any handler: `is_allowed_user(user_id) or is_shared_user(user_id)` on the dispatcher, and `channel_inbound_permitted("slack")` for OPTIONS interactions. Both are load-bearing because the action value becomes agent-visible context and a routed turn. A Home-tab action button is the owner's only: the dispatcher admits a `slack.shared_access` person for card answers, so `_handle_home_tab_action` asks `is_allowed_user(user_id)` itself and refuses anyone else with an `owner-only action` denial row; then, in this order, `channel_inbound_permitted("slack")`, `open_dm(user_id)` and `channel_refusal(<the DM id>, operation="slack.interactive", caller=user_id)`; the dispatcher's OPTIONS gate is not evaluated for it, because `channel_refusal("")` would refuse the empty channel under a channel-id allow list such as `["D*"]` and write a misleading denial.
 
 An `OPTIONS_ACTION_PREFIX` element whose action ID is NOT a numbered card button (`options_choice_<digits>`) and whose `value` starts with `action::` enters the action branch of `_handle_options`. A numbered button is a choice on an OPTIONS card and always answers through `_answer_options`, whatever its value says, so a choice the model wrote as `action::…` cannot skip the staleness check, the once-only claim or the asker pin. The remainder of `value` is an opaque payload — the handler neither parses nor requires JSON — and the visible label comes from `action["text"]["text"]`, falling back to the selected overflow option's text. `_route_action_to_session` then performs the shared delivery:
 
-1. Redact credentials, inside URLs too, from the label, then attempt to replace matching elements in the source message with a context label.
-2. Post the redacted label as a visible reply in the source thread. A failed post aborts routing, so an agent turn never runs without its visible Slack message; `test_post_message_failure_aborts` locks that ordering.
+1. Redact credentials, inside URLs too, from the label, then attempt to replace matching elements in the source message with a context label. A Home-tab click has no source message, so nothing is edited.
+2. Post the redacted label as a visible reply in the source thread. A Home-tab click posts it as a new top-level message (`thread_ts=None`) in the clicker's DM, so each click starts another thread there. A failed post aborts routing, so an agent turn never runs without its visible Slack message; `test_post_message_failure_aborts` locks that ordering.
 3. Redact and bound the payload per `_ACTION_PAYLOAD_CAP`, record the Slack access event, and build an `Action button clicked` context entry.
-4. Call `slack.handler.handle_message` with the source message's `thread_ts`, the new reply timestamp, the visible label, `action_context` and `interpret_commands=False` (the label is model-authored, so it never runs as a command).
+4. Call `slack.handler.handle_message` with the source message's `thread_ts` (`None` for a Home-tab click, so the reply threads under the posted label), the new reply timestamp, the visible label, `action_context` and `interpret_commands=False` (the label is model-authored, so it never runs as a command).
 
 `ContextBuilder.build_message` appends a non-empty `action_context` ahead of the message text, so the payload arrives as context rather than displayed verbatim in the thread (`test_redaction_applied_to_payload`). In a bound code channel the answer is pinned to the channel's own session (`routing.action_answer_slot`) and its label posts top-level; that delivery goes through `maybe_route_linked_thread(turn_context=...)`, which seats the payload (marker-neutralized, framed as content rather than instructions) as the slot's pending context when the session is idle, so the row and the echo show only the label, and drops the entry when that turn's task ends without taking it (a Stop during admission, a command label, a refusal), so no later turn inherits it; when the session is busy it is appended to the queued entry's text. The source-message update is best-effort: `_route_action_to_session` logs and continues when `update_message` fails, so a successful route does not guarantee the original button was visually replaced.
 
@@ -1705,7 +1709,7 @@ An `OPTIONS_ACTION_PREFIX` element whose action ID is NOT a numbered card button
 
 `_handle_options` also carries a direct-handler branch for an `action_id` beginning with `action::`: it parses the suffix as a JSON object, obtains a selection through `_extract_selected_value` (which handles `selected_option`, date, time and datetime fields), adds `selected_value`, derives a label from `placeholder.text` plus the selected display text, and routes through `_route_action_to_session`. Malformed JSON or a non-object payload stops the branch without routing. **That branch is not reachable through the Slack dispatcher** — `dispatch` forwards only `OPTIONS_ACTION_PREFIX` action IDs, so an `action::` action ID falls through to `_handle_tool_approval`; `test_extended_element_happy_path`, `test_malformed_json_in_action_id_no_crash` and `test_non_dict_json_in_action_id_no_crash` exercise `_handle_options` directly. An element with an `OPTIONS_ACTION_PREFIX` action ID whose selected value starts with `action::` enters the value branch instead, where that value is the opaque payload and no base JSON object is merged with `selected_value`. Agents must not treat `action::` in an extended element's `action_id` as an available Slack protocol.
 
-`test/test_action_interactions.py` covers the direct action-handler path, payload redaction, audit logging and the block-transforming helpers; `test/test_slack_interactions_coverage.py::TestDispatchPayloadParsing::test_unknown_action_id_falls_through_to_tool_approval` covers the dispatch boundary that excludes arbitrary action IDs.
+`test/test_action_interactions.py` covers the direct action-handler path, payload redaction, audit logging, the block-transforming helpers and the Home-tab route (`TestHomeTabActionButton`); `test/test_slack_interactions_coverage.py::TestDispatchPayloadParsing::test_unknown_action_id_falls_through_to_tool_approval` covers the dispatch boundary that excludes arbitrary action IDs.
 
 ## Messaging Transport (`messaging.use_transport`)
 
