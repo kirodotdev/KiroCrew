@@ -155,6 +155,7 @@ from typing import Any
 
 from kiro_crew import acp_tool_gate, platform_compat
 from kiro_crew.acp import launch as launch_mod
+from kiro_crew.acp.client_spawn_env import _CODEX_ACP_PKG_ENTRY, CODEX_ACP_BIN
 from kiro_crew.acp.codex_sqlite import SQLITE_HOME_ENV, seed_private_state
 from kiro_crew.acp.codex_subagent_wire import CODEX_CLIENT_CAPABILITIES
 from kiro_crew.acp.harness._common import MembershipHarness
@@ -413,14 +414,19 @@ def _bundled_codex_version(argv: list[str]) -> tuple[int, int, int] | None:
     element of *argv*, through its realpath): each ancestor directory's
     ``node_modules/@openai/codex``, nearest first, skipping a directory that is
     itself a ``node_modules`` the way Node does. That finds a copy nested inside
-    the adapter's package and a hoisted one beside it alike. Only a manifest
-    named :data:`CODEX_NPM_PKG` counts, and the climb and the file size are both
-    bounded. Blocking (small file reads); callers run it off the loop.
+    the adapter's package and a hoisted one beside it alike. An npm Windows shim
+    is a text file, not a link to that script, so the walk starts from the script
+    it launches (:func:`~kiro_crew.acp.launch._npm_windows_shim_target`). Only a
+    manifest named :data:`CODEX_NPM_PKG` counts, and the climb and the file size
+    are both bounded. Blocking (small file reads); callers run it off the loop.
     """
     if not argv:
         return None
     try:
-        start = Path(os.path.realpath(argv[-1])).parent
+        shim_target = launch_mod._npm_windows_shim_target(
+            argv[-1], CODEX_ACP_BIN, _CODEX_ACP_PKG_ENTRY
+        )
+        start = Path(os.path.realpath(shim_target or argv[-1])).parent
     except (OSError, ValueError):
         return None
     for directory in [start, *start.parents][:_BUNDLED_CODEX_MAX_LEVELS]:
