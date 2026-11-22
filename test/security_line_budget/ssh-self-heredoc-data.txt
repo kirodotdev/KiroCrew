@@ -1,0 +1,9 @@
++18
+The ssh-to-self floor reads here-document bodies through the self floor's
+_heredoc_data_view, the one heredoc reader, so a Python edit script's
+n = a * localhost is not read as a glob verb naming ssh and its target. One import
+name, the cased-text view, one condition of four checks and its reason comment in
+_judge_ssh_to_self: the view is read on the words as written (bash matches a
+closing line case-sensitively) and skipped when the text holds a \r or a line
+holding << ends in a backslash, two shapes the view reads differently from bash.
+The reader itself is unchanged.
