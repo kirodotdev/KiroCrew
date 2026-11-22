@@ -939,7 +939,10 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   model sent to the pane in front carries those rows (`relayCrews`: endpoint ID, name, type, the relay's
   state words, last seen, open and current; never the Crew's URL, a token or
   the account), so the
-  switcher an SSH Crew draws lists the Remote Crews too. `mc-native-notify`
+  switcher an SSH Crew draws lists the Remote Crews too. `relayCrewsFailed` says
+  the window's latest read failed (the rows are the last ones loaded, none on a
+  first read), and that switcher then shows the same notice the top bar's group
+  does. `mc-native-notify`
   carries user-visible text, so it is accepted only from a resolved tunnel origin
   and only when every field has exactly the expected type
   (`parseNativeNotifyEnvelope`), with title, body and tag bounded.
@@ -1458,7 +1461,12 @@ aws-cli v1 is Python; the ssh children keep them, since a `ProxyCommand` can run
 any program of the user's and stripping there would change more than `aws`. When
 the proxy still cannot find its program, the tunnel and mint errors say so and
 name the `PATH` the child was given, instead of the "connection closed" that ssh
-prints afterwards reading as a network drop. When that program is a refused
+prints afterwards reading as a network drop. "Cannot find" means ssh exited 255
+and its stderr holds a phrase in `token_mint.PROXY_TOOL_MISSING_SIGNALS`: the SSM
+plugin's "not installed" wording, a POSIX shell's "not found", or Windows
+OpenSSH's `posix_spawnp: No such file or directory` (it starts a `ProxyCommand`
+without a shell). Its `CreateProcessW failed error:2` line is not used, because
+`error:2` also begins unrelated codes such as `error:225`. When that program is a refused
 `session-manager-plugin`, they name its file, the refusal and the fix instead
 (`cloud.ssm.session_manager_plugin_unavailable_message`). For any other
 missing program, a refused plugin or `aws` is named when it is what hid that
@@ -2224,7 +2232,14 @@ auth/transport matchers, which would mislabel an `AccessDenied` as an ssh auth
 failure. The detail it quotes is cut to 200 characters (`_BANNER_DETAIL_MAX_CHARS`),
 except an `ssm:StartSession` denial, which keeps 400
 (`_SSM_DENIAL_DETAIL_MAX_CHARS`) so AWS's one sentence still names the action,
-the resource to grant and the policy gap.
+the resource to grant and the policy gap. A denial whose text names StartSession
+(not, say, a refused AssumeRole) also sets
+`TunnelStatus.error_code = "ssm_start_session_denied"`, kept beside the reason
+after the failed tunnel is dropped (`last_error_code`, read only while
+`last_error` still answers that reason). Settings → Remote Crew shows a plain
+sentence for that code in the row's Why and the Connect failure, with the
+error's own text (ARNs and account IDs included, never redacted) folded under
+it.
 
 Stderr is not the only input. The plugin exits `0` with an empty stderr whether
 the session went idle, the transport was lost, or the session never started, so

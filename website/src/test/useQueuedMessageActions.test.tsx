@@ -376,7 +376,7 @@ describe('useQueuedMessageActions — edit', () => {
   it('trims, updates the card optimistically, and PATCHes the trimmed text', async () => {
     const { get, store } = renderActions({})
     await act(async () => { get().onEdit('q1', '  run the tests twice  ') })
-    expect(apiMocks.editQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1', 'run the tests twice')
+    expect(apiMocks.editQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1', 'run the tests twice', expect.any(String))
     const card = (store.getState() as RootState).chat.messages.find(m => m.meta?.queueId === 'q1')
     expect(card?.content).toBe('run the tests twice')
   })
@@ -397,7 +397,7 @@ describe('useQueuedMessageActions — edit', () => {
     expect(apiMocks.holdQueuedMessageEdit).not.toHaveBeenCalled()
     apiMocks.editQueuedMessage.mockRejectedValueOnce(new Error('409'))
     await act(async () => { get().onEdit('q1', 'refused edit') })
-    await waitFor(() => expect(apiMocks.holdQueuedMessageEdit).toHaveBeenCalledWith('chat-1', 'q1', false))
+    await waitFor(() => expect(apiMocks.holdQueuedMessageEdit).toHaveBeenCalledWith('chat-1', 'q1', false, expect.any(String)))
   })
 
   // A close must not reach the server before its own open, or the late open
@@ -407,9 +407,46 @@ describe('useQueuedMessageActions — edit', () => {
     apiMocks.holdQueuedMessageEdit.mockImplementationOnce(() => new Promise(r => { finishOpen = r }))
     const { get } = renderActions({})
     act(() => { get().onEditOpen('q1', true); get().onEditOpen('q1', false) })
-    expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q1', true]])
+    const holder = apiMocks.holdQueuedMessageEdit.mock.calls[0][3]
+    expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q1', true, holder]])
     await act(async () => { finishOpen({ ok: true }) })
-    await waitFor(() => expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q1', true], ['chat-1', 'q1', false]]))
+    await waitFor(() => expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q1', true, holder], ['chat-1', 'q1', false, holder]]))
+  })
+
+  // The server keeps an entry held while ANY editor holds it, so each editor
+  // (a tab, a pane) names itself: a close or save in one releases only its own.
+  it('names one holder per hook instance on every hold, release and save', async () => {
+    const first = renderActions({})
+    await act(async () => { first.get().onEditOpen('q1', true) })
+    await act(async () => { first.get().onEdit('q1', 'stored edit') })
+    apiMocks.editQueuedMessage.mockRejectedValueOnce(new Error('409'))
+    await act(async () => { first.get().onEdit('q2', 'refused edit') })
+    await waitFor(() => expect(apiMocks.holdQueuedMessageEdit).toHaveBeenCalledTimes(2))
+    const holder = apiMocks.holdQueuedMessageEdit.mock.calls[0][3]
+    expect(holder).toEqual(expect.any(String))
+    expect(holder).not.toBe('')
+    expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q1', true, holder], ['chat-1', 'q2', false, holder]])
+    expect(apiMocks.editQueuedMessage.mock.calls).toEqual([['chat-1', 'q1', 'stored edit', holder], ['chat-1', 'q2', 'refused edit', holder]])
+
+    const second = renderActions({})
+    await act(async () => { second.get().onEditOpen('q1', true) })
+    const other = apiMocks.holdQueuedMessageEdit.mock.calls[2][3]
+    expect(other).toEqual(expect.any(String))
+    expect(other).not.toBe(holder)
+  })
+
+  // Moving from card A's editor to card B's: B's hold goes out first
+  // (QueueStack sends it on the pencil's press), and A's release must not
+  // overtake it, or the queue can run B's old words in between.
+  it("sends card A's release only after card B's earlier hold has finished", async () => {
+    let finishHold: (v: unknown) => void = () => {}
+    apiMocks.holdQueuedMessageEdit.mockImplementationOnce(() => new Promise(r => { finishHold = r }))
+    const { get } = renderActions({})
+    act(() => { get().onEditOpen('q2', true); get().onEditOpen('q1', false) })
+    const holder = apiMocks.holdQueuedMessageEdit.mock.calls[0][3]
+    expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q2', true, holder]])
+    await act(async () => { finishHold({ ok: true }) })
+    await waitFor(() => expect(apiMocks.holdQueuedMessageEdit.mock.calls).toEqual([['chat-1', 'q2', true, holder], ['chat-1', 'q1', false, holder]]))
   })
 })
 

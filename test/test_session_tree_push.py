@@ -22,7 +22,7 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_EN
 from kiro_crew.crew_log import bus, emit
 from kiro_crew.crew_log import session_tree_projection as stp
 from kiro_crew.crew_log.session_tree import EDGE_NAMED, EDGE_NONE, EdgeRecord, OpenedRecord
-from kiro_crew.dashboard.state import DashboardState, SlotOrigin
+from kiro_crew.dashboard.state import CrewLogPrevious, DashboardState, SlotOrigin, _ChatSlot
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG
 from kiro_crew.testing.wait import wait_until
 
@@ -224,6 +224,39 @@ def test_a_restored_child_with_no_predecessor_inherits_from_the_spawn():
     # A slot the spawn never named inherits nothing.
     other = SimpleNamespace(key="stranger", _created_by="lead")
     assert chat_runner._crew_log_inherited_parent(other, "") == ""
+
+
+def test_a_confirmed_absence_outlives_the_prefetch_mapping_its_successor():
+    """The prefetch reads "no predecessor" for a restored logless child, then maps its
+    own session; the turn's read of that mapping must not replace the absence, or the
+    take cites the store being written and the spawn's creator is never consulted."""
+    from kiro_crew.dashboard import chat_runner
+
+    emit.on_session_opened("s-lead", agent="kirocrew-lead", slot="lead")
+    emit.on_session_spawned("s-lead", creator_slot="lead", child_slot="worker")
+    assert_drained()
+    stp.reset_for_tests()
+    emit.reset_caches()
+
+    child = _ChatSlot("worker")
+    child._created_by = "lead"
+    asyncio.run(chat_runner._crew_log_seed_tree(child))
+    mapping = {"worker": ""}
+    sessions = SimpleNamespace(mapped_sid=mapping.get)
+
+    async def _latch() -> None:
+        previous = await chat_runner._slot_predecessor_store(sessions, child, "worker")
+        child.latch_crew_log_previous(
+            previous.sid, undecided=previous.undecided, from_mapping=previous.from_mapping
+        )
+
+    asyncio.run(_latch())  # the eager prefetch, before it allocates
+    mapping["worker"] = "s-worker"  # the prefetch maps its own session
+    asyncio.run(_latch())  # the first real turn
+
+    edge = child.take_crew_log_previous(now_writing="s-worker")
+    assert edge == CrewLogPrevious(sid="", undecided=False)
+    assert chat_runner._crew_log_inherited_parent(child, edge.sid) == "lead"
 
 
 def test_an_adopter_is_never_re_cited_as_the_creator():

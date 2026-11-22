@@ -38,6 +38,7 @@ from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.archive_config_vetting import config_document_refusal
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.bounded_read import bounded_read
 from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX
@@ -99,6 +100,7 @@ from kiro_crew.portability_archive import (
     logger,
     manifest_is_memory_only,
 )
+from kiro_crew.portability_export import unbundled_apps
 from kiro_crew.portability_templates import (
     AGENT_TEMPLATE_SECRET_PLACEHOLDER,
     AGENT_TEMPLATES_DIR,
@@ -338,7 +340,12 @@ def _vet_archive_settings(snap: Path, summary: dict) -> dict[str, object]:
                 atomic_write(src, json.dumps({"channel_settings": channels}, indent=2))
                 vetted[name] = (channels, dropped)
             else:
-                vetted[name] = _read_archive_object(src)
+                document = _read_archive_object(src)
+                if name in ("config.json", "config.local.json"):
+                    why = config_document_refusal(document)
+                    if why:
+                        raise _SettingsRefused(f"the archive's {name} is unsafe: {why}")
+                vetted[name] = document
             # Replace installs the STAGED file's mode (`_backup_and_copy` copies it
             # from the source fstat), and the extractor creates every staged file at
             # the umask default -- typically group/world-readable. The config writer
@@ -972,6 +979,19 @@ def apply_import_zip(
         # removed from the extraction here, and reported.
         vetted_settings = _vet_archive_settings(snap, summary)
 
+        # Before either branch as well: the archive's agent config under ``workspace/``
+        # (``.claude/``, ``.mcp.json``, ``.kiro/`` ...) must not govern the next agent
+        # session, so Merge never adds it and Replace stages this install's own copy. The
+        # CLI restore applies the same rule. Imported here, not at module level: the
+        # facade binds only the names `test_portability_facade` lists.
+        from kiro_crew.snapshot import _hold_back_agent_config
+
+        held_config, _notes = _hold_back_agent_config(
+            snap, mc, None, mode, allow_unpinned=not staging_pinned
+        )
+        if held_config:
+            summary["held_agent_config"] = [f"workspace/{name}" for name in held_config]
+
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
             for excluded_name in EXPORT_EXCLUDE:
@@ -1259,6 +1279,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_for_export,
         _keep_store_for_export,
         _manifest_entry_size,
+        _named_in_export,
         _open_contained_file,
         _open_verified,
         _plan_sessions,

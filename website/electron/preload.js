@@ -320,8 +320,9 @@ contextBridge.exposeInMainWorld("remoteCrewPaneAPI", {
 // a main-process crash reaches us as "it closed by itself" with the evidence
 // still unread on the reporter's disk. This bridge is what closes that loop.
 //
-// `get` resolves { newCount } and NOTHING else: no paths, no filenames, no
-// exception codes, not even a timestamp. `reveal` takes no argument — main.js knows
+// `get` resolves the count of new crashes and the newest one's time
+// ({ newCount, lastCrashAt }); no path, file name, module name, exception code
+// or logs directory crosses. `reveal` takes no argument — main.js knows
 // where the log is from the scan it performed, so this cannot be turned into a
 // request to open an arbitrary file. Absent in plain browsers and in the PWA,
 // where there is no local disk to reveal; the banner hides itself.
@@ -441,6 +442,14 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("relayCrewAPI", {
 if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("folderPickAPI", {
   available: () => ipcRenderer.invoke("dashboard:can-pick-folder"),
   pick: () => ipcRenderer.invoke("dashboard:pick-folder"),
+});
+
+// Connect with WakaTime from the desktop: `openInBrowser()` asks the main
+// process to open this dashboard's WakaTime panel in the system browser, where
+// the sign-in can finish. It passes nothing; resolves true when the OS took the
+// hand-off, false when it failed, and rejects when the shell refuses the window.
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("wakatimeConnectAPI", {
+  openInBrowser: () => ipcRenderer.invoke("wakatime:open-in-browser"),
 });
 
 // External terminal bridge for the Files tab's "Open in external terminal" row

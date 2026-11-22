@@ -958,8 +958,8 @@ function createIpcRegistrar({
     });
     ipcMain.on("theme-mode-changed", (event, pref) =>
       windows.chrome.setThemeMode(pref, event.sender));
-    ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
-      windows.chrome.setTitlebarMode(mode));
+    ipcMain.on("titlebar-overlay-theme", (event, mode) =>
+      windows.chrome.setTitlebarMode(mode, event.sender));
 
     // Electron no-ops setBadgeCount on unsupported platforms. Keep the clamp in
     // the trusted process so a malformed renderer value cannot set an absurd
@@ -1327,6 +1327,21 @@ function createIpcRegistrar({
         await assertLocalDashboard(event, "dashboard:can-pick-folder");
         return true;
       } catch {
+        return false;
+      }
+    });
+
+    // Connect with WakaTime finishes in the system browser: its callback needs
+    // the state cookie of the browser that started the sign-in. The renderer
+    // passes nothing; the only URL opened is this dashboard's WakaTime panel.
+    // Answers whether the OS took the hand-off.
+    ipcMain.handle("wakatime:open-in-browser", async (event) => {
+      await assertLocalDashboard(event, "wakatime:open-in-browser");
+      try {
+        await shell.openExternal(`${backendUrl}/settings/overview?view=wakatime`);
+        return true;
+      } catch (e) {
+        log(`wakatime:open-in-browser failed: ${e && e.message}`);
         return false;
       }
     });

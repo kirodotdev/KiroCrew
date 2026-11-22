@@ -105,6 +105,8 @@ export const UI_CONDITIONS = {
   terminal_not_popped_out: 'the terminal is docked in the dashboard, not popped out to its own window',
   terminal_docked_bottom: 'the terminal panel sits below the chat (the default)',
   terminal_docked_right: 'the terminal panel sits to the right of the chat, side by side with it',
+  // Customize > MCP Servers: the approval card above both views
+  mcp_launch_awaiting_approval: "an MCP server's launch waits for approval (it was listed in a config file by hand, or its command changed), so the page shows a card naming it",
 } as const
 
 export type UiConditionId = keyof typeof UI_CONDITIONS

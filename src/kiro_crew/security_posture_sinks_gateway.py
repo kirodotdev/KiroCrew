@@ -1088,6 +1088,14 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential scanner then runs over the text, cut to 300 characters.",
     ),
     (
+        "Managed-environment service error text",
+        "managed_env/client.py",
+        "The managed-environment service's own error message, kept on the client's "
+        "error for the caller to show. A 401 or 403 keeps no message; any other has "
+        "the bearer the call sent replaced first, then passes the credential scanner, "
+        "cut to 200 characters.",
+    ),
+    (
         "Browser page text handed to an app",
         "apps/browser_page_port.py",
         "Every string `ctx.browser.page(slot)` returns to an app's backend: the page "

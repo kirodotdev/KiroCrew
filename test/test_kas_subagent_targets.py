@@ -235,14 +235,16 @@ async def test_the_targets_past_the_cap_are_named(agents_dir, monkeypatch):
     import kiro_crew.acp.kas_subagent_targets as targets_mod
 
     monkeypatch.setattr(targets_mod, "MAX_SUBAGENT_TARGETS", 1)
-    _write(agents_dir, _delegator("slack-agent", "slack-bot"))
+    _write(agents_dir, _delegator("slack-*"))
     for name in ("slack-agent", "slack-bot"):
         _write(agents_dir, {**_SLACK, "name": name})
 
     extras = await _extras()
 
     assert _ids(extras) == ["delegator", "slack-agent"]
-    assert "1 more agents (slack-bot) (only the first 1" in extras.withheld_credentials_notice
+    assert "1 more agents its patterns match (slack-bot) (patterns add at most 1" in (
+        extras.withheld_credentials_notice
+    )
 
 
 @pytest.mark.asyncio
@@ -419,6 +421,74 @@ async def test_registration_stops_at_the_cap_and_counts_the_rest(agents_dir):
 
     assert _ids(extras) == ["delegator", *names[:MAX_SUBAGENT_TARGETS]]
     assert "2 more agents" in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_every_agent_the_list_names_outright_is_registered_past_the_cap(agents_dir):
+    from kiro_crew.acp.kas_subagent_targets import MAX_SUBAGENT_TARGETS
+
+    names = [f"helper-{i:02d}" for i in range(MAX_SUBAGENT_TARGETS + 3)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names]
+    assert "more agents" not in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_name_after_a_pattern_that_matched_it_is_tried_past_the_cap(agents_dir):
+    from kiro_crew.acp.kas_subagent_targets import MAX_SUBAGENT_TARGETS
+
+    names = [f"helper-{i:02d}" for i in range(MAX_SUBAGENT_TARGETS + 2)]
+    _write(agents_dir, _delegator("helper-*", names[-1]))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names[:MAX_SUBAGENT_TARGETS], names[-1]]
+    assert "1 more agents its patterns match" in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_named_targets_stop_where_the_backend_batch_is_full(agents_dir):
+    from kiro_crew.acp.kas_agents import KAS_MAX_CUSTOM_AGENTS
+
+    # Fewer entries than one rule carries, more than the backend's batch holds.
+    names = [f"helper-{i:02d}" for i in range(KAS_MAX_CUSTOM_AGENTS + 5)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names[: KAS_MAX_CUSTOM_AGENTS - 1]]
+    left_out = names[KAS_MAX_CUSTOM_AGENTS - 1 :]
+    assert (
+        f"{len(left_out)} more agents ({', '.join(left_out)}) (a chat registers at most "
+        f"{KAS_MAX_CUSTOM_AGENTS}"
+    ) in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_session_whose_rule_spawns_nothing_registers_no_target(agents_dir):
+    # More distinct entries than one rule carries: the parent's entry denies
+    # every spawn, so a registered target could never be reached.
+    names = [f"helper-{i:02d}" for i in range(65)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert {"capability": "subagent", "effect": "deny"} in (
+        extras.custom_agents[0]["permissions"]["rules"]
+    )
+    assert _ids(extras) == ["delegator"]
+    assert "cannot hand work to" not in extras.withheld_credentials_notice
 
 
 @pytest.fixture

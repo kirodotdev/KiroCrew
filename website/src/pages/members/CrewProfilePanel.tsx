@@ -99,7 +99,8 @@ export interface CrewProfilePanelProps {
   schedulesError?: boolean
   nowTs: number
   onOpenSchedule: () => void
-  onOpenScheduleJob: (id: string) => void
+  /** Open one job on the Schedule page; `logs` opens its run log. */
+  onOpenScheduleJob: (id: string, tab?: 'logs') => void
   /** The schedule CREATE form (the crew editor's own pane), pushed as a page.
    *  The card is a summary with doors, never a second source of truth. */
   newScheduleBody: ReactNode

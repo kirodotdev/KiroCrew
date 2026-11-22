@@ -575,7 +575,7 @@ async def test_an_ask_on_a_page_the_url_gate_refuses_writes_nothing(
     page = FakePage()
     _login(page)
     hub, _rec = await _live(page)
-    monkeypatch.setattr(browser_ops, "committed_url_allowed", lambda _url: False)
+    monkeypatch.setattr(browser_ops, "committed_url_allowed", lambda _url, _own=(): False)
     assert (await browser_ask.run_ask(hub, KEY, dict(CREDS)))["code"] == "frame_unverified"
     signed = {"kind": "credentials", "reason": "Sign in"}
     assert (await browser_ask.run_ask(hub, KEY, signed))["code"] == "frame_unverified"

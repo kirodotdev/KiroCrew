@@ -338,6 +338,30 @@ describe('createTrackpadSwipeReader', () => {
     expect(back.verdicts[0].lead).toBeUndefined()
   })
 
+  it('a reveal that goes further down than sideways before its start is handed back to the browser', () => {
+    const reveals = (d: TrackpadSwipeDir) => d === 'left'
+    const step = (dx: number, dy: number, at: number): WheelSample => ({ dx, dy, mode: 0, ctrl: false, owned: false, at })
+    // A scroll whose first step drifts sideways, then goes on down with a little
+    // leftward drift: 124px sideways in all, past the start distance. The desktop
+    // shell reports the fingers down, so every step is read as the fingers.
+    const reader = createTrackpadSwipeReader(yes, () => true, reveals)
+    const drift = [step(4, 2, 0), ...run(4, 30, 30, 16)].map((s) => reader.feed(s))
+    expect(drift.filter((v) => v.start || v.move !== undefined)).toEqual([])
+    // Only the first step was held; from the second the scroll is the browser's.
+    expect(drift.map((v) => v.consume)).toEqual([true, ...Array<boolean>(30).fill(false)])
+    expect(reader.runId()).toBe(2)
+    expect(reader.waitingReveal()).toBe(false)
+    // A deliberate swipe that starts at a slant is still one, and starts at 80px.
+    const slant = feedAll([step(3, 2, 0), ...run(20, 1, 5, 16)], yes, reveals)
+    expect(slant.starts).toEqual(['left'])
+    expect(slant.verdicts.findIndex((v) => v.start)).toBe(4)
+    // A jitter back and forth with no vertical travel is not a scroll: the run
+    // stays the page's and the swipe after it starts.
+    const jitter = feedAll([step(1, 0, 0), step(-1, 0, 16), ...run(20, 0, 5, 32)], yes, reveals)
+    expect(jitter.starts).toEqual(['left'])
+    expect(jitter.consumed).toBe(7)
+  })
+
   it("a reveal whose fingers stop short of SWIPE_THRESHOLD_PX is never started by what follows them", () => {
     const reveals = () => true
     const at = (dx: number[], t0 = 0) => dx.map((d, i) => ({ dx: d, dy: 0, mode: 0, ctrl: false, owned: false, at: t0 + i * 16 }))

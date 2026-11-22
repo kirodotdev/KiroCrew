@@ -164,12 +164,12 @@ def steer_version_issue(backend: str, agent_version: str) -> str:
 
 
 #: The goose release Crew's goose contract was recorded on: the goose capture README
-#: (``test/fixtures/acp_frames/goose/README.md``) names 1.50.1 for every capture but
-#: ``effort-live.jsonl`` (1.54.0, effort only), ``handshake-live.jsonl`` reports it,
-#: and ``agent_sdk/backends.py`` declares the VERIFIED RANGE 1.50.x (the range
-#: ``GOOSE_VERIFIED_VERSION_PREFIX`` logs against). Steer and effort were also measured
-#: on 1.54.0, but the routing contract was not. Lower bound inclusive, upper
-#: exclusive. goose is not in the real-adapter lane, so nothing measures another line.
+#: (``test/fixtures/acp_frames/goose/README.md``) names 1.50.1 for every capture,
+#: ``handshake-live.jsonl`` reports it, and ``agent_sdk/backends.py`` declares the
+#: VERIFIED RANGE 1.50.x (the range ``GOOSE_VERIFIED_VERSION_PREFIX`` logs against).
+#: Steer was also measured on 1.54.0, but the routing contract was not. Lower bound
+#: inclusive, upper exclusive. ``test_real_adapter_fixture_pins.py`` holds every goose
+#: capture to the lane pin.
 GOOSE_TESTED_VERSION = "1.50.1"
 GOOSE_TESTED_RANGE = ((1, 50, 0), (1, 51, 0))
 

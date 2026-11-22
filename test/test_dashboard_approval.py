@@ -31,6 +31,7 @@ from dashboard_approval_helpers import (
 from named_cases_helpers import named_cases
 from redaction_structured_cases import PEM_BEGIN, PEM_BODY, github_classic
 
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.state import (
@@ -1532,10 +1533,18 @@ class TestHostPreDeclinedRowIsBornResolved:
         if failure == "delivery-returns-none":
             # Nobody had answered, so this decline is the runner's own and the
             # user is told so.
-            assert any(
-                m.get("role") == "assistant" and "auto-declined" in str(m.get("content"))
+            notices = [
+                m
                 for m in slot.messages
-            ), "the undelivered prompt was declined without telling the user"
+                if m.get("role") == "assistant" and "auto-declined" in str(m.get("content"))
+            ]
+            assert notices, "the undelivered prompt was declined without telling the user"
+            # The row names the host's cause, so the dashboard does not credit the
+            # reply's "Steered" chip to the person.
+            # ``chat_utils.HOST_DECLINE_CAUSE_META_KEY``, pinned in test_dashboard_approval_window.
+            assert [(n.get("meta") or {}).get("host_decline_cause") for n in notices] == [
+                DENY_CAUSE_APPROVAL_UNDELIVERABLE
+            ]
         # Nothing was posted, so nothing is cleaned up on the Slack side.
         state.slack_client.delete_message.assert_not_awaited()
 

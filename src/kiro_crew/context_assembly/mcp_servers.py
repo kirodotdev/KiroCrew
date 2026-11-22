@@ -77,6 +77,15 @@ _SETTLED_RULE = (
     "For a server in any other state do not wait: if the request needs it, say "
     "what is true of it and do what you can without it. "
 )
+#: The error itself stays out of the prompt; this says where the person can read it.
+#: The MCP Servers page lists only what ``list_servers`` reads, so a server declared
+#: only in a custom agent's spec has no row there; the chat menu lists that spec's servers.
+_FAILED_RULE = (
+    "For one that failed to start, never guess why: tell the user that if the "
+    "dashboard's MCP Servers page lists it, Test on its row there shows its error, "
+    "and that in a dashboard chat the chat menu's MCP servers list shows this "
+    "session's error. "
+)
 #: The key the reader's answer carries the session's CONNECTED servers under,
 #: beside the not-ready states (``agent_sdk.mcp_problems.session_mcp_states``).
 CONNECTED = "connected"
@@ -202,6 +211,7 @@ def render(
         "Say nothing about these unless this request needs one of them. "
         + (_CONNECTING_RULE if states.get("connecting") else "")
         + (_SETTLED_RULE if settled else "")
+        + (_FAILED_RULE if states.get("failed") else "")
         + (_NOT_TRACKED_RULE if not_tracked > 0 else "")
         + "Never say such a server or its tools do not exist.\n\n"
     )

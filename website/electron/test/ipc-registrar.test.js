@@ -29,6 +29,7 @@ const {
   lastCall,
   wslEvent,
   assertWslRejected,
+  PICK_REJECTIONS,
 } = require("./ipc-registrar-test-helpers");
 
 test("the updater's handlers are the update:* channels the preload invokes", () => {
@@ -168,7 +169,7 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     ["focus-mode-watch-cursor", "chrome.watchFocusCursor", [sender, true]],
     ["window-control", "chrome.windowControl", [sender, "maximize", senderFrame]],
     ["theme-mode-changed", "chrome.setThemeMode", ["dark", sender]],
-    ["titlebar-overlay-theme", "chrome.setTitlebarMode", ["light"]],
+    ["titlebar-overlay-theme", "chrome.setTitlebarMode", ["light", sender]],
   ];
   for (const [channel, owner, args] of chromeCases) {
     h.listeners.get(channel)(event, ...args.filter((value) => value !== sender));
@@ -316,13 +317,16 @@ test("image:copy-at copies at the zoomed point and reports whether an image land
 });
 
 // A completed scan, shaped like collectCrashReports' return value. Only
-// newCrashes (what crashNoticeSummary counts) and crashLogPath (what reveal
-// opens) matter here; `recorded` is carried because the log line count is
+// newCrashes (what crashNoticeSummary counts and dates) and crashLogPath (what
+// reveal opens) matter here; `recorded` is carried because the log line count is
 // logged, never handed to the renderer.
 function crashScanResult(overrides = {}) {
   return {
     crashLogPath: "/logs/crashes.log",
-    newCrashes: [{ key: "a" }, { key: "b" }],
+    newCrashes: [
+      { key: "a", kind: "minidump", name: "a.dmp", at: "2026-10-28T19:19:55.283Z" },
+      { key: "b", kind: "minidump", name: "b.dmp", at: "2026-10-10T19:58:23.706Z" },
+    ],
     recorded: 2,
     ...overrides,
   };
@@ -457,17 +461,18 @@ test("crash-reports channels accept the service manager as the port owner", asyn
   }
 });
 
-test("crash-reports:get narrows the scan to a single count", async () => {
+test("crash-reports:get narrows the scan to the count and the newest crash's time", async () => {
   const h = harness({ crashScan: crashScanResult });
   h.registrar.registerShell();
 
   const summary = await h.handlers.get("crash-reports:get")(wslEvent());
 
-  assert.deepEqual(summary, { newCount: 2 });
-  // The renderer must never receive a path, a filename, an exception code, or
-  // even a timestamp: the reveal gesture happens in the trusted process
-  // precisely so it need not.
-  assert.deepEqual(Object.keys(summary).sort(), ["newCount"]);
+  assert.deepEqual(summary, { newCount: 2, lastCrashAt: "2026-10-28T19:19:55.283Z" });
+  // The renderer must never receive a path, a file name or an exception code:
+  // the reveal gesture happens in the trusted process precisely so it need not.
+  assert.deepEqual(Object.keys(summary).sort(), ["lastCrashAt", "newCount"]);
+  assert.equal(JSON.stringify(summary).includes(".dmp"), false);
+  assert.equal(JSON.stringify(summary).includes("/logs"), false);
   assert.equal(h.crashScans.length, 1, "the summary must come from the injected scan");
 });
 
@@ -475,7 +480,7 @@ test("crash-reports:get reports nothing when no collector was injected", async (
   const h = harness();
   h.registrar.registerShell();
 
-  assert.deepEqual(await h.handlers.get("crash-reports:get")(wslEvent()), { newCount: 0 });
+  assert.deepEqual(await h.handlers.get("crash-reports:get")(wslEvent()), { newCount: 0, lastCrashAt: null });
 });
 
 test("crash-reports:reveal selects the ledger the main process resolved itself", async () => {
@@ -781,13 +786,6 @@ test("dashboard:open-file hardens the launcher PATH across the native launch", a
 // three-gate local-dashboard check; the availability probe answers `false`
 // where the pick itself would be refused, and neither ever reaches the dialog
 // from a rejected sender.
-const PICK_REJECTIONS = [
-  ["wrong origin", {}, "https://remote.example/chat"],
-  ["remote window", { wslOwner: { fake: "remote-window" }, wslGatewayLocal: false }, undefined],
-  ["foreign port owner", { primaryPortOwner: "foreign" }, undefined],
-  ["unknown port owner", { primaryPortOwner: "unknown" }, undefined],
-];
-
 test("dashboard:pick-folder is refused outside the local dashboard and opens no dialog", async () => {
   for (const [label, options, url] of PICK_REJECTIONS) {
     const h = harness({

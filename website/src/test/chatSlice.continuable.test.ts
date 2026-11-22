@@ -166,6 +166,10 @@ describe('selectContinuable', () => {
     expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'slot-1', executor: 'remote' }]))).toBe(false)
   })
 
+  it('is false on a read-only cron run transcript — the server refuses Continue there too', () => {
+    expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'slot-1', executor: 'local', cron_run_read_only: true }]))).toBe(false)
+  })
+
   it('is false on a crew-bound slot whose relayed turn died mid-stream', () => {
     // An archive whose last relayed turn died ends on this trailing `error`
     // row, so without the guard the composer would offer a guaranteed-409
@@ -593,6 +597,11 @@ describe('slotIsRemoteBound', () => {
 
   it('is false when executor is absent — an older gateway still ships it, so an absent one is a missing lookup, not a bound slot', () => {
     expect(slotIsRemoteBound({})).toBe(false)
+  })
+
+  it('is true for a cron run transcript reopened read-only — the server answers 409 `cron_run_read_only`', () => {
+    expect(slotIsRemoteBound({ executor: 'local', cron_run_read_only: true })).toBe(true)
+    expect(slotIsRemoteBound({ executor: 'local', cron_run_read_only: false })).toBe(false)
   })
 
   it('is false for a missing slot (null / undefined)', () => {

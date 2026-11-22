@@ -191,15 +191,19 @@ decision, since `schedule_abort_for` is fire-and-forget and the downstream
 applied-audit only fires on success.
 
 **Eager respawn is a UX optimization, not a correctness requirement.** After a hard
-kill, `_eager_respawn` runs as a tracked background task (a strong reference is
-kept, because the event loop holds only a weak one and the task could otherwise be
-garbage-collected mid-respawn). It calls the ordinary `get_or_create(key)`, so the
-warm pool and the persisted session-resume mapping are honored with no new fast
-path, and then releases the per-session semaphore that `get_or_create` acquires on
-every return path, so the next real user message can run. On failure it logs at
-debug and does nothing more: the next user message calls `get_or_create` again, so
-a transient pool exhaustion recovers on its own and a deeper problem surfaces on
-that message exactly as it would have anyway.
+kill, the successor start (`_respawn_as`) runs as a tracked background task (a
+strong reference is kept, because the event loop holds only a weak one and the task
+could otherwise be garbage-collected mid-respawn). It calls the ordinary
+`get_or_create(key)` with the stopped session's own identity
+(`allocation_identity`, as the reset successor does), so the chat keeps running on
+the agent it is set to, the warm pool and the persisted session-resume mapping are
+honored with no new fast path, and it re-arms the successor's first-turn
+observation, so a failed native resume replays the history. It then releases the
+per-session semaphore that `get_or_create` acquires on every return path, so the
+next real user message can run. On failure it logs at debug and does nothing more:
+the next user message calls `get_or_create` again, so a transient pool exhaustion
+recovers on its own and a deeper problem surfaces on that message exactly as it
+would have anyway.
 
 ### Handler response to a cancelled turn
 

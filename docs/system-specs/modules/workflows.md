@@ -174,10 +174,13 @@ Semantics, from `runner._RunContext.agent`:
 `label`, `phase`, `schema`, `model`, `agent`, `effort`, `cwd`, `session` and
 `nudge` are all passed to the injected `agent_fn` in one `opts` dict, and `backend`
 joins them only when the call names one, so a call without it keeps the fingerprint
-it had. The shipped adapters read `session`, `agent`, `model`, `cwd`, `effort` and
-`backend`; `label` and `phase` are consumed by the runner for the event stream;
-`schema` is consumed by the runner, and the adapters read only whether it is set
-(`step_text(..., has_schema=)`).
+it had. The shipped adapters read `session`, `agent`, `model`, `cwd`, `effort`,
+`backend` and `schema`; `label` and `phase` are consumed by the runner for the
+event stream; `schema` drives the runner's structured-output loop. A `schema=`
+call's `opts` also carry the runner's own `_on_refusal`, added after the
+fingerprint so a replay still matches: the adapters hand it each person-only
+directive refused in a turn that returns (see "Person-only directives are
+refused out loud" below).
 
 `agent` is the agent spec the step's session runs. Unset, it is the run carrier's
 template: each run start reads `workflow_memory.inherited_step_agent(execution)`
@@ -546,7 +549,7 @@ are allowed** so a journal stays forward-compatible.
 | `agent_started` | `agent_id`, `label`, `phase`, `call_index` | `agent_id` is `a<call_index>`; also an optional `phase_index`, the ordinal of the phase the call runs in (0 when the call names its own `phase=` or runs before any phase) |
 | `agent_progress` | `agent_id`, `turns`, `last_tool`, `elapsed_s` | **builder exists, nothing emits it.** The frontend reads `last_tool` from it |
 | `agent_finished` | `agent_id`, `result_summary`, `ok` | plus an optional `error` (bounded, redacted; empty when `ok`). `result_summary` is `str(result)[:120]`, empty when the result is `None`. `error` is deliberately **not** in `REQUIRED_DATA_KEYS` so journals from an older build still deserialize |
-| `log` | `message` | from `ctx.log()`, from authoring progress, and from nudge outcomes |
+| `log` | `message` | from `ctx.log()`, from authoring progress, from nudge outcomes, and from a `schema=` step's refused person-only directive (`agent a<N> "<label>": <refusal>`) |
 | `budget_update` | `spent`, `remaining` | **builder exists, nothing emits it** (see the Budget open question) |
 | `approval_requested` | `prompt`, `approval_id` | **builder exists, nothing emits it**; `ctx.approve` delegates straight to its port |
 | `run_finished` | `result`, `duration_s` | terminal. `result` is the script's return value; `duration_s` is host `time.monotonic()` elapsed |
@@ -1629,11 +1632,20 @@ never spawns `kiro-cli` in tests. Two production adapters:
   redaction (`agent_exec.step_text`). Nothing is applied. A `schema=` step is
   the exception: its text is parsed as JSON, and a refusal line ahead of a
   scalar reply would fail that parse and spend the step's re-asks, so there the
-  refusal stays in its SEL row and an INFO log line and the text is left as the
-  model wrote it. The cold path reads the step's `opts`; a pooled worker's
-  `send_message` carries no options, so the pooled `agent_fn` sets the
-  `_STEP_HAS_SCHEMA` context variable around the call (`WorkerPool.send` awaits
-  the worker in the caller's task). Covered by
+  text is left as the model wrote it and each refusal of a turn that returns
+  goes to the runner's `_on_refusal`, which records it on the run's event
+  stream as a `log` line `agent a<N> "<label>": <refusal>` between that call's
+  `agent_started` and `agent_finished`, where the Workflows run view shows it.
+  The label and the refusal (which names a `session=` step's own key) are each
+  redacted, then cut to `CEILING_MAX_LABEL_CHARS` and `MAX_AGENT_ERROR_CHARS`
+  (`test_a_refusal_log_line_bounds_the_label_and_the_refusal`). These lines
+  are capped per run at the failed-task lines' limit, counted apart from them,
+  the last saying further refusals are not logged
+  (`test_refusal_log_lines_are_capped_per_run`); the SEL row records every
+  refusal. A replayed call runs nothing, so it logs none. The cold path reads
+  the step's `opts`; a pooled worker's `send_message` carries no options, so the
+  pooled `agent_fn` sets the `_STEP_OPTS` context variable to them around the
+  call (`WorkerPool.send` awaits the worker in the caller's task). Covered by
   `test/test_workflow_user_origin_directive_refusal.py`.
 - **`agent_pool.build_pooled_agent_fn`** (warm sessions; the service default,
   `pool_agents=True`). Per-call sessions make every call pay a full cold start

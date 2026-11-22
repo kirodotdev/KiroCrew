@@ -208,7 +208,7 @@ leftover prefix without touching it.
 | `kirocrew spawn run --crew NAME "task"` | Run as a Bot (its memory and template); an unknown name is refused |
 | `kirocrew spawn run --agent NAME "task"` | Run under a named agent template; an unknown name is refused |
 | `kirocrew spawn run --model ID "task"` | Run on a model id; it outranks the member's and the template's pin |
-| `kirocrew spawn list` | List active subagents |
+| `kirocrew spawn list` | List subagents that no session started (CLI and app runs) |
 
 ## Cron Jobs
 
@@ -271,6 +271,7 @@ A session subscribes with the `resource_subscribe` MCP tool once `mcp_gateway.re
 | `kirocrew memory export --store <name>` | Export a named store's rows instead |
 | `kirocrew memory import file.json` | Import memory from JSON |
 | `kirocrew memory import --store <name> file.json` | Import into a named store instead |
+| `kirocrew memory import-text notes.md` | Offer the facts in a text or Markdown file and save the ones you confirm |
 | `kirocrew memory migrate` | Migrate legacy markdown memory to vector store |
 | `kirocrew memory backup [--keep N]` | Back up active memory stores now |
 | `kirocrew memory backups [--store <name>]` | List memory backups, newest first |

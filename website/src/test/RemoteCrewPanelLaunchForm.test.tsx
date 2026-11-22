@@ -398,7 +398,8 @@ describe('RemoteCrewPanel launch form', () => {
   it('marks the checklist out of date while the typed profile differs from the checked one', async () => {
     const u = userEvent.setup()
     await openSetup(u)
-    const list = (await screen.findByText('Session Manager plugin')).closest('ul') as HTMLElement
+    // The answered list: the rows drawn while the check runs carry the same titles.
+    const list = (await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).closest('ul') as HTMLElement
     const greyMarks = () => list.querySelectorAll('li > span.bg-border-strong').length
     expect(greyMarks()).toBe(0)
     expect(screen.queryByText(STALE)).toBeNull()

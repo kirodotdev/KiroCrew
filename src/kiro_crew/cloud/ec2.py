@@ -365,12 +365,11 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
         return
     detail = "; ".join(f"{host} is inside private zone {zone}" for host, zone in hits)
     raise aws.AWSError(
-        f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap "
-        f"must download from ({detail}). Inside this VPC that name resolves to "
-        "NXDOMAIN instead of falling through to public DNS, so the install would "
-        "fail several minutes from now with a misleading error. Launch into a VPC "
-        "without that zone via `--subnet <subnet-id>`, or remove the zone from this "
-        "VPC, then retry.",
+        f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap must download "
+        f"from ({detail}). Launch into a VPC without that zone by giving one of its subnets "
+        "(the Subnet ID field, or `--subnet <subnet-id>`), or remove the zone from this VPC, "
+        "then retry. Inside this VPC that name resolves to NXDOMAIN instead of falling through to "
+        "public DNS, so the install would fail several minutes from now with a misleading error.",
         action="route53:ListHostedZonesByVPC",
     )
 
@@ -455,8 +454,9 @@ def discover_network(
         vpc_list = allv.get("Vpcs", []) if isinstance(allv, dict) else []
         if len(vpc_list) != 1:
             raise aws.AWSError(
-                "no default VPC found — create one (`aws ec2 create-default-vpc`) "
-                "or pass `--subnet <subnet-id>`, then retry.",
+                f"no default VPC in {region}, and {len(vpc_list)} other VPCs, so Kiro Crew can't "
+                "pick one. Give a subnet with internet access (the Subnet ID field, or `--subnet`)"
+                " or create a default VPC (`aws ec2 create-default-vpc`), then retry.",
                 action="ec2:DescribeVpcs",
             )
     vpc_id = vpc_list[0]["VpcId"]
@@ -531,8 +531,8 @@ def discover_network(
     raise aws.AWSError(
         f"no subnet in VPC {vpc_id} has a verified internet egress route (internet "
         f"gateway or NAT).{dead_note} Kiro Crew needs outbound access to install packages and "
-        "reach SSM. Add or repair an internet gateway or NAT default route, or pass a "
-        "subnet that has one via `--subnet`, then retry.",
+        "reach SSM. Add or repair an internet gateway or NAT default route, or give a "
+        "subnet that has one (the Subnet ID field, or `--subnet`), then retry.",
         action="ec2:DescribeRouteTables",
     )
 
@@ -559,7 +559,7 @@ def resolve_explicit_subnet(
     subnet_list = data.get("Subnets", []) if isinstance(data, dict) else []
     if not subnet_list:
         raise aws.AWSError(
-            f"subnet {subnet_id} not found in {region} — check the id and --region.",
+            f"subnet {subnet_id} not found in {region}: check the Subnet ID and Region (--region).",
             action="ec2:DescribeSubnets",
         )
     subnet = subnet_list[0]
@@ -1200,9 +1200,9 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
     tags = {t.get("Key"): t.get("Value") for t in stack.get("Tags", [])}
     if tags.get(MANAGED_TAG_KEY) != "true":
         raise aws.AWSError(
-            f"a CloudFormation stack named {stack_name(tag)} already exists but is "
-            f"NOT tagged {MANAGED_TAG_KEY}=true — refusing to touch it (it wasn't "
-            "created by KiroCrew). Use a different --tag, or remove that stack.",
+            f"a CloudFormation stack named {stack_name(tag)} already exists but is NOT tagged "
+            f"{MANAGED_TAG_KEY}=true — refusing to touch it (Kiro Crew didn't create it). Remove "
+            "it, launch again from the dashboard (it picks a new name), or use a different --tag.",
             action="cloudformation:DescribeStacks",
         )
     # Also require the instance tag to match THIS tag. A managed stack that
@@ -1214,9 +1214,9 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
     inst = tags.get(INSTANCE_TAG_KEY)
     if inst is not None and inst != tag:
         raise aws.AWSError(
-            f"stack {stack_name(tag)} is {MANAGED_TAG_KEY}=true but its "
-            f"{INSTANCE_TAG_KEY} tag is '{inst}', not '{tag}' — refusing to touch "
-            "it (it isn't this launch's stack). Use the correct --tag.",
+            f"stack {stack_name(tag)} is {MANAGED_TAG_KEY}=true but its {INSTANCE_TAG_KEY} tag is "
+            f"'{inst}', not '{tag}' — refusing to touch it (it isn't this launch's stack). Launch "
+            "again from the dashboard (it picks a new name), or pass the correct --tag.",
             action="cloudformation:DescribeStacks",
         )
     return stack

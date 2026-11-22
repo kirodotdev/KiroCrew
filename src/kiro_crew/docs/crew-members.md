@@ -277,12 +277,19 @@ A Bot's **Goals** tab (Profile card) holds what it works toward:
   it is what wakes the Bot on its own rather than a goal check-in. While it is on,
   the Bot wakes in its own chat every 30 minutes, hour (the default),
   2 hours or 4 hours, looks for what it can move forward toward its goals,
-  and does it. It works quietly: what it did shows on its **Dashboard** tab and
+  and does it. Under the interval, **Only between** limits the wakes to a
+  window of whole hours (for example 08:00 to 20:00), in the zone the
+  schedule runs in, so the Bot does not wake all night. The
+  whole day is the default; the window does not cross midnight and has no
+  weekdays, and it is set only on this tab, not by the Bot's card. It works quietly: what it did shows on its **Dashboard** tab and
   its task list, and it writes in the chat only when it needs your decision,
   when something you asked for is done, or when something needs your attention
   now. When it has nothing to move, it ends the wake without a word. Anything
   it does write during a wake shows in the chat. A wake is skipped while the chat is busy or a monitor loop is running in it. Each run uses credits. The
   Bot can suggest turning it on with a card; only you can press it.
+  A wake cannot reset the bot's conversation, because no person sent it; to keep
+  a long chat small, set **Summarize old messages at** under **Settings** on the
+  bot's **Profile** tab.
 - **Reports.** The newest weekly reports and monthly reviews, each linking its
   artifact.
   When the monthly review finds the goal or its key results no longer fit the

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { crewApprovalDecidableHere, crewModeRoot, crewRootOf, showsAsCrewMode } from '../lib/crewMode'
+import { conductorDefaultPicker, crewApprovalDecidableHere, crewModeRoot, crewRootOf, showsAsCrewMode } from '../lib/crewMode'
 import CrewApprovalCards, { MateApprovalCards } from './crew/CrewApprovalCards'
 import MateWorkerQuestions from './crew/MateWorkerQuestions'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
@@ -652,6 +652,10 @@ export default function ChatPane({
   // transcript, so the watch does not drop when the active slot moves away.
   const activePageLoaded = useAppSelector((s) => !s.chat.slotLoading && s.chat.slotSwitchTarget !== slotKey)
   const transcriptLoaded = paneIsActive ? activePageLoaded : warmHasMore !== undefined
+  // A conductor mode root on a conductor that is the default agent keeps its picker
+  // until its first message (a transcript still loading or with older rows counts
+  // as one) and while no turn runs.
+  const panePickerKept = conductorDefaultPicker(paneSlot, defaultAgent) && transcriptLoaded && !paneHasUserMessage && !olderHasMore && !paneSlot?.running
   // A turn this pane sent is watched without a loaded page. Kept after the
   // send is confirmed, which clears the row's `optimistic` mark.
   // Dropped when the pane moves to another slot, as the footer resets per session.
@@ -686,7 +690,7 @@ export default function ChatPane({
   // thinking block expanding) and turn-collapse shrink re-pin too.
 
 
-  const pickerActions = useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD })
+  const pickerActions = useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD, templatesOnly: pickerModels.templatesOnly })
   const { switchError, setSwitchError } = pickerActions
 
   const {
@@ -1415,7 +1419,7 @@ export default function ChatPane({
           derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
           // A Crew Mode root with a message offers no switch, preview on or off: the raw
           // `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`).
-          onAgentClick={!agentLocked && !showsAsCrewMode(paneSlot)
+          onAgentClick={!agentLocked && (panePickerKept || !showsAsCrewMode(paneSlot))
             && !(paneHasUserMessage && !!paneSlot?.crew_mode_root) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}

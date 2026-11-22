@@ -346,8 +346,8 @@ class LoopStore:
             )
             self._refuse_writes_and_preserve_sidecar()
             return []
-        # `_rows_or_empty` answers a dict- or scalar-shaped value with [], which reads as
-        # "nothing is held aside" and lets the next persist unlink the only copy.
+        # A non-list `quarantined` refuses writes instead of reading as []: an empty list
+        # reads as "nothing is held aside" and lets the next persist unlink the only copy.
         if "quarantined" in raw and not isinstance(raw["quarantined"], list):
             logger.warning(
                 "autonudge: quarantine sidecar at %s has a non-list `quarantined` (%s); "
@@ -367,7 +367,7 @@ class LoopStore:
             )
             self._refuse_writes_and_preserve_sidecar()
             return []
-        rows = _rows_or_empty(raw["quarantined"])
+        rows = raw["quarantined"]
         # FILTERING a non-dict member would silently shrink the held-aside set and let the
         # load proceed, so an unreadable member refuses the store exactly as a bad file does.
         if any(not isinstance(row, dict) for row in rows):

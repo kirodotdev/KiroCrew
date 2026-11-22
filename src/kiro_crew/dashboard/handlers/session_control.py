@@ -1239,12 +1239,16 @@ async def api_session_control_handoff(request: web.Request) -> web.Response:
         recipient = body.get("to")
         if not isinstance(recipient, str) or not recipient.strip():
             raise sc.SessionControlError("to is required", code="recipient_required")
+        bind = body.get("bind", False)
+        if not isinstance(bind, bool):
+            raise sc.SessionControlError("bind must be a boolean", code="invalid_bind")
         result = await sc.handoff_target(
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
             to=recipient.strip(),
             caller_fenced=_carried_fence(request),
+            bind=bind,
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)

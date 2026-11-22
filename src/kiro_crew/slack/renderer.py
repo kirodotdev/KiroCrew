@@ -1854,7 +1854,8 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
             self._status_cleared = True
         except Exception:
             logger.warning("Slack set_thread_status failed — skipping status clear", exc_info=True)
-        # Timing footer, mirroring native (unless the stream's seal carried it).
+        # Timing footer, mirroring native (unless the stream's seal carried it); no
+        # blocks when slack.show_timing_footer is off.
         turn_elapsed = (self._now() - self._t0) if self._t0 else 0.0
         footer_blocks, footer_text = build_timing_footer(turn_elapsed, None)
         # Make the turn durable and stamp the control BEFORE it goes out. This is
@@ -1903,7 +1904,8 @@ class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, ThinkingReply, Rend
         # native handler's deferred-OPTIONS verdict -- one policy, both sites.
         footer_ts: str | None = None
         try:
-            if not footer_inline:
+            # An empty footer (timing hidden, no choices) posts nothing.
+            if not footer_inline and footer_blocks:
                 footer_ts = await self.slack.post_blocks(
                     self.channel, footer_blocks, footer_text, self.thread_ts
                 )

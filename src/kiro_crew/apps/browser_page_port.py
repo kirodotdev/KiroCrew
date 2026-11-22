@@ -12,8 +12,9 @@ own runtime session key (``dashboard:<slot>``), the key the Bot in that slot
 browses under. So the on/off switch (``capabilities.browse``, read for that key,
 never for the app's name), the navigate gate on the requested address, an app's
 ``browserSites``, the takeover hold, the gateway-wide lock, the tab binding and the
-per-caller checks apply to an app exactly as they apply to the Bot, from one copy.
-An app op queues on the same lock as the Bot's.
+per-caller checks apply to an app exactly as they apply to the Bot, from one copy;
+only the gateway's own origins, which the route's request carries, are the Bot's
+alone. An app op queues on the same lock as the Bot's.
 
 Which tabs. A slot is the app's only when its key is spelled ``<app>-<id>`` AND the
 live slot under it carries the app's stamp (``slot._app``): an app name can extend

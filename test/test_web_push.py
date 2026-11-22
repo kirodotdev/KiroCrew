@@ -8,6 +8,7 @@ import contextlib
 import json
 import random
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -290,6 +291,55 @@ async def test_send_web_push_marks_gone_on_410(monkeypatch):
     # address would otherwise turn the fan-out POST into an SSRF (the endpoint is
     # only SSRF-validated at subscribe time).
     assert session.post_kwargs.get("allow_redirects") is False
+
+
+def test_vapid_subject_is_an_https_uri_on_a_real_host():
+    """Apple's push service answers 403 BadJwtToken to a `localhost` contact."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    headers = web_push._vapid_headers("https://web.push.apple.com/QGv1", key, "x")
+    token = headers["Authorization"].removeprefix("vapid t=").split(",", 1)[0]
+    claims = json.loads(web_push._b64url_decode(token.split(".")[1]))
+    subject = urlparse(claims["sub"])
+    assert subject.scheme == "https"
+    assert subject.hostname not in (None, "localhost")
+
+
+@pytest.mark.asyncio
+async def test_send_web_push_logs_the_reason_a_push_service_gives(monkeypatch, caplog):
+    class _Content:
+        def __init__(self):
+            self.asked: list[int] = []
+
+        async def read(self, n=-1):
+            self.asked.append(n)
+            return b'{"reason":"BadJwtToken"}'
+
+    class _Resp:
+        status = 403
+        content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        def post(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(
+        web_push.vapid_keys, "get_private_key", lambda: ec.generate_private_key(ec.SECP256R1())
+    )
+    monkeypatch.setattr(web_push.vapid_keys, "public_key_b64url", lambda: "x")
+    with caplog.at_level("WARNING", logger=web_push.__name__):
+        result = await web_push.send_web_push(
+            _Session(), _fake_subscription(), {"notification": {"title": "t"}}
+        )
+    assert result.gone is False
+    assert "returned HTTP 403" in caplog.text
+    assert "BadJwtToken" in caplog.text
+    assert _Resp.content.asked == [web_push._ERROR_BODY_LOG_BYTES]
 
 
 # ── delivery-sink fan-out ───────────────────────────────────────────────────

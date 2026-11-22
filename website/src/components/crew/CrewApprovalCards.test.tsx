@@ -197,6 +197,36 @@ describe('CrewApprovalCards (owner decision B)', () => {
     expect(pre.textContent).toBe(long)
   })
 
+  it('styles an edit diff line by line and still shows every character of it', async () => {
+    const diff = [
+      '--- /home/u/project/src/app.ts',
+      '+++ /home/u/project/src/app.ts',
+      '@@ -1,3 +1,3 @@',
+      ' keep',
+      '-old line',
+      '+new line',
+      '',
+    ].join('\n')
+    api.crewWorkers.mockResolvedValue({ root: 'root', workers: [] })
+    const row = waiting('d')
+    await renderCards([{ ...row, pending_approval_info: { ...row.pending_approval_info, tool: 'Replace in File', tool_kind: 'edit', tool_input: diff } }])
+    const pre = screen.getByRole('region', { name: 'The exact tool input' })
+    expect(pre.textContent).toBe(diff)
+    const kinds = Array.from(pre.querySelectorAll('[data-diff-line]')).map(el => [el.getAttribute('data-diff-line'), el.textContent])
+    expect(kinds).toEqual([
+      ['old-header', '--- /home/u/project/src/app.ts'],
+      ['new-header', '+++ /home/u/project/src/app.ts'],
+      ['hunk', '@@ -1,3 +1,3 @@'],
+      ['ctx', ' keep'],
+      ['del', '-old line'],
+      ['add', '+new line'],
+      ['ctx', ''],
+    ])
+    // Nothing in the approved text becomes a control.
+    expect(within(pre).queryAllByRole('link')).toHaveLength(0)
+    expect(within(pre).queryAllByRole('button')).toHaveLength(0)
+  })
+
   it('says so when the worker list cannot be read, and keeps the cards decidable', async () => {
     api.crewWorkers.mockRejectedValue(new Error('500'))
     await renderCards([waiting('w1')])

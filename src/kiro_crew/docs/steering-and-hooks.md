@@ -206,7 +206,10 @@ audits calls sees a call that asks for approval twice there: once at the notice
 and once at its approval request.
 
 On every other event a non-zero exit is warn-only: the run is recorded against
-the hook with its error, and the turn continues.
+the hook with its error, and the turn continues. The gateway log also gets one
+WARNING, `Hook <name> (<event>) failed: <detail>`, where the detail is the
+hook's error, its stderr tail, or `exited with code N`, so a hook that fails
+without printing anything still shows up there.
 
 **Exit 0 discards both streams except where the table says otherwise.** On
 `PostToolUse` and `Stop` a successful run surfaces nothing — stderr included — and

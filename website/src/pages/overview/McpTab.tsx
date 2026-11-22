@@ -525,8 +525,8 @@ function mcpStatusHint(
   // row past the consecutive-failure threshold is ALSO "outdated", because
   // every probe pass skips it (docs/system-specs/modules/mcp-probe-quarantine.md
   // §3), and refresh alone does nothing for it. That row always carries the
-  // Failing badge in the same cell, whose tip says probing stopped and names
-  // Reset count, so this badge stays silent there rather than repeat it or
+  // Quarantined badge and its Retry server button in the same cell, whose tip
+  // says probing stopped, so this badge stays silent there rather than repeat it or
   // send the reader to a refresh that will not work (#15516).
   //
   // An `outdated` row that carries an `error` is a probe refused before any
@@ -813,18 +813,31 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     mutationFn: () => api.mcpProbe(),
     onSuccess: (data) => {
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], data)
+      // These rows are a fresh check, so a Retry server failure notice that
+      // said "the status shown is from the last check" is no longer true.
+      // Only a FAILED Retry is reset: resetting one still running would detach
+      // it from the row, and its failure would then never be shown.
+      if (resetFailures.isError) resetFailures.reset()
     },
     onError: () => {
       refetch()
     },
   })
 
-  // Release is a REFETCH, not an optimistic edit: the badge has to disappear
-  // because the server actually came back, and the same request rebuilt the
-  // agent config. Painting the row clean locally would claim a remount the
-  // backend may have failed to perform (it answers 500 in that case).
+  // Retry server: clear the quarantine, then probe that one server, so one click
+  // does what used to take Reset count plus the page's refresh button. The row
+  // shown after it is the backend's fresh probe, not an optimistic edit: the
+  // badge disappears only because the server answered. A failed clear throws
+  // before the probe, so the badge stays.
   const resetFailures = useMutation({
-    mutationFn: (name: string) => api.mcpResetProbeFailures(name),
+    mutationFn: async (name: string) => {
+      await api.mcpResetProbeFailures(name)
+      return api.mcpProbeOne(name)
+    },
+    onSuccess: (row) => {
+      queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
+        prev?.map(x => (x.name === row.name ? row : x)))
+    },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
     },
@@ -839,6 +852,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       // would keep a stale failing badge or sign-in note the response no longer carries.
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
         prev?.map(x => (x.name === row.name ? row : x)))
+      // A fresh check of the row a Retry server failure was about makes that
+      // notice untrue; one about another row stays.
+      if (resetFailures.isError && resetFailures.variables === row.name) resetFailures.reset()
     },
   })
 
@@ -1219,9 +1235,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         className="whitespace-nowrap text-[11px] text-accent hover:text-accent-hover cursor-pointer transition-colors disabled:cursor-not-allowed disabled:text-muted"
                         onClick={() => resetFailures.mutate(s.name)}
                         disabled={resetFailures.isPending}
-                        title={i18nT('pages.overview.mcpTab.reset_failures_help')}
                       >
-                        {i18nT('pages.overview.mcpTab.reset_failures')}
+                        {resetFailures.isPending && resetFailures.variables === s.name
+                          ? i18nT('pages.overview.mcpTab.testing_server')
+                          : i18nT('pages.overview.mcpTab.reset_failures')}
                       </button>
                     </div>
                   )}
@@ -1264,6 +1281,11 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        row's status is the last check's. In the wide cell, wrapping its
                        hand-off under the text, so it neither breaks mid-word nor clips. */
                     <ErrorNotice variant="inline" className="flex-wrap" message={i18nT('pages.overview.mcpTab.test_server_failed')} testId="mcp-test-server-failed" askAgent />
+                  )}
+                  {resetFailures.isError && resetFailures.variables === s.name && (
+                    /* Retry server failed at the clear or at the probe after it, so the
+                       row shows the last check's status: say so, like Test does. */
+                    <ErrorNotice variant="inline" className="flex-wrap" message={i18nT('pages.overview.mcpTab.retry_server_failed')} testId="mcp-retry-server-failed" askAgent />
                   )}
                   {s.tempRefusals?.map(r => (
                     /* The probe still answered with the managed temp, so the status

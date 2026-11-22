@@ -21,10 +21,15 @@ import { RestartToActivateText } from './InstancesPanel'
 import { CREW_NEEDS_RESTART_BANNER_ID } from './RemoteCrewPanelCrewRow'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
+import { useAppSelector } from '../../store'
 
 export function RemoteCrewRestartBanner() {
   const [restarting, setRestarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The restart reloads the page, which empties every crew form the store holds.
+  // An add link alone is not counted; an add form on screen copies it into `add`.
+  const hasCrewDraft = useAppSelector(s =>
+    !!(s.instances.crewForms?.add || s.instances.crewForms?.edit || s.instances.crewForms?.launch))
   const restartRefusal = useRestartRefusal(detail => {
     setRestarting(false)
     setError(detail || i18nT('pages.settings.aboutPanel.restart_failed'))
@@ -54,9 +59,11 @@ export function RemoteCrewRestartBanner() {
           restarting={restarting}
           onConfirm={() => restart.mutate()}
           testId="remote-crew-restart-gateway"
+          armedNote={hasCrewDraft ? i18nT('pages.settings.remoteCrewPanel.restart_clears_draft') : undefined}
         />
       </div>
-      {/* The hand-off is safe: every draft this page holds lives in the store. */}
+      {/* The agent hand-off keeps the crew drafts: the store outlives an in-app
+          navigation. The Restart above reloads and clears them; its armed step says so. */}
       {error && <ErrorNotice message={error} variant="inline" askAgent className="mt-2" testId="remote-crew-restart-failed" />}
     </div>
   )

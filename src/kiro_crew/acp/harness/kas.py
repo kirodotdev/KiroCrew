@@ -370,10 +370,11 @@ def resolve_projected_spec(
 
     A name the user level declares resolves to the user-level spec in
     *agents_dir*; a checkout spec of the same name adds only its switch-off keys
-    (a mute, switched-off tools) for the servers that spec declares, as the
-    mirrored hosts do (:func:`_with_project_switch_offs`). Only a name the user level does
-    NOT declare is looked up in ``<work_dir>/.kiro/agents/``, through the
-    resolver the mirrored hosts use (``acp.session_mcp.project_agent_spec``).
+    (a mute, switched-off tools) for the servers that spec declares or Crew adds
+    to it, as the mirrored hosts do (:func:`_with_project_switch_offs`). Only a
+    name the user level does NOT declare is looked up in
+    ``<work_dir>/.kiro/agents/``, through the resolver the mirrored hosts use
+    (``acp.session_mcp.project_agent_spec``).
 
     A checkout is untrusted input, so a project-only agent's spec is its
     :data:`PROJECT_SPEC_HONOURED_KEYS` and nothing else, with no servers. Its
@@ -435,11 +436,13 @@ def resolve_projected_spec(
                 "your own agents folder. Your own one runs here. kiro-cli would run "
                 "the folder's, but Crew does not let a cloned folder replace your agent."
             )
+        # A user-level custom agent gets Crew's default servers, through the helper
+        # the kiro-cli skill view applies too, so the two paths cannot drift. Added
+        # first, so the checkout's switch-offs reach them as well.
+        spec = with_default_crew_servers(agent, spec)
         if isinstance(project, dict):
             spec = _with_project_switch_offs(spec, project)
-        # A user-level custom agent gets Crew's default servers, through the helper
-        # the kiro-cli skill view applies too, so the two paths cannot drift.
-        return with_default_crew_servers(agent, spec), agents_dir
+        return spec, agents_dir
     # Crewmate scope. A name the user level does NOT declare may be a crewmate's
     # own config in ``~/.kiro/mates/agents/`` (``rfc-mate-owned-agent-config``
     # §5.3): resolution reads this folder, the session agent picker does not, so
@@ -832,8 +835,17 @@ class KasHarness(MembershipHarness):
         from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn, kiro_cli_not_found_message
         from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
         from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.auth.login.endpoints import (
+            LOCAL_AGENT_UNAVAILABLE,
+            stored_sign_in_registered,
+        )
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
+        # Before any route is chosen: a sign-in on an edition's own start URL
+        # (``crew_client`` preview) is not one a local agent may run on, on any route.
+        # The turn gate refuses the same sign-in (``kiro_readiness.kas_turn_verdict``).
+        if await asyncio.to_thread(stored_sign_in_registered):
+            raise AcpRuntimeError(LOCAL_AGENT_UNAVAILABLE)
         self.bundle_engine_version = ""
         self.untested_version_notice = ""
         self.engine_fallback_notice = ""

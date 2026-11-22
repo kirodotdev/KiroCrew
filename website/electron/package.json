@@ -103,6 +103,9 @@
     "rpm": {
       "packageName": "kirocrew",
       "packageCategory": "Development/Tools",
+      "fpm": [
+        "--rpm-rpmbuild-define=_build_id_links none"
+      ],
       "publish": [
         {
           "provider": "generic",

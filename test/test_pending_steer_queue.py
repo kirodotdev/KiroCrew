@@ -34,6 +34,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.testing.wait import await_until
 
 
 def _refuse_sender(monkeypatch):
@@ -140,11 +141,11 @@ async def test_a_tool_result_in_a_running_stream_injects_a_held_steer(tmp_path):
     held text into that same turn instead of leaving it for the end-of-turn queue.
     """
     from chat_runner_coverage_helpers import (
+        _async_iter,
         _coding_tool_call,
         _coding_tool_result,
         _complete,
         _drive,
-        _set_stream,
     )
 
     state = _make_state(tmp_path)
@@ -172,7 +173,35 @@ async def test_a_tool_result_in_a_running_stream_injects_a_held_steer(tmp_path):
     state.sessions.consume_replay_suppression = MagicMock(return_value=False)
     state.sessions.consume_needs_reinjection = MagicMock(return_value=False)
     state._hook_store = MagicMock(fire=AsyncMock(return_value=[]))
-    _set_stream(client, [_coding_tool_call(), _coding_tool_result(), _complete()])
+    # The boundary flush is a task that hops to threads to warm its gate, while a
+    # real model step after a tool result runs for seconds. A script that completes
+    # right after the result ends the turn first on a slow runner, and the steer is
+    # queued instead. So the model step here lasts until the steer is injected.
+    steered = asyncio.Event()
+
+    def _took_the_steer(*_args, **_kwargs):
+        steered.set()
+        return True
+
+    inner.steer.side_effect = _took_the_steer
+
+    async def _model_step_outlasting_the_flush():
+        yield _coding_tool_call()
+        yield _coding_tool_result()
+        await await_until(steered, what="the tool boundary to inject the held steer")
+        yield _complete()
+
+    calls = {"n": 0}
+
+    def _stream(*_args, **_kwargs):
+        # Only the first turn carries the tool call, as _set_stream scripts it.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _model_step_outlasting_the_flush()
+        return _async_iter([_complete()])
+
+    client.stream = MagicMock(side_effect=_stream)
+    client.stream_command = MagicMock(side_effect=_stream)
 
     await _drive(state, target, "do the work")
 

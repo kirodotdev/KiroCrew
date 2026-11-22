@@ -22,6 +22,7 @@ import json
 import logging
 import string
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
@@ -124,6 +125,22 @@ class CrewEndpoint:
     last_seen_at: Optional[float] = None
 
 
+class CrewList(tuple[CrewEndpoint, ...]):
+    """The Crews :func:`list_crew_endpoints` kept, as a tuple, with what it left out.
+
+    ``off_domain`` counts the entries left out only because their address is not
+    under ``tunnel.relay_viewer_relay_domain``: without that setting they would
+    have been kept, so a non-zero count says the setting does not match the relay.
+    """
+
+    off_domain: int
+
+    def __new__(cls, crews: Iterable[CrewEndpoint] = (), off_domain: int = 0) -> "CrewList":
+        listed = super().__new__(cls, crews)
+        listed.off_domain = off_domain
+        return listed
+
+
 @dataclass(frozen=True)
 class CrewAccessToken:
     access_token: str = field(repr=False)
@@ -149,7 +166,7 @@ async def list_crew_endpoints(
     crew_domain: str = "",
     token_type: str = "",
     profile_arn: str = "",
-) -> tuple[CrewEndpoint, ...]:
+) -> CrewList:
     """Every Crew this person can open, in the service's order, checked entry by entry.
 
     *crew_domain* is a dev relay domain, lower case. When set, an entry is kept
@@ -159,10 +176,12 @@ async def list_crew_endpoints(
     ``EXTERNAL_IDP`` for an external IdP sign-in, else empty. *profile_arn* is
     sent as ``profileArn`` on every page when set, which CPS needs to tell which
     account is asking; with it CPS lists the personal Crews of that profile
-    only. Empty sends no profile.
+    only. Empty sends no profile. The answer counts the entries the domain alone
+    left out (:class:`CrewList`).
     """
     crews: dict[str, CrewEndpoint] = {}
     dropped = 0
+    off_domain = 0
     profile: dict[str, Any] = {"profileArn": profile_arn} if profile_arn else {}
     body: dict[str, Any] = dict(profile)
     for _ in range(MAX_PAGES):
@@ -186,6 +205,8 @@ async def list_crew_endpoints(
             crew = _crew_endpoint(raw, crew_domain)
             if crew is None or crew.endpoint_id in crews:
                 dropped += 1
+                if crew is None and crew_domain and _crew_endpoint(raw, "") is not None:
+                    off_domain += 1
             else:
                 crews[crew.endpoint_id] = crew
         token = payload.get("nextToken")
@@ -206,7 +227,7 @@ async def list_crew_endpoints(
                 else ""
             ),
         )
-    return tuple(crews.values())
+    return CrewList(crews.values(), off_domain)
 
 
 async def create_crew_access_token(

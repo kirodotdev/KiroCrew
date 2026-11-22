@@ -140,6 +140,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
         # without a gateway restart (cross-surface consistency).
         heartbeat_hooks = _build_heartbeat_hooks(self.ctx_builder.hooks)
         _acquired = False
+        timed_out = False
         # Whether this task's prompt landed, read from its completion's stop
         # reason, so the finally can settle the skill-body record its build
         # wrote: a prompt that never landed must not leave the next task of
@@ -309,9 +310,11 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
             except Exception:
                 logger.warning("Heartbeat: session reset after timeout failed", exc_info=True)
             # Produce a graceful incomplete result rather than crashing the loop.
+            # The task stays in HEARTBEAT.md and runs again next beat.
+            timed_out = True
             result_text = (
                 f"_Heartbeat task timed out after {HEARTBEAT_TASK_TIMEOUT_SECS}s "
-                "and was cancelled._"
+                "and was cancelled. It stays in HEARTBEAT.md and runs again next beat._"
             )
         except Exception:
             logger.exception("Heartbeat task failed: %s", task_text[:80])
@@ -342,7 +345,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
         display_text = strip_keep_sentinel(result_safe)
         # Only notify when task is complete — suppress delivery for
         # incomplete tasks (HEARTBEAT_KEEP) to avoid spamming every cycle.
-        if is_keep_response(result_safe):
+        if is_keep_response(result_safe) and not timed_out:
             # Gate-side LOG line, so it takes the context spelling: a host with
             # a companion loaded must not have this text scanned with the
             # weaker OSS pass. Truncation comes AFTER redaction — the
@@ -364,6 +367,11 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 display_text,
                 deliver,
             )
+        if timed_out:
+            # Delivered above; the sentinel keeps the line for the next beat.
+            from kiro_crew.heartbeat import _KEEP_SENTINEL
+
+            return f"{result_safe}\n{_KEEP_SENTINEL}"
         return result_safe
 
     async def _on_cycle_end() -> None:
@@ -387,11 +395,13 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
 
     async def _admitted_heartbeat_task(task_text: str, deliver: str) -> str | None:
         # Shared Crew fair admission: a heartbeat is Crew automation. A refused
-        # task is skipped this beat (None, like a task that produced nothing).
+        # task is skipped this beat and kept for the next one:
+        # ``_heartbeat_task`` never returns None, so None means it did not run.
+        from kiro_crew.heartbeat import _KEEP_SENTINEL
         from kiro_crew.shared_crew.admission import OperationKind
         from kiro_crew.shared_crew.turn_gate import run_admitted
 
-        return await run_admitted(
+        result = await run_admitted(
             _heartbeat_task(task_text, deliver),
             session_key=HEARTBEAT_KEY,
             text=task_text,
@@ -401,6 +411,7 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 "Heartbeat task skipped by fair admission (%s)", getattr(reason, "value", reason)
             ),
         )
+        return _KEEP_SENTINEL if result is None else result
 
     self.heartbeat_svc = HeartbeatService(
         memory=memory,

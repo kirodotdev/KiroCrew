@@ -526,7 +526,7 @@ test("a stale bundled gateway warns and continues without requesting a restart",
   assert.doesNotMatch(state.dialogs[0].detail, /[“”]/);
   assert.deepEqual(state.dialogs[0].buttons, ["Continue with existing gateway", "Quit"]);
   assert.deepEqual(state.requests, [
-    "http://localhost:5476/api/status",
+    "http://localhost:5476/api/live",
     "http://localhost:5476/api/health",
     "http://localhost:5476/api/ready",
   ]);
@@ -1226,4 +1226,48 @@ test("with the local gateway on, an unanswered crew port opens no unrequested fo
   assert.strictEqual(await supervisor.start(), false);
   assert.strictEqual(tunnelCalls.length, 0);
   assert.strictEqual(spawnCalls.length, 0, "and no gateway is bound over the crew's port");
+});
+
+test("the connect poll and the post-handoff liveness probe ask the unauthenticated /api/live", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const http = switchableHttp({ status: 200 });
+  const timers = fakeTimers();
+  const webContents = {
+    isDestroyed: () => false,
+    loadFile() {},
+    loadURL() {},
+    // No splash fade in this harness: the boot-ready send fails, so the fade ends at once.
+    send(channel) { if (channel === "boot-ready") throw new Error("no renderer"); },
+    session: { fetch: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }) },
+  };
+  const mainWindow = {
+    isDestroyed: () => false,
+    isMinimized: () => false,
+    isVisible: () => true,
+    show() {},
+    focus() {},
+    restore() {},
+    webContents,
+  };
+  const { supervisor } = harness({
+    mainWindow,
+    timers,
+    httpMod: http,
+    store: remoteCrewStore(5476, { host: "clouddesk", binPath: "/opt/kc/bin/kirocrew" }),
+    execFileFn: (_file, _args, _options, callback) => callback(null, "http://localhost:5476/?token=abc\n", ""),
+  });
+
+  await supervisor.connect(mainWindow);
+  const connectRequests = [...http.requests];
+  const liveness = timers.intervals.find((timer) => timer.ms === 10_000);
+  assert.ok(liveness, "the handoff started the liveness monitor");
+  liveness.fn();
+  await flush();
+
+  assert.ok(connectRequests.length >= 1, "the connect poll probed the gateway");
+  assert.ok(
+    connectRequests.every((url) => url === "http://localhost:5476/api/live"),
+    connectRequests.join("\n"),
+  );
+  assert.deepStrictEqual(http.requests.slice(connectRequests.length), ["http://localhost:5476/api/live"]);
 });

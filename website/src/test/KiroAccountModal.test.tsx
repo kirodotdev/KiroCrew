@@ -423,6 +423,21 @@ describe('KiroAccountModal', () => {
     expect(await screen.findByText(notice)).toBeInTheDocument()
   })
 
+  // The usage service answered and reports no credit limit: there is no
+  // balance, and another read answers the same, so the modal says why from the
+  // first view, as a passive notice with no Refresh and no failure.
+  it('says the plan reports no credit limit, with no Refresh and no failure', async () => {
+    const usage = parseKiroUsagePayload({ usage: { available: false, reason: 'plan_without_limit' } })
+    expect(usage).toBe('no-limit')
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
+
+    expect(await screen.findByText(i18nT('components.kiroAccountModal.credit_usage_no_limit'))).toBeInTheDocument()
+    expect(screen.queryByText('Could not read your balance.')).not.toBeInTheDocument()
+    expect(screen.queryByText('No balance reading is available for this account yet.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Refresh/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('renders independent identity and usage failure states', async () => {
     renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="none" />)
 
@@ -911,6 +926,18 @@ describe('KiroAccountModal refresh', () => {
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
     expect(screen.getByText(/Balance checks are paused because recent ones failed/)).toBeInTheDocument()
     expect(screen.getByRole('button', REFRESH)).toBeDisabled()
+  })
+
+  it('shows the no-limit notice, not a failure, when a refresh lands on a plan with no limit', async () => {
+    refreshMock.mockResolvedValue({ usage: { available: false, reason: 'plan_without_limit' } })
+    const { queryClient } = renderWithProviders(<QueryFedModal initial="none" />)
+
+    fireEvent.click(screen.getByRole('button', REFRESH))
+
+    expect(await screen.findByText(i18nT('components.kiroAccountModal.credit_usage_no_limit'))).toBeInTheDocument()
+    expect(queryClient.getQueryData(['kiro-usage'])).toBe('no-limit')
+    expect(screen.queryByText('Could not read your balance.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('treats a refresh that produced no plan as a failure and writes that state into the query', async () => {

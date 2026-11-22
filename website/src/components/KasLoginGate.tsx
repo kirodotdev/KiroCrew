@@ -30,7 +30,7 @@ import {
 } from './OnboardingChapterShell'
 import GithubLogo from './icons/GithubLogo'
 import { Btn, IconButton } from './ui'
-import { initialCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
+import { initialCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
@@ -57,6 +57,7 @@ const FELL_BACK_LINE = {
 // The begin error's DOM id, so the SSO field it names can point at it.
 const SSO_ERROR_ID = 'kas-sso-begin-error'
 const SSO_PREFILLED_ID = 'kas-sso-start-url-prefilled'
+const SSO_LOCAL_AGENT_OFF_ID = 'kas-sso-local-agent-off'
 
 /** The `reason` a begin refusal's JSON body names (the start-URL rule it broke), or ''. */
 function refusalReason(err: unknown): string {
@@ -112,6 +113,8 @@ const ChromeContext = createContext<Chrome>('gate')
 // True when only an organisation sign-in can work (an LTS gateway with
 // nobody signed in): the chooser offers Company SSO alone, already open.
 const OrganisationOnlyContext = createContext(false)
+/** The full-screen chooser's way out without signing in, when its caller offers one. */
+const SkipContext = createContext<(() => void) | undefined>(undefined)
 
 /** Per-chrome class choices for the recurring text roles. Gate values are the
  *  strings the full-screen views always rendered; card values scale them down
@@ -433,6 +436,7 @@ function Chooser({
   beginError,
   beginErrorCode,
   companyDefault,
+  localAgentOffUrls = [],
   bare = false,
   beginErrorReason,
   beginErrorReport,
@@ -444,6 +448,8 @@ function Chooser({
   beginErrorCode: string
   /** The gateway's default company portal (`KasLoginStatus.company_sign_in`). */
   companyDefault?: KasLoginStatus['company_sign_in']
+  /** Portals whose sign-in turns the local agent off (`KasLoginStatus.local_agent_off_start_urls`). */
+  localAgentOffUrls?: string[]
   bare?: boolean
   /** The begin refusal's `reason`, or '' (see refusalReason). */
   beginErrorReason: string
@@ -455,6 +461,7 @@ function Chooser({
   // beginning immediately: the portal URL is per-company, so there is nothing to
   // start until the user supplies it.
   const organisationOnly = useContext(OrganisationOnlyContext)
+  const onSkip = useContext(SkipContext)
   const [ssoOpen, setSsoOpen] = useState(organisationOnly)
   // Seeded from the last company sign-in submitted on this browser, else the
   // gateway's default portal, so a person need not look the URL up.
@@ -465,6 +472,8 @@ function Chooser({
   // enough to press Continue. The note goes once they edit the field.
   const [urlFromDefault, setUrlFromDefault] = useState(initial.fromDefault)
   const startUrlReady = startUrl.trim().length > 0
+  // Said BEFORE sign-in: no local agent runs on an edition's own company sign-in.
+  const localAgentOff = localAgentOffUrls.some(url => sameCompanyPortal(url, startUrl))
   // The 400s the user fixes in this form: the error names the field (both, when
   // AWS's answer names neither) and is tied to it, instead of sending them to
   // check their connection.
@@ -568,7 +577,7 @@ function Chooser({
                 aria-label={i18nT('components.kasLogin.sso_start_url_label')}
                 aria-invalid={startUrlBad || undefined}
                 aria-describedby={
-                  [urlFromDefault && SSO_PREFILLED_ID, startUrlBad && SSO_ERROR_ID]
+                  [urlFromDefault && SSO_PREFILLED_ID, localAgentOff && SSO_LOCAL_AGENT_OFF_ID, startUrlBad && SSO_ERROR_ID]
                     .filter(Boolean)
                     .join(' ') || undefined
                 }
@@ -589,6 +598,16 @@ function Chooser({
                 data-testid="kas-login-sso-prefilled"
               >
                 {i18nT('components.kasLogin.sso_start_url_prefilled')}
+              </p>
+            )}
+            {localAgentOff && (
+              <p
+                id={SSO_LOCAL_AGENT_OFF_ID}
+                role="note"
+                className="mt-2 rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-[12px] leading-relaxed text-text-strong"
+                data-testid="kas-login-sso-local-agent-off"
+              >
+                {i18nT('components.kasLogin.sso_local_agent_off')}
               </p>
             )}
             <p className="mt-1 text-[12px] leading-relaxed text-muted">
@@ -672,6 +691,13 @@ function Chooser({
           {i18nT('components.kasLogin.browser_note')}
         </p>
       )}
+      {onSkip && !chrome.card ? (
+        <div className="mt-5">
+          <Btn type="button" disabled={busy} onClick={onSkip} data-testid="kas-login-skip">
+            {i18nT('components.kasLogin.skip_for_now')}
+          </Btn>
+        </div>
+      ) : null}
     </ViewShell>
   )
 }
@@ -1048,23 +1074,28 @@ export interface KasLoginFlowSlots {
  * (Google / GitHub / AWS Builder ID / company SSO) starts a browser
  * authorization, and on a remote gateway — where the OAuth callback cannot
  * reach the user's browser — it switches to the device-code flow and shows the
- * code to approve. Not mounted at the app root: the flow's product entry point
- * is the embedded variant on Settings → Agent Harness (`KasLoginEmbedded`,
- * rendered by `KiroSignInCard` under the harness switch); this full-screen form stays
- * available for a future app-root mount as a sibling of KiroPrerequisiteGate.
+ * code to approve. An existing user signs in from the embedded variant on
+ * Settings → Kiro account (`KasLoginEmbedded`, rendered by `KiroSignInCard`).
+ * This full-screen form is the LTS sign-in-only gateway's screen, and the
+ * first-run hold's (`FirstRunSignInHold`), which passes `onSkip`.
  */
 export default function KasLoginGate({
   children,
   organisationOnly = false,
+  onSkip,
 }: {
   children?: ReactNode
   /** Offer only Company SSO: an enterprise gateway accepts no other sign-in. */
   organisationOnly?: boolean
+  /** Offer a Skip under the chooser, which calls this instead of signing in. */
+  onSkip?: () => void
 }) {
   return (
     <ChromeContext.Provider value="gate">
       <OrganisationOnlyContext.Provider value={organisationOnly}>
-        <KasLoginFlow>{children}</KasLoginFlow>
+        <SkipContext.Provider value={onSkip}>
+          <KasLoginFlow>{children}</KasLoginFlow>
+        </SkipContext.Provider>
       </OrganisationOnlyContext.Provider>
     </ChromeContext.Provider>
   )
@@ -1245,6 +1276,7 @@ function KasLoginFlow({
         beginError={flow.beginError}
         beginErrorCode={flow.beginErrorCode}
         companyDefault={status.company_sign_in}
+        localAgentOffUrls={status.local_agent_off_start_urls}
         bare={bare}
         beginErrorReason={refusalReason(flow.beginDeviceError)}
         beginErrorReport={

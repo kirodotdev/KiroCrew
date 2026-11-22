@@ -193,7 +193,7 @@ def _floor_monkeypatch():
         for name, value in cli_process_environment.items():
             if value is None:
                 os.environ.pop(name, None)
-            else:
+            elif os.environ.get(name) != value:
                 os.environ[name] = value
 
 

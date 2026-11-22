@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
 from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
+from kiro_crew.agent_sdk.kas_telemetry_notice import notice_gets_row
 from kiro_crew.agent_sdk.spec_hooks import (
     _MAX_SPEC_HOOKS,
     CRON_SESSION_KEY_PREFIX,
@@ -221,8 +222,8 @@ async def _prepare_spec_hooks(
     entries, and one where nothing applies the spec's ``toolsSettings``
     (``spec_tools_settings_applied_nowhere``) gets one naming what of it goes
     unapplied, and one that drops a remote MCP server's ``oauth`` block gets one
-    naming those servers, and a claude one that leaves the spec's `tools` or `model`
-    unapplied gets one naming them. None of them runs silently.
+    naming those servers, and a claude one that leaves the spec's `model` pin
+    unapplied gets one naming it. None of them runs silently.
     """
     if is_new and spec_steering_read_nowhere(client):
         await _notice_unread_steering(state, slot, client, agent)
@@ -717,7 +718,7 @@ def _project_hook_files_notice_is_new(
     Every new backend session of a chat (a reconnect, a reload, a restart) would
     show it again, and nothing in the chat changes the files, so the chat shows it
     once. It shows again only for another folder or another set of file names. The
-    mark is saved on the chat's metadata line, as ``_telemetry_notice_is_new``'s is.
+    mark is saved on the chat's metadata line, as ``notice_gets_row``'s is.
     """
     key = json.dumps([project_dir, names])
     mark = hashlib.sha256(key.encode()).hexdigest()[:16]
@@ -864,10 +865,12 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     pi or deepseek adapter is outside its tested range: the chat runs, and each row names the installed version, the
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
-    key names it lost, never a value. One more on a KAS session told to turn telemetry
-    off, since Crew cannot confirm the engine applied it; a chat shows that one once
-    (``_telemetry_notice_is_new``). One more on a claude session that runs in Default
-    instead of the Auto it asked for, naming the ways back. One more on a codex
+    key names it lost, never a value. One more on a KAS session whose folder's telemetry
+    opt-out was not applied, once per chat; the notice that Crew cannot confirm KAS
+    turned telemetry off is a row only when it follows another telemetry row in the
+    chat, since the bell carries it once per install (``notice_gets_row``). One more
+    on a claude session that runs in Default instead of the Auto it asked for, naming
+    the ways back. One more on a codex
     session whose spec declares ``"tools": []``, which Crew enforces only at the
     permission request. One more on a session whose adapter release has a known
     problem a newer release fixes (``KNOWN_LIMITATIONS``)."""
@@ -886,25 +889,9 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         notice = getattr(client, name, "")
         if not (isinstance(notice, str) and notice):
             continue
-        if name == "telemetry_unconfirmed_notice" and not _telemetry_notice_is_new(slot, notice):
+        if name == "telemetry_unconfirmed_notice" and not notice_gets_row(slot, notice):
             continue
         append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
-
-
-def _telemetry_notice_is_new(slot: "_ChatSlot", notice: str) -> bool:
-    """Whether *slot*'s chat has yet to show telemetry *notice*; marks it shown.
-
-    Every KAS session a chat creates or reloads carries the notice, and nothing the
-    user does in the chat ends it, so the chat shows it once. It shows again only
-    when the text differs from the last one shown: the opt-out stopped applying to
-    this chat, or applies again. The mark is saved on the chat's metadata line, so
-    a restart does not repeat the notice.
-    """
-    mark = hashlib.sha256(notice.encode()).hexdigest()[:16]
-    if slot._telemetry_notice_shown == mark:
-        return False
-    slot._telemetry_notice_shown = mark
-    return True
 
 
 #: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).
@@ -1186,9 +1173,9 @@ async def _fire(
                             "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
                         },
                     )
-                elif r.stderr:
+                else:
                     # Non-zero, non-block on a non-gating event: warn only.
-                    logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[-200:])
+                    logger.warning("Hook %s (%s) failed: %s", r.hook_name, event, detail)
     except Exception as exc:
         if event == HOOK_EVENT_PRE_TOOL_USE:
             logger.warning("Hook fire error during blocking event %s: %s", event, exc)

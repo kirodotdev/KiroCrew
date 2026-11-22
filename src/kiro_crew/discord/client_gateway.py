@@ -225,7 +225,7 @@ async def _run_connection(self: DiscordClient) -> None:
     ws: Any = None
     try:
         async with session.ws_connect(
-            url, proxy=self._proxy, heartbeat=_WS_HEARTBEAT_SECS, max_msg_size=0
+            url, proxy=self._proxy_for(url), heartbeat=_WS_HEARTBEAT_SECS, max_msg_size=0
         ) as ws:
             self._ws = ws
             try:

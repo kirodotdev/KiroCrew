@@ -539,6 +539,19 @@ async def own_worker_records(
         return await asyncio.to_thread(_own_worker_records_locked, slot_key)
 
 
+def _binds_back(slot_key: str, item: work_ledger.WorkItem) -> bool:
+    """Whether *item*'s worker is bound to *item* now: its one binding file names it.
+
+    A worker holds one binding, replaced on each bind, so an older item that still
+    names the worker is not what the worker is working on. FILE I/O.
+    """
+    worker = item.worker_session_key or ""
+    return bool(worker) and any(
+        work_ledger.read_binding(candidate) == (slot_key, item.item_id)
+        for candidate in dict.fromkeys((worker, session_ledger.ledger_key(worker)))
+    )
+
+
 def _own_worker_records_locked(
     slot_key: str,
 ) -> tuple[work_ledger.ConductorRecord | None, list[work_ledger.WorkItem]]:
@@ -549,15 +562,7 @@ def _own_worker_records_locked(
         return None, []
     items = work_ledger.list_work_items(slot_key)
     for item in items:
-        worker = item.worker_session_key or ""
-        if not worker:
-            continue
-        bound = False
-        for candidate in dict.fromkeys((worker, session_ledger.ledger_key(worker))):
-            if work_ledger.read_binding(candidate) == (slot_key, item.item_id):
-                bound = True
-                break
-        if not bound:
+        if item.worker_session_key and not _binds_back(slot_key, item):
             item.worker_session_key = None
     for item in items:
         # A person's steer answers a worker's question as a decide does
@@ -612,15 +617,17 @@ def closed_items(slot_key: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _alive_of(state: DashboardState, worker_key: str) -> str:
+def _alive_of(state: DashboardState, worker_key: str, *, current: bool = True) -> str:
     """``running`` / ``idle`` / ``closed`` for a worker session key.
 
     Computed here and the key discarded, because the page may not have the key.
     An item never bound to a session is ``closed``: nothing is running for it.
+    An item that is not the worker's *current* one is at most ``idle``: the
+    worker's turn is for another item.
     """
     if not worker_key:
         return "closed"
-    if _slot_running(state, worker_key):
+    if current and _slot_running(state, worker_key):
         return "running"
     if _slot_open(state, worker_key) or _find_slot(state, worker_key) is not None:
         return "idle"
@@ -818,6 +825,19 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
     )
 
     remote_live = await asyncio.to_thread(work_ledger.remote_liveness_map, key, items)
+    # A closed item keeps its worker's key after the worker is bound to a newer
+    # item, so the worker's busy turn says nothing about it unless the worker is
+    # still bound to it (a closed item asked to work again).
+    not_current = await asyncio.to_thread(
+        lambda: {
+            item.item_id
+            for item in items
+            if item.is_terminal
+            and item.worker_session_key
+            and not item.worker_instance_id
+            and not _binds_back(key, item)
+        }
+    )
     rows: list[dict[str, Any]] = []
     for item in items:
         row = item.to_dict()
@@ -863,7 +883,7 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
                 alive=(
                     _remote_alive(running, closed)
                     if item.worker_instance_id
-                    else _alive_of(state, worker_key)
+                    else _alive_of(state, worker_key, current=item.item_id not in not_current)
                 ),
                 outstanding=_is_outstanding(item, row["events"]),
                 terminal=item.is_terminal,

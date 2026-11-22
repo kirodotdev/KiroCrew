@@ -658,6 +658,7 @@ def _build_instances_config(
         max_recovery_attempts=section.read("max_recovery_attempts", _safe_int),
         recover_backoff_max_secs=section.read("recover_backoff_max_secs", _safe_float),
         probe_failure_threshold=section.read("probe_failure_threshold", _safe_int),
+        managed_env_endpoint=section.read("managed_env_endpoint", _safe_str),
     )
 
 
@@ -834,6 +835,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         reactions_enabled=bool(section.get("reactions_enabled")),
         use_tunnel_url=bool(section.get("use_tunnel_url")),
         show_thinking=bool(section.get("show_thinking")),
+        show_timing_footer=bool(section.get("show_timing_footer")),
         dm_single_session=bool(section.get("dm_single_session")),
         # Default True: a missing or non-boolean value keeps the built-in page.
         home_tab_builtin=section.read("home_tab_builtin", _safe_bool),

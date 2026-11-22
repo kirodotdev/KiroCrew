@@ -596,7 +596,6 @@ class DashboardState:
         # pre-loop, post-detection); status_snapshot() reads this attribute so
         # subprocess never runs on the event loop. See module-level _build_info.
         self._build_info: tuple[str, str] = _build_info
-        self.messages_received = 0
         # Broadcast: each SSE client gets its own queue; _notify_event wakes all
         self._sse_queues: list[asyncio.Queue[dict[str, Any]]] = []
         self._notify_event = asyncio.Event()

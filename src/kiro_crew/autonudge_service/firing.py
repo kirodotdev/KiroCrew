@@ -360,6 +360,7 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
             monitor_loop_metrics.record_tick(loop, monitor_loop_metrics.OUTCOME_QUIET)
             now = time.time()
             fresh = now + loop.idle_secs
+            previous_due = loop.next_due_ts
             if pushed and loop.next_due_ts > now:
                 # A tick a worker's push brought forward is extra: keep the earlier
                 # deadline so a quiet push never delays the scheduled check.
@@ -368,6 +369,10 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
                 loop.next_due_ts = fresh
             self._persist_soon()
             self._arm_from_deadline(loop)
+            # The dashboard learns a deadline only from a state frame; without one
+            # its countdown reads "due" once the old deadline passes.
+            if loop.next_due_ts != previous_due and self._loops.get(loop.id) is loop:
+                self._emit("updated", loop)
         return
     self._firing.add(loop.id)
     try:
@@ -933,10 +938,12 @@ async def _holds_for_person_wait(self: AutoNudgeService, loop: NudgeLoop) -> boo
                 "until the ledger moves",
                 loop.id,
             )
-            self._emit("updated", loop)
         loop.next_due_ts = time.time() + loop.idle_secs
         self._persist_soon()
         self._arm_from_deadline(loop)
+        # Every held tick moves the deadline, so every one announces it: a dashboard
+        # left on an old deadline reads the held loop as due and disables Nudge now.
+        self._emit("updated", loop)
         return True
     if loop.waiting_on_person:
         if not await _commit_person_wait(self, loop, held=False):
@@ -944,6 +951,7 @@ async def _holds_for_person_wait(self: AutoNudgeService, loop: NudgeLoop) -> boo
             # interval rather than acting on a release nothing recorded.
             loop.next_due_ts = time.time() + loop.idle_secs
             self._arm_from_deadline(loop)
+            self._emit("updated", loop)
             return True
         logger.warning(
             "AutoNudge: loop %s released from its person-wait hold -- the ledger moved",

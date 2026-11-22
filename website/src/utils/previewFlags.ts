@@ -259,6 +259,14 @@ export const PREVIEW_WIDGETS = `${PREVIEW_FLAG_PREFIX}widgets`
 export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
 
 /**
+ * Company sign-in: an edition may give an IAM Identity Center start URL its own
+ * sign-in profile. Has SERVER behavior: off, the gateway asks the edition for no
+ * profile (`kiro_crew/auth/login/endpoints.py`), and the sign-in form shows no
+ * company warning. Default OFF, and OFF is `main`.
+ */
+export const PREVIEW_CREW_CLIENT = `${PREVIEW_FLAG_PREFIX}crew-client`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -284,6 +292,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_APP_BROWSER_SDK,
   PREVIEW_VISUAL_REFRESH,
   PREVIEW_WIDGETS,
+  PREVIEW_CREW_CLIENT,
 ]
 
 /**

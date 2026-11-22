@@ -172,7 +172,10 @@ def _sdk_bundles_native_binary(resolved: object) -> bool:
     spawn that runs first. The SDK ships that binary as an optional dependency,
     ``@anthropic-ai/claude-agent-sdk-<platform>-<arch>[-musl]``, and Node resolves
     it by walking up from the adapter's entry script, so this walks the same way
-    and looks for the ``claude`` file inside. Blocking: it stats files.
+    and looks for the ``claude`` file inside. An npm Windows shim is a text file,
+    not a link to that script, so the walk starts from the script it launches
+    (:func:`~kiro_crew.acp.launch._npm_windows_shim_target`). Blocking: it stats
+    files.
     """
     import platform
     import sys
@@ -186,7 +189,10 @@ def _sdk_bundles_native_binary(resolved: object) -> bool:
         entry = Path(str(part))
         if not entry.is_file():
             continue
-        for directory in Path(os.path.realpath(entry)).parents:
+        shim_target = launch_mod._npm_windows_shim_target(
+            str(entry), CLAUDE_ACP_BIN, _CLAUDE_ACP_PKG_ENTRY
+        )
+        for directory in Path(os.path.realpath(shim_target or entry)).parents:
             scope = directory / "node_modules" / "@anthropic-ai"
             if scope.is_dir() and any(
                 (pkg / name).is_file()
@@ -742,6 +748,7 @@ class ClaudeHarness(MembershipHarness):
         mcp_servers: list[dict[str, Any]],
         *,
         zero_tools: bool = False,
+        builtin_tools: tuple[str, ...] | None = None,
         stub_token: str = "",
     ) -> dict[str, Any] | None:
         """The ``_meta.claudeCode`` envelope the per-session client sends, for this session.
@@ -766,6 +773,10 @@ class ClaudeHarness(MembershipHarness):
         # The spec's "tools": [] as the mirror's projection read it: a zero-tool
         # session whose array still mounts a server is refused here.
         state._spec_zero_tools = zero_tools
+        # The built-ins the mirror's projection keeps (a Bot worker's excludes, a named
+        # agent's ``tools`` list), carried as the envelope's ``tools`` option as on the
+        # per-session client.
+        state._note_worker_builtin_tools(builtin_tools)
         # The array this start sends, which the starting-mode pin reads to tell a
         # session carrying Crew's tools from one with none (on the per-session
         # client, ``_begin_session_report`` records it).

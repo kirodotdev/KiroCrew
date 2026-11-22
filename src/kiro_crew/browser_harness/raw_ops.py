@@ -145,9 +145,9 @@ async def _refuse_named_target(ctx: _ops.OpContext, target: Any) -> dict[str, An
 
     return _ops.refusal(
         "url_blocked",
-        f"js: that tab or frame is on {clean_url(url)[:120]}, which is not a "
-        "public http(s) URL or a loopback origin the user listed (or, for an app's own "
-        "session, not one of the pages the app may browse)",
+        f"js: that tab or frame is on {clean_url(url)[:120]}, which is not a public "
+        "http(s) URL other than this dashboard or a loopback origin the user listed (or, "
+        "for an app's own session, not one of the pages the app may browse)",
     )
 
 

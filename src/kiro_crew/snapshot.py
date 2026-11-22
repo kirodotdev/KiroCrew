@@ -125,6 +125,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _JSON_OBJECT_LISTS,
     _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _REPLACE_ONLY_COMPONENTS,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
@@ -963,6 +964,126 @@ def _hold_back_executables(
     return held
 
 
+#: Names, at any depth under ``workspace/``, that steer an agent session started in that
+#: folder (sessions start in ``workspace/<project>/`` folders): each harness's project
+#: settings, hooks, skills, agents and MCP servers. Derived from the project config the
+#: harness code itself reads or fences, so a harness added there is added here:
+#: ``.claude`` (``acp/claude_settings_sources.py:171``, ``native_allow_stores.py:126``),
+#: ``.mcp.json`` (Claude's project MCP file), ``.kiro`` (``acp/kas_settings_mcp.py:209``,
+#: ``acp/session_mcp.py:1501``, ``acp/kas_skill_scope.py:128``), ``opencode.json``,
+#: ``opencode.jsonc``, ``.opencode`` (``native_allow_stores.py:130-132``), ``.pi``
+#: (``native_allow_stores.py:135``), ``mimocode.json``, ``mimocode.jsonc``, ``.mimocode``
+#: (``native_allow_stores.py:141-143``). ``.codex``, ``.goose`` and ``.goosehints`` are those
+#: tools' own project names, named by the security review; nothing in this tree reads them.
+#: Plain notes are NOT here, see ``_NOTE_NAMES``.
+_AGENT_CONFIG_NAMES = (
+    ".claude",
+    ".mcp.json",
+    ".kiro",
+    ".codex",
+    ".goose",
+    ".goosehints",
+    ".opencode",
+    "opencode.json",
+    "opencode.jsonc",
+    ".pi",
+    ".mimocode",
+    "mimocode.json",
+    "mimocode.jsonc",
+)
+#: Notes an agent reads as instructions but that carry no permissions, hooks or servers.
+#: They restore as usual and the summary names each one a restore installed.
+_NOTE_NAMES = ("claude.md", "agents.md")
+
+
+def _agent_config_paths(
+    root: Path,
+    *,
+    names: tuple[str, ...] = _AGENT_CONFIG_NAMES,
+) -> list[Path]:
+    """Every entry under *root* named in *names*, at any depth, without following links.
+
+    A matching directory is returned whole and not entered; a link is returned as the
+    entry it is, so the caller refuses or unlinks it rather than walking through it.
+    """
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        keep: list[str] = []
+        for d in sorted(dirnames):
+            if d.casefold() in names:
+                found.append(here / d)
+            else:
+                keep.append(d)
+        dirnames[:] = keep
+        found.extend(here / f for f in sorted(filenames) if f.casefold() in names)
+    return found
+
+
+def _hold_back_agent_config(
+    snap: Path, mc: Path, components: list[str] | None, mode: str, *, allow_unpinned: bool = False
+) -> tuple[list[str], list[str]]:
+    """Keep this install's agent-config files out of reach of the archive's copies.
+
+    Done on the staged bundle, like :func:`_hold_back_executables`. The archive's copy is
+    removed, so merge (which adds what is missing) installs nothing for these names. Replace
+    swaps the whole ``workspace/`` tree, so it also gets the LIVE copy staged in the
+    archive's place; a live name with no copy ends up absent, never the archive's. Returns
+    ``(held, notes)``: the workspace-relative paths the bundle carried and did not get to
+    install, and the notes (``CLAUDE.md``, ``AGENTS.md``) the restore WILL install, which
+    stay restorable but are named. Merge keeps a note the live tree already has.
+
+    A live link or hard link is not handled here: Replace's own backup of the live
+    ``workspace/`` (``_backup_tree_or_refuse``) refuses on one before this copy matters.
+
+    Both walks enter every directory, ``node_modules``, ``.git`` and ``venv`` included: a
+    skip on only the live side strips the archive's copy there while the live one is lost,
+    and a skip on both sides would let the archive install config there. Walking everything
+    is the one choice that can neither lose nor install a config.
+    shortcut: the live walk reads the whole workspace tree, so a huge ``node_modules`` costs
+    time on Replace; bound it only with a skip applied to BOTH walks.
+    """
+    staged = snap / "workspace"
+    if not _want(components, "workspace") or not staged.is_dir():
+        return [], []
+    held: list[str] = []
+    for entry in _agent_config_paths(staged):
+        if platform_compat.is_link_or_junction(entry):
+            platform_compat.unlink_link_or_junction(entry)
+        elif entry.is_dir():
+            _rmtree_or_raise(entry)
+        else:
+            entry.unlink()
+        held.append(entry.relative_to(staged).as_posix())
+    live_root = mc / "workspace"
+    notes = [
+        rel.as_posix()
+        for rel in (p.relative_to(staged) for p in _agent_config_paths(staged, names=_NOTE_NAMES))
+        if mode == "replace" or not os.path.lexists(live_root / rel)
+    ]
+    if mode == "replace":
+        for live in _agent_config_paths(live_root):
+            rel = live.relative_to(live_root)
+            dst = staged / rel
+            what = f"keeping the live workspace/{rel.as_posix()}"
+            # A parent the archive does not carry is made; one that is a link is refused,
+            # so the live copy is never written through it.
+            for parent in dst.parents:
+                if parent == staged:
+                    break
+                if platform_compat.is_link_or_junction(parent):
+                    raise pinned_fs.PinnedPathRefusal(f"{what}: staged parent is a link")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            skip = pinned_fs.fatal_skip_reporter(what)
+            if live.is_dir() and not platform_compat.is_link_or_junction(live):
+                _copytree_safe(
+                    live, dst, allow_unpinned=allow_unpinned, must_create=True, on_skip=skip
+                )
+            else:
+                pinned_fs.copy_file_pinned(str(live), str(dst), on_skip=skip)
+    return held, notes
+
+
 def _cron_names(path: Path) -> set[str]:
     """The job names in a cron store, or none when it cannot be read as one.
 
@@ -1007,6 +1128,24 @@ def _report_held_back(held: dict[str, list[str]], mc: Path) -> None:
         for name in held["hooks"]:
             print(f"     {_safe_name(_terminal_safe(name))}")
         print("   Check each one, then enable it on the dashboard's Hooks page.")
+    if held.get("agent_config"):
+        # The held list names what the ARCHIVE carried; a current copy exists only where
+        # the live tree has one, so the two cases are not worded alike.
+        live_root = mc / "workspace"
+        kept = [n for n in held["agent_config"] if os.path.lexists(live_root / n)]
+        absent = [n for n in held["agent_config"] if n not in kept]
+        for heading, names in (
+            ("Not restored, kept your current copy of these agent-config files:", kept),
+            ("Not installed (no current copy):", absent),
+        ):
+            if names:
+                print(heading)
+                for name in names:
+                    print(f"     {_safe_name(_terminal_safe('workspace/' + name))}")
+        print("   They set permissions, hooks and MCP servers for the next agent session.")
+        print("   Copy anything you want from the archive by hand after reading it.")
+    for name in held.get("notes", []):
+        print(f"Restored notes: {_safe_name(_terminal_safe('workspace/' + name))}")
 
 
 def _is_interactive() -> bool:
@@ -1437,10 +1576,13 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         # judged the files as the archive carried them, and before either mode reads it.
         try:
             held_back = _hold_back_executables(snap, mc, components, mode)
-        except OSError as exc:
+            held_back["agent_config"], held_back["notes"] = _hold_back_agent_config(
+                snap, mc, components, mode, allow_unpinned=allow_unpinned
+            )
+        except (OSError, pinned_fs.PinnedPathRefusal) as exc:
             # Only the staged copy was touched: live state is as it was.
             _audit("state_restore_rejected", f"reason=staging_rewrite_failed detail={exc}")
-            print(f"❌ Could not prepare the bundle's crons and hooks: {exc}")
+            print(f"❌ Could not prepare the bundle's crons, hooks and agent config: {exc}")
             print("   Nothing was restored; your current state is unchanged.")
             return 1
         # Contained here rather than allowed to propagate: a refusal is a decision

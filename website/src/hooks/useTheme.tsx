@@ -1286,13 +1286,14 @@ function useThemeState(): ThemeContextValue {
     bridge?.setThemeMode?.(mode === 'schedule' ? resolved : mode)
   }, [mode, resolved, modeOverride])
 
-  // Sync the Windows titleBarOverlay colors whenever the resolved dark/light
+  // Sync the Windows titleBarOverlay colors whenever the painted dark/light
   // mode changes. The overlay strip must match the dashboard chrome at all
-  // times; sending on `resolved` (not `mode`) handles Auto switching correctly.
+  // times, a Remote Crew's lent mode included; the shell stores it on this
+  // window only, so no other window and no native theme takes it.
   useEffect(() => {
     const bridge = window.electronAPI
-    bridge?.setTitleBarOverlayTheme?.(resolved)
-  }, [resolved])
+    bridge?.setTitleBarOverlayTheme?.(painted)
+  }, [painted])
 
   // Read the target token, not body.backgroundColor: the body's colour
   // transition can still be between palettes when this frame runs.

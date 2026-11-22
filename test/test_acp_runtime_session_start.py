@@ -263,6 +263,33 @@ async def test_create_session_refusal_explains_a_derived_readonly_spec(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_create_session_refusal_for_a_bots_agent_names_the_dashboard(tmp_path, monkeypatch):
+    """A Bot chats on the mate conductor, kept in ``mates/agents/``, which kiro-cli
+    does not list and setup does not write: the refusal says so and names the
+    dashboard instead of the setup hint that cannot fix a Bot."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.config import paths as paths_mod
+
+    mates = tmp_path / "mates" / "agents"
+    mates.mkdir(parents=True)
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", tmp_path)
+    monkeypatch.setattr(paths_mod, "_mate_agents_dir_override", lambda: mates)
+    rt, _, _ = _make_runtime()
+    rt._finish_session_init = MagicMock(return_value=[])  # type: ignore[method-assign]
+    resp = _new_resp({"currentModeId": "kirocrew", "availableModes": [{"id": "kirocrew"}]})
+    rt._send_and_await = AsyncMock(side_effect=[resp, {}])  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "drain_init", AsyncMock()):
+        with pytest.raises(AcpRuntimeError, match="not available") as exc:
+            await rt.create_session(agent="kirocrew-mate-conductor", mcp_servers=[])
+    message = str(exc.value)
+    assert "kirocrew setup --agent-only` does not write it" in message
+    assert "Run `kirocrew setup --agent-only`" not in message
+    assert "is likely missing" not in message
+    assert "'kirocrew-mate-conductor' is a Bot's agent" in message
+    assert message.endswith("Chat with the Bot from the dashboard's Bots page.")
+
+
+@pytest.mark.asyncio
 async def test_create_session_refusal_names_the_v3_format_on_the_kiro_cli_harness(
     tmp_path, monkeypatch
 ):

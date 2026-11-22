@@ -180,8 +180,17 @@ declare global {
     forwardPorts: (ports: number[]) => Promise<Record<string, 'up' | 'down'> | null>
   }
 
+  /** The count of new crashes and the newest one's time, never a path, file
+   *  name, module name, exception code or logs directory. */
+  interface CrashReportsSummary {
+    newCount: number
+    /** ISO 8601 UTC time of the newest new crash, or null when none parses.
+     *  Optional: absent on an older shell. */
+    lastCrashAt?: string | null
+  }
+
   interface CrashReportsAPI {
-    get: () => Promise<{ newCount: number }>
+    get: () => Promise<CrashReportsSummary>
     reveal: () => Promise<{ ok: boolean; error?: string }>
   }
 
@@ -214,6 +223,11 @@ declare global {
     available: () => Promise<boolean>
     /** The chosen absolute folder, or null when the user cancels; rejects when no dialog could be shown. */
     pick: () => Promise<string | null>
+  }
+
+  interface WakaTimeConnectAPI {
+    /** Opens this dashboard's WakaTime panel in the system browser; false when the OS hand-off failed. */
+    openInBrowser: () => Promise<boolean>
   }
 
   interface ZoomAPI {
@@ -414,6 +428,7 @@ declare global {
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI
+    wakatimeConnectAPI?: WakaTimeConnectAPI
     zoomAPI?: ZoomAPI
     browserAPI?: BrowserAPI
     updateAPI?: UpdateAPI

@@ -1661,6 +1661,18 @@ describe("uninstall data preservation contract", () => {
     }
   });
 
+  it("builds the rpm without /usr/lib/.build-id links", () => {
+    // rpmbuild adds a /usr/lib/.build-id/<xx>/<id> symlink for every ELF it
+    // packages. Electron's binaries are byte-identical in every app built on
+    // the same Electron, so another Electron app's rpm (or our own nightly)
+    // claims the same paths and rpm refuses the second install as a file
+    // conflict -- which is also how every in-app rpm update failed.
+    assert.ok(
+      (electronPkg.build.rpm.fpm ?? []).includes("--rpm-rpmbuild-define=_build_id_links none"),
+      "rpm.fpm must turn off rpmbuild's build-id links"
+    );
+  });
+
   it("keeps OSS4's ALSA stand-in from satisfying the deb's ALSA dependency", () => {
     // On Ubuntu 24.04 OSS4's liboss4-salsa-asound2 provides an unversioned
     // libasound2 and lacks ALSA symbols the binary links, so the app never starts.

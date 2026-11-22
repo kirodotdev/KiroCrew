@@ -49,7 +49,13 @@ from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.hidden_leaf_staging import EnvStagingRefused
 from kiro_crew.host_timezone import LOCAL_TIMEZONE, detect_host_timezone, is_local_timezone
-from kiro_crew.sandbox import unavailable_kind
+from kiro_crew.sandbox import (
+    REMEDY_APPARMOR_USERNS,
+    configured_sandbox_mode,
+    effective_sandbox_mode,
+    unavailable_kind,
+    unavailable_remedy,
+)
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
@@ -463,7 +469,7 @@ def _setup_impl(
     #     Runs BEFORE the agent-only early return: the servers this unblocks are
     #     the ones install_agent() just wrote, so `--agent-only` needs it too.
     progress.begin("sandbox check")
-    _setup_sandbox_consent()
+    no_agent = _setup_sandbox_consent()
 
     if agent_only:
         # --agent-only returns before the channel steps below, so an explicit
@@ -475,7 +481,7 @@ def _setup_impl(
                 f"\n  ⚠️  {flag} is ignored with --agent-only. Run "
                 f"'kirocrew setup {flag}' for its guided setup."
             )
-        print("\n👻 Done! Try: kirocrew gateway")
+        print(_NO_AGENT_CLOSING if no_agent else "\n👻 Done! Try: kirocrew gateway")
         return
 
     # 3. Messaging channels (optional, configured after setup by default).
@@ -535,7 +541,12 @@ def _setup_impl(
     _maybe_setup_cloud()
 
     # No `&&`: Windows PowerShell 5.1 cannot parse it. The words keep its condition.
-    print("\n👻 Done! Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`.")
+    if no_agent:
+        print(_NO_AGENT_CLOSING)
+    else:
+        print(
+            "\n👻 Done! Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`."
+        )
 
 
 def _builtin_cloud_lane_offered() -> bool:
@@ -1309,7 +1320,13 @@ def _remove_retired_conductor_skill() -> None:
         print(f"  ⚠️  Retired conductor skill cleanup failed: {exc}")
 
 
-def _setup_sandbox_consent() -> None:
+_NO_AGENT_CLOSING = (
+    "\n⚠️  Setup finished, but no agent can run on this host yet: its sandbox"
+    "\n   refuses them. Run `kirocrew doctor` for the fix."
+)
+
+
+def _setup_sandbox_consent() -> bool:
     """Surface the unconfined-exec decision when this host has NO sandbox backend.
 
     Which WAY this step asks depends on what an undeclared key resolves to here,
@@ -1365,12 +1382,16 @@ def _setup_sandbox_consent() -> None:
     ``None`` — leaves the config untouched in BOTH directions, so the host keeps
     this platform's default AND stays undeclared, and a later change to that
     default still reaches it.
+
+    Returns True when the step leaves an undeclared no-backend host on its
+    fail-closed default with the chat agent refused too (effective
+    ``agent.sandbox`` not ``"off"``), so setup's closing line can say so.
     """
     try:
         kind = unavailable_kind()
     except Exception as exc:  # pragma: no cover — defensive
         print(f"  ⚠️  Could not probe for a sandbox backend: {exc}")
-        return
+        return False
     if kind == "transient":
         # A momentary fork/resource failure is NOT grounds for a permanent
         # bypass: it is not cached, the next spawn re-probes, and the sandbox
@@ -1379,12 +1400,12 @@ def _setup_sandbox_consent() -> None:
         print("  The sandbox probe failed for what looks like a TRANSIENT reason")
         print("  (momentary resource pressure). It re-probes automatically, so no")
         print("  opt-in is offered. Retry the operation instead.\n")
-        return
+        return False
     if kind != "no_backend":
         # "" (a backend exists — the Linux/macOS norm) or "foreign_sandbox",
         # where this host's sandbox works and the remedy hands isolation back to
         # Kiro Crew rather than disabling it. Neither warrants this opt-in.
-        return
+        return False
     # Which way this step ASKS depends on what an undeclared key now resolves to
     # on this platform. Resolved once, up front, because the non-interactive
     # notice, the question and the value written must all describe the same
@@ -1399,7 +1420,12 @@ def _setup_sandbox_consent() -> None:
     # declared the opposite would tell an operator who locked the host down that it
     # runs unconfined.
     if unsandboxed_exec_declared():
-        return
+        return False
+    # Fail-closed refuses the chat agent too, except under "off": it runs unconfined.
+    blocked = (
+        not unconfined_by_default and effective_sandbox_mode(configured_sandbox_mode()) != "off"
+    )
+    apparmor = not unconfined_by_default and unavailable_remedy() == REMEDY_APPARMOR_USERNS
     # A prompt nobody can see is a hang, not consent: `kirocrew update` runs
     # setup with its output captured and stdin on DEVNULL, so a question asked
     # there is invisible and reads EOF. This guard keeps the decision at a real
@@ -1416,10 +1442,13 @@ def _setup_sandbox_consent() -> None:
             print("     agent.sandbox_allow_unsandboxed_exec=false by hand to refuse")
             print("     them instead.\n")
         else:
-            print("  ⚠️  No sandbox backend on this host, so agent subprocesses are")
-            print("     refused. Run `kirocrew setup` from a terminal to decide, or set")
+            print("  ⚠️  The sandbox cannot run on this host, so agent subprocesses are")
+            print("     refused, the chat agent included." if blocked else "     refused.")
+            if apparmor:
+                print("     To fix it, run `kirocrew service install` (needs sudo).")
+            print("     Run `kirocrew setup` from a terminal to decide, or set")
             print("     agent.sandbox_allow_unsandboxed_exec=true by hand to opt in.\n")
-        return
+        return blocked
 
     cfg_file = config_path()
     cfg: dict = {}
@@ -1428,14 +1457,14 @@ def _setup_sandbox_consent() -> None:
             loaded = json.loads(read_config_text(cfg_file))
         except Exception as exc:
             print(f"  ⚠️  Could not read {cfg_file}: {exc}")
-            return
+            return blocked
         # A top-level non-object (`[]`, `"x"`, `null`) is not something this step
         # may repair: writing our own object over it would destroy whatever the
         # operator meant, and `.get()` on it raises. Report and leave it alone —
         # the effective default stays fail-closed either way.
         if not isinstance(loaded, dict):
             print(f"  ⚠️  {cfg_file} does not contain a JSON object; skipping.\n")
-            return
+            return blocked
         cfg = loaded
 
     print("── Sandbox ──\n")
@@ -1462,11 +1491,23 @@ def _setup_sandbox_consent() -> None:
         answer = _input_or_skip("  Refuse unsandboxed execution on this host? [y/N]: ")
         granting = False
     else:
-        print("  This host offers no OS-level sandbox backend (Linux user namespaces")
-        print("  or macOS sandbox-exec), so Kiro Crew currently REFUSES to run agent")
+        if apparmor:
+            print("  This host restricts unprivileged user namespaces through AppArmor,")
+            print("  which blocks Kiro Crew's sandbox, so Kiro Crew REFUSES to run agent")
+        else:
+            print("  This host offers no OS-level sandbox backend (Linux user namespaces")
+            print("  or macOS sandbox-exec), so Kiro Crew currently REFUSES to run agent")
         print("  subprocesses at all — MCP servers, Dev Fleet and the Papyrus")
         print("  compiler will report a sandbox error until you decide.")
+        if blocked:
+            print("  The chat agent is refused too, so no agent can run here yet.")
         print()
+        if apparmor:
+            print("  The fix is `kirocrew service install` (needs sudo): it installs and starts")
+            print("  the gateway as a system service confined by Kiro Crew's AppArmor profile,")
+            print("  so the sandbox can run in it. The other way out is to allow unsandboxed")
+            print("  execution:")
+            print()
         print("  Allowing them to run unconfined means an agent-driven subprocess can")
         print("  read your home directory, including ~/.aws and ~/.ssh, with no OS")
         print("  confinement. Kiro Crew still scrubs credential environment variables,")
@@ -1485,14 +1526,19 @@ def _setup_sandbox_consent() -> None:
             print("     agent.sandbox_allow_unsandboxed_exec=false")
             print(f"     in {cfg_file}\n")
         else:
-            print("  ⏭  Left fail-closed — MCP tooling stays disabled on this host.")
+            if blocked:
+                print("  ⏭  Left fail-closed — no agent can run on this host yet, chat included.")
+            else:
+                print("  ⏭  Left fail-closed — MCP tooling stays disabled on this host.")
+            if apparmor:
+                print("     To fix it, run `kirocrew service install` (needs sudo).")
             print("     To opt in later, set agent.sandbox_allow_unsandboxed_exec=true")
             print(f"     in {cfg_file}\n")
-        return
+        return blocked
 
     if not isinstance(cfg.get("agent"), dict) and "agent" in cfg:
         print("  ⚠️  'agent' section is not an object; leaving config untouched.\n")
-        return
+        return blocked
 
     # Audit BEFORE the write: this persists an execution permission, so it belongs
     # in the tamper-evident log next to the ``denied`` event ``wrap_argv`` emits
@@ -1532,7 +1578,7 @@ def _setup_sandbox_consent() -> None:
         if granting:
             print("     Refusing to grant unsandboxed execution unaudited —")
             print("     left fail-closed. Fix the audit log, then re-run setup.\n")
-            return
+            return blocked
         print("     Recording the restriction anyway: refusing to fail-close this")
         print("     host because the audit log is broken would leave it unconfined.\n")
 
@@ -1572,7 +1618,7 @@ def _setup_sandbox_consent() -> None:
     except ConfigReadError as exc:
         print(f"  ⚠️  Could not read {cfg_file}: {exc}")
         print(f"     Nothing was recorded — {unchanged}.\n")
-        return
+        return blocked
     except OSError as exc:
         # A locked or read-only config (common on Windows when another process
         # holds it) must not abort the whole wizard after the user has already
@@ -1581,11 +1627,12 @@ def _setup_sandbox_consent() -> None:
         print(f"  ⚠️  Could not write {cfg_file}: {exc}")
         print(f"     Nothing was recorded — {unchanged}. Set")
         print(f"     agent.sandbox_allow_unsandboxed_exec={byhand} by hand instead.\n")
-        return
+        return blocked
     if section_clash:
         print("  ⚠️  'agent' section is not an object; leaving config untouched.\n")
-        return
+        return blocked
     print(f"  ✅ Recorded: agent.sandbox_allow_unsandboxed_exec = {str(granting).lower()}\n")
+    return False
 
 
 def _setup_timezone() -> None:

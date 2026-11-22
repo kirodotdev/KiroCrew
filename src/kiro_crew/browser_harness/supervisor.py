@@ -1019,7 +1019,7 @@ class HarnessSupervisor:
                 if url is not None:
                     return proc, url
                 if proc.returncode is not None:
-                    break
+                    raise BrowserUnavailable(self._chromium_exit_detail(proc.returncode))
                 await asyncio.sleep(_POLL_SECS)
             raise BrowserUnavailable("Kiro's Chromium did not open its debugging port")
         except BaseException:

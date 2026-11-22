@@ -357,15 +357,41 @@ class TestHarvestDenominator:
         return load_skill_script("fix_loop_metrics", METRICS_SCRIPT)
 
     @staticmethod
-    def _fake_gh(prs: list[dict], run_created: dict[str, str] | None = None):
-        """Stand in for `gh`: the default-branch probe, the gate-run probe, the PR list."""
+    def _fake_gh(
+        prs: list[dict],
+        run_created: dict[str, str] | None = None,
+        check_runs: dict[str, list[int]] | None = None,
+        named: dict[int, dict] | None = None,
+    ):
+        """Stand in for `gh`: the default-branch probe, the gate-run probe, the PR list.
+
+        An empty listing is read through the head's check-runs: ``check_runs``
+        maps a head to the run ids its check-runs name (default: none) and
+        ``named`` answers each bare run read (absent = the call raises)."""
         created = run_created or {}
+        heads = check_runs or {}
+        reads = named or {}
 
         def fake_gh_json(*args, **kwargs):
             if args and args[0] == "repo":
                 return {"defaultBranchRef": {"name": "main"}}
             if args and args[0] == "api":
-                sha = str(args[1]).split("head_sha=")[1].split("&")[0]
+                path = str(args[-1])
+                if "/check-runs" in path:
+                    assert "--slurp" in args, args  # the code reads a list of pages
+                    sha = path.split("/commits/")[1].split("/")[0]
+                    rows = [
+                        {"details_url": f"https://github.com/o/r/actions/runs/{rid}/job/1"}
+                        for rid in heads.get(sha, [])
+                    ]
+                    rows.append({"details_url": "https://example.com/report"})
+                    return [{"check_runs": rows}]
+                if "/actions/runs/" in path:
+                    rid = int(path.rsplit("/", 1)[1])
+                    if rid not in reads:
+                        raise RuntimeError(f"gh api {path} failed")
+                    return reads[rid]
+                sha = path.split("head_sha=")[1].split("&")[0]
                 when = created.get(sha)
                 return {"workflow_runs": [{"created_at": when}] if when else []}
             return prs
@@ -438,6 +464,81 @@ class TestHarvestDenominator:
         out = mod.harvest_metrics("o/r", "2026-08-31T00:00:00Z", prs)
         assert out["escapes"] == 1
         assert out["adoption_pct"] == 0.0
+
+    def test_an_empty_listing_counts_a_gate_run_the_check_runs_name(self) -> None:
+        """The head_sha listing can answer no run for a head whose runs exist."""
+        mod = self._module()
+        prs = [self._pr("fix: a", "no section", "sha-a")]
+
+        def run(rid: int, path: str, sha: str = "sha-a") -> dict:
+            return {"id": rid, "path": path, "head_sha": sha, "created_at": "2026-09-01T00:00:00Z"}
+
+        mod.gh_json = self._fake_gh(
+            prs,
+            check_runs={"sha-a": [7, 9, 7]},
+            named={
+                7: run(7, ".github/workflows/ci.yml"),
+                9: run(9, ".github/workflows/code-review.yml"),
+            },
+        )
+        out = mod.harvest_metrics("o/r", "2026-08-31T00:00:00Z", prs)
+        assert out["merged_fix_prs"] == 1
+        assert out["escapes"] == 1
+        assert out["excluded_gate_never_ran"] == 0
+
+    def test_check_runs_naming_no_gate_run_keep_it_never_ran(self) -> None:
+        # Another workflow's run on the head, and a gate run of another head.
+        mod = self._module()
+        calls: list[tuple] = []
+        at = "2026-09-01T00:00:00Z"
+        fake = self._fake_gh(
+            [],
+            check_runs={"sha-a": [7, 8]},
+            named={
+                7: {
+                    "id": 7,
+                    "path": ".github/workflows/ci.yml",
+                    "head_sha": "sha-a",
+                    "created_at": at,
+                },
+                8: {
+                    "id": 8,
+                    "path": ".github/workflows/code-review.yml",
+                    "head_sha": "sha-other",
+                    "created_at": at,
+                },
+            },
+        )
+
+        def recording(*args, **kwargs):
+            calls.append(args)
+            return fake(*args, **kwargs)
+
+        mod.gh_json = recording
+        assert mod.gate_ran_on("o/r", "sha-a") is False
+        assert len([c for c in calls if "/check-runs" in str(c[-1])]) == 1, calls
+
+    def test_a_named_run_that_cannot_be_read_raises(self) -> None:
+        mod = self._module()
+        prs = [self._pr("fix: a", "no section", "sha-a")]
+        mod.gh_json = self._fake_gh(prs, check_runs={"sha-a": [9]})
+        with pytest.raises(RuntimeError, match="actions/runs/9"):
+            mod.gate_ran_on("o/r", "sha-a")
+        with pytest.raises(RuntimeError, match="actions/runs/9"):
+            mod.harvest_metrics("o/r", "2026-08-31T00:00:00Z", prs)
+
+    def test_a_listed_run_reads_no_check_runs(self) -> None:
+        mod = self._module()
+        calls: list[tuple] = []
+        fake = self._fake_gh([], {"sha-a": "2026-09-01T00:00:00Z"}, check_runs={"sha-a": [9]})
+
+        def recording(*args, **kwargs):
+            calls.append(args)
+            return fake(*args, **kwargs)
+
+        mod.gh_json = recording
+        assert mod.gate_ran_on("o/r", "sha-a") is True
+        assert len(calls) == 1 and "/check-runs" not in str(calls[0][-1]), calls
 
 
 class TestPatternHarvest:

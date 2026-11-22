@@ -46,6 +46,7 @@ from security_path_resolve_bounded_helpers import (  # noqa: F401 -- the autouse
     _REAL_REBUILD_BUDGET,
     _REAL_WAIT_CAP,
     _fresh_resolver_state,
+    _lift_resolver_budgets,
     _stall_like_a_child,
     _StalledResolver,
 )
@@ -55,12 +56,13 @@ from kiro_crew import security
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.subprocess_pool import OP_REALPATH_MANY, SubprocessPoolTimeout
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
-from kiro_crew.testing.wait import default_timeout, wait_until
+from kiro_crew.testing.wait import wait_until
 
 
-def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path) -> None:
+def test_symlink_alias_is_still_resolved_on_a_healthy_filesystem(tmp_path, monkeypatch) -> None:
     # The whole point of the resolved forms is defeating a link bypass; bounding
     # the wait must not cost that on a filesystem that answers.
+    _lift_resolver_budgets(monkeypatch)
     target = tmp_path / "real"
     target.mkdir()
     link = tmp_path / "alias"
@@ -147,7 +149,8 @@ def test_a_stall_is_refused_as_unverifiable_not_as_a_match(monkeypatch) -> None:
     assert security.is_sensitive_path(token) is True
 
 
-def test_a_match_and_a_benign_path_keep_their_answers(tmp_path) -> None:
+def test_a_match_and_a_benign_path_keep_their_answers(tmp_path, monkeypatch) -> None:
+    _lift_resolver_budgets(monkeypatch)
     benign = tmp_path / "notes.md"
     benign.write_text("x")
     assert security.sensitive_path_refusal(str(benign)) is None
@@ -176,6 +179,7 @@ def test_a_matched_path_spelled_like_the_stall_wording_is_still_a_match(monkeypa
     # fixed PREFIX the path cannot reach, never by searching the text. A path
     # carrying the whole stall opening keeps the match wording and is not a stall.
     forged = f"/home/someone/{security.UNVERIFIABLE_PATH_PREFIX}/x"
+    _lift_resolver_budgets(monkeypatch)
     monkeypatch.setattr(security.paths, "_path_in_home_dirs", lambda *a, **k: True)
     reason = security.sensitive_path_refusal(forged)
     assert reason == f"Blocked: access to sensitive path: {forged}"
@@ -235,7 +239,9 @@ def test_the_cooldown_is_scoped_to_the_stalled_prefix(monkeypatch, tmp_path) -> 
     target.write_text("k")
     link = tmp_path / "link"
     link.symlink_to(target)
-    assert str(target) in security._candidate_forms(str(link))
+    with monkeypatch.context() as mp:
+        _lift_resolver_budgets(mp)
+        assert str(target) in security._candidate_forms(str(link))
 
     # Past the cooldown the stalled prefix is tried again.
     stalled2 = _StalledResolver()
@@ -546,6 +552,7 @@ def test_unc_paths_are_never_probed_on_windows(monkeypatch) -> None:
         token = "//server//share//project//readme.md"
         forms = security._candidate_forms(token)
         assert forms == {os.path.normpath(token), token}
+        _lift_resolver_budgets(monkeypatch)  # the anchors behind is_sensitive_path are real
         assert not security.is_sensitive_path(token)
         assert stalled.calls == []
     finally:
@@ -654,6 +661,7 @@ def test_an_empty_resolver_pool_knob_is_the_default_without_a_warning(
 def test_a_failed_resolution_still_falls_back_to_lexical_forms(monkeypatch) -> None:
     # FAILURE (OSError inside the worker -> empty set) is not a STALL: it keeps
     # the pre-existing lexical fallback and never refuses.
+    _lift_resolver_budgets(monkeypatch)
     monkeypatch.setattr(security, "_resolved_spellings", lambda e: set())
     token = "/home/someone/ws/../ws/README.md"
     assert security._candidate_forms(token) == {os.path.normpath(token), token}
@@ -680,6 +688,7 @@ def test_symlinked_home_is_fenced_by_its_logical_spelling_when_resolution_fails(
     # the logical home is the link on every platform.
     monkeypatch.setenv("HOME", str(link_home))
     monkeypatch.setenv("USERPROFILE", str(link_home))
+    _lift_resolver_budgets(monkeypatch)
     security._home_targets_cache.clear()
     assert str(security._resolved_root_key()[0]) == str(real_home.resolve())
 
@@ -1192,8 +1201,7 @@ def test_a_stalled_root_anchor_refuses_within_the_budget(monkeypatch, tmp_path) 
     # resolution, so it gets the lost-run bound rather than the fixture's 0.2 s: a
     # slow or loaded host must not turn the setup itself into a stall.
     with monkeypatch.context() as mp:
-        mp.setattr(security, "_PATH_RESOLVE_TIMEOUT_SECS", default_timeout())
-        mp.setattr(security.paths, "_PATH_RESOLVE_REBUILD_TIMEOUT_SECS", default_timeout())
+        _lift_resolver_budgets(mp)
         security._resolved_root_key()
     stalled = _StalledRealpath()
     monkeypatch.setattr(security.paths, "_realpaths_or_none", stalled)
@@ -1325,6 +1333,7 @@ def test_root_anchors_resolve_in_one_pool_hop(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
     monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    _lift_resolver_budgets(monkeypatch)
     requests = _count_child_requests(monkeypatch)
     security._home_targets_cache.clear()
     try:
@@ -1353,7 +1362,9 @@ def test_a_stalled_rebuild_refuses_even_with_a_warm_cache(monkeypatch, tmp_path)
     clock = [1_000.0]
     monkeypatch.setattr(security.time, "monotonic", lambda: clock[0])
     security._home_targets_cache.clear()
-    warm = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)  # canonical
+    with monkeypatch.context() as mp:
+        _lift_resolver_budgets(mp)
+        warm = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)  # canonical
     assert str(crew_home / "token_signing.key").casefold() in warm
     # The EFFECTIVE expiry, read through the adaptive law rather than off the
     # floor constant: under a frozen clock the warm build above measures as
@@ -1381,6 +1392,7 @@ def test_the_rebuild_is_one_pool_job(monkeypatch, tmp_path) -> None:
     # A single bash command can drive ~200 rebuilds; 40 hops each is what turns
     # a 9s gate into a 15s one.  Roots and rebuild are one submission apiece.
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
+    _lift_resolver_budgets(monkeypatch)
     requests = _count_child_requests(monkeypatch)
     security._home_targets_cache.clear()
     try:
@@ -1412,7 +1424,9 @@ def test_a_repointed_override_root_is_never_served_stale_through_a_stall(
     clock = [1_000.0]
     monkeypatch.setattr(security.time, "monotonic", lambda: clock[0])
     security._home_targets_cache.clear()
-    assert security.is_sensitive_path(str(real_a / "security_policy.json")) is True  # warm on A
+    with monkeypatch.context() as mp:
+        _lift_resolver_budgets(mp)
+        assert security.is_sensitive_path(str(real_a / "security_policy.json")) is True  # warm on A
     clock[0] += security._home_targets_ttl(0.0) + 0.01
     link.unlink()
     link.symlink_to(real_b, target_is_directory=True)  # repointed...
@@ -1429,6 +1443,7 @@ def test_a_repointed_override_root_is_never_served_stale_through_a_stall(
         security._home_targets_cache.clear()
     # And once the disk answers again, B is anchored canonically.
     monkeypatch.setattr(security.paths, "_realpaths_or_none", real_resolver)
+    _lift_resolver_budgets(monkeypatch)
     security._home_targets_cache.clear()
     security._path_resolve_degraded.clear()
     assert str(security.Path(real_b / "security_policy.json").resolve()).casefold() in (

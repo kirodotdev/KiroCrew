@@ -745,6 +745,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _HARNESS_CHOICE_KEYS,
         _JSON_TYPE_LABELS,
         _MEMBER_HARNESS_KEY,
+        _POD_ENV,
         _SECURITY_BOUNDED_FIELDS,
         MEMBER_BACKEND_INHERITED_ATTR,
         _agent_section_fields,
@@ -971,12 +972,14 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         resolve_agent_config_path,
         shared_crew_preview_path,
         ssh_auth_sock_consent_path,
+        usable_workspace_dir_from_entry,
         workspace_dir_from_entry,
         workspace_root,
     )
     from kiro_crew.config.loader_pipeline import (  # noqa: F401
         _TOP_LEVEL_DEFAULTS,
         ConfigDocument,
+        _drop_unsafe_agent_rows,
         _parse_app_settings,
         _parse_template_settings,
         _recording_config_reader,

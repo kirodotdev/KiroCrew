@@ -129,6 +129,11 @@ before installation completes stops any partially enabled gateway and safely
 reruns the idempotent install. Once `signal-complete` exists, later host reboots
 skip bootstrap and only the normal gateway service starts.
 
+The script writes `kcfetch.sh` and the gateway unit through unquoted heredocs, so
+their variables expand at write time. Their bodies therefore carry no backtick:
+bash would run the quoted word as a command while writing the file, comment lines
+included (`test_cloud_ec2_heredoc.py`).
+
 The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry. This installs the existing `voice` extra (`boto3` and
 `amazon-transcribe`) before the gateway first imports its Transcribe provider;
@@ -179,7 +184,9 @@ refusals name the dead route (subnet and target) instead of only asking for a
 route the table already has.
 
 With no default VPC, discovery falls back to the Region's only VPC (none, or two
-or more, is the "no default VPC" error). That pick is the launcher's, not the
+or more, is the "no default VPC" error, which gives the Region and the count of
+other VPCs and names the Subnet ID field beside `--subnet`; the no-egress and
+private-zone refusals name the field the same way). That pick is the launcher's, not the
 user's, so `discover_network(on_fallback=...)` hands one sentence naming the
 region, the VPC, the subnet and its egress (NAT or internet gateway), saying the
 launch goes on and that a subnet ID picks another network next time, to
@@ -205,6 +212,16 @@ under the running provision step on the launch card and under the "Setting up"
 row's status, the time since Launch (`created_at`, on the shared 1 Hz
 clock); past 6 minutes a built-in (`aws_ec2`) job reads "Past the 6-minute
 estimate, … so far" instead.
+
+A launch card closes only when the launch needs nothing more
+(`launchCardDismissable` in `website/src/pages/settings/remoteCrewPanelModel.ts`):
+the job is `done`, its crew is registered with no error, and its sign-in is
+confirmed with no code left. Such a card shows a Hide card button and also
+closes by itself `LAUNCH_CARD_SHOWN_MS` (2 minutes) after the job's last write
+(`updated_at`). The closed job ids stay in this browser's `localStorage`
+(`mc-cloud-launch-dismissed`, the last 50), so a reload does not bring the
+card back. A failed, cancelled or running launch, or one still waiting on
+sign-in, keeps its card.
 
 `launch --subnet <subnet-id>` (and the optional Subnet ID field in Settings ›
 Remote Crew › Add Crew › Set up a new Crew, which reaches the same `ec2.deploy(subnet_id=...)`
@@ -782,10 +799,15 @@ all matter more to the operator than a pointer -- and those flags reach the stac
     ones in `cloud/iam.py`; the step adds no permission of its own. Each goes
     through the same `_ensure_boundary` sequence a launch uses, so a re-run is a
     no-op for a boundary whose content matches, and a boundary that has drifted
-    from its document is refused, never re-versioned or overwritten. The three
+    from its document is refused, never re-versioned or overwritten. The refusal
+    says in plain words that a policy of that name exists with other contents and
+    is not used, and that once the operator or their AWS admin deletes it a retry
+    creates it again or names the admin step that does; it never offers this step
+    alone as the fix, because a re-run meets the same refusal. The three
     are attempted independently, so one refusal still reports the other two; the
     step exits non-zero when any is not ready and then tells the operator to keep
-    `iam:CreatePolicy` in the statement, because the one statement covers all
+    `iam:CreatePolicy` in that statement of the applied launcher policy (the one
+    `kirocrew cloud iam-policy` prints), because the one statement covers all
     three names and removing the action while a boundary is missing leaves no
     principal allowed to create it. A launch whose `create-policy` is denied names
     this admin step at the head of its error, ahead of AWS's own text.

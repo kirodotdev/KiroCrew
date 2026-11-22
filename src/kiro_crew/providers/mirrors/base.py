@@ -217,8 +217,10 @@ class SessionProjection:
     """The harness built-ins this session keeps, ``None`` for all of them.
 
     A client obligation the array cannot carry: claude takes it as the session's
-    ``tools`` option. Set only for a crewmate worker whose worker spec (base plus
-    crewmate file) excludes a native tool (``claude_worker_tools.claude_worker_builtin_tools``).
+    ``tools`` option. Set for a crewmate worker whose worker spec (base plus
+    crewmate file) excludes a native tool (``claude_worker_tools.claude_worker_builtin_tools``),
+    and for a named agent whose spec Crew does not write and whose ``tools`` list
+    leaves out a built-in (``claude_worker_tools.claude_agent_builtin_tools``).
     """
 
 

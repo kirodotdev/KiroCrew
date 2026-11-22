@@ -309,6 +309,10 @@ async def _fire_slack_inner_nudge(
                 ),
                 timeout=_NUDGE_TURN_TIMEOUT,
             )
+            # A directive tool result the reply quotes is protocol, not reply text.
+            from kiro_crew.session_directive import strip_quoted_markers
+
+            response = strip_quoted_markers(response or "")
             if _directives.terminal_applied:
                 # A plain wake has no human-steer path. Its accepted quiet end
                 # is the reply, not any text the provider streams around it.

@@ -158,7 +158,7 @@ function createRemoteSwitch({
     }
     setSwitchingToRemote(true);
     try {
-      window.webContents.loadFile(path.join(dirname, "loading.html"), {
+      await window.webContents.loadFile(path.join(dirname, "loading.html"), {
         query: splashQuery(window, { accent: currentThemeAccent() }),
       });
     } catch { /* window may be tearing down */ }

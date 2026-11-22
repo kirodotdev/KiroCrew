@@ -164,7 +164,9 @@ export function useMessageActions({
     caseSensitive: search.caseSensitive,
     currentMessageIdx: search.currentMessageIdx,
     currentOccurrenceIdx: search.currentOccurrenceIdx,
-  }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx])
+    reveal: search.reveal,
+    revealLedger: search.revealLedger,
+  }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx, search.reveal, search.revealLedger])
 
   const renderUserContentCb = useCallback(
     // The session triple matches what the assistant / note rows hand

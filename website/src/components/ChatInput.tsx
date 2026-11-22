@@ -142,7 +142,7 @@ const ONE_ROW_CLUSTER_PAD_PX = 12
 // would get half the rim of a two-row one, so the rim is sized from the
 // two-row height (one wrapped line of text plus the toolbar) in both shapes.
 const COMPOSER_RIM_FROM_PX = 102
-const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.eml,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.eml,.py,.js,.ts,.tsx,.jsx,.html,.htm,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz,.tgz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
@@ -1849,7 +1849,7 @@ function ChatInput({
               the right group gives way, its model name truncating, so it never
               covers the chips. */}
           <div className={`flex items-center gap-2 flex-1 ${shelfCompact ? 'min-w-21' : 'min-w-28'}`}>
-          {!onAgentClick && agentBadge}
+          {agentBadge}
           {onAgentClick && agentName && (
             <AgentChip agentName={agentName} agentLabel={agentLabel} agentIsInheritedDefault={agentIsInheritedDefault} agentMemory={agentMemory} agentSource={agentSource} isRunning={isRunning} shelfCompact={shelfCompact} onAgentClick={onAgentClick} />
           )}

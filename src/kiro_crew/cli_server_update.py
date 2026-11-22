@@ -571,12 +571,25 @@ def _update(force: bool = False) -> None:
         line for line in status.stdout.strip().splitlines() if not line.startswith("??")
     ]
     if tracked_changes:
-        print("  ⚠️  Local tracked-file changes will be discarded:")
+        count = len(tracked_changes)
+        files = "1 file" if count == 1 else f"{count} files"
+        rerun = "kirocrew update --force" if force else "kirocrew update"
+        print(f"  ⚠️  You have uncommitted changes in {files}. Updating will discard them:")
         for line in tracked_changes[:10]:
             print(f"      {line}")
-        resp = input("  Continue? [y/N] ").strip().lower()
+        if count > 10:
+            print(f"      … and {count - 10} more")
+        # The folder goes on a line of its own, not into a command: no one
+        # quoting keeps every legal path literal in sh, cmd.exe and PowerShell.
+        print("  Answer N to keep them. To keep them and still update, go to the checkout:")
+        print(f"      {proj}")
+        print("  and run there:")
+        print("      git stash")
+        print(f"      {rerun}")
+        print("      git stash pop")
+        resp = input("  Discard these changes and update anyway? [y/N] ").strip().lower()
         if resp != "y":
-            print("  Aborted.")
+            print("  Aborted. Your changes were kept; nothing was updated.")
             sys.exit(0)
 
     # Re-classify immediately before the reset. The verdict above is a
@@ -660,11 +673,28 @@ def _update(force: bool = False) -> None:
     # lays down for the new release's pin (``release_apply``). Decided before the
     # kiro-cli pin so a host without kiro-cli prints the reason, not a PATH note.
     # Local import: this body runs on the ``cli_server`` facade's globals.
+    from kiro_crew import crewmate_harness
     from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.config import KiroCrewConfig
 
+    # No configured harness choice (main, crewmate, a Bot's pin, an enabled failover
+    # chain) spawns kiro-cli. An unreadable config reads as "one does", so the step
+    # keeps running as it did.
+    try:
+        no_kiro_cli_role = not crewmate_harness.kiro_cli_runs_anywhere(KiroCrewConfig.load())
+    except Exception:
+        no_kiro_cli_role = False
     if kas_bundle.kas_bundle_route():
         print(
             "  ℹ️  kiro-cli update skipped: KAS runs Kiro Crew's own engine bundle, not kiro-cli."
+        )
+        kiro_cli_bin, unpinned_kiro_cli = None, False
+    elif no_kiro_cli_role:
+        # The self-update has no result this install reads, and a slow link makes
+        # it run to its 120 s timeout while the gateway is down.
+        print(
+            "  ℹ️  kiro-cli update skipped: no selected backend runs kiro-cli "
+            "(run `kiro-cli update` by hand if an agent spec pins it)."
         )
         kiro_cli_bin, unpinned_kiro_cli = None, False
     else:

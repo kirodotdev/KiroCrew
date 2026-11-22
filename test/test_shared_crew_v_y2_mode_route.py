@@ -83,7 +83,7 @@ async def _read_with_a_counted_walk(state, monkeypatch, path: str, *, preview_on
     preview.reset_for_tests()
     reads: list[str] = []
 
-    async def walk(_request):
+    async def walk(_state):
         reads.append("catalog")
         return []
 

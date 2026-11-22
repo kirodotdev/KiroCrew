@@ -525,6 +525,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   const editingRow = useRef<ChatMessage | null>(null)
   // The queue id whose editor is open and holds its entry on the server.
   const openEditRef = useRef<string | null>(null)
+  // The card whose pencil press sent its hold ahead of the open editor's blur
+  // release; cleared when an editor opens, released if the press never clicks.
+  const preHeldRef = useRef<string | null>(null)
 
   // Reset expanded when queue drains to trivial size
   useEffect(() => {
@@ -546,6 +549,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   onEditOpenRef.current = onEditOpen
   useEffect(() => () => {
     if (openEditRef.current) onEditOpenRef.current?.(openEditRef.current, false)
+    if (preHeldRef.current) onEditOpenRef.current?.(preHeldRef.current, false)
   }, [])
   // The hold lapses on its own deadline, so an editor left open renews it; a
   // closed or killed tab stops renewing and the queue moves on soon after.
@@ -559,8 +563,25 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   const openEdit = (queueId: string) => {
     if (openEditRef.current && openEditRef.current !== queueId) onEditOpen?.(openEditRef.current, false)
     openEditRef.current = queueId
+    // Held again even after its press: a press hold that outlived its press
+    // may have lapsed, and on a live one a second hold only renews it.
+    const pressed = preHeldRef.current
+    preHeldRef.current = null
+    if (pressed && pressed !== queueId) onEditOpen?.(pressed, false)
     onEditOpen?.(queueId, true)
     setEditingId(queueId)
+  }
+  // The press fires before the open editor's blur releases its card.
+  const preHoldEdit = (queueId: string) => {
+    if (!openEditRef.current || openEditRef.current === queueId || preHeldRef.current === queueId) return
+    if (preHeldRef.current) onEditOpen?.(preHeldRef.current, false)
+    preHeldRef.current = queueId
+    onEditOpen?.(queueId, true)
+  }
+  const dropPreHold = (queueId: string) => {
+    if (preHeldRef.current !== queueId) return
+    preHeldRef.current = null
+    onEditOpen?.(queueId, false)
   }
 
   const commitEdit = (queueId: string, content: string, pastes?: PasteBlock[]) => {
@@ -888,6 +909,8 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                           title={i18nT('components.queueStack.edit_queued_message')}
                           aria-label={i18nT('components.queueStack.edit_queued_message')}
                           disabled={isPending}
+                          onMouseDown={(e) => { if (e.button === 0 && !e.ctrlKey) preHoldEdit(queueId!) }}
+                          onMouseLeave={() => dropPreHold(queueId!)}
                           onClick={(e) => { e.stopPropagation(); editingRow.current = m; openEdit(queueId!) }}
                         >
                           <Pencil size={13} />

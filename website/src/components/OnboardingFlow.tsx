@@ -12,7 +12,7 @@ import { LIQUID_GLASS_STORAGE_KEY, liquidGlassSeeded, markLiquidGlassSeeded } fr
 import { LookPreview } from './LookPreview'
 import ErrorNotice from './ErrorNotice'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
-import { api } from '../api/client'
+import { api, type KasBundleStatus } from '../api/client'
 import { capRoleOther, clampRoleOther } from '../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../lib/profileOptions'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
@@ -241,6 +241,18 @@ export default function OnboardingFlow({
   } = useTheme()
   const [open, setOpen] = useState(initialOpen)
   const [step, setStep] = useState(() => (initialOpen ? resumedStep() : 1))
+  // The gateway's word, the one the chat's sign-in prompt reads, read only for the
+  // tour's last card: "your agent is ready" is untrue while it says a new chat
+  // would fail for lack of a Kiro sign-in.
+  const kasBundle = useQuery<KasBundleStatus>({
+    queryKey: ['kas-bundle'],
+    queryFn: () => api.kasBundleStatus(),
+    enabled: POPS[step]?.navId === 'chat',
+    retry: false,
+    // Stale at once, so reaching the card refetches past an answer cached earlier.
+    staleTime: 0,
+  })
+  const kiroSignInNeeded = kasBundle.data?.chat_needs_sign_in === true
   const [coords, setCoords] = useState<{ left: number; top: number } | null>(null)
   // The focus trap queries the dialog element. Inside a persistent shell host
   // the dialog is host-owned, so use its ref; standalone we own it locally.
@@ -860,7 +872,11 @@ export default function OnboardingFlow({
           <GhostWithArm />
         </div>
         <h3 className="text-[18px] font-semibold text-text-strong leading-tight">{i18nT(POP_TITLE_KEY[pop.navId])}</h3>
-        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">{i18nT(POP_BODY_KEY[pop.navId])}</p>
+        <p className="text-[13px] text-muted mt-2.5 leading-relaxed">
+          {pop.navId === 'chat' && kiroSignInNeeded
+            ? i18nT('components.onboardingFlow.pop_chat_body_sign_in_first')
+            : i18nT(POP_BODY_KEY[pop.navId])}
+        </p>
         <div className="flex items-center mt-[18px]">
           <div className="flex items-center gap-1.5">
             {[0, 1, 2].map(i => (

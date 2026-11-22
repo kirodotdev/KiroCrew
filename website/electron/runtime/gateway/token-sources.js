@@ -182,7 +182,7 @@ function createTokenSources({
     // ANSWERED. The pre-spawn probe established the port was free then, and our
     // child binds only after its interpreter has imported -- seconds on a cold
     // bundled tree -- so anything may bind inside that window. An `ssh -L`
-    // reconnect answers `/api/status` exactly as the gateway would, `waitForBackend`
+    // reconnect answers `/api/live` exactly as the gateway would, `waitForBackend`
     // accepts it, and the secret would go to the far end of the tunnel.
     //
     // The kernel's own pid-to-port mapping settles it, and that is the whole

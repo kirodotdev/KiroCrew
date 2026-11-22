@@ -630,6 +630,131 @@ async def test_a_memory_export_names_no_unbundled_templates(monkeypatch) -> None
     assert whole.headers.get(module.UNBUNDLED_TEMPLATES_HEADER) == '["reviewer"]'
 
 
+def _install_app_record(
+    mc,
+    app_id: str,
+    *,
+    origin: str,
+    display_name: str | None = None,
+    manifest: str | None = None,
+    enabled: bool = True,
+    source: str | None = None,
+    source_url: str = "",
+) -> None:
+    """An app folder as an install leaves it: ``installed.json``, and ``app.json``
+    when *display_name* or a raw *manifest* text is given."""
+    entry = mc / "apps" / app_id
+    entry.mkdir(parents=True)
+    record = {
+        "name": app_id,
+        "version": "1.0.0",
+        "origin": origin,
+        "source": origin if source is None else source,
+        "sourceUrl": source_url,
+        "enabled": enabled,
+    }
+    (entry / "installed.json").write_text(json.dumps(record), encoding="utf-8")
+    if display_name is not None:
+        manifest = json.dumps({"name": app_id, "displayName": display_name, "version": "1.0.0"})
+    if manifest is not None:
+        (entry / "app.json").write_text(manifest, encoding="utf-8")
+
+
+async def _export_headers(monkeypatch, module, mc, query: str = "") -> dict[str, str]:
+    monkeypatch.setenv("KIROCREW_HOME", str(mc))
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    _patch_streaming_export(monkeypatch, module, plan=_FakePlan())
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+        assert response.status == 200
+        return dict(response.headers)
+
+
+@pytest.mark.asyncio
+async def test_a_whole_install_export_names_every_app_but_an_off_built_in(
+    monkeypatch, tmp_path
+) -> None:
+    """Every app that is on, and every app the person installed, is named as the Apps
+    page shows it, a damaged manifest or record by its id. A built-in that is off,
+    adopted onto its repository or not, arrives off on every install, so it is not."""
+    module = _handler_module()
+    adoption = importlib.import_module("kiro_crew.apps.builtin_adoption")
+    pinned = sorted(adoption.adoption_pin_names())[0]
+    mc = tmp_path / "home"
+    _install_app_record(mc, "notes", origin="builtin", display_name="Notes Board")
+    _install_app_record(mc, "quiet", origin="builtin", display_name="Quiet", enabled=False)
+    _install_app_record(
+        mc,
+        pinned,
+        origin="registry",
+        source=f"registry:{pinned}",
+        source_url=adoption.adoption_repository(pinned),
+        display_name="Adopted",
+        enabled=False,
+    )
+    _install_app_record(mc, "minimal-app", origin="local", display_name="Minimal App")
+    _install_app_record(mc, "parked", origin="local", display_name="Parked", enabled=False)
+    _install_app_record(mc, "broken", origin="registry", manifest="{not json")
+    _install_app_record(mc, "deep", origin="local")
+    (mc / "apps" / "deep" / "installed.json").write_text("[" * 100_000, encoding="utf-8")
+    (mc / "apps" / "not-installed").mkdir()
+
+    whole = await _export_headers(monkeypatch, module, mc)
+    memory = await _export_headers(monkeypatch, module, mc, "?components=memory")
+    # An uninstall that keeps the app's data leaves its folder without a record.
+    for leftover in ("installed.json", "app.json"):
+        (mc / "apps" / "parked" / leftover).unlink()
+    (mc / "apps" / "parked" / "data").mkdir()
+    after_uninstall = await _export_headers(monkeypatch, module, mc)
+
+    assert json.loads(whole[module.UNBUNDLED_APPS_HEADER]) == [
+        "broken",
+        "deep",
+        "Minimal App",
+        "Notes Board",
+        "Parked",
+    ]
+    assert module.UNBUNDLED_APPS_HEADER not in memory
+    assert json.loads(after_uninstall[module.UNBUNDLED_APPS_HEADER]) == [
+        "broken",
+        "deep",
+        "Minimal App",
+        "Notes Board",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_export_of_a_home_without_apps_names_none(monkeypatch, tmp_path) -> None:
+    module = _handler_module()
+    mc = tmp_path / "home"
+    mc.mkdir()
+
+    headers = await _export_headers(monkeypatch, module, mc)
+
+    assert module.UNBUNDLED_APPS_HEADER not in headers
+    assert not (mc / "apps").exists()
+
+
+@pytest.mark.asyncio
+async def test_the_app_notice_is_bounded_like_the_template_notice(monkeypatch, tmp_path) -> None:
+    module = _handler_module()
+    portability = importlib.import_module("kiro_crew.portability")
+    mc = tmp_path / "home"
+    total = portability.MAX_TEMPLATE_WARNINGS + 3
+    for i in range(total):
+        _install_app_record(mc, f"app-{i:02d}", origin="local")
+    long_name = "A" * (portability.MAX_TEMPLATE_NAME_CHARS + 10)
+    _install_app_record(mc, "long", origin="local", display_name=long_name)
+
+    headers = await _export_headers(monkeypatch, module, mc)
+
+    named = json.loads(headers[module.UNBUNDLED_APPS_HEADER])
+    assert named[0] == "A" * (portability.MAX_TEMPLATE_NAME_CHARS - 1) + "\u2026"
+    assert named[1:] == [f"app-{i:02d}" for i in range(19)] + ["+4"]
+
+
 # --- The export streams, so the first byte does not wait for the whole build ---
 
 

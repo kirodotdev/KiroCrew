@@ -35,6 +35,7 @@ from kiro_crew.auth.login.endpoints import (
     OIDC_SCOPES,
     OIDC_SCOPES_EXTRA_KEY,
     USER_AGENT,
+    IdcProfile,
     oidc_url,
 )
 from kiro_crew.auth.store import KasToken
@@ -150,18 +151,25 @@ async def register_client(
     *,
     session: aiohttp.ClientSession,
     scopes: tuple[str, ...] = OIDC_SCOPES,
+    form: IdcProfile | None = None,
 ) -> RegisteredClient:
     """Dynamic client registration — no Kiro-controlled gate, any app may do this.
 
     ``scopes`` is bound to the registration, so the device-code token and every
     refresh of it (which sends only the client credentials) carry the same ones.
+    A start URL's registered ``form`` replaces ``scopes`` and adds its grant
+    types and issuer URL.
     """
+    if form is not None:
+        scopes = form.scopes
     url = f"{oidc_url(region)}/client/register"
     payload = {
         "clientName": OIDC_CLIENT_NAME,
         "clientType": "public",
         "scopes": list(scopes),
     }
+    if form is not None:
+        payload.update(grantTypes=list(form.grant_types), issuerUrl=form.issuer_url)
     async with session.post(url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)) as resp:
         if resp.status not in (200, 201):
             body = await resp.text()

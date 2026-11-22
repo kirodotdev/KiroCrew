@@ -54,6 +54,7 @@ class TestConfig:
             "recover_backoff_max_secs": 30.0,
             "probe_failure_threshold": 3,
             "default_destination": "",
+            "managed_env_endpoint": "",
         }
         paths = {e.path for e in SCHEMA_REGISTRY}
         for p in (

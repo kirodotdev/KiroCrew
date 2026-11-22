@@ -408,6 +408,40 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     act(() => { h.result.current.jumpToPinnedPromptInPlace(7, mountedSteer) })
     expect(frames).toHaveLength(0)
   })
+
+  it('keeps the in-place jump on its prompt when a page lands mid-glide and renumbers the rows', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    trackScroll(g.rows[2], 300, 40, g)
+    wire(h, g)
+    act(() => { h.result.current.jumpToPinnedPromptInPlace(2, mountedSteer) })
+    flushFrame(0)
+    flushFrame(225)
+
+    // Three older rows land above: the prompt is row 5 now, 300px lower, and
+    // row 2 is an older message that took its number.
+    const older: DisplayItem[] = [0, 1, 2].map((i) => ({
+      kind: 'single', idx: i, msg: message(i % 2 ? 'assistant' : 'user', `older ${i}`, `2026-09-07T00:00:0${i}.000Z`),
+    }))
+    act(() => {
+      h.result.current.displayItemsRef.current = [...older, ...ITEMS.map((it, i) => ({ ...it, idx: i + 3 }) as DisplayItem)]
+      g.rows.forEach((row, i) => { row.dataset.displayIndex = String(i + 3) })
+      older.forEach((_, i) => {
+        const row = document.createElement('div')
+        row.dataset.displayIndex = String(i)
+        trackScroll(row, 50 * i, 40, g)
+        g.scroller.append(row)
+      })
+      trackScroll(g.rows[2], 600, 40, g)
+    })
+
+    // Run the glide out: its travel pays the moved goal back, then it converges.
+    let at = 225
+    while (frames.length && at < 5000) flushFrame((at += 16))
+    expect(frames).toHaveLength(0)
+    // The prompt's row top (600) minus the chrome (198), not the older row 2's.
+    expect(g.scrollTop).toBe(402)
+  })
 })
 
 /**

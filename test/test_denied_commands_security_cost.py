@@ -456,6 +456,47 @@ class TestSelfFloorShortCircuit:
         assert security._is_credential_mint(reach)
 
 
+class TestGitTarParallelGuardIsLinear:
+    """The git/tar floor's parallel-input guard must stay LINEAR in git-verb count.
+
+    ``_git_tar_read`` loops over every git/tar verb position (``starts``) and tested, per
+    position, ``any(map(_is_parallel, command[found:start]))`` -- re-scanning the slice
+    from the first verb to this one on every iteration.  A command of ``git status`` then
+    thousands of ``git`` words makes ``starts`` O(n) and each scan O(n), so the floor did
+    about n^2/2 ``_is_parallel`` calls on the gateway event loop for an ALLOW verdict, a
+    repeatable stall.  The first ``parallel`` index at or after ``found`` is now found
+    once and the guard is O(1).  The verdict is pinned alongside the cost, since a
+    rewrite that changed which verbs enter the parallel branch would change what the
+    floor denies.
+    """
+
+    @staticmethod
+    def _build(n: int) -> str:
+        # Many ``git`` verbs in ONE command (no separators), under the char and word
+        # caps, so the floor reads every ``start`` rather than refusing the input.
+        return "git status " + "git " * n
+
+    def test_the_repeated_git_verb_scan_is_linear(self):
+        assert is_denied(self._build(400)) is None  # first-call work is spent here
+        sizes = (800, 1600, 2400)
+
+        def work_of(n: int) -> int:
+            command = self._build(n)
+            verdicts: "list[str | None]" = []
+            work = _interpreter_work(lambda: verdicts.append(is_denied(command)))
+            assert verdicts == [None], (n, verdicts)  # benign repeated git: ALLOW
+            return work
+
+        work = [work_of(n) for n in sizes]
+        assert _linear_work(work), f"{work} instructions at sizes {sizes}"
+
+    def test_a_real_self_dial_among_many_git_verbs_is_still_denied(self):
+        # The optimization must not drop a refusal: a self-dial after the repeated
+        # verbs is still caught, as is a bare one.
+        assert is_denied("git status " + "git " * 50 + "clone localhost:x") is not None
+        assert is_denied("git clone localhost:x") is not None
+
+
 class TestSelfModuleIndexIsLinear:
     """The self-protection floor's module-flag scan must stay LINEAR in token count.
 
@@ -1802,3 +1843,105 @@ class TestSshGateBracketWordsAreLinear:
         from kiro_crew.security import argv_floor_ssh
 
         assert argv_floor_ssh._gate_words(word, group_brackets=True) == [word]
+
+
+class TestEscapedBacktickBodyIsReadLinearly:
+    """A long double-quoted body with many escaped backticks costs the same as one without.
+
+    A PR body that writes inline code as ``\\`x\\``` holds one escaped backtick per mark.
+    No backtick there closes, so each one opened a substitution that ran to the end of
+    the text, and the walk read every such remainder as a frame of its own: the frames
+    were the body's suffixes, and the self-subcommand floors read them all, so the cost
+    grew with the square of the body (about 64 s for ``is_denied`` on 5.5 KB).
+    Asserted on interpreter steps, never on a clock.
+    """
+
+    _SENTENCE = "The reader calls \\`x\\` once per frame and keeps \\`y\\` in scope. "
+
+    @staticmethod
+    def _command(sentence: str, repeats: int) -> str:
+        return 'gh pr create --title t --body "' + sentence * repeats + '"'
+
+    def _work(self, text: str) -> int:
+        verdicts: "list[bool]" = []
+        work = _interpreter_work(lambda: verdicts.append(security._is_self_restart(text)))
+        assert verdicts == [False]
+        return work
+
+    def test_the_floor_grows_linearly_with_the_body(self):
+        security._is_self_restart(self._command(self._SENTENCE, 5))
+        sizes = (20, 40, 60)
+        work = [self._work(self._command(self._SENTENCE, n)) for n in sizes]
+        assert _linear_work(work), f"{work} instructions at {sizes} repeats"
+
+    def test_escaped_backticks_cost_about_what_other_inert_marks_cost(self):
+        backtick = self._command(self._SENTENCE, 85)
+        assert len(backtick) > 5_000
+        quoted = "gh pr create --title t --body '" + self._SENTENCE.replace("\\", "") * 85 + "'"
+        dollar = self._command(self._SENTENCE.replace("\\`", "\\$"), 85)
+        security._is_self_restart(dollar)
+        work = self._work(backtick)
+        # The single-quoted spelling takes the same message-value reading.
+        ratio = work / self._work(quoted)
+        assert ratio <= 1.5, f"escaped backticks cost {ratio:.2f}x single-quoted ones"
+        # Escaped dollars open no substitution, so the walk skips the quote check
+        # (two character walks, about 2.4x here); the old reading cost about 490x.
+        ratio = work / self._work(dollar)
+        assert ratio <= 4, f"escaped backticks cost {ratio:.2f}x escaped dollars"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Not a message flag command: escaped backticks keep the quote-blind reading.
+            'foo "a \\`x\\` b \\`kirocrew restart"',
+            'eval "echo \\`kirocrew restart\\`"',
+            # A live backtick in the value, or outside it.
+            'gh pr create --title t --body "run `kirocrew restart`"',
+            'gh pr create --title t --body "a \\`x\\` b" `kirocrew restart`',
+            # Any other backslash keeps the old reading too.
+            'gh pr create --title t --body "a \\`x\\` \\\\" `kirocrew restart`',
+        ],
+    )
+    def test_a_self_restart_the_shell_can_run_is_still_denied(self, cmd):
+        assert security._is_self_restart(cmd.lower()), cmd
+        assert _denied_by(cmd) is not None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Bash still runs ``$(...)``, ``${...}`` and an unescaped backtick inside
+            # double quotes, even when every backslash escapes a backtick.
+            'gh pr create --title t --body "\\`x\\` $(kirocrew restart)"',
+            'gh pr create --title t --body "\\`x\\` ${a:-$(kirocrew restart)}"',
+            'git commit -m "\\`a\\` `kirocrew restart`"',
+        ],
+    )
+    def test_a_live_substitution_beside_escaped_backticks_keeps_the_old_reading(self, cmd):
+        # The skip never fires here: the walk still opens substitution bodies.
+        assert security._substitution_bodies(cmd, raw_source=True), cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'gh pr create --title t --body "\\`x\\` $(kirocrew restart)"',
+            'gh pr create --title t --body "\\`x\\` ${a:-$(kirocrew restart)}"',
+        ],
+    )
+    def test_a_dollar_substitution_beside_escaped_backticks_is_still_denied(self, cmd):
+        assert _denied_by(cmd) is not None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'gh pr create --body "\\`x\\` $(ssh localhost)"',
+            'git commit -m "\\`a\\` `ssh localhost`"',
+        ],
+    )
+    def test_an_ssh_self_dial_beside_escaped_backticks_is_still_denied(self, cmd):
+        assert _denied_by(cmd) is not None, cmd
+
+    def test_the_body_of_a_message_flag_value_opens_no_substitution(self):
+        cmd = 'gh pr create --title t --body "run \\`kirocrew restart\\` after \\`x\\`"'
+        assert security._substitution_bodies(cmd, raw_source=True) == []
+        assert not security._is_self_restart(cmd.lower())
+        assert _denied_by(cmd) is None

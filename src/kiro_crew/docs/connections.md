@@ -3,9 +3,10 @@
 **Connections** is the one page for everything outside Kiro Crew that an agent can
 reach: the MCP servers this install runs, and the third-party services you have
 signed into. A curated vendor connects in a click and its tools appear in your next
-session; a server nobody curated is added by hand on the same page and behaves the
-same way afterwards. The page also reports whether each one is actually answering,
-which is usually the question you came with.
+session; a server nobody curated is added by hand on the **MCP Servers** page
+(**Customize → MCP Servers**, `/mcp`) and behaves the same way afterwards. The page
+also reports whether each one is actually answering, which is usually the question
+you came with.
 
 Open it from the sidebar: **Settings → Connections**. The older
 `/connections` address still works and redirects there.
@@ -47,8 +48,9 @@ of your own.
 
 ## Adding your own MCP server
 
-Anything not in the catalogue is added on the same page. A server takes one of two
-shapes, and exactly one:
+Anything not in the catalogue is added by hand on the **MCP Servers** page
+(**Customize → MCP Servers**, `/mcp`), not on Settings → Connections. A server takes
+one of two shapes, and exactly one:
 
 **stdio** — Kiro Crew launches a local process and talks to it over its pipes:
 
@@ -68,11 +70,11 @@ servers, every entry is validated before any of them is written, so a single bad
 entry fails the whole paste rather than half-applying it. A name already configured
 anywhere is refused rather than overwritten.
 
-This page is the place to add or turn on a server. The default agent's spec,
+**MCP Servers** is the place to add or turn on a server. The default agent's spec,
 `~/.kiro/agents/kirocrew.json`, is rebuilt on every gateway start from this list,
 `~/.kiro/settings/mcp.json` and installed apps, so it is not edited to add one. A
 stdio server whose program is not found on this computer is dropped from that spec;
-if a server's tools are missing in chat, check its row here first.
+if a server's tools are missing in chat, check its row on MCP Servers first.
 
 ### Remote servers that need a sign-in
 
@@ -170,7 +172,7 @@ applies while it is at its default, `"auto"`, messaging-channel sessions include
    setting applies only at a restart.
 2. Create a full-access API key in the Bland dashboard, and add
    `BLAND_API_KEY=<your key>` to `~/.kiro/crew/.env`.
-3. Add the server on this page, and enable it:
+3. Add the server on **MCP Servers**, and enable it:
 
    ```json
    { "mcpServers": { "bland": {
@@ -183,7 +185,7 @@ applies while it is at its default, `"auto"`, messaging-channel sessions include
 An unrecognised `.env` line reaches every process the gateway starts, the agent's
 own shell included, so the agent can read this key. When you stop using it, delete
 it in Bland, along with any key you did not create yourself: removing the server
-entry here revokes nothing.
+from MCP Servers revokes nothing.
 
 ### Redmine: a local server and an API key
 
@@ -210,7 +212,7 @@ To connect it:
 2. Add `REDMINE_API_KEY=<your key>` to `~/.kiro/crew/.env`, and install
    [uv](https://docs.astral.sh/uv/), which provides `uvx`.
 3. Run `kirocrew config set hooks.confirm_tools '["@redmine/manage_time_entry"]'`,
-   keeping any patterns you already list there. A server added on this page is
+   keeping any patterns you already list there. A server added on MCP Servers is
    otherwise approved for every tool, so not even a time entry would ask first.
 4. Choose **Add Custom**, paste this block, and enable it. Do not install it from
    **Add Server**: the registry's entry leaves out `REDMINE_MCP_TRANSPORT`, and

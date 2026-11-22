@@ -246,6 +246,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_normalize_models": ("staticmethod", False, "0587318c8e24", "session_handle_model_selection"),
     "_note_call_frame": ("function", False, "640278a21156", "session_handle_tool_silence"),
     "_note_child_calls": ("function", False, "2362e63eea68", "session_handle_tool_silence"),
+    "_note_mcp_call_disconnected": ("function", False, "9afd0349ed2f", "session_handle_mcp"),
     "_note_mcp_sign_in_status": ("function", False, "d0d2b0689553", "session_handle_mcp"),
     "_note_native_child": ("function", False, "09a8133eda4c", "session_handle_native_children"),
     "_note_native_roster": ("function", False, "7a20326749ff", "session_handle_native_children"),

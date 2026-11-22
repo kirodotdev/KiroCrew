@@ -144,6 +144,11 @@ describe('popping a side-panel file out to its own window', () => {
     await vi.waitFor(() => expect(closeAsks()).toBe(false))
   })
 
+  it('titles the window with the file name, so pop-outs can be told apart', () => {
+    renderIn(<FilePopoutFrame />, '/popout/file?path=%2Fw%2Fsrc%2Fmain.py&sid=chat-1')
+    expect(document.title).toBe('main.py — Kiro Crew')
+  })
+
   it("hands the panel's own exits to the main dashboard and keeps the window's unsaved edits", async () => {
     // Served under a sub-path: the main dashboard is handed the path without it.
     renderIn(<FilePopoutFrame />, '/crew/popout/file?path=%2Fw%2Flinked.py&sid=chat-1', '/crew')

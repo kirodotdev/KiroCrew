@@ -13,7 +13,7 @@ import type { McpApplyChange, McpServer } from '../../types'
 import { Badge, Btn, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
-import { fmtList } from '../../i18n/format'
+import { fmtList, joinSentences } from '../../i18n/format'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL, docSectionHref } from '../../utils/docsLink'
 import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
@@ -729,7 +729,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         ...current,
         [provider.slug]: disconnectFeedback(
           provider,
-          [grantClause, entryClause, specClause].filter(Boolean).join(' '),
+          joinSentences([grantClause, entryClause, specClause]),
           // A census gap tells the user their access was NOT withdrawn and hands
           // them a repair to make; a not-ours entry leaves the card showing
           // Connected with a live Disconnect button, so a green success would

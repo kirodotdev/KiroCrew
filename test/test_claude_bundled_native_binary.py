@@ -36,6 +36,23 @@ def _adapter(tmp_path, *, bundled: bool):
     return (["node", str(entry)], "")
 
 
+def _npm_windows_install(tmp_path, *, bundled: bool):
+    """`npm i -g` on Windows: a `.cmd` text shim in the prefix, the SDK nested in the adapter."""
+    shim = tmp_path / "claude-agent-acp.cmd"
+    shim.write_text("@ECHO off\r\n", encoding="utf-8")
+    adapter = tmp_path / "node_modules" / "@agentclientprotocol" / "claude-agent-acp"
+    entry = adapter / "dist" / "index.js"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("// adapter\n", encoding="utf-8")
+    if bundled:
+        pkg = (
+            adapter / "node_modules" / "@anthropic-ai" / f"claude-agent-sdk-{sys.platform}-{_ARCH}"
+        )
+        pkg.mkdir(parents=True)
+        (pkg / ("claude.exe" if sys.platform == "win32" else "claude")).write_bytes(b"\0")
+    return ([str(shim)], "")
+
+
 def _spawn_env(monkeypatch, resolved) -> dict[str, str]:
     monkeypatch.setattr(claude_mod, "_claude_acp_argv_cache", resolved)
     monkeypatch.setattr(claude_mod, "_resolve_claude_code_executable", lambda: None)
@@ -57,6 +74,18 @@ def test_still_warns_when_no_binary_is_anywhere(tmp_path, monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.client"):
         _spawn_env(monkeypatch, resolved)
     assert [r for r in caplog.records if "not found on PATH" in r.getMessage()]
+
+
+@pytest.mark.parametrize("bundled", [True, False])
+def test_an_npm_windows_shim_is_walked_from_the_script_it_launches(
+    tmp_path, monkeypatch, caplog, bundled
+):
+    resolved = _npm_windows_install(tmp_path, bundled=bundled)
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.acp.client"):
+        _spawn_env(monkeypatch, resolved)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("ships its own" in m for m in messages) is bundled
+    assert any("not found on PATH" in m for m in messages) is not bundled
 
 
 def test_an_unresolved_adapter_still_warns(monkeypatch, caplog):

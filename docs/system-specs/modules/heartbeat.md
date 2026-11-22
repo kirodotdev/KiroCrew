@@ -42,6 +42,7 @@ While `require_memory_ready()` raises `MemoryStartupUnavailable` (Global memory 
 4. Tasks with `HEARTBEAT_KEEP` in response are retained for next tick (incomplete)
 5. Tasks without the sentinel are removed (complete)
 6. Tasks that raise exceptions are retained automatically (retry)
+7. Tasks whose turn times out, or that Shared Crew fair admission refuses, are retained (they did not finish): the gateway returns `HEARTBEAT_KEEP` for both
 
 ### Task Retention (`HEARTBEAT_KEEP`)
 
@@ -85,7 +86,7 @@ On `asyncio.TimeoutError`:
    blocked on the per-key semaphore (held until our `finally` releases) — they
    pick up the freshly-recreated session.
 2. Log a warning.
-3. Return a graceful incomplete result string (the loop is NOT crashed).
+3. Deliver a notice that the task timed out and runs again next beat, then return it with `HEARTBEAT_KEEP` appended so the task is retained (the loop is NOT crashed).
 4. The `finally` block calls `release(HEARTBEAT_KEY)` ONLY — no per-task reset.
    Cycle-end recycle is owned by `SessionManager.recycle_heartbeat`, called
    once via `HeartbeatService.on_cycle_end` after `asyncio.gather` completes.
@@ -210,4 +211,4 @@ Slot resolution: `chat-0` → first active slot, `chat-3` → fourth slot. A bus
 
 ### Slack Suppression for Incomplete Tasks
 
-When a task response contains `HEARTBEAT_KEEP`, Slack delivery is suppressed. The task is retained for the next tick without notifying the user. Only completed tasks (no `HEARTBEAT_KEEP`) trigger Slack/dashboard delivery.
+When a task response contains `HEARTBEAT_KEEP`, Slack delivery is suppressed. The task is retained for the next tick without notifying the user. Only completed tasks (no `HEARTBEAT_KEEP`) trigger Slack/dashboard delivery, plus the timeout notice, which is delivered even though the task is retained.

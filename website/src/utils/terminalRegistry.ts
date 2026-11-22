@@ -158,7 +158,7 @@ export function onTerminalReady(
   onFailure?: () => void,
 ): () => void {
   const known = conns.get(sessionId)
-  if (known?.invalidCwd || known?.wrongMachine) { onFailure?.(); return () => {} }
+  if (known?.invalidCwd || known?.wrongMachine || known?.atLimit) { onFailure?.(); return () => {} }
   if (getTerminalWs(sessionId)) { onReady(); return () => {} }
   let set = readyListeners.get(sessionId)
   if (!set) { set = new Set(); readyListeners.set(sessionId, set) }
@@ -268,6 +268,9 @@ interface Conn {
   /** The gateway refused to open this shell on that machine (`terminal_wrong_machine`):
    *  the chat runs elsewhere. */
   wrongMachine?: boolean
+  /** The gateway already runs its most terminals (`terminal_max_sessions`):
+   *  parks until the user closes one and retries. */
+  atLimit?: boolean
   /** Consecutive `terminal_placement_unavailable` refusals. The refused socket
    *  still opens (so `onopen` would reset `retries`); this carries the backoff
    *  across them until a shell is ready. */
@@ -437,6 +440,25 @@ export function useTerminalWrongMachine(sessionId: string): boolean {
   )
 }
 
+/** Whether the gateway refused this shell at its terminal ceiling. */
+export function isTerminalAtLimit(sessionId: string): boolean {
+  return conns.get(sessionId)?.atLimit ?? false
+}
+
+/** Whether the gateway refused this shell at its terminal ceiling, published with the status. */
+export function useTerminalAtLimit(sessionId: string): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      let s = statusListeners.get(sessionId)
+      if (!s) { s = new Set(); statusListeners.set(sessionId, s) }
+      s.add(cb)
+      return () => { s?.delete(cb) }
+    },
+    () => conns.get(sessionId)?.atLimit ?? false,
+    () => false,
+  )
+}
+
 /** Whether the requested cwd was rejected, published with the connection status. */
 export function useTerminalInvalidCwd(sessionId: string): boolean {
   return useSyncExternalStore(
@@ -466,7 +488,7 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
   if (!c || c.disposed) return
   // Only the user re-arms a deliberate handoff or a rejected cwd. Automatic
   // revives must neither displace another window nor retry an unchanged path.
-  if (c.displaced || c.invalidCwd || c.wrongMachine) {
+  if (c.displaced || c.invalidCwd || c.wrongMachine || c.atLimit) {
     if (!manual) return
     // Only explicit recovery from a refused directory can change the target.
     // An empty override asks the server to use its terminal starting directory.
@@ -474,6 +496,7 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
     c.displaced = false
     c.invalidCwd = false
     c.wrongMachine = false
+    c.atLimit = false
     notifyStatus(sessionId)
   }
   if (manual) setManualRetry(sessionId, c)
@@ -516,7 +539,7 @@ if (typeof window !== 'undefined') {
 }
 
 function connect(sessionId: string, c: Conn) {
-  if (c.disposed || c.invalidCwd || c.wrongMachine) return
+  if (c.disposed || c.invalidCwd || c.wrongMachine || c.atLimit) return
   if (c.retries >= MAX_RETRIES) {
     // Backoff exhausted: no further dial will happen until a revive event
     // (online / tab foreground) or a manual Reconnect re-arms it. This is the
@@ -600,8 +623,9 @@ function connect(sessionId: string, c: Conn) {
           c.placementRefusals = (c.placementRefusals ?? 0) + 1
           c.retries = c.placementRefusals - 1
         }
-        if (m && m.type === 'error' && (m.code === 'terminal_invalid_cwd' || m.code === 'terminal_wrong_machine')) {
+        if (m && m.type === 'error' && (m.code === 'terminal_invalid_cwd' || m.code === 'terminal_wrong_machine' || m.code === 'terminal_max_sessions')) {
           if (m.code === 'terminal_invalid_cwd') c.invalidCwd = true
+          else if (m.code === 'terminal_max_sessions') c.atLimit = true
           else c.wrongMachine = true
           clearTimeout(c.reconnectTimer)
           c.reconnectTimer = undefined
@@ -628,8 +652,8 @@ function connect(sessionId: string, c: Conn) {
       handleShellExit(sessionId, c, { status: null })
       return
     }
-    if (c.displaced || c.invalidCwd || c.wrongMachine) {
-      // A deliberate handoff, rejected cwd or refused machine needs an explicit user retry.
+    if (c.displaced || c.invalidCwd || c.wrongMachine || c.atLimit) {
+      // A deliberate handoff, rejected cwd, refused machine or full gateway needs an explicit user retry.
       clearTimeout(c.reconnectTimer)
       c.reconnectTimer = undefined
       setConnStatus(sessionId, c, 'disconnected')

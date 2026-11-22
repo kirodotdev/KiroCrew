@@ -623,6 +623,11 @@ class _RefusingStore(TaskStore):
         self._check("cancel", task_id)
         return super().cancel(task_id, *a, **kw)  # type: ignore[arg-type]
 
+    def latest_events(self, task_ids: object, *a: object, **kw: object) -> "dict":
+        for task_id in task_ids:  # type: ignore[attr-defined]
+            self._check("latest_events", task_id)
+        return super().latest_events(task_ids, *a, **kw)  # type: ignore[arg-type]
+
 
 def _seed_wait_scenario(path: Path, clock: Clock) -> None:
     """One deadline-passed dependency wait, one wakeable parent, one orphan."""
@@ -686,6 +691,142 @@ def test_a_stopped_recovering_row_the_store_will_not_cancel_is_held_out_of_claim
         # The hold's own retry lands the stop, so the claim finds nothing to run.
         assert s.claim("stopped") is None
         assert s.state_of("stopped") == model.CANCELLED
+        assert s.held_until_settled() == []
+    finally:
+        s.close()
+
+
+def _park_stopped_subagent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: Clock, *, also: str = ""
+) -> Path:
+    """A ``retry_wait`` row (``rw1``) whose current attempt's tombstone records a user
+    stop, crashed before its cancel landed; *also* seeds a plain queued sub-agent."""
+    import kiro_crew.subagent_persistence as sp
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+    _write_json(tmp_path / "subagents" / "rw1" / "state.json", {"id": "rw1", "task": "t"})
+    path = tmp_path / "t.db"
+    s = TaskStore(path, clock=clock, network_fs=False).open()
+    s.accept([_rec("rw1", session_key="parent-slot"), *([_rec(also)] if also else [])])
+    g = s.claim("rw1").generation
+    s.transition("rw1", model.STARTING, generation=g)
+    stop = {"cause": "user_stop", "outcome": "stopped", "taskq_attempt": g}
+    _write_json(sp._agent_dir("rw1") / "tombstone.json", stop)
+    assert s.transition("rw1", model.RETRY_WAIT, generation=g, next_run_at=None)
+    s.close()
+    clock.t += 6 * 3600
+    return path
+
+
+def _subagent_probe(rec: model.TaskRecord, /, attempt: "int | None" = None) -> "str | None":
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    return _TaskqBridgeMixin.taskq_artifact_probe(rec, attempt=attempt)
+
+
+def test_a_parked_stop_the_store_will_not_cancel_is_held_until_its_guarded_cancel_lands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: Clock
+) -> None:
+    path = _park_stopped_subagent(tmp_path, monkeypatch, clock)
+    s = _reopen_refusing(path, clock, cancel={"rw1"})
+    try:
+        report = reconcile_on_boot(s, artifact_probe=_subagent_probe)
+        assert report.held == 1 and len(report.errors) == 1 and "rw1" in report.errors[0]
+        assert s.held_until_settled() == ["rw1"]
+        # While the store still refuses the cancel, the stopped run is never published.
+        assert s.fetch_dispatchable(model.KIND_SUBAGENT, limit=10) == []
+        assert s.claim("rw1") is None
+        assert s.state_of("rw1") == model.RETRY_WAIT
+        s._refuse = {}  # the store answers again
+        assert s.fetch_dispatchable(model.KIND_SUBAGENT, limit=10) == []
+        assert s.state_of("rw1") == model.CANCELLED
+        assert s.held_until_settled() == []
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("parked_again", [False, True])
+def test_a_held_parked_stop_releases_uncancelled_when_the_row_was_claimed_since(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: Clock, parked_again: bool
+) -> None:
+    """Another incarnation on the same file claims and starts the row while this
+    one's hold waits: the hold's retry is the guarded cancel, so it lets go of a
+    row that moved on -- running, or parked again under a later generation."""
+    path = _park_stopped_subagent(tmp_path, monkeypatch, clock)
+    s = _reopen_refusing(path, clock, cancel={"rw1"})
+    other = _crash_and_reopen(path, clock)
+    try:
+        assert reconcile_on_boot(s, artifact_probe=_subagent_probe).held == 1
+        g = other.claim("rw1").generation
+        other.transition("rw1", model.STARTING, generation=g)
+        other.transition("rw1", model.RUNNING, generation=g)
+        if parked_again:
+            assert other.transition("rw1", model.RETRY_WAIT, generation=g, next_run_at=None)
+        moved_to = other.state_of("rw1")
+        s._refuse = {}
+        s.fetch_dispatchable(model.KIND_SUBAGENT, limit=10)
+        assert s.held_until_settled() == []
+        row = s.get("rw1")
+        assert row.state == moved_to and row.generation == g
+    finally:
+        other.close()
+        s.close()
+
+
+@pytest.mark.parametrize("refused", ["cancel", "latest_events"])
+def test_a_parked_stop_its_dependency_wake_requeued_is_still_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: Clock, refused: str
+) -> None:
+    """The dependency coordinator, rebuilt from the row's wait, wakes it
+    (``retry_wait -> queued``, no claim) before a dispatch read retries the
+    hold (a refused cancel) or re-runs the fenced pass (a refused attempt read)."""
+    path = _park_stopped_subagent(tmp_path, monkeypatch, clock)
+    s = _reopen_refusing(path, clock, **{refused: {"rw1"}})
+    try:
+        reconcile_on_boot(s, artifact_probe=_subagent_probe)
+        s._refuse = {}
+        g = s.get("rw1").generation
+        assert s.transition("rw1", model.QUEUED, generation=g, next_run_at=clock.t)
+        assert s.fetch_dispatchable(model.KIND_SUBAGENT, limit=10) == []
+        assert s.state_of("rw1") == model.CANCELLED
+        assert s.held_until_settled() == []
+    finally:
+        s.close()
+
+
+def test_a_refused_attempt_read_fences_subagent_dispatch_until_the_pass_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: Clock
+) -> None:
+    path = _park_stopped_subagent(tmp_path, monkeypatch, clock, also="plain")
+    s = _reopen_refusing(path, clock, latest_events={"rw1"})
+    try:
+        report = reconcile_on_boot(s, artifact_probe=_subagent_probe)
+        assert any("rw1" in e for e in report.errors) and report.held == 0
+        assert s.fetch_dispatchable(model.KIND_SUBAGENT, limit=10) == []
+        with pytest.raises(TaskStoreUnavailable, match="fenced"):
+            s.claim("rw1")
+        assert s.state_of("rw1") == model.RETRY_WAIT
+        s._refuse = {}
+        assert [r.id for r in s.fetch_dispatchable(model.KIND_SUBAGENT, limit=10)] == ["plain"]
+        assert s.state_of("rw1") == model.CANCELLED
+    finally:
+        s.close()
+
+
+def test_a_claim_whose_fence_rerun_holds_the_parked_stop_does_not_claim_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: Clock
+) -> None:
+    path = _park_stopped_subagent(tmp_path, monkeypatch, clock)
+    s = _reopen_refusing(path, clock, latest_events={"rw1"})
+    try:
+        reconcile_on_boot(s, artifact_probe=_subagent_probe)
+        s._refuse = {"cancel": {"rw1"}}  # the read lands, the cancel does not
+        assert s.claim("rw1") is None
+        assert s.state_of("rw1") == model.RETRY_WAIT
+        assert s.held_until_settled() == ["rw1"]
+        s._refuse = {}
+        assert s.fetch_dispatchable(model.KIND_SUBAGENT, limit=10) == []
+        assert s.state_of("rw1") == model.CANCELLED
         assert s.held_until_settled() == []
     finally:
         s.close()

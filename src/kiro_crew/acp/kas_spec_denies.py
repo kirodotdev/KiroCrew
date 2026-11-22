@@ -17,14 +17,18 @@ from __future__ import annotations
 
 import json
 import os
+import string
 from typing import Any, cast
 
 from kiro_crew.acp.kas_grant_only_settings import without_grant_only_settings
 from kiro_crew.acp.kas_permissions import (
+    _MAX_PATTERN_LENGTH,
     _SHELL_SETTINGS_KEYS,
     _WRITE_SETTINGS_KEYS,
     CREW_SPEC_DENIES_KEY,
     CREW_UNJUDGED_DENIES_KEY,
+    _chunked_rules,
+    _url_glob,
     shell_denies_carried,
     shell_deny_carried,
     shell_deny_globs,
@@ -129,21 +133,141 @@ def web_fetch_gate(tools_settings: Any, authored_permissions: Any = None) -> dic
     allow for it, so the fetch asks. On a fetch that reaches Crew's gate,
     ``spec-builtin-grant`` grants one a trusted entry names as a plain URL or a
     plain URL plus ``.*`` (:func:`url_literal`), only when every
-    ``web_fetch.blocked`` entry has that shape too and none matches. Anything
-    else keeps main's prompt; the blocked list is only read to withhold the grant,
-    and KAS's host deny stays as on main. An ``ask`` or ``deny`` in
-    *authored_permissions* reaching ``web_fetch``, or a block the merge refuses,
-    drops the grant (:func:`_authored_web_fetch_restricted`). Empty when nothing
-    can be granted.
+    ``web_fetch.blocked`` entry has that shape too and none matches. An ``ask`` or
+    ``deny`` in *authored_permissions* reaching ``web_fetch``, or a block the merge
+    refuses, drops the grant (:func:`_authored_web_fetch_restricted`).
+
+    The readable blocked entries travel too, and ``spec-denies`` refuses a fetch
+    one definitely matches (``spec_denied_gate.web_fetch_blocked_match``); with no
+    trusted grant they travel alone when an entry is one the gate refuses
+    (:func:`gate_refused_blocked`). Empty when the gate has nothing to judge.
     """
     blocked, complete, trusted, _ = _web_fetch_lists(tools_settings)
-    if not trusted or not complete or _authored_web_fetch_restricted(authored_permissions):
+    if trusted and complete and not _authored_web_fetch_restricted(authored_permissions):
+        return {
+            "webFetchBlocked": blocked,
+            "webFetchBlockedComplete": complete,
+            "webFetchTrusted": trusted,
+        }
+    if not gate_refused_blocked(tools_settings):
         return {}
-    return {
-        "webFetchBlocked": blocked,
-        "webFetchBlockedComplete": complete,
-        "webFetchTrusted": trusted,
-    }
+    return {"webFetchBlocked": blocked, "webFetchBlockedComplete": complete, "webFetchTrusted": []}
+
+
+def gate_refused_blocked(tools_settings: Any) -> list[str]:
+    """The ``web_fetch.blocked`` entries KAS cannot carry as a host deny that Crew's
+    gate refuses itself: each one :func:`url_literal` reads among the entries the
+    record carries (:func:`_web_fetch_lists`), as written, that can match an
+    ``http(s)`` URL (:func:`_blocked_ask_host`; any other stays as on main). ``[]`` while
+    ``agent.kas_fail_closed_web_fetch_blocked`` is on: its KAS deny over ``*``
+    already refuses every fetch. One reader for the record, the asks
+    (:func:`with_blocked_host_asks`) and the notice, so they cannot disagree."""
+    from kiro_crew.acp import kas_unread_commands
+
+    def carried(raw: str) -> bool:
+        glob = _url_glob(raw.strip())
+        return glob is not None and len(glob) <= _MAX_PATTERN_LENGTH
+
+    blocked = _web_fetch_lists(tools_settings)[0]
+    uncarried = [
+        raw for raw in blocked if raw.strip() and not carried(raw) and _blocked_ask_host(raw) != ""
+    ]
+    if not uncarried or kas_unread_commands.fails_closed_on_uncarried_blocked():
+        return []
+    return uncarried
+
+
+#: The characters of a host an ``ask`` is scoped to; any other asks unscoped.
+_ASK_HOST_CHARS = frozenset(string.ascii_lowercase + string.digits + "._-")
+
+
+def _blocked_ask_host(raw: str) -> str | None:
+    """The host glob a KAS ``web_fetch`` ``ask`` for the blocked entry *raw* is
+    scoped to, read with string work like ``kas_permissions._url_glob``: the
+    literal's authority up to the first ``/``, ``?`` or ``#``, port dropped,
+    lower-cased, with a trailing ``*`` when a prefix entry ends inside the host.
+
+    ``""`` when the entry needs no ask: another scheme's, or one with no ``://``
+    that cannot start an ``http(s)`` URL, never matches one. ``None`` when it
+    names no clear host (empty, userinfo, an address literal, another character,
+    past the pattern bound): the caller then asks for every fetch."""
+    entry = url_literal(raw)
+    if entry is None:
+        return None
+    literal, prefix = entry
+    scheme, sep, rest = literal.partition("://")
+    if not sep:
+        starts_url = prefix and any(s.startswith(literal) for s in ("http://", "https://"))
+        return None if starts_url else ""
+    if scheme.lower() not in ("http", "https"):
+        return ""
+    cut = min((i for i in map(rest.find, "/?#") if i >= 0), default=len(rest))
+    authority = rest[:cut]
+    if "@" in authority or "[" in authority:
+        return None
+    host, colon, _port = authority.partition(":")
+    host = host.lower()
+    if prefix and cut == len(rest) and not colon:
+        host += "*"
+    name = host.removesuffix("*")
+    if not name or not _ASK_HOST_CHARS.issuperset(name) or len(host) > _MAX_PATTERN_LENGTH:
+        return None
+    return host
+
+
+def with_blocked_host_asks(policy: Any, tools_settings: Any) -> Any:
+    """*policy* with a KAS ``web_fetch`` ``ask`` scoped to the host of each
+    :func:`gate_refused_blocked` entry (:func:`_blocked_ask_host`), or one unscoped
+    ``ask`` when an entry names no clear host. KAS resolves deny over ask over
+    allow and matches a ``web_fetch`` rule on the URL's host, so a fetch to one of
+    those hosts reaches Crew's gate as a permission request; any other fetch is
+    left as it was. *policy* unchanged when no entry needs one."""
+    hosts = [_blocked_ask_host(raw) for raw in gate_refused_blocked(tools_settings)]
+    if any(host is None for host in hosts):
+        asks: list[dict[str, Any]] = [{"capability": "web_fetch", "effect": "ask"}]
+    else:
+        asks = _chunked_rules("web_fetch", "ask", list(dict.fromkeys(h for h in hosts if h)))
+    if not asks:
+        return policy
+    block = dict(policy) if isinstance(policy, dict) else {}
+    block["rules"] = [*(block.get("rules") or []), *asks]
+    return block
+
+
+def _auto_approves_web_fetch(policy: Any) -> bool:
+    """Whether *policy* runs a ``web_fetch`` unprompted on any host: an unscoped
+    ``allow`` reaching it and no unscoped ``ask`` or ``deny`` (a hook's ``ask``, a
+    kept authored rule) holding it back."""
+    rules = policy.get("rules") if isinstance(policy, dict) else None
+    if not isinstance(rules, list) or any(v for k, v in policy.items() if k != "rules"):
+        return False
+    unscoped = [
+        r
+        for r in rules
+        if isinstance(r, dict)
+        and r.get("capability") in _WEB_FETCH_CAPABILITIES
+        and "match" not in r
+        and "exclude" not in r
+    ]
+    effects = {r.get("effect") for r in unscoped}
+    return "allow" in effects and not effects & {"ask", "deny"}
+
+
+def web_fetch_regranted(tools_settings: Any, authored_permissions: Any, policy: Any) -> bool:
+    """Whether the record lifts ``web_fetch`` by name (its ``builtins``): the
+    asks of :func:`with_blocked_host_asks` are all that hold a fetch back. *policy*
+    is the projected ``permissions`` before those asks; it must auto-approve the
+    fetch (:func:`_auto_approves_web_fetch`), the spec's own block must not
+    restrict ``web_fetch`` (:func:`_authored_web_fetch_restricted`), and the ceiling
+    must let the gate grant it. The gate then grants only a URL clear of every
+    readable blocked entry (``spec_denied_gate.denied_grant_applies``)."""
+    if not gate_refused_blocked(tools_settings) or not _auto_approves_web_fetch(policy):
+        return False
+    if _authored_web_fetch_restricted(authored_permissions):
+        return False
+    from kiro_crew.platform.governance import may_grant_builtin_at_gate_now
+
+    return may_grant_builtin_at_gate_now("web_fetch")
 
 
 def web_fetch_carried(tools_settings: Any, authored_permissions: Any) -> frozenset[str]:
@@ -152,23 +276,27 @@ def web_fetch_carried(tools_settings: Any, authored_permissions: Any) -> frozens
     is readable, the spec's own block does not restrict ``web_fetch`` and the
     ceiling lets the gate grant it. A trusted list past the bound still counts: the
     gate grants its first entries, and the notice names the rest
-    (:func:`trusted_past_bound`). ``web_fetch.blocked`` is never dropped: a fetch
-    KAS's policy allows skips the gate, so an entry KAS cannot carry still may not
-    apply.
+    (:func:`trusted_past_bound`). ``web_fetch.blocked`` when every entry KAS cannot
+    carry is one the gate refuses (:func:`gate_refused_blocked`); otherwise the
+    notice names each entry neither applies
+    (``kas_unread_commands._uncarried_web_fetch_blocked``).
     """
+    from kiro_crew.acp.kas_unread_commands import _uncarried_web_fetch_blocked
+
+    carried: set[str] = set()
+    if gate_refused_blocked(tools_settings) and not _uncarried_web_fetch_blocked(tools_settings):
+        carried.add("web_fetch.blocked")
     _blocked, complete, trusted, trusted_complete = _web_fetch_lists(tools_settings)
     trusted_complete = trusted_complete or bool(trusted_past_bound(tools_settings))
     if not (trusted and complete and trusted_complete):
-        return frozenset()
+        return frozenset(carried)
     if _authored_web_fetch_restricted(authored_permissions):
-        return frozenset()
+        return frozenset(carried)
     from kiro_crew.platform.governance import may_grant_builtin_at_gate_now
 
-    return (
-        frozenset({"web_fetch.trusted"})
-        if may_grant_builtin_at_gate_now("web_fetch")
-        else frozenset()
-    )
+    if may_grant_builtin_at_gate_now("web_fetch"):
+        carried.add("web_fetch.trusted")
+    return frozenset(carried)
 
 
 def _checkable(tools_settings: Any, keys: tuple[str, ...], field: str, read: Any) -> list[str]:
