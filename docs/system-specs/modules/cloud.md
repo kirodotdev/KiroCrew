@@ -179,7 +179,9 @@ refusals name the dead route (subnet and target) instead of only asking for a
 route the table already has.
 
 With no default VPC, discovery falls back to the Region's only VPC (none, or two
-or more, is the "no default VPC" error). That pick is the launcher's, not the
+or more, is the "no default VPC" error, which gives the Region and the count of
+other VPCs and names the Subnet ID field beside `--subnet`; the no-egress and
+private-zone refusals name the field the same way). That pick is the launcher's, not the
 user's, so `discover_network(on_fallback=...)` hands one sentence naming the
 region, the VPC, the subnet and its egress (NAT or internet gateway), saying the
 launch goes on and that a subnet ID picks another network next time, to
