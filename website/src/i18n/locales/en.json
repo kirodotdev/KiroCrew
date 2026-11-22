@@ -4824,7 +4824,7 @@
       "model_list": "Model list",
       "split_down": "Split down",
       "split_right": "Split right",
-      "split_right_d": "Split right (⌘D)",
+      "split_right_d": "Split right ({{shortcut}})",
       "type_to_filter": "Type to filter…",
       "preparing_catch_up": "Preparing your catch-up…"
     },
@@ -5881,7 +5881,7 @@
       "search_sessions": "Search sessions…",
       "split_down": "Split down",
       "split_right": "Split right",
-      "split_right_d": "Split right (⌘D)",
+      "split_right_d": "Split right ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "Terminal pane — coming in Phase 2"
     },
     "sessionMoveUndoBar": {
@@ -8165,7 +8165,7 @@
       "return_to_split_view": "Return to split view",
       "scroll_to_bottom": "Scroll to bottom",
       "session_options": "Session options",
-      "split_view_d": "Split view (⌘D)",
+      "split_view_d": "Split view ({{shortcut}})",
       "start_a_new_chat": "Start a new chat",
       "session_closed_in_another_window": "This session was closed in another window",
       "close_window": "Close window",

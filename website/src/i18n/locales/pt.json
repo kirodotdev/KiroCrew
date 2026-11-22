@@ -7320,7 +7320,7 @@
       "stop_failed_owner_only": "Só o proprietário do painel pode interromper esta execução. Peça a ele que a interrompa.",
       "split_down": "Dividir abaixo",
       "split_right": "Dividir à direita",
-      "split_right_d": "Dividir à direita (⌘D)",
+      "split_right_d": "Dividir à direita ({{shortcut}})",
       "type_to_filter": "Digite para filtrar…",
       "earlier_conversation_show": "Começar do zero às {{time}} · Mostrar mensagens anteriores ({{count}})",
       "earlier_conversation_hide": "Começar do zero às {{time}} · Ocultar mensagens anteriores (não lembra mais)",
@@ -9702,7 +9702,7 @@
       "search_sessions": "Pesquisar sessões…",
       "split_down": "Dividir abaixo",
       "split_right": "Dividir à direita",
-      "split_right_d": "Dividir à direita (⌘D)",
+      "split_right_d": "Dividir à direita ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "Painel de terminal — chega na Fase 2"
     },
     "sessionMoveUndoBar": {
@@ -15159,7 +15159,7 @@
       "session_options": "Opções da sessão",
       "show_sessions": "Mostrar sessões",
       "show_sessions_sidebar": "Mostrar a barra lateral de sessões",
-      "split_view_d": "Visualização dividida (⌘D)",
+      "split_view_d": "Visualização dividida ({{shortcut}})",
       "start_a_new_chat": "Iniciar um novo chat",
       "session_closed_in_another_window": "Esta sessão foi fechada em outra janela",
       "close_window": "Fechar janela",

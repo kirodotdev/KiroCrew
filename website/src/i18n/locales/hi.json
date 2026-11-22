@@ -7133,7 +7133,7 @@
       "stop_failed_owner_only": "सिर्फ़ डैशबोर्ड का मालिक इस रन को रोक सकता है। उनसे इसे रोकने के लिए कहो।",
       "split_down": "नीचे विभाजित करें",
       "split_right": "दाईं ओर विभाजित करें",
-      "split_right_d": "दाईं ओर विभाजित करें (⌘D)",
+      "split_right_d": "दाईं ओर विभाजित करो ({{shortcut}})",
       "type_to_filter": "फ़िल्टर करने के लिए टाइप करें…",
       "earlier_conversation_show": "{{time}} पर नई शुरुआत · पिछले मैसेज दिखाओ ({{count}})",
       "earlier_conversation_hide": "{{time}} पर नई शुरुआत · पिछले मैसेज छिपाओ (अब याद नहीं)",
@@ -9469,7 +9469,7 @@
       "search_sessions": "सेशन खोजें…",
       "split_down": "नीचे विभाजित करें",
       "split_right": "दाईं ओर विभाजित करें",
-      "split_right_d": "दाईं ओर विभाजित करें (⌘D)",
+      "split_right_d": "दाईं ओर विभाजित करो ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "टर्मिनल पैन — चरण 2 में आ रहा है"
     },
     "sessionMoveUndoBar": {
@@ -14808,7 +14808,7 @@
       "session_options": "सत्र विकल्प",
       "show_sessions": "सेशन दिखाएँ",
       "show_sessions_sidebar": "सेशन साइडबार दिखाएँ",
-      "split_view_d": "स्प्लिट व्यू (⌘D)",
+      "split_view_d": "स्प्लिट व्यू ({{shortcut}})",
       "start_a_new_chat": "नई चैट शुरू करें",
       "session_closed_in_another_window": "यह सत्र किसी दूसरी विंडो में बंद कर दिया गया",
       "close_window": "विंडो बंद करो",

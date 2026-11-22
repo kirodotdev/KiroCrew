@@ -100,6 +100,7 @@ import { useChatPaneContinue } from './useChatPaneContinue'
 import { useChatPaneRenderers, ChatPaneAboveRows } from './ChatPaneTranscript'
 import { slotRowByKey } from '../store/slotIndex'
 import { useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
+import { platformShortcut } from '../utils/platform'
 
 export type { PaneLeading } from './ChatPaneProps'
 // Side Chat runs the same upload flow under a key of its own.
@@ -914,7 +915,7 @@ export default function ChatPane({
               : <span data-testid="chat-pane-status-caption" className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>
           )}
           {onSplitRight && (
-            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
+            <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d', { shortcut: platformShortcut('Cmd+D') })} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
               <SplitGlyph />
             </button>
           )}

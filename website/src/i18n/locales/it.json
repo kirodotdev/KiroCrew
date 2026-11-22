@@ -7320,7 +7320,7 @@
       "stop_failed_owner_only": "Solo il proprietario della dashboard può interrompere questa esecuzione. Chiedigli di interromperla.",
       "split_down": "Dividi in basso",
       "split_right": "Dividi a destra",
-      "split_right_d": "Dividi a destra (⌘D)",
+      "split_right_d": "Dividi a destra ({{shortcut}})",
       "type_to_filter": "Digita per filtrare…",
       "earlier_conversation_show": "Ricomincia da capo alle {{time}} · Mostra i messaggi precedenti ({{count}})",
       "earlier_conversation_hide": "Ricomincia da capo alle {{time}} · Nascondi i messaggi precedenti (non più ricordati)",
@@ -9702,7 +9702,7 @@
       "search_sessions": "Cerca tra le sessioni…",
       "split_down": "Dividi in basso",
       "split_right": "Dividi a destra",
-      "split_right_d": "Dividi a destra (⌘D)",
+      "split_right_d": "Dividi a destra ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "Riquadro del terminale — disponibile nella fase 2"
     },
     "sessionMoveUndoBar": {
@@ -15159,7 +15159,7 @@
       "session_options": "Opzioni della sessione",
       "show_sessions": "Mostra sessioni",
       "show_sessions_sidebar": "Mostra la barra laterale delle sessioni",
-      "split_view_d": "Vista divisa (⌘D)",
+      "split_view_d": "Vista divisa ({{shortcut}})",
       "start_a_new_chat": "Avvia una nuova chat",
       "session_closed_in_another_window": "Questa sessione è stata chiusa in un'altra finestra",
       "close_window": "Chiudi finestra",

@@ -7133,7 +7133,7 @@
       "stop_failed_owner_only": "Nur der Besitzer des Dashboards kann diesen Lauf stoppen. Bitte den Besitzer, ihn zu stoppen.",
       "split_down": "Nach unten teilen",
       "split_right": "Nach rechts teilen",
-      "split_right_d": "Nach rechts teilen (⌘D)",
+      "split_right_d": "Nach rechts teilen ({{shortcut}})",
       "type_to_filter": "Zum Filtern tippen…",
       "earlier_conversation_show": "Neu anfangen um {{time}} · Frühere Nachrichten zeigen ({{count}})",
       "earlier_conversation_hide": "Neu anfangen um {{time}} · Frühere Nachrichten ausblenden (nicht mehr erinnert)",
@@ -9469,7 +9469,7 @@
       "search_sessions": "Sitzungen suchen…",
       "split_down": "Nach unten teilen",
       "split_right": "Nach rechts teilen",
-      "split_right_d": "Nach rechts teilen (⌘D)",
+      "split_right_d": "Nach rechts teilen ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "Terminal-Bereich — kommt in Phase 2"
     },
     "sessionMoveUndoBar": {
@@ -14808,7 +14808,7 @@
       "session_options": "Sitzungsoptionen",
       "show_sessions": "Sitzungen anzeigen",
       "show_sessions_sidebar": "Sitzungsseitenleiste anzeigen",
-      "split_view_d": "Geteilte Ansicht (⌘D)",
+      "split_view_d": "Geteilte Ansicht ({{shortcut}})",
       "start_a_new_chat": "Einen neuen Chat starten",
       "session_closed_in_another_window": "Diese Sitzung wurde in einem anderen Fenster geschlossen",
       "close_window": "Fenster schließen",

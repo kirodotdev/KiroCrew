@@ -7133,7 +7133,7 @@
       "stop_failed_owner_only": "শুধু ড্যাশবোর্ডের মালিক এই রানটি থামাতে পারেন। তাঁকে থামাতে বলো।",
       "split_down": "নিচে ভাগ করুন",
       "split_right": "ডানে ভাগ করুন",
-      "split_right_d": "ডানে ভাগ করুন (⌘D)",
+      "split_right_d": "ডানে ভাগ করো ({{shortcut}})",
       "type_to_filter": "ফিল্টার করতে লিখুন…",
       "earlier_conversation_show": "{{time}}-এ নতুন করে শুরু · আগের মেসেজ দেখাও ({{count}})",
       "earlier_conversation_hide": "{{time}}-এ নতুন করে শুরু · আগের মেসেজ লুকাও (আর মনে নেই)",
@@ -9469,7 +9469,7 @@
       "search_sessions": "সেশন সার্চ করুন…",
       "split_down": "নিচে স্প্লিট করুন",
       "split_right": "ডানে স্প্লিট করুন",
-      "split_right_d": "ডানে স্প্লিট করুন (⌘D)",
+      "split_right_d": "ডানে স্প্লিট করো ({{shortcut}})",
       "terminal_pane_coming_in_phase_2": "টার্মিনাল প্যান — ফেজ 2-এ আসছে"
     },
     "sessionMoveUndoBar": {
@@ -14808,7 +14808,7 @@
       "session_options": "সেশন অপশন",
       "show_sessions": "সেশন দেখাও",
       "show_sessions_sidebar": "সেশন সাইডবার দেখাও",
-      "split_view_d": "স্প্লিট ভিউ (⌘D)",
+      "split_view_d": "স্প্লিট ভিউ ({{shortcut}})",
       "start_a_new_chat": "নতুন চ্যাট শুরু করুন",
       "session_closed_in_another_window": "এই সেশনটি অন্য একটি উইন্ডোতে বন্ধ করা হয়েছে",
       "close_window": "উইন্ডো বন্ধ করো",
