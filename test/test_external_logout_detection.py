@@ -200,6 +200,61 @@ class TestIdentityFingerprint:
         # Still absent -- and absent is never accepted as a reconciled baseline.
         assert kp.identity_fingerprint(db) == ""
 
+    @pytest.mark.parametrize(
+        "value",
+        ["1763400246", '"2026-11-17T17:24:06Z"', "2026-11-17T17:24:06Z"],
+        ids=["json-number", "json-string", "not-json"],
+    )
+    @pytest.mark.parametrize("with_sso_row", [False, True], ids=["alone", "beside-sso"])
+    def test_a_row_that_is_no_credential_blob_is_ignored(
+        self, tmp_path: Path, value: str, with_sso_row: bool
+    ) -> None:
+        """kiro-cli leaves a `kirocli:auth:last-forced-refresh-at` timestamp in auth_kv.
+
+        It names no login, so the read stays definitive and the fingerprint is
+        what the store gives without it."""
+
+        db = tmp_path / "data.sqlite3"
+        if with_sso_row:
+            _write_store(db, state_rows=False)
+        else:
+            _write_store(db, auth_keys=(), state_rows=False)
+        without_row: list[bool] = []
+        expected = kp.identity_fingerprint(db, definitive=without_row)
+        con = sqlite3.connect(str(db))
+        with con:
+            con.execute(
+                "INSERT INTO auth_kv (key, value) VALUES (?, ?)",
+                ("kirocli:auth:last-forced-refresh-at", value),
+            )
+        con.close()
+
+        definitive: list[bool] = []
+        assert kp.identity_fingerprint(db, definitive=definitive) == expected
+        assert definitive == without_row == [True]
+
+    def test_a_social_login_beside_a_non_credential_row_is_still_not_definitive(
+        self, tmp_path: Path
+    ) -> None:
+        """The ignored row must not hide a login the reader cannot identify."""
+
+        db = tmp_path / "data.sqlite3"
+        _write_store(db, auth_keys=(), state_rows=False)
+        con = sqlite3.connect(str(db))
+        with con:
+            con.executemany(
+                "INSERT INTO auth_kv (key, value) VALUES (?, ?)",
+                [
+                    ("kirocli:social:token", json.dumps({"access_token": "social-a"})),
+                    ("kirocli:auth:last-forced-refresh-at", "1763400246"),
+                ],
+            )
+        con.close()
+
+        definitive: list[bool] = []
+        assert kp.identity_fingerprint(db, definitive=definitive) == ""
+        assert definitive == [False]
+
     def test_a_claimful_row_still_records_its_key(self, tmp_path: Path) -> None:
         """The skip must not drop rows that DO identify an account."""
 
@@ -985,6 +1040,29 @@ class TestApiKeyIdentity:
         changed, live = await service.identity_changed_since_sessions()
         assert changed is False
         assert live != ""
+
+    @pytest.mark.asyncio
+    async def test_a_non_credential_row_does_not_withhold_the_key(self, tmp_path: Path) -> None:
+        """The reported host: the CLI authenticates by key, and an earlier login left a
+        `kirocli:auth:last-forced-refresh-at` timestamp in the store. That row names no
+        login, so the key counts, the boot seed succeeds and a turn reads no change.
+        Withholding the key read as signed out on every send, which retired idle
+        sessions and cancelled their `spawn_run` children."""
+
+        db = self._write_empty_store(tmp_path)
+        con = sqlite3.connect(str(db))
+        with con:
+            con.execute(
+                "INSERT INTO auth_kv (key, value) VALUES (?, ?)",
+                ("kirocli:auth:last-forced-refresh-at", "1763400246"),
+            )
+        con.close()
+        service = self._service(tmp_path, {"KIRO_API_KEY": self._KEY_1})
+
+        assert await service.seed_sessions_baseline() is True
+        changed, live = await service.identity_changed_since_sessions()
+        assert changed is False
+        assert kp._identity_components(live)[1] != ""
 
     @pytest.mark.asyncio
     async def test_a_per_session_key_overlay_is_never_stamped(self, tmp_path: Path) -> None:

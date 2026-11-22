@@ -860,6 +860,7 @@ def main() -> None:
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
+        from kiro_crew import cli_chat_runs
         from kiro_crew.cli_chat_headless import EXIT_USAGE as _headless_usage
         from kiro_crew.cli_chat_headless import main as _headless_main
         from kiro_crew.cli_chat_headless import (
@@ -867,17 +868,30 @@ def main() -> None:
         )
 
         if getattr(args, "headless", False):
+            if args.list_chats or args.continue_chat:
+                print("Error: --list and --continue are not --headless flags", file=sys.stderr)
+                sys.exit(_headless_usage)
             sys.exit(_headless_main(args))
         stray = _headless_stray(args)
         if stray:
             print(f"Error: {stray} needs --headless", file=sys.stderr)
             sys.exit(_headless_usage)
+        if args.list_chats:
+            cli_chat_runs.print_runs()
+            return
         try:
             message = resolve_chat_message(args.message)
         except StdinMessageError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-        _run_chat(message, args.model, agent=getattr(args, "agent", None))
+        run = cli_chat_runs.ChatRun(agent=args.agent or "")
+        try:
+            if args.continue_chat:
+                run.resume = cli_chat_runs.choose_resume(args.agent)
+            _run_chat(message, args.model, agent=args.agent, run=run)
+        except cli_chat_runs.CannotContinue as exc:
+            print(f"\nError: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "gateway":
         # The gateway's status lines are plain print() calls. Off a terminal
         # (systemd journal, launchd file, the Desktop supervisor's log fd, a

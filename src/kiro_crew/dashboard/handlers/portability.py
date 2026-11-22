@@ -28,6 +28,7 @@ from kiro_crew.portability import (
     preview_agent_templates,
     stream_export_zip,
     unbundled_agent_templates,
+    unbundled_apps,
     validate_import_zip,
 )
 from kiro_crew.sel import sel as _sel_fn  # circular import — sel imports lazily
@@ -102,6 +103,10 @@ _SPOOL_FILE = "import.zip"
 
 #: Export response header naming the agent templates the bundle does not carry.
 UNBUNDLED_TEMPLATES_HEADER = "X-Kirocrew-Unbundled-Templates"
+
+#: Export response header naming the installed apps a whole-install export does not
+#: carry, nor their data. Same JSON shape and bounds as the template header.
+UNBUNDLED_APPS_HEADER = "X-Kirocrew-Unbundled-Apps"
 
 #: Export response header: how many chats were left out so the archive stays within
 #: what import accepts (`portability_export._plan_sessions`). A bare non-negative integer.
@@ -330,6 +335,14 @@ async def api_portability_export(request: web.Request) -> web.StreamResponse:
         more += past_cap
     if unbundled or more:
         headers[UNBUNDLED_TEMPLATES_HEADER] = json.dumps(unbundled + ([f"+{more}"] if more else []))
+    # Every installed app stays behind with its data (`unbundled_apps` says which
+    # are named). A memory export carries no install, so it gets no app notice.
+    if not memory_only:
+        apps, apps_more = await asyncio.to_thread(unbundled_apps)
+        if apps or apps_more:
+            headers[UNBUNDLED_APPS_HEADER] = json.dumps(
+                apps + ([f"+{apps_more}"] if apps_more else [])
+            )
     if include_sessions:
         headers[SESSIONS_SKIPPED_SIZE_HEADER] = str(skipped_size)
 

@@ -122,8 +122,9 @@ export function refusalText(
 }
 
 /**
- * The export's warning header: a JSON list of the agent templates the bundle does
- * not carry, ending in `"+N"` when the server left N more out.
+ * An export warning header (`X-Kirocrew-Unbundled-Templates`, `X-Kirocrew-Unbundled-Apps`):
+ * a JSON list of the names the bundle does not carry, ending in `"+N"` when the
+ * server left N more out.
  */
 export function unbundledTemplates(header: string | null): { names: string[]; more: number } {
   try {
@@ -306,6 +307,7 @@ export default function PortabilityTab() {
     carried ? { type: 'ok', msg: carried.msg } : { type: 'idle', msg: '' },
   )
   const [exportWarning, setExportWarning] = useState('')
+  const [exportAppsWarning, setExportAppsWarning] = useState('')
   const [exportChatsSkipped, setExportChatsSkipped] = useState('')
   const [importWarnings, setImportWarnings] = useState<string[]>(carried?.warnings ?? [])
   const [importErrors, setImportErrors] = useState<string[]>(carried?.errors ?? [])
@@ -357,6 +359,7 @@ export default function PortabilityTab() {
     }
     setExportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.generating_export') })
     setExportWarning('')
+    setExportAppsWarning('')
     setExportChatsSkipped('')
     const withChats = includeChats && !memoryOnly
     try {
@@ -380,6 +383,8 @@ export default function PortabilityTab() {
       setExportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.download_started') })
       const { names, more } = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Templates'))
       if (names.length || more) setExportWarning(i18nT('pages.overview.portabilityTab.export_templates_not_included', { names: joinWithMore(names, more) }))
+      const apps = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Apps'))
+      if (apps.names.length || apps.more) setExportAppsWarning(i18nT('pages.overview.portabilityTab.export_apps_not_included', { names: joinWithMore(apps.names, apps.more) }))
       const skipped = withChats ? skippedChats(resp.headers.get('X-Kirocrew-Sessions-Skipped-Size')) : 0
       if (skipped > 0) setExportChatsSkipped(i18nT('pages.overview.portabilityTab.export_chats_skipped_size', { chats: skipped }))
     } catch (e: unknown) {
@@ -643,6 +648,7 @@ export default function PortabilityTab() {
           <ErrorNotice variant="inline" message={exportStatus.msg} className="mt-3" testId="portability-export-error" />
         )}
         <WarnLine msg={exportWarning} testId="portability-export-warning" />
+        <WarnLine msg={exportAppsWarning} testId="portability-export-apps-warning" />
         <WarnLine msg={exportChatsSkipped} testId="portability-export-chats-skipped" />
       </Card>
 

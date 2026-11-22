@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         _keep_background_open,
         _native_subagent_close_all,
     )
+    from kiro_crew.dashboard.chat_turn.stop_recovery import _stale_replay_vetoed
     from kiro_crew.dashboard.chat_turn.tool_rows import _MAX_TCID_SOURCES
     from kiro_crew.dashboard.chat_turn.turn_ledgers import _report_consumed, _wt_collect
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
@@ -863,7 +864,8 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # turn that is actually re-driven in place, so a stall takes the
     # terminal stall_exhausted label when its 3-attempt budget is
     # already spent ("Session stuck") OR when it is a NESTED turn
-    # (depth > 0), which those branches never re-queue — it dies
+    # (depth > 0) or a stale replay the person's newer intent vetoes,
+    # which those branches never re-queue — it dies
     # with "please retry", a user-visible fault that must reach
     # fault_rate. Only this surface maintains such a budget; every
     # other surface's outcome comes from its stop reason alone.
@@ -873,7 +875,9 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # zero-billing timeout takes the second path only.
     if event.stop_reason == STOP_REASON_STALE_RECOVER:
         _turn_exhausted = (
-            _prompt_depth > 0 or slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES
+            _prompt_depth > 0
+            or slot._stale_recovery_retries >= STOP_RECOVERY_MAX_RETRIES
+            or _stale_replay_vetoed(turn)
         )
     elif event.stop_reason == STOP_REASON_TOOL_STALL:
         _turn_exhausted = _prompt_depth > 0 or slot._tool_stall_retries >= STOP_RECOVERY_MAX_RETRIES

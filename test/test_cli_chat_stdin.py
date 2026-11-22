@@ -105,7 +105,9 @@ def test_the_help_and_the_spec_state_the_measured_cap() -> None:
 
 def _run_cli(monkeypatch, stdin_bytes: bytes, argv: list[str]) -> list[str | None]:
     sent: list[str | None] = []
-    monkeypatch.setattr(cli, "_run_chat", lambda message, model, agent=None: sent.append(message))
+    monkeypatch.setattr(
+        cli, "_run_chat", lambda message, model, agent=None, run=None: sent.append(message)
+    )
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin_bytes)))
     monkeypatch.setattr(sys, "argv", ["kirocrew", "chat", *argv])
     cli.main()

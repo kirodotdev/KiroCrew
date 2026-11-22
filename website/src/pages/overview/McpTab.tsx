@@ -813,6 +813,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     mutationFn: () => api.mcpProbe(),
     onSuccess: (data) => {
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], data)
+      // These rows are a fresh check, so a Retry server failure notice that
+      // said "the status shown is from the last check" is no longer true.
+      resetFailures.reset()
     },
     onError: () => {
       refetch()
@@ -847,6 +850,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       // would keep a stale failing badge or sign-in note the response no longer carries.
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
         prev?.map(x => (x.name === row.name ? row : x)))
+      // A fresh check of the row a Retry server failure was about makes that
+      // notice untrue; one about another row stays.
+      if (resetFailures.variables === row.name) resetFailures.reset()
     },
   })
 

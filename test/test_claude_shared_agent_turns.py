@@ -15,7 +15,12 @@ from test_claude_shared_runtime import harness  # noqa: F401  (fixture, by name)
 from test_claude_shared_runtime import _SIGNAL_DEADLINE_SECS, _claude_runtime, _Plane
 
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, JsonRpcMessage
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    METHOD_COMMANDS_EXECUTE,
+    JsonRpcMessage,
+)
 
 #: Every session here starts through the claude harness with its adapter resolved
 #: to a test value, as in ``test_claude_shared_runtime``.
@@ -116,6 +121,54 @@ def test_a_prompt_that_starts_first_reads_the_agents_frames_as_its_own(tmp_path,
     assert "late reply" in [e.text for e in events if e.kind == EVENT_TEXT_CHUNK]
     assert events[-1].kind == EVENT_COMPLETE
     assert not handle.agent_turn_pending()
+    asyncio.run(rt.terminate_session("s-1"))
+
+
+def _record_stale_eligible_at_dispatch(handle: Any) -> list[bool]:
+    """Whether the model-wait watchdog may judge the turn when its dispatch loop starts."""
+    seen: list[bool] = []
+    dispatch = handle._dispatch_events
+
+    def _recording(*args: Any, **kwargs: Any) -> Any:
+        seen.append(handle._stale_eligible)
+        return dispatch(*args, **kwargs)
+
+    handle._dispatch_events = _recording
+    return seen
+
+
+def test_a_prompt_starts_stale_eligible_and_agent_or_command_turns_do_not(tmp_path, monkeypatch):
+    """A prompt is judged by the model-wait watchdog from its send; a turn the
+    agent started arms from its first activity frame instead, and a native
+    command turn is bounded by its own command timeout."""
+    rt, handle = _session(tmp_path)
+    queue = rt._session_queues["s-1"]
+
+    async def send_request(method: str, params: dict, **_: Any) -> int:
+        queue.put_nowait(
+            JsonRpcMessage.from_dict(
+                {"jsonrpc": "2.0", "id": 7, "result": {"stopReason": "end_turn"}}
+            )
+        )
+        return 7
+
+    monkeypatch.setattr(rt, "send_request", send_request)
+    seen = _record_stale_eligible_at_dispatch(handle)
+
+    async def scenario() -> None:
+        handle.watch_agent_turns(lambda: None)
+        queue.put_nowait(_chunk("s-1", "the background job finished"))
+        queue.put_nowait(_autonomous_end("s-1"))
+        await _collect(handle.stream_unsolicited())
+        await _collect(handle.prompt("next question"))
+
+        async def _command() -> tuple[str, dict[str, Any]]:
+            return METHOD_COMMANDS_EXECUTE, {"sessionId": "s-1", "command": {"command": "usage"}}
+
+        await _collect(handle._run_turn(_command, None, extract_command_result=True))
+
+    asyncio.run(scenario())
+    assert seen == [False, True, False]
     asyncio.run(rt.terminate_session("s-1"))
 
 
