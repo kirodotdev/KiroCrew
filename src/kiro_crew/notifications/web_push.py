@@ -52,13 +52,18 @@ if TYPE_CHECKING:  # `ResolveResult` exists only from aiohttp 3.10; setup.cfg al
 logger = logging.getLogger(__name__)
 
 # The application-server contact URI in the VAPID JWT `sub` claim. Apple's push
-# service is the strict one: `sub` must be a mailto: or https: URI and the JWT
-# `exp` must be no more than 24h out, else it returns 403 BadJwtToken.
-_VAPID_SUBJECT = "mailto:kirocrew@localhost"
+# service is the strict one: `sub` must be a mailto: or https: URI on a real
+# host (it refuses `mailto:...@localhost`) and the JWT `exp` must be no more
+# than 24h out, else it returns 403 BadJwtToken. The project page is that URI.
+_VAPID_SUBJECT = "https://github.com/kirodotdev/KiroCrew"
 # Well under Apple's 24h ceiling, comfortably longer than any single request.
 _VAPID_TTL_SECONDS = 12 * 60 * 60
 # Push-service TTL: how long to retain the message for a disconnected device.
 _MESSAGE_TTL_SECONDS = 24 * 60 * 60
+# How much of a failed push's response body the warning quotes: enough for the
+# push service's reason (Apple: `{"reason":"BadJwtToken"}`), bounded so an
+# endpoint answering with a large page cannot fill the log.
+_ERROR_BODY_LOG_BYTES = 256
 
 
 @dataclass
@@ -274,7 +279,13 @@ async def send_web_push(
             gone = status in (404, 410)
             ok = 200 <= status < 300
             if not ok and not gone:
-                logger.warning("Web push to %s returned HTTP %s", urlparse(endpoint).netloc, status)
+                reason = await resp.content.read(_ERROR_BODY_LOG_BYTES)
+                logger.warning(
+                    "Web push to %s returned HTTP %s: %r",
+                    urlparse(endpoint).netloc,
+                    status,
+                    reason.decode("utf-8", "replace"),
+                )
             return PushResult(gone=gone)
     except Exception:
         logger.warning("Web push delivery failed for %s", urlparse(endpoint).netloc, exc_info=True)
