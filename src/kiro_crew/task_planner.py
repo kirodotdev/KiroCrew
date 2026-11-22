@@ -380,7 +380,10 @@ async def decompose(
                             outcome="denied",
                             request_id=event.request_id,
                             error="hook_deny",
-                            metadata={"phase": "decomposition"},
+                            metadata={
+                                "phase": "decomposition",
+                                **({"rule_id": hook_result.tier} if hook_result.tier else {}),
+                            },
                         )
                         await _steer_host_deny(
                             client,

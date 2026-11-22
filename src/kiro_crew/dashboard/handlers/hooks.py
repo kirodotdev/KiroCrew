@@ -1136,6 +1136,11 @@ async def _run_hook_inner(
                     source="webhook",
                     request_id=str(event.request_id),
                     error=deny_error,
+                    metadata=(
+                        {"rule_id": decision.tier}
+                        if deny_error == "hook_deny" and decision is not None and decision.tier
+                        else None
+                    ),
                 )
                 # No person is attached to a webhook turn, so every deny here
                 # is the host's: tell the model which one before the wire.

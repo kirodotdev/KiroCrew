@@ -25,6 +25,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1136,11 +1137,15 @@ class TestCompactionReinjection:
 
 class TestToolHookVerdicts:
     @pytest.mark.asyncio
-    async def test_tool_call_deny_is_surfaced_as_unenforceable_warning(self):
+    async def test_tool_call_deny_is_surfaced_as_unenforceable_warning(self, monkeypatch):
         """EVENT_TOOL_CALL is informational — the tool is ALREADY running, so a
         hook deny warns instead of claiming it was blocked."""
         slack = MockSlackClient()
-        builder = _Builder(ToolHookResult(action=TOOL_DENY, reason="denylisted"))
+        verdict = ToolHookResult(action=TOOL_DENY, reason="denylisted")
+        verdict.tier = "deny-rules"
+        builder = _Builder(verdict)
+        audit = MagicMock()
+        monkeypatch.setattr(h, "sel", lambda: audit)
         provider = FakeProvider(
             [
                 AcpEvent(kind=EVENT_TOOL_CALL, title="rm -rf /tmp/x", tool_kind="execute"),
@@ -1161,6 +1166,9 @@ class TestToolHookVerdicts:
         assert "flagged by security" in text
         assert "cannot be stopped here" in text
         assert builder.hooks.tool_calls == ["rm -rf /tmp/x"]
+        rows = [c.kwargs for c in audit.log_tool_invocation.call_args_list]
+        (flagged,) = [r for r in rows if r["outcome"] == "flagged_unenforceable"]
+        assert flagged["metadata"] == {"rule_id": "deny-rules"}
 
     @pytest.mark.asyncio
     async def test_permission_request_hook_auto_approve(self):

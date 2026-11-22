@@ -870,7 +870,13 @@ async def _steer_user_reply(provider: LLMProvider, event: LLMEvent, reply: str) 
 
 
 async def _audit_off_loop(
-    gate: _ToolGate, event: LLMEvent, outcome: str, *, error: str = "", critical: bool = False
+    gate: _ToolGate,
+    event: LLMEvent,
+    outcome: str,
+    *,
+    error: str = "",
+    critical: bool = False,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     """Await :func:`_audit` on a worker thread.
 
@@ -891,10 +897,14 @@ async def _audit_off_loop(
     it in :func:`asyncio.shield` so the record still lands if another
     cancellation arrives mid-write. No caller audits synchronously on the loop.
     """
-    await asyncio.to_thread(_audit, gate, event, outcome, error=error, critical=critical)
+    await asyncio.to_thread(
+        _audit, gate, event, outcome, error=error, critical=critical, metadata=metadata
+    )
 
 
-async def _audit_refusal(gate: _ToolGate, event: LLMEvent, *, error: str) -> None:
+async def _audit_refusal(
+    gate: _ToolGate, event: LLMEvent, *, error: str, metadata: dict[str, str] | None = None
+) -> None:
     """Audit a REFUSAL without letting the audit become the outcome.
 
     Every caller goes on to ``reject_tool``, and that call is what ends the turn:
@@ -909,7 +919,7 @@ async def _audit_refusal(gate: _ToolGate, event: LLMEvent, *, error: str) -> Non
     anything. Refusal paths therefore fail safe when bookkeeping is unavailable.
     """
     try:
-        await _audit_off_loop(gate, event, "denied", error=error)
+        await _audit_off_loop(gate, event, "denied", error=error, metadata=metadata)
     except Exception:
         # Warning, not debug: an audit sink that cannot record refusals is an
         # operational fault worth seeing, even though it must not stop the refusal.
@@ -924,6 +934,7 @@ async def _refuse_host_deny(
     error: str,
     cause: str,
     reason: str,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     """Refuse a request the HOST declined, and tell the model so first.
 
@@ -946,7 +957,7 @@ async def _refuse_host_deny(
     The person's own refusal must NOT come through here: there kiro-cli's
     wording is the truth.
     """
-    await _audit_refusal(gate, event, error=error)
+    await _audit_refusal(gate, event, error=error, metadata=metadata)
     await _steer_host_deny(provider, event, reason, cause=cause)
     await provider.reject_tool(event.request_id)
 
@@ -972,7 +983,13 @@ async def _reject_internal_failure(
 
 
 def _audit(
-    gate: _ToolGate, event: LLMEvent, outcome: str, *, error: str = "", critical: bool = False
+    gate: _ToolGate,
+    event: LLMEvent,
+    outcome: str,
+    *,
+    error: str = "",
+    critical: bool = False,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     """Record a permission decision in the SEL audit log.
 
@@ -1024,6 +1041,7 @@ def _audit(
         outcome=outcome,
         request_id=event.request_id,
         error=error,
+        metadata=metadata,
         critical=critical,
     )
 
@@ -1188,6 +1206,7 @@ async def _answer_permission(
             error=_HOOK_DENY_CODE,
             cause=DENY_CAUSE_POLICY,
             reason=decision.reason or "blocked by security policy",
+            metadata={"rule_id": decision.tier} if decision.tier else None,
         )
         try:
             reason = (

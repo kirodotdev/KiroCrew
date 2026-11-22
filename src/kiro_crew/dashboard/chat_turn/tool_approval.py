@@ -872,6 +872,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 outcome="denied",
                 request_id=event.request_id,
                 error="hook_deny",
+                metadata={"rule_id": tool_result.tier} if tool_result.tier else None,
             )
             # In-band first, and BEFORE the rejection goes on the
             # wire: holding the unanswered permission request is what
