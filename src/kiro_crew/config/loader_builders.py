@@ -101,6 +101,9 @@ _JSON_TYPE_LABELS: dict[str, str] = {
 }
 
 
+_POD_ENV = "KIROCREW_POD"
+
+
 def resolve_loop_stall_exit_after(
     dashboard_data: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
@@ -120,11 +123,12 @@ def resolve_loop_stall_exit_after(
             LOOP_STALL_EXIT_AFTER_MAX,
         )
     source = os.environ if environ is None else environ
-    # The generated service definition is the sole launch-class authority.
-    # Inferring from systemd metadata is ambiguous because descendants inherit
-    # INVOCATION_ID; old definitions are reported by ``kirocrew doctor`` with
-    # the one-time regeneration command instead.
-    managed = source.get(_MANAGED_SERVICE_ENV) == "1"
+    # The generated service definition is the live service's launch-class
+    # authority; systemd metadata is ambiguous because descendants inherit
+    # INVOCATION_ID. A pod gateway is booted by its own service manager with no
+    # desktop app watching it, so the pod marker its boot sets counts too; that
+    # boot never sets the live marker, which the restart checks also read.
+    managed = source.get(_MANAGED_SERVICE_ENV) == "1" or source.get(_POD_ENV) == "1"
     return LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT if managed else LOOP_STALL_EXIT_AFTER_DEFAULT
 
 
@@ -136,16 +140,19 @@ def consume_managed_service_launch_environment(
     The generated service definition sets this marker for the gateway itself.
     Consuming it before the dashboard starts app backends or child terminals
     prevents those descendants from being misclassified as managed services.
+    A pod marker is copied into the result but left in place, since every
+    descendant of a pod gateway is still in that pod.
     """
     source = os.environ if environ is None else environ
+    launch = {_POD_ENV: "1"} if source.get(_POD_ENV) == "1" else {}
     value = source.pop(_MANAGED_SERVICE_ENV, None)
     if value is None:
-        return {}
+        return launch
     if environ is None:
         # Consumed for descendants only: the gateway's own exec successor (an
         # in-app restart) is the same service launch and gets it back.
         platform_compat.keep_for_reexec(_MANAGED_SERVICE_ENV, value)
-    return {_MANAGED_SERVICE_ENV: value}
+    return {**launch, _MANAGED_SERVICE_ENV: value}
 
 
 def launched_as_managed_service() -> bool:
