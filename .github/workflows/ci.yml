@@ -779,6 +779,8 @@ jobs:
       # actions:read is what lets this read another workflow's runs. Job-level
       # permissions REPLACE the top-level grant, so contents:read is restated.
       actions: read
+      # Reads the commit's check-runs when the Fast Gate listing answers none.
+      checks: read
       contents: read
     steps:
       # The poll body lives in a script on disk, so the file has to be present
@@ -856,9 +858,11 @@ jobs:
     timeout-minutes: 40
     permissions:
       # actions:write is what lets this cancel its own run (it also covers the
-      # probe's reads). Job-level permissions REPLACE the top-level grant, so
+      # probe's run reads). Job-level permissions REPLACE the top-level grant, so
       # contents:read is restated for the checkout.
       actions: write
+      # The probe reads the commit's check-runs when the listing answers none.
+      checks: read
       contents: read
     steps:
       # Sparse, shallow and credential-free, like the barrier's checkout: only
