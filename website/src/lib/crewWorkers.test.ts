@@ -8,6 +8,7 @@ describe('crewWorkers', () => {
     // A worker's question is its conductor's (edge review R1 S2, owner decision A).
     expect(crewWorkerGroupOfRow({ needs_input: true })).toBe('with_conductor')
     expect(crewWorkerGroupOfRow({ running: true })).toBe('working')
+    expect(crewWorkerGroupOfRow({ subagents_running: true })).toBe('working')
     expect(crewWorkerGroupOfRow({ messages: 3 })).toBe('waiting')
     expect(crewWorkerGroupOfRow({ messages: 0 })).toBe('waiting')
   })
@@ -29,6 +30,7 @@ describe('crewWorkers', () => {
     [{ pending_approval: true, messages: 4 }, 'approval'],
     [{ needs_input: true, messages: 4 }, 'with_conductor'],
     [{ running: true, messages: 0 }, 'working'],
+    [{ subagents_running: true, messages: 0 }, 'working'],
     // An open question blocks the turn: the server reads it before `running`.
     [{ running: true, needs_input: true, messages: 4 }, 'with_conductor'],
     // The server says done only from a closed tab or the ledger; a row has neither.

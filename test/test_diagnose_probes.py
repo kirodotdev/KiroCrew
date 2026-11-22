@@ -329,6 +329,18 @@ def test_agent_spec_mcp_command_that_no_longer_exists(world, tmp_path):
     assert "Reinstall" in f["fix"]["steps"][0]
 
 
+def test_a_server_the_default_agent_left_out_for_a_missing_program_is_named(world):
+    from kiro_crew import mcp_dropped_servers
+
+    assert _run(world)["agent_spec_dead_paths"]["status"] == dp.OK
+    mcp_dropped_servers.record_rebuild_drops({"notes": "uvx"})
+    f = _run(world)["agent_spec_dead_paths"]
+    assert f["status"] == dp.PROBLEM
+    assert f["summary"].endswith("program is not on this computer: notes")
+    assert f["evidence"]["dropped"] == [{"server": "notes", "program": "uvx"}]
+    assert "start a new chat with the default agent" in f["fix"]["steps"][0]
+
+
 def test_signed_out_kiro_cli_explains_failing_turns(world):
     world["app"]["kiro_prerequisite_service"] = _Service(_Status(authenticated=False))
     world["units"].append(
@@ -419,6 +431,22 @@ def test_remote_crew_that_does_not_answer(world):
     assert f["status"] == dp.PROBLEM
     assert f["evidence"]["unreachable"] == [{"name": "lab box", "local_port": port}]
     assert "Remote Crew" in f["fix"]["steps"][0]
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-16"])
+def test_remote_crew_probe_reads_every_encoding_the_registry_accepts(world, encoding):
+    # A BOM or UTF-16 file (PowerShell 5.1's default) must not make the check "could not run".
+    port = _closed_port()
+    instances = {"instances": [{"id": "r1", "name": "lab box", "local_port": port}]}
+    (world["home"] / "instances.json").write_bytes(json.dumps(instances).encode(encoding))
+    f = _run(world)["remote_crew_unreachable"]
+    assert f["status"] == dp.PROBLEM
+    assert f["evidence"]["unreachable"] == [{"name": "lab box", "local_port": port}]
+
+
+def test_remote_crew_file_no_encoding_decodes_is_not_ok(world):
+    (world["home"] / "instances.json").write_bytes(b"\xff\xfe\x00\xd8garbage")
+    assert _run(world)["remote_crew_unreachable"]["status"] != dp.OK
 
 
 def test_turn_running_for_half_an_hour(world):

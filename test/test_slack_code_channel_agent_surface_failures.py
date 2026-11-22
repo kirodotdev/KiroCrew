@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from git_repo_templates import _surface_root_template, surface_worktree_fixture  # noqa: F401
 from slack_code_channel_surface_helpers import (  # noqa: F401 - fixtures by name
     BRANCH,
     CH,
@@ -41,7 +42,6 @@ from slack_code_channel_surface_helpers import (  # noqa: F401 - fixtures by nam
     _turn,
     _wrap,
     env_fixture,
-    worktree_fixture,
 )
 from slack_code_channels_helpers import OWNER
 
@@ -993,7 +993,7 @@ def test_a_second_wrap_up_survives_the_first_ones_failed_delivery(
     calls: list[str] = []
     second: list[str] = []
 
-    async def deliver(_orch: Any, _r: Any, _e: Any, text: str, _u: Any) -> bool:
+    async def deliver(_orch: Any, _r: Any, _e: Any, text: str, _u: Any, **_kw: Any) -> bool:
         calls.append(text)
         if len(calls) == 1:
             # While the first is still being delivered, a second /wrap-up arrives.

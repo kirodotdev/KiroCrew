@@ -88,7 +88,7 @@ function SafetySwitchesCard() {
 
   // What every row shows under its toggle. The toggles themselves are written
   // out per row, so the settings registry reads their literal labels.
-  const rowExtras = (key: SafetySwitchKey, shown: Shown, restartNote: ReactNode = null) => (
+  const rowExtras = (key: SafetySwitchKey, shown: Shown, note: ReactNode = null) => (
     <>
       {readOnly && (
         // A disabled row is dimmed; this line, outside it, keeps on and off apart.
@@ -109,7 +109,7 @@ function SafetySwitchesCard() {
           </span>
         </div>
       )}
-      {restartNote}
+      {note}
       {failedKey === key && (
         <ErrorNotice
           variant="inline"
@@ -131,16 +131,13 @@ function SafetySwitchesCard() {
 
   return (
     <SettingsCard>
-      <p className="m-0 mb-2 text-[12px] text-muted leading-relaxed">
-        {i18nT('pages.settings.securityPanel.safetySwitches.intro')}
-      </p>
       {isLoading ? (
         <div data-testid="safety-switches-loading" aria-busy="true">
           <SkeletonToggleRow />
           <SkeletonToggleRow />
         </div>
       ) : view || ownerGateRefused ? (
-        <div data-testid="safety-switches-rows" className="flex flex-col gap-1.5">
+        <div data-testid="safety-switches-rows" className="flex flex-col -my-3 divide-y divide-border [&>*]:py-3">
           {ownerGateRefused && (
             // A permission lock, not a failure: a neutral line with nothing to retry.
             <div data-testid="safety-switches-owner-only" className="flex items-start gap-2 text-[12px] text-muted leading-relaxed">
@@ -162,7 +159,7 @@ function SafetySwitchesCard() {
             />
           )}
           {protect && (
-            <div data-testid="safety-switch-protect" className="flex flex-col gap-1 border border-border rounded-md px-3 py-2">
+            <div data-testid="safety-switch-protect" className="flex flex-col gap-1">
               <SettingsToggle
                 label={i18nT('pages.settings.securityPanel.safetySwitches.protect_label')}
                 description={i18nT('pages.settings.securityPanel.safetySwitches.protect_desc')}
@@ -171,11 +168,18 @@ function SafetySwitchesCard() {
                 disabled={readOnly || busy}
                 onChange={on => send(PROTECT, on)}
               />
-              {rowExtras(PROTECT, protect)}
+              {rowExtras(PROTECT, protect, (
+                // The fence covers the agent's file-edit tools only, so the
+                // terminal caveat gets a line of its own.
+                <div data-testid="safety-switch-terminal-note" className="flex items-start gap-2 text-[11px] text-muted leading-relaxed">
+                  <Info size={12} className="shrink-0 mt-px" />
+                  <span>{i18nT('pages.settings.securityPanel.safetySwitches.protect_terminal_note')}</span>
+                </div>
+              ))}
             </div>
           )}
           {honour && (
-            <div data-testid="safety-switch-honour" className="flex flex-col gap-1 border border-border rounded-md px-3 py-2">
+            <div data-testid="safety-switch-honour" className="flex flex-col gap-1">
               <SettingsToggle
                 label={i18nT('pages.settings.securityPanel.safetySwitches.ask_label')}
                 description={i18nT('pages.settings.securityPanel.safetySwitches.ask_desc')}
@@ -230,7 +234,7 @@ function SafetySwitchesCard() {
 /** Settings -> Security -> Safety switches. */
 export function SafetySwitchesSection() {
   return (
-    <SettingsSection title={i18nT('pages.settings.securityPanel.safetySwitches.section_title')}>
+    <SettingsSection title={i18nT('pages.settings.securityPanel.safetySwitches.section_title')} description={i18nT('pages.settings.securityPanel.safetySwitches.intro')}>
       <SafetySwitchesCard />
     </SettingsSection>
   )

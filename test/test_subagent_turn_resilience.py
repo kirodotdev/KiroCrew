@@ -381,7 +381,7 @@ async def test_a_shutdown_cancel_under_a_tab_is_announced_by_the_next_start(
     notify.assert_awaited_once()
     notified_parent, msg = notify.await_args.args[:2]
     assert notified_parent == parent
-    assert f"Agent `{info.id}` ⚠️ cut off mid-turn by gateway restart" in msg
+    assert f"Agent `{info.id}` interrupted: cut off mid-turn by gateway restart" in msg
     assert "Partial output saved at:" in msg  # the text it streamed before the cancel
     assert sp.list_orphans() == []
 

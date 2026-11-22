@@ -32,6 +32,7 @@ from kiro_crew.acp._dispatch import (
     _dumps_degraded,
     _measure_tool_output,
     classify_tool_call,
+    claude_mcp_stamp,
     derive_edit_diff,
     extract_tool_purpose,
     is_rendered_edit_diff,
@@ -331,6 +332,9 @@ async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") ->
 
             _serialized = redact(_serialized)
             _redacted_input = _serialized
+        # The structured params, when the frame carried them, are what the
+        # payload's tool_input is built from (redacted value by value in
+        # hooks.hook_tool_input); the redacted string above is the fallback.
         await fire_tool_hooks(
             hook_store,
             # Fall back to 'unknown' when the event carries no title, matching
@@ -339,6 +343,7 @@ async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") ->
             tool_event.title or "unknown",
             _redacted_input,
             agent_role=self._agent or None,
+            raw_tool_params=getattr(tool_event, "raw_tool_params", None),
         )
     except Exception:
         logger.warning("ACP-layer PreToolUse hook failed", exc_info=True)
@@ -665,9 +670,10 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # Antigravity's reads) names them on the event that starts the call, for
         # its PostToolUse spec hooks. The other backends are named by their
         # permission request alone.
+        _stated_tool_name = stated_harness_tool_name(self.backend, update)
         _event_tool_id = start_event_tool_id(
             self.backend,
-            stated_harness_tool_name(self.backend, update),
+            _stated_tool_name,
             tool_kind=kind if isinstance(kind, str) else "",
             mcp_server=event_mcp_server,
             mcp_tool=event_tool_name,
@@ -709,6 +715,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
             harness_tool_id=_event_tool_id,
+            claude_mcp_tool_name=claude_mcp_stamp(update, _stated_tool_name, backend=self.backend),
             # Off the RAW kind: the argument naming the file this call reads, for the
             # row's thumbnail strip (``acp.read_path_arg``).
             read_path_arg=read_path_arg(self.backend, update.get("kind")),

@@ -33,6 +33,7 @@ _pinned_identity = suite._pinned_identity
 publisher_clock = suite.publisher_clock
 slack = suite.slack
 repo = suite.repo
+_repo_template = suite._repo_template
 StepClock = suite.StepClock
 _Harness = suite._Harness
 _Item = suite._Item
@@ -86,7 +87,7 @@ def test_a_board_not_shown_at_send_time_clears_the_sidebar_summary(monkeypatch, 
     monkeypatch.setattr(links, "link_builder", lambda: _link)
     source.set_scope_predicate(lambda st, b: True)
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         return answer
 
     monkeypatch.setattr(publisher, "publish", fake_publish)
@@ -359,7 +360,7 @@ def test_the_board_publish_honours_an_off_channel(monkeypatch):
 
     sent: list = []
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         sent.append(snapshot)
         return "updated"
 
@@ -435,7 +436,7 @@ def test_the_publish_wrapper_hands_the_publisher_the_live_scope_check(monkeypatc
 
     seen: dict = {}
 
-    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake_publish(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         seen["admits"] = admits
         return "updated"
 
@@ -1354,8 +1355,9 @@ def test_a_display_cut_never_shows_part_of_a_path(monkeypatch):
 def test_a_structured_path_is_redacted_whole_before_it_is_shortened(monkeypatch):
     _on_posix(monkeypatch)
     key = SAMPLE_SLACK_BOT_TOKEN
-    step = _published_step(monkeypatch, "read", f"/opt/x/{key}/notes.txt")
-    assert key not in step and key[-8:] not in step and step.startswith("Reading ")
+    # The key in the segment the shortening keeps (M3), so only the redaction removes it.
+    step = _published_step(monkeypatch, "read", f"/opt/x/{key}.txt")
+    assert key not in step and key[-8:] not in step and step.startswith("Reading …/")
 
 
 @pytest.mark.parametrize(
@@ -1373,18 +1375,18 @@ def test_a_published_line_published_again_is_unchanged(monkeypatch, case):
     assert _published(monkeypatch, once, project) == once
 
 
-def test_running_helpers_counts_the_watched_sessions_running_but_the_channels_own(tmp_path):
+def test_watched_sessions_are_the_watchs_sessions_but_the_channels_own(tmp_path):
     h = _Harness(tmp_path)
     h.svc._seen["T1:C1"] = {
         "dashboard_chat-cond": (True, 1),  # the channel's own session
         "chat-w1": (True, 1),
-        "chat-w2": (False, 1),  # idle
+        "chat-w2": (False, 1),  # idle: the Stop reads its live state itself
         "dashboard_chat-w3": (True, 2),
     }
-    assert h.svc.running_helpers(suite._FakeBinding()) == 2
-    assert h.svc.running_helpers(suite._FakeBinding(channel_id="C2")) == 0
+    assert h.svc.watched_sessions(suite._FakeBinding()) == {"chat-w1", "chat-w2", "chat-w3"}
+    assert h.svc.watched_sessions(suite._FakeBinding(channel_id="C2")) == set()
     source.set_scope_predicate(lambda state, b: False)  # shared: the board withholds them
-    assert h.svc.running_helpers(suite._FakeBinding()) == 0
+    assert h.svc.watched_sessions(suite._FakeBinding()) == set()
 
 
 def test_a_stop_clears_the_suspended_the_last_turn_left_for_the_worker_status(monkeypatch):
@@ -1629,7 +1631,7 @@ def _scope_says(monkeypatch, why):
 def _fake_publisher(monkeypatch, body):
     sent: list = []
 
-    async def fake(binding, snapshot, *, link_for, owner_id="", admits=None):
+    async def fake(binding, snapshot, *, link_for, owner_id="", admits=None, **_kw):
         sent.append(snapshot)
         return body(admits)
 

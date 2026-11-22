@@ -48,6 +48,10 @@ Authorities cited:
   adjacent Latin letter, digit or `$`-prefixed number — `MCP 服务器`, `第 3 轮`.
   No space between CJK and full-width punctuation, and none between two CJK
   characters.
+- **No line break from the source layout.** A line break plus indentation in the
+  English is how the code was wrapped, and the browser shows it as a space. Drop
+  it between CJK characters or next to full-width punctuation; write one space
+  anywhere else. Checked by `zhStyle.test.ts`.
 - **Trailing punctuation matches the English.** If the English has no `.`, the
   Chinese gets no `。`.
 - **Em dash** `—` is preserved 1:1 with the English, spaced on both sides.
@@ -173,7 +177,7 @@ sentence. New copy must not add fragments: one key per sentence.
 | correct CLDR plural categories (1: other) | `catalogParity.test.ts` |
 | no unreachable plural suffixes | `zhStyle.test.ts` |
 | selected terminology mappings | `zhStyle.test.ts` |
-| CJK punctuation, ellipsis, no corner brackets and mixed parentheses | `zhStyle.test.ts` |
+| CJK punctuation, ellipsis, no corner brackets, mixed parentheses or source-layout line breaks | `zhStyle.test.ts` |
 | no 您, 这将, doubled particles or three-的 clauses | `zhStyle.test.ts` |
 | do-not-translate terms present | `glossary.test.ts` |
 

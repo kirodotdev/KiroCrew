@@ -78,6 +78,7 @@ seam. Rule: `no-new-builtin-apps` in `../AUTOSDE.yaml`; the backend half:
   inline with text.** Never use an emoji or hand-rolled SVG as an icon. Size props
   are valid for standalone glyphs. Enforced by `AUTOSDE.yaml`
   (`use-lucide-icons`, `no-emoji-as-icons`).
+  Scope: [the 2026-11-18 emoji decision](../docs/decisions/2026-11-18-emoji-are-replaced-only-in-the-web-ui.md).
 - **Errors shown to the user render through `ErrorNotice`**, never a hand-written
   `<div className="text-danger">{err}</div>`. Turn on `askAgent` wherever the
   hand-off cannot lose anything. Next to an unsaved draft, leave it off and name

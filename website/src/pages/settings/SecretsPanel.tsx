@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Check, Copy, ExternalLink, Globe, KeyRound, LogIn, Pencil, Plus, ShieldCheck, StickyNote, Trash2 } from 'lucide-react'
+import { Check, ChevronRight, ExternalLink, Globe, KeyRound, LogIn, Pencil, Plus, ShieldCheck, StickyNote, Trash2 } from 'lucide-react'
 import { useQuery, useMutation, useMutationState, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useForm, useWatch } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { SUBNAV_PARAM, parsePathSegments, toPathSegment } from '../../components/subNavParams'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SecretField } from '../../components/SecretField'
-import { Btn, Card, CardTitle, IconButton, IconButtonGroup, Input } from '../../components/ui'
+import { Btn, Card, CardTitle, IconButton, Input } from '../../components/ui'
+import Tablist from '../../components/Tablist'
+import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../components/ui/collapsible'
+import { Field, FieldDescription, FieldError, FieldLabel } from '../../components/ui/field'
+import { Form, FormControl, FormField, FormItem, FormLabel } from '../../components/ui/form'
+import InfoTip from '../../components/InfoTip'
 import {
   api,
   isAuthExpiredError,
@@ -19,14 +28,13 @@ import {
   type SecretsListResponse,
 } from '../../api/client'
 import { i18nT } from '../../i18n/t'
+import { SecretsOwnerOnlyNotice, useSecretsOwnerOnly } from './secretsOwnerOnly'
 import { fmtDateTime } from '../../i18n/format'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
-import { whenPreviewFlagSaved } from '../../hooks/usePreviewFlagServerSync'
-import { PREVIEW_SECRETS_VAULT } from '../../utils/previewFlags'
 import { SECRETS_GUIDE_URL as SECRETS_SETUP_GUIDE } from '../../utils/docsLink'
-import { copyToClipboard } from '../../utils/clipboard'
-import { SECRETS_AUTHORIZE_COMMAND, SECRETS_SERVER_GRANT } from './secretsAuthorizeCommand'
+import { SECRETS_AUTHORIZE_COMMAND } from './secretsAuthorizeCommand'
+import { FieldRow, FieldRows } from '../../components/ui/field-row'
 import { SecretInUseNote, SecretUsageCard, useReferencedNames } from './SecretUsage'
 
 const UNUSED_REASON_KEYS = {
@@ -129,7 +137,7 @@ function managedCopy(kind: string): { label: string } | null {
 }
 
 /** The WakaTime sign-in tokens entry, the one `wakatime_oauth` row the vault
- *  routes refuse (main's legacy panel draws it read-only the same way). */
+ *  routes refuse, so it is drawn read-only. */
 function isWakatimeOAuthTokens(secret: ManagedSecret): boolean {
   return secret.kind === 'wakatime_oauth' && secret.name === 'WAKATIME_OAUTH_TOKENS'
 }
@@ -188,17 +196,24 @@ function DetailHeader({ icon, title, subtitle }: { icon: ReactNode; title: strin
 
 // ── Forms ──
 
-interface LoginDraft {
+/** Everything the typed form edits. One shape for every type, so the type
+ *  switch is a schema change, not a second form; a type ignores the fields it
+ *  does not send. `newUrl` is the website typed into the add field but not yet
+ *  added: never sent on its own, it only counts toward the draft and is saved
+ *  with the rest, as Add website would. */
+interface ItemValues {
+  value: string
+  text: string
   username: string
   password: string
   urls: string[]
   notes: string
-  /** The website typed into the add field but not yet added. Never sent; it
-   *  only counts toward the draft. */
   newUrl: string
 }
 
-const emptyLogin = (): LoginDraft => ({ username: '', password: '', urls: [], notes: '', newUrl: '' })
+type LoginDraft = Pick<ItemValues, 'username' | 'password' | 'urls' | 'notes' | 'newUrl'>
+
+const emptyValues = (): ItemValues => ({ value: '', text: '', username: '', password: '', urls: [], notes: '', newUrl: '' })
 
 /** Whether *draft* holds anything the user typed since the form opened on *initial*. */
 function loginChanged(draft: LoginDraft, initial: LoginDraft): boolean {
@@ -207,73 +222,122 @@ function loginChanged(draft: LoginDraft, initial: LoginDraft): boolean {
     || Boolean(draft.password || draft.notes || draft.newUrl.trim())
 }
 
-/** `keepHint` is set when editing a stored login: the password and notes
- *  are never sent to the page, so each starts blank and a
- *  blank one keeps its stored value (the server's `KEPT_WHEN_ABSENT`). */
-function LoginFields({ draft, onChange, disabled, keepHint }: { draft: LoginDraft; onChange: (next: LoginDraft) => void; disabled: boolean; keepHint?: string }) {
-  const newUrl = draft.newUrl
-  const setNewUrl = (next: string) => onChange({ ...draft, newUrl: next })
+const filled = (field: string) => field.trim() !== ''
+
+/** What Save needs before it can run: the field that holds the item's value.
+ *  Editing, a hidden field left blank keeps its stored value, so it may stay
+ *  empty. No messages: Save stays disabled until the schema passes. */
+function itemSchema(type: SecretItemType, editing: boolean) {
+  return z.object({
+    value: type === 'secret' ? z.string().refine(filled) : z.string(),
+    text: type === 'note' && !editing ? z.string().refine(filled) : z.string(),
+    username: z.string(),
+    password: type === 'login' && !editing ? z.string().min(1) : z.string(),
+    urls: z.array(z.string()),
+    notes: z.string(),
+    newUrl: z.string(),
+  })
+}
+
+/** The login fields of the typed form. `keepHint` is set when editing a stored
+ *  login: the password and notes are never sent to the page, so each starts
+ *  blank and a blank one keeps its stored value (the server's `KEPT_WHEN_ABSENT`). */
+function LoginFields({ form, urls, keepHint }: { form: ReturnType<typeof useForm<ItemValues>>; urls: string[]; keepHint?: string }) {
+  const setUrls = (next: string[]) => form.setValue('urls', next, { shouldDirty: true, shouldValidate: true })
   const addUrl = () => {
-    const href = newUrl.trim()
+    const href = form.getValues('newUrl').trim()
     if (!href) return
-    onChange({ ...draft, urls: [...draft.urls, href], newUrl: '' })
+    setUrls([...form.getValues('urls'), href])
+    form.setValue('newUrl', '', { shouldDirty: true, shouldValidate: true })
   }
   return (
-    <fieldset disabled={disabled} className="space-y-3">
-      <label className="block">
-        <span className="mb-1 block text-[13px] font-medium text-muted">{i18nT('settings.secrets.username_label')}</span>
-        <Input value={draft.username} onChange={e => onChange({ ...draft, username: e.target.value })} autoComplete="off" />
-      </label>
-      {/* One line for the three hidden fields below it; a placeholder is cut
-          off in an input this narrow. */}
+    <>
+      <FormField
+        control={form.control}
+        name="username"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>{i18nT('settings.secrets.username_label')}</FormLabel>
+            <FormControl>
+              <Input {...field} className="w-full" autoComplete="off" />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      {/* One line for the hidden fields below it; a placeholder is cut off in
+          an input this narrow. */}
       {keepHint && <p className="text-[12.5px] text-muted">{keepHint}</p>}
-      <label className="block">
-        <span className="mb-1 block text-[13px] font-medium text-muted">{i18nT('settings.secrets.password_label')}</span>
-        <Input type="password" value={draft.password} onChange={e => onChange({ ...draft, password: e.target.value })} className="font-mono" autoComplete="new-password" />
-      </label>
-      <div>
-        <span className="mb-1 block text-[13px] font-medium text-muted">{i18nT('settings.secrets.websites_label')}</span>
-        <ul className="space-y-2">
-          {draft.urls.map((href, i) => (
-            <li key={`${href}-${i}`} className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-elevated px-2 py-1.5">
-              <Globe className="lucide-inline shrink-0 text-muted" aria-hidden />
-              <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{href}</span>
-              <IconButton variant="danger" aria-label={i18nT('settings.secrets.remove_website', { href })} onClick={() => onChange({ ...draft, urls: draft.urls.filter((_, j) => j !== i) })}>
-                <Trash2 className="lucide-inline" aria-hidden />
-              </IconButton>
-            </li>
-          ))}
-        </ul>
-        <div className="mt-2 flex gap-2">
-          <Input
-            value={newUrl}
-            onChange={e => setNewUrl(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                addUrl()
-              }
-            }}
-            placeholder={i18nT('settings.secrets.url_placeholder')}
-            aria-label={i18nT('settings.secrets.add_website')}
-            className="font-mono"
-          />
-          <Btn onClick={addUrl} disabled={!newUrl.trim()}>
-            <Plus className="lucide-inline mr-1" aria-hidden />
-            {i18nT('settings.secrets.add_website')}
-          </Btn>
-        </div>
-      </div>
-      <label className="block">
-        <span className="mb-1 block text-[13px] font-medium text-muted">{i18nT('settings.secrets.notes_label')}</span>
-        <Input value={draft.notes} onChange={e => onChange({ ...draft, notes: e.target.value })} autoComplete="off" />
-      </label>
-    </fieldset>
+      <FormField
+        control={form.control}
+        name="password"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>{i18nT('settings.secrets.password_label')}</FormLabel>
+            <FormControl>
+              <Input {...field} type="password" className="w-full font-mono" autoComplete="new-password" />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      <FormField
+        control={form.control}
+        name="newUrl"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>{i18nT('settings.secrets.websites_label')}</FormLabel>
+            <ul className="space-y-2">
+              {urls.map((href, i) => (
+                <li key={`${href}-${i}`} className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg-elevated px-2 py-1.5">
+                  <Globe className="lucide-inline shrink-0 text-muted" aria-hidden />
+                  <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{href}</span>
+                  <IconButton variant="danger" aria-label={i18nT('settings.secrets.remove_website', { href })} onClick={() => setUrls(urls.filter((_, j) => j !== i))}>
+                    <Trash2 className="lucide-inline" aria-hidden />
+                  </IconButton>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-2 flex gap-2">
+              <FormControl>
+                <Input
+                  {...field}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      addUrl()
+                    }
+                  }}
+                  placeholder={i18nT('settings.secrets.url_placeholder')}
+                  aria-label={i18nT('settings.secrets.add_website')}
+                  className="font-mono"
+                />
+              </FormControl>
+              <Btn type="button" onClick={addUrl} disabled={!field.value.trim()}>
+                <Plus className="lucide-inline mr-1" aria-hidden />
+                {i18nT('settings.secrets.add_website')}
+              </Btn>
+            </div>
+          </FormItem>
+        )}
+      />
+      <FormField
+        control={form.control}
+        name="notes"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>{i18nT('settings.secrets.notes_label')}</FormLabel>
+            <FormControl>
+              <Input {...field} className="w-full" autoComplete="off" />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+    </>
   )
 }
 
-/** The typed write, shared by Add and Replace. Owns the draft and the mutation;
- *  the host decides what happens on success. */
+/** The typed write, shared by Add and Replace, on shadcn's Form
+ *  (react-hook-form with a zod schema). Owns the draft and the mutation; the
+ *  host decides what happens on success. */
 function ItemForm({
   name,
   type,
@@ -288,7 +352,7 @@ function ItemForm({
 }: {
   name: string
   type: SecretItemType
-  initialLogin?: Partial<LoginDraft>
+  initialLogin?: Partial<Pick<ItemValues, 'username' | 'urls'>>
   /** Editing a stored item of this type: a hidden field left blank is not
    *  sent, so the server keeps its stored value instead of erasing it. */
   editing?: boolean
@@ -306,13 +370,16 @@ function ItemForm({
   disabled?: boolean
 }) {
   const stillMounted = useStillMounted()
-  const [value, setValue] = useState('')
-  const [text, setText] = useState('')
-  const [initial] = useState<LoginDraft>(() => ({ ...emptyLogin(), ...initialLogin }))
-  const [login, setLogin] = useState<LoginDraft>(initial)
+  // The host keys this form by type, so the type and the schema are fixed for
+  // its life.
+  const [initial] = useState<ItemValues>(() => ({ ...emptyValues(), ...initialLogin }))
+  const [schema] = useState(() => itemSchema(type, editing))
+  const form = useForm<ItemValues>({ resolver: zodResolver(schema), defaultValues: initial, mode: 'onChange' })
+  const values = { ...initial, ...useWatch({ control: form.control }) } as ItemValues
+  const { isValid } = form.formState
   // Every editable field counts, so the agent hand-off is withheld for any
   // unsaved edit (it navigates away and unmounts this form).
-  const hasDraft = Boolean(value || text) || loginChanged(login, initial)
+  const hasDraft = Boolean(values.value || values.text) || loginChanged(values, initial)
   useEffect(() => {
     onDraftChange(hasDraft)
   }, [hasDraft, onDraftChange])
@@ -320,78 +387,108 @@ function ItemForm({
 
   // Editing, a blank hidden field is left out of the body: absent keeps.
   const kept = (field: string): string | undefined => (editing && !field ? undefined : field)
-  // A website typed but not yet added is saved too, as Add website would.
-  const pendingUrl = login.newUrl.trim()
-  const urls = pendingUrl ? [...login.urls, pendingUrl] : login.urls
-  const body = (): SecretItemBody =>
-    type === 'login'
-      ? { type, fields: { username: login.username, password: kept(login.password), urls, notes: kept(login.notes) } }
+  const body = (data: ItemValues): SecretItemBody => {
+    // A website typed but not yet added is saved too, as Add website would.
+    const pendingUrl = data.newUrl.trim()
+    const urls = pendingUrl ? [...data.urls, pendingUrl] : data.urls
+    return type === 'login'
+      ? { type, fields: { username: data.username, password: kept(data.password), urls, notes: kept(data.notes) } }
       : type === 'note'
-        ? { type, fields: { text: kept(text) } }
-        : { type, fields: { value } }
-  const complete = type === 'login' ? editing || Boolean(login.password) : type === 'note' ? editing || Boolean(text.trim()) : Boolean(value.trim())
+        ? { type, fields: { text: kept(data.text) } }
+        : { type, fields: { value: data.value } }
+  }
   const keepHint = editing ? i18nT('settings.secrets.keep_blank_hint') : undefined
 
   const save = useMutation({
     mutationKey: [WRITE_KEY, name],
-    mutationFn: () => api.secretsSave(name, body()),
+    mutationFn: (data: ItemValues) => api.secretsSave(name, body(data)),
     // Returned, so the mutation stays pending until the host's refetch and
     // navigation are done.
     onSuccess: () => onSaved(stillMounted),
   })
   useResetOnAuthRecovered(() => resetIfAuthExpired(save))
+  // Any edit clears the last save error, as typing over a failed value should.
+  const resetSave = save.reset
+  useEffect(() => {
+    const subscription = form.watch(() => resetSave())
+    return () => subscription.unsubscribe()
+  }, [form, resetSave])
   const frozen = save.isPending
   useEffect(() => {
     onPendingChange?.(frozen)
   }, [frozen, onPendingChange])
+  // handleSubmit validates before it calls back, so two quick presses both
+  // reach the callback before the first save renders as pending: the ref is
+  // what keeps the second from sending a second write.
+  const inFlight = useRef(false)
+  const submit = form.handleSubmit(data => {
+    if (inFlight.current || disabled) return
+    inFlight.current = true
+    save.mutate(data, { onSettled: () => { inFlight.current = false } })
+  })
 
   return (
-    <div className="space-y-3">
-      {type === 'login' && <LoginFields draft={login} onChange={next => { save.reset(); setLogin(next) }} disabled={frozen} keepHint={keepHint} />}
-      {type === 'note' && (
-        <label className="block">
-          <span className="mb-1 block text-[13px] font-medium text-muted">{i18nT('settings.secrets.text_label')}</span>
-          <textarea
-            aria-label={i18nT('settings.secrets.text_label')}
-            value={text}
-            onChange={e => { save.reset(); setText(e.target.value) }}
-            disabled={frozen}
-            placeholder={keepHint}
-            rows={6}
-            className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[13px] text-text"
-          />
-        </label>
-      )}
-      {type === 'secret' && (
-        <label className="block">
-          <span className="mb-1 block text-[13px] font-medium text-muted">{i18nT('settings.secrets.value_label')}</span>
-          <Input
-            type="password"
-            value={value}
-            onChange={e => { save.reset(); setValue(e.target.value) }}
-            disabled={frozen}
-            placeholder={i18nT('settings.secrets.value_placeholder')}
-            className="font-mono"
-            aria-label={i18nT('settings.secrets.secret_value_aria')}
-            autoComplete="off"
-          />
-        </label>
-      )}
-      <div className="flex gap-2">
-        <Btn primary onClick={() => save.mutate()} disabled={!complete || frozen || disabled}>
-          {save.isPending ? i18nT('settings.secrets.saving') : submitLabel}
-        </Btn>
-        {onCancel && (
-          <Btn onClick={onCancel} disabled={save.isPending}>
-            {i18nT('settings.secrets.cancel')}
+    <Form {...form}>
+      <form onSubmit={submit} className="space-y-3">
+        <fieldset disabled={frozen} className="space-y-3">
+          {type === 'login' && <LoginFields form={form} urls={values.urls} keepHint={keepHint} />}
+          {type === 'note' && (
+            <FormField
+              control={form.control}
+              name="text"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{i18nT('settings.secrets.text_label')}</FormLabel>
+                  <FormControl>
+                    <textarea
+                      {...field}
+                      placeholder={keepHint}
+                      rows={6}
+                      className="w-full rounded-md border border-border bg-bg px-3 py-2 font-mono text-[13px] text-text"
+                    />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+          )}
+          {type === 'secret' && (
+            <FormField
+              control={form.control}
+              name="value"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{i18nT('settings.secrets.value_label')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      type="password"
+                      placeholder={i18nT('settings.secrets.value_placeholder')}
+                      className="w-full font-mono"
+                      aria-label={i18nT('settings.secrets.secret_value_aria')}
+                      autoComplete="off"
+                    />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+          )}
+        </fieldset>
+        <div className="flex gap-2">
+          <Btn primary type="submit" disabled={!isValid || frozen || disabled}>
+            {save.isPending ? i18nT('settings.secrets.saving') : submitLabel}
           </Btn>
+          {onCancel && (
+            <Btn type="button" onClick={onCancel} disabled={save.isPending}>
+              {i18nT('settings.secrets.cancel')}
+            </Btn>
+          )}
+        </div>
+        {/* No hand-off: navigation would discard the unsaved value. */}
+        {save.isError && (
+          <ErrorNotice variant="inline" message={i18nT('settings.secrets.save_error', { error: (save.error as Error).message })} />
         )}
-      </div>
-      {/* No hand-off: navigation would discard the unsaved value. */}
-      {save.isError && (
-        <ErrorNotice variant="inline" message={i18nT('settings.secrets.save_error', { error: (save.error as Error).message })} />
-      )}
-    </div>
+      </form>
+    </Form>
   )
 }
 
@@ -432,25 +529,22 @@ function AddPane({
   return (
     <div className="flex h-full flex-col gap-4">
       <DetailHeader icon={<Plus aria-hidden />} title={i18nT('settings.secrets.add_secret')} />
-      <div role="radiogroup" aria-label={i18nT('settings.secrets.type_label')} className="inline-flex gap-1 self-start rounded-lg border border-border bg-bg-elevated p-1">
-        {types.map(option => (
-          <Btn
-            key={option}
-            role="radio"
-            aria-checked={type === option}
-            onClick={() => setType(option)}
-            disabled={saving}
-            className={`flex items-center gap-1.5 rounded-md border-transparent px-3 py-1.5 text-[13px] ${type === option ? 'bg-accent-subtle text-accent' : 'bg-transparent text-muted'}`}
-          >
-            <TypeIcon type={option} className="lucide-inline" />
-            {typeLabel(option)}
-          </Btn>
-        ))}
-      </div>
-      <div>
-        <label className="mb-1 block text-[13px] font-medium text-muted" htmlFor="secret-name-input">
-          {i18nT('settings.secrets.name_label')}
-        </label>
+      {/* One form below, parameterised by the type: a tablist with no panel
+          linkage (Tablist), not Radix Tabs. A save in flight holds the type. */}
+      <Tablist<SecretItemType>
+        tabs={types.map(option => ({
+          key: option,
+          label: typeLabel(option),
+          icon: <TypeIcon type={option} className="lucide-inline" />,
+          disabled: saving && option !== type,
+        }))}
+        value={type}
+        onChange={setType}
+        ariaLabel={i18nT('settings.secrets.type_label')}
+        layoutId="secrets-add-type"
+      />
+      <Field data-invalid={trimmed.includes('#') || undefined}>
+        <FieldLabel htmlFor="secret-name-input">{i18nT('settings.secrets.name_label')}</FieldLabel>
         <Input
           id="secret-name-input"
           value={name}
@@ -461,12 +555,12 @@ function AddPane({
           aria-label={i18nT('settings.secrets.secret_name_aria')}
           autoFocus
         />
-        {trimmed.includes('#') && <p className="mt-1 text-[12px] text-warn">{i18nT('settings.secrets.name_no_hash')}</p>}
+        {trimmed.includes('#') && <FieldError>{i18nT('settings.secrets.name_no_hash')}</FieldError>}
         {managedTarget && (
-          <p className="mt-1 text-[12px] text-warn">{i18nT('settings.secrets.managed_name_hint', { name: managedTarget.name })}</p>
+          <FieldDescription><span className="text-warn">{i18nT('settings.secrets.managed_name_hint', { name: managedTarget.name })}</span></FieldDescription>
         )}
-        {nameOk && <code className="mt-1 block text-[12px] text-muted">secret://{target}</code>}
-      </div>
+        {nameOk && <FieldDescription><code>secret://{target}</code></FieldDescription>}
+      </Field>
       <ItemForm
         key={type}
         name={target}
@@ -640,55 +734,27 @@ function WakatimeOAuthTokensPane({ secret }: { secret: ManagedSecret }) {
   )
 }
 
-/** One row of a field card: label column, value column, actions that appear
- *  on hover or keyboard focus. The label is optional so a card can continue a
- *  group (the second and third reference rows) without repeating it. */
-function FieldRow({ label, children, actions, mono = false }: { label?: string; children: ReactNode; actions?: ReactNode; mono?: boolean }) {
-  return (
-    <div className="group grid grid-cols-1 items-center gap-x-4 gap-y-1 border-t border-border py-2.5 first:border-t-0 first:pt-0 last:pb-0 sm:grid-cols-[140px_minmax(0,1fr)]">
-      <div className="text-[13px] text-muted">{label}</div>
-      <div className={`flex min-w-0 flex-wrap items-center gap-2.5 text-[13.5px] text-text-strong sm:flex-nowrap ${mono ? 'font-mono' : ''}`}>
-        {children}
-        {/* IconButtonGroup's reveal: hidden until hover or keyboard focus, always shown on touch. */}
-        {actions && <IconButtonGroup reveal className="ml-auto shrink-0">{actions}</IconButtonGroup>}
-      </div>
-    </div>
-  )
+/** The hosts of a login's websites, where browser sign-in offers it. A saved
+ *  website that is not a URL names no host and is left out. */
+function hostsOf(urls: string[]): string[] {
+  return [...new Set(urls.flatMap(href => {
+    try {
+      return [new URL(href).host]
+    } catch {
+      return []
+    }
+  }))]
 }
 
-/** A field group. `Card` carries the project's border, glow, radius and rise;
- *  the `mb-0` hands the gap back to the pane's own column. */
-function FieldCard({ title, children }: { title?: string; children: ReactNode }) {
-  return (
-    <Card className="mb-0 py-3.5">
-      {title && <CardTitle>{title}</CardTitle>}
-      {children}
-    </Card>
-  )
-}
-
-/** Copy *text* to the clipboard; the icon flips to a check for a moment.
- *  *onResult* hears whether the copy landed, so the pane can say when not. */
-function CopyAction({ text, label, onResult }: { text: string; label: string; onResult: (ok: boolean) => void }) {
-  const [copied, setCopied] = useState(false)
-  useEffect(() => {
-    if (!copied) return
-    const t = window.setTimeout(() => setCopied(false), 1500)
-    return () => window.clearTimeout(t)
-  }, [copied])
-  return (
-    <IconButton
-      aria-label={label}
-      onClick={() => {
-        void copyToClipboard(text).then(ok => {
-          setCopied(ok)
-          onResult(ok)
-        })
-      }}
-    >
-      {copied ? <Check className="lucide-inline text-ok" aria-hidden /> : <Copy className="lucide-inline" aria-hidden />}
-    </IconButton>
-  )
+/** The authorize command, with the item's real name when that name reads the
+ *  same in every shell the CLI runs from (POSIX shells, PowerShell, cmd): only
+ *  letters, digits, `_`, `.` and `-`, not leading `-`. Quoting differs per
+ *  shell, so any other name keeps the `NAME` placeholder the user replaces,
+ *  as the command did before. The URL stays the example origin. */
+function authorizeCommand(name: string): string {
+  const plain = /^\w[\w.-]*$/.test(name)
+  // A function replacer, so nothing in the name is read as a `$` pattern.
+  return plain ? SECRETS_AUTHORIZE_COMMAND.replace('NAME', () => name) : SECRETS_AUTHORIZE_COMMAND
 }
 
 function ItemPane({
@@ -741,14 +807,17 @@ function ItemPane({
     requestAnimationFrame(() => deleteButtonRef.current?.focus())
   }
 
-  const references = item.type === 'login'
-    ? [`secret://${item.name}`, `secret://${item.name}#username`]
-    : [`secret://${item.name}`]
   const secretLabel = item.type === 'note'
     ? i18nT('settings.secrets.text_label')
     : item.type === 'login'
       ? i18nT('settings.secrets.password_label')
       : i18nT('settings.secrets.value_label')
+  const copy = (text: string) => <CopyCommandButton text={text} verbatim label={i18nT('settings.secrets.copy_reference', { reference: text })} onResult={onCopied} />
+  const copyRow = (label: string, text: string) => (
+    <FieldRow key={text} label={label} mono actions={copy(text)}>
+      <code className="min-w-0 flex-1 truncate text-[13px]">{text}</code>
+    </FieldRow>
+  )
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -785,10 +854,11 @@ function ItemPane({
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-danger-subtle bg-danger-subtle px-3 py-2">
           <SecretInUseNote name={item.name} />
           <span className="text-[13px] text-danger">{i18nT('settings.secrets.delete_confirm', { name: item.name })}</span>
-          <Btn danger onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
+          {/* The stock Btn is transparent, so on the danger tint it has no edge until hovered. */}
+          <Btn danger onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending} className="border-border-strong bg-bg-elevated">
             {i18nT('settings.secrets.delete')}
           </Btn>
-          <Btn ref={deleteCancelRef} onClick={cancelDelete} disabled={deleteMutation.isPending}>
+          <Btn ref={deleteCancelRef} onClick={cancelDelete} disabled={deleteMutation.isPending} className="border-border-strong bg-bg-elevated">
             {i18nT('settings.secrets.cancel')}
           </Btn>
         </div>
@@ -802,7 +872,7 @@ function ItemPane({
       {item.corrupt && <ErrorNotice variant="inline" askAgent={allowAgentHandoff && !deleteConfirm} message={i18nT('settings.secrets.corrupt_item')} />}
 
       {editing ? (
-        <FieldCard>
+        <Card className="mb-0 py-3.5">
           <ItemForm
               name={item.name}
               type={item.type}
@@ -817,11 +887,12 @@ function ItemPane({
               onDraftChange={draftChange}
               submitLabel={i18nT('settings.secrets.save')}
             />
-        </FieldCard>
+        </Card>
       ) : !item.corrupt && (
-        <FieldCard>
+        <Card className="mb-0 py-3.5">
+          <FieldRows>
           {pub && (
-            <FieldRow label={i18nT('settings.secrets.username_label')} mono actions={pub.username ? <CopyAction text={pub.username} label={i18nT('settings.secrets.copy_reference', { reference: pub.username })} onResult={onCopied} /> : undefined}>
+            <FieldRow label={i18nT('settings.secrets.username_label')} mono actions={pub.username ? copy(pub.username) : undefined}>
               <span className="truncate">{pub.username || <span className="text-muted">—</span>}</span>
             </FieldRow>
           )}
@@ -853,30 +924,44 @@ function ItemPane({
               )}
             </>
           )}
-        </FieldCard>
+          </FieldRows>
+        </Card>
       )}
 
-      <SecretUsageCard name={item.name} allowAgentHandoff={allowAgentHandoff} />
+      <SecretUsageCard name={item.name} allowAgentHandoff={allowAgentHandoff} signInHosts={pub ? hostsOf(pub.urls) : []} />
 
-      <FieldCard title={i18nT('settings.secrets.reference_title')}>
-        <p className="pb-2 text-[13px] text-muted">{i18nT('settings.secrets.reference_hint')}</p>
-        {references.map(reference => (
-          <div key={reference} className="group flex items-center gap-2.5 border-t border-border py-2 first:border-t-0 first:pt-0 last:pb-0">
-            <code className="truncate font-mono text-[13px] text-text-strong">{reference}</code>
-            <IconButtonGroup reveal className="ml-auto shrink-0">
-              <CopyAction text={reference} label={i18nT('settings.secrets.copy_reference', { reference })} onResult={onCopied} />
-            </IconButtonGroup>
-          </div>
-        ))}
-        {/* Hand-off withheld only while a draft is open (allowAgentHandoff). */}
-        {copyFailed && <ErrorNotice variant="inline" askAgent={allowAgentHandoff} message={i18nT('settings.secrets.copy_failed')} />}
-        <p className="border-t border-border pt-2 text-[13px] text-muted">
-          {i18nT('settings.secrets.custom_authorize', { server: SECRETS_SERVER_GRANT })}
-          <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
-            {SECRETS_AUTHORIZE_COMMAND}
-          </code>
-        </p>
-      </FieldCard>
+      {/* A login is for browser sign-in, which runs on its own: no tool card. */}
+      {item.type !== 'login' && (
+        <Card className="mb-0 py-3.5">
+          <CardTitle>
+            {i18nT('settings.secrets.use_in_tool_title')}
+            <InfoTip text={i18nT('settings.secrets.use_in_tool_tip')} />
+          </CardTitle>
+          <FieldRows>{copyRow(secretLabel, `secret://${item.name}`)}</FieldRows>
+        </Card>
+      )}
+
+      {/* The box and the type size sit on a plain wrapper: Collapsible owns
+          neither, and the trigger inherits the muted 13px. */}
+      <div className="rounded-lg border border-border px-4 py-2 text-[13px] text-muted">
+        <Collapsible>
+          <CollapsibleTrigger className="group/advanced flex min-h-7 w-full cursor-pointer items-center">
+            <ChevronRight className="lucide-inline mr-1 transition-transform group-data-[state=open]/advanced:rotate-90" aria-hidden />
+            {i18nT('settings.secrets.advanced_title')}
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="pt-2 pb-1">
+              <FieldRows>
+                {item.type === 'login'
+                  ? [copyRow(secretLabel, `secret://${item.name}`), copyRow(i18nT('settings.secrets.username_label'), `secret://${item.name}#username`)]
+                  : copyRow(i18nT('settings.secrets.api_call_label'), authorizeCommand(item.name))}
+              </FieldRows>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+      {/* Hand-off withheld only while a draft is open (allowAgentHandoff). */}
+      {copyFailed && <ErrorNotice variant="inline" askAgent={allowAgentHandoff} message={i18nT('settings.secrets.copy_failed')} />}
 
       <div className="mt-auto flex items-center justify-between gap-4 pt-2 text-[12px] text-muted">
         <span>{item.updated_at ? i18nT('settings.secrets.updated_at', { when: fmtDateTime(item.updated_at) }) : ''}</span>
@@ -934,18 +1019,12 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
   })
   const lockedNames = useMemo(() => new Set(pendingWrites), [pendingWrites])
 
-  // Its own key under ['secrets'] (every invalidation still reaches it): with the
-  // preview off the gateway lists names only, so the legacy panel's cached
-  // listing must not stand in for this one. The list is read only after the
-  // switch's write has reached the gateway: read before it, the gateway still
-  // answers names only.
+  // Its own key under ['secrets'], so every invalidation still reaches it.
   const { data, isLoading, isError, error: listError } = useQuery<SecretsListResponse>({
     queryKey: ['secrets', 'items'],
-    queryFn: async () => {
-      await whenPreviewFlagSaved(PREVIEW_SECRETS_VAULT)
-      return api.secretsList()
-    },
+    queryFn: () => api.secretsList(),
   })
+  const ownerOnly = useSecretsOwnerOnly(listError)
 
   const names = useMemo(() => data?.names ?? [], [data?.names])
   const managed = useMemo(() => data?.managed ?? [], [data?.managed])
@@ -1044,6 +1123,8 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
       {data?.managed_error && <ErrorNotice variant="inline" askAgent={!hasAnyDraft} message={i18nT('settings.secrets.managed_config_error')} />}
     </div>
   ) : undefined
+
+  if (ownerOnly) return <SecretsOwnerOnlyNotice held={ownerOnly} error={listError} />
 
   if (isLoading) {
     return <p className="text-sm text-muted">{i18nT('settings.secrets.loading')}</p>

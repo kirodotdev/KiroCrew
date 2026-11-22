@@ -396,9 +396,8 @@ def test_an_unterminated_raw_html_block_is_closed_at_the_message_boundary(tag):
         ("<script\u2003\nvar x = 1;", "</script>"),
         ("<STYLE\u3000\n.a { color: red }", "</style>"),
         ("<textarea\u2028text", "</textarea>"),
-        ("<\u017fcript>\nvar x = 1;", "</script>"),
     ],
-    ids=["no-break-space", "em-space", "ideographic-space", "line-separator", "long-s"],
+    ids=["no-break-space", "em-space", "ideographic-space", "line-separator"],
 )
 def test_a_condition_one_opener_is_closed_as_the_parser_reads_it(content, closer):
     # The parser reads `\s` as Unicode whitespace and folds case by Unicode rules,
@@ -415,6 +414,25 @@ def test_a_condition_one_opener_is_closed_as_the_parser_reads_it(content, closer
         )
     )
     assert out.index(closer) < out.index("## User")
+    _assert_later_heading_parses(out)
+
+
+def test_a_long_s_opener_never_hides_the_next_turn():
+    # Whether `<ſcript>` opens an HTML block depends on the markdown-it-py release:
+    # 4.2 folds the long s to `s` and opens a script block, 4.3 reads a plain
+    # paragraph. The export must keep the next turn either way, so this asks the
+    # parser rather than pinning one release's answer.
+    content = "<\u017fcript>\nvar x = 1;"
+    opens_block = sm._parser().parse(content)[0].type == "html_block"
+    assert sm._unterminated_blocks(content) == ("</script>" if opens_block else "")
+    out = _render(
+        _bundle(
+            [
+                {"role": "assistant", "content": content, "ts": "t1"},
+                {"role": "user", "content": "still readable", "ts": "t2"},
+            ]
+        )
+    )
     _assert_later_heading_parses(out)
 
 

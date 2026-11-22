@@ -22,18 +22,49 @@ import contextvars
 import fnmatch
 import functools
 import re
-from typing import Callable
+import shlex
+from typing import TYPE_CHECKING
+from urllib.parse import unquote
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 # The reader names a test instruments on the facade are reached as attributes of
+from ..trust_patterns import ENV_ASSIGNMENT_RE
+
 # the reader module rather than bound here at import: the facade mirrors a patch
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
+from . import argv_rules as _argv_rules
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
 from .argv_floor_self import (
-    _quoted_assignment_scripts,
+    _SELF_FLOOR_QUOTE_JUNK_RE,
+    _heredoc_data_view,
     _self_token_frames,
     _static_substitution_output,
+)
+from .argv_floor_ssh_gate import (  # noqa: F401  (served under these names from here too)
+    _GATE_WORD_SEPARATORS,
+    _QUOTED_SEP_SENTINELS,
+    _SSH_FAMILY_VERBS,
+    _cannot_name_ssh_verb,
+    _gate_words,
+    _glob_can_name_ssh_verb,
+)
+from .argv_floor_ssh_operand import (  # noqa: F401  (served under these names from here too)
+    _ARITH_INT_LITERAL_RE,
+    _BRACE_EXPANSION_CAP,
+    _BRACE_GROUP_RE,
+    _BRACE_RANGE_RE,
+    _EXPANSION_DEFAULT_RE,
+    _HOSTNAME_SUBSTITUTION_HINTS,
+    _HOSTNAME_VARIABLE_FORMS,
+    _LITERAL_HOSTS,
+    _arith_int_literal_repl,
+    _brace_alternatives,
+    _brace_expansions,
+    _operand_targets_self,
 )
 from .shell_commands import (
     _double_quoted_substitution_bodies,
@@ -42,13 +73,14 @@ from .shell_commands import (
 )
 from .shell_normalizer import (
     _argv_programs,
-    _cut_at_operator,
     _data_consumer_exempt,
     _decode_shell_quoted_literals,
     _ends_argv,
+    _glob_could_expand_to,
     _only_single_quoted_openers,
     _program_basename,
     _resolve_param_defaults,
+    _shell_join_continuations,
     _strip_redirect,
     _substitution_depth_delta,
     _xargs_here_string_rebuild,
@@ -99,23 +131,13 @@ from .shell_normalizer import (
 # The strictly larger residual is OUT OF GATE SCOPE by the module's own
 # doctrine (a script body is never a gate subject): interpreter/script-file
 # indirection (``bash escape.sh``, ``python -c`` + subprocess or paramiko)
-# and non-ssh-family clients (``git clone ssh://localhost/…``, autossh) reach
-# the unsandboxed sshd without an ssh-family command line ever crossing this
-# floor.  The sandbox has no network namespace, so loopback:22 stays
+# and ssh clients this floor does not read (autossh) reach the unsandboxed
+# sshd without an ssh-family command line ever crossing this floor; git and
+# tar transports are read by the git/tar floor (``argv_floor_git_tar``) with
+# this floor's front end.  The sandbox has no network namespace, so loopback:22 stays
 # reachable from inside; this floor is the interim tier, and the fix of
 # record is an OS-level network fence in the sandbox (tracked follow-up:
 # see the sandbox-escape residuals note in docs/system-specs/modules/security.md).
-
-
-# Operand spellings that resolve to this host's name at run time, matched as
-# TEXT inside a single argv token.  The substitution forms are substring
-# matches ("$(hostname -f)" still hits); the variable forms are exact or
-# dot-suffixed ("$hostname", "$hostname.example") so an unrelated variable
-# like "$hostname_backup" is NOT read as this host.
-_HOSTNAME_SUBSTITUTION_HINTS: tuple[str, ...] = ("$(hostname", "`hostname")
-
-
-_HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
 
 
 # A FLAT command substitution -- no nested substitution characters in the
@@ -125,16 +147,57 @@ _HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
 _FLAT_SUBSTITUTION_RE = re.compile(r"\$\(([^()`$]*)\)|`([^`()$]*)`")
 
 
-def _glob_can_name_ssh_verb(probe: str) -> bool:
-    """True when a glob word in *probe* can expand to an ssh-family program."""
-    for word in probe.split():
-        if not _GLOB_CHARS.intersection(word):
-            continue
-        base = word.rsplit("/", 1)[-1]
-        for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
-                return True
-    return False
+def _may_name_ssh_verb(text: str) -> bool:
+    """The floor's verb gate: False only when *text* cannot name an ssh-family program.
+
+    Quote and backslash splices (``ss""h``, ``s\\sh``) and ANSI-C quoting are undone
+    first, and ``${VAR:-word}`` defaults are substituted, the way bash builds the word
+    before exec. The operand walk's tokenizer resolves the same spellings, so a gate
+    on the raw text would let a verb past that the walk would deny. A bare ``$VAR``
+    known only at run time stays the documented fail-open residual.
+    """
+    probe = _decode_shell_quoted_literals(text)
+    probe = probe.replace('"', "").replace("'", "").replace("\\", "")
+    probe = _resolve_param_defaults(probe)
+    return any(verb in probe for verb in _SSH_FAMILY_VERBS) or _glob_can_name_ssh_verb(probe)
+
+
+def _escaped(text: str, at: int) -> bool:
+    """True when the character at *at* follows an odd run of backslashes."""
+    slashes = at
+    while slashes > 0 and text[slashes - 1] == "\\":
+        slashes -= 1
+    return (at - slashes) % 2 == 1
+
+
+# Set while the floor reads a line as main did: no body span copied in one step and
+# no quote rewriting in a splice. Recursion inherits it, so that reading stays whole.
+_MAIN_READING = contextvars.ContextVar("ssh_floor_main_reading", default=False)
+
+
+def _splice_static_substitutions(text: str, *, escaped_too: bool = False) -> str:
+    """*text* with each flat ``echo``/``printf`` substitution replaced by its static output.
+
+    A backtick span whose opening backtick is escaped is data on this line, so it
+    stays as written unless *escaped_too* or *_MAIN_READING*: one level down (an
+    ``eval`` or ``sh -c`` payload, an outer double quote) bash runs it.
+    An output's quotes and trailing backslash are written as ``_`` (bash reads none of
+    them; ``"$(echo 'a"b')" ; ssh``), except in heredoc text and *_MAIN_READING*.
+    """
+    docs = [] if _MAIN_READING.get() else heredoc_text_spans(text)
+
+    def _splice(match: "re.Match[str]") -> str:
+        body = match.group(1) if match.group(1) is not None else match.group(2)
+        out = _static_substitution_output(body)
+        escaped = match.group(2) is not None and _escaped(text, match.start())
+        if out == "\x00" or (escaped and not escaped_too and not _MAIN_READING.get()):
+            return match.group(0)
+        if _MAIN_READING.get() or any(a <= match.start() < e for a, e in docs):
+            return out
+        out = out.replace('"', "_").replace("'", "_")
+        return out[:-1] + "_" if out.endswith("\\") else out
+
+    return _FLAT_SUBSTITUTION_RE.sub(_splice, text)
 
 
 # ``${VAR:-word}`` / ``${VAR:=word}`` / ``${VAR:+word}`` — bash substitutes the
@@ -142,12 +205,6 @@ def _glob_can_name_ssh_verb(probe: str) -> bool:
 # destination when the variable is unset (``ssh "${TARGET:-localhost}"``).
 # The word is statically visible, so it is checked; a bare ``$VAR`` whose
 # value only exists at run time remains the documented fail-open residual.
-_EXPANSION_DEFAULT_RE = re.compile(r"\$\{[^{}:]*:[-=+?]([^{}]+)\}")
-
-
-_SSH_FAMILY_VERBS: frozenset[str] = frozenset({"ssh", "scp", "sftp", "rsync"})
-
-
 # Verbs that place a copy (or a link) of their SOURCE operand at their
 # DESTINATION operand.  A destination whose source is an ssh-family binary
 # IS that binary under a new name, so the walk binds it as the verb for the
@@ -171,58 +228,6 @@ _ENV_ASSIGN_PREFIX_RE = re.compile(r"[a-z_][a-z0-9_]*=")
 # (``GIT_SSH_COMMAND`` and the like) stay a documented residual, deliberately
 # out of this floor's scope.
 _RSYNC_RSH_ASSIGN_RE = re.compile(r"^(rsync_rsh|rsync_connect_prog)=(.+)$", re.IGNORECASE)
-
-
-# Sentinel bytes standing in for an ``_ends_argv`` boundary character that was
-# QUOTED or backslash-escaped in the raw source, so it is literal DATA rather
-# than a command separator.  ``_self_tokens`` runs shlex, which resolves quotes
-# BEFORE the operand walk in ``_is_ssh_to_self`` runs, so by token time a quoted
-# ``a;b`` is indistinguishable from a glued unquoted operator ``a;b`` -- yet the
-# first is one operand and the second is a command boundary.  The distinguishing
-# information exists only in the SOURCE, before tokenization, so the raw text is
-# scanned there and every data separator is rewritten to a sentinel that
-# ``_ends_argv`` does not treat as a boundary.  A real, unquoted separator keeps
-# its character and still ends the walk.  The table covers EVERY character that
-# can make ``_ends_argv`` end the walk (``;`` ``|`` ``&`` newline ``#`` ``(``
-# ``{``) -- covering only a subset would let a quoted spelling of the missing
-# one hide a self-host operand behind a fake boundary (``scp '&' localhost:/x``
-# stops the walk at ``&`` with the target unexamined).  Control bytes are used
-# because a real shell command never contains them.
-_QUOTED_SEP_SENTINELS = {
-    ";": "\x00",
-    "|": "\x01",
-    "&": "\x02",
-    "\n": "\x03",
-    "#": "\x04",
-    "(": "\x05",
-    "{": "\x06",
-}
-
-
-def _cannot_name_ssh_verb(text: str) -> bool:
-    """Whether the verb gate in :func:`_is_ssh_to_self` must fail on *text* however
-    :func:`_mask_quoted_separators` masks it, so the quoted-body readers that the
-    mask needs can be skipped. Each body re-reads the rest of the line, so their
-    cost grows with the square of the body count.
-
-    A mask turns some of the :data:`_QUOTED_SEP_SENTINELS` keys into control bytes.
-    None of those keys is a letter, so a verb substring is the same either way. A
-    mask can change two readings, and each makes this return False:
-    a ``${`` default (a masked ``{`` changes what ``_resolve_param_defaults``
-    deletes), and a ``[`` class in a word that holds a key (``[{-~]`` widens when
-    its ``{`` becomes a control byte, and a masked newline joins two words).
-    ``*`` and ``?`` match the same either way.
-    """
-    probe = _decode_shell_quoted_literals(text)
-    probe = probe.replace('"', "").replace("'", "").replace("\\", "")
-    if "${" in probe or any(verb in probe for verb in _SSH_FAMILY_VERBS):
-        return False
-    # A masked newline can join words, so a word here runs up to any other space.
-    spaced = "".join(" " if ch.isspace() and ch != "\n" else ch for ch in probe)
-    for word in spaced.split(" "):
-        if "[" in word and any(key in word for key in _QUOTED_SEP_SENTINELS):
-            return False
-    return not _glob_can_name_ssh_verb(probe)
 
 
 def _mask_quoted_separators(text: str, *, blank_bodies: bool = False) -> str:
@@ -320,6 +325,168 @@ def _unmask_separators(text: str) -> str:
     return text
 
 
+def _dequoted(text: str) -> str:
+    """*text* without its outer quote pair and any unpaired end quote.
+
+    A quote that pairs with one inside (``sh -c "git ls-remote localhost:x"``)
+    is kept, so a nested script reaches the carried command's own read whole.
+    """
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+    while text and text[-1] in "\"'" and text.count(text[-1]) % 2:
+        text = text[:-1]
+    while text and text[0] in "\"'" and text.count(text[0]) % 2:
+        text = text[1:]
+    return text
+
+
+def _git_config_override(tokens: "list[str]", index: int) -> "tuple[str, str, int] | None":
+    """Return ``(option, config, consumed)`` for a git config option at *index*."""
+    tok = tokens[index]
+    if tok in ("-c", "--config", "--config-env"):
+        if index + 1 >= len(tokens):
+            return None
+        return tok, tokens[index + 1], 2
+    if tok.startswith("--config-env="):
+        return "--config-env", tok[len("--config-env=") :], 1
+    if tok.startswith("--config="):
+        return "--config", tok[len("--config=") :], 1
+    if tok.startswith("-c") and len(tok) > 2:
+        return "-c", tok[2:], 1
+    return None
+
+
+def _glob_word_spellings(source: str) -> "tuple[frozenset[str], str]":
+    """The de-quoted words of *source*, and those whose glob is active, joined by NUL.
+
+    Read by the shared shell reader (``read_commands``): a ``*?[`` step that is
+    live syntax (unquoted, unescaped) is an active glob, so ``l"ocal"*:x`` and
+    ``lo\\cal*:x`` have one and ``'local*:x'`` has none.  A quote that opens or
+    closes a quoted run is dropped from the word.  A *source* the reader cannot
+    read has no words, so every glob in it reads as active (fail closed).
+    """
+    from .shell_commands import read_commands
+
+    try:
+        commands = read_commands(_unmask_separators(source), nested=False)
+    except Exception:
+        return frozenset(), ""
+    words: "set[str]" = set()
+    active: "list[str]" = []
+    for word in (word for command in commands for word in command.words):
+        steps = word.steps
+        text = "".join(
+            s.char for s in steps if s.text not in ("'", '"') or s.state and not s.active
+        )
+        words.add(text)
+        if any(s.active and s.char in "*?[" for s in steps):
+            active.append(text)
+    return frozenset(words), "\0".join(active)
+
+
+def _mask_sq_apostrophes(source: str) -> "tuple[str, bool]":
+    """*source* with each ``'\\''`` inside an open quote masked, and whether *source*
+    ends inside a quote.
+
+    The quote state is ``_mask_quoted_separators``'s, the scan that decides which
+    separators are data, so a ``'\\''`` is masked only where that scan is inside a
+    quote: in a single quote it is git's sq-quote apostrophe escape (close,
+    ``\\'``, reopen) and the quote stays open; in a double quote
+    (``GIT_CONFIG_PARAMETERS="'a=it'\\''s'"``) its apostrophes are data.  Outside a
+    quote, ``x'\\''abc'`` is ``x``, the quoted ``\\``, then ``'abc'``, and is copied as
+    typed so the quote it opens closes.
+    """
+    out: "list[str]" = []
+    quote: "str | None" = None
+    i = 0
+    while i < len(source):
+        ch = source[i]
+        if quote is not None and source.startswith("'\\''", i):
+            out.append("\ue100")
+            i += 4
+            continue
+        width = 1
+        if quote is None:
+            if ch == "\\":
+                width = 2
+            elif ch in "'\"":
+                quote = ch
+        elif quote == '"' and ch == "\\" and source[i + 1 : i + 2] in ('"', "\\", "$", "`"):
+            width = 2
+        elif ch == quote:
+            quote = None
+        out.append(source[i : i + width])
+        i += width
+    return "".join(out), quote is not None
+
+
+def _decode_url_authority(url: str) -> str:
+    """*url* with ``%HH`` escapes resolved in the authority only.
+
+    git percent-decodes the host of a URL authority before dialing it
+    (``ssh://local%68ost/x`` reaches ``localhost``), so the literal self check
+    must read the decoded host.  Only the authority -- between ``//`` and the
+    next ``/`` -- is decoded; a ``%`` in the path is left alone.
+    """
+    marker = url.find("://")
+    if marker < 0:
+        return url
+    start = marker + len("://")
+    end = url.find("/", start)
+    if end < 0:
+        end = len(url)
+    authority = url[start:end]
+    if "%" not in authority:
+        return url
+    return url[:start] + unquote(authority) + url[end:]
+
+
+def _decode_scp_host(operand: str) -> str:
+    """*operand* (``[user@]host:path``) with ``%HH`` resolved in the host part only."""
+    if operand.startswith("["):
+        close = operand.find("]")
+        if close > 0:
+            return "[" + unquote(operand[1:close]) + "]" + operand[close + 1 :]
+    head, sep, rest = operand.partition(":")
+    if not sep or "%" not in head:
+        return operand
+    return unquote(head) + sep + rest
+
+
+def _env_assignment(stripped_tok: str) -> "tuple[str, str] | None":
+    """``(name, value)`` of any ``NAME=value`` word, the name lowered, else None.
+
+    The parser ``_FrameEnvironment`` reads git's environment with: every
+    variable counts (``GIT_SSH*``, the numbered ``GIT_CONFIG_*`` config, and
+    any name a ``--config-env`` points at).
+    """
+    if not ENV_ASSIGNMENT_RE.match(stripped_tok):
+        return None
+    name, _, value = stripped_tok.partition("=")
+    return name.lower(), value
+
+
+def _is_env_name(name: str) -> bool:
+    """True if a bare ``export`` operand *name* is a variable name."""
+    return ENV_ASSIGNMENT_RE.match(name + "=") is not None
+
+
+def _exported_environment(env: "dict[str, list[str]]", extra: "Iterable[str]" = ()) -> str:
+    """Shell text exporting every value in *env* (and the *extra* assignments).
+
+    A rebuilt command is re-entered as text, so the environment the invocation
+    runs with leads it as ``export NAME=value …;``: every value kept under a
+    name is exported, the way ``_FrameEnvironment`` keeps them all.
+    """
+    assignments = [
+        name + "=" + shlex.quote(_unmask_separators(value))
+        for name, values in env.items()
+        for value in values
+    ]
+    assignments.extend(extra)
+    return "export " + " ".join(assignments) + "; " if assignments else ""
+
+
 # An EMPTY command substitution expands to nothing, so ``s$()sh`` runs ``ssh``
 # and ``local$()host`` resolves to ``localhost`` -- the same glue-evasion the
 # self-kill floor names for ``p$()kill``, but aimed at the verb gate and at the
@@ -348,299 +515,14 @@ _SSH_FORWARD_OPT_LETTERS: frozenset[str] = frozenset("lrdwb")
 # prints (hex and bash-octal included); anything else inside ``$((…))`` is
 # left alone — an in-floor expression evaluator is itself attack surface, and
 # a variable-carrying expression is runtime state (documented residual).
-_ARITH_INT_LITERAL_RE = re.compile(r"\$\(\(\s*(-?(?:0[xX][0-9a-fA-F]+|[0-9]+))\s*\)\)")
-
-
 # A brace group with a comma alternation or a ``..`` range is a brace
 # expansion; ``{single}`` is literal in bash and stays untouched, and the
 # lookbehind keeps ``${…}`` parameter expansions out.
-_BRACE_GROUP_RE = re.compile(r"(?<!\$)\{([^{}]*)\}")
-
-
-_BRACE_RANGE_RE = re.compile(r"\A(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.\.(-?[0-9]+))?\Z")
-
-
 # ponytail: fan-out ceiling.  Expansion stops at 256 generated words and the
 # caller DENIES (fail-closed) — a wider product in a connection operand is
 # pathological, and enumerating it here would be its own DoS.
-_BRACE_EXPANSION_CAP = 256
-
-
-def _arith_int_literal_repl(match: "re.Match[str]") -> str:
-    """The decimal spelling bash prints for one arithmetic integer literal."""
-    lit = match.group(1)
-    magnitude = lit.lstrip("-")
-    try:
-        if magnitude.lower().startswith("0x"):
-            value = int(lit, 16)
-        elif magnitude.startswith("0") and len(magnitude) > 1:
-            # bash reads a leading zero as octal; an invalid octal digit is a
-            # bash error (no command runs), so the spelling is left alone.
-            value = int(lit, 8)
-        else:
-            value = int(lit, 10)
-        # ``str`` stays INSIDE the try: hex/octal ``int`` uses a
-        # power-of-two base exempt from the interpreter's digit cap, so a
-        # ~3600-digit hex literal converts -- but its decimal ``str`` IS
-        # capped and would raise straight through ``is_denied``, aborting
-        # the evaluation.  Keeping the original spelling instead composes
-        # with the target-position rule into a fail-closed deny.
-        return str(value)
-    except ValueError:
-        return match.group(0)
-
-
-def _brace_alternatives(body: str) -> "list[str] | None":
-    """The words one brace-group *body* expands to, or None when literal.
-
-    A comma body is an alternation (empty alternatives included, as in
-    ``{h,}``); a ``a..b`` / ``a..b..step`` body is a numeric or single-char
-    range.  Anything else — ``{single}``, an empty body — is not a brace
-    expansion in bash and expands to nothing here.
-    """
-    range_match = _BRACE_RANGE_RE.match(body)
-    if range_match is not None:
-        start_s, end_s, step_s = range_match.groups()
-        if start_s.isalpha() != end_s.isalpha():
-            return None
-        try:
-            step = abs(int(step_s)) if step_s else 1
-            if step == 0:
-                step = 1
-            if start_s.isalpha():
-                start, end = ord(start_s), ord(end_s)
-                render = chr
-            else:
-                start, end = int(start_s), int(end_s)
-                render = str  # type: ignore[assignment]
-        except ValueError:
-            # ``int()`` refuses digit strings past the interpreter's
-            # conversion cap (~4300 digits); uncaught, that crashes the
-            # gate.  An endpoint or step that large cannot name a single
-            # legitimate target, so signal overflow exactly like the cap
-            # check below -- the caller converts it to a fail-closed deny.
-            return [""] * (_BRACE_EXPANSION_CAP + 1)
-        if abs(end - start) // step + 1 > _BRACE_EXPANSION_CAP:
-            # Signal overflow with an over-long list the caller's cap check
-            # converts to a fail-closed deny.
-            return [""] * (_BRACE_EXPANSION_CAP + 1)
-        direction = 1 if start <= end else -1
-        return [render(v) for v in range(start, end + direction, direction * step)]
-    if "," in body:
-        return body.split(",")
-    return None
-
-
-def _brace_expansions(token: str) -> "list[str] | None":
-    """Every word bash brace expansion produces for *token*; None on overflow.
-
-    Groups are expanded left-to-right to a fixpoint (each rewrite removes one
-    brace pair, so this terminates); the returned words carry no expandable
-    group.  A product beyond ``_BRACE_EXPANSION_CAP`` returns None and the
-    caller fails closed.
-    """
-    words = [token]
-    changed = True
-    while changed:
-        changed = False
-        next_words: list[str] = []
-        for word in words:
-            expanded = False
-            for group in _BRACE_GROUP_RE.finditer(word):
-                alternatives = _brace_alternatives(group.group(1))
-                if alternatives is None:
-                    continue
-                head, tail = word[: group.start()], word[group.end() :]
-                next_words.extend(head + alt + tail for alt in alternatives)
-                expanded = True
-                changed = True
-                break
-            if not expanded:
-                next_words.append(word)
-            if len(next_words) > _BRACE_EXPANSION_CAP:
-                return None
-        words = next_words
-    return words
-
-
-def _operand_targets_self(
-    operand: str, *, host_position: bool = True, dns: bool = True, match_globs: bool = True
-) -> bool:
-    """True if *operand* names THIS machine as a connection target.
-
-    ``dns=False`` passes ``dns_fallback=False`` to every host check (no
-    hosts-file or DNS alias verdict, no unread-address-table window), for a
-    word that is not itself the destination (see
-    ``_command_value_names_self_endpoint``).  ``match_globs=False`` passes
-    the same to every host check, for an operand of a bare glob verb (see
-    ``_is_ssh_to_self``).
-
-    Resolves the host part the way the ssh family reads an operand: an
-    optional ``ssh://``/``scp://``/``sftp://``/``rsync://`` scheme (authority
-    isolated before any path), an optional ``user@`` prefix stripped from the
-    HOST part only (an ``@`` in a remote PATH is not userinfo), a bracketed
-    IPv6 literal, a bare IPv6/numeric IP literal, and a ``host:path`` colon
-    form.  A bare word equal to a self-host name also counts: for ssh/sftp it
-    IS the positional target, and for scp/rsync a local file named exactly
-    ``localhost`` is not worth carving an allowance for (over-blocking is the
-    safer direction, and the catalog pattern must stay a SUBSET of this
-    predicate — see ``test_retained_pattern_is_a_subset_of_its_predicate``).
-
-    Every statically-derivable expansion/gluing form is resolved over the
-    WHOLE operand and the resolved spelling re-checked (round-10 invariant):
-    parameter defaults (``local${U:-host}`` -> ``localhost``), brace
-    expansion (``local{h,}ost``), and single-integer arithmetic literals
-    (``$((0x7f)).0.0.1``).  Each resolution only WIDENS the deny.  Forms
-    whose produced text depends on runtime state — a bare ``$VAR`` value,
-    command substitution with output (``$(get-host)``), arithmetic beyond
-    one literal (``$((i+1))``) — are the documented run-time residual class:
-    emulating them needs an in-floor evaluator that is itself attack
-    surface, and their statically-visible parts are already checked (the
-    embedded defaults here, the ``$(hostname`` hints, the empty-substitution
-    collapse in ``_is_ssh_to_self``).
-    """
-    t = operand.strip().strip("\"'")
-    if not t or t.startswith("-"):
-        return False
-    # A glued shell operator (``ssh localhost;true`` hands the operand
-    # ``localhost;true``) is never part of a hostname, so consult the
-    # operator-cut spelling too -- the same ``(token, _cut_at_operator(token))``
-    # idiom the git-push floor uses.  This only WIDENS the deny: the cut token
-    # has no operator left, so the recursive call cuts nothing and does not
-    # recurse again, and a bare ``$VAR`` (no operator to cut) is unaffected.
-    cut = _cut_at_operator(t)
-    if cut != t and _operand_targets_self(
-        cut, host_position=host_position, dns=dns, match_globs=match_globs
-    ):
-        return True
-    for hint in _HOSTNAME_SUBSTITUTION_HINTS:
-        if hint in t:
-            return True
-    for var in _HOSTNAME_VARIABLE_FORMS:
-        if t == var or t.startswith(var + ".") or t.startswith(var + ":"):
-            return True
-    # An expansion's embedded default is the destination when the variable is
-    # unset — check every ``${…:-word}``-style word (recursion terminates:
-    # the word is strictly shorter than the operand).  Kept alongside the
-    # whole-operand resolution below because it is WIDER on mangled glue
-    # (``foo${X:-localhost}bar``): the embedded word alone is self even when
-    # the resolved whole is not.
-    for match in _EXPANSION_DEFAULT_RE.finditer(t):
-        if _operand_targets_self(
-            match.group(1), host_position=host_position, dns=dns, match_globs=match_globs
-        ):
-            return True
-    # Bash substitutes a parameter default INTO the surrounding
-    # word (``local${KC_UNSET:-host}`` -> ``localhost``), so the whole
-    # operand is resolved and re-checked — checking each default word in
-    # isolation misses the reconstruction.  ``_resolve_param_defaults``
-    # substitutes every ``${VAR<op>literal}`` with its literal to a fixpoint
-    # (nesting and colon-less operators included); the recursive call sees a
-    # string with no such form left, so it does not recurse here again.
-    resolved = _resolve_param_defaults(t)
-    if resolved != t and _operand_targets_self(
-        resolved, host_position=host_position, dns=dns, match_globs=match_globs
-    ):
-        return True
-    # A single integer literal inside arithmetic expansion is
-    # printed decimally by bash (``$((0x7f))`` -> ``127``), gluing into the
-    # surrounding word.  Only the literal spellings are normalized — an
-    # expression or a variable stays unresolved (run-time residual, see the
-    # docstring) — and the substituted string carries no ``$((…))`` literal,
-    # so the recursion is a single level.
-    normalized = _ARITH_INT_LITERAL_RE.sub(_arith_int_literal_repl, t)
-    if normalized != t and _operand_targets_self(
-        normalized, host_position=host_position, dns=dns, match_globs=match_globs
-    ):
-        return True
-    # An arithmetic expansion that SURVIVED normalization is an
-    # expression (``$((0+1))``) whose produced text only the shell knows.
-    # In a connection-target position that unknown glues into the host
-    # (``127.0.0.$((0+1))`` -> ``127.0.0.1``), so fail closed.  For the
-    # ``host:path`` colon form only the PRE-COLON host part can name this
-    # machine: arithmetic after the colon glues into a remote
-    # filename (``far:/backups/part$((i)).tar``), so it stays allowed.
-    if "$((" in normalized and (
-        host_position or (":" in normalized and "$((" in normalized.split(":", 1)[0])
-    ):
-        return True
-    # Brace expansion splices each alternative into the
-    # surrounding word BEFORE every other expansion (``local{h,}ost`` ->
-    # ``localhost``), so each choice is re-checked.  ``None`` means the
-    # fan-out exceeded the cap: fail closed — no legitimate single-target
-    # connection operand needs a >256-way product, and over-blocking is this
-    # floor's safe direction.
-    choices = _brace_expansions(t)
-    if choices is None:
-        return True
-    for choice in choices:
-        if choice != t and _operand_targets_self(
-            choice, host_position=host_position, dns=dns, match_globs=match_globs
-        ):
-            return True
-    scheme_seen = False
-    for scheme in ("ssh://", "scp://", "sftp://", "rsync://"):
-        if t.startswith(scheme):
-            # Isolate the URI authority before any path, so an ``@`` or ``:``
-            # in the remote path cannot masquerade as userinfo or a port.
-            t = t[len(scheme) :].split("/", 1)[0]
-            scheme_seen = True
-            break
-    # A bare loopback/IP literal is a host even when it CONTAINS colons
-    # (``::1``, ``::ffff:127.0.0.1``): check the whole token before
-    # colon-splitting, which would read an IPv6 literal as an empty host.
-    # The DNS layer applies to the WHOLE token only when the token sits in
-    # host position (or a scheme marked it as an authority) -- a plain word
-    # here may be a local filename.
-    if _host_is_self(
-        t, dns_fallback=dns and (host_position or scheme_seen), match_globs=match_globs
-    ):
-        return True
-    if t.startswith("[") or "@[" in t:
-        # Bracketed IPv6, optionally behind userinfo: user@[::1]:path
-        host = t.split("[", 1)[1].partition("]")[0]
-    else:
-        # host[:path] first, THEN userinfo — in that order, so an ``@`` in
-        # the path part (``localhost:/tmp/a@b``) is never taken as userinfo.
-        pre_colon = t.partition(":")[0]
-        if "@" in pre_colon:
-            # An ``@`` BEFORE the first colon is real userinfo.  Check the
-            # whole remainder after it as a bare host first: ``user@::1``
-            # names ``::1``, which the plain colon split below would misread
-            # as an empty host.  Userinfo marks the remainder as a host.
-            after_userinfo = t[len(pre_colon.rsplit("@", 1)[0]) + 1 :]
-            if _host_is_self(after_userinfo, dns_fallback=dns, match_globs=match_globs):
-                return True
-        host = pre_colon
-        if "@" in host:
-            host = host.rsplit("@", 1)[1]
-    # An isolated host part (a scheme authority, a bracketed literal, a
-    # ``host:path`` prefix, a userinfo remainder) IS a host wherever the
-    # operand sits, so the DNS layer applies; an operand isolation did not
-    # shorten is a bare word -- a host only in host position.
-    if "@" in t and (scheme_seen or "/" not in t):
-        # Userinfo may CONTAIN a colon (``user:pass@host``): the colon-first
-        # split above then reads the host as ``user``.  OpenSSH resolves the
-        # destination AFTER the LAST ``@`` -- in a URI authority (its path is
-        # already split off) and in the plain ``[user@]host`` form (which has
-        # no path).  A token with a ``/`` outside a scheme keeps the colon-first
-        # order: its ``@`` is path data (``far:/backup/a@b``).
-        tail = t.rsplit("@", 1)[1]
-        tail_dns = dns and (host_position or scheme_seen)
-        if _host_is_self(tail, dns_fallback=tail_dns, match_globs=match_globs):
-            return True
-        tail_host = tail.partition(":")[0]
-        if tail_host != tail and _host_is_self(
-            tail_host, dns_fallback=tail_dns, match_globs=match_globs
-        ):
-            return True
-    return _host_is_self(
-        host,
-        dns_fallback=dns and (host_position or scheme_seen or host != t),
-        match_globs=match_globs,
-    )
-
-
+# Set while the floors read a command value that names no literal self host
+# (``argv_floor_git_tar._reenter_floors``): every host is then read with no DNS.
 def _ssh_verb_basename(token: str) -> str:
     """*token*'s program basename as ``_ssh_family_verb`` reads it (``ssh.exe`` is ``ssh``)."""
     base = _program_basename(_strip_redirect(token.strip("\"'")))
@@ -933,6 +815,28 @@ _CALL_WRAPPER_WORDS: frozenset[str] = frozenset(
 )
 
 
+def _bind_positional_parameters(body: str, args: "list[str]") -> str:
+    """*body* with ``$1``..``$9``, ``${N}``, ``$@`` and ``$*`` replaced by *args*.
+
+    Shared by the function-call binder and the git/tar floor's ``!`` alias
+    rebuild, which bind one level of call arguments the same way.
+    """
+    bound = body
+    joined = " ".join(args)
+    for star in ('"$@"', "$@", '"$*"', "$*"):
+        bound = bound.replace(star, joined)
+    # Braced ``${N}`` has no single-digit ceiling in bash, so it binds for
+    # EVERY supplied argument; unbraced ``$N`` reads one digit (``$10`` is
+    # ``${1}0``), so it stays capped at nine.
+    for i, arg in enumerate(args, start=1):
+        bound = bound.replace('"${%d}"' % i, arg)
+        bound = bound.replace("${%d}" % i, arg)
+        if i <= 9:
+            bound = bound.replace('"$%d"' % i, arg)
+            bound = bound.replace("$%d" % i, arg)
+    return bound
+
+
 def _function_call_binds_self(text: str) -> bool:
     """True if a bound (def, call) pair opens an ssh channel to this host."""
     # The caller hands over masked text: a quoted ``{`` rides as a sentinel
@@ -975,41 +879,185 @@ def _function_call_binds_self(text: str) -> bool:
                 # of one name is unresolvable padding, so deny.
                 return True
             args = [w.strip("\"'") for w in words[idx + 1 :]]
-            bound = body
-            joined = " ".join(args)
-            for star in ('"$@"', "$@", '"$*"', "$*"):
-                bound = bound.replace(star, joined)
-            # Braced ``${N}`` has no single-digit ceiling in bash, so it
-            # binds for EVERY supplied argument; unbraced ``$N`` reads one
-            # digit (``$10`` is ``${1}0``), so it stays capped at nine.
-            for i, arg in enumerate(args, start=1):
-                bound = bound.replace('"${%d}"' % i, arg)
-                bound = bound.replace("${%d}" % i, arg)
-                if i <= 9:
-                    bound = bound.replace('"$%d"' % i, arg)
-                    bound = bound.replace("$%d" % i, arg)
+            bound = _bind_positional_parameters(body, args)
             if bound != body and _is_ssh_to_self(bound):
                 return True
     return False
 
 
-# Set while the floor reads a line as main did: no body span copied in one step and
-# no quote rewriting in a splice. Recursion inherits it, so that reading stays whole.
-_MAIN_READING = contextvars.ContextVar("ssh_floor_main_reading", default=False)
+def _ssh_floor_source_text(text_lower: str) -> str:
+    """The ssh floor's source pre-walk: *text_lower* as the walk reads it.
+
+    Empty expansions collapsed, statically decidable flat substitutions
+    (``$(printf localhost)``) spliced in, literal same-line assignments
+    substituted (:func:`_ssh_floor_unmasked_text`), and quoted separators
+    masked -- in that order.  The git/tar floor reads the same text, so it sees
+    every spelling this floor resolves.
+    """
+    # Mask every ``;``/``|`` that is QUOTED or backslash-escaped in the source to
+    # a sentinel BEFORE tokenization, so a quoted separator surviving into a
+    # shlex-dequoted token (``scp 'a;b' localhost:/x``) is not read as a
+    # command boundary by ``_ends_argv`` -- which would end the walk before the
+    # real target and let the connection through.  It is restored only at the
+    # faithful operand/routing checks; recursion sites receive the masked
+    # text unchanged (the mask is idempotent -- their quotes are already gone).
+    return _mask_quoted_separators(_ssh_floor_unmasked_text(text_lower))
 
 
-def _reaches_self_over_ssh(text_lower: str) -> bool:
-    """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
-    read whole: the separator mask would turn a script's own separators into data. Either
-    the quote-aware reading or main's unchanged one (*_MAIN_READING*) refusing refuses."""
-    scripts = _quoted_assignment_scripts(text_lower)
-    if _is_ssh_to_self(text_lower, own_line=True) or any(map(_is_ssh_to_self, scripts)):
-        return True
-    token = _MAIN_READING.set(True)
-    try:
-        return _is_ssh_to_self(text_lower, own_line=True) or any(map(_is_ssh_to_self, scripts))
-    finally:
-        _MAIN_READING.reset(token)
+def _ssh_floor_unmasked_text(text_lower: str) -> str:
+    """:func:`_ssh_floor_source_text` before its quoted separators are masked."""
+    # Collapse empty expansions in the SOURCE so the gate and tokenization both
+    # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
+    text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
+
+    # A flat command substitution whose output is statically decidable
+    # (``$(printf localhost)``, backtick ``echo localhost``) IS its output by
+    # the time the kernel sees the command line, so splice that output into
+    # the source before the probe and the walk -- the resolved self-host is
+    # then an ordinary operand, glued spellings (``local$(printf host)``)
+    # included.  ``_static_substitution_output`` resolves only echo/printf
+    # literals; every other body keeps its original text (the ``$(hostname``
+    # hints below read it) and stays the documented run-time residual.  A
+    # single-quoted spelling resolves too -- an over-approximation toward
+    # deny, accepted for a deny floor.  Only the first word is spliced.
+    # An escaped backtick span stays unspliced here; one quoting level down
+    # (``eval "ssh \`printf localhost\`"``) the ``_MAIN_READING`` pass of
+    # ``_reaches_self_over_ssh`` splices it, as main did.
+    text_lower = _splice_static_substitutions(text_lower)
+    # Substitute ``$a``/``${a}`` from literal same-line assignments
+    # (``a=s; ${a}sh localhost`` -> ``ssh localhost``) so neither the verb nor
+    # the operand can be spliced from statically-known text.  Values are
+    # separator-free by construction, so the substitution cannot fabricate a
+    # command boundary the masking below would misread.
+    return _resolve_line_assignments(text_lower)
+
+
+def _rsync_rsh_assignment(stripped_tok: str) -> "tuple[str, str] | None":
+    """``(name, value)`` of a ``RSYNC_RSH=`` / ``RSYNC_CONNECT_PROG=`` word, else None."""
+    assign = _RSYNC_RSH_ASSIGN_RE.match(stripped_tok)
+    if assign is None:
+        return None
+    return assign.group(1), assign.group(2).strip("\"'")
+
+
+def _is_rsync_rsh_name(name: str) -> bool:
+    """True for the two rsync env names whose bare ``export`` the walk models."""
+    return name in ("rsync_rsh", "rsync_connect_prog")
+
+
+class _FrameEnvironment:
+    """The environment assignments one frame of the walk has seen, by name.
+
+    Fed every non-verb word of a frame in order (``observe``).  Bash applies a
+    leading assignment to the WHOLE simple command that follows -- the command
+    word and every child it execs, wrappers of any shape (``env``/``command``/
+    ``timeout`` …) included -- so an ordinary word does NOT drop the pending
+    value; only a command separator ends that simple command and clears it
+    (tracked substitution-aware, so a ``;`` inside ``$( … )`` does not).
+    ``export`` makes the value persist for the rest of the line, so an
+    exported value is remembered separately and survives separators.  Which
+    words are assignments, and which names a bare ``export NAME`` promotes,
+    are the caller's (*parse_assignment*, *exportable*).
+
+    The floors read lower-cased text, so ``GIT_SSH_COMMAND`` and
+    ``git_ssh_command`` arrive as one name although the shell keeps two
+    variables.  Every store therefore keeps EVERY distinct value seen under a
+    name, in order, and a reader checks them all: a benign value in one case
+    cannot hide a self-dialing value in the other.  The cost is a refusal when
+    a later same-name value really did replace a self-dialing one.
+    """
+
+    def __init__(
+        self,
+        parse_assignment: "Callable[[str], tuple[str, str] | None]",
+        exportable: "Callable[[str], bool]",
+    ) -> None:
+        self._parse_assignment = parse_assignment
+        self._exportable = exportable
+        self.pending: dict[str, list[str]] = {}
+        self.exported: dict[str, list[str]] = {}
+        # Names declared for export BEFORE any value exists (the POSIX
+        # ``export VAR; VAR=value`` order): a later assignment to a
+        # marked name is exported the moment it lands.  Never cleared by
+        # separators.
+        self.export_marked: set[str] = set()
+        # Every plain assignment value seen in this frame, PER NAME (independent
+        # names — one shared slot would let a later far assignment overwrite an
+        # earlier self value), wherever it appeared: a shell variable persists
+        # for the rest of the line even after the simple command it prefixed
+        # ends, so a later bare ``export NAME`` (the POSIX ``VAR=value; export
+        # VAR`` two-step) promotes THAT name's values into the environment.
+        # Never cleared by separators.
+        self.assigned: dict[str, list[str]] = {}
+        self.prev_stripped_tok: "str | None" = None
+        self.prev_program = False  # whether that word was its command's program word
+        # ``export`` and the ``declare -x`` / ``typeset -x`` forms export every
+        # assignment operand in their command, not only the adjacent one.
+        self.inside_export_command = False
+        self.outer_depth = 0
+
+    def observe(self, token: str, stripped_tok: str, program: bool = False) -> bool:
+        """Read one non-verb word; True when a command separator ended its simple command.
+
+        *program* is True when the word is its command's program word.  Only an
+        ``export``/``declare``/``typeset`` there exports: the same word as an
+        argument of another program (``echo export A=x``) is data.
+        """
+        ended = False
+        assign = self._parse_assignment(stripped_tok)
+        if assign is not None:
+            env_name, value = assign
+            self._keep(self.pending, env_name, [value])
+            self._keep(self.assigned, env_name, [value])
+            if self.inside_export_command or env_name in self.export_marked:
+                self._keep(self.exported, env_name, [value])
+        else:
+            exported_name = stripped_tok.rstrip(";&")
+            if (program and exported_name == "export") or (
+                self.prev_program
+                and self.prev_stripped_tok in ("declare", "typeset")
+                and exported_name == "-x"
+            ):
+                self.inside_export_command = True
+            elif self.inside_export_command and self._exportable(exported_name):
+                # Bare ``export NAME`` after an earlier plain assignment: THAT
+                # name's stored value enters the environment.  Declared BEFORE
+                # any value (export-first), the name is marked so the later
+                # assignment exports itself.  The state spans every operand in
+                # this export command and ends only at its command boundary.
+                self.export_marked.add(exported_name)
+                if exported_name in self.assigned:
+                    self._keep(self.exported, exported_name, self.assigned[exported_name])
+            self.outer_depth += _substitution_depth_delta(token)
+            if self.outer_depth <= 0 and _ends_argv(token):
+                # A command separator ends the simple command the
+                # leading assignment prefixed; pending does not cross it.
+                self.pending.clear()
+                self.inside_export_command = False
+                ended = True
+            self.outer_depth = max(self.outer_depth, 0)
+        self.prev_stripped_tok = stripped_tok
+        self.prev_program = program
+        return ended
+
+    @staticmethod
+    def _keep(store: "dict[str, list[str]]", name: str, values: "list[str]") -> None:
+        """Add each of *values* to *store*'s list for *name*, once and in order."""
+        kept = store.setdefault(name, [])
+        kept.extend(value for value in values if value not in kept)
+
+    def value(self, name: str) -> "str | None":
+        """*name*'s value for a command run here: pending, else exported.
+
+        When ANY pending or exported value kept under *name* is a command line
+        ``_is_ssh_to_self`` reads as dialing this host, that value is returned
+        instead, so the caller's self check sees it whichever case was real.
+        """
+        for candidate in (*self.pending.get(name, ()), *self.exported.get(name, ())):
+            if _is_ssh_to_self(candidate):
+                return candidate
+        current = self.pending.get(name) or self.exported.get(name)
+        return current[-1] if current else None
 
 
 # How many :func:`_is_ssh_to_self` readings may be open at once. Each nested
@@ -1025,13 +1073,13 @@ def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
     """*read*, refused (True) once ``_MAX_SSH_READING_DEPTH`` readings are open."""
 
     @functools.wraps(read)
-    def bounded(text_lower: str, *, own_line: bool = False) -> bool:
+    def bounded(text_lower: str, *, own_line: bool = False, raw_text: "str | None" = None) -> bool:
         depth = _ssh_reading_depth.get()
         if depth >= _MAX_SSH_READING_DEPTH:
             return True
         token = _ssh_reading_depth.set(depth + 1)
         try:
-            return read(text_lower, own_line=own_line)
+            return read(text_lower, own_line=own_line, raw_text=raw_text)
         finally:
             _ssh_reading_depth.reset(token)
 
@@ -1039,22 +1087,25 @@ def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
 
 
 @_bounded_ssh_reading
-def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
+def _is_ssh_to_self(
+    text_lower: str, *, own_line: bool = False, raw_text: "str | None" = None
+) -> bool:
     """:func:`_judge_ssh_to_self`, read once per gate call: a bound body re-reads the
-    bodies nested in it. The key holds the reading and its depth, so a reused verdict
-    is the one this depth would give."""
+    bodies nested in it. The key holds the reading, its depth and the submitted text,
+    so a reused verdict is the one this depth and this casing would give."""
     from .shell_commands import _CALL_VIEWS  # local: the facade serves every module name
 
     memo = _CALL_VIEWS.get()
-    key = ("ssh_to_self", text_lower, own_line, _MAIN_READING.get(), _ssh_reading_depth.get())
+    reading = (_MAIN_READING.get(), _LITERAL_HOSTS.get(), _ssh_reading_depth.get())
+    key = ("ssh_to_self", text_lower, own_line, raw_text, *reading)
     if memo is None:
-        return _judge_ssh_to_self(text_lower, own_line)
+        return _judge_ssh_to_self(text_lower, own_line, raw_text)
     if key not in memo:
-        memo[key] = _judge_ssh_to_self(text_lower, own_line)
+        memo[key] = _judge_ssh_to_self(text_lower, own_line, raw_text)
     return bool(memo[key])
 
 
-def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
+def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" = None) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
     Structural for the same reason the other floors are: the target hides
@@ -1095,48 +1146,39 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
     ``_routing_option_value_targets_self``) and rsync's ``-e``/``--rsh``.
     rsync also honors a leading ``RSYNC_RSH=`` environment assignment as the
     same selector -- handled in the walk below; the wider remote-shell env-var
-    family (``GIT_SSH_COMMAND`` and the like) is a documented residual, as are
-    the shell-builtin export spellings (``declare -x``/``typeset -x``), which
-    are not leading-assignment syntax and so are not modeled by the walk.
+    family (``GIT_SSH_COMMAND`` and the like) is a documented residual.  For
+    the rsync variables this floor tracks, every assignment operand of
+    ``export`` / ``declare -x`` / ``typeset -x`` persists through the command
+    boundary.
     """
+    # A here-document body that no program on the line runs is data, not argv: the
+    # self floor's view blanks it, and the line read that way may allow. The view
+    # reads neither a ``\r`` (it drops one from a tag but not from the closing line,
+    # where bash keeps it) nor bash's join of a ``<<`` line that ends in a backslash,
+    # so on such a line this floor reads the whole line as before. bash matches a
+    # closing line case-sensitively, so the bodies are found on the words as written
+    # and only then lowered; without them the view is not taken. These guards only
+    # turn the allow off, so the floor never refuses more than without the view.
+    cased = raw_text if raw_text is not None and raw_text.lower() == text_lower else None
+    view = text_lower if cased is None else _heredoc_data_view(cased).lower()
+    if (
+        view != text_lower
+        and "\r" not in text_lower
+        and not any("<<" in ln and ln.endswith("\\") for ln in text_lower.split("\n"))
+        and not _is_ssh_to_self(view, own_line=own_line)
+    ):
+        return False
     # Single quotes read as literal only in the caller's own line, and only when it
     # has no live substitution opener before the splices below rewrite it: a spliced
     # static output (``x'y``) could otherwise pair into quotes around a live one.
     literal = own_line and _only_single_quoted_openers(text_lower)
-    # Collapse empty expansions in the SOURCE so the gate and tokenization both
-    # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
-    text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
-
-    # A flat command substitution whose output is statically decidable
-    # (``$(printf localhost)``, backtick ``echo localhost``) IS its output by
-    # the time the kernel sees the command line, so splice that output into
-    # the source before the probe and the walk -- the resolved self-host is
-    # then an ordinary operand, glued spellings (``local$(printf host)``)
-    # included.  ``_static_substitution_output`` resolves only echo/printf
-    # literals; every other body keeps its original text (the ``$(hostname``
-    # hints below read it) and stays the documented run-time residual.  A
-    # single-quoted spelling resolves too -- an over-approximation toward
-    # deny, accepted for a deny floor.
-    docs = [] if _MAIN_READING.get() else heredoc_text_spans(text_lower)
-
-    def _splice_static_substitution(match: "re.Match[str]") -> str:
-        body = match.group(1) if match.group(1) is not None else match.group(2)
-        out = _static_substitution_output(body)
-        # Spliced quotes would open or close one (``"$(echo 'a"b')" ; ssh``) and a
-        # trailing backslash would escape the next character; bash reads neither. Heredoc
-        # text keeps its old reading, as the mask leaves it.
-        if out == "\x00" or _MAIN_READING.get() or any(a <= match.start() < e for a, e in docs):
-            return match.group(0) if out == "\x00" else out
-        out = out.replace('"', "_").replace("'", "_")
-        return out[:-1] + "_" if out.endswith("\\") else out
-
-    text_lower = _FLAT_SUBSTITUTION_RE.sub(_splice_static_substitution, text_lower)
-    # Substitute ``$a``/``${a}`` from literal same-line assignments
-    # (``a=s; ${a}sh localhost`` -> ``ssh localhost``) so neither the verb nor
-    # the operand can be spliced from statically-known text.  Values are
-    # separator-free by construction, so the substitution cannot fabricate a
-    # command boundary the masking below would misread.
-    text_lower = _resolve_line_assignments(text_lower)
+    # The words as written, when the line had upper case (see the frame loop).
+    cased_text = raw_text if raw_text is not None and raw_text != text_lower else None
+    same_case = raw_text is not None and cased_text is None
+    # The source pre-walk (empty expansions, static substitutions, same-line
+    # assignments) is ``_ssh_floor_unmasked_text``, shared with the git/tar floor;
+    # the double-quoted substitution bodies below are read from the text it returns.
+    text_lower = _ssh_floor_unmasked_text(text_lower)
     unmasked = text_lower
     if _cannot_name_ssh_verb(text_lower):
         return False
@@ -1149,20 +1191,8 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
     # text unchanged (the mask is idempotent -- their quotes are already gone).
     kept = _mask_quoted_separators(text_lower)
     text_lower = _mask_quoted_separators(text_lower, blank_bodies=True)
-    # Quote/backslash splices survive into the tokens (shlex rejoins them) but
-    # defeat this raw-substring gate, so probe a copy with them stripped out.
-    # Bash decodes ANSI-C quoting ($'\x73\x73\x68' -> ssh)
-    # before exec, and the operand walk's tokenizer resolves it too -- so the
-    # gate guarding that walk probes the DECODED text, or a verb spelling the
-    # walk would deny slips past the gate the walk never gets to correct.
-    probe = _decode_shell_quoted_literals(kept)
-    probe = probe.replace('"', "").replace("'", "").replace("\\", "")
-    # bash substitutes ``${VAR:-word}`` defaults before exec, so the verb can
-    # be spliced from statically-known text (``s${U:-s}h`` -> ``ssh``).
-    # Resolve the same forms the operand walk resolves; a bare ``$VAR`` whose
-    # value exists only at run time stays the documented fail-open residual.
-    probe = _resolve_param_defaults(probe)
-    if not any(verb in probe for verb in _SSH_FAMILY_VERBS) and not _glob_can_name_ssh_verb(probe):
+    # The verb gate probes *kept*, the copy whose body quotes stay as written.
+    if not _may_name_ssh_verb(kept):
         return False
     # Bind one level of function-call arguments (``f(){ ssh "$1"
     # id; }; f localhost``) and recurse on the bound body -- the literal call
@@ -1190,57 +1220,82 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
-    for tokens in _self_token_frames(text_lower, literal):
+    frames = _self_token_frames(text_lower, literal)
+    # A wrapper's option words are read in the case they were written in
+    # (``sudo -H`` takes no value, ``sudo -h`` does), so the caller's own line
+    # goes through the same rewrites into frames that keep its case.  A line
+    # with no upper case is its own cased frames.  Where a cased frame does not
+    # lower to the frame read here word for word (a rewrite that only matched
+    # one spelling), that frame keeps today's lowered reading; so does every
+    # line the floor reaches by recursion, which has no submitted text.
+    cased_frames: "list[list[str] | None]" = [tokens if same_case else None for tokens in frames]
+    if cased_text is not None:
+        cased_text = _mask_quoted_separators(
+            _ssh_floor_unmasked_text(cased_text), blank_bodies=True
+        )
+        cased_all = _self_token_frames(cased_text, literal)
+        if len(cased_all) == len(frames):
+            cased_frames = [
+                cased if [t.lower() for t in cased] == tokens else None
+                for cased, tokens in zip(cased_all, frames)
+            ]
+    for tokens, cased_tokens in zip(frames, cased_frames):
         programs = _argv_programs(tokens)
+        executed = _argv_rules._executed_program_indices(tokens, cased_tokens)
+        # Only a submitted line that is one simple ``git add`` gets this reading.
+        file_operands = (
+            _argv_rules._file_operand_indices(tokens, cased_tokens)
+            if own_line and raw_text is not None and _argv_rules.is_one_plain_git_add_line(raw_text)
+            else set()
+        )
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
         # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb
         # so the operand walk below never sees it.  When rsync runs live, that
-        # value is a local command line that recurses the floor.  Bash applies a
-        # leading assignment to the WHOLE simple command that follows -- the
-        # command word and every child it execs, wrappers of any shape
-        # (``env``/``command``/``timeout`` …) included -- so an ordinary word
-        # does NOT drop the pending value; only a command separator ends that
-        # simple command and clears it (tracked substitution-aware, so a ``;``
-        # inside ``$( … )`` does not).  ``export`` makes the value persist for
-        # the rest of the line, so an exported value is remembered separately
-        # and survives separators.
-        rsync_rsh_pending: dict[str, str] = {}
-        rsync_rsh_exported: dict[str, str] = {}
-        # Names declared for export BEFORE any value exists (the POSIX
-        # ``export VAR; VAR=value`` order): a later assignment to a
-        # marked name is exported the moment it lands.  Never cleared by
-        # separators.
-        rsync_rsh_export_marked: set[str] = set()
-        # The last plain assignment seen in this frame, PER NAME (the two
-        # rsync env vars are independent — one shared slot would let a later
-        # far assignment overwrite an earlier self value), wherever it
-        # appeared: a shell variable persists for the rest of the line even
-        # after the simple command it prefixed ends, so a later bare
-        # ``export RSYNC_RSH`` (the POSIX ``VAR=value; export VAR`` two-step)
-        # promotes THAT name's value into the environment.  Never cleared by
-        # separators.
-        rsync_rsh_assigned: dict[str, str] = {}
-        prev_stripped_tok: "str | None" = None
+        # value is a local command line that recurses the floor.  Pending,
+        # exported and export-first values are tracked by ``_FrameEnvironment``.
+        rsync_env = _FrameEnvironment(_rsync_rsh_assignment, _is_rsync_rsh_name)
         cmd_start = True  # the next token sits in program position
-        outer_depth = 0
         xargs_prefix_index: "int | None" = None  # a bare ``xargs`` in this simple command
         # Once per FRAME, not once per verb token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
             verb = _ssh_family_verb(token)
-            # A verb read through a bare glob (``s?h``, a lone ``*``) expands only
-            # in the working directory, so it already spends the one filesystem
-            # expansion this floor models and a glob operand after it is not read
-            # as this host.  Two wildcard words in a row are every five-field cron
+            # A glob that bash does not run and that ends its command (``git add
+            # *; curl localhost:3000``) is that command's last operand, not an
+            # ssh verb whose operand scan would run on past the ``;``.
+            if (
+                verb is not None
+                and _ssh_verb_basename(token) != verb
+                and i not in executed
+                and token.endswith((";", "|"))
+            ):
+                verb = None
+            # A bare glob (``s?h``) that bash RUNS -- program
+            # position, or the program a wrapper runs (``env s?h``) -- is an ssh
+            # verb whose glob operands (``local*``) keep host glob matching.  The
+            # same glob as another program's operand (``tar … s* *.*``,
+            # ``find s* l*``) is a filename: it already spends the one filesystem
+            # expansion this floor models, so a glob after it is not read as this
+            # host.  Two wildcard words in a row are every five-field cron
             # schedule (``0 * * * *``), and a working directory that expands both
             # into a self connection also makes a lone ``*`` that whole command
             # line, which no static floor reads.  A verb glob with a directory part
             # (``/usr/bin/s?h``) expands outside it, so its operands keep glob
-            # host matching.
+            # host matching.  A word of only ``*`` keeps the filename reading
+            # wherever it sits: it is the field of a cron schedule
+            # (``* * * * * root …``) far more often than a program.
             glob_verb = (
                 verb is not None
                 and _ssh_verb_basename(token) != verb
                 and not any(sep in token for sep in "/\\")
+                and (i not in executed or not token.strip("*"))
+            )
+            # A wildcard that is a plain ``git add`` operand (``_file_operand_indices``)
+            # is a file name: the words after it get no DNS lookup, only the own-name
+            # and literal loopback checks. Any slot not proven a file operand keeps
+            # the DNS check (``sshpass s?h <alias>``, ``find -exec s?h …``).
+            filename_glob = (
+                verb is not None and _ssh_verb_basename(token) != verb and i in file_operands
             )
             if verb is None and bound_program_verbs:
                 stripped_prog = token.strip("\"'")
@@ -1249,40 +1304,8 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
                 )
             if verb is None:
                 stripped_tok = token.strip("\"'")
-                assign = _RSYNC_RSH_ASSIGN_RE.match(stripped_tok)
-                if assign is not None:
-                    env_name = assign.group(1)
-                    value = assign.group(2).strip("\"'")
-                    rsync_rsh_pending[env_name] = value
-                    rsync_rsh_assigned[env_name] = value
-                    # A preceding ``export`` makes the assignment persist into
-                    # every later segment's environment for real, so remember it
-                    # where no separator clears it.
-                    if prev_stripped_tok == "export" or env_name in rsync_rsh_export_marked:
-                        rsync_rsh_exported[env_name] = value
-                else:
-                    exported_name = stripped_tok.rstrip(";&")
-                    if prev_stripped_tok == "export" and exported_name in (
-                        "rsync_rsh",
-                        "rsync_connect_prog",
-                    ):
-                        # Bare ``export RSYNC_RSH`` (or ``RSYNC_CONNECT_PROG``)
-                        # after an earlier plain assignment: THAT name's stored
-                        # value enters the environment.  The walk reads lowered
-                        # text, and a glued separator (``export RSYNC_RSH;``)
-                        # rides on the name token.  Declared BEFORE any value
-                        # (export-first), the name is marked so the later
-                        # assignment exports itself.
-                        rsync_rsh_export_marked.add(exported_name)
-                        if exported_name in rsync_rsh_assigned:
-                            rsync_rsh_exported[exported_name] = rsync_rsh_assigned[exported_name]
-                    outer_depth += _substitution_depth_delta(token)
-                    if outer_depth <= 0 and _ends_argv(token):
-                        # A command separator ends the simple command the
-                        # leading assignment prefixed; pending does not cross it.
-                        rsync_rsh_pending.clear()
-                        xargs_prefix_index = None
-                    outer_depth = max(outer_depth, 0)
+                if rsync_env.observe(token, stripped_tok, i in executed):
+                    xargs_prefix_index = None
                 # ``xargs`` turns its stdin into argv for the
                 # program it launches -- remember a bare ``xargs`` in this
                 # simple command (any position: wrappers keep it off program
@@ -1322,11 +1345,11 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
                 cmd_start = _ends_argv(token) or (
                     cmd_start and _ENV_ASSIGN_PREFIX_RE.match(stripped_tok) is not None
                 )
-                prev_stripped_tok = stripped_tok
                 continue
-            # A verb starts a fresh simple command, so the ``export`` adjacency
-            # run ends here.
-            prev_stripped_tok = None
+            # A verb starts a fresh simple command, so the export command
+            # state cannot reach later words in this invocation.
+            rsync_env.prev_stripped_tok = None
+            rsync_env.inside_export_command = False
             # ``echo ssh localhost`` prints two words; it connects to nothing.
             if disqualified is None:
                 disqualified = _shell_normalizer._data_consumer_command_disqualified(tokens)
@@ -1350,13 +1373,13 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
             # exported one persists, so fall back to it when nothing is pending.
             if verb == "rsync":
                 for env_name in ("rsync_rsh", "rsync_connect_prog"):
-                    env_val = rsync_rsh_pending.get(env_name, rsync_rsh_exported.get(env_name))
+                    env_val = rsync_env.value(env_name)
                     if env_val is not None and _is_ssh_to_self(env_val):
                         return True
                 # With neither a pending nor an exported value in THIS
                 # frame, fall back to a self-targeting value carried from an
                 # EARLIER frame (inherited into this nested payload).
-                if not rsync_rsh_pending and not rsync_rsh_exported and rsync_rsh_carried_self:
+                if not rsync_env.pending and not rsync_env.exported and rsync_rsh_carried_self:
                     return True
             positional_pending = verb in ("ssh", "sftp")
             option_shadow = False  # previous token was an option that may take a value
@@ -1418,6 +1441,7 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
                         if checkable and _operand_targets_self(
                             _unmask_separators(remainder),
                             host_position=positional_pending and not value_shadow,
+                            dns=not filename_glob,
                             match_globs=not glob_verb,
                         ):
                             return True
@@ -1555,6 +1579,7 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
                         _unmask_separators(stripped),
                         host_position=positional_pending
                         and (not value_shadow or value_shadow_ambiguous),
+                        dns=not filename_glob,
                         match_globs=not glob_verb,
                     ):
                         return True
@@ -1580,7 +1605,110 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool) -> bool:
         # cleared) so a nested ``sh -c 'rsync ...'`` frame denies.  Same
         # precedence as the in-walk rsync check: pending, else exported.
         for env_name in ("rsync_rsh", "rsync_connect_prog"):
-            carried_now = rsync_rsh_pending.get(env_name, rsync_rsh_exported.get(env_name))
+            carried_now = rsync_env.value(env_name)
             if carried_now is not None and _is_ssh_to_self(carried_now):
                 rsync_rsh_carried_self = True
     return False
+
+
+def _open_frame_could_run_git_tar(source: str) -> bool:
+    """True if a frame that ends inside a quote could still run git or tar.
+
+    The quotes of such a frame cannot be read, so every separator in it is
+    taken as real.  Only a word in COMMAND POSITION is read as the program the
+    frame runs: the start of a command -- the frame start, or right after a
+    separator (``;`` ``&&`` ``||`` ``|`` newline ``(`` ``$(`` backtick) -- with
+    any leading ``VAR=value`` assignments and command wrappers (``env``,
+    ``sudo``, ``exec`` ...) stepped over, plus the program a carried
+    ``sh -c <script>`` runs.  A ``git``/``tar`` word anywhere else (mid-sentence
+    or as an argument) names no command, so prose that merely mentions git or
+    tar (``I can't run git here``) is left to the other floors.  A command word
+    runs git or tar when it reads as ``git``/``tar`` once its quotes,
+    backslashes, path and ``.exe`` are removed (``gi''t``, ``/usr/bin/git``,
+    ``git.exe``), when it holds a ``$`` the shell expands (``$x``), or when it
+    is a glob with at least one LITERAL character that can name ``git``,
+    ``tar`` or ``ssh`` (``g?t``, ``/usr/bin/t*r``).  A word built only of
+    wildcards (``*``, ``?``) matches every file in the directory, not a fixed
+    program, so it does not count.
+    """
+    from .argv_rules import _RUNS_C_VALUE, _program_args, _split_commands
+
+    def _glob_has_literal(base: str) -> bool:
+        # A glob counts only if some character must appear literally in every
+        # expansion.  ``*`` and ``?`` match freely; a ``[...]`` class matches
+        # one unfixed character, so it is read as a wildcard unit.
+        i = 0
+        while i < len(base):
+            if base[i] == "[":
+                close = base.find("]", i + 1)
+                if close < 0:
+                    return True
+                i = close + 1
+                continue
+            if base[i] not in "*?":
+                return True
+            i += 1
+        return False
+
+    def _program_runs_git_tar(program: str) -> bool:
+        base = program.rsplit("/", 1)[-1].removesuffix(".exe")
+        if base in ("git", "tar") or "$" in program:
+            return True
+        return _glob_has_literal(base) and _glob_could_expand_to(base, ("git", "tar", "ssh"))
+
+    def _command_position_runs_git_tar(words: "list[str]") -> bool:
+        for argv in _split_commands(words):
+            parsed = _program_args(argv)
+            if parsed is None:
+                continue
+            args = parsed[1]
+            program = argv[len(argv) - len(args) - 1]
+            if _program_runs_git_tar(program):
+                return True
+            # A carried ``sh -c <script>`` puts its own program in command
+            # position inside the script; read that script the same way.
+            if program.rsplit("/", 1)[-1] in _RUNS_C_VALUE and "-c" in args:
+                script = args[args.index("-c") + 1 :]
+                if script and _command_position_runs_git_tar(script):
+                    return True
+        return False
+
+    text = _shell_join_continuations(_unmask_separators(source))
+    # A backslash-escaped ``\$`` is a literal dollar in every quoting context
+    # (inside single quotes the ``$`` is literal too), so it expands nothing.
+    # Replace it with a plain character before the quote junk is stripped,
+    # or ``\$`` in quoted data (a regex in a ``grep`` argument) reads as a
+    # ``$`` program word.
+    kept: "list[str]" = []
+    index = 0
+    while index < len(text):
+        if text[index] == "\\" and index + 1 < len(text):
+            pair = text[index : index + 2]
+            kept.append("_" if pair == "\\$" else pair)
+            index += 2
+            continue
+        kept.append(text[index])
+        index += 1
+    text = "".join(kept)
+    for separator in ";|&()`\n":
+        text = text.replace(separator, " ; ")
+    words = [_SELF_FLOOR_QUOTE_JUNK_RE.sub("", word) for word in text.split()]
+    return _command_position_runs_git_tar(words)
+
+
+def _executed_value_forms(value: str) -> "tuple[str, ...]":
+    """The forms a command *value* git or tar runs reaches the command check as.
+
+    git strips a leading ``!`` from some executed values (a ``credential.helper``
+    / ``credential.<url>.helper`` and an ``alias`` body) and runs the remainder
+    through the shell, while it runs others (``core.sshCommand``, ``core.pager``
+    and the rest) as a shell command verbatim -- where a leading ``! word`` still
+    runs ``word``.  Reading BOTH the value and, when it begins with ``!``, the
+    value without that one character covers every key fail closed, without a key
+    table: the bare form catches a verbatim shell value, the stripped form the
+    ``!``-stripped keys.  A value without a leading ``!`` yields itself only, so
+    nothing else is read twice.  (Used by ``argv_floor_git_tar``.)
+    """
+    if value.startswith("!"):
+        return (value, value[1:])
+    return (value,)

@@ -12,7 +12,7 @@
  *      droppable at all degrades to closestCenter over EVERY droppable; with a
  *      sidebar droppable present it never resolves to the pane.
  *  (4) A pointer drag inside no droppable falls back to the nearest SIDEBAR
- *      droppable by edge distance, never to the pane.
+ *      droppable by edge distance, never to the pane or a Split View pane.
  *
  * Neighbouring cases already pinned elsewhere and not repeated here:
  *  - pane overlapping a containing sidebar folder, pane-only keyboard drag,
@@ -258,5 +258,16 @@ describe('sidebarCollision — a pointer inside no droppable', () => {
     }))
     expect(ids(hits)).not.toContain('chat-pane-ref')
     expect(ids(hits)).toEqual(['folder-drop:near', 'folder-drop:far'])
+  })
+
+  it('never falls back to a Split View pane, even when its edge is nearer', () => {
+    const near = container('folder-drop:near', rect(0, 40, 0, 240), newRoot(), { type: 'folder-drop', folderId: 'near' })
+    const pane = container('split-pane:l1', rect(0, 900, 300, 1200), newRoot(), { type: 'split-pane', show: null })
+    const hits = sidebarCollision(args({
+      active: { type: 'session', key: 'k1' },
+      containers: [pane, near],
+      pointer: { x: 299, y: 20 },
+    }))
+    expect(ids(hits)).toEqual(['folder-drop:near'])
   })
 })

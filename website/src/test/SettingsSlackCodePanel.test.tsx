@@ -18,6 +18,7 @@ import { SlackPanel } from '../pages/settings/SlackPanel'
 import { slackCodePayload, slackCodeDraftFrom } from '../pages/settings/SlackCodePanel'
 import { forgetSlackInstallReading, useInstallRecheckFailed } from '../pages/settings/SlackManifestUpdate'
 import { markModelsDegraded } from '../providers/modelListHealth'
+import { turnOffCrewModeAsLts } from './crewModeOff'
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -37,9 +38,14 @@ const FOLDERS = [
   { id: 'bbbbbbbbbbbb', name: 'Slack Code', order: 1, parent_id: 'aaaaaaaaaaaa', default_agent: 'builder' },
 ]
 
-const NO_CHANGE = { added_scopes: [], removed_scopes: [], added_events: [], removed_events: [], added_features: [], removed_features: [] }
+const NO_CHANGE = {
+  added_scopes: [], removed_scopes: [], added_events: [], removed_events: [], added_features: [], removed_features: [],
+  added_user_scopes: [], removed_user_scopes: [], added_settings: [],
+}
+const MCP_SETTINGS = ['oauth_config.pkce_enabled: true', 'oauth_config.redirect_urls: http://localhost:48106/callback', 'settings.is_mcp_enabled: true']
 const CHANGES = {
   code_channels: { ...NO_CHANGE, added_features: ['code_channels'], added_scopes: ['canvases:write', 'chat:write.customize', 'code_channels:manage'], added_events: ['agent_session_stopped'] },
+  slack_mcp: { ...NO_CHANGE, added_user_scopes: ['channels:history', 'search:read.public'], removed_user_scopes: ['search:read'], added_settings: MCP_SETTINGS },
 }
 
 function status(install: Partial<SlackManifestStatus['install']> = {}, over: Partial<SlackManifestStatus> = {}): SlackManifestStatus {
@@ -73,7 +79,8 @@ function config(over: Partial<SlackConfigData> = {}): SlackConfigData {
       project_dir: null, project_source: '', slack_agent: 'kirocrew',
     },
     code_channel_warnings: [],
-    code_channel_auto_folder: { name: 'Code channels', agent: 'kirocrew-conductor', id: null },
+    code_channel_auto_folder: { name: 'Code channels', legacy_agent: 'kirocrew-conductor', id: null },
+    code_channel_conductor_agent: 'kirocrew-conductor',
     code_channel_agents: ['builder', 'reviewer'],
     ...over,
   }
@@ -105,8 +112,10 @@ describe('Slack Code payload', () => {
     const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: 'aaaaaaaaaaaa', agent: null, model: 'gone-model', reasoning_effort: null } }))
     expect(slackCodePayload(saved, saved)).toEqual({})
     expect(slackCodePayload({ ...saved, effort: 'high' }, saved)).toEqual({ code_channel_defaults: { reasoning_effort: 'high' } })
-    expect(slackCodePayload({ ...saved, folder: '', switches: { agent_sessions: false, code_channels: true } }, saved)).toEqual({
+    expect(slackCodePayload({ ...saved, folder: '', switches: { agent_sessions: false, code_channels: true, slack_mcp: false } }, saved)).toEqual({
       code_channels: true,
+      // An enabling save always carries the helper-agents value the card shows.
+      code_channel_dispatch: false,
       code_channel_defaults: { folder: null },
     })
   })
@@ -114,6 +123,16 @@ describe('Slack Code payload', () => {
   it('stores the inherit model as unset', () => {
     const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: null, agent: null, model: 'claude-x', reasoning_effort: null } }))
     expect(slackCodePayload({ ...saved, model: 'auto' }, saved)).toEqual({ code_channel_defaults: { model: null } })
+  })
+
+  it('leaves out a conductor mode edit config.local.json locks, keeping the rest', () => {
+    const saved = slackCodeDraftFrom(config())
+    const edited = { ...saved, conductorMode: true, effort: 'high' }
+    expect(slackCodePayload(edited, saved)).toEqual({ code_channel_defaults: { reasoning_effort: 'high', conductor_mode: true } })
+    // Pinned or unreadable: the switch is shown disabled, so a draft edit made
+    // before the lock landed is never sent (it would refuse the whole save).
+    expect(slackCodePayload(edited, saved, true)).toEqual({ code_channel_defaults: { reasoning_effort: 'high' } })
+    expect(slackCodePayload({ ...saved, conductorMode: true }, saved, true)).toEqual({})
   })
 
   it('reads an unset or unknown approval mode as Ask and stores Ask as unset', () => {
@@ -246,7 +265,10 @@ describe('Code channels card', () => {
     expect(preview).not.toHaveTextContent('kirocrew-conductor')
   })
 
-  it('turning Code channels on leaves dispatch off and says what turning it on does', async () => {
+  it('with no first enable read, turning Code channels on sends the off it shows and says what turning it on does', async () => {
+    // Also the stale-card case: the GET read no first enable (a value stored, or
+    // config.json unreadable then), so the server must not decide helpers on
+    // from files the card never showed.
     const { save } = seed()
     await hydrated()
     expect(screen.queryByTestId('slack-code-dispatch')).toBeNull()
@@ -260,7 +282,54 @@ describe('Code channels card', () => {
     expect(screen.queryByTestId('slack-code-dispatch-off')).toBeNull()
     fireEvent.click(saveBtn())
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: false })
+  })
+
+  it('turning Code channels on while config.local.json owns helper agents sends no helper value', async () => {
+    const { save } = seed({ code_channel_dispatch_overlay: true, code_channel_dispatch_overlay_state: 'unreadable' })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    await screen.findByTestId('slack-code-dispatch')
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
     expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
+  })
+
+  it('a first enable of Code channels turns helper agents on with it', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    const sub = await screen.findByTestId('slack-code-dispatch')
+    expect(within(sub).getByRole('switch', { name: 'Let code channels start helper agents' })).toBeChecked()
+    expect(sub).toHaveTextContent('On by default when you first turn on Code channels.')
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: true })
+  })
+
+  it('an off chosen in the enabling save is sent, so it is stored as an explicit off', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    fireEvent.click(screen.getByRole('switch', { name: 'Code channels' }))
+    const toggle = await screen.findByRole('switch', { name: 'Let code channels start helper agents' })
+    fireEvent.click(toggle)
+    expect(toggle).not.toBeChecked()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ code_channels: true, code_channel_dispatch: false })
+  })
+
+  it('turning Code channels back off before saving leaves helper agents as saved', async () => {
+    const { save } = seed({ code_channel_dispatch_on_enable: true })
+    await hydrated()
+    const cc = screen.getByRole('switch', { name: 'Code channels' })
+    fireEvent.click(cc)
+    await screen.findByTestId('slack-code-dispatch')
+    fireEvent.click(cc)
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channels')
     expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
   })
 
@@ -308,18 +377,18 @@ describe('Code channels card', () => {
     expect(within(screen.getByTestId('slack-code-dispatch-overlay')).getByRole('alert')).toBeInTheDocument()
     expect(screen.getByTestId('slack-code-dispatch-overlay')).not.toHaveTextContent(/^Off,/)
   })
-  it('with nothing configured, files into an auto-created Code channels folder run by the conductor', async () => {
+  it('with nothing configured, files into an auto-created Code channels folder on the default agent', async () => {
     seed({ code_channels: true }, status(), [])
     await hydrated()
     const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
-    await waitFor(() => expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Code channels (created automatically · kirocrew-conductor)'), CHAINED)
+    await waitFor(() => expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Code channels (created automatically)'), CHAINED)
     // The hint names the picker that holds New folder…, since the row is
     // only visible once that picker is open.
     expect(card).toHaveTextContent('No folders yet. To create one, open Default folder and pick New folder…')
     const preview = screen.getByTestId('slack-code-preview')
     expect(preview).toHaveTextContent('Code channels (created automatically)')
-    expect(preview).toHaveTextContent('kirocrew-conductor')
-    expect(preview).toHaveTextContent('Inherited from folder')
+    expect(preview).not.toHaveTextContent('kirocrew-conductor')
+    expect(preview).toHaveTextContent(/Agent\s*kirocrew\s*Inherited from Slack/)
   })
 
   it('uses an existing Code channels folder as the default row, with its own agent', async () => {
@@ -334,6 +403,181 @@ describe('Code channels card', () => {
     // Listed once, as the default row, not again among the folders.
     await userEvent.click(within(card).getByLabelText('Default folder'))
     expect(screen.getAllByRole('option', { name: /Code channels/ })).toHaveLength(1)
+  })
+
+  it('reads the legacy conductor on an existing Code channels folder as no folder agent', async () => {
+    const auto = { id: 'cccccccccccc', name: 'Code channels', order: 2, default_agent: 'kirocrew-conductor' }
+    seed({ code_channels: true }, status(), [...FOLDERS, auto])
+    await hydrated()
+    const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+    await waitFor(() => expect(within(card).getByLabelText('Default folder')).toHaveTextContent('Code channels (default)'), CHAINED)
+    const preview = screen.getByTestId('slack-code-preview')
+    expect(preview).not.toHaveTextContent('kirocrew-conductor')
+    expect(preview).toHaveTextContent(/Agent\s*kirocrew\s*Inherited from Slack/)
+  })
+
+  describe('Always use conductor mode', () => {
+    it('is hidden where conductor mode is not offered (LTS)', async () => {
+      turnOffCrewModeAsLts()
+      seed({ code_channels: true })
+      await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+      expect(screen.queryByTestId('slack-code-conductor-mode')).toBeNull()
+      expect(screen.queryByRole('switch', { name: 'Always use conductor mode' })).toBeNull()
+    })
+
+    it('a stored on is inert where conductor mode is not offered: the default agent stays usable', async () => {
+      turnOffCrewModeAsLts()
+      seed({
+        code_channels: true,
+        code_channel_defaults: { folder: null, agent: 'reviewer', model: null, reasoning_effort: null, conductor_mode: true },
+      })
+      const card = await screen.findByTestId('slack-code-defaults', {}, CHAINED)
+      await waitFor(() => expect(within(card).getByLabelText('Default agent')).toHaveTextContent('reviewer'))
+      expect(within(card).getByLabelText('Default agent')).not.toBeDisabled()
+      expect(screen.getByTestId('slack-code-preview')).toHaveTextContent(/Agent\s*reviewer\s*Set here/)
+    })
+
+    it('overrides the default agent: the field is disabled with a note and the preview names the conductor mode agent', async () => {
+      const { save } = seed({
+        code_channels: true,
+        code_channel_dispatch: true,
+        code_channel_defaults: { folder: 'bbbbbbbbbbbb', agent: 'reviewer', model: null, reasoning_effort: null },
+      })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      expect(screen.getByTestId('slack-code-conductor-mode')).toHaveTextContent('Every new code channel starts on kirocrew-conductor, which plans the work and hands it to helper agents. This overrides the default agent and the folder\'s agent.')
+      // The info tip (the glyph's title while hidden) names the helpers switch.
+      expect(within(screen.getByTestId('slack-code-conductor-mode')).getByTitle(/“Let code channels start helper agents” too/)).toBeInTheDocument()
+      const agentField = within(screen.getByTestId('slack-code-defaults')).getByLabelText('Default agent')
+      expect(agentField).not.toBeDisabled()
+      fireEvent.click(toggle)
+      await waitFor(() => expect(agentField).toBeDisabled())
+      // The stored pick stays shown, and comes back when the switch goes off.
+      expect(agentField).toHaveTextContent('reviewer')
+      expect(screen.getByTestId('slack-code-defaults')).toHaveTextContent('Always use conductor mode picks the agent while it is on.')
+      // Helper agents are on, so no warning.
+      expect(screen.queryByTestId('slack-code-conductor-helpers-off')).toBeNull()
+      const preview = screen.getByTestId('slack-code-preview')
+      expect(preview).toHaveTextContent(/Agent\s*kirocrew-conductor\s*Conductor mode/)
+      fireEvent.click(saveBtn())
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+      expect(save.mock.calls[0][0]).toMatchObject({ code_channel_defaults: { conductor_mode: true } })
+      expect(save.mock.calls[0][0].code_channel_defaults).not.toHaveProperty('agent')
+      expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
+    })
+
+    it('warns, without saving anything, while it is on and helper agents are off', async () => {
+      const { save } = seed({
+        code_channels: true,
+        code_channel_dispatch: false,
+        code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, conductor_mode: true },
+      })
+      const warning = await screen.findByTestId('slack-code-conductor-helpers-off', {}, CHAINED)
+      expect(warning).toHaveTextContent('Helper agents are off, so the conductor can\'t hand out work. Turn on Let code channels start helper agents under Code channels on this page.')
+      // The setting's name in the warning is a link to that toggle: it scrolls to it and focuses it.
+      const scroll = vi.fn()
+      const before = Element.prototype.scrollIntoView
+      Element.prototype.scrollIntoView = scroll
+      try {
+        fireEvent.click(within(warning).getByRole('button', { name: 'Let code channels start helper agents' }))
+      } finally {
+        Element.prototype.scrollIntoView = before
+      }
+      const helpersSwitch = screen.getByRole('switch', { name: 'Let code channels start helper agents' })
+      expect(helpersSwitch).toHaveFocus()
+      expect(scroll).toHaveBeenCalled()
+      // Turning helpers on in the draft clears it; the switch itself never sets them.
+      fireEvent.click(screen.getByRole('switch', { name: 'Let code channels start helper agents' }))
+      await waitFor(() => expect(screen.queryByTestId('slack-code-conductor-helpers-off')).toBeNull())
+      fireEvent.click(screen.getByRole('switch', { name: 'Let code channels start helper agents' }))
+      fireEvent.click(screen.getByRole('switch', { name: 'Always use conductor mode' }))
+      expect(screen.queryByTestId('slack-code-conductor-helpers-off')).toBeNull()
+      fireEvent.click(saveBtn())
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+      expect(save.mock.calls[0][0]).not.toHaveProperty('code_channel_dispatch')
+    })
+
+    it('hides the stale-agent warnings while it decides the agent', async () => {
+      seed({
+        code_channels: true,
+        code_channel_dispatch: true,
+        code_channel_defaults: { folder: null, agent: 'ghost', model: null, reasoning_effort: null, conductor_mode: true },
+        code_channel_warnings: ['agent_missing'],
+      })
+      await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      expect(screen.queryByText(/“ghost” is no longer installed/)).toBeNull()
+      // Turned off, the dormant pick is live again and the warning is back.
+      fireEvent.click(screen.getByRole('switch', { name: 'Always use conductor mode' }))
+      expect(await screen.findByText(/“ghost” is no longer installed/)).toBeInTheDocument()
+    })
+
+    it('is disabled and says so when config.local.json sets it', async () => {
+      seed({
+        code_channels: true,
+        code_channel_dispatch: true,
+        code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, conductor_mode: true },
+        code_channel_conductor_mode_overlay_state: 'pinned',
+        code_channel_dispatch_overlay_path: '~/.kiro/crew/config.local.json',
+      })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      await waitFor(() => expect(toggle).toHaveAttribute('aria-disabled', 'true'))
+      expect(screen.getByTestId('slack-code-conductor-mode-overlay')).toHaveTextContent(/^On, set in ~\/\.kiro\/crew\/config\.local\.json, which overrides/)
+    })
+
+    it('follows a pin that lands after the draft was seeded, not the kept draft', async () => {
+      // Off when the page opened; then config.local.json pins it on and the config
+      // is read again (Check again). The page keeps its draft, but the card must
+      // show and preview the pinned value the bind and the save use.
+      const { queryClient } = seed({ code_channels: true, code_channel_dispatch: true })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      expect(toggle).not.toBeChecked()
+      vi.mocked(api.getSlackConfig).mockResolvedValue(config({
+        code_channels: true,
+        code_channel_dispatch: true,
+        code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, conductor_mode: true },
+        code_channel_conductor_mode_overlay_state: 'pinned',
+      }))
+      await act(async () => { await queryClient.refetchQueries() })
+      await waitFor(() => expect(screen.getByRole('switch', { name: 'Always use conductor mode' })).toBeChecked())
+      expect(screen.getByTestId('slack-code-preview')).toHaveTextContent(/Agent\s*kirocrew-conductor\s*Conductor mode/)
+      expect(within(screen.getByTestId('slack-code-defaults')).getByLabelText('Default agent')).toBeDisabled()
+    })
+
+    it('is disabled with an error when config.local.json cannot be read', async () => {
+      seed({
+        code_channels: true,
+        code_channel_defaults: { folder: null, agent: 'ghost', model: null, reasoning_effort: null, conductor_mode: true },
+        code_channel_warnings: ['agent_missing'],
+        code_channel_conductor_mode_overlay_state: 'unreadable',
+        code_channel_dispatch_overlay_path: '~/.kiro/crew/config.local.json',
+      })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      await waitFor(() => expect(toggle).toHaveAttribute('aria-disabled', 'true'))
+      const note = screen.getByTestId('slack-code-conductor-mode-overlay')
+      expect(note).toHaveAttribute('data-state', 'unreadable')
+      expect(note).toHaveTextContent(/^Off: ~\/\.kiro\/crew\/config\.local\.json can't be read, so this switch is off and can't be changed here/)
+      // The toggle draws the value in force (off), not the stored on.
+      expect(toggle).not.toBeChecked()
+      // Whether config.local.json turns the switch off is unknown, so it counts as
+      // off everywhere (the bind, the save, this card): the default agent is what
+      // runs, its picker is usable and its stale warning shows.
+      expect(within(screen.getByTestId('slack-code-defaults')).getByLabelText('Default agent')).not.toBeDisabled()
+      expect(screen.getByText(/“ghost” is no longer installed/)).toBeInTheDocument()
+      expect(screen.queryByTestId('slack-code-conductor-helpers-off')).toBeNull()
+      expect(screen.getByTestId('slack-code-preview')).not.toHaveTextContent('Conductor mode')
+    })
+
+    it('reads a saved on back and sends null when turned off', async () => {
+      const { save } = seed({
+        code_channels: true,
+        code_channel_defaults: { folder: null, agent: null, model: null, reasoning_effort: null, conductor_mode: true },
+      })
+      const toggle = await screen.findByRole('switch', { name: 'Always use conductor mode' }, CHAINED)
+      await waitFor(() => expect(toggle).toBeChecked())
+      fireEvent.click(toggle)
+      fireEvent.click(saveBtn())
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+      expect(save.mock.calls[0][0]).toMatchObject({ code_channel_defaults: { conductor_mode: null } })
+    })
   })
 
   it('offers the shipped agents the server lists, conductor and team lead included', async () => {
@@ -393,9 +637,9 @@ describe('Code channels card', () => {
     // Wait for the refetch to settle as failed, then the old YAML stays uncopyable.
     expect(await screen.findByText(/Could not load the Slack app manifest/, {}, CHAINED)).toBeInTheDocument()
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
-    expect(within(panel).getByRole('button', { name: 'Copy manifest YAML' })).toBeDisabled()
+    expect(within(panel).getByRole('button', { name: 'Copy manifest' })).toBeDisabled()
     // The setup card's Copy and Create export the same YAML: both are off too.
-    for (const btn of screen.getAllByRole('button', { name: 'Copy manifest YAML' })) expect(btn).toBeDisabled()
+    for (const btn of screen.getAllByRole('button', { name: /^Copy manifest( YAML)?$/ })) expect(btn).toBeDisabled()
     const create = screen.getByRole('link', { name: /Create Slack app/ })
     expect(create).toHaveAttribute('aria-disabled', 'true')
     expect(create).toHaveAttribute('href', '#')
@@ -406,7 +650,7 @@ describe('Code channels card', () => {
     seed({ code_channels: true }, status({ status: 'needs_update', missing_scopes: ['code_channels:manage'] }))
     const manifest = vi.mocked(api.getSlackManifest)
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
-    const copyBtn = () => within(panel).getByRole('button', { name: 'Copy manifest YAML' })
+    const copyBtn = () => within(panel).getByRole('button', { name: 'Copy manifest' })
     manifest.mockResolvedValue({ alias: 'kirocrew', manifest: 'old: yaml\n', create_url: 'https://example.invalid/new', features: [] })
     fireEvent.click(within(panel).getByRole('button', { name: /Check again/ }))
     await waitFor(() => expect(copyBtn()).toBeDisabled())
@@ -563,7 +807,7 @@ describe('Code channels card', () => {
     // The preview names the agent that runs instead, not the missing one.
     const preview = screen.getByTestId('slack-code-preview')
     expect(preview).not.toHaveTextContent('ghost')
-    expect(preview).toHaveTextContent(/Agent\s*kirocrew-conductor\s*Inherited from folder/)
+    expect(preview).toHaveTextContent(/Agent\s*kirocrew\s*Inherited from Slack/)
   })
 
   it('previews the inherited agent when the picked one is not in the folder', async () => {
@@ -703,7 +947,7 @@ describe('Update your Slack app', () => {
     expect(within(panel).queryByTestId('slack-manifest-agent-sessions-warning')).toBeNull()
     expect(within(panel).queryByRole('list')).toBeNull()
     expect(within(panel).queryByTestId('slack-manifest-replace-warning')).toBeNull()
-    expect(within(panel).queryByRole('button', { name: 'Copy manifest YAML' })).toBeNull()
+    expect(within(panel).queryByRole('button', { name: 'Copy manifest' })).toBeNull()
     expect(within(panel).queryByRole('link', { name: /Open App Manifest/ })).toBeNull()
 
     // Asked for, the steps arrive with their warning, as for a reading that needs the update.
@@ -712,7 +956,7 @@ describe('Update your Slack app', () => {
     const warning = within(panel).getByTestId('slack-manifest-agent-sessions-warning')
     expect(warning).toHaveTextContent("can't be undone")
     expect(within(panel).getByRole('list')).toHaveTextContent('reinstall the app')
-    expect(within(panel).getByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
     expect(within(panel).getByRole('link', { name: /Open App Manifest/ })).toBeInTheDocument()
   })
 
@@ -875,7 +1119,7 @@ describe('Update your Slack app', () => {
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
     expect(panel).toHaveTextContent('if threads show no Stop button, copy the manifest')
-    expect(within(panel).getByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
     expect(within(panel).getByRole('link', { name: /Open App Manifest/ })).toBeInTheDocument()
   })
 
@@ -885,8 +1129,23 @@ describe('Update your Slack app', () => {
     seed({ code_channels: true }, status(install))
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', install.status))
-    expect(within(panel).queryByRole('button', { name: 'Copy manifest YAML' })).toBeNull()
+    expect(within(panel).queryByRole('button', { name: 'Copy manifest' })).toBeNull()
     expect(within(panel).queryByRole('link', { name: /Open App Manifest/ })).toBeNull()
+  })
+
+  it('still offers Copy and Open when the workspace lacks one feature but Slack tools is saved', async () => {
+    // Code channels cannot be fixed by an update here, but the Slack tools lines
+    // (PKCE, the redirect, user scopes) are never in a reading, so the manifest
+    // must stay on offer for them.
+    seed(
+      { code_channels: true, slack_mcp: true, slack_mcp_card: true },
+      status({ status: 'feature_disabled', disabled_features: ['code_channels'] }, { features: ['code_channels', 'slack_mcp'] }),
+    )
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'feature_disabled'))
+    expect(within(panel).getByTestId('slack-manifest-unconfirmable')).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
+    expect(within(panel).getByRole('link', { name: /Open App Manifest/ })).toBeInTheDocument()
   })
 
   it('offers nothing to copy or open while a switch change is unsaved', async () => {
@@ -895,14 +1154,14 @@ describe('Update your Slack app', () => {
     // steps do.
     seed({ agent_sessions: true }, status({ status: 'needs_update', missing_scopes: ['assistant:write'] }))
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
-    expect(await within(panel).findByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    expect(await within(panel).findByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('switch', { name: 'Agent sessions' }))
     await within(panel).findByTestId('slack-manifest-pending')
-    expect(within(panel).queryByRole('button', { name: 'Copy manifest YAML' })).toBeNull()
+    expect(within(panel).queryByRole('button', { name: 'Copy manifest' })).toBeNull()
     expect(within(panel).queryByRole('link', { name: /Open App Manifest|Open your Slack apps/ })).toBeNull()
     // Flipped back: nothing unsaved, so the update is offered again.
     fireEvent.click(screen.getByRole('switch', { name: 'Agent sessions' }))
-    expect(await within(panel).findByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    expect(await within(panel).findByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
   })
 
   it('offers nothing to copy on a first flip that is not saved yet', async () => {
@@ -911,7 +1170,7 @@ describe('Update your Slack app', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Agent sessions' }))
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     await within(panel).findByTestId('slack-manifest-pending')
-    expect(within(panel).queryByRole('button', { name: 'Copy manifest YAML' })).toBeNull()
+    expect(within(panel).queryByRole('button', { name: 'Copy manifest' })).toBeNull()
   })
 
   it('offers Copy and Open again when a re-check of an up-to-date app fails', async () => {
@@ -920,7 +1179,7 @@ describe('Update your Slack app', () => {
     await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
     getStatus.mockRejectedValue(new Error('down'))
     fireEvent.click(within(panel).getByRole('button', { name: /Check again/ }))
-    expect(await within(panel).findByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    expect(await within(panel).findByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
     // A failed check names no app, so the link is the Slack apps list.
     expect(within(panel).getByRole('link', { name: /Open your Slack apps/ })).toBeInTheDocument()
   })
@@ -1010,14 +1269,14 @@ describe('Update your Slack app', () => {
     seed({ code_channels: true }, status({ status: 'up_to_date', extra_scopes: ['some:leftover'] }))
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
     await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
-    expect(within(panel).getByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
     expect(within(panel).getByRole('link', { name: /Open App Manifest/ })).toBeInTheDocument()
   })
 
   it('still offers Copy and Open when leftover scopes are the only reason for the panel', async () => {
     seed({ code_channels: false }, LEFTOVER_ONLY)
     const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
-    expect(within(panel).getByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
     expect(within(panel).getByRole('link', { name: /Open App Manifest/ })).toBeInTheDocument()
   })
 
@@ -1277,6 +1536,224 @@ describe('Capability line under a saved toggle', () => {
   })
 })
 
+
+/** The first point of the warning box while the switch is on with no Slack card. */
+const SLACK_MCP_NO_CARD = 'This switch was turned on earlier, but Settings → Connections is turned off here, so nobody can connect a Slack account yet. Turn Settings → Connections on, or turn this switch off until it is.'
+
+describe('Slack tools for your agents (Slack MCP) switch', () => {
+  it('is hidden while Connections offers no Slack card and the switch is off', async () => {
+    seed()
+    await hydrated()
+    await screen.findByRole('switch', { name: 'Code channels' })
+    expect(screen.queryByRole('switch', { name: 'Slack tools for your agents' })).toBeNull()
+    expect(screen.queryByTestId('slack-mcp-before')).toBeNull()
+    expect(screen.queryByTestId('slack-mcp-switch-safe')).toBeNull()
+  })
+
+  it('stays shown, with a note, when it is on but Connections offers no Slack card', async () => {
+    const { save } = seed({ slack_mcp: true }, status({}, { features: ['slack_mcp'] }))
+    await hydrated()
+    const toggle = await screen.findByRole('switch', { name: 'Slack tools for your agents' })
+    await waitFor(() => expect(toggle).toBeChecked())
+    // What is wrong, then what to do about it, as the box's FIRST point, so
+    // there is one warning to read, not a line stacked on a box.
+    const before = screen.getByTestId('slack-mcp-before')
+    const points = within(before).getAllByRole('listitem')
+    expect(points[0]).toBe(within(before).getByTestId('slack-mcp-no-card'))
+    expect(points[0].textContent).toBe(SLACK_MCP_NO_CARD)
+    // Why it is shown, then what to do, with the guide link in the same point;
+    // the disclosure says why there is no card, with no config file to edit by hand.
+    // Why it is shown comes first, then what to do.
+    expect(points[0].textContent).toMatch(/^This switch was turned on earlier, but/)
+    expect(before).not.toHaveTextContent('connections_ui')
+    const noCardDetail = within(screen.getByTestId('slack-mcp-details')).getByTestId('slack-mcp-details-no-card')
+    expect(noCardDetail).toHaveTextContent("Settings → Connections is turned off on this install, so the Slack card isn't shown.")
+    // One name for that place everywhere: no "gallery".
+    expect(screen.getByTestId('slack-code-switches')).not.toHaveTextContent(/gallery/i)
+    expect(noCardDetail).not.toHaveTextContent(/config\.json|connections_ui/)
+    // The guide link is the fix itself, inside the sentence, not behind the collapsed disclosure.
+    expect(within(noCardDetail).queryByRole('link')).toBeNull()
+    const guide = within(points[0]).getByRole('link', { name: 'Turn Settings → Connections on' })
+    expect(guide).toHaveAttribute('href', 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/connections.md')
+    expect(guide).toHaveAttribute('target', '_blank')
+    expect(guide).toHaveAttribute('rel', 'noopener noreferrer')
+    // No card to point at: the box does not send the reader to one.
+    expect(before).not.toHaveTextContent('on the Slack card')
+    expect(screen.queryByTestId('slack-mcp-switch-safe')).toBeNull()
+    fireEvent.click(toggle)
+    // Off: nothing at warning weight is left on the switch.
+    expect(screen.queryByTestId('slack-mcp-before')).toBeNull()
+    expect(screen.queryByTestId('slack-mcp-no-card')).toBeNull()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ slack_mcp: false })
+  })
+
+  it('says what turning it on commits to before it is on, then saves it', async () => {
+    const { save } = seed({ slack_mcp_card: true })
+    await hydrated()
+    const toggle = screen.getByRole('switch', { name: 'Slack tools for your agents' })
+    expect(toggle).not.toBeChecked()
+    expect(screen.queryByTestId('slack-mcp-no-card')).toBeNull()
+    // Off: no separate note; the description itself says flipping is safe.
+    expect(screen.queryByTestId('slack-mcp-before')).toBeNull()
+    expect(screen.queryByTestId('slack-mcp-switch-safe')).toBeNull()
+    expect(screen.getByTestId('slack-code-switches').querySelector('.text-warn')).toBeNull()
+    // The row leads with what the person gets, in plain words; the manifest
+    // terms wait in a disclosure, and the box around them names no "MCP server".
+    const switches = screen.getByTestId('slack-code-switches')
+    // Benefit, then consent, then reach: what the switch gives, for whom it
+    // reads (only people who connect), then the way back. Who can see what
+    // (DMs included) waits in the disclosure.
+    const desc = "Lets your agents search and read Slack, read-only, for each person who connects their own Slack account. Each person can disconnect on the Slack card at any time, which stops their agents reading Slack."
+    expect(switches).toHaveTextContent(desc)
+    // It never opens by denying it does anything.
+    expect(switches).not.toHaveTextContent(/reads nothing/i)
+    // The way back sits next to the reach, and nothing near the switch says "stays on".
+    expect(switches).toHaveTextContent('Each person can disconnect on the Slack card at any time')
+    expect(switches).not.toHaveTextContent(/stays on/i)
+    expect(screen.getByTestId('slack-mcp-details')).not.toHaveClass('text-muted')
+    const details = screen.getByTestId('slack-mcp-details')
+    expect(details.tagName).toBe('DETAILS')
+    expect(details).not.toHaveAttribute('open')
+    expect(within(details).getByText('What this adds to your Slack app').tagName).toBe('SUMMARY')
+    // The counts follow the manifest (test_slack_code_settings pins them per
+    // catalog), so this stays count-free. One list: the total, then how many are new.
+    expect(details).toHaveTextContent(/\d+ read-only permissions \(\d+ new\)/)
+    // Who can see what, DMs included, is said here, not in the description.
+    expect(details).toHaveTextContent('private messages and DMs included')
+    // What turning it off later leaves on the Slack app lives here, not under the
+    // switch, and names only what a save takes out (not the sign-in safeguard).
+    expect(details).toHaveTextContent('With the switch off, the manifest keeps the shorter list; to take these permissions and the address out of your Slack app, save the manifest there again.')
+    expect(details).not.toHaveTextContent(/stays on/i)
+    expect(within(details).queryByTestId('slack-mcp-details-no-card')).toBeNull()
+    expect(details).not.toHaveTextContent(/PKCE|user scopes/)
+    const outsideDetails = (switches.textContent ?? '').replace(details.textContent ?? '', '')
+    expect(outsideDetails).not.toMatch(/MCP server|user scopes|\d+ read-only|PKCE|private messages/)
+
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // On: the off note goes; the warning box says what to know before saving
+    // the manifest in Slack, under one heading.
+    expect(screen.queryByTestId('slack-mcp-switch-safe')).toBeNull()
+    const before = screen.getByTestId('slack-mcp-before')
+    expect(before).toHaveTextContent('Before you save this manifest in Slack')
+    const points = within(before).getAllByRole('listitem').map(li => li.textContent)
+    expect(points).toEqual([
+      // Each names its own action and says what to do.
+      "Keep this Slack app to your own workspace: leave the app's Manage Distribution page in Slack alone. If you turn on public distribution there, Slack turns these tools off.",
+      "Save this app's Client ID and Client secret on the Slack card under Settings → Connections. Both are on the app's Basic Information page in Slack. Each person then selects Connect on that card to link their own Slack account.",
+      'On an app set up this way, Slack ends each sign-in after 30 days, so each person connects again about once a month.',
+    ])
+    // Tested in a live Slack workspace: no "not yet tested" caveat.
+    expect(before).not.toHaveTextContent("haven't been tested")
+    expect((screen.getByTestId('slack-code-switches').textContent ?? '').replace(details.textContent ?? '', '')).not.toMatch(/PKCE|MCP server/)
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ slack_mcp: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channels')
+  })
+
+  it('lists its user scopes and settings as lines a bot-token reading cannot confirm', async () => {
+    // A bot scope of the same name is missing: the user-scope chip must not
+    // borrow that reading.
+    seed({ slack_mcp: true }, status({ missing_scopes: ['channels:history'], status: 'needs_update' }, { features: ['slack_mcp'] }))
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    const rows = within(panel).getAllByTestId('slack-manifest-lines')
+    // The box says what added these lines, not the switch's own name, and
+    // counts the permissions it lists (two in this fixture).
+    expect(panel).toHaveTextContent('2 new permissions added by Slack tools')
+    expect(within(panel).queryByText('Slack tools for your agents')).toBeNull()
+    const user = rows.find(r => r.textContent?.startsWith('Added permissions people grant (user scopes)'))!
+    const settings = rows.find(r => r.textContent?.startsWith('Sign-in settings (app settings)'))!
+    expect(user).toHaveTextContent('channels:history')
+    expect(user).not.toHaveTextContent('missing')
+    expect(user).not.toHaveTextContent('+ ')
+    // The legacy scope the switch drops is shown leaving, and says so in words.
+    const dropped = within(user).getByText('No longer requested: search:read')
+    expect(dropped.closest('span.line-through')).toBeNull()
+    expect(user).not.toHaveTextContent('− search:read')
+    for (const line of MCP_SETTINGS) expect(settings).toHaveTextContent(line)
+    // No Slack card here, so nobody could connect: the note says what the
+    // status cannot see and does not urge the one-way save in Slack.
+    const note = within(panel).getByTestId('slack-manifest-unconfirmable')
+    // Its first words say which part is not checked, so it does not read as a second status.
+    expect(note.textContent).toBe("Not checked: whether the manifest with Slack tools is saved in Slack. Slack reports an app's bot permissions but not the user scopes and app settings listed here.")
+    expect(within(panel).queryByTestId('slack-manifest-unconfirmable-save')).toBeNull()
+    // No capability line: nothing runs for it.
+    expect(screen.queryByTestId('slack-capability')).toBeNull()
+  })
+
+  it('does not promise a Stop button check when only Slack MCP is saved', async () => {
+    seed({ slack_mcp: true }, status({}, { features: ['slack_mcp'] }))
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
+    expect(panel).not.toHaveTextContent('Permissions are up to date.')
+    expect(within(panel).getByTestId('slack-manifest-unconfirmable')).toBeInTheDocument()
+    // The pill says what was checked, since the reading does not cover this
+    // switch's lines: no bare green "Up to date" above a note that says so.
+    const pill = within(panel).getByTestId('slack-manifest-status')
+    // Both halves in the pill, what was read and what was not, and no ask:
+    // with no Slack card here nobody could connect, so it must not urge the one-way save.
+    expect(pill.textContent).toBe('Slack bot permissions OK · Slack tools not checked')
+    expect(pill.textContent).not.toMatch(/save/i)
+    // It wraps instead of clipping on a narrow screen.
+    expect(pill).toHaveClass('whitespace-normal')
+    expect(pill).toHaveClass('max-w-full')
+    // The note sits right under the pill, in place of a line that would
+    // claim more than the reading covers, and before the technical lines.
+    expect(panel).not.toHaveTextContent('Your installed app has every permission these switches need.')
+    const note = within(panel).getByTestId('slack-manifest-unconfirmable')
+    expect(within(panel).getAllByTestId('slack-manifest-unconfirmable')).toHaveLength(1)
+    // No Slack card in this seed: under the pill too, no push toward the save.
+    expect(within(panel).queryByTestId('slack-manifest-unconfirmable-save')).toBeNull()
+    const firstLines = within(panel).getAllByTestId('slack-manifest-lines')[0]
+    expect(note.compareDocumentPosition(firstLines) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The manifest stays on offer to copy, since the reading cannot vouch for it;
+    // the button leads with plain words, the raw term in brackets.
+    expect(within(panel).getByRole('button', { name: 'Copy manifest' })).toBeInTheDocument()
+    // No events footnote: this switch subscribes none, and "Slack reports an
+    // app's permissions" would contradict the note above.
+    expect(within(panel).queryByTestId('slack-manifest-events-footnote')).toBeNull()
+  })
+
+  it('keeps the events footnote when a saved switch subscribes events beside Slack tools', async () => {
+    seed({ agent_sessions: true, slack_mcp: true, slack_mcp_card: true }, status({}, { features: ['agent_sessions', 'slack_mcp'] }))
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
+    // With a Slack card too, the pill stays a status: the save step below is the one ask.
+    expect(within(panel).getByTestId('slack-manifest-status').textContent).toBe('Slack bot permissions OK · Slack tools not checked')
+    const note = within(panel).getByTestId('slack-manifest-unconfirmable')
+    expect(note).toHaveTextContent('Not checked: whether the manifest with Slack tools is saved in Slack.')
+    // The Slack card is offered, so the save step follows, named as the one-way step.
+    const saveStep = within(note).getByTestId('slack-manifest-unconfirmable-save')
+    // Worded as a step to do once, so it does not read as asked again on every visit.
+    // The one place that says what is permanent and what it costs: the bot is
+    // untouched and the switch stays reversible.
+    expect(saveStep.textContent).toBe("Do this once after turning that switch on: copy the manifest and save it on your app's settings page in Slack (App Manifest). Saving it turns on a sign-in safeguard, which stays on but has no effect on what can be read or on the bot. You can still turn Slack tools off here.")
+    // Plain words only: no acronym in the step either.
+    expect(saveStep.textContent).not.toMatch(/PKCE/)
+    // The safeguard is said once here, in the same words as the disclosure.
+    // "Stays on" is said here only, with what it does not change.
+    expect(saveStep.textContent).toContain('has no effect on what can be read')
+    // The one permanent effect is named as harmless; nothing says "for good".
+    expect(document.body.textContent).not.toMatch(/for good/)
+    // Nothing else on the page calls a step one-way.
+    expect(document.body.textContent).not.toMatch(/only Slack support can/)
+    expect(within(panel).getByTestId('slack-manifest-events-footnote')).toHaveTextContent('Slack reports an app\'s permissions but not its event subscriptions')
+  })
+
+  it('adds no unconfirmable note for switches that add only bot lines', async () => {
+    seed({ code_channels: true })
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
+    expect(panel).toHaveTextContent('Permissions are up to date.')
+    expect(within(panel).queryByTestId('slack-manifest-unconfirmable')).toBeNull()
+    expect(within(panel).getByTestId('slack-manifest-status').textContent).toBe('Up to date')
+    expect(panel).toHaveTextContent('Your installed app has every permission these switches need.')
+    expect(within(panel).getByTestId('slack-manifest-events-footnote')).toBeInTheDocument()
+  })
+})
 
 describe('a failed Check again', () => {
   function setup() {

@@ -20,6 +20,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+import source_corpus
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
 # scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
@@ -144,7 +145,8 @@ def test_the_baseline_header_comes_from_the_generator(gate):
 def test_every_recorded_violation_still_exists(gate):
     """A paid-off entry must be pruned; a stale baseline stops shrinking."""
     baseline = gate._read_baseline(BASELINE)
-    current = {rel: len(hits) for rel, hits in gate._scan(gate.DEFAULT_TARGETS).items()}
+    with source_corpus.untraced():
+        current = {rel: len(hits) for rel, hits in gate._scan(gate.DEFAULT_TARGETS).items()}
     stale = {
         rel: (recorded, current.get(rel, 0))
         for rel, recorded in baseline.items()

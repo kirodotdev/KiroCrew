@@ -242,7 +242,8 @@ def test_monitor_inspect_passes_strict_identity_without_fallback():
                     "created_ts": 123.0,
                     "wake_count": 3,
                     "token_usage_known": False,
-                    "wake_instructions": "large prompt omitted from inspect",
+                    "wake_instructions": "Check CI on the new head.",
+                    "wake_on_terminal": True,
                     "last_wake_reason_code": "checks_failed",
                     "user_stop_reason": "operator stopped",
                     "last_observation_status": "pending",
@@ -270,7 +271,9 @@ def test_monitor_inspect_passes_strict_identity_without_fallback():
     assert payload["monitor"]["last_observation_reason_code"] == "checks_pending"
     assert "last_observation_summary" not in payload["monitor"]
     assert payload["monitor"]["observation"]["checks"]["passed_count"] == 20
-    assert "wake_instructions" not in payload["monitor"]
+    # What monitor_update can change is read back, so an update can be confirmed.
+    assert payload["monitor"]["wake_instructions"] == "Check CI on the new head."
+    assert payload["monitor"]["wake_on_terminal"] is True
     assert "check-0" not in result
 
 

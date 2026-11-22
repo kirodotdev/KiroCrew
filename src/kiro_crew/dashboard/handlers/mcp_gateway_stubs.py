@@ -34,6 +34,7 @@ from kiro_crew.dashboard.handlers.mcp_gateway_routes import (
     _launch_specs_for,
     _local_overlay_section,
     _overlay_shadowed_keys,
+    declared_launch,
 )
 from kiro_crew.dashboard.handlers.mcp_probe import _probe_currency
 from kiro_crew.dashboard.state import DashboardState
@@ -237,6 +238,14 @@ def _stub_eligibility(
     return eligible, skipped
 
 
+def _set_cwd_bindings(section: dict, bindings: Mapping[str, str]) -> None:
+    """Write ``mcp_gateway.cwd_use_launch`` sorted, or drop the key when empty."""
+    if bindings:
+        section["cwd_use_launch"] = {n: bindings[n] for n in sorted(bindings)}
+    else:
+        section.pop("cwd_use_launch", None)
+
+
 async def api_mcp_gateway_server_launches(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
@@ -336,6 +345,8 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         _CWD_NOT_USED,
         _CWD_USES,
         _resolve_cwd_use,
+        _resolve_cwd_use_launch,
+        effective_cwd_answer,
     )
     from kiro_crew.config.loader import (  # noqa: F811
         ConfigReadError,
@@ -604,7 +615,11 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         # for the roster, so the check covers this key too.
         shadowed = _overlay_shadowed_keys(
             overlay,
-            ("stub_servers", "stub_overrides", *(("cwd_use",) if cwd_answer is not None else ())),
+            (
+                "stub_servers",
+                "stub_overrides",
+                *(("cwd_use", "cwd_use_launch") if cwd_answer is not None else ()),
+            ),
         )
         if shadowed:
             return web.json_response(
@@ -641,6 +656,17 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
             if revoked_snapshot is not None:
                 await asyncio.to_thread(restore, revoked_snapshot)
 
+        # The launch each name declares now, which a ``not_used`` answer is bound
+        # to. A scan that fails reads as "cannot tell", which keeps every answer
+        # exactly as it reads today rather than asking again.
+        current_launch: dict[str, str | None] = {}
+        if cwd_answer is not None or stub:
+            try:
+                rows = await asyncio.to_thread(_collect_server_rows)
+                current_launch = {n: declared_launch(rows.get(n)) for n in names}
+            except Exception:
+                logger.warning("mcp server scan for the cwd answer failed", exc_info=True)
+
         # Read here, off the loop, so ``list_servers()`` and its own config reads
         # stay out of the locked read-modify-write below.
         probe_current = (
@@ -667,6 +693,12 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 answers = _resolve_cwd_use(section)
                 answers[name] = cwd_answer
                 section["cwd_use"] = {n: answers[n] for n in sorted(answers)}
+                bindings = _resolve_cwd_use_launch(section)
+                bindings.pop(name, None)
+                launch_now = current_launch.get(name)
+                if cwd_answer == _CWD_NOT_USED and launch_now:
+                    bindings[name] = launch_now
+                _set_cwd_bindings(section, bindings)
             if stub is None:
                 resolved["eligible"] = []
                 return data
@@ -676,11 +708,18 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 # project, so only a server the operator said does not use the
                 # folder is routed. Read here, under the lock, from the same deep
                 # merge of config.json and config.local.json the loader reads.
-                answers = _resolve_cwd_use(_deep_merge(section, overlay))
+                # A ``not_used`` answer counts only for the launch it was given
+                # for (``effective_cwd_answer``); an answer with no binding, or a
+                # launch that cannot be read, counts as it does today.
+                merged = _deep_merge(section, overlay)
+                answers = _resolve_cwd_use(merged)
+                bindings = _resolve_cwd_use_launch(merged)
                 unconfirmed = [
                     n
                     for n in written
-                    if n not in KIROCREW_BIN_MCP_SERVERS and answers.get(n) != _CWD_NOT_USED
+                    if n not in KIROCREW_BIN_MCP_SERVERS
+                    and effective_cwd_answer(answers.get(n), bindings.get(n), current_launch.get(n))
+                    != _CWD_NOT_USED
                 ]
                 if unconfirmed and not resolve_eligibility:
                     refused["code"] = "cwd_unconfirmed"
@@ -739,6 +778,28 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                     resolved["eligible"] = []
                     return None
             resolved["eligible"] = written
+            if stub:
+                # An answer recorded before bindings existed is bound to the
+                # launch it routes now, in this same write, so it is not asked
+                # again and a later change of launch is.
+                # Answers are read merged, as the eligibility check above reads
+                # them, so an answer kept in config.local.json is bound too. An
+                # overlay that owns the bindings is left alone: a base write
+                # would be shadowed.
+                own = _resolve_cwd_use_launch(section)
+                answered = _resolve_cwd_use(_deep_merge(section, overlay))
+                adopt: dict[str, str] = {}
+                for n in written if "cwd_use_launch" not in overlay else ():
+                    launch_now = current_launch.get(n)
+                    if (
+                        launch_now
+                        and n not in own
+                        and n not in KIROCREW_BIN_MCP_SERVERS
+                        and answered.get(n) == _CWD_NOT_USED
+                    ):
+                        adopt[n] = launch_now
+                if adopt:
+                    _set_cwd_bindings(section, {**own, **adopt})
             # Freeze the alias through the SAME helper the sharing toggle uses, so
             # both writers leave the file in one shape. On a legacy install the
             # effective set comes from the deprecated `poolable_servers`, and reading

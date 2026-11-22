@@ -1,10 +1,10 @@
 ---
 title: A goal conductor looks before it plans, has its plan grilled each round, gives every item a time budget, and actively checks open items about hourly
-status: accepted
+status: implemented
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-14
-last-audited: 2026-11-14
-audited-at: db4300cb71
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 37092
 implementation-prs: [37030]
 tracking-issues: [36990]
@@ -14,11 +14,16 @@ superseded-by: []
 
 # RFC: Plan reviewer, scout, item budget and an hourly active check for the goal conductor
 
-Status: accepted. The repository owner made these decisions on 2026-11-13 in
+Status: implemented. The repository owner made these decisions on 2026-11-13 in
 the conductor chat that ran the `conduct-flex` debate; the rulings are quoted
-in section 9. It takes effect when this document merges. The implementation is
-[#37030](https://github.com/kirodotdev/KiroCrew/pull/37030), which rebases onto
-the base that carries this document. Every citation was read on `origin/main`
+in section 9. The implementation,
+[#37030](https://github.com/kirodotdev/KiroCrew/pull/37030), merged on
+2026-11-14: all four parts of section 3 are in `goal-conductor/SKILL.md`, and
+`autonudge_service/gate.py` sets `_IDLE_LEDGER_QUIET_FLOOR = _MAX_QUIET_STREAK`
+with `_REVIEW_WAIT_QUIET_FLOOR` kept at 40 ticks (checked at `c157748343`).
+Section 10's rule 4 on main (`references/worker-debate.md`) is broader than the
+addendum: every spent budget is the conductor's call unless going on spends past
+an amount the owner approved. Every citation was read on `origin/main`
 at `db4300cb71`. `GC` is `src/kiro_crew/builtin_skills/goal-conductor/SKILL.md`.
 
 It lands on its own because it changes what every goal-conductor run does by

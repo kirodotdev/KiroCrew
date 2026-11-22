@@ -302,3 +302,150 @@ def test_a_null_manifest_version_is_refused_by_a_deny_list(
     _install_policy(monkeypatch, {"app_versions": {"mode": "deny", "deny": ["demoapp@2.*"]}})
     manifest = AppManifest.from_dict({"name": "demoapp", "version": None})
     assert app_admission_denied("demoapp", manifest=manifest, action="install")
+
+
+# ── LTS skill install: a package is judged by the skill names it holds (RFC D13) ──
+
+
+class _SkillInner(_Inner):
+    """An inner manager whose ``skill_names`` lists *names*, or raises *error*."""
+
+    def __init__(self, names=None, error: Exception | None = None) -> None:
+        super().__init__()
+        self.names = names
+        self.error = error
+        self.listed: list[str] = []
+
+    async def skill_names(self, package: str):
+        self.listed.append(package)
+        if self.error is not None:
+            raise self.error
+        return self.names
+
+
+def _install_skill(inner, package: str = "owner/repo"):
+    return asyncio.run(BoundedCapabilityManager(inner).install_skill(package))  # type: ignore[arg-type]
+
+
+def _deny_skills(names: list[str]) -> dict:
+    return {
+        "capabilities": {
+            "extension_install": {
+                "scopes": {
+                    "extensions": {
+                        "mode": "deny",
+                        "deny": [f"skill:{n}" for n in names] + ["plugin:*"],
+                    }
+                }
+            }
+        }
+    }
+
+
+def test_lts_a_denied_skill_in_the_package_refuses_the_install(
+    lts, isolated_home, fake_sel, monkeypatch
+) -> None:
+    _install_policy(monkeypatch, _deny_skills(["evil"]))
+    inner = _SkillInner(names=["good", "evil"])
+    res = _install_skill(inner)
+    assert res.ok is False
+    assert "'evil'" in res.message and "'owner/repo'" in res.message
+    assert inner.listed == ["owner/repo"] and inner.calls == []
+
+
+def test_lts_allowed_skills_install(lts, isolated_home, fake_sel, monkeypatch) -> None:
+    _install_policy(monkeypatch, _install_on(["skill:pdf", "skill:docx"]))
+    inner = _SkillInner(names=["pdf", "docx"])
+    assert _install_skill(inner).ok is True
+    assert inner.calls == ["install_skill"]
+    # The package id itself is not asked: only the names it holds.
+    items = {c.kwargs["item"] for c in fake_sel.log_governance_decision.call_args_list}
+    assert "extensions:skill:owner/repo" not in items
+    assert {"extensions:skill:pdf", "extensions:skill:docx"} <= items
+    # One name outside the allow-list refuses the whole package.
+    other = _SkillInner(names=["pdf", "xlsx"])
+    assert _install_skill(other).ok is False and other.calls == []
+
+
+def test_lts_allow_all_installs_any_listed_package(
+    lts, isolated_home, fake_sel, monkeypatch
+) -> None:
+    """D1/D13: an ``allow all`` lands as ``skill:*`` and grants install."""
+    _install_policy(monkeypatch, _install_on(["skill:*", "mcp:*", "agent:*"]))
+    inner = _SkillInner(names=["anything"])
+    assert _install_skill(inner).ok is True
+
+
+@pytest.mark.parametrize(
+    "inner",
+    [
+        _Inner(),  # no skill_names op
+        _SkillInner(names=[]),
+        _SkillInner(names=None),
+        _SkillInner(names="pdf"),  # not a list
+        _SkillInner(names=["pdf", ""]),
+        _SkillInner(names=["pdf", 3]),
+        _SkillInner(error=RuntimeError("registry down")),
+        _SkillInner(error=asyncio.TimeoutError()),
+    ],
+    ids=["no-op", "empty", "none", "string", "blank", "non-string", "error", "timeout"],
+)
+def test_lts_a_package_that_cannot_be_listed_is_refused(
+    lts, isolated_home, fake_sel, monkeypatch, inner
+) -> None:
+    _install_policy(monkeypatch, _install_on(["skill:*"]))
+    res = _install_skill(inner)
+    assert res.ok is False and "cannot list the skills" in res.message
+    assert inner.calls == []
+
+
+def test_lts_install_off_refuses_before_listing(lts, isolated_home, fake_sel, monkeypatch) -> None:
+    _install_policy(monkeypatch, {})
+    inner = _SkillInner(names=["pdf"])
+    assert _install_skill(inner).ok is False
+    assert inner.listed == [] and inner.calls == []
+
+
+def test_lts_a_seam_refusal_is_redacted(lts, isolated_home, fake_sel, monkeypatch) -> None:
+    from kiro_crew.testing.synthetic_credentials import github_classic
+
+    secret = github_classic()
+    _install_policy(monkeypatch, _install_on(["skill:pdf"]))
+    res = _install_skill(_SkillInner(names=[f"x-{secret}"]))
+    assert res.ok is False and "governance" in res.message and secret not in res.message
+
+
+def test_oss_no_policy_skill_install_is_unchanged(isolated_home, fake_sel, monkeypatch) -> None:
+    _install_policy(monkeypatch, None)
+    inner = _SkillInner(names=[])
+    assert _install_skill(inner).ok is True
+    assert inner.listed == [] and inner.calls == ["install_skill"]
+    fake_sel.log_governance_decision.assert_not_called()
+
+
+def test_oss_policy_still_judges_the_package_id(isolated_home, fake_sel, monkeypatch) -> None:
+    _install_policy(monkeypatch, _install_on(["skill:owner/repo"]))
+    inner = _SkillInner(names=["evil"])
+    assert _install_skill(inner).ok is True
+    assert _install_skill(inner, "owner/other").ok is False
+    assert inner.listed == []
+
+
+def test_lts_translated_policy_refuses_a_package_holding_a_denied_skill(
+    lts, isolated_home, fake_sel, monkeypatch
+) -> None:
+    """End to end: the policy reply's named ``skill`` deny reaches the install seam."""
+    import json
+
+    from kiro_crew.platform import enterprise_policy_translate as t
+
+    doc = t.translate(
+        "rules:\n"
+        "  - {capability: all, effect: allow}\n"
+        "  - {capability: skill, effect: deny, match: [evil]}\n"
+    )
+    doc.pop("version", None)
+    _install_policy(monkeypatch, json.loads(json.dumps(doc)))
+    assert _install_skill(_SkillInner(names=["good"])).ok is True
+    res = _install_skill(_SkillInner(names=["good", "evil"]))
+    assert res.ok is False and "'evil'" in res.message

@@ -8,6 +8,8 @@ const {
   UNREACHABLE_AFTER_MS,
   UNREACHABLE_MIN_FAILURES,
   OUTAGE_GAP_MS,
+  HOST_GONE_AFTER_MS,
+  HOST_GONE_MIN_ANSWERS,
 } = require("../relay-crew-reachability");
 
 function clock(start = 1_000_000) {
@@ -17,11 +19,11 @@ function clock(start = 1_000_000) {
 
 // The page's own pace while it is disconnected: a status probe every 3 s, plus
 // a socket attempt on its 1 s, 2 s, 4 s, 8 s, then 10 s backoff.
-function failFor(watch, c, ms, everyMs = 3000) {
+function failFor(watch, c, ms, everyMs = 3000, hostGone = false) {
   let tripped = false;
   for (let elapsed = 0; elapsed < ms; elapsed += everyMs) {
     c.advance(everyMs);
-    if (watch.fail()) tripped = true;
+    if (watch.fail(hostGone)) tripped = true;
   }
   return tripped;
 }
@@ -75,4 +77,25 @@ test("elapsed time alone is not enough: a few failures spread over the cap do no
 test("now() defaults to Date.now", () => {
   const w = createReachabilityWatch();
   assert.equal(w.fail(), false);
+});
+
+test("the relay saying the host is gone ends the wait after the short bound, not the two minutes", () => {
+  assert.equal(HOST_GONE_AFTER_MS, 30_000);
+  assert.ok(HOST_GONE_AFTER_MS < UNREACHABLE_AFTER_MS);
+  const c = clock();
+  const w = createReachabilityWatch({ now: c.now });
+  assert.equal(failFor(w, c, HOST_GONE_AFTER_MS - 3000, 3000, true), false, "a relay move can say it for a moment");
+  assert.equal(failFor(w, c, 6000, 3000, true), true);
+});
+
+test("a host-gone answer needs several of them, and an answered attempt clears it", () => {
+  const c = clock();
+  const w = createReachabilityWatch({ now: c.now });
+  // Too few answers, however far apart inside one outage.
+  for (let i = 0; i < HOST_GONE_MIN_ANSWERS - 1; i += 1) {
+    c.advance(9000);
+    assert.equal(w.fail(true), false);
+  }
+  w.ok();
+  assert.equal(failFor(w, c, HOST_GONE_AFTER_MS - 3000, 3000, true), false, "the clock started again");
 });

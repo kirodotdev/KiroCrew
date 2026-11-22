@@ -3,8 +3,8 @@ title: A PR item stays open until its pull request lands, the work-ledger probe 
 status: withdrawn
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
-last-audited: 2026-11-15
-audited-at: f1a5a16cae
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: []
 tracking-issues: [36751]

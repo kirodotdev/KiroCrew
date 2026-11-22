@@ -40,6 +40,11 @@ import kiro_crew.vector_memory as vm
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.vector_memory import VectorMemoryStore
 
+#: One worker for the module, so the cached test-tree scan behind the seam checks
+#: (``test_vector_memory_composition_contract._corpus_facade_patches``) runs once per
+#: run rather than once on every worker a test of this file lands on.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_vector_memory_owners")
+
 RUNTIME_PACKAGE = "kiro_crew.vector_memory_runtime"
 STORE_LOGGER = "kiro_crew.vector_memory"
 FACADE_DIR = Path(vm.__file__).resolve().parent

@@ -16,7 +16,12 @@ from dev_fleet_app_helpers import _reset_make_live_committed_latch  # noqa: F401
 from dev_fleet_app_helpers import _reset_shutdown_admission_state  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _sweep_staged_sync_tempdirs  # noqa: F401 - fixture
 from dev_fleet_app_helpers import _venv_maps_to_the_synced_checkout  # noqa: F401 - fixture
-from dev_fleet_app_helpers import _POSIX_ONLY, _mk_make_live_wt, _stub_make_live
+from dev_fleet_app_helpers import (
+    _POSIX_ONLY,
+    _mk_make_live_wt,
+    _stub_make_live,
+    simulate_live_platform,
+)
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
@@ -535,17 +540,17 @@ async def test_make_live_write_failure_does_not_latch(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_live_worktree_path_reads_working_directory_with_spaces(monkeypatch):
+async def test_live_worktree_path_reads_working_directory_with_spaces(monkeypatch, tmp_path):
     """_live_worktree_path resolves via `systemctl show --property=
     WorkingDirectory --value`, which (unlike the ExecStart path= regex) is NOT
     truncated at spaces — so a checkout path containing a space resolves whole."""
-    spacey = "/home/u/my worktrees/kirocrew-wt-feat"
+    spacey = _mk_make_live_wt(tmp_path / "my worktrees", venv=True, dist=True)
 
     async def fake_run_cmd(cmd, **kw):
         assert "--property=WorkingDirectory" in cmd and "--value" in cmd
-        return (0, spacey + "\n", "")
+        return (0, f"{spacey}\n", "")
 
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="linux"))
+    simulate_live_platform(monkeypatch, "linux")
     monkeypatch.setattr(
         live_mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
     )
@@ -553,14 +558,13 @@ async def test_live_worktree_path_reads_working_directory_with_spaces(monkeypatc
     monkeypatch.setattr(live_mod, "_LIVE_CHECK_AT", 0.0, raising=False)
     monkeypatch.setattr(live_mod, "_LIVE_WORKTREE", None, raising=False)
     got = await mod._live_worktree_path()
-    assert got == str(Path(spacey).resolve())
+    assert got == str(spacey.resolve())
 
 
 @pytest.mark.asyncio
 async def test_live_worktree_path_falls_back_to_execstart(monkeypatch, tmp_path):
     """When WorkingDirectory is empty, fall back to parsing ExecStart's path=."""
-    checkout = tmp_path / "kirocrew-wt-feat"
-    (checkout / ".venv" / "bin").mkdir(parents=True)
+    checkout = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     exe = checkout / ".venv" / "bin" / "kirocrew"
 
     async def fake_run_cmd(cmd, **kw):
@@ -570,7 +574,7 @@ async def test_live_worktree_path_falls_back_to_execstart(monkeypatch, tmp_path)
             return (0, f"{{ path={exe} ; argv[]={exe} gateway ; ignore_errors=no }}", "")
         raise AssertionError(f"unexpected cmd {cmd}")
 
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="linux"))
+    simulate_live_platform(monkeypatch, "linux")
     monkeypatch.setattr(
         live_mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
     )
@@ -793,7 +797,7 @@ async def test_live_user_unit_status_ok_and_missing(monkeypatch):
     Loadedness alone is not enough: `ok` means a restart replaces the gateway we
     are in, so the classifier also requires `is-active`.
     """
-    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="linux"))
+    simulate_live_platform(monkeypatch, "linux")
     monkeypatch.setattr(
         live_mod, "shutil", MagicMock(which=MagicMock(return_value="/usr/bin/systemctl"))
     )
@@ -809,7 +813,7 @@ async def test_live_user_unit_status_ok_and_missing(monkeypatch):
     assert await mod._live_user_unit_status() == "ok"
 
     async def cat_missing(cmd, **kw):
-        return (1, "", "No files found for kirocrew-gateway.service.")
+        return (1, "", "No files found for kirocrew.service.")
 
     monkeypatch.setattr(runtime_mod, "_run_cmd", cat_missing)
     assert await mod._live_user_unit_status() == "no_user_unit"

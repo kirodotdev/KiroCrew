@@ -368,15 +368,26 @@ async def peer_logins() -> dict[str, str]:
     return out
 
 
-async def snapshot(settings: RemoteDispatchSettings) -> tuple[dict[str, Any], str]:
-    """:func:`measure` off the loop, with ``logins`` added. Never raises.
+#: ``GET api/chat/headroom`` queries: a hub sends :data:`WITH_LOGINS_QUERY` for
+#: an item whose ``requires.logins`` is set and :data:`NO_LOGINS_QUERY` for any
+#: other read. Only ``NO_LOGINS_QUERY`` skips the login checks, so a hub that
+#: predates the query still gets ``logins``, and a peer that predates it ignores it.
+WITH_LOGINS_QUERY = {"logins": "1"}
+NO_LOGINS_QUERY = {"logins": "0"}
+
+
+async def snapshot(
+    settings: RemoteDispatchSettings, *, logins: bool = False
+) -> tuple[dict[str, Any], str]:
+    """:func:`measure` off the loop, with ``logins`` added when asked. Never raises.
 
     For ``GET api/chat/headroom`` only, the read placement ranks from: a create
     reply carries :func:`measure`'s snapshot alone, so no create waits on a
-    login check.
+    login check, and a headroom read with :data:`NO_LOGINS_QUERY` waits on none.
     """
     headroom, short = await asyncio.to_thread(measure, settings)
-    headroom["logins"] = await peer_logins()
+    if logins:
+        headroom["logins"] = await peer_logins()
     return headroom, short
 
 
@@ -417,5 +428,6 @@ async def api_chat_headroom(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "chat.headroom.read")
     if denied is not None:
         return denied
-    headroom, _ = await snapshot(settings)
+    wants_logins = request.query.get("logins") != NO_LOGINS_QUERY["logins"]
+    headroom, _ = await snapshot(settings, logins=wants_logins)
     return web.json_response(headroom)

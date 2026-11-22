@@ -5,7 +5,8 @@
  *  the crew profile settings mount them, each importing this module directly.
  *  It imports no page, so a consumer never closes a module cycle through it.
  *  `KiroCrewAgentsPage.tsx` re-exports every name for its existing importers. */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import { api } from '../../api/client'
 import { FOLDER_COLOR_PALETTE } from '../folderColorCatalog'
 import { Btn, SendBtn, Input } from '../ui'
@@ -29,6 +30,9 @@ export interface AgentMutationResult {
   error?: string
   name?: string
   memory_store?: string
+  /** Set by a create that succeeded with a caveat, such as a `copy_from` source
+   *  whose folder is gone (the workspace is made empty). */
+  warnings?: string[]
 }
 
 /** The stored spelling for "no per-agent pin, inherit the next tier down". The
@@ -56,18 +60,26 @@ type FormSubject = 'agent' | 'member'
  *  name between openings for free. Hoisting it into the parent (which stays
  *  mounted so Radix can run its own close transition) would persist it. */
 function WorkspaceForm({
+  open,
   workspaceOptions,
   onCreated,
   onClose,
   onDirtyChange,
+  onWarnedChange,
   onSaveChain,
 }: {
+  /** The modal's `open`: Radix keeps this form mounted through the close
+   *  animation, so mounted is not the same as still showing. */
+  open: boolean
   workspaceOptions: string[]
   onCreated: (name: string) => void
   onClose: () => void
   /** Whether the form holds unsaved input; the modal reads it to refuse
    *  Escape / backdrop dismissal while it does. */
   onDirtyChange?: (dirty: boolean) => void
+  /** The workspace a create made while the form shows its warning, else null;
+   *  the modal reads it so its X and Escape report that create, not a cancel. */
+  onWarnedChange: (name: string | null) => void
   /** Register the in-flight create POST with the host so its navigation guard
    *  tracks it to SETTLEMENT, not to this form's lifetime: a boolean cleared on
    *  unmount would release the guard the instant the modal closes (Cancel)
@@ -80,7 +92,21 @@ function WorkspaceForm({
   const [wsDir, setWsDir] = useState('workspace')
   const [dirTouched, setDirTouched] = useState(false)
   const [copyFrom, setCopyFrom] = useState('')
-  const dirty = wsName !== '' || dirTouched || copyFrom !== ''
+  // A create that succeeded with a warning (a copy whose source folder is gone):
+  // the workspace exists, so the form shows the server's words instead of closing
+  // and reports the create when the person leaves. Nothing is unsaved by then.
+  const [warned, setWarned] = useState<{ name: string; warnings: string[] } | null>(null)
+  useEffect(() => { onWarnedChange(warned?.name ?? null); return () => onWarnedChange(null) }, [warned, onWarnedChange])
+  // An answer that lands after the dialog closed has no view to show its warning
+  // in, so it reports the create as a clean one would, letting the host refresh.
+  const showing = useRef(false)
+  // A warned create no exit has reported yet. Done, X and Escape report it and
+  // close the dialog, so one still set at teardown means the page went away
+  // under the warning (a navigation): report it then, so the host still refreshes.
+  const unreported = useRef<(() => void) | null>(null)
+  useEffect(() => { showing.current = open; if (!open) unreported.current = null; return () => { showing.current = false } }, [open])
+  useEffect(() => () => unreported.current?.(), [])
+  const dirty = !warned && (wsName !== '' || dirTouched || copyFrom !== '')
   // With a cleanup: Radix unmounts this form when the dialog closes, and a
   // draft that went with it must not leave the host reading `dirty` as true
   // (its Escape/backdrop guard and the crewmate dialog's navigation stake
@@ -118,12 +144,41 @@ function WorkspaceForm({
       onSaveChain?.(createWrite)
       const r: AgentMutationResult = await createWrite
       if (r.error) { setWsError(r.error); setSubmitting(false); return }
+      if (r.warnings?.length && showing.current) {
+        const name = r.name || n
+        unreported.current = () => onCreated(name)
+        setWarned({ name, warnings: r.warnings })
+        return
+      }
       onCreated(r.name || n)
     } catch (e) {
       setWsError(e instanceof Error ? e.message : i18nT('pages.kiroCrewAgentsPage.failed_to_create_workspace'))
     } finally {
       setSubmitting(false)
     }
+  }
+
+  if (warned) {
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle>{i18nT('pages.kiroCrewAgentsPage.create_workspace')}</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          {/* Not an ErrorNotice: the create succeeded, so it wears the warn status. */}
+          <div id="ws-create-warning" className="bg-warn-subtle border border-warn/20 rounded-lg p-3 flex items-start gap-3" role="status">
+            <AlertTriangle size={16} className="text-warn shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="flex-1 min-w-0 flex flex-col gap-1 text-[13px] break-words">
+              <p>{i18nT('pages.kiroCrewAgentsPage.workspace_created_named', { name: warned.name })}</p>
+              {warned.warnings.map(w => <p key={w} className="text-warn-text">{w}</p>)}
+            </div>
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <SendBtn onClick={() => onCreated(warned.name)} aria-describedby="ws-create-warning" autoFocus>{i18nT('pages.kiroCrewAgentsPage.done')}</SendBtn>
+        </DialogFooter>
+      </>
+    )
   }
 
   return (
@@ -205,6 +260,9 @@ export function WorkspaceModal({
   // name/directory/copy-from. The explicit Cancel and the X still close.
   const [dirty, setDirty] = useState(false)
   useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
+  // Set while the form shows a warned create: the workspace exists, so every
+  // way out of the dialog hands the host its name, as a clean create does.
+  const [warned, setWarned] = useState<string | null>(null)
   /* Kept MOUNTED and driven by `open`, rather than conditionally rendered.
      Radix tracks dismissable layers in a global stack, and tearing this whole
      subtree out the instant it closes skipped the layer's own deregistration —
@@ -217,7 +275,7 @@ export function WorkspaceModal({
      content sits at z-[101]; at an equal z-index this would render behind its
      own opener. */
   return (
-    <Dialog open={open} onOpenChange={next => { if (!next) onClose() }}>
+    <Dialog open={open} onOpenChange={next => { if (!next) { if (warned === null) onClose(); else onCreated(warned) } }}>
       <DialogContent
         maxWidth={448}
         className="z-[110]"
@@ -229,7 +287,7 @@ export function WorkspaceModal({
         onEscapeKeyDown={e => { if (dirty) e.preventDefault() }}
         onPointerDownOutside={e => { if (dirty) e.preventDefault() }}
       >
-        <WorkspaceForm workspaceOptions={workspaceOptions} onCreated={onCreated} onClose={onClose} onDirtyChange={setDirty} onSaveChain={onSaveChain} />
+        <WorkspaceForm open={open} workspaceOptions={workspaceOptions} onCreated={onCreated} onClose={onClose} onDirtyChange={setDirty} onWarnedChange={setWarned} onSaveChain={onSaveChain} />
       </DialogContent>
     </Dialog>
   )

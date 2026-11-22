@@ -13,6 +13,11 @@
  *  starts the backoff over; one that drops sooner keeps it growing. */
 export const RECONNECT_HEALTHY_MS = 10_000
 
+/** How long a quiet reconnect may take to open before the dashboard says it is
+ *  offline (`hooks/websocket/relayClose`); the relay's own reconnect lands in
+ *  about a second. The shell's host cover waits the same time. */
+export const QUIET_RECONNECT_GRACE_MS = 5000
+
 /** `delay` less a random part of up to half of it. */
 export function jittered(delay: number): number {
   return delay - Math.floor(Math.random() * (delay / 2))

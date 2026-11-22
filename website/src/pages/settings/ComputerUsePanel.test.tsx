@@ -287,8 +287,9 @@ describe('ComputerUsePanel', () => {
       }),
     )
     expect(
-      await screen.findByText('the Linux AT-SPI driver is not implemented yet'),
+      await screen.findByText("Computer Use isn't available on Linux in this release."),
     ).toBeInTheDocument()
+    expect(screen.queryByText(/AT-SPI/)).not.toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: ENABLE_LABEL })).not.toBeInTheDocument()
     // **No badge on an unsupported host**, and specifically not "macOS only": on
     // Linux that is a claim about a different platform sitting beside a reason that
@@ -300,6 +301,11 @@ describe('ComputerUsePanel', () => {
   })
 
 
+
+  it('keeps the driver reason on another unsupported platform', async () => {
+    await renderPanel(snapshot({ supported: false, platform: 'windows', reason: 'the Windows UI Automation driver could not be loaded on this host' }))
+    expect(await screen.findByText('the Windows UI Automation driver could not be loaded on this host')).toBeInTheDocument()
+  })
 
   /* ── the real-pointer opt-in ────────────────────────────────────────────── */
 

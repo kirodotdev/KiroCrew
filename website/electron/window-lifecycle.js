@@ -3,13 +3,18 @@
 const fs = require("fs");
 const path = require("path");
 
-const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("./token-retry");
+const {
+  createTokenRetryHandler,
+  dashboardRetryPath,
+  dashboardUrlFor,
+  loadDashboardWithToken,
+} = require("./token-retry");
 const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
 const { createHangRecovery, endHungRenderer } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
-const { armScrollTouch } = require("./scroll-touch");
+const { armScrollTouch, readNaturalScrolling } = require("./scroll-touch");
 const { hideToTray, cancelPendingTrayHide, shouldKeepAppHidden } = require("./hide-to-tray");
 const {
   createCloseHandler,
@@ -17,6 +22,7 @@ const {
   setCloseAction,
 } = require("./close-action");
 const { getTrayIcon, setTrayIcon } = require("./tray-icon");
+const { createMinimizeToTray } = require("./minimize-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { menuBarCanOverlap } = require("./fullscreen-top-reserve");
 const {
@@ -28,6 +34,7 @@ const { sanitizeWindowState, captureWindowState } = require("./window-state");
 const { stepZoomFactor } = require("./zoom");
 const { registerCaptureSurface } = require("./capture-trust");
 const { isLoopbackUrl } = require("./browser-view");
+const { shownRelayPane } = require("./relay-crew-window");
 const { runAnnotateOp } = require("./browser-annotate");
 const { attachContextMenu } = require("./context-menu");
 const {
@@ -374,9 +381,12 @@ function createWindowLifecycle(options) {
     });
     // The trackpad's real finger-down / finger-up, so a two-finger drag in the
     // dashboard releases on the lift-off instead of a guessed gap (macOS only).
+    // It also tells the page the Natural scrolling setting, which decides
+    // which way the fingers moved for a given wheel sign.
     armScrollTouch(view.webContents, {
       platform,
       isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
+      readNatural: () => readNaturalScrolling(systemPreferences),
     });
 
     // Teardown order is load-bearing: no embedded view may outlive the page it
@@ -1021,6 +1031,7 @@ function createWindowLifecycle(options) {
         persist();
       },
     }));
+    mainWindow.on("minimize", minimizeToTray.minimizeHandler(mainWindow));
 
     return mainWindow;
   }
@@ -1141,6 +1152,9 @@ function createWindowLifecycle(options) {
     syncTray();
     return state;
   }
+
+  // Minimize to tray needs a tray to bring the window back (minimize-to-tray.js).
+  const minimizeToTray = createMinimizeToTray({ store, platform, trayShown: () => tray !== null, log: glog });
 
   async function promptRemoteHost() {
     const focused = BaseWindow.getFocusedWindow() || mainWindow;
@@ -1398,8 +1412,8 @@ function createWindowLifecycle(options) {
         ({ token: tokenValue } = await fetchRemoteToken(connectionPort));
       }
       if (tokenValue && !connWin.isDestroyed()) {
-        const target = new URL(retryTarget || "", connectionBackendUrl);
-        await loadDashboardWithToken(connWin.webContents, target.toString(), tokenValue);
+        const target = dashboardUrlFor(connectionBackendUrl, retryTarget);
+        await loadDashboardWithToken(connWin.webContents, target, tokenValue);
       }
     });
     connWin.webContents.on("did-navigate", (_event, url, httpCode) => {
@@ -1528,11 +1542,17 @@ function createWindowLifecycle(options) {
       appName: app.name,
       openSettings: () => openSettingsPage(),
       openAbout: () => openSettingsPage("about"),
+      // A relay Crew tab in front takes Reload, as its own window did,
+      // instead of the dashboard reloading and closing every tab.
       reload: () => {
+        const pane = shownRelayPane(BaseWindow.getFocusedWindow());
+        if (pane) { pane.menuReload({ ignoreCache: false }); return; }
         const wc = focusedDashboardWebContents();
         if (wc) wc.reload();
       },
       forceReload: () => {
+        const pane = shownRelayPane(BaseWindow.getFocusedWindow());
+        if (pane) { pane.menuReload({ ignoreCache: true }); return; }
         const wc = focusedDashboardWebContents();
         if (wc) wc.reloadIgnoringCache();
       },
@@ -1573,7 +1593,7 @@ function createWindowLifecycle(options) {
   // silently no-ops when clicked. Strict `=== true` matches the fail-closed
   // rule executeMenuItem uses.
   function menuItems(sender, id, senderIsLocal) {
-    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
+    if (!(IS_WINDOWS || LINUX_FRAMELESS) || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
     const menu = appMenu || Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById(id);
     const win = windowForWebContents(sender);
@@ -1588,7 +1608,7 @@ function createWindowLifecycle(options) {
   // exit says so explicitly.
   function executeMenu(sender, id, index, senderIsLocal) {
     if (
-      !IS_WINDOWS
+      !(IS_WINDOWS || LINUX_FRAMELESS)
       || !WINDOWS_TITLEBAR_MENU_IDS.has(id)
       || !Number.isInteger(index)
     ) return false;
@@ -1821,6 +1841,7 @@ function createWindowLifecycle(options) {
       get: () => getTrayIcon(store, { isMac: IS_MAC }),
       set: setTrayIconAndLog,
     },
+    minimizeToTray: { get: minimizeToTray.get, set: minimizeToTray.set },
     getSummonWindow,
     focusedDashboardWindow,
     focusedDashboardWebContents,

@@ -6,13 +6,14 @@
 import { createAction, createAsyncThunk, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { ChatMessage } from '../../types'
-import { emitSlotRead } from '../../lib/slotReadRelay'
+import { emitSlotRead, newerTs, newestServerRowTs } from '../../lib/slotReadRelay'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
 import { armConfirmedCloseHold, markSlotRead, confirmOrphanUnread, removeSlotOptimistic } from '../dashboardSlice'
 import { slotLastTsOf } from '../slotLastTs'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../../utils/errorReport'
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import { asFrontRead } from '../../api/readGate'
@@ -190,6 +191,12 @@ export function switchSlotNoticeCopy(kind: 'gone' | 'failed' | 'closed', name: s
 export const setSwitchSlotGone = createAction<{ name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport }>('chat/setSwitchSlotGone')
 export const clearSwitchSlotGone = createAction('chat/clearSwitchSlotGone')
 
+/** The name a switch-failure notice gives a session: the one its Sessions row shows. */
+function slotNoticeName(state: RootState, key: string): string | undefined {
+  const slot = state.dashboard?.slots?.find(s => s.key === key)
+  return slot ? sessionDisplayTitle(slot) : undefined
+}
+
 export const switchSlot = createAsyncThunk<
   Awaited<ReturnType<typeof fetchSlotDetail>>,
   SwitchSlotArg,
@@ -275,10 +282,10 @@ export const switchSlot = createAsyncThunk<
         // badges for messages nobody displayed. `pending` assigns activeSlot
         // atomically before this thunk body runs, so a superseded request
         // observes someone else's key here.
-        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, newerTs(_newestSlotTs(), newestServerRowTs(walked.messages)))
         return { ...walked, comparableTotal: first.total }
       }
-      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, newerTs(_newestSlotTs(), newestServerRowTs(first.messages)))
       return first
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
@@ -314,7 +321,7 @@ export const switchSlot = createAsyncThunk<
           // Read BEFORE the eviction below removes the row. Optional-chained
           // like the other dashboard reads in this thunk: a partial preloaded
           // test state can omit the slice.
-          const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+          const name = slotNoticeName(getState() as RootState, key)
           const chat = (getState() as RootState).chat
           // The announcement is ESCAPES-ONLY: re-activating the session the
           // user is already in (the live-claimed origin names the gone key)
@@ -387,7 +394,7 @@ export const switchSlot = createAsyncThunk<
           // notice belonging to the user's current gesture with one about a
           // click they already moved past.
           if ((getState() as RootState).chat.slotSwitchRequestId === requestId) {
-            const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+            const name = slotNoticeName(getState() as RootState, key)
             dispatch(setSwitchSlotGone({
               name: name ?? '',
               kind: 'failed',
@@ -404,7 +411,7 @@ export const switchSlot = createAsyncThunk<
       // cannot overwrite the current gesture's notice.
       if (typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
           && (getState() as RootState).chat.slotSwitchRequestId === requestId) {
-        const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
+        const name = slotNoticeName(getState() as RootState, key)
         dispatch(setSwitchSlotGone({
           name: name ?? '',
           kind: 'failed',
@@ -554,6 +561,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const { key, messages: fetchedMessages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
+      if (state.slotOpenFailed === key) state.slotOpenFailed = null
       // The user's open of this session has landed (see `ChatState.userOpen`):
       // only its own gesture load, never a plain switch that superseded it.
       const openArg = action.meta?.arg
@@ -905,6 +913,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // The run mirrors stay as they are: they describe the selected chat's
       // run, which `pending` seeded and live frames keep current, so a turn
       // still running there keeps its Stop.
+      state.slotOpenFailed = target
       state.messages = []
       setPagingCursor(state, false, 0)
       state.slotLoading = false

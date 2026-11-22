@@ -281,27 +281,20 @@ def _patch_decisions(monkeypatch, answer) -> list[str]:
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-@pytest.mark.parametrize("answer", [_default_permit, _profile_permit])
-def test_external_decisions_off_by_default_in_lts(monkeypatch, edition, answer) -> None:
+@pytest.mark.parametrize("answer", [_default_permit, _profile_permit, _policy_permit])
+def test_external_decisions_lock_only_jev_in_lts(monkeypatch, edition, answer) -> None:
+    """RFC D13: the row follows its answer (the LTS baseline turns
+    it on), and only hosted Jev and hand-written endpoints are locked off."""
     from kiro_crew.decisions import capability
 
     lts = _set_edition(monkeypatch, edition)
     rows = _patch_decisions(monkeypatch, answer)
 
-    assert capability.is_decisions_denied() is lts
-    assert rows == ["denied" if lts else "allowed"]
-    assert capability.is_decisions_denied(local=True) is lts
-
-
-@pytest.mark.parametrize("edition", EDITIONS)
-def test_external_decisions_follow_the_policy_in_lts(monkeypatch, edition) -> None:
-    from kiro_crew.decisions import capability
-
-    _set_edition(monkeypatch, edition)
-    rows = _patch_decisions(monkeypatch, _policy_permit)
-
     assert capability.is_decisions_denied() is False
-    assert rows == ["allowed"]
+    assert capability.is_decisions_denied(provider="sagemaker") is False
+    assert capability.is_decisions_denied(provider="jev") is lts
+    assert capability.is_decisions_denied(provider="custom") is lts
+    assert rows[0] == "allowed"
 
 
 # --- Managed update commands -----------------------------------------------------

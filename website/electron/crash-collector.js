@@ -114,26 +114,26 @@ const {
 } = require("./runtime/crash/scan");
 
 /**
- * The renderer-facing view of a scan.
- *
- * Deliberately narrow: ONE number. No paths, filenames, module names, exception
- * codes, timestamps, or logs directory — all of which describe the machine (down
- * to the account name in a home directory) and none of which the notice needs.
- * A connection window pointed at a remote gateway shares this preload, so the
- * smaller this payload is, the less the sender gate has to carry. The detail
- * lives in `crashes.log`, which the user reveals and hands over deliberately.
- *
- * It carried `lastCrashAt` and `hasLog` too, until a review pointed out that no
- * consumer read either one: the banner's text is a count, and the reveal button
- * renders whenever the count is non-zero. `hasLog` in particular looked
- * load-bearing and was not — `newCount > 0` already implies a ledger line,
- * because a crash is only counted once its line is durably on disk. Fields the
- * UI does not read are not free here: every one is another thing crossing the
- * boundary this channel's three gates exist to protect.
+ * The renderer-facing view of a scan: the count of new crashes and, as one ISO
+ * 8601 UTC string (or `null`), when the newest of them happened, so a weeks-old
+ * crash does not read like one that just occurred. A path, file name, module
+ * name, exception code or the logs directory never crosses: they describe the
+ * machine (down to the account name in a home directory), and a connection
+ * window pointed at a remote gateway shares this preload. That detail lives in
+ * `crashes.log`, which the user reveals and hands over deliberately; the time
+ * shown here is the same `at=` that file already records.
  */
 function crashNoticeSummary(scan) {
   const newCrashes = (scan && scan.newCrashes) || [];
-  return { newCount: newCrashes.length };
+  let newest = null;
+  for (const crash of newCrashes) {
+    const ms = Date.parse(crash.at);
+    if (Number.isFinite(ms) && (newest === null || ms > newest)) newest = ms;
+  }
+  return {
+    newCount: newCrashes.length,
+    lastCrashAt: newest === null ? null : new Date(newest).toISOString(),
+  };
 }
 
 module.exports = {

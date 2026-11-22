@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { ChatMessage } from '../types'
-import { searchableTextMemo } from '../utils/searchableText'
 import { hasCommandModifier } from '../utils/commandModifier'
 import { isMac } from '../utils/platform'
 import { focusComposer } from '../pages/chat/composerFocus'
-import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
+import { useStableMessageKey } from '../chat-core/transcript/useStableMessageKey'
+import { CONVERGE_MAX_MS } from '../utils/searchScroll'
+import type { RevealLedger } from './SearchHighlightContext'
+import { findMatchIds, findReducer, livePosition, messageKeys, NO_FIND, type FindState, type RowIndex } from './messageSearchState'
 
 export interface SearchMatch {
   /** Index into the messages[] Redux array. */
@@ -13,16 +15,28 @@ export interface SearchMatch {
   occ: number
 }
 
+const NO_ROWS: RowIndex = new Map()
+const clearFind = (s: FindState) => findReducer(s, { type: 'clear' })
+
 /**
- * In-session message search hook. Must only be called from ChatPage —
- * the keydown listener is scoped to ChatPage's mount/unmount lifecycle.
+ * In-session message search hook: ChatPage's, and a Bot chat's (`ChatPane`
+ * with `findInChat`). The keydown listener lives as long as the caller is
+ * mounted, so only one caller on a page may pass `enabled`; `enabled: false`
+ * leaves the shortcut to the browser and closes an open bar.
+ *
+ * The current match is the match itself, not its place in the list (see
+ * messageSearchState): rows arriving around it leave it current and leave the
+ * reader where they are. Only a find action hands out a `reveal`, the signal
+ * the hosts and rows move the reader by.
  */
-export function useMessageSearch(messages: ChatMessage[], activeSlot: string | null) {
+export function useMessageSearch(messages: ChatMessage[], activeSlot: string | null, enabled = true) {
   const [isOpen, setIsOpen] = useState(false)
   const [term, setTerm] = useState('')
-  const [currentIdx, setCurrentIdx] = useState(0)
   const [caseSensitive, setCaseSensitive] = useState(false)
-  const [matches, setMatches] = useState<SearchMatch[]>([])
+  // One state, with findReducer as the updater rather than useReducer: a
+  // 'clear' that changes nothing returns the same state, and only useState
+  // skips that render. Each streamed chunk sends one while the bar is closed.
+  const [find, setFind] = useState<FindState>(NO_FIND)
   // Bumped every time the find shortcut fires so the SearchBar can re-focus and
   // select-all — letting the user immediately type a new query over the old one.
   const [focusNonce, setFocusNonce] = useState(0)
@@ -36,88 +50,116 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
   const isOpenRef = useRef(false)
   useEffect(() => { isOpenRef.current = isOpen }, [isOpen])
 
+  // Each message's key while a search is on, and each key's index in the list
+  // this render was given: a match is mapped onto its message's index in the
+  // same render, so no render points a match at another message. (The Sessions
+  // chat's rows draw a deferred snapshot of that list; ChatPage hands them the
+  // match's index in it.)
+  const keyOf = useStableMessageKey()
+  const searching = term !== '' || find.ids.length > 0
+  const msgKeys = useMemo(() => (searching ? messageKeys(messages, keyOf) : null), [searching, messages, keyOf])
+  const rows = useMemo<RowIndex>(() => (msgKeys ? new Map(msgKeys.map((k, i) => [k, i])) : NO_ROWS), [msgKeys])
+  // Read by the identity-stable steps below: a step moves over the matches
+  // whose rows the last render held.
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+
   // Debounced match computation (50ms)
   useEffect(() => {
-    // Keep the current array when it is already empty: a fresh `[]` here
-    // re-renders the page on every `messages` change (each streamed chunk)
-    // while the search bar is closed.
-    if (!term) { setMatches(prev => (prev.length === 0 ? prev : [])); return }
+    // An empty search that stays empty returns the same state, so this sends
+    // nothing to render on every `messages` change (each streamed chunk) while
+    // the search bar is closed.
+    if (!term) { setFind(clearFind); return }
+    if (!msgKeys) return
     const timer = setTimeout(() => {
-      const needle = caseSensitive ? term : term.toLowerCase()
-      const result: SearchMatch[] = []
-      for (let i = 0; i < messages.length; i++) {
-        const m = messages[i]
-        if (m.role !== 'user' && m.role !== 'assistant') continue
-        // A superseded steer is not drawn; its successor row carries the same
-        // text and is the hit the reader can land on.
-        if (isHiddenSupersededSteer(messages, i)) continue
-        // Skip assistant reasoning segments collapsed inside turns
-        if (m.role === 'assistant') {
-          const next = messages[i + 1]
-          if (next && next.role === 'tool') continue
-        }
-        const haystack = caseSensitive ? searchableTextMemo(m) : searchableTextMemo(m).toLowerCase()
-        let pos = 0
-        let occ = 0
-        while (true) {
-          const idx = haystack.indexOf(needle, pos)
-          if (idx === -1) break
-          result.push({ msgIdx: i, occ })
-          occ++
-          pos = idx + needle.length
-        }
-      }
-      setMatches(result)
+      const ids = findMatchIds(messages, msgKeys, term, caseSensitive)
+      setFind(s => findReducer(s, { type: 'found', ids, term, caseSensitive }))
     }, 50)
     return () => clearTimeout(timer)
-  }, [messages, term, caseSensitive])
-
-  // Clamp currentIdx when matches change
-  useEffect(() => {
-    setCurrentIdx(prev => (matches.length === 0 ? 0 : Math.min(prev, matches.length - 1)))
-  }, [matches])
+  }, [messages, msgKeys, term, caseSensitive])
 
   // Reset on session switch
   useEffect(() => {
     setIsOpen(false)
     setTerm('')
-    setMatches([])
-    setCurrentIdx(0)
+    setFind(clearFind)
   }, [activeSlot])
 
   const open = useCallback(() => setIsOpen(true), [])
+  // Clears the bar without touching focus.
+  const reset = useCallback(() => {
+    isOpenRef.current = false
+    setIsOpen(false)
+    setTerm('')
+    setFind(clearFind)
+  }, [])
   const close = useCallback(() => {
     // Focus is handed back only when the bar was actually open: ChatPage's
     // file/folder-open handlers call close() unconditionally to un-gate the
     // dock, and a close that never dismissed anything must not steal focus.
     const wasOpen = isOpenRef.current
-    isOpenRef.current = false
-    setIsOpen(false)
-    setTerm('')
-    setMatches([])
-    setCurrentIdx(0)
+    reset()
     // In the close path itself — not the Escape handler — so the bar's own
     // close button hands typing back to the composer identically. focusComposer
     // already defers a frame, skips touch devices, and no-ops when the composer
     // is unmounted or the session switched, so closing never throws.
     if (wasOpen) focusComposer()
-  }, [])
+  }, [reset])
   const next = useCallback(() => {
-    setCurrentIdx(prev => (matches.length === 0 ? 0 : (prev + 1) % matches.length))
-  }, [matches.length])
+    const rows = rowsRef.current
+    setFind(s => findReducer(s, { type: 'step', delta: 1, rows }))
+  }, [])
   const prev = useCallback(() => {
-    setCurrentIdx(prev => (matches.length === 0 ? 0 : (prev - 1 + matches.length) % matches.length))
-  }, [matches.length])
+    const rows = rowsRef.current
+    setFind(s => findReducer(s, { type: 'step', delta: -1, rows }))
+  }, [])
   // Jump directly to an arbitrary match (Home/End in the find bar, result-row clicks).
   // Clamped to the valid range so a stale index from a shrinking match set
   // can never point past the array.
-  const goTo = useCallback((idx: number) => {
-    setCurrentIdx(() => (matches.length === 0 ? 0 : Math.max(0, Math.min(idx, matches.length - 1))))
-  }, [matches.length])
+  const goTo = useCallback((index: number) => {
+    const rows = rowsRef.current
+    setFind(s => findReducer(s, { type: 'goto', index, rows }))
+  }, [])
   const toggleCaseSensitive = useCallback(() => setCaseSensitive(p => !p), [])
+
+  // The matches whose rows are in the list, in this render's indices. Between a
+  // row leaving and the next search (one debounce), a current match whose row
+  // left shows as the next one, which no find action asked for.
+  const live = useMemo(() => {
+    const places: number[] = []
+    const matches: SearchMatch[] = []
+    find.ids.forEach((id, i) => {
+      const msgIdx = rows.get(id.key)
+      if (msgIdx === undefined) return
+      places.push(i)
+      matches.push({ msgIdx, occ: id.occ })
+    })
+    return { places, matches }
+  }, [find.ids, rows])
+  const pos = livePosition(find.at, live.places)
+  const reveal = pos >= 0 && live.places[pos] === find.at ? find.reveal : 0
+  // When the shown find action was handed out. A row may start centering for it
+  // only within one converge backstop: a row that unmounted before it finished
+  // centering, or a row no host could move to, must not move the reader when
+  // the reader's own scroll mounts it later.
+  const issuedRef = useRef({ reveal: 0, at: 0 })
+  if (reveal !== issuedRef.current.reveal) issuedRef.current = { reveal, at: reveal ? performance.now() : 0 }
+  // Which reveals a row has already used, for every row of this search.
+  const revealedRef = useRef(0)
+  const revealLedger = useMemo<RevealLedger>(() => ({
+    pending: n => n > revealedRef.current && n === issuedRef.current.reveal
+      && performance.now() - issuedRef.current.at < CONVERGE_MAX_MS,
+    consume: n => { if (n > revealedRef.current) revealedRef.current = n },
+  }), [])
+
+  // A host that stops offering the find (its chat is covered, or the user moved
+  // into a side panel) clears the bar without close()'s focus hand-back: the
+  // user's focus is already where they want it, not in the composer.
+  useEffect(() => { if (!enabled) reset() }, [enabled, reset])
 
   // Keyboard shortcuts
   useEffect(() => {
+    if (!enabled) return
     const handler = (e: KeyboardEvent) => {
       // `hasCommandModifier` accepts either primary modifier, which is right for
       // every chord except this one on a Mac: Ctrl+F is Cocoa's `forward-char`
@@ -126,8 +168,10 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
       // one character right. On Mac the pane is ⌘F only and bare Ctrl+F falls
       // through unhandled; Windows/Linux keep Ctrl+F, where no such binding
       // exists. (Ctrl+⌘F stays with macOS either way — hasCommandModifier
-      // rejects both-modifiers so Toggle Full Screen survives.)
-      if (hasCommandModifier(e) && (!isMac || e.metaKey) && e.key === 'f') {
+      // rejects both-modifiers so Toggle Full Screen survives.) Shift is ⌘⇧F /
+      // Ctrl+Shift+F, Search all chats; macOS still reports `e.key` as 'f' then,
+      // so the Shift state, not the key's case, keeps the two chords apart.
+      if (hasCommandModifier(e) && (!isMac || e.metaKey) && !e.shiftKey && e.key === 'f') {
         // Yield to a surface that already answered the chord. In an edit
         // session Pierre binds cmdOrCtrl+f on its own content element and calls
         // preventDefault() without stopPropagation(), so this document-level
@@ -152,18 +196,19 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [isOpen, close])
+  }, [isOpen, close, enabled])
 
-  const current = matches[currentIdx] as SearchMatch | undefined
+  const current = pos >= 0 ? live.matches[pos] : undefined
   const currentMessageIdx = current?.msgIdx ?? -1
   const currentOccurrenceIdx = current?.occ ?? -1
+  const currentRowKey = pos >= 0 ? find.ids[live.places[pos]].key : null
 
   return {
     isOpen,
     term,
     setTerm,
-    matches,
-    currentIdx,
+    matches: live.matches,
+    currentIdx: Math.max(pos, 0),
     next,
     prev,
     goTo,
@@ -173,6 +218,15 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
     toggleCaseSensitive,
     currentMessageIdx,
     currentOccurrenceIdx,
+    /** The key of the message that holds the current match, the same across
+     *  renders while it stays that message (null with no current match). */
+    currentRowKey,
+    /** The find action that asked to move the reader to the current match: a
+     *  new term or case, a step, Home or End, or a result click. 0 when the
+     *  current match became current without one. A host moves the reader once
+     *  per value; a row centers its occurrence once per value (`revealLedger`). */
+    reveal,
+    revealLedger,
     focusNonce,
   }
 }

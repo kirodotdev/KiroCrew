@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,7 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.testing.wait import until_parked
@@ -311,6 +312,115 @@ class TestSlotModelLiveSwitch:
         state.sessions.reset.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "listed,current,live",
+        [
+            # session/new's select: auto plus the account's models.
+            (("auto", "claude-opus-5.5", "claude-haiku-5.5"), "claude-opus-5.5", True),
+            # A reopened chat's session/load select names only its current model.
+            (("claude-haiku-5.5",), "claude-haiku-5.5", True),
+            # No select yet: not judged.
+            ((), "", True),
+            # A region that serves no auto keeps the reset.
+            (("claude-opus-5.5", "claude-haiku-5.5"), "claude-opus-5.5", False),
+        ],
+    )
+    async def test_auto_on_kas_goes_live_unless_its_select_leaves_it_out(
+        self, tmp_path, listed, current, live
+    ):
+        # KAS advertises no model list, and the reset fallback reloads the
+        # session on the model it already runs.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._provider(models=())
+        provider.capabilities = capabilities_for(ACP_BACKEND_KAS)
+        provider.is_kas_backend = True
+        provider.client.acp_config_options = (
+            [
+                {
+                    "id": "model",
+                    "type": "select",
+                    "currentValue": current,
+                    "options": [{"value": m, "name": m} for m in listed],
+                }
+            ]
+            if listed
+            else []
+        )
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model=current or "claude-opus-5.5")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            # The literal the dashboard's picker sends for Auto.
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "auto"})
+
+        assert resp.status == 200
+        assert state._slots["a"].model == "auto"
+        if live:
+            provider.client.set_model.assert_awaited_once_with("auto")
+            state.sessions.reset.assert_not_awaited()
+        else:
+            provider.client.set_model.assert_not_awaited()
+            state.sessions.reset.assert_awaited_once()
+
+    @staticmethod
+    def _kas_provider(running: str):
+        """A live KAS session on *running*, whose full select lists ``auto``."""
+        provider = TestSlotModelLiveSwitch._provider(models=())
+        provider.capabilities = capabilities_for(ACP_BACKEND_KAS)
+        provider.is_kas_backend = True
+        provider.client.served_model = running
+        provider.client.acp_config_options = [
+            {
+                "id": "model",
+                "type": "select",
+                "currentValue": running,
+                "options": [{"value": m, "name": m} for m in ("auto", running)],
+            }
+        ]
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_an_inherited_pick_on_kas_keeps_the_reset(self, tmp_path):
+        # ``""`` is Inherited (what a crewmate's profile posts), not Auto: the
+        # reset's cold start runs the inherited model, as it did before KAS
+        # sent Auto live.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._kas_provider("claude-sonnet-4.5")
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="claude-sonnet-4.5")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": ""})
+
+        assert resp.status == 200
+        assert state._slots["a"].model == ""
+        provider.client.set_model.assert_not_awaited()
+        state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_auto_pick_on_kas_moves_a_session_on_a_concrete_model(self, tmp_path):
+        # A reopened KAS chat holds ``auto`` while its session runs the model it
+        # ran before; picking Auto again must reach the engine.
+        state = _make_state(tmp_path)
+        state.sessions.reset = AsyncMock()
+        provider = self._kas_provider("claude-opus-5.5")
+        state.sessions.get_provider = MagicMock(return_value=provider)
+        state.get_or_create_slot("a", model="auto")
+        state.push_slots_update = MagicMock()
+
+        async with TestClient(TestServer(self._app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/model", json={"model": "auto"})
+
+        assert resp.status == 200
+        assert state._slots["a"].model == "auto"
+        provider.client.set_model.assert_awaited_once_with("auto")
+        state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_claude_backend_default_falls_back_to_reset(self, tmp_path):
         # The claude backend has no "let the server choose" id.
         state = _make_state(tmp_path)
@@ -514,24 +624,34 @@ class TestSlotModelLiveSwitch:
         assert state._slots["a"].model == "gpt-5.6-sol"
 
     @pytest.mark.asyncio
-    async def test_a_relaunch_refusal_is_4xx_and_keeps_the_model(self, tmp_path):
+    async def test_a_relaunch_refusal_is_4xx_and_keeps_the_model(self, tmp_path, caplog):
         """A relaunching harness (Strands) put the prior model back on the same chat.
         A reset would cold-start on the refused model and fail the same way."""
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         provider = self._provider()
         provider.switches_by_relaunch = True
-        provider.client.set_model = AsyncMock(side_effect=RuntimeError("cannot run that model"))
+        provider.client.set_model = AsyncMock(
+            side_effect=RuntimeError("cannot run that model: /home/u/private internal.example.net")
+        )
         state.sessions.get_provider = MagicMock(return_value=provider)
         state.get_or_create_slot("a", model="gpt-5.6-sol")
         state.push_slots_update = MagicMock()
 
-        async with TestClient(TestServer(self._app(state))) as client:
-            resp = await client.post("/api/chat/slots/a/model", json={"model": "claude-opus-4.8"})
-            body = await resp.json()
+        with caplog.at_level(logging.WARNING):
+            async with TestClient(TestServer(self._app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/a/model", json={"model": "claude-opus-4.8"}
+                )
+                body = await resp.json()
 
         assert resp.status == 400
-        assert body["code"] == "model_switch_refused"
+        # A fixed sentence: the exception text stays out of the body, the log keeps it.
+        assert body == {
+            "error": "The agent did not accept the model change.",
+            "code": "model_switch_refused",
+        }
+        assert "/home/u/private" in caplog.text
         state.sessions.reset.assert_not_awaited()
         assert state._slots["a"].model == "gpt-5.6-sol"
 
@@ -921,6 +1041,24 @@ class TestDeferredModelSwitchAtTheBoundary:
         assert slot._pending_reset_history_key is None
         # The chip's served-model refresh reaches the dashboard.
         assert state.push_slots_update.called
+
+    @pytest.mark.asyncio
+    async def test_a_deferred_inherited_pick_on_kas_arms_the_reset(self, tmp_path):
+        # The boundary lands ``""`` (Inherited) as the idle pick does: by the
+        # reset, never as an Auto pick sent live.
+        from kiro_crew.dashboard import session_control as sc
+
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        provider = TestSlotModelLiveSwitch._kas_provider("claude-sonnet-4.5")
+        slot = self._slot_with_deferred_pick(state, provider, model="")
+
+        armed = await sc.apply_deferred_model_switch(state, slot)
+
+        assert armed is True
+        provider.client.set_model.assert_not_awaited()
+        assert slot._deferred_model_switch_key == ""
+        assert slot._pending_reset_history_key
 
     @pytest.mark.asyncio
     async def test_a_rebind_during_the_rpc_keeps_the_pick_deferred(self, tmp_path):

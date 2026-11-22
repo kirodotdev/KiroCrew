@@ -666,7 +666,7 @@ def _local_file_name(path: str) -> str:
 
 
 def _label_local_images(text: str) -> str:
-    """*text* with each local ``![alt](path)`` replaced by ``🖼 <name>``.
+    """*text* with each local ``![alt](path)`` replaced by ``Image: <name>``.
 
     The mirror never prints a path on this host: a picture it does not send is
     named instead. The scan is the channel renderers' own
@@ -703,8 +703,8 @@ async def _cross_surface_images(
     """Pull a mirrored reply's local images out for upload; name every other one.
 
     Returns ``(text, files, notes)``: the text with every local reference either
-    cut (it is in *files*) or replaced by ``🖼 <name>``, the validated files, and
-    one ``⚠`` line per refused reference, naming it rather than its path. *limits*
+    cut (it is in *files*) or replaced by ``Image: <name>``, the validated files, and
+    one ``Warning:`` line per refused reference, naming it rather than its path. *limits*
     is the channel's answer for this conversation (``outbound_image_limits``, its
     renderer's budgets), ``None`` where its renderer would send no picture there.
     Every admission gate is the renderers' own: the shared ``uploads_restricted``
@@ -756,11 +756,11 @@ async def _cross_surface_images(
             resources=f"{len(result.files)} file(s)",
         )
     notes = [
-        f"⚠ {_local_file_name(strip_url_syntax(item.dest)) or 'image'} not sent: {item.detail}"
+        f"Warning: {_local_file_name(strip_url_syntax(item.dest)) or 'image'} not sent: {item.detail}"
         for item in result.rejections[:_MAX_REJECTION_LINES]
     ]
     if len(result.rejections) > _MAX_REJECTION_LINES:
-        notes.append(f"⚠ …and {len(result.rejections) - _MAX_REJECTION_LINES} more")
+        notes.append(f"Warning: …and {len(result.rejections) - _MAX_REJECTION_LINES} more")
     body = await asyncio.to_thread(_label_local_images, result.rewritten_text.strip())
     return body, list(result.files), notes
 
@@ -768,7 +768,7 @@ async def _cross_surface_images(
 async def _send_mirror_images(
     transport: Any, link: Any, images: list[OutboundFile], notes: list[str]
 ) -> None:
-    """Send each image through *transport*; add a ``⚠`` line naming each that failed."""
+    """Send each image through *transport*; add a ``Warning:`` line naming each that failed."""
     for image in images:
         try:
             sent = await transport.send_outbound_image(
@@ -783,7 +783,7 @@ async def _send_mirror_images(
             # Extraction cut this reference out of the text, so a failed upload
             # names the picture rather than leave a reply about a picture with no
             # picture.
-            notes.append(f"⚠ Couldn't upload: {_local_file_name(image.path) or 'image'}")
+            notes.append(f"Warning: Couldn't upload: {_local_file_name(image.path) or 'image'}")
 
 
 def _notice_unsigned_mirror_refusal(state: Any, slot: Any, session_key: str, link: Any) -> None:
@@ -977,8 +977,8 @@ async def _deliver_cross_surface_user_message(
 
 
 #: What a dashboard attachment reads as in the cross-surface echo.
-_ECHO_IMAGE_PREFIX = "🖼 "
-_ECHO_FILE_PREFIX = "📎 "
+_ECHO_IMAGE_PREFIX = "Image: "
+_ECHO_FILE_PREFIX = "File: "
 
 
 def _upload_display_name(name: str) -> str:
@@ -1043,7 +1043,7 @@ _MIRROR_ECHO_LIMIT = 500
 
 #: The dashboard -> Slack mirror's working placeholder, posted under the prompt
 #: echo and deleted once the task stream, the answer or the turn's end takes over.
-_MIRROR_THINKING = "💭 _Thinking…_"
+_MIRROR_THINKING = "_Thinking…_"
 
 
 async def _retire_mirror_thinking(slack_client: Any, channel: str | None, ts: str) -> str:

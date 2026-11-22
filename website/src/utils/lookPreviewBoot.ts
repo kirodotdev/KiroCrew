@@ -42,6 +42,8 @@ import { appPathname } from '../lib/basePath'
  *    terminal's, which the server would make the sole owner, displacing the
  *    parent's -- is an inert closed object that never dials.
  *
+ * Nor may it take the keyboard: its own `focus()` calls do nothing.
+ *
  * Imported FIRST by `main.tsx`: ES module evaluation follows import order, so
  * this runs before the extension root, the store, the API client or any hook
  * touches the platform. Outside the frame every function here does nothing.
@@ -179,6 +181,20 @@ export function installLookPreviewNetworkFence(win: Window = window): boolean {
   return true
 }
 
+/**
+ * Keyboard focus is the parent's too. The frame's chat composer focuses itself
+ * when the demo session opens, and focus inside a frame sends every key to it,
+ * so the step's controls and Tab trap would never see one. `inert` on the
+ * iframe stops the user's Tab, not the frame's own `focus()`, so that is a no-op.
+ */
+export function installLookPreviewFocusFence(win: Window = window): boolean {
+  if (!isLookPreviewFrame()) return false
+  const g = win as Globals
+  g.HTMLElement.prototype.focus = () => undefined
+  g.focus = () => undefined
+  return true
+}
+
 /** The one socket the frame may dial: the dashboard's own, `hooks/websocket/connection.ts`. */
 export const LOOK_PREVIEW_ALLOWED_SOCKET_PATH = '/api/ws'
 
@@ -229,5 +245,6 @@ export function scrollDemoTranscriptUnderDock(doc: Document = document, deadline
 
 installLookPreviewStorageFence()
 installLookPreviewNetworkFence()
+installLookPreviewFocusFence()
 followParentLiquidGlass()
 scrollDemoTranscriptUnderDock()

@@ -43,8 +43,12 @@ def test_install_subscribes_its_hooks_once(monkeypatch: pytest.MonkeyPatch) -> N
 
     surface.install(first)
     surface.install(second)
+    from kiro_crew.slack.code_channels import comments
+
     # Subscribed once; the later provider still replaces the earlier one.
-    assert len(starts) == 3 and len(ends) == 1
+    assert len(starts) == 3
+    # Turn end: the wrap-up's own hook, then the Plan-canvas comment read-back.
+    assert ends == [wrapup.on_turn_end, comments.on_turn_end]
     # The stop fence's turn mark and the wrap-up go first.
     assert [h for h, f in starts if f] == [wrapup.on_turn_start, surface.note_turn_start]
     assert surface.slack() == "second"

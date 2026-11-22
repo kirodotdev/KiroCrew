@@ -33,6 +33,7 @@ from kiro_crew.apps.manager_records import (
     _approved_grants_row,
     _is_sidecar_entry,
     _read_installed,
+    _recorded_app_names,
     _write_installed,
     app_dir,
     apps_dir,
@@ -138,18 +139,23 @@ def _app_display_name(app_name: str) -> str:
     return label if isinstance(label, str) and label.strip() else app_name
 
 
-def _screened_spec_path(path: Path) -> Path | None:
+def _screened_spec_path(path: Path, *, canonical_gate: bool = False) -> Path | None:
     """*path* as the screened canonical path to read, or None when the screen refuses.
 
     :func:`kiro_crew.hooks.validate_file_path` reads a link's own target before
     anything resolves it, so a link into a protected location or an untrusted share
-    is refused without being followed; the hardened reader then reads the canonical
-    path the screen returned.
+    is refused without being followed; the caller then reads the canonical path
+    the screen returned. *canonical_gate* answers inline off the event loop,
+    with no resolver-pool submission.
     """
     from kiro_crew import hooks
 
     try:
-        screened = hooks.validate_file_path(str(path))
+        # Passed only when set: a default call keeps the one-argument shape stand-ins take.
+        if canonical_gate:
+            screened = hooks.validate_file_path(str(path), canonical_gate=True)
+        else:
+            screened = hooks.validate_file_path(str(path))
     except (OSError, ValueError):
         return None
     return None if screened is None else Path(screened)
@@ -436,17 +442,19 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
 def list_apps() -> list[dict[str, Any]]:
     """Return metadata for all installed apps."""
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.browser_sdk import browser_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.kiro_operations import kiro_operations_grant_row  # noqa: PLC0415
 
     root = apps_dir()
-    if not root.is_dir():
+    names = _recorded_app_names(root)
+    if not names:
         return []
     orphaned_set = detect_orphaned_builtins()
     adoption_markers = _adoption_rows_context()
     result: list[dict[str, Any]] = []
-    for entry in sorted(root.iterdir()):
-        if _is_sidecar_entry(entry.name) or not entry.is_dir():
-            continue
+    for entry in (root / name for name in names):
         try:
             meta = _read_installed(entry.name)
         except InstalledRecordShapeError as exc:
@@ -502,6 +510,9 @@ def list_apps() -> list[dict[str, Any]]:
             **user_session_reach_grant_row(entry.name, manifest_data),
             **desktop_capabilities_grant_row(entry.name, manifest_data),
             **frame_sources_grant_row(entry.name, manifest_data),
+            **browser_sites_grant_row(entry.name, manifest_data),
+            **kiro_operations_grant_row(entry.name, manifest_data),
+            **browser_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -519,7 +530,10 @@ def list_apps() -> list[dict[str, Any]]:
 def get_app(name: str) -> dict[str, Any] | None:
     """Return full metadata for a single installed app, or None."""
     # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.browser_sdk import browser_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.browser_sites import browser_sites_grant_row  # noqa: PLC0415
     from kiro_crew.apps.frame_sources import frame_sources_grant_row  # noqa: PLC0415
+    from kiro_crew.apps.kiro_operations import kiro_operations_grant_row  # noqa: PLC0415
 
     meta = _read_installed(name)
     if not meta:
@@ -551,6 +565,9 @@ def get_app(name: str) -> dict[str, Any] | None:
         **user_session_reach_grant_row(name, manifest_data),
         **desktop_capabilities_grant_row(name, manifest_data),
         **frame_sources_grant_row(name, manifest_data),
+        **browser_sites_grant_row(name, manifest_data),
+        **kiro_operations_grant_row(name, manifest_data),
+        **browser_grant_row(name, manifest_data),
         "manifest": manifest_data,
     }
     adoption_markers = _adoption_rows_context()
@@ -674,11 +691,25 @@ def app_enabled_state(name: str) -> bool | None:
     healthy app's routes and modules on the next tick. That reader has 24 callers and
     ``get_app``/``list_apps`` 63, so it is not made tri-state here; the reconciler
     confirms absence through THIS function instead and defers on unknown.
+
+    A record that is itself a link is screened as :func:`_owner_json` screens it before
+    anything follows it, and a refused link reads as None. A regular record is read
+    unscreened, so the gate's fence over the whole apps folder (one entry there that
+    cannot be stat'd) cannot make every installed app unknown.
     """
     meta_path = app_dir(name) / INSTALLED_META_FILENAME
     try:
+        record = meta_path
+        if meta_path.is_symlink() or is_link_or_junction(meta_path):
+            screened = _screened_spec_path(meta_path, canonical_gate=True)
+            if screened is None:
+                logger.warning(
+                    "Metadata path %s is refused by the sensitive-path screen", meta_path
+                )
+                return None
+            record = screened
         try:
-            st = meta_path.stat()
+            st = record.stat()
         except FileNotFoundError:
             # A dangling link is a path that EXISTS and whose target cannot be
             # seen, which is not the same as nothing being there. Both predicates
@@ -699,7 +730,7 @@ def app_enabled_state(name: str) -> bool | None:
         if not stat.S_ISREG(st.st_mode):
             logger.warning("Metadata path %s is not a regular file", meta_path)
             return None
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        data = json.loads(record.read_text(encoding="utf-8"))
         # The owner's disable, kept outside the app's tree, outranks this file.
         return bool(InstalledApp.from_dict(data).enabled) and not owner_disabled(name)
     # No `json.JSONDecodeError` member: it subclasses ValueError, so pairing the two is

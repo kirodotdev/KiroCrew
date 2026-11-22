@@ -25,12 +25,13 @@ up, so it is examined for TWO markers only, each the artifact an ending
 published before the row's own terminal write landed leaves behind when that
 write was lost before the crash: a REFUSAL marker (``REFUSED``, a spawn refused
 before its row was ever claimed), settled ``failed``, and a QUEUED-STOP marker
-(``STOPPED``, a run stopped before it started), settled ``cancelled`` -- rather
+(``STOPPED``, a run stopped before it started or a row whose parent
+conversation ended), settled ``cancelled`` -- rather
 than started as if the ending had never happened. Any
 other ending the artifacts record for a ``queued`` row is NOT acted on: a row
 can come back to ``queued`` after an earlier attempt (a dependency wake of a
 parked ``retry_wait`` row, a lost-owner requeue), and that attempt's ending
-on disk is not this row's. Such a row, and one whose artifacts say nothing,
+on disk need not be this row's. Such a row, and one whose artifacts say nothing,
 is left exactly as it was.
 
 The one exception is a STOP of a ``retry_wait`` row's CURRENT attempt, settled
@@ -94,9 +95,10 @@ STARTED = "started"
 REFUSED = "refused"
 
 #: A probe verdict that is not a task state: the run was STOPPED before it
-#: started (``write_queued_stop_tombstone``, cause ``queued_stop``) and its row
-#: ends ``cancelled``. Like ``REFUSED`` it can only be this row's own marker, so
-#: the queued pass acts on it too.
+#: started (``write_queued_stop_tombstone``, cause ``queued_stop``), or its parent
+#: conversation ended (cause ``parent_end``), and its row ends ``cancelled``. Like
+#: ``REFUSED`` it can only be this row's own marker, so the queued pass acts on it
+#: too: a parent end ends every attempt of the row, since its conversation is gone.
 STOPPED = "stopped"
 
 #: The two markers the queued pass acts on, each with the state it settles the row in.
@@ -120,8 +122,8 @@ class ReconcileReport:
     awaiting_adapter: int = 0
     #: rows ended ``failed`` because their lost-owner recoveries were spent.
     lost_owner_limit: int = 0
-    #: ``queued`` rows whose artifact-recorded ending the store refused to
-    #: write, held out of dispatch until it lands (``TaskStore.hold_until_settled``).
+    #: rows whose artifact-recorded ending the store refused to write, held out
+    #: of dispatch until it lands (``TaskStore.hold_until_settled``).
     held: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -160,13 +162,15 @@ def reconcile_on_boot(
     report = ReconcileReport()
     # The queued pass runs FIRST: a row the active pass requeues from
     # ``admitted`` was examined by it, and must not be read a second time here.
-    if not _queued_pass(store, probe, report):
-        # A read the store refused leaves rows unexamined that may owe the
-        # terminal write ``hold_until_settled`` exists for, and a hold needs the
-        # row's id. So the whole dispatch is fenced: every dispatch read re-runs
+    unread: dict[str, TaskRecord] = {}
+    if not _queued_pass(store, probe, report, unread):
+        # A read the store refused leaves rows unexamined (or a parked row's
+        # attempt unknown) that may owe the terminal write ``hold_until_settled``
+        # exists for, and a hold needs the row's id and attempt. So the whole
+        # dispatch is fenced: every dispatch read re-runs
         # this pass first and publishes nothing until it has run to completion
         # (rows settled by the pages that did land are terminal and not re-read).
-        store.fence_dispatch(functools.partial(_queued_pass, store, probe, report))
+        store.fence_dispatch(functools.partial(_fenced_pass, store, probe, report, unread))
     for rec in store.active_rows(exclude_owner=store.incarnation):
         report.examined += 1
         try:
@@ -207,15 +211,19 @@ def _probe_verdict(
         return None
 
 
-def _queued_pass(store: TaskStore, probe: ArtifactProbe, report: ReconcileReport) -> bool:
+def _queued_pass(
+    store: TaskStore, probe: ArtifactProbe, report: ReconcileReport, unread: dict[str, TaskRecord]
+) -> bool:
     """Settle every ``queued`` row its artifacts say ended; False when a read failed.
 
     Walks the backlog one dispatch-window page at a time, keyed on the last row
     of the previous page, so a boot over a large backlog never holds more rows
     than the dispatcher would; a page shorter than the window is the last. A
-    page the store refuses ends the pass with the error on the report.
+    page the store refuses ends the pass with the error on the report; a row
+    whose own read it refuses makes the pass incomplete without ending it.
     """
     after: tuple[float, str] | None = None
+    complete = True
     while True:
         try:
             page = store.queued_rows(after=after)
@@ -224,32 +232,51 @@ def _queued_pass(store: TaskStore, probe: ArtifactProbe, report: ReconcileReport
             return False
         for rec in page:
             report.queued_examined += 1
-            _settle_queued(store, rec, probe, report)
+            complete = _settle_queued(store, rec, probe, report, unread) and complete
         if len(page) < store.window:
-            return True
+            return complete
         after = (page[-1].created_at, page[-1].id)
 
 
+def _fenced_pass(
+    store: TaskStore, probe: ArtifactProbe, report: ReconcileReport, unread: dict[str, TaskRecord]
+) -> bool:
+    """The fenced dispatch's re-run: each *unread* row first, from the read that found it.
+
+    A dependency wake can make that row ``queued`` while dispatch is fenced, and
+    the pass does not cancel from ``queued``; the row's own cancel still does.
+    """
+    for rec in list(unread.values()):
+        _cancel_parked_stop(store, rec, probe, report, unread)
+    return _queued_pass(store, probe, report, unread) and not unread
+
+
 def _settle_queued(
-    store: TaskStore, rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport
-) -> None:
+    store: TaskStore,
+    rec: TaskRecord,
+    probe: ArtifactProbe,
+    report: ReconcileReport,
+    unread: dict[str, TaskRecord],
+) -> bool:
     """Settle a ``queued`` row when its artifacts carry a refusal or queued-stop marker.
+
+    False when a READ the store refused left the row's ending unknown (see
+    :func:`_cancel_parked_stop`); a refused write is held, so it answers True.
 
     Only ``REFUSED`` and ``STOPPED`` are acted on. A ``queued`` row can be one an earlier attempt
     already ran -- a ``retry_wait`` row a dependency wake made claimable again,
     an ``admitted`` row a lost-owner requeue put back -- and that attempt's
-    ``done``/``failed``/``cancelled`` on disk is not this row's ending. A
+    ``done``/``failed``/``cancelled`` on disk need not be this row's ending. A
     refusal marker is written only for a spawn refused before its row was
-    claimed, and a queued-stop marker only for a run stopped before it started,
-    so either can only be this row's own.
+    claimed, and a queued-stop marker only for a run stopped before it started
+    or a row whose parent conversation ended, so either can only be this row's own.
     """
     verdict = _probe_verdict(rec, probe, report)
     if verdict == CANCELLED and rec.state == RETRY_WAIT:
-        _cancel_parked_stop(store, rec, probe, report)
-        return
+        return _cancel_parked_stop(store, rec, probe, report, unread)
     ending = _QUEUED_MARKER_STATES.get(verdict or "")
     if ending is None:
-        return
+        return True
     try:
         _settle_terminal(store, rec, verdict, report)
     except TaskStoreUnavailable as exc:
@@ -262,30 +289,47 @@ def _settle_queued(
         # row can be published.
         store.hold_until_settled(rec.id, ending)
         report.held += 1
+    return True
 
 
 def _cancel_parked_stop(
-    store: TaskStore, rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport
-) -> None:
+    store: TaskStore,
+    rec: TaskRecord,
+    probe: ArtifactProbe,
+    report: ReconcileReport,
+    unread: dict[str, TaskRecord],
+) -> bool:
     """Cancel a ``retry_wait`` row when its CURRENT attempt recorded a stop.
 
     The attempt is the generation of the row's latest ``claimed`` event; a row
-    with none is left alone. The cancel is fenced on the state and generation
-    read, so a row claimed since is not touched. A store that refuses a read or
-    the write leaves the row as it was, named in ``report.errors``.
+    with none is left alone. The cancel is fenced on the generation read and on
+    ``retry_wait`` / ``queued``, so a row claimed since is not touched. Both
+    failures are named in ``report.errors``. A refused READ leaves the attempt
+    unknown, so no hold can say whether the row owes its ending: the row goes
+    into *unread* for the fence's re-run (:func:`_fenced_pass`) and it answers
+    False. A refused cancel is held with the same condition as its guard, so
+    the retry still cannot cancel a row claimed since.
     """
     try:
         claim = store.latest_events([rec.id], ["claimed"]).get((rec.id, "claimed"))
-        attempt = claim.data.get("generation") if claim is not None else None
-        if type(attempt) is not int:
-            return
-        if _probe_verdict(rec, probe, report, attempt) != CANCELLED:
-            return
+    except TaskStoreUnavailable as exc:
+        report.errors.append(f"{rec.id}: {exc}")
+        unread[rec.id] = rec
+        return False
+    unread.pop(rec.id, None)
+    attempt = claim.data.get("generation") if claim is not None else None
+    if type(attempt) is not int:
+        return True
+    if _probe_verdict(rec, probe, report, attempt) != CANCELLED:
+        return True
+    # A dependency wake re-queues a parked row under the same generation.
+    only_from = frozenset({RETRY_WAIT, QUEUED})
+    try:
         if (
             store.cancel(
                 rec.id,
                 reason="reconciled: tombstone",
-                only_from=frozenset({RETRY_WAIT}),
+                only_from=only_from,
                 generation=rec.generation,
             )
             is not None
@@ -293,6 +337,9 @@ def _cancel_parked_stop(
             report.settled_cancelled += 1
     except TaskStoreUnavailable as exc:
         report.errors.append(f"{rec.id}: {exc}")
+        store.hold_until_settled(rec.id, CANCELLED, guard=(only_from, rec.generation))
+        report.held += 1
+    return True
 
 
 def _settle_terminal(

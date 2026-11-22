@@ -64,9 +64,13 @@ from kiro_crew.dashboard.session_directive_apply_outcome import (
     _REVISION_DIRECTIVES,
     _STOP_DIRECTIVES,
     _USER_SURFACE_DIRECTIVES,
+    ARM_REFUSAL_NOTICE_PREFIX,
     REVISION_REFUSAL_NOTICE_PREFIX,
+    STOP_OUTCOME_NOTICE_PREFIX,
     STOP_REFUSAL_NOTICE_PREFIX,
+    USER_ORIGIN_REFUSAL_NOTICE_PREFIX,
     DirectiveOutcome,
+    _deliver_refusal_to_crewmate,
     _DirectiveDenied,
     _has_user_surface,
     _surface_arm_refusal,
@@ -84,6 +88,14 @@ from kiro_crew.directive_origin import user_origin_gate_admits
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")
+
+# The notice wording for a loop directive that did not land, by its class: an arm, a
+# revision of the loop in place, or a stop. Every other directive has its own surface.
+_LOOP_FAILURE_NOTICE_PREFIXES = {
+    **{kind: ARM_REFUSAL_NOTICE_PREFIX for kind in _ARMING_DIRECTIVES},
+    **{kind: REVISION_REFUSAL_NOTICE_PREFIX for kind in _REVISION_DIRECTIVES},
+    **{kind: STOP_REFUSAL_NOTICE_PREFIX for kind in _STOP_DIRECTIVES},
+}
 
 
 def _audit(session_key: str, kind: str, outcome: str) -> None:
@@ -281,8 +293,21 @@ async def apply_session_directive_outcome(
         kind, session_key, producer_is_user_facing=producer_is_user_facing
     ):
         # A cron turn can run on a user's slot and a sub-agent can share its
-        # parent's slot, so both inherit a surface they never opened.
-        return DirectiveOutcome(refuse_user_origin_directive(session_key, kind))
+        # parent's slot, so both inherit a surface they never opened. The tool
+        # already answered "requested", so the refusal gets a row of its own,
+        # worded for the person like the arm refusal's.
+        reason = refuse_user_origin_directive(session_key, kind)
+        origin = _TURN_ORIGINS.get(producer_turn_actor, "something other than the user")
+        _surface_arm_refusal(
+            state,
+            slot,
+            kind,
+            f"this turn was started by {origin}, so its {kind} call was refused and "
+            "nothing changed. To do it, send the request yourself in this chat.",
+            prefix=USER_ORIGIN_REFUSAL_NOTICE_PREFIX,
+            session_key=session_key,
+        )
+        return DirectiveOutcome(reason)
     # SELF-ARM PROVENANCE: which turns count as "the session's own" for the
     # crew/member rule. Two producers, each named explicitly: a turn a HUMAN
     # started in this session (the same authenticated-human flag the
@@ -302,6 +327,24 @@ async def apply_session_directive_outcome(
     # ``reset_conversation`` admits a wake only through
     # ``_refuse_unvouched_wake_reset``.
     self_arm_ok = bool(producer_is_user_facing or producer_is_self_wake)
+
+    def surface_loop_failure(reason: str) -> None:
+        # A loop directive that did not land, refused or failed alike: the tool has
+        # already answered "requested", so this notice is the only report of it.
+        prefix = _LOOP_FAILURE_NOTICE_PREFIXES.get(kind)
+        if prefix is None:
+            return
+        _surface_arm_refusal(
+            state,
+            slot,
+            kind,
+            reason,
+            prefix=prefix,
+            session_key=session_key,
+            producer_is_self_wake=producer_is_self_wake,
+            producer_wake_loop_id=producer_wake_loop_id,
+        )
+
     try:
         if producer_is_self_wake and kind in _ARMING_DIRECTIVES:
             _refuse_stale_wake_arm(session_key, producer_wake_loop_id)
@@ -399,43 +442,14 @@ async def apply_session_directive_outcome(
             kind,
             reason,
         )
-        if kind in _ARMING_DIRECTIVES:
-            _surface_arm_refusal(
-                state,
-                slot,
-                kind,
-                reason,
-                session_key=session_key,
-                producer_is_self_wake=producer_is_self_wake,
-                producer_wake_loop_id=producer_wake_loop_id,
-            )
-        elif kind in _REVISION_DIRECTIVES:
-            _surface_arm_refusal(
-                state,
-                slot,
-                kind,
-                reason,
-                prefix=REVISION_REFUSAL_NOTICE_PREFIX,
-                session_key=session_key,
-                producer_is_self_wake=producer_is_self_wake,
-                producer_wake_loop_id=producer_wake_loop_id,
-            )
-        elif kind in _STOP_DIRECTIVES:
-            _surface_arm_refusal(
-                state,
-                slot,
-                kind,
-                reason,
-                prefix=STOP_REFUSAL_NOTICE_PREFIX,
-                session_key=session_key,
-                producer_is_self_wake=producer_is_self_wake,
-                producer_wake_loop_id=producer_wake_loop_id,
-            )
+        surface_loop_failure(reason)
         return DirectiveOutcome(reason)
     except Exception as exc:  # never propagate into the turn loop
         logger.warning("apply_session_directive(%s) failed", kind, exc_info=True)
         _audit(session_key, kind, "error")
-        return DirectiveOutcome(f"Error applying {kind}: {exc}")
+        error_text = f"Error applying {kind}: {exc}"
+        surface_loop_failure(error_text)
+        return DirectiveOutcome(error_text)
     # Some appliers RETURN a readable failure instead of raising (an invalid
     # project dir, an absent loop, no attached client), so a blanket "success"
     # would falsely mark those in the SEL chain. Derive the outcome from the
@@ -444,6 +458,18 @@ async def apply_session_directive_outcome(
     outcome = _outcome(result)
     failed = outcome.text.startswith("Error:")
     _audit(session_key, kind, "error" if failed else "success")
+    if failed:
+        surface_loop_failure(outcome.text)
+    elif kind in _STOP_DIRECTIVES:
+        # The stop tool answered "requested" before this ran, so the applied
+        # outcome, stopped or nothing to stop, is news to the agent too.
+        _deliver_refusal_to_crewmate(
+            slot,
+            session_key,
+            f"{STOP_OUTCOME_NOTICE_PREFIX}{outcome.text}",
+            producer_is_self_wake=producer_is_self_wake,
+            producer_wake_loop_id=producer_wake_loop_id,
+        )
     if not failed and kind in ("monitor_start", "monitor_watch"):
         # The "PR watch" milestone, once the loop is really armed: the MCP tool
         # already answered "requested" before this consumer could refuse it.
@@ -491,13 +517,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.session_directive_apply_outcome import (  # noqa: F401
         ARM_REFUSAL_NOTICE_KIND,
-        ARM_REFUSAL_NOTICE_PREFIX,
         ARM_SUCCESS_NOTICE_PREFIX,
         QUIET_END_OUTCOME_PREFIX,
         REFUSAL_SELF_WAKE_META_KEY,
         REFUSAL_WAKE_LOOP_ID_META_KEY,
         TERMINAL_DIRECTIVES,
-        _deliver_refusal_to_crewmate,
         _describe_interval,
         _describe_next_wake,
         _surface_arm_success,

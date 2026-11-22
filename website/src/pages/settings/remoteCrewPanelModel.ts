@@ -46,7 +46,11 @@ export function launchGuardKey(body: { provider_id?: string }): string {
 const TERMINAL: LaunchJob['status'][] = ['done', 'failed', 'cancelled']
 export const isTerminal = (j: LaunchJob) => TERMINAL.includes(j.status)
 
-/** The connect (register) step ran — the crew exists under Your crews, so a
+/** A cancelled launch whose instance is still being deleted: the gateway keeps the
+ *  rollback step active until AWS confirms the delete (or it fails). */
+export const isRemoving = (j: LaunchJob) => j.status === 'cancelled' && j.steps.some(st => st.state === 'active')
+
+/** The connect (register) step ran — the crew exists under My Crews, so a
  *  sign-in can be re-run against it rather than provisioning anything. */
 export const isRegistered = (j: LaunchJob) => j.steps.some(st => st.key === 'connect' && st.state === 'done')
 
@@ -54,13 +58,52 @@ export const isRegistered = (j: LaunchJob) => j.steps.some(st => st.key === 'con
  *  crew is registered (Stop / Delete work) but a chat on it fails with "not
  *  logged in", so it must not read as ready to connect. */
 export const needsSignin = (j: LaunchJob) =>
-  isTerminal(j) && !!j.instance_id && j.signin_detected !== true && isRegistered(j)
+  isTerminal(j) && !!j.instance_id && j.signin_detected !== true && isRegistered(j) && !signinSkipped(j)
+
+/** The owner chose to launch without the Kiro sign-in. A crew on another agent
+ *  harness works without one, so this is not "Needs sign-in": the crew can sign
+ *  in later from its own Settings. */
+export const signinSkipped = (j: LaunchJob) => j.signin_skipped === true && j.signin_detected !== true
+
+/** A finished launch's card closes by itself this long after its last write. */
+export const LAUNCH_CARD_SHOWN_MS = 120_000
+
+/** Ids of the finished launch cards closed in this browser, so a reload does not
+ *  bring one back. Newest last; only the last 50 are kept. */
+export const LAUNCH_DISMISSED_KEY = 'mc-cloud-launch-dismissed'
+const LAUNCH_DISMISSED_MAX = 50
+
+/** A card the reader may close: the launch finished, its crew is registered with no
+ *  error, and its sign-in is confirmed with no code left, so it needs nothing more.
+ *  A failed, cancelled or running launch, or one still waiting on sign-in, keeps it. */
+export const launchCardDismissable = (j: LaunchJob) =>
+  j.status === 'done' && isRegistered(j) && !j.error &&
+  j.signin_detected === true && !j.signin && !needsSignin(j)
+
+export function readDismissedLaunches(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(LAUNCH_DISMISSED_KEY) ?? '[]')
+    return Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === 'string').slice(-LAUNCH_DISMISSED_MAX)
+      : []
+  } catch {
+    return []
+  }
+}
+
+export function writeDismissedLaunches(ids: string[]): void {
+  try {
+    localStorage.setItem(LAUNCH_DISMISSED_KEY, JSON.stringify(ids.slice(-LAUNCH_DISMISSED_MAX)))
+  } catch {
+    // Storage full or off: the card still closes for this page.
+  }
+}
 
 /** Whether the Connect step's icon should read as waiting rather than done.
  *  What it answers is "is this crew signed in", NOT "is this job over" — a
  *  registered crew waiting on a code is unsigned for the whole approval, which
  *  is most of the time a user spends looking at the card. */
-export const connectWaiting = (j: LaunchJob) => isRegistered(j) && j.signin_detected !== true
+export const connectWaiting = (j: LaunchJob) => isRegistered(j) && j.signin_detected !== true && !signinSkipped(j)
 
 /** The launch chose a company (IAM Identity Center) identity, so its code is
  *  approved through the organization's portal and not the Builder ID one.
@@ -105,21 +148,23 @@ export interface SizeTier {
   vcpu: number
   ramGb: number
   diskGb: number
+  /** sizes.py's `approx_usd_per_hr`: the PRICE_REGION on-demand rate, display only. */
+  approxUsdPerHr: number
   subagents: number
   recommended?: boolean
 }
 export const SIZE_TIERS: SizeTier[] = [
-  { key: 'light', family: 'light', arch: 'arm64', instanceType: 't4g.xlarge', vcpu: 4, ramGb: 16, diskGb: 40, subagents: 3 },
-  { key: 'balanced', family: 'balanced', arch: 'arm64', instanceType: 'm7g.2xlarge', vcpu: 8, ramGb: 32, diskGb: 60, subagents: 6, recommended: true },
-  { key: 'power', family: 'power', arch: 'arm64', instanceType: 'm7g.4xlarge', vcpu: 16, ramGb: 64, diskGb: 80, subagents: 12 },
+  { key: 'light', family: 'light', arch: 'arm64', instanceType: 't4g.xlarge', vcpu: 4, ramGb: 16, diskGb: 40, approxUsdPerHr: 0.134, subagents: 3 },
+  { key: 'balanced', family: 'balanced', arch: 'arm64', instanceType: 'm7g.2xlarge', vcpu: 8, ramGb: 32, diskGb: 60, approxUsdPerHr: 0.326, subagents: 6, recommended: true },
+  { key: 'power', family: 'power', arch: 'arm64', instanceType: 'm7g.4xlarge', vcpu: 16, ramGb: 64, diskGb: 80, approxUsdPerHr: 0.653, subagents: 12 },
 ]
 // The x86_64 lane, shown only when the disclosure is expanded. It exists because
 // some images and toolchains are still amd64-only; the shapes mirror the arm64
 // ladder so the sub-agent counts match. Keys match cloud/sizes.py's x86 lane.
 export const X86_TIERS: SizeTier[] = [
-  { key: 'light-x86', family: 'light', arch: 'x86_64', instanceType: 't3.xlarge', vcpu: 4, ramGb: 16, diskGb: 40, subagents: 3 },
-  { key: 'balanced-x86', family: 'balanced', arch: 'x86_64', instanceType: 'm7i.2xlarge', vcpu: 8, ramGb: 32, diskGb: 60, subagents: 6 },
-  { key: 'power-x86', family: 'power', arch: 'x86_64', instanceType: 'm7i.4xlarge', vcpu: 16, ramGb: 64, diskGb: 80, subagents: 12 },
+  { key: 'light-x86', family: 'light', arch: 'x86_64', instanceType: 't3.xlarge', vcpu: 4, ramGb: 16, diskGb: 40, approxUsdPerHr: 0.166, subagents: 3 },
+  { key: 'balanced-x86', family: 'balanced', arch: 'x86_64', instanceType: 'm7i.2xlarge', vcpu: 8, ramGb: 32, diskGb: 60, approxUsdPerHr: 0.403, subagents: 6 },
+  { key: 'power-x86', family: 'power', arch: 'x86_64', instanceType: 'm7i.4xlarge', vcpu: 16, ramGb: 64, diskGb: 80, approxUsdPerHr: 0.806, subagents: 12 },
 ]
 
 // Full literal keys per tier so the i18n key-reference gate can verify them
@@ -138,6 +183,13 @@ export const tierWhy = (key: SizeTier['family']) =>
       : i18nT('pages.settings.remoteCrewPanel.tier_power_why')
 
 export const PRICING_CALCULATOR_URL = 'https://calculator.aws'
+/** The Region `approxUsdPerHr` was read for: sizes.py's PRICE_REGION. */
+export const PRICE_REGION = 'us-east-1'
+/** Hours in sizes.py's `monthly_estimate` month: 24 a day for 30 days. */
+export const HOURS_PER_MONTH = 24 * 30
+/** The CLI flag a size card names. It is typed into a terminal, so it is a code
+ *  constant rendered verbatim, never a catalog value a translation could change. */
+export const SIZE_FLAG = '--size'
 // NOTE: the session-manager-plugin install command is NOT hardcoded here. It has to
 // match the platform of the machine running the gateway — which may be a Linux host
 // while this dashboard is open on a Mac — so the preflight response carries it.

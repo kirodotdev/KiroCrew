@@ -147,15 +147,11 @@ def receipt_url(
     return f"{endpoint.rstrip('/')}/b/{beacon.BEACON_SCHEMA}/install/" f"{app_slug}?{query}"
 
 
-def should_send(*, enabled: bool, official: bool, acked: bool) -> beacon.Verdict:
+def should_send(*, enabled: bool, official: bool) -> beacon.Verdict:
     """Apply the provenance gate before the beacon's shared consent ladder."""
     if not official:
         return beacon.Verdict(False, "not an official catalog entry", "unofficial")
-    return beacon.telemetry_permitted(
-        enabled=enabled,
-        acked=acked,
-        audit_tool="install_receipt_send",
-    )
+    return beacon.telemetry_permitted(enabled=enabled, audit_tool="install_receipt_send")
 
 
 def send(
@@ -165,7 +161,6 @@ def send(
     app_version: str,
     enabled: bool,
     official: bool,
-    acked: bool,
     kind: str,
     config_dir: Path | None = None,
 ) -> bool:
@@ -178,7 +173,7 @@ def send(
     if not endpoint:
         return False
     try:
-        if not should_send(enabled=enabled, official=official, acked=acked).ok:
+        if not should_send(enabled=enabled, official=official).ok:
             return False
         secret = receipt_secret(config_dir=config_dir)
         token = receipt_token(secret, app_slug)
@@ -217,12 +212,11 @@ def _send_configured(
     config_dir: Path,
     endpoint: str,
     enabled: bool,
-    acked: bool,
 ) -> None:
     """Send inside the worker thread, from values the caller already resolved.
 
     Every input that depends on the process environment -- ``config_dir`` and
-    the three config fields ``send`` reads -- is resolved by ``dispatch()`` on
+    the two config fields ``send`` reads -- is resolved by ``dispatch()`` on
     the dispatching thread and passed in. ``beacon.config_dir()`` and
     ``KiroCrewConfig.load()`` both honor ``KIROCREW_HOME`` at the moment they
     are called; resolving either on this worker thread would race a test's
@@ -237,7 +231,6 @@ def _send_configured(
             app_version=__version__,
             enabled=enabled,
             official=official,
-            acked=acked,
             kind=kind,
             config_dir=config_dir,
         )
@@ -322,7 +315,6 @@ def dispatch(
                 "config_dir": config_dir,
                 "endpoint": config.telemetry.beacon_endpoint,
                 "enabled": config.telemetry.beacon_enabled,
-                "acked": config.dashboard.privacy_acked,
             },
             name="kirocrew-install-receipt",
             daemon=True,

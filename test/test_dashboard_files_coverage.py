@@ -1696,6 +1696,7 @@ class TestDashboardConfigPut:
             "merge_queued_messages",
             "tail_fork_enabled",
             "folder_suggestions_enabled",
+            "folder_suggestions_auto_apply",
             "project_tags_enabled",
             "topic_tags_enabled",
             "link_previews",
@@ -1705,6 +1706,7 @@ class TestDashboardConfigPut:
             "side_panel_always_open",
             "side_panel_pin_summary",
             "new_chat_crew_mode",
+            "auto_open_conductor_board",
         ]
         async with TestClient(TestServer(config_client_app)) as client:
             for field in bool_fields:
@@ -1716,6 +1718,7 @@ class TestDashboardConfigPut:
     async def test_coded_boolean_errors_carry_a_machine_code(self, config_client_app):
         coded = {
             "folder_suggestions_enabled": "invalid_folder_suggestions_enabled",
+            "folder_suggestions_auto_apply": "invalid_folder_suggestions_auto_apply",
             "project_tags_enabled": "invalid_project_tags_enabled",
             "topic_tags_enabled": "invalid_topic_tags_enabled",
             "link_previews": "invalid_link_previews",
@@ -1723,6 +1726,7 @@ class TestDashboardConfigPut:
             "side_panel_always_open": "invalid_side_panel_always_open",
             "side_panel_pin_summary": "invalid_side_panel_pin_summary",
             "new_chat_crew_mode": "invalid_new_chat_crew_mode",
+            "auto_open_conductor_board": "invalid_auto_open_conductor_board",
         }
         async with TestClient(TestServer(config_client_app)) as client:
             for field, code in coded.items():
@@ -1804,11 +1808,13 @@ class TestDashboardConfigPut:
             "tail_fork_enabled": True,
             "link_previews": True,
             "folder_suggestions_enabled": True,
+            "folder_suggestions_auto_apply": True,
             "project_tags_enabled": False,
             "topic_tags_enabled": True,
             "side_panel_always_open": True,
             "side_panel_pin_summary": True,
             "new_chat_crew_mode": True,
+            "auto_open_conductor_board": False,
         }
         async with TestClient(TestServer(config_client_app)) as client:
             resp = await client.put("/api/dashboard/config", json=payload)

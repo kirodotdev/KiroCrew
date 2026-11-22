@@ -1,5 +1,6 @@
 import type { OfflineCause } from '../store/dashboardSlice'
 import { i18nT } from '../i18n/t'
+import { isLoopbackHost } from '../lib/loopbackHost'
 
 /** True when this page is a remote Crew opened in the desktop app's own relay
  *  window. That window says when it stops waiting for the Crew, so while it
@@ -28,6 +29,32 @@ export function isRelayRetrying(cause: OfflineCause | null, relayCrewWindow: boo
   return relayCrewWindow && cause !== 'refused' && cause !== 'session_ended'
 }
 
+/** Which calm view covers the content area while the connection is down, or
+ *  null when none does. One gate for every panel: under the cover the panels'
+ *  own fetch errors (all caused by the same lost connection) are hidden and
+ *  inert, and while connected they show as they always did.
+ *  - `relay`: a relay Crew window still retrying (`isRelayRetrying`).
+ *  - `host`: the owner's own dashboard on this machine (a loopback origin) with
+ *    the gateway gone. A relay reason, a relay Crew pane and any other origin
+ *    (a tailnet, a Kiro Mobile WebView) keep their current surfaces.
+ *  Never before the first socket has failed, and never while sign-in is the
+ *  cause: the session-expired banner names the fix. */
+export type OfflineCover = 'relay' | 'host' | null
+export function offlineCover(s: {
+  connected: boolean
+  connecting: boolean
+  authRequired: boolean
+  cause: OfflineCause | null
+  relayCrewWindow: boolean
+  relayCrewPane: boolean
+  hostname: string
+}): OfflineCover {
+  if (s.connected || s.connecting || s.authRequired) return null
+  if (s.relayCrewWindow) return isRelayRetrying(s.cause, true) ? 'relay' : null
+  if (s.relayCrewPane || s.cause || !isLoopbackHost(s.hostname)) return null
+  return 'host'
+}
+
 /** The offline wording: the Kiro relay's reason when it gave one (a Crew opened
  *  through Kiro Mobile or the desktop app), otherwise the generic reconnecting.
  *  In a relay Crew window the generic case is the same word the desktop's Crew
@@ -35,6 +62,7 @@ export function isRelayRetrying(cause: OfflineCause | null, relayCrewWindow: boo
 export function offlineReason(cause: OfflineCause | null, relayCrewWindow: boolean = isRelayCrewWindow()): string {
   if (cause === 'session_ended') return i18nT('app.relay_session_ended')
   if (cause === 'refused') return i18nT('app.relay_access_refused')
+  if (cause === 'remote_off') return i18nT('app.relay_remote_control_off')
   if (relayCrewWindow) return i18nT('app.relay_crew_reconnecting')
   return i18nT('app.gateway_offline_reconnecting')
 }

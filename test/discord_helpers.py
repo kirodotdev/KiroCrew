@@ -273,6 +273,8 @@ class _Ev:
 class FakeProvider:
     supports_steer, cwd = True, os.getcwd()
     work_scratch_dir = None
+    # ``LLMProvider``'s default: no spawn tier to compare.
+    sandbox_mode = None
 
     def __init__(self, reply: str = "Answer") -> None:
         self._reply = reply

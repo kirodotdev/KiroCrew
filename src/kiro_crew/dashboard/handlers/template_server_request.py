@@ -598,6 +598,10 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
     if "entry" in body:
         entry = body["entry"]
         if masks_settings(entry):
+            if not isinstance(body["server"], str):
+                # The same answer ``add_addition`` gives a non-string name on the
+                # unmasked path; the config lookup below needs a string.
+                return _deny(400, "addition_refused", "server_invalid")
             # The card showed its env and header values masked; the values
             # recorded are this gateway's own, read now, never the body's.
             entry = await asyncio.to_thread(gateway_entry_behind, body["server"], entry)

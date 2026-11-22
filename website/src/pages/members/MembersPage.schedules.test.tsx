@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
@@ -180,6 +181,7 @@ async function openCrewmate(name = 'oncall', alsoRoster: string[] = []) {
     <NavigationLeaveGuardProvider>
       <MembersPage />
       <LeaveProbe />
+      <MenuProfileProbe />
     </NavigationLeaveGuardProvider>,
   )
   fireEvent.click(await screen.findByText(name))
@@ -241,6 +243,17 @@ function LeaveProbe() {
     </button>
   )
 }
+/** Stands in for the sidebar bot row menu's Profile on an address that differs from
+ *  the one on screen: asks the page's guards, then pushes the carrier marked
+ *  `leaveGranted` (mateRowMenu.tsx). */
+function MenuProfileProbe() {
+  const mayLeave = useMayLeaveForNavigation()
+  const [, setSearchParams] = useSearchParams()
+  const open = () => {
+    if (mayLeave()) setSearchParams({ member: 'oncall', via: 'menu' }, { state: { openMateSessions: true, tab: 'profile', leaveGranted: true } })
+  }
+  return <button type="button" data-testid="menu-profile-probe" aria-label="Menu profile probe" onClick={open} />
+}
 /** Does the page hold the document open right now? The `beforeunload` listener and the
  *  published navigation stake are armed off ONE flag on adjacent lines, and this is the
  *  half a test can see: a cancelled unload event means the flag is up. */
@@ -262,9 +275,9 @@ beforeEach(() => {
 })
 
 describe('MembersPage Profile card Schedules tab', () => {
-  it('the side panel carries no Schedules chip and no count badge — the strip is Dashboard alone', async () => {
+  it('the side panel carries no Schedules chip and no count badge — the strip is Dashboard and Sessions', async () => {
     await openCrewmate()
-    await waitFor(() => expect(strip()).toEqual(['Dashboard']))
+    await waitFor(() => expect(strip()).toEqual(['Dashboard', 'Sessions']))
     expect(screen.queryByTestId(`side-panel-leading-tab-${CREW_SCHEDULES_TAB_ID}`)).toBeNull()
     expect(screen.queryByTestId('member-schedules-count')).toBeNull()
     // Nor is the editor's pane mounted anywhere before the card asks for it.
@@ -543,7 +556,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     await openCrewmate()
     fireEvent.click(screen.getByRole('button', { name: 'Open quiet sessions' }))
     const card = await screen.findByTestId('crew-profile-panel')
-    expect(screen.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(screen.getByTestId('crew-profile-panel')).getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(within(card).getByRole('tab', { name: 'Schedules' }))
     await screen.findByTestId('crew-schedule-list')
     await openCreateForm()
@@ -668,7 +681,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open quiet sessions' }))
     await answer('Discard')
     await waitFor(() => expect(screen.queryByDisplayValue('Check the board')).toBeNull())
-    expect(screen.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(screen.getByTestId('crew-profile-panel')).getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('asks before a driving-session row leaves for the chat page over a draft', async () => {
@@ -714,6 +727,19 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
       await typeDraft()
       expect(askToLeave()).toBe('false')
       expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/lose the schedule/i))
+    } finally {
+      confirmSpy.mockRestore()
+    }
+  })
+
+  it('opens Profile from the sidebar bot row menu with one question, not two, when the menu asked', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    try {
+      await openDraft()
+      fireEvent.click(screen.getByTestId('menu-profile-probe'))
+      expect(confirmSpy).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'profile'))
+      expect(screen.queryByRole('dialog')).toBeNull()
     } finally {
       confirmSpy.mockRestore()
     }
@@ -1002,7 +1028,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
       () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' })),
       // The pushed page covers the rail, but the tab exit must also guard a
       // programmatic selection rather than unmounting the Goals body.
-      () => fireEvent.click(screen.getByRole('tab', { name: 'Sessions', hidden: true })),
+      () => fireEvent.click(within(screen.getByTestId('crew-profile-panel')).getByRole('tab', { name: 'Sessions', hidden: true })),
       () => fireEvent.click(screen.getByTestId('member-back')),
       () => fireEvent.click(screen.getByRole('button', { name: 'Open quiet sessions' })),
     ]
@@ -1077,7 +1103,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     expect(holdsDocument()).toBe(true)
     fireEvent.click(screen.getByTestId('crew-profile-close'))
     fireEvent.click(screen.getByTestId('crew-profile-back'))
-    fireEvent.click(screen.getByRole('tab', { name: 'Sessions', hidden: true }))
+    fireEvent.click(within(screen.getByTestId('crew-profile-panel')).getByRole('tab', { name: 'Sessions', hidden: true }))
     expect(askToLeave()).toBe('false')
     expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -1094,7 +1120,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
     expect(holdsDocument()).toBe(true)
     fireEvent.click(screen.getByTestId('crew-profile-close'))
-    fireEvent.click(screen.getByRole('tab', { name: 'Sessions', hidden: true }))
+    fireEvent.click(within(screen.getByTestId('crew-profile-panel')).getByRole('tab', { name: 'Sessions', hidden: true }))
     expect(askToLeave()).toBe('false')
     expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
     // The one dialog on screen is the modal itself; no discard question is asked.

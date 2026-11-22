@@ -140,6 +140,28 @@ async def test_the_monitor_tick_reaches_the_controller() -> None:
     assert wired.controller.tick.await_args.args == (loop,)
 
 
+@pytest.mark.asyncio
+async def test_work_ledger_patrol_reads_session_owned_work() -> None:
+    orch = _orchestrator()
+    slot = SimpleNamespace(
+        key="worker",
+        linked_session_key="",
+        turn_running=False,
+        running=False,
+    )
+    workflow = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == "dashboard:worker")
+    )
+    orch.dashboard_state = SimpleNamespace(
+        get_slot=lambda key: slot if key == "worker" else None,
+        subagents=None,
+        workflow_service=workflow,
+    )
+    wired = await _wire(orch)
+
+    assert wired.service_kwargs["worker_running"]("worker") is True
+
+
 # ── the wake judge's evidence collector ──────────────────────────────────────
 
 

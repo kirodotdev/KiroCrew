@@ -32,6 +32,7 @@ from kiro_crew.change_card_catalog_kinds import (
     _SETTING_ORDER,
     CREWMATE_CREATE_SCHEDULE_STEP,
     DEFAULT_CREWMATE_TEMPLATE,
+    HEARTBEAT_HOURS_KEY,
     KIND_CONNECTION_CONNECT,
     KIND_CREWMATE_CAPABILITIES,
     KIND_CREWMATE_CHECK_INS,
@@ -484,6 +485,11 @@ def build_preview(
             {"label": "Name", "after": p["name"]},
             {"label": "Goal", "after": p["goal"]},
         ]
+        # "" and DEFAULT_MODEL both mean inherit: no row, and the create body
+        # carries no pin, exactly as a card without `model`.
+        model = normalize_agent_model(p.get("model"))
+        if model:
+            out["changes"].append({"field": "model", "label": "Model", "after": model})
         inherited = [s for s in snapshot.get("inherited_auto_approve") or () if isinstance(s, str)]
         if inherited:
             # The crewmate runs these without asking from its first turn; the
@@ -515,6 +521,7 @@ def build_preview(
                     # Its first chat opens with the crewmate asking about this
                     # goal, as one made on the Crewmates page does.
                     "first_greeting": True,
+                    **({"model": model} if model else {}),
                 },
             ),
             step(
@@ -646,7 +653,7 @@ def build_preview(
                     "field": GOAL_HEARTBEAT_FIELD,
                     "after": offer["checked"],
                     "interval": every,
-                    "per_day": _goals.wakes_per_day(every),
+                    "per_day": _goals.wakes_per_day(every, offer["hours"]),
                 }
             )
             goal_body["heartbeat_offer"] = (
@@ -744,13 +751,14 @@ def build_preview(
         if not snapshot.get("has_goal") and any(p.get(c) is True for c in _goals.CADENCES):
             raise _fail("no_goal", "the Bot has no goal to check in on yet")
         label = str(context.get("label") or p["member"])
+        hours = snapshot.get(HEARTBEAT_HOURS_KEY)
         out["title"] = f"Set the check-ins for “{label}”"
         out["changes"] = [
             {
                 "label": CHECK_IN_LABELS[k],
                 "field": k,
-                "before": _check_in_value(k, before_ci.get(k)),
-                "after": _check_in_value(k, v),
+                "before": _check_in_value(k, before_ci.get(k), hours),
+                "after": _check_in_value(k, v, hours),
             }
             for k, v in changed.items()
         ]
@@ -761,7 +769,7 @@ def build_preview(
                 if row["field"] == _goals.CADENCE_HEARTBEAT:
                     row["after"] = (
                         f"On, every {_goals.interval_label(every)} "
-                        f"(up to {_goals.wakes_per_day(every)} runs a day)"
+                        f"(up to {_goals.wakes_per_day(every, hours)} runs a day)"
                     )
         out["scope"] = {"members": [label], "count": 1, "only_this_member": True}
         out["apply"] = [
@@ -1326,12 +1334,20 @@ IMPORT_STEP_CREATE = "create"
 IMPORT_STEP_GOAL = "goal"
 IMPORT_STEP_RULES = "rules"
 IMPORT_STEP_FILES = "files"
+IMPORT_STEP_DASHBOARD = "dashboard"
 IMPORT_STEP_CRON = "cron"
 
 
 def _import_message_crons(p: dict[str, Any]) -> list[dict[str, Any]]:
     """The crons a plain cron step creates; a ``script`` cron is made with its script."""
     return [job for job in p.get("crons") or () if "script" not in job]
+
+
+def _import_applies_dashboard(p: dict[str, Any]) -> bool:
+    """A built-in page the receiver ships; any other stays in ``not_imported``."""
+    return bool(p.get("dashboard_template")) and "dashboardTemplate" not in (
+        p.get("not_imported") or ()
+    )
 
 
 def import_step_roles(p: dict[str, Any]) -> list[str]:
@@ -1343,6 +1359,8 @@ def import_step_roles(p: dict[str, Any]) -> list[str]:
         roles.append(IMPORT_STEP_RULES)
     if p.get("carried"):
         roles.append(IMPORT_STEP_FILES)
+    if _import_applies_dashboard(p):
+        roles.append(IMPORT_STEP_DASHBOARD)
     roles += [IMPORT_STEP_CRON] * len(_import_message_crons(p))
     return roles
 
@@ -1367,6 +1385,14 @@ def _import_files_step(sha: str) -> dict[str, Any]:
     fills = _import_member_fills()
     body = _with_fills({"sha256": sha}, fills[1:])
     return step("POST", import_files_path(placeholder(fills[0])), body, fill=fills)
+
+
+def _import_dashboard_step(template: str) -> dict[str, Any]:
+    """Adopt the shipped dashboard ``builtin:<id>`` on the new crewmate."""
+    fills = _import_member_fills()
+    path = f"/api/members/{placeholder(fills[0])}/dashboard/template"
+    body = _with_fills({"template_id": template.removeprefix("builtin:")}, fills[1:])
+    return step("POST", path, body, fill=fills)
 
 
 def _import_cron_step(job: dict[str, Any]) -> dict[str, Any]:
@@ -1468,6 +1494,8 @@ def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, An
         apply.append(_import_rules_step(p["rules"]))
     if carried:
         apply.append(_import_files_step(p["bundle_sha256"]))
+    if _import_applies_dashboard(p):
+        apply.append(_import_dashboard_step(p["dashboard_template"]))
     apply += [_import_cron_step(job) for job in _import_message_crons(p)]
     out["apply"] = apply
     return out
@@ -1481,6 +1509,7 @@ def import_undo(
     Its plain crons are deleted by the ids their creates answered, its carried
     files (and the script crons made with them) by the file step's own record,
     its rules are cleared (a rules file outlives the crewmate it belongs to),
+    the dashboard the card adopted is removed only at the version it adopted,
     and the crewmate is deleted last, so every earlier step still finds it.
     """
     roles = import_step_roles(p)[:applied_steps]
@@ -1491,6 +1520,13 @@ def import_undo(
             plan.append(step("DELETE", f"/api/crons/{_q(str(job_id))}"))
     name = (evidence[0].get("name") if evidence else None) or p["name"]
     slug = str((evidence[0].get("member_id") if evidence else "") or "")
+    if IMPORT_STEP_DASHBOARD in roles:
+        at = roles.index(IMPORT_STEP_DASHBOARD)
+        adopted = evidence[at].get("instance_version") if at < len(evidence) else None
+        if isinstance(adopted, int):  # no recorded version: the page cannot be proven ours
+            tid = str(p["dashboard_template"]).removeprefix("builtin:")
+            body = {"member": name, "template_id": tid, "instance_version": adopted}
+            plan.append(step("DELETE", f"/api/members/{_q(slug)}/dashboard/template", body))
     if IMPORT_STEP_FILES in roles:
         plan.append(step("DELETE", import_files_path(_q(slug)), {"member": name}))
     if IMPORT_STEP_RULES in roles:
@@ -1548,7 +1584,7 @@ GOAL_HEARTBEAT_FIELD = "heartbeat_offer"
 
 
 def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    """The goal card's Heartbeat checkbox, ``{checked, interval}``, or ``None`` for none.
+    """The goal card's Heartbeat checkbox, ``{checked, interval, hours}``, or ``None`` for none.
 
     Offered while the snapshot reads the Heartbeat off and never declined
     (the record's ``heartbeat_offer`` is not ``declined``). A snapshot taken
@@ -1561,7 +1597,11 @@ def _goal_heartbeat_offer(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[s
     every = hb.get("interval")
     if not _goals.is_heartbeat_interval(every):
         every = _goals.DEFAULT_HEARTBEAT_INTERVAL
-    return {"checked": p.get("heartbeat", True) is not False, "interval": every}
+    return {
+        "checked": p.get("heartbeat", True) is not False,
+        "interval": every,
+        "hours": hb.get("hours"),
+    }
 
 
 def _goal_path(slug: str) -> str:
@@ -1589,8 +1629,8 @@ CHECK_IN_LABELS = {
 _WEEKDAY_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 
 
-def _check_in_value(key: str, value: Any) -> str | None:
-    """How one check-in field reads on the card."""
+def _check_in_value(key: str, value: Any, hours: Any = None) -> str | None:
+    """How one check-in field reads on the card, *hours* being its active hours."""
     if value is None:
         return None
     if key in _goals.CADENCES:
@@ -1602,7 +1642,7 @@ def _check_in_value(key: str, value: Any) -> str | None:
     if key == "interval" and isinstance(value, int):
         return (
             f"Every {_goals.interval_label(value)} "
-            f"(up to {_goals.wakes_per_day(value)} runs a day)"
+            f"(up to {_goals.wakes_per_day(value, hours)} runs a day)"
         )
     return str(value)
 

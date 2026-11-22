@@ -77,7 +77,7 @@ describe('useSessionRosters', () => {
     return renderHook(() => useSessionRosters({
       activeSlot: 'member-helper',
       activeSlotProject: undefined,
-      refreshTrigger: 0,
+      catalogRefreshTrigger: 0,
       slots: [],
       dispatch: vi.fn(),
       modelsBackend,

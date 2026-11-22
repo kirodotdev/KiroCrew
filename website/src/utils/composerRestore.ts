@@ -13,14 +13,25 @@ export function registerMainComposer(target: MainComposer): () => void {
   return () => { mainComposers.delete(target) }
 }
 
-/** Put `text` into `slot`'s composer and report whether that composer is visible. */
-export function restoreToComposer(slot: string, text: string): boolean {
-  if (!text.trim()) return false
-  for (const target of mainComposers) if (target(slot, text, true)) return true
-  if (hasPaneListener(slot)) { mergePaneDraft(slot, text, []); return true }
-  for (const target of mainComposers) if (target(slot, text, false)) return false
+/**
+ * Where restored text landed: `shown` (a composer on screen for `slot` holds it),
+ * `kept` (a mounted composer showing another slot, or the stored drafts, hold it
+ * for `slot`), or `lost` (blank text, or the browser refused to store the draft).
+ */
+export type ComposerRestoreResult = 'shown' | 'kept' | 'lost'
+
+/** Put `text` into `slot`'s composer and say where it landed. */
+export function keepInComposer(slot: string, text: string): ComposerRestoreResult {
+  if (!text.trim()) return 'lost'
+  for (const target of mainComposers) if (target(slot, text, true)) return 'shown'
+  if (hasPaneListener(slot)) { mergePaneDraft(slot, text, []); return 'shown' }
+  for (const target of mainComposers) if (target(slot, text, false)) return 'kept'
   const drafts = loadDrafts()
   setDraft(drafts, slot, mergeIntoDraft(drafts[slot], text))
-  saveDrafts(drafts)
-  return false
+  return saveDrafts(drafts) ? 'kept' : 'lost'
+}
+
+/** Put `text` into `slot`'s composer and report whether that composer is visible. */
+export function restoreToComposer(slot: string, text: string): boolean {
+  return keepInComposer(slot, text) === 'shown'
 }

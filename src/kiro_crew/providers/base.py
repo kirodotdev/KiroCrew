@@ -113,6 +113,11 @@ class SessionMcpReport(Protocol):
     #: read it.
     def not_ready(self) -> dict[str, tuple[str, ...]]: ...
 
+    #: Record servers a config write changed that this running session will not
+    #: load, so its ``restart_to_load`` names them until the next session. Returns
+    #: the names not already recorded.
+    def mark_restart_to_load(self, names: list[str]) -> tuple[str, ...]: ...
+
     #: Called, with no argument, each time a frame changed the report. Set
     #: through ``LLMProvider.set_mcp_report_changed_hook``.
     on_change: Callable[[], None] | None
@@ -857,6 +862,12 @@ class LLMProvider(ABC):
         return ""
 
     @property
+    def kas_folder_hooks_projected(self) -> bool:
+        """Whether this session's registered agent batch projects a folder agent's
+        own hooks (``kas_project_hooks.kas_hook_checkout``). False with no batch."""
+        return False
+
+    @property
     def tool_search_settings(self) -> "ToolSearchSettings | None":
         """The operator's MCP Tool Search choice this provider spawned with, or
         ``None`` when it carries none.
@@ -898,6 +909,15 @@ class LLMProvider(ABC):
         scratch answers ``None`` and the child starts its own directory, exactly
         as before the capability existed. The ACP providers answer the directory
         their live process was spawned with.
+        """
+        return None
+
+    @property
+    def sandbox_mode(self) -> str | None:
+        """The ``agent.sandbox`` tier the process this session runs on was spawned under.
+
+        Session allocation recycles a session once the configured tier is stricter.
+        ``None`` (the H14 safe default) is never recycled for its tier.
         """
         return None
 

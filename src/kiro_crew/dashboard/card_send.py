@@ -106,9 +106,10 @@ class card_turn:
 
 #: The routes through which a running turn hands work to something that is NOT that turn:
 #: another session (create, fork, send, broadcast, continue, retry, revive), a workflow
-#: run, a task run, a cron job, a nudge loop or a monitor. Each starts a turn or an agent
-#: that reads the thread's trust, or one that nobody marked as a card's. Sub-agents are
-#: refused by the spawn gate itself (``subagent_manager/admission/gate.py``).
+#: run, a task run, a cron job, a nudge loop, a monitor or a resource subscription. Each
+#: starts a turn or an agent that reads the thread's trust, or one that nobody marked as
+#: a card's. Sub-agents are refused by the spawn gate itself
+#: (``subagent_manager/admission/gate.py``).
 #:
 #: Each shape is the path's segments after ``/api/``; ``None`` stands for any one
 #: non-empty segment (an id).
@@ -137,6 +138,7 @@ _DELEGATION_ROUTES: frozenset[tuple[str | None, ...]] = frozenset(
         ("monitors",),
         ("monitors", None),
         ("monitors", None, "restart"),
+        ("resource-subscriptions",),
     }
 )
 _DELEGATION_METHODS = frozenset({"POST", "PUT", "PATCH"})
@@ -308,10 +310,21 @@ def card_turn_text(text: str) -> str:
     redaction any non-human origin gets (credential-shaped runs and exfiltration
     URLs), once, before the tag is added. The row is stored and served as a user
     row, which is otherwise exempt.
+
+    Hidden characters (zero-width, BOM, bidi controls, TAG characters) are
+    stripped first, so redaction sees the cleaned text and a split credential
+    still matches.
+
+    shortcut: emoji TAG flags (England, Scotland, Wales) show as a plain black
+    flag, as on every other sanitized path. A future carve-out may keep only the
+    exact RGI flag sequences ``gbeng``, ``gbsct`` and ``gbwls``, never a TAG
+    range (TAG characters spell hidden ASCII a model reads), and it belongs in
+    the shared sanitizer, not here.
     """
     from kiro_crew.dashboard.chat_handlers import queued_text_for_display
+    from kiro_crew.validation import strip_hidden_unicode
 
-    return CARD_TURN_PREFIX + queued_text_for_display(text, user_origin=False)
+    return CARD_TURN_PREFIX + queued_text_for_display(strip_hidden_unicode(text), user_origin=False)
 
 
 def _refuse(

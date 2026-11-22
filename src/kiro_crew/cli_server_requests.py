@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -123,6 +124,31 @@ def _token_refusal_message(exc: urllib.error.HTTPError) -> str:
     return message
 
 
+#: Where an embedding gateway passes the port its forward reaches this dashboard
+#: on: an environment variable rather than a flag, because a CLI older than the
+#: claim refuses an unknown argument and the mint would fail, while it ignores a
+#: variable it does not read.
+EMBED_FORWARD_PORT_ENV = "KIROCREW_EMBED_FORWARD_PORT"
+
+
+def _embed_query(args: argparse.Namespace) -> str:
+    """The pane claims for ``/api/token/local``: ``&embed_parent_port=``, and with it
+    ``&embed_forward_port=`` from :data:`EMBED_FORWARD_PORT_ENV`.
+
+    A forward port alone says nothing (it pairs with a parent), so it is sent only
+    beside one; a value that is not a port in 1-65535 is left out.
+    """
+    epp = getattr(args, "embed_parent_port", None)
+    if not epp:
+        return ""
+    query = f"&embed_parent_port={int(epp)}"
+    raw = os.environ.get(EMBED_FORWARD_PORT_ENV, "").strip()
+    efp = int(raw) if raw.isascii() and raw.isdigit() else None
+    if efp and 1 <= efp <= 65535:
+        query += f"&embed_forward_port={int(efp)}"
+    return query
+
+
 def _token(args: argparse.Namespace) -> None:
     """Print a dashboard URL with a fresh auth token.
 
@@ -172,10 +198,7 @@ def _token(args: argparse.Namespace) -> None:
     # unprovable peer is refused (fail closed) rather than sent to. So no pre-
     # send gate is needed here; the live connected-peer verdict is the single
     # authority.
-    url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={args.ttl}"
-    epp = getattr(args, "embed_parent_port", None)
-    if epp:
-        url += f"&embed_parent_port={int(epp)}"
+    url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={args.ttl}" + _embed_query(args)
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
         with _owner_verified_secret_urlopen(

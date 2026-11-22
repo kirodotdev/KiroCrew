@@ -292,7 +292,7 @@ class TestTaskNotify:
             "[standup] 💀 Task 1: process died",
             "[standup] 💀 Watchdog: ACP process died",
             "[standup] ⏸️ Run not auto-resumed",
-            "[standup] ▶️ Resumed after a gateway restart",
+            "[standup] Resumed after a gateway restart",
         ],
     )
     async def test_a_death_or_restart_notice_reaches_the_tab_that_started_the_run(

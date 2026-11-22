@@ -44,7 +44,7 @@ agent whose whole job is a handful of MCP tools would pay that on every session,
 so :data:`JOB_TOOLS` names those tools per shipped agent and
 :func:`job_tool_ids` puts them on ``neverDefer`` for a spec that grants the
 loader; :data:`CUSTOM_AGENT_JOB_TOOLS` is the same for every custom agent whose
-added Crew servers are deferred. It is the one declaration: nothing else names a tool to keep direct.
+added Crew servers are deferred, with or without the loader. It is the one declaration: nothing else names a tool to keep direct.
 kiro-cli's Rust engine has no per-tool exemption (it exempts whole servers,
 ``ASBX_KIRO_MANDATORY_MCPS``), so the declaration reaches no channel there and
 those tools stay deferred behind its loader.
@@ -347,7 +347,9 @@ JOB_TOOLS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 )
 
 
-def job_tool_ids(agent: str | None, spec: dict[str, Any] | None) -> list[str]:
+def job_tool_ids(
+    agent: str | None, spec: dict[str, Any] | None, *, custom: bool = False
+) -> list[str]:
     """The job tools declared for *agent* that *spec* mounts, as ``neverDefer`` ids.
 
     Read through :func:`kas_never_defer_ids`, so a declared tool is listed only
@@ -356,18 +358,22 @@ def job_tool_ids(agent: str | None, spec: dict[str, Any] | None) -> list[str]:
     (``@server/tool``) and the row does not is dropped, so the list is never
     wider than the row. The answer depends on the agent and its spec alone, never
     on the session, so the tool definitions an agent's requests open with are the
-    same in every session of it.
+    same in every session of it. *custom* says Kiro Crew added its own servers to
+    the spec of a custom agent (``acp.default_crew_servers.crew_added_servers``);
+    such an agent has no row, and :data:`CUSTOM_AGENT_JOB_TOOLS` stands in for one.
     """
-    declared = JOB_TOOLS.get(agent or "")
+    declared = CUSTOM_AGENT_JOB_TOOLS if custom else JOB_TOOLS.get(agent or "")
     if declared is None:
         return []
     return _declared_ids(declared, spec)
 
 
-#: A custom agent's job tools, kept direct when its added Crew servers are deferred
-#: (:func:`custom_agent_never_defer_ids`): the wait every session's MCP block tells
-#: the turn to call for a server that is still starting.
-CUSTOM_AGENT_JOB_TOOLS: tuple[str, ...] = _MCP_LOADING
+#: A custom agent's job tools, kept direct when its added Crew servers are deferred,
+#: whether or not its spec grants the loader (:func:`custom_agent_never_defer_ids`,
+#: :func:`job_tool_ids`): the sub-agent tools, because a custom agent cannot name
+#: them one by one without knowing they exist, and the wait every session's MCP
+#: block tells the turn to call for a server that is still starting.
+CUSTOM_AGENT_JOB_TOOLS: tuple[str, ...] = _SUB_AGENTS
 
 
 def custom_agent_never_defer_ids(

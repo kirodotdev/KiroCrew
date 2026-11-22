@@ -434,7 +434,9 @@ def crewmate_import_params(bundle: Any, files: CrewmateFile | None = None) -> di
         # The model hint has its own row (shown, not applied); only an effort
         # hint with no model row is named as left out.
         "model": not params.get("model_hint") and params.get("reasoning_effort_hint"),
-        "dashboardTemplate": template,
+        # A built-in page this build ships is applied by the card's own step;
+        # only one it lacks is left out.
+        "dashboardTemplate": template and not _ships_builtin(template),
     }
     left_out = [code for code, part in left_out_parts.items() if part]
     if left_out:
@@ -444,6 +446,17 @@ def crewmate_import_params(bundle: Any, files: CrewmateFile | None = None) -> di
         if carried:
             params["carried"] = carried
     return catalog.validate_params(catalog.KIND_CREWMATE_IMPORT, params)
+
+
+def _ships_builtin(template: str) -> bool:
+    """Whether ``builtin:<id>`` names a page the shipped catalog of this build holds."""
+    from kiro_crew.dashboard_templates import catalog as templates
+
+    try:
+        entry = templates.load_one(template.removeprefix("builtin:"))
+    except Exception:  # unknown id, or a catalog that cannot be read: leave it out
+        return False
+    return entry.origin == templates.BUILTIN_SOURCE
 
 
 def _rules_max() -> int:

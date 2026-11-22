@@ -600,7 +600,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     # here too so a stale tab or a hand-built request cannot start that process.
     if not await asyncio.to_thread(_oauth_client_configured, provider):
         return _conflict(
-            "this provider needs an OAuth app configured under Settings → Connections",
+            await asyncio.to_thread(_client_not_configured_error, provider),
             "client_not_configured",
             slug=slug,
         )
@@ -1223,6 +1223,24 @@ def _oauth_client_configured(provider: Provider) -> bool:
 
     if not is_preregistered(provider):
         return True
+    return bool(_read_oauth_client_view(provider).get("configured"))
+
+
+def _client_not_configured_error(provider: Provider) -> str:
+    """The mint refusal's text, naming each half of the OAuth app still missing so
+    the operator knows which field to fill. Worker-thread only."""
+    view = _read_oauth_client_view(provider)
+    missing: list[str] = []
+    if view["client_id"] is None:
+        missing.append("Client ID")
+    if view["confidential"] and not view["client_secret_set"]:
+        missing.append("Client secret")
+    error = "this provider needs an OAuth app configured under Settings → Connections"
+    return f"{error} (missing: {' and '.join(missing)})" if missing else error
+
+
+def _read_oauth_client_view(provider: Provider) -> dict[str, Any]:
+    """``provider``'s dashboard record, read from config and vault now. Worker-thread only."""
     from kiro_crew.config import config_dir
     from kiro_crew.config.loader import read_config_for_update
     from kiro_crew.connections.oauth_clients import oauth_client_view
@@ -1236,7 +1254,7 @@ def _oauth_client_configured(provider: Provider) -> bool:
         names = set(SecretVault(config_dir()).list_names())
     except Exception:  # noqa: BLE001 -- an unreadable vault reads as "not configured"
         names = set()
-    return bool(oauth_client_view(provider, config=config, vault_names=names).get("configured"))
+    return dict(oauth_client_view(provider, config=config, vault_names=names))
 
 
 async def _refresh_client_projections(slug: str) -> bool | None | Literal["composition_refused"]:
@@ -1540,6 +1558,13 @@ async def api_connections_oauth_client_put(request: web.Request) -> web.Response
     # (commit both halves, or roll the first back) before the cancellation
     # propagates to the caller.
     failure = await asyncio.shield(_mutate())
+    from kiro_crew.connections import crew_oauth
+    from kiro_crew.connections.owner_servers import taken_by_card
+
+    # A saved app can end the card's yield, and the owner server the card takes
+    # over has no use left for its grant. Judged on what is stored, so a failed
+    # save takes nothing over.
+    await crew_oauth.forget_owner_grants(await asyncio.to_thread(taken_by_card, slug))
     if failure is not None:
         return failure
 

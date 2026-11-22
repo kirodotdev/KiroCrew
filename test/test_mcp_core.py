@@ -143,7 +143,7 @@ class TestSendMessageCronSession:
             mock_post.return_value = {"ok": True, "delivered_to": "notification"}
             result = _call_tool("send_message", {"text": "sweep done"})
 
-            assert "⚠️" in result
+            assert result.startswith("Warning:")
             assert "NOT posted to Slack" in result
 
     def test_explicit_session_origin_passes_through(self):

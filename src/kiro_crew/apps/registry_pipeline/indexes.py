@@ -35,6 +35,11 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _mkdtemp_settled,
     _rmtree_force_settled,
 )
+from kiro_crew.apps.registry_pipeline.gh_credential import (
+    _gh_access,
+    _github_https_repo,
+    _private_github_shaped,
+)
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _FETCH_CAUSE_AUTH,
     _FETCH_CAUSE_OTHER,
@@ -43,6 +48,7 @@ from kiro_crew.apps.registry_pipeline.git_targets import (
     _classify_registry_fetch_failure,
     _entry_git_url,
     _git_target_is_unsupported,
+    _lfs_endpoint_pin_argv,
     _loggable_git_transport_output,
     _looks_like_git_url,
     _public_registry_name,
@@ -64,6 +70,7 @@ from kiro_crew.apps.registry_pipeline.store_art import (
     _prewarm_owner_tier_store_assets,
 )
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _GIT_CLONE_LOCALE,
     _git_network_env,
     _proxy_env_has_credentials,
     minimal_env,
@@ -277,6 +284,8 @@ def _load_index_entries_sync(
 async def _fetch_external_registry_index(
     repo: str,
     branch: str,
+    *,
+    gh_path: str = "",
 ) -> list[dict[str, Any]] | None:
     """Fetch app-registry.json from an external repo via a shallow git clone.
 
@@ -304,6 +313,14 @@ async def _fetch_external_registry_index(
     - Timeout + kill: _communicate_with_timeout() kills on timeout.
     - Read-only: only ``git clone`` (no write operations to the remote).
     - SEL audit (best-effort): start/outcome events logged when SEL is present.
+
+    A private ``https://github.com/<owner>/<repo>`` index: when the clone fails the
+    way a private repository fails (:func:`_private_github_shaped`), the host's
+    ``gh`` is checked (:func:`_gh_access`) and the fetch runs once more with
+    *gh_path*, through the split fetch whose network step alone signs in. When
+    ``gh`` cannot read it, the recorded cause is the ``gh_*`` one. A URL with
+    embedded credentials never reaches ``gh``; a credential-bearing proxy keeps
+    the retry on the split path.
     """
     failure_key = (_strip_git_target_userinfo(repo), branch)
     _FETCH_FAILURE_CAUSES.pop(failure_key, None)
@@ -327,9 +344,25 @@ async def _fetch_external_registry_index(
     credential_target = repo
     git_url = _strip_git_target_userinfo(credential_target)
     credentialed_transport = credential_target != git_url
+    if gh_path and credentialed_transport:
+        raise ValueError("a gh sign-in is only for a credential-free registry URL")
     # A proxy URL holding a password is a credential too: it takes the split path,
     # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
-    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
+    # A gh sign-in takes it as well: only the network step may run the helper.
+    isolate_transport = (
+        credentialed_transport or bool(gh_path) or _proxy_env_has_credentials(git_url)
+    )
+
+    async def _retry_with_gh(output: str, cause: str) -> list[dict[str, Any]] | None:
+        """Retry an eligible private source once, otherwise record the failure."""
+        if not credentialed_transport and not gh_path:
+            github_repo = _github_https_repo(git_url)
+            if github_repo and _private_github_shaped(output):
+                found_gh, gh_cause = await _gh_access(github_repo)
+                if gh_cause:
+                    return _failed(gh_cause)
+                return await _fetch_external_registry_index(repo, branch, gh_path=found_gh)
+        return _failed(cause)
 
     # SEL audit: log external subprocess invocation for traceability (best-effort).
     def _sel_outcome(outcome: str) -> None:
@@ -364,6 +397,7 @@ async def _fetch_external_registry_index(
                 credential_target=credential_target,
                 clone_env=minimal_env(),
                 sandbox_mode=_context_clone_sandbox_mode(git_url),
+                gh_path=gh_path,
             )
             if err is not None:
                 _sel_outcome("failed")
@@ -383,11 +417,12 @@ async def _fetch_external_registry_index(
                         else failure_class or "unclassified git failure"
                     ),
                 )
-                return _failed(cause)
+                return await _retry_with_gh(fetch_text, cause)
         else:
             clone_cmd = [
                 "git",
                 *_HOOKS_NEUTRALIZER_ARGV,
+                *_lfs_endpoint_pin_argv(git_url),
                 "clone",
                 "--depth",
                 "1",
@@ -404,11 +439,13 @@ async def _fetch_external_registry_index(
                 clone_cmd, mode=mode, forward_ssh_auth_sock=True, _prepare=wrap_argv
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
+            process_env = _git_network_env(minimal_env(), git_url)
+            process_env["LC_ALL"] = _GIT_CLONE_LOCALE
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=_git_network_env(minimal_env(), git_url),
+                env=process_env,
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
@@ -422,7 +459,7 @@ async def _fetch_external_registry_index(
                     "external registry clone failed (git exit %s): %r", proc.returncode, tail
                 )
                 _sel_outcome("failed")
-                return _failed(_classify_registry_fetch_failure(text))
+                return await _retry_with_gh(text, _classify_registry_fetch_failure(text))
 
         # Prefer an explicit app-registry.json index, then the apps/*/app.json
         # fallback. Both walk the clone's disk, so they run in ONE

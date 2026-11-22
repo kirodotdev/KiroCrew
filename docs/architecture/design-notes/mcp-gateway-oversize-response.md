@@ -143,7 +143,7 @@ no brokered path renders resource blobs to the model today.
 ### Spill file format
 
 - **Directory:** `<data home>/mcp_spill/` (mode 0700; `KIROCREW_HOME`, default `~/.kiro/crew`)
-- **Filename:** `<server_name>-<request_id>-<unix_timestamp>.json`
+- **Filename:** `<server>-<request_id>-<timestamp>.json`
 - **Content:** Complete original JSON-RPC response line
 - **Cleanup:** Files older than 24h are deleted on gatewayd startup
 

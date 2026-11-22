@@ -70,7 +70,8 @@ const CHIP = 'shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1
 /**
  * Make a wave digest's per-agent outcomes readable without an emoji font.
  *
- * The gateway marks each digest row's outcome with an emoji, and on a host whose
+ * Older gateways marked each digest row's outcome with an emoji (current ones
+ * write the word, which needs nothing here), and on a host whose
  * fonts lack them (a plain Linux desktop, and the screenshot container) they
  * render as tofu boxes. A SUCCESS row is the case that actually loses
  * information: the gateway writes no status word beside its glyph, so the reader
@@ -92,6 +93,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   message,
   onFileOpen,
   onFolderOpen,
+  onArtifactOpen,
   onSessionOpen,
   sessions,
   activeSession,
@@ -102,6 +104,9 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   message: ChatMessage
   onFileOpen?: (path: string, opts?: { line?: number }) => void
   onFolderOpen?: (path: string) => void
+  /** Opens an `/artifacts/<slug>` link in the host's side panel; absent, the
+   *  link stays a plain new-tab anchor. */
+  onArtifactOpen?: (slug: string) => void
   /** Session switching for a `/chat?sid=` link in the payload, same triple the
    *  assistant row passes. Omitted by hosts with no slot roster. */
   onSessionOpen?: (key: string) => void
@@ -365,6 +370,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
             content={parsed.kind === 'batch' ? legibleDigest(parsed.body) : parsed.body}
             onFileOpen={onFileOpen}
             onFolderOpen={onFolderOpen}
+            onArtifactOpen={onArtifactOpen}
             onSessionOpen={onSessionOpen}
             sessions={sessions}
             activeSession={activeSession}

@@ -40,9 +40,14 @@ from kiro_crew.slack import scope_probe
 # registering one there needs nothing here.
 #: The ``code_channel_defaults`` keys the PUT accepts.
 DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort", "approval_mode")
-#: ``slack.code_channel_dispatch``: the opt-in sub-toggle under Code channels
-#: ("Let code channels start helper agents"). Off by default; hot-applied like the
-#: switches, through the live config watcher.
+#: ``code_channel_defaults.conductor_mode`` ("Always use conductor mode"): a boolean, so it
+#: is validated apart from the text keys above. Stored only when on.
+CONDUCTOR_MODE_KEY = "conductor_mode"
+#: ``slack.code_channel_dispatch``: the sub-toggle under Code channels ("Let code
+#: channels start helper agents"). Off when unset; a save that newly turns Code
+#: channels on also turns it on unless a value is already stored (see
+#: :func:`dispatch_follows_enable`). Hot-applied like the switches, through the
+#: live config watcher.
 DISPATCH_KEY = "code_channel_dispatch"
 #: The model picker's "pin nothing, inherit" spelling; stored as unset.
 _INHERIT_MODEL = "auto"
@@ -62,13 +67,16 @@ class CodeSettingsError(ValueError):
         self.status = status
 
 
-def _dispatch_overlay_state() -> str:
-    """``"pinned"``, ``"absent"`` or ``"unreadable"``: does ``config.local.json`` set
-    ``slack.code_channel_dispatch``?
+def _overlay_read(*keys: str) -> tuple[str, object]:
+    """``(state, value)``: does ``config.local.json`` set the key at *keys*
+    (``"slack", "code_channel_dispatch"`` for ``slack.code_channel_dispatch``)?
+
+    *state* is ``"pinned"``, ``"absent"`` or ``"unreadable"``; *value* is what the
+    overlay sets when pinned, else ``None``.
 
     Not ``overlay_pins``, which answers "not pinned" for a file it cannot read:
-    the dispatch save must not take an unreadable overlay -- which may hold the
-    value that wins -- for one that does not set the key.
+    a save must not take an unreadable overlay -- which may hold the value that
+    wins -- for one that does not set the key.
 
     Read as the load reads it (``read_endorsed_config_text``), with no
     ``exists()`` check first, as ``overlay_entry`` does: where the sandbox seals
@@ -83,18 +91,69 @@ def _dispatch_overlay_state() -> str:
     try:
         node: object = json.loads(read_endorsed_config_text(path))
     except FileNotFoundError:
-        # Neither a file nor an endorsed copy: what the loader also reads as absent.
-        return "absent"
+        # Neither a file nor an endorsed copy (a dangling symlink included): what
+        # the loader also reads as absent.
+        return "absent", None
     except (OSError, ValueError):
-        return "unreadable"
-    if not isinstance(node, dict):
-        return "unreadable"
-    if "slack" not in node:
-        return "absent"
-    slack = node["slack"]
-    if not isinstance(slack, dict):
-        return "unreadable"
-    return "pinned" if DISPATCH_KEY in slack else "absent"
+        return "unreadable", None
+    for key in keys:
+        if not isinstance(node, dict):
+            return "unreadable", None
+        if key not in node:
+            return "absent", None
+        node = node[key]
+    return "pinned", node
+
+
+def _overlay_state(*keys: str) -> str:
+    """The *state* half of :func:`_overlay_read`."""
+    return _overlay_read(*keys)[0]
+
+
+def _dispatch_overlay_state() -> str:
+    """:func:`_overlay_state` for ``slack.code_channel_dispatch``."""
+    return _overlay_state("slack", DISPATCH_KEY)
+
+
+def _conductor_overlay_read() -> tuple[str, object]:
+    """:func:`_overlay_read` for ``slack.code_channel_defaults.conductor_mode``.
+
+    A ``code_channel_defaults`` the overlay sets to a non-object (``null``, a
+    string) replaces the base one whole in the merge (``_deep_merge``), and the
+    reader takes it as all-unset: the overlay pins the switch off, so it reads
+    ``("pinned", None)``, not unreadable.
+    """
+    return _conductor_overlay_from(*_overlay_read("slack", "code_channel_defaults"))
+
+
+def _conductor_overlay_from(state: str, section: object) -> tuple[str, object]:
+    """:func:`_conductor_overlay_read` from one read of ``slack.code_channel_defaults``."""
+    if state != "pinned":
+        return state, None
+    if not isinstance(section, dict):
+        return "pinned", None
+    if CONDUCTOR_MODE_KEY not in section:
+        return "absent", None
+    return "pinned", section[CONDUCTOR_MODE_KEY]
+
+
+def _conductor_overlay_state() -> str:
+    """The *state* half of :func:`_conductor_overlay_read`."""
+    return _conductor_overlay_read()[0]
+
+
+def conductor_overlay_unreadable() -> bool:
+    """Whether ``config.local.json`` cannot be read, so whether it sets "Always use
+    conductor mode" is unknown.
+
+    The one rule every reader of the switch applies (the bind, the settings GET,
+    the save, and the card through ``code_channel_conductor_mode_overlay_state``):
+    while the file is unreadable the switch counts as OFF, read from the file at
+    the moment of the decision. Fail-closed, as the helper-agents switch is, and
+    independent of whether the loader dropped the file or the live watcher kept
+    an earlier copy. Filesystem read: run it through ``asyncio.to_thread``.
+    """
+    return _conductor_overlay_state() == "unreadable"
 
 
 #: How :func:`_overlay_display_path` names the home directory: ``~`` on POSIX,
@@ -123,6 +182,36 @@ def _dispatch_overlay_pins() -> bool:
     """Whether ``config.local.json`` may set ``slack.code_channel_dispatch`` (an
     unreadable overlay counts: what it holds is unknown)."""
     return _dispatch_overlay_state() != "absent"
+
+
+def dispatch_follows_enable(stored: Mapping[str, Any]) -> bool:
+    """Whether a save that turns Code channels on in *stored* (the ``slack``
+    section of ``config.json``) also turns helper agents on.
+
+    Only for a first enable: Code channels not saved on, and no dispatch value
+    stored, so an explicit off (and any value an existing install saved) is
+    kept. ``config.local.json`` is checked by the caller: a value it sets wins,
+    and one it may set (unreadable) is unknown, so neither gets a base write.
+    """
+    return stored.get(slack_manifest.CODE_CHANNELS) is not True and DISPATCH_KEY not in stored
+
+
+def _dispatch_on_enable() -> bool:
+    """:func:`dispatch_follows_enable` on the files as they are now, for the
+    card; ``False`` (helpers stay as shown) when either file cannot be read."""
+    from kiro_crew.config.loader import config_path, read_config_for_update
+
+    if _dispatch_overlay_state() != "absent":
+        return False
+    try:
+        data = read_config_for_update(config_path())
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    # A non-object ``slack`` section is rebuilt as ``{}`` by the save, as here.
+    slack = data.get("slack")
+    return dispatch_follows_enable(slack if isinstance(slack, dict) else {})
 
 
 def _folders(state: Any) -> list[dict[str, Any]]:
@@ -228,17 +317,43 @@ async def code_channel_agents(state: Any, folder_ref: str | None) -> list[str] |
         return None
 
 
-def _slack_agent(cfg: Any) -> str:
-    """The agent Slack already uses when nothing else names one."""
-    return str(getattr(getattr(cfg, "agent", None), "default_agent", "") or "")
+#: The Connections registry slug of the card the Slack MCP switch is for.
+SLACK_CONNECTIONS_SLUG = "slack"
+
+
+def _slack_card_offered(cfg: Any) -> bool:
+    """Connections shows a Slack card, by the Connections page's own two rules.
+
+    The gallery is on (``connections_ui``, a real ``True`` as the page reads it;
+    off, it offers no provider at all) and the registry shows the entry
+    (``is_visible``). Whether that card can already *connect* (its OAuth app
+    saved, the Crew-owned sign-in preview on) is the card's to say, not ours.
+    """
+    from kiro_crew.connections import registry
+
+    if getattr(cfg, "connections_ui", False) is not True:
+        return False
+    provider = registry.get_provider(SLACK_CONNECTIONS_SLUG)
+    return provider is not None and registry.is_visible(provider)
 
 
 async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
     """The GET body fragment: switches, defaults, effective resolution, warnings."""
+    from kiro_crew import crew_mode
+    from kiro_crew.slack.code_channels.binding import resolved_default_agent
+
     defaults = slack_features.code_channel_defaults(cfg)
+    conductor_agent = slack_features.code_channel_conductor_agent(cfg)
+    unreadable = bool(conductor_agent) and await asyncio.to_thread(conductor_overlay_unreadable)
+    if unreadable:
+        # The rule the bind applies: unknown reads as off.
+        conductor_agent = None
+    # ``agent.default_agent`` as a new code channel resolves it (a removed spec
+    # falls back to the managed default), so the preview names what will run.
+    slack_agent = await asyncio.to_thread(resolved_default_agent, cfg)
     folders = _folders(state)
     resolved = slack_features.resolve_code_channel_session(
-        defaults, folders, slack_agent=_slack_agent(cfg) or None
+        defaults, folders, slack_agent=slack_agent or None, conductor_agent=conductor_agent
     )
     folder = (
         slack_features.find_folder(folders, defaults.folder)
@@ -253,11 +368,17 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
     except Exception:
         choices = None
     # The same rule as ``default_agent_available``, on the list already read.
+    # Reported while conductor mode decides the agent too: the card hides it while
+    # its draft has the switch on, and shows it the moment the draft turns it off.
     if defaults.agent and choices is not None and defaults.agent not in choices:
         warnings.append("agent_missing")
         # What a new channel runs with instead, as the runtime resolves it.
         resolved = slack_features.resolve_code_channel_session(
-            defaults, folders, slack_agent=_slack_agent(cfg) or None, default_agent_available=False
+            defaults,
+            folders,
+            slack_agent=slack_agent or None,
+            default_agent_available=False,
+            conductor_agent=conductor_agent,
         )
 
     def _capability(feature: str) -> dict[str, object]:
@@ -268,18 +389,24 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
             "scope": slack_features.REQUIRED_SCOPE[feature],
         }
 
-    # Per registered switch: the toggle as saved (``<name>``) and whether the
-    # install can run it (``<name>_capability``); toggle AND available is what
-    # the runtime checks.
+    # Per registered switch: the toggle as saved (``<name>``) and, for a switch
+    # the gateway runs, whether the install can run it (``<name>_capability``);
+    # toggle AND available is what the runtime checks. The Slack MCP switch has
+    # no capability: nothing runs for it, and a bot token cannot read the user
+    # scopes or app settings it adds.
     switches: dict[str, Any] = {}
     for feature in slack_manifest.FEATURES:
         switches[feature] = slack_features.toggle(cfg, feature)
-        switches[f"{feature}_capability"] = _capability(feature)
+        if feature not in slack_manifest.MANIFEST_ONLY_FEATURES:
+            switches[f"{feature}_capability"] = _capability(feature)
     return {
         **switches,
-        # The code-channel dispatch sub-toggle: a plain opt-in under Code channels,
-        # with no manifest scope of its own, so it is not a registered switch.
+        # The code-channel dispatch sub-toggle under Code channels, with no
+        # manifest scope of its own, so it is not a registered switch.
         DISPATCH_KEY: getattr(getattr(cfg, "slack", None), DISPATCH_KEY, False) is True,
+        # Turning Code channels on now would also turn helper agents on (nothing
+        # stored, no overlay), so the card can show that before the save.
+        f"{DISPATCH_KEY}_on_enable": await asyncio.to_thread(_dispatch_on_enable),
         # ``config.local.json`` sets it: a save writes the base file, which the
         # overlay wins over, so the card disables the toggle and the PUT refuses.
         f"{DISPATCH_KEY}_overlay": await asyncio.to_thread(_dispatch_overlay_pins),
@@ -288,13 +415,27 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
         f"{DISPATCH_KEY}_overlay_state": await asyncio.to_thread(_dispatch_overlay_state),
         # Where that file is, home shown as ``~``, so the card can name it.
         f"{DISPATCH_KEY}_overlay_path": _overlay_display_path(),
+        # Whether Connections offers the Slack card, which is the only way to
+        # use what the Slack MCP switch adds; the page hides that switch
+        # without it (unless it is already on, so it can be turned off).
+        "slack_mcp_card": _slack_card_offered(cfg),
         "code_channel_defaults": {
             "folder": defaults.folder,
             "agent": defaults.agent,
             "model": defaults.model,
             "reasoning_effort": defaults.reasoning_effort,
             "approval_mode": defaults.approval_mode,
+            "conductor_mode": defaults.conductor_mode,
         },
+        # The agent "Always use conductor mode" runs (``agent.crew_mode_agent``), so
+        # the switch can name it; shown only where conductor mode is offered.
+        "code_channel_conductor_agent": crew_mode.crew_mode_agent(cfg),
+        # ``config.local.json`` sets the switch ("pinned"), may (``"unreadable"``),
+        # or does not (``"absent"``): the card disables it unless absent, and the
+        # PUT refuses a change, as for the dispatch switch.
+        "code_channel_conductor_mode_overlay_state": await asyncio.to_thread(
+            _conductor_overlay_state
+        ),
         "code_channel_effective": {
             "folder": _folder_view(folders, folder),
             "agent": resolved.agent,
@@ -304,17 +445,18 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
             "project_dir": resolved.project_dir,
             "project_source": resolved.project_source,
             "approval_mode": resolved.approval_mode,
-            "slack_agent": _slack_agent(cfg),
+            "slack_agent": slack_agent,
             "folder_path": resolved.folder_path,
             "folder_auto_create": resolved.folder_auto_create,
         },
         # What an unset default folder means, so the picker's default row and the
         # preview say it without a second copy of the rule: the folder's name,
-        # the agent it is created with, the id when it already exists, and
-        # whether two top-level folders share the name (then neither is used).
+        # the id when it already exists, whether two top-level folders share the
+        # name (then neither is used), and the agent an earlier release created
+        # it with, which reads as no folder agent.
         "code_channel_auto_folder": {
             "name": slack_features.AUTO_FOLDER_NAME,
-            "agent": slack_features.AUTO_FOLDER_AGENT,
+            "legacy_agent": slack_features.LEGACY_AUTO_FOLDER_AGENT,
             "id": (
                 str(auto["id"])
                 if (auto := slack_features.find_auto_folder(folders)) is not None
@@ -384,8 +526,9 @@ async def validate_code_settings(
         if val != (stored.get(key) is True):
             staged[key] = val
             applied.append(key)
-    # Saved only when the body names it: turning Code channels on never saves
-    # dispatch on (it is its own opt-in).
+    # A first enable of Code channels turns helper agents on with it; a value
+    # already stored (an explicit off included) is kept.
+    enabling = staged.get(slack_manifest.CODE_CHANNELS) is True and dispatch_follows_enable(stored)
     if DISPATCH_KEY in body:
         val = body.get(DISPATCH_KEY)
         if not isinstance(val, bool):
@@ -406,20 +549,70 @@ async def validate_code_settings(
                 f"(slack.{DISPATCH_KEY}) is unknown; fix the file and try again",
                 status=409,
             )
-        if val != (stored.get(DISPATCH_KEY) is True):
+        # On a first enable an off is stored too, so a later enable keeps it.
+        if val != (stored.get(DISPATCH_KEY) is True) or enabling:
             staged[DISPATCH_KEY] = val
             applied.append(DISPATCH_KEY)
+    elif enabling and await asyncio.to_thread(_dispatch_overlay_state) == "absent":
+        # Only with no overlay: one that sets the key wins over this write, and
+        # one that cannot be read may, so helpers are left as the files say.
+        staged[DISPATCH_KEY] = True
+        applied.append(DISPATCH_KEY)
 
     if "code_channel_defaults" not in body:
         return staged, applied
     raw = body.get("code_channel_defaults")
     if not isinstance(raw, dict):
         raise CodeSettingsError("code_channel_defaults must be an object")
-    unknown = sorted(set(raw) - set(DEFAULT_KEYS))
+    unknown = sorted(set(raw) - set(DEFAULT_KEYS) - {CONDUCTOR_MODE_KEY})
     if unknown:
         raise CodeSettingsError(f"code_channel_defaults has unknown key(s): {', '.join(unknown)}")
     prior = stored.get("code_channel_defaults")
     prior = prior if isinstance(prior, dict) else {}
+    # config.local.json's ``slack.code_channel_defaults``, read ONCE for this save,
+    # so the refusal, the switch state and the agent check below cannot disagree.
+    overlay_defaults = await asyncio.to_thread(_overlay_read, "slack", "code_channel_defaults")
+    overlay_state, overlay_value = _conductor_overlay_from(*overlay_defaults)
+    conductor_changed: dict[str, object] = {}
+    if CONDUCTOR_MODE_KEY in raw:
+        conductor = raw[CONDUCTOR_MODE_KEY]
+        if conductor is not None and not isinstance(conductor, bool):
+            raise CodeSettingsError(f"code_channel_defaults.{CONDUCTOR_MODE_KEY} must be a boolean")
+        # Refused, not acknowledged, as the dispatch switch is: the save writes
+        # config.json and the overlay deep-merges over it, so a change saved here
+        # would report success while the overlay's value stayed in force.
+        if overlay_state == "pinned":
+            raise CodeSettingsError(
+                "Always use conductor mode is set in config.local.json "
+                f"(slack.code_channel_defaults.{CONDUCTOR_MODE_KEY}), which overrides this "
+                "setting; change it there",
+                status=409,
+            )
+        if overlay_state == "unreadable":
+            raise CodeSettingsError(
+                "config.local.json cannot be read, so whether it sets Always use conductor "
+                f"mode (slack.code_channel_defaults.{CONDUCTOR_MODE_KEY}) is unknown; fix the "
+                "file and try again",
+                status=409,
+            )
+        # Stored only when on; off is unset, the one spelling the builder reads.
+        if (conductor is True) != (prior.get(CONDUCTOR_MODE_KEY) is True):
+            conductor_changed[CONDUCTOR_MODE_KEY] = True if conductor is True else None
+    # Conductor mode decides the agent after this save: the stored default agent is
+    # dormant (kept for when it goes off), so a folder change alone does not judge
+    # it against the new folder's project. An explicit agent edit still is checked.
+    # Read with the overlay applied, as the runtime reads it: a pinned value wins
+    # over config.json (and a change to it was refused above). While the overlay
+    # is unreadable the switch counts as off (``conductor_overlay_unreadable``),
+    # so the stored agent is judged as live.
+    after = (
+        overlay_value
+        if overlay_state == "pinned"
+        else (raw.get(CONDUCTOR_MODE_KEY, prior.get(CONDUCTOR_MODE_KEY)))
+    )
+    conductor_on = (
+        overlay_state != "unreadable" and after is True and slack_features.conductor_mode_offered()
+    )
     stored_defaults = {k: _stored_default(prior, k) for k in DEFAULT_KEYS}
     # A key the body omits keeps its stored value; null or "" clears it.
     merged: dict[str, str | None] = {
@@ -437,13 +630,39 @@ async def validate_code_settings(
         merged["folder"] = str(folder.get("id"))
     project_dir = _defaults_project_dir(folders, merged["folder"])
 
-    if merged["agent"] is not None and ("agent" in raw or "folder" in raw):
+    # Judged when this save edits it, or when it is live after this save and the
+    # save moved the folder or turned conductor mode off (the dormant agent runs
+    # again, so a missing one is refused rather than saved silently). A request
+    # that resends the switch unchanged turns nothing off.
+    reawakened = ("folder" in raw or CONDUCTOR_MODE_KEY in conductor_changed) and not conductor_on
+    judged_agent, judged_project = merged["agent"], project_dir
+    if reawakened and "agent" not in raw and CONDUCTOR_MODE_KEY in conductor_changed:
+        # This save turns the switch off and does not edit the agent: judge what the
+        # runtime will run after it, the base values with config.local.json merged
+        # over them (``_deep_merge``). A plain folder change judges the stored
+        # agent against the new folder, as before this switch existed.
+        # A section the overlay sets to a non-object is all-unset; an unreadable
+        # overlay leaves the base values judged, as before.
+        section_state, overlay_section = overlay_defaults
+        if section_state == "pinned":
+            replaced = not isinstance(overlay_section, dict)
+            section: Mapping[str, Any] = (
+                overlay_section if isinstance(overlay_section, dict) else {}
+            )
+            if replaced or "agent" in section:
+                # config.local.json decides the agent (or, replacing the section,
+                # leaves none): not this page's to change, so nothing to judge here.
+                # The runtime skips a missing one and the GET warns about it.
+                judged_agent = None
+            if replaced or "folder" in section:
+                judged_project = _defaults_project_dir(folders, _stored_default(section, "folder"))
+    if judged_agent is not None and ("agent" in raw or reawakened):
         try:
-            known = await _agent_names(project_dir)
+            known = await _agent_names(judged_project)
         except Exception as exc:
             raise CodeSettingsError("could not list agents to check the default agent") from exc
-        if merged["agent"] not in known:
-            raise CodeSettingsError(f"code_channel_defaults.agent {merged['agent']!r} not found")
+        if judged_agent not in known:
+            raise CodeSettingsError(f"code_channel_defaults.agent {judged_agent!r} not found")
 
     if merged["model"] is not None and "model" in raw:
         if merged["model"] == _INHERIT_MODEL:
@@ -488,7 +707,10 @@ async def validate_code_settings(
     # Only the sub-keys this save changes: the write merges them into the object
     # as re-read inside the config lock (``merge_nested``), so a concurrent edit
     # to another default survives instead of being replaced by this snapshot.
-    changed = {k: merged[k] for k in DEFAULT_KEYS if merged[k] != stored_defaults[k]}
+    changed: dict[str, object] = {
+        k: merged[k] for k in DEFAULT_KEYS if merged[k] != stored_defaults[k]
+    }
+    changed.update(conductor_changed)
     if changed:
         staged["code_channel_defaults"] = changed
         applied.append("code_channel_defaults")
@@ -528,7 +750,7 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
     }
     if not bot_token:
         body["install"] = scope_probe.ManifestStatus(scope_probe.STATUS_NOT_CONFIGURED).as_dict()
-        body["app_manifest_url"] = None
+        body["app_manifest_url"] = body["app_basic_info_url"] = body["app_dm_url"] = None
         return body
 
     key = hashlib.sha256((bot_token + "\0" + ",".join(sorted(enabled))).encode("utf-8")).hexdigest()
@@ -561,7 +783,12 @@ async def manifest_status(cfg: Any, bot_token: str, *, refresh: bool = False) ->
         _status_cache.clear()  # one install per gateway: keep only the newest answer
         _status_cache[key] = (now, install)
     body["install"] = install
-    body["app_manifest_url"] = slack_manifest.app_manifest_url(str(install.get("app_id") or ""))
+    app_id = str(install.get("app_id") or "")
+    body["app_manifest_url"] = slack_manifest.app_manifest_url(app_id)
+    # The setup wizard's two links: where to generate the app-level token, and
+    # the bot's DM for the first message.
+    body["app_basic_info_url"] = slack_manifest.app_basic_info_url(app_id)
+    body["app_dm_url"] = slack_manifest.app_dm_url(app_id, str(install.get("team_id") or ""))
     return body
 
 

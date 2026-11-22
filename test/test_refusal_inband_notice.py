@@ -320,13 +320,17 @@ class TestRefusalRowKeepsItsReason:
 
     def test_running_row_is_still_refined(self):
         # The refinement is useful on a live row; only refusals are exempt.
-        assert _refined_tool_row_content("🔧 old title", "new title") == "🔧 new title"
+        assert _refined_tool_row_content("🔧 old title", "new title") == "Tool: new title"
+        assert _refined_tool_row_content("Tool: old title", "new title") == "Tool: new title"
 
     def test_completed_row_is_still_refined(self):
-        assert _refined_tool_row_content("✅ old title", "new title") == "✅ new title"
+        assert _refined_tool_row_content("✅ old title", "new title") == "Approved: new title"
+        assert (
+            _refined_tool_row_content("Approved: old title", "new title") == "Approved: new title"
+        )
 
     def test_unprefixed_row_gets_the_running_icon(self):
-        assert _refined_tool_row_content("bare text", "new title") == "🔧 new title"
+        assert _refined_tool_row_content("bare text", "new title") == "Tool: new title"
 
 
 class TestRecoveryIsNowAFallback:
@@ -861,7 +865,7 @@ class TestEveryHostDenyCallSiteIsWired:
             ),
             (
                 "approval timeout",
-                "format_approval_timeout_card(_approval_window)",
+                "format_approval_timeout_card(\n            _approval_window, yolo_covers=",
                 400,
                 "DENY_CAUSE_APPROVAL_TIMEOUT",
             ),

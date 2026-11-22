@@ -14,8 +14,9 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
-from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
+from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRuntimeError, continue_timed_out_calls
 from kiro_crew.agent_sdk.host_auth import for_terminal
+from kiro_crew.cli_chat_runs import ChatRun, note_turn, start_run
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
@@ -46,6 +47,7 @@ from kiro_crew.hooks import (
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -348,8 +350,10 @@ def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None,
     )
 
 
-async def _chat(message: str | None, model: str | None, agent: str | None = None) -> None:
-    """Run a single message or interactive chat session."""
+async def _chat(
+    message: str | None, model: str | None, agent: str | None = None, run: ChatRun | None = None
+) -> None:
+    """Run a single message or interactive chat session; :class:`ChatRun` documents *run*."""
     # A stored Kiro CLI pick runs on KAS where kiro-cli offers v3; this process
     # never ran the gateway's KAS floor, so establish that evidence here, before
     # the config load below reads the pick. Probe-once, off the event loop.
@@ -361,7 +365,7 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # like `gateway` and `run`.
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg, headless=True)
+    usage_notice.print_notice_in_background(cfg)
     if model:
         cfg.agent.model = model
     channel_id = os.environ.get("KIROCREW_CHANNEL_ID") or None
@@ -440,16 +444,16 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # backend before the handshake completes: a failure partway through leaves a
     # process that only `shutdown()` ends.
     try:
-        await provider.start()
-
+        await start_run(provider, run)
         if message:
             # `-m` is documented as a non-interactive single message, so this
             # path never stops to ask -- a permission request is denied rather
             # than blocking a caller that may be a script.
             built = await context.first_message(provider, message)
             await _send_and_print(provider, built or message, interactive=False, gate=gate)
+            await note_turn(run, provider, message)
         else:
-            await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context)
+            await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context, run=run)
     finally:
         try:
             await provider.shutdown()
@@ -465,7 +469,9 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
             gc.collect()
 
 
-def _run_chat(message: str | None, model: str | None, agent: str | None = None) -> None:
+def _run_chat(
+    message: str | None, model: str | None, agent: str | None = None, run: ChatRun | None = None
+) -> None:
     """Run chat at the sync CLI boundary and render SIGINT as a clean exit.
 
     Also renders a fail-closed SANDBOX REFUSAL as a message rather than a traceback.
@@ -491,7 +497,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     this function's own ``BENIGN_SPAWNS`` entry read as stale.
     """
     try:
-        asyncio.run(_chat(message, model, agent=agent))
+        asyncio.run(_chat(message, model, agent=agent, run=run))
     except KeyboardInterrupt:
         print("\nBye! 👻")
     except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
@@ -509,9 +515,13 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
             file=sys.stderr,
         )
         sys.exit(1)
-    except AcpError as exc:
-        # A backend that fails to start, before any turn, prints its message as a
-        # failed turn does in ``_send_and_print``, not as a traceback.
+    except (AcpError, AcpRuntimeError) as exc:
+        # A backend that refuses to start, before any turn or on the REPL's restart
+        # after a compaction, prints its message as a failed turn does in
+        # ``_send_and_print``, not as a traceback. ``AcpRuntimeError`` is outside the
+        # ``AcpError`` hierarchy and is what a KAS engine install that cannot fetch
+        # the engine raises; the stack trace goes to the debug log only.
+        logger.debug("chat backend refused to start", exc_info=True)
         print(f"\n❌ {for_terminal(str(exc))}", file=sys.stderr)
         sys.exit(1)
 
@@ -1422,13 +1432,16 @@ async def _send_and_print(
     # ``o`` replies the backend could not take mid-turn. Sent as the next message
     # once this turn ends, so what the person typed still reaches the agent.
     undelivered: list[str] = []
+    # A quoted directive marker line is protocol: held to its newline, then dropped.
+    quoted = QuotedDirectiveFilter()
     try:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn, on the same session (``acp.timed_out_continuation``).
         async for event in continue_timed_out_calls(provider.stream, message):
             if event.kind == EVENT_TEXT_CHUNK:
-                print(event.text, end="", flush=True)
+                print(quoted.feed(event.text), end="", flush=True)
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                print(quoted.flush(), end="", flush=True)  # the held text goes above the prompt
                 # The backend holds the turn open until this is answered, so an
                 # unhandled request is not a missed prompt -- it is a turn that
                 # never ends.
@@ -1440,13 +1453,14 @@ async def _send_and_print(
                     undelivered_replies=undelivered,
                 )
             elif event.kind == EVENT_COMPLETE:
+                print(quoted.flush(), end="", flush=True)
                 # The text was printed as it streamed, so the error carries
                 # none: the timeout branch below must not print it twice.
                 unfinished = unfinished_turn_error(event, "")
                 if unfinished is not None:
                     raise unfinished
                 break
-        print()  # final newline
+        print(quoted.flush())  # a stream that ended without a complete event, and the newline
     except AcpTimeoutError as e:
         if e.partial_output:
             print(e.partial_output)
@@ -1482,6 +1496,7 @@ async def _interactive(
     gate: _ToolGate | None = None,
     agent: str = "",
     context: CliSessionContext | None = None,
+    run: ChatRun | None = None,
 ) -> None:
     """REPL loop — read user input, stream responses, auto-compact at configured threshold.
 
@@ -1523,6 +1538,7 @@ async def _interactive(
         if context is not None and context.owed(provider, delivered_to):
             built = await context.first_message(provider, message)
         await _send_and_print(provider, built or message, interactive=True, gate=gate)
+        await note_turn(run, provider, message)
         if built is not None:
             delivered_to = provider.context_incarnation
         elif context is not None and context.clears_history(message):

@@ -1,10 +1,10 @@
 ---
 title: Sub-agent backend selection — an orchestrator picks the harness a child runs on
-status: draft
+status: partial
 author: billygerhard
 created: 2026-10-09
-last-audited: 2026-10-09
-audited-at: 33b67aced2
+last-audited: 2026-11-20
+audited-at: 0c5d8bd5f3
 doc-pr: 18486
 implementation-prs: [18150]
 tracking-issues: [13892]
@@ -14,8 +14,10 @@ superseded-by: []
 
 # RFC: Sub-Agent Backend Selection
 
-> **Status:** `draft`. Acceptance is requested from a maintainer; the status
-> flips to `accepted` when one records it here. Phase 1
+> **Status:** `partial`. Maintainer bolichen97 accepted the feature and answered
+> both open questions on #18150 ("Maintainer decision (bolichen97): yes, I want
+> this feature"); `spawn_continue` and retry still do not refuse an inherited
+> backend that can no longer start (checked at `0c5d8bd5f3`). Phase 1
 > ([#18150](https://github.com/kirodotdev/KiroCrew/pull/18150)) has merged;
 > Phase 2 is not on main. The baseline below was verified at
 > `33b67aced2`: `SPAWN_RUN_SCHEMA` and `SPAWN_RUN_TASK_ITEM_SCHEMA` in

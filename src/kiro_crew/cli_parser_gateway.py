@@ -1,8 +1,8 @@
 """Argparse definitions for the ``Start here``, ``Run the gateway`` and ``Set it up`` commands.
 
 One registrar per command of those ``cli_help.COMMAND_GROUPS`` sections: doctor, service,
-status, restart, stop, gateway-pid, logs, token, logout, ledger-sweep, tmp, update, setup,
-config, sandbox, kas and manifest. ``kiro_crew.cli.main`` builds the top-level parser and
+status, usage, restart, stop, gateway-pid, logs, token, logout, ledger-sweep, tmp, update,
+setup, config, sandbox, kas and manifest. ``kiro_crew.cli.main`` builds the top-level parser and
 calls every registrar in the command line's registration order, so a new command of these
 sections gets a registrar here and a call there. The ``gateway`` command's own arguments
 stay in ``cli.py``: ``pod.runtime_boot.target_supports_flag`` reads them from that file.
@@ -15,10 +15,11 @@ here reads a name a test patches through ``kiro_crew.cli``
 from __future__ import annotations
 
 import argparse
+from datetime import date
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
-from kiro_crew.cli_arg_types import non_negative_int
+from kiro_crew.cli_arg_types import non_negative_int, positive_int
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -310,7 +311,7 @@ def register_kas_parser(sub: _Commands) -> None:
         epilog="""
 Examples:
   kirocrew kas install                   # latest pinned engine + Node, from agent.kas_bundle_url
-  kirocrew kas install --version 0.66.33
+  kirocrew kas install --version 0.66.117
   kirocrew kas install --from ./bundle   # offline: manifest.json + artifacts in a directory
   kirocrew kas status
   kirocrew kas remove
@@ -413,6 +414,53 @@ def register_status_parser(sub: _Commands) -> None:
         type=int,
         default=None,
         help="Dashboard port (default: resolved from KIROCREW_PORT env or dashboard.url config)",
+    )
+
+
+def _iso_day(raw: str) -> date:
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a day as YYYY-MM-DD, got {raw!r}") from None
+
+
+def register_usage_parser(sub: _Commands) -> None:
+    usage_parser = cli_help.add_command(
+        sub,
+        "usage",
+        formatter_class=_fmt,
+        epilog="""
+Reads this install's usage store directly; no running gateway is needed.
+
+Examples:
+  kirocrew usage                     # spend per day, last 7 days
+  kirocrew usage --by model          # the same window, one row per model
+  kirocrew usage --since 2026-11-01  # from that local day through today
+  kirocrew usage --days 1 --json     # today, as one JSON document
+""",
+    )
+    window = usage_parser.add_mutually_exclusive_group()
+    window.add_argument(
+        "--days",
+        type=positive_int,
+        default=7,
+        help="Last N local days, today included (default: 7; at most 30)",
+    )
+    window.add_argument(
+        "--since",
+        type=_iso_day,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="From this local day through today (at most the last 30 days, today included)",
+    )
+    usage_parser.add_argument(
+        "--by",
+        choices=("model", "agent", "channel", "session"),
+        default=None,
+        help="Group the window's totals by this field instead of by day",
+    )
+    usage_parser.add_argument(
+        "--json", action="store_true", help="Print one JSON document instead of a table"
     )
 
 

@@ -56,4 +56,16 @@ describe('workerKitErrorText', () => {
     expect(workerKitErrorText(null)).toBeNull()
     expect(workerKitErrorText(undefined)).toBeNull()
   })
+
+  it('says a read past either deadline ran out of time, and an unreadable one only failed', () => {
+    const timedOut = new ApiError(503, 'capabilities_unavailable', JSON.stringify({
+      error: 'capabilities_unavailable', code: 'capabilities_unavailable', detail: '', reason: 'timed_out',
+    }))
+    const deadline = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    expect(workerKitErrorText(timedOut)).toBe(i18nT('crewEditorNext.load_error_timed_out'))
+    expect(workerKitErrorText(deadline)).toBe(i18nT('crewEditorNext.load_error_timed_out'))
+    expect(workerKitErrorText(new ApiError(503, 'capabilities_unavailable', JSON.stringify({
+      error: 'capabilities_unavailable', code: 'capabilities_unavailable', detail: '',
+    })))).toBe(i18nT('crewEditorNext.load_error'))
+  })
 })

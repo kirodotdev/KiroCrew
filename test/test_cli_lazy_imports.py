@@ -52,6 +52,7 @@ _BANNED_AFTER_CLI_IMPORT = (
     "kiro_crew.cli_commands_eval",
     "kiro_crew.cli_commands_learn",
     "kiro_crew.cli_commands_secrets",
+    "kiro_crew.cli_commands_usage",
     "kiro_crew.cli_server",
     "kiro_crew.slack.gateway",
     "kiro_crew.dashboard.state",

@@ -415,6 +415,7 @@ class TestGateParityWithCi:
         {
             "check_brand_name.py",
             "check_comment_history.py",
+            "check_emoji_icons.py",
             "check_focus_cue.py",
             "check_harness_parity.py",
             # Only added lines are enforced; the whole-tree backlog is a report.
@@ -423,6 +424,8 @@ class TestGateParityWithCi:
             # Compares the base ref's ledger entries with the head's, so main's
             # own tree has nothing to be judged against.
             "check_decisions_history.py",
+            # Compares the metric manifest with its copy at the base ref.
+            "check_metrics_schema_history.py",
             "check_per_file_coverage.py",
             # Consumes the `integration` job's route-hit dumps, which this lane never produces.
             "check_integration_route_coverage.py",

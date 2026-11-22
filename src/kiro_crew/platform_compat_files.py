@@ -501,7 +501,15 @@ def chmod_safe(path: str | os.PathLike, mode: int) -> None:
             logger.warning("Cannot set permissions on %s", path)
 
 
-def _clear_readonly_and_retry(func: Any, path: str, _exc: BaseException) -> None:
+def _clear_readonly_and_retry(
+    func: Any,
+    path: str,
+    _exc: BaseException,
+    *,
+    root: str | None = None,
+    root_fd: int | None = None,
+    failed: list[str] | None = None,
+) -> None:
     """``shutil.rmtree`` error hook: drop the read-only bit, then retry once.
 
     Windows checks the read-only ATTRIBUTE on the file being deleted, whereas
@@ -509,34 +517,126 @@ def _clear_readonly_and_retry(func: Any, path: str, _exc: BaseException) -> None
     which a git checkout is full, since loose objects are written read-only —
     cannot be unlinked on Windows even when its directory is writable.
 
-    Only Windows gets the chmod, and only for an entry that is not a link. On
-    POSIX the entry's own mode never decides whether it can be removed, so a
-    chmod there buys nothing, and ``os.chmod`` follows a symlink: a tree an
-    agent wrote could aim one at any file this process can reach and have its
-    mode rewritten. The write bit is ADDED to the current mode, never set in
-    its place, so a failed retry leaves a directory still listable.
+    On Windows the chmod goes on the entry, and only on an entry that is not a
+    link. On POSIX the entry's own mode never decides whether it can be
+    removed, and ``os.chmod`` follows a symlink: a tree an agent wrote could aim
+    one at any file this process can reach and have its mode rewritten. So on
+    POSIX the write bit goes on the PARENT directory instead (a Go module cache
+    is ``0555`` directories), and only when the removal was refused
+    (``EACCES``/``EPERM``), *root* names the tree being removed, *root_fd* is
+    the descriptor :func:`rmtree_force` holds on it, and the parent lies inside
+    it: see :func:`_retry_within_root`. The write bit is ADDED to
+    the current mode, never set in its place, so a failed retry leaves a
+    directory still listable.
 
     Only a removal (``unlink``/``rmdir``) is retried. ``rmtree`` also reports a
     directory it could not open or list (``os.open``, ``os.scandir``, ...);
     the read-only bit is not why those failed, and ``os.open(path)`` called
     with ``path`` alone raises ``TypeError``, which would unwind past
     ``rmtree_force``'s "never raises" contract. Those are logged and left.
+
+    A path that stays is logged, or appended to *failed* when the caller
+    collects them to report once.
     """
+
+    def _give_up() -> None:
+        if failed is None:
+            logger.warning("Cannot remove %s", path)
+        else:
+            failed.append(path)
+
     if func not in (os.unlink, os.remove, os.rmdir):
-        logger.warning("Cannot remove %s", path)
+        _give_up()
         return
     try:
         if not IS_POSIX:
             info = os.lstat(path)
             if not (stat.S_ISLNK(info.st_mode) or lstat_is_name_surrogate(info)):
                 os.chmod(path, stat.S_IMODE(info.st_mode) | stat.S_IWRITE)
+        elif (
+            root is not None
+            and root_fd is not None
+            and getattr(_exc, "errno", None) in (errno.EACCES, errno.EPERM)
+        ):
+            _retry_within_root(func, path, root, root_fd)
+            return
         func(path)
     except OSError:
-        logger.warning("Cannot remove %s", path)
+        _give_up()
 
 
-def rmtree_force(path: str | os.PathLike) -> bool:
-    """Remove a directory tree, defeating Windows read-only files. Never raises.
+def _retry_within_root(func: Any, path: str, root: str, root_fd: int) -> None:
+    """Add the owner write bit to *path*'s parent inside *root*, then retry *func* there.
+
+    The parent is first compared by name with *root*, so nothing above the tree
+    being removed is touched, the root's own parent included. It is then reached
+    from *root_fd*, the descriptor :func:`rmtree_force` opened on the root before
+    the walk, never from a path: each component is opened with ``O_NOFOLLOW``
+    relative to the one before and checked to be a directory, so a component
+    swapped for a symlink stops the walk, and a swapped ancestor of the root is
+    never looked at again. The chmod and the retried removal both go through
+    the final descriptor. Raises :class:`OSError` on any refusal and the entry
+    stays. A refused walk changes nothing; a failed retry leaves the write bit
+    added on that in-tree parent.
+    """
+    parent = os.path.abspath(os.path.dirname(path))
+    top = os.path.abspath(root)
+    if parent != top and not parent.startswith(top.rstrip(os.sep) + os.sep):
+        raise OSError(errno.EACCES, "parent is outside the tree being removed", path)
+    rel = os.path.relpath(parent, top)
+    parts = [] if rel == os.curdir else rel.split(os.sep)
+    name = os.path.basename(path)
+    if any(part in ("", os.curdir, os.pardir) for part in parts) or name in (
+        "",
+        os.curdir,
+        os.pardir,
+    ):
+        raise OSError(errno.EACCES, "path is not a plain entry of the tree", path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(os.curdir, flags, dir_fd=root_fd)
+    try:
+        for part in parts:
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.ENOTDIR, "component is not a directory", path)
+        info = os.fstat(fd)
+        os.fchmod(fd, stat.S_IMODE(info.st_mode) | stat.S_IWUSR)
+        func(name, dir_fd=fd)
+    finally:
+        os.close(fd)
+
+
+def _open_root(root: str, expect: tuple[int, int] | None) -> tuple[int | None, bool]:
+    """Open *root* for :func:`_retry_within_root`; ``(fd, refused)``. POSIX only.
+
+    *expect* is the ``(st_dev, st_ino)`` the caller read when it chose the tree.
+    A root that is not that directory (an ancestor swapped since) is
+    refused, so nothing is removed or chmodded. A root that cannot be opened
+    gets no retry descriptor and is left to ``rmtree``'s own checks.
+    """
+    if not IS_POSIX:
+        return None, False
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None, expect is not None and os.path.lexists(root)
+    if expect is not None:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != expect:
+            os.close(fd)
+            return None, True
+    return fd, False
+
+
+def rmtree_force(
+    path: str | os.PathLike,
+    *,
+    failures: list[str] | None = None,
+    expect: tuple[int, int] | None = None,
+) -> bool:
+    """Remove a directory tree, defeating read-only entries. Never raises.
 
     Returns True when *path* is gone afterwards.
 
@@ -545,12 +645,33 @@ def rmtree_force(path: str | os.PathLike) -> bool:
     objects under ``.git/objects`` refuse to unlink, ``ignore_errors`` swallows
     every one of those failures, and the caller reports success over a tree that
     is still on disk — so the project name stays taken and the next create
-    answers 409.
+    answers 409. On POSIX the same holds for a tree of read-only directories,
+    such as a Go module cache.
+
+    Entries that could not be removed are logged as ONE warning with their
+    count, so a large stuck tree costs one line. A caller passing *failures*
+    gets the paths appended there instead and logs them itself. A caller passing
+    *expect*, the ``(st_dev, st_ino)`` of the directory it chose, gets the tree
+    left alone (counted as stuck) when *path* names a different directory.
 
     The return value is what lets a caller tell a real deletion from a partial
     one; the boolean is derived from the filesystem rather than from the hook,
     because a surviving file is the only thing that actually matters.
     """
+    failed: list[str] = []
+    root = os.fspath(path)
+    root_fd, refused = _open_root(root, expect)
+    if refused:
+        failed.append(root)
+        if failures is not None:
+            failures.extend(failed)
+        else:
+            logger.warning("Cannot remove %s: it is not the directory chosen", path)
+        return False
+
+    def _hook(func: Any, target: str, exc: BaseException) -> None:
+        _clear_readonly_and_retry(func, target, exc, root=root, root_fd=root_fd, failed=failed)
+
     # `onexc` replaced `onerror` in 3.12 and the old name warns; this project
     # still supports 3.9+, so pick by capability rather than by version number.
     kwarg = "onexc" if sys.version_info >= (3, 12) else "onerror"
@@ -558,19 +679,29 @@ def rmtree_force(path: str | os.PathLike) -> bool:
         if kwarg == "onerror":  # pragma: no cover - exercised on Python < 3.12
 
             def _legacy(func: Any, target: str, exc_info: Any) -> None:
-                _clear_readonly_and_retry(func, target, exc_info[1])
+                _hook(func, target, exc_info[1])
 
             shutil.rmtree(path, onerror=_legacy)
         else:
-            shutil.rmtree(path, onexc=_clear_readonly_and_retry)  # type: ignore[call-arg]
+            shutil.rmtree(path, onexc=_hook)  # type: ignore[call-arg]
+        gone = not os.path.lexists(path)
     except FileNotFoundError:
         # A missing ROOT is success. A nested entry can disappear during rmtree while
         # the root survives, especially through the Python <3.12 onerror path.
-        return not os.path.lexists(path)
+        gone = not os.path.lexists(path)
     except OSError:
-        logger.warning("Cannot remove %s", path)
-        return False
-    return not os.path.lexists(path)
+        failed.append(root)
+        gone = False
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+    if not gone and not failed:
+        failed.append(root)  # left behind with no refusal reported, e.g. refilled mid-walk
+    if failures is not None:
+        failures.extend(failed)
+    elif failed:
+        logger.warning("Cannot remove %d entries under %s", len(failed), path)
+    return gone
 
 
 #: Windows sharing (32) and lock (33) violations: another process holds a file

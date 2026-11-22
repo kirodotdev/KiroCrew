@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion, useReducedMotion, type TargetAndTransition } from 'framer-motion'
 import { i18nT } from '../../i18n/t'
-import { useAppDispatch, useAppSelector } from '../../store'
+import { store, useAppDispatch, useAppSelector } from '../../store'
 import { ackNotification } from '../../store/notificationsSlice'
 import { setActiveId } from '../../store/instancesSlice'
 import { useLocalCrewHidden } from '../overlayRoot'
@@ -19,7 +19,7 @@ import {
   loadBannerEnabled, shouldBannerNote,
 } from '../../hooks/notificationBanner'
 import type { Notification } from '../../types'
-import { notePriority, noteText, safeInternalUrl } from './notifMeta'
+import { noteActionLabel, notePriority, noteText, safeInternalUrl } from './notifMeta'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
 import SwipeToDismiss from './SwipeToDismiss'
 import { CrewmateRosterError, noteMember } from './CrewmateNoteFace'
@@ -267,6 +267,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
         // Read at arrival, like focus: the Members page registers its thread
         // only while it is visible and focused.
         viewedThread: getViewedThreadSlot(),
+        relayCovered: store.getState().instances?.relayActive != null,
       })
       if (!ok) return
       const next = [note, ...pendingRef.current.filter(n => n.ts !== note.ts)]
@@ -324,7 +325,10 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
   // The banner shows over every Crew, but its actions land in the local one (a
   // navigation, the leave-guard prompt), so over a remote Crew each brings the
   // local Crew forward first.
-  const crewHidden = useLocalCrewHidden()
+  // A relay tab covers <main> without hiding the local overlay root, so it is read on its own.
+  const localHidden = useLocalCrewHidden()
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
+  const crewHidden = localHidden || relayCovered
   const showLocalCrew = useCallback(() => {
     if (crewHidden) dispatch(setActiveId(null))
   }, [crewHidden, dispatch])
@@ -418,7 +422,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
             const deck = !expanded && !isMobile && idx > 0
             const urlActions = (Array.isArray(n.actions) ? n.actions : [])
               .filter(a => typeof a?.id === 'string' && typeof a?.label === 'string' && typeof a?.url === 'string')
-              .map(a => ({ ...a, safeUrl: safeInternalUrl(a.url) }))
+              .map(a => ({ ...a, label: noteActionLabel(n, a), safeUrl: safeInternalUrl(a.url) }))
               .filter(a => a.safeUrl)
               .slice(0, 2)
             const isApproval = n.kind === 'approval' && !n.acked
@@ -463,6 +467,10 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote, a
                 // took its close click (the click expanded the deck instead).
                 style={{ zIndex: 10 - idx, ...(deck ? { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 } : { position: 'relative' }) }}
                 data-testid="notification-banner-card"
+                // A relay Crew pane hides under a critical card (lib/relayCrewPanes.ts).
+                // Any other card is a passing note: hiding the whole Crew for it
+                // blanked the page each time one came up, and the bell keeps it.
+                data-relay-pane-overlay={prio === 'critical' ? '' : undefined}
                 data-priority={prio}
                 data-deck={deck ? 'true' : undefined}
                 className="rounded-2xl"

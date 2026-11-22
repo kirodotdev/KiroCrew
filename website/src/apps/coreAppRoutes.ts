@@ -21,12 +21,14 @@
  */
 export const CORE_APP_ROUTE_SEGMENTS = new Set([
   '_jobs',
+  '_sel',
   'bot-grants',
   'config',
   'dev',
   'disable',
   'enable',
   'frames',
+  'kiro',
   'manifest',
   'migrate-cleanup',
   'open',

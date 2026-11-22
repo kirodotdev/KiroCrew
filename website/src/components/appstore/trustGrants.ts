@@ -1,4 +1,5 @@
 import type { TrustAppTarget } from './TrustAppModal'
+import { knownChatLaunch } from './chatLaunch'
 
 /** The manifest `permissions` fields the trust prompt discloses. */
 export interface DisclosedPermissions {
@@ -8,14 +9,17 @@ export interface DisclosedPermissions {
   workerAutoApprove?: boolean
   chatSlots?: boolean
   hiddenSessions?: boolean
+  chatLaunch?: unknown
   reachableByUserSessions?: string[]
   desktopCapabilities?: string[]
+  browser?: string[]
+  kiroOperations?: string[]
   webhookSource?: boolean
 }
 
 type TrustGrants = Pick<
   TrustAppTarget,
-  'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'hiddenSessions' | 'reachableByUserSessions' | 'desktopCapabilities' | 'api' | 'webhookSource'
+  'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'hiddenSessions' | 'chatLaunch' | 'reachableByUserSessions' | 'desktopCapabilities' | 'browser' | 'kiroOperations' | 'api' | 'webhookSource'
 >
 
 /**
@@ -31,8 +35,11 @@ export function trustGrants(permissions: DisclosedPermissions | undefined): Trus
     workerAutoApprove: permissions?.workerAutoApprove === true,
     chatSlots: permissions?.chatSlots === true,
     hiddenSessions: permissions?.hiddenSessions === true,
+    chatLaunch: knownChatLaunch(permissions?.chatLaunch),
     reachableByUserSessions: permissions?.reachableByUserSessions,
     desktopCapabilities: permissions?.desktopCapabilities,
+    browser: permissions?.browser,
+    kiroOperations: permissions?.kiroOperations,
     api: permissions?.api,
     webhookSource: permissions?.webhookSource === true,
   }

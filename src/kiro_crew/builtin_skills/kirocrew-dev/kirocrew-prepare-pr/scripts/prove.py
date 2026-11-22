@@ -569,8 +569,10 @@ def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
     if not merge_base:
         raise EnvironmentError(f"no merge base between {base} and HEAD")
 
+    # `-z` prints each path verbatim; line output C-quotes a non-ASCII name,
+    # and the quoted spelling is neither a test path nor a file git can revert.
     changed = [
-        p for p in _git_ok(["diff", "--name-only", merge_base, commit], repo).splitlines() if p
+        p for p in _git_ok(["diff", "--name-only", "-z", merge_base, commit], repo).split("\0") if p
     ]
     prod, tests = classify(changed)
 
@@ -605,7 +607,8 @@ def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
             + ", ".join(stale)
         )
 
-    patch = _git_ok(["diff", merge_base, commit, "--", *prod], repo)
+    # Unquoted headers: `split_hunks` reads each hunk's path from `diff --git`.
+    patch = _git_ok(["-c", "core.quotepath=false", "diff", merge_base, commit, "--", *prod], repo)
     if not patch.strip():
         return {
             "verdict": "NOTHING_TO_PROVE",

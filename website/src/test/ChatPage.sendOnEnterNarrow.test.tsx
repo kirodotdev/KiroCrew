@@ -1,13 +1,12 @@
 /**
- * A narrow viewport alone must not override the saved send key.
+ * The Chat page leaves the send key to ChatInput.
  *
- * ChatPage used to pass `isMobile ? 'ctrl-enter' : chatConfig.sendOnEnter`,
- * and `isMobile` is width-only (`max-width: 767px`). So a narrow desktop pane
- * (split window, high zoom) silently dropped the saved "Enter sends" choice and
- * Enter inserted a newline. Only a narrow TOUCH device (a phone) forces
- * Ctrl+Enter; a wide touch tablet keeps the saved choice, as before.
+ * ChatInput's fallback, `useComposerSendMode()`, applies the stored send key
+ * and makes Return a new line on a phone. A `sendOnEnter` passed by the page
+ * (the stored choice, say) would override that rule on the Chat page alone, so
+ * on a phone the page must leave the prop unset.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -24,9 +23,9 @@ vi.mock('../pages/chat', () => ({
 }))
 
 // Capture the send mode ChatPage hands the composer.
-const seen: string[] = []
+const seen: Array<string | undefined> = []
 vi.mock('../components/ChatInput', () => ({
-  default: (props: { sendOnEnter?: string }) => { seen.push(String(props.sendOnEnter)); return null },
+  default: (props: { sendOnEnter?: string }) => { seen.push(props.sendOnEnter); return null },
 }))
 
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -78,14 +77,11 @@ vi.mock('../api/client', () => ({
   fileReadUrl: (p: string) => `/api/file?path=${encodeURIComponent(p)}`,
 }))
 
-// Viewport width and pointer kind are the variables under test.
-let narrow = true
-let touch = false
+// A phone: a narrow viewport on a touch screen.
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
   value: vi.fn().mockImplementation((q: string) => ({
-    // A getter: useIsMobile caches the list object, so `matches` must read live.
-    get matches() { return (narrow && q.includes('max-width')) || (touch && (q.includes('pointer: coarse') || q.includes('hover: none'))) },
+    matches: q.includes('max-width') || q.includes('pointer: coarse') || q.includes('hover: none'),
     media: q, onchange: null,
     addListener: vi.fn(), removeListener: vi.fn(),
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
@@ -133,32 +129,10 @@ const renderChatPage = () => {
   )
 }
 
-describe('ChatPage send key by viewport and pointer', () => {
-  beforeEach(() => {
-    seen.length = 0
-    narrow = true
-    for (const k of Object.keys(apiMocks)) delete apiMocks[k]
-  })
-
-  it('keeps the saved "Enter sends" choice on a narrow desktop pane', async () => {
-    touch = false
+describe('ChatPage send key on a phone', () => {
+  it('leaves sendOnEnter unset, so ChatInput applies the phone rule', async () => {
     renderChatPage()
     await waitFor(() => expect(seen.length).toBeGreaterThan(0))
-    expect(seen.at(-1)).toBe('enter')
-  })
-
-  it('uses Ctrl+Enter on a touch device', async () => {
-    touch = true
-    renderChatPage()
-    await waitFor(() => expect(seen.length).toBeGreaterThan(0))
-    expect(seen.at(-1)).toBe('ctrl-enter')
-  })
-
-  it('keeps the saved choice on a wide touch tablet', async () => {
-    narrow = false
-    touch = true
-    renderChatPage()
-    await waitFor(() => expect(seen.length).toBeGreaterThan(0))
-    expect(seen.at(-1)).toBe('enter')
+    expect(seen.filter(mode => mode !== undefined)).toEqual([])
   })
 })

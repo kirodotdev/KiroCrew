@@ -144,6 +144,39 @@ async def test_turn_end_after_fire_announces_the_new_deadline(svc):
 
 
 @pytest.mark.asyncio
+async def test_quiet_gated_tick_announces_the_new_deadline(svc):
+    """A quiet tick spends no turn, so no turn end announces the deadline it sets.
+
+    Without a frame the dashboard keeps the old deadline and reads "due" once it
+    passes. A pushed quiet tick that keeps the earlier deadline publishes nothing.
+    """
+
+    async def on_fire(loop):  # pragma: no cover - a quiet tick spends no turn
+        raise AssertionError("a quiet tick must not fire")
+
+    async def quiet(loop):
+        return True
+
+    svc._on_fire = on_fire
+    svc._monitor_tick_is_quiet = quiet  # type: ignore[method-assign]
+    events: list[tuple[str, float]] = []
+    svc.subscribe(lambda event, loop: events.append((event, loop.next_due_ts if loop else -1)))
+    await svc.start()
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=100)
+    stale = loop.next_due_ts - 50
+    loop.next_due_ts = stale
+    events.clear()
+    await svc._timer(loop, delay=0)
+    assert loop.next_due_ts > stale
+    assert events == [("updated", loop.next_due_ts)]
+    events.clear()
+    svc._pushed_ticks.add(loop.id)
+    await svc._timer(loop, delay=0)
+    assert events == []
+    svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_deferred_turn_end_rearm_announces_the_new_deadline(svc):
     """A turn that ends inside the fire window is re-armed when the window closes.
 

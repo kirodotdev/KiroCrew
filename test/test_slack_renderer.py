@@ -9,9 +9,11 @@ Block Kit approve/deny buttons and the interactive approval await/resolve.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from redaction_structured_cases import github_classic
+from slack_handler_helpers import hide_slack_timing_footer
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
@@ -26,6 +28,7 @@ from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.renderer import (
     _STATUS_WORKING,
+    _THINKING,
     TOOL_APPROVE_ACTION_PREFIX,
     TOOL_DENY_ACTION_PREFIX,
     TOOL_TRUST_ACTION_PREFIX,
@@ -82,7 +85,7 @@ class _RecSlack:
         self.calls.append(("set_thread_status", {"status": status}))
 
     async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
-        self.calls.append(("post_blocks", {"blocks": blocks}))
+        self.calls.append(("post_blocks", {"blocks": blocks, "text": text}))
         return self._ts()
 
     def approval_token(self):
@@ -917,7 +920,7 @@ class TestStreamMachinery:
         # chat.update (update_message), never append_stream.
         assert "update_message" in methods, methods
         assert "append_stream" not in methods, methods
-        assert "post_message" in methods, methods  # the _THINKING placeholder
+        assert any(m == "post_blocks" and kw["text"] == _THINKING for m, kw in rec.calls), rec.calls
 
     def test_no_stream_keeps_the_text_before_a_tool_call_in_the_reply(self):
         """The fallback has no plan block to hold narration, so the text before
@@ -1060,7 +1063,7 @@ class TestNoStreamOptionsFiltering:
 
 
 class TestShowThinking:
-    """slack.show_thinking gates surfacing the model's reasoning as a 💭 thread
+    """slack.show_thinking gates surfacing the model's reasoning as a Thinking thread
     reply above the answer (matches native). Off => reasoning stays private."""
 
     def _events(self):
@@ -1076,14 +1079,16 @@ class TestShowThinking:
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=True)
         asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
         posts = [kw["text"] for m, kw in rec.calls if m == "post_message"]
-        assert any(p.startswith("💭") and "let me think about it" in p for p in posts), posts
+        assert any(
+            p.startswith("*Thinking*") and "let me think about it" in p for p in posts
+        ), posts
 
     def test_show_thinking_off_suppresses_reasoning(self):
         rec = _RecSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, show_thinking=False)
         asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
         posts = [kw["text"] for m, kw in rec.calls if m == "post_message"]
-        assert not any(p.startswith("💭") for p in posts), posts
+        assert not any(p.startswith("*Thinking*") for p in posts), posts
 
     def test_thinking_reply_is_redacted(self):
         rec = _RecSlack()
@@ -1096,7 +1101,9 @@ class TestShowThinking:
         ]
         asyncio.run(TurnDriver(_Provider(events), renderer, approval_mode="auto").run("hi"))
         thinking = [
-            kw["text"] for m, kw in rec.calls if m == "post_message" and kw["text"].startswith("💭")
+            kw["text"]
+            for m, kw in rec.calls
+            if m == "post_message" and kw["text"].startswith("*Thinking*")
         ]
         assert thinking, rec.calls
         assert secret not in thinking[0]
@@ -1327,7 +1334,8 @@ class TestAppendTaskRaiseIsSwallowed:
         final_texts = [
             str(kw.get("final_text") or kw.get("text") or "")
             for m, kw in rec.calls
-            if m in ("stop_stream", "post_message", "update_message", "append_stream")
+            if m
+            in ("stop_stream", "post_message", "post_blocks", "update_message", "append_stream")
         ]
         joined = " ".join(final_texts)
         assert "The answer is 42" in joined, rec.calls
@@ -1356,7 +1364,8 @@ class TestRendererPresentationGuards:
         return " ".join(
             str(kw.get("final_text") or kw.get("text") or "")
             for m, kw in rec.calls
-            if m in ("stop_stream", "post_message", "update_message", "append_stream")
+            if m
+            in ("stop_stream", "post_message", "post_blocks", "update_message", "append_stream")
         )
 
     def test_raising_set_thread_status_does_not_escape(self):
@@ -1441,16 +1450,16 @@ class TestRendererPresentationGuards:
                 self.start_raises += 1
                 raise RuntimeError("fatal_error: chat.startStream")
 
-            async def post_message(self, channel, text, thread_ts=None, **kw):
+            async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
                 if "Thinking" in text:
                     raise RuntimeError("channel_not_found: chat.postMessage")
-                return await super().post_message(channel, text, thread_ts=thread_ts, **kw)
+                return await super().post_blocks(channel, blocks, text, thread_ts=thread_ts, **kw)
 
         rec = RaisingStartSlack()
         renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
         asyncio.run(TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi"))
         assert rec.start_raises >= 1, rec.calls
-        posts = [str(kw.get("text") or "") for m, kw in rec.calls if m == "post_message"]
+        posts = [str(kw.get("text") or "") for m, kw in rec.calls if m == "post_blocks"]
         assert any("The answer is 42" in p for p in posts), rec.calls
         assert "Something went wrong" not in self._joined(rec), rec.calls
 
@@ -1466,6 +1475,9 @@ class TestRendererPresentationGuards:
                 raise RuntimeError("fatal_error: chat.startStream")
 
             async def post_message(self, channel, text, thread_ts=None, **kw):
+                raise RuntimeError("channel_not_found: chat.postMessage")
+
+            async def post_blocks(self, channel, blocks, text, thread_ts=None, **kw):
                 raise RuntimeError("channel_not_found: chat.postMessage")
 
         rec = TotalFailureSlack()
@@ -1599,11 +1611,77 @@ class TestOptionsFooterCancellationDefersFinalize:
         asyncio.run(scenario())
 
 
+class TestTimingFooterSetting:
+    """``slack.show_timing_footer`` decides whether the transport turn shows its
+    "Finished in" line, in the stream's seal or as a post of its own. Off, a footer
+    carrying choices still posts them -- and is still recorded for the
+    strike-through -- and an empty footer posts nothing."""
+
+    @staticmethod
+    def _end_turn(accumulated: str):
+        rec = _RecSlack()
+        texts: list[str] = []
+        record = rec.post_blocks
+
+        async def _post_blocks(channel, blocks, text, thread_ts=None, **kw):
+            texts.append(text)
+            return await record(channel, blocks, text, thread_ts, **kw)
+
+        rec.post_blocks = _post_blocks  # type: ignore[assignment]
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        renderer._accumulated = accumulated
+        asyncio.run(renderer.on_done())
+        footers = [kw["blocks"] for name, kw in rec.calls if name == "post_blocks"]
+        return footers, texts, renderer
+
+    def test_by_default_the_seal_carries_the_footer_as_it_always_has(self):
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        renderer._accumulated = "the answer is 42"
+        asyncio.run(renderer.on_done())
+        (stop,) = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert stop == {
+            "final_text": "the answer is 42",
+            "blocks": [
+                {"type": "context", "elements": [{"type": "mrkdwn", "text": "Finished in 0s"}]}
+            ],
+        }
+        assert "post_blocks" not in [m for m, _ in rec.calls], "the seal already carries it"
+
+    def test_off_seals_a_streamed_answer_without_the_timing_line(self, monkeypatch, tmp_path):
+        hide_slack_timing_footer(monkeypatch, tmp_path)
+        rec = _RecSlack()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="the answer is 42"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+        (stop,) = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert stop == {"final_text": "the answer is 42", "blocks": None}
+        assert "post_blocks" not in [m for m, _ in rec.calls], "an empty footer must not post"
+        assert renderer.turn_finalized is True
+
+    def test_off_still_posts_the_choices_without_the_timing_line(self, monkeypatch, tmp_path):
+        hide_slack_timing_footer(monkeypatch, tmp_path)
+        footers, texts, renderer = self._end_turn("pick one\n[OPTIONS: alpha | beta]")
+        assert len(footers) == 1, "the choices ride only in the footer, so it must post"
+        assert [b["type"] for b in footers[0]] == ["actions"]
+        assert "Finished in" not in json.dumps(footers[0])
+        assert texts == ["Options"], "the notification text must not read 'Finished in'"
+        posted = renderer.posted_options
+        assert posted is not None and posted.choices == ("alpha", "beta")
+        assert posted.text == "Options" and list(posted.blocks) == footers[0]
+        assert renderer.turn_finalized is True
+
+
 class TestTransportRedactionNotice:
     """The DEFAULT Slack path posts a redaction notice below a rewritten answer.
 
     Driven through the real TurnDriver so the StreamRedactor writes the placeholder.
-    The tally counts the final body plus the posted 💭 reasoning; shared wording is
+    The tally counts the final body plus the posted Thinking reasoning; shared wording is
     pinned in ``test_credential_redaction_notice.py``.
     """
 

@@ -50,6 +50,7 @@ from .taskq_bridge_window import (  # noqa: F401 - re-exported
 from .types import (  # noqa: F401 - the module's public surface
     MEMORY_WAIT_UNTIL_KEY,
     MIN_RECHECK_DELAY_SECS,
+    PARENT_END_TOMBSTONE_CAUSE,
     QUEUED_STOP_TOMBSTONE_CAUSE,
     REFUSAL_TOMBSTONE_CAUSE,
     WINDOW_ENTRY_RECOVERING,
@@ -307,7 +308,10 @@ class _TaskqBridgeMixin(ManagerComponent):
         (``write_refusal_tombstone``) and answers ``REFUSED``, a ``queued_stop``
         cause the queued-stop marker (``write_queued_stop_tombstone``) and
         answers ``STOPPED``: the two verdicts the boot reconcile settles a
-        ``queued`` row on. With no tombstone, or
+        ``queued`` row on. A ``parent_end`` cause also answers ``STOPPED``: the
+        conversation that owns the row is gone, so whichever attempt wrote it, the
+        row must not run again. That holds for a claim released back to ``queued``
+        after the teardown recorded its parent end. With no tombstone, or
         one whose cause proves nothing (``gateway_restart``), the run is done
         when its result is whole by ``result_is_whole``, the rule the orphan
         reconcile announces it with, so the row and the parent's notice agree.
@@ -346,7 +350,7 @@ class _TaskqBridgeMixin(ManagerComponent):
                 cause = str(tombstone.get("cause") or "")
                 if cause == REFUSAL_TOMBSTONE_CAUSE:
                     return REFUSED
-                if cause == QUEUED_STOP_TOMBSTONE_CAUSE:
+                if cause in (QUEUED_STOP_TOMBSTONE_CAUSE, PARENT_END_TOMBSTONE_CAUSE):
                     return STOPPED
                 if cause != "gateway_restart":
                     return tombstone_terminal_state(cause, str(tombstone.get("outcome") or ""))
@@ -489,7 +493,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             return False
         return store.advance(agent_id, state, generation=generation)
 
-    async def await_pending_defer(self, agent_id: str, *, dispatch: bool = False) -> None:
+    async def await_pending_defer(self, agent_id: str, *, dispatch: bool = False) -> bool:
         """Wait for the write :meth:`taskq_defer_posted` or :meth:`taskq_fail`
         retained for *agent_id*, so the row carries it before the pump may
         refill it or the caller hears the verdict. The wait is SHIELDED: the
@@ -524,11 +528,18 @@ class _TaskqBridgeMixin(ManagerComponent):
         keeps retrying behind the dispatcher -- nothing is published over the
         unlanded write; the pump just stops waiting on it. A caller's own wait
         (``spawn_async``) is the one that publishes, and keeps the full hold.
+        Stop all takes the dispatcher's wait for each row its cancel left
+        settling and counts only the rows whose hold released
+        (:meth:`settled_within_bound`).
+
+        Returns whether the hold released: False only for a *dispatch* wait
+        that ended at the read bound, so a report gate on the full hold always
+        opens.
         """
         pending = getattr(self._manager, "_pending_defers", None)
         task = pending.get(agent_id) if pending else None
         if task is None:
-            return
+            return True
         bound = (getattr(self._manager, "_settle_read_bounds", None) or {}).get(agent_id)
         try:
             if dispatch and bound is not None:
@@ -546,6 +557,14 @@ class _TaskqBridgeMixin(ManagerComponent):
             pass
         if task.done() and pending is not None and pending.get(agent_id) is task:
             pending.pop(agent_id, None)
+        return task.done()
+
+    async def settled_within_bound(self, agent_ids: Collection[str]) -> int:
+        """How many of *agent_ids*, rows a stop left settling, settle within the
+        dispatcher's bounded wait (:meth:`await_pending_defer` with *dispatch*).
+        A row past the bound is published only by its own gated report."""
+        waits = (self.await_pending_defer(a, dispatch=True) for a in agent_ids)
+        return sum(await _asyncio.gather(*waits))
 
     def register_refused(self, info: SubagentInfo) -> None:
         """Register *info* as its run's terminal record once the row's settle has landed.
@@ -1306,7 +1325,7 @@ class _TaskqBridgeMixin(ManagerComponent):
     lane_refill_scheduler = _window.lane_refill_scheduler
     # From ``taskq_bridge_cancel``: cancelling persisted rows that have not started.
     taskq_cancel_queued_async = _cancel.taskq_cancel_queued_async
-    taskq_row_is_claimed_unstarted_async = _cancel.taskq_row_is_claimed_unstarted_async
+    taskq_unstarted_claim_generation_async = _cancel.taskq_unstarted_claim_generation_async
     taskq_cancel_queued = _cancel.taskq_cancel_queued
     taskq_cancel_unstarted = _cancel.taskq_cancel_unstarted
     taskq_cancel_queued_each = _cancel.taskq_cancel_queued_each

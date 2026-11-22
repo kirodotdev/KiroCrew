@@ -61,6 +61,9 @@ class ScopedApiError extends ApiError implements AppApiError {
 export interface AppPermissions {
   api: string[]
   events: string[]
+  /** The `permissions.browser` verbs the owner approved (`view`, `read`, `act`);
+   *  absent on a host that predates it or for an app that declares none. */
+  browser?: string[]
 }
 
 /**
@@ -90,6 +93,9 @@ export interface AppInfo {
   name: string
   version: string
   permissions: AppPermissions
+  /** Whether the app is turned on, as the host last read it; absent when the host
+   *  does not say (treat as on). The SDK's `BrowserView` stops once it is false. */
+  enabled?: boolean
   /** Whether the app's host surface is currently visible. A routed page is
    *  always the visible surface (`true`); a body-owning side-panel tab stays
    *  mounted while hidden and reads this to pause polling or release global
@@ -131,6 +137,18 @@ export interface AppSdkContextValue {
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
   /** The host's per-slot change signal; absent when the host has none (see slotPush.ts). */
   slotPush?: SlotPush
+  /** Create or reopen the person's chat the app's manifest `permissions.chatLaunch`
+   *  declares; resolves to its slot key. Behind `useChatLauncher().createChat`. */
+  launchChat?: (opts: ChatLaunchCreate) => Promise<string>
+}
+
+/** One app-launched chat, as `useChatLauncher().createChat` passes it on. */
+export interface ChatLaunchCreate {
+  slotKey: string
+  agent: string
+  title?: string
+  folderId?: string
+  memoryMode?: string
 }
 
 export const AppSdkContext = createContext<AppSdkContextValue | null>(null)
@@ -186,6 +204,26 @@ export function permissionDenied(appName: string, path: string, allowedPaths: re
   return new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${path}. Declared: [${allowedPaths.join(', ')}]`, appLabel)
 }
 
+/** The one wire under the scoped client and the chat launcher: send a request
+ *  whose path is already scoped (the client's declared paths, or the launcher's
+ *  create the gateway holds to `chatLaunch`), and throw a scoped non-2xx. */
+async function sendScoped(path: string, init: RequestInit): Promise<Response> {
+  const res = await fetch(path, init)
+  noteSessionExpiredResponse(res)
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    // A stale pre-owner session denial raises the dashboard's re-auth prompt
+    // (installed by api/client); in a document without it — the vendored
+    // iframe copy of this SDK — detection is a no-op and the throw below is
+    // unchanged either way.
+    noteStaleOwnerResponse(res.status, text)
+    // The gateway's own signed-out 403, read the way api/client reads it, so
+    // a caller can tell "sign in again" from any other refusal (#20398).
+    throw new ScopedApiError(res.status, text, res.status === 403 && res.headers.get('X-Auth-Required') === 'true')
+  }
+  return res
+}
+
 function createScopedApi(allowedPaths: string[], appName: string, sessionKey: string | undefined, appLabel: string): AppApi {
   const check = (path: string): string => {
     // Reject absolute and protocol-relative URLs to prevent SSRF. Backslashes
@@ -216,20 +254,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
     } else if (headers.has('X-Session-Key')) {
       throw new Error('[app-sdk] X-Session-Key requires a host session binding')
     }
-    const res = await fetch(safePath, { ...init, headers })
-    noteSessionExpiredResponse(res)
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText)
-      // A stale pre-owner session denial raises the dashboard's re-auth prompt
-      // (installed by api/client); in a document without it — the vendored
-      // iframe copy of this SDK — detection is a no-op and the throw below is
-      // unchanged either way.
-      noteStaleOwnerResponse(res.status, text)
-      // The gateway's own signed-out 403, read the way api/client reads it, so
-      // a caller can tell "sign in again" from any other refusal (#20398).
-      throw new ScopedApiError(res.status, text, res.status === 403 && res.headers.get('X-Auth-Required') === 'true')
-    }
-    return res
+    return sendScoped(safePath, { ...init, headers })
   }
 
   const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
@@ -293,6 +318,39 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
 }
 
 /**
+ * The host-mediated create behind `useChatLauncher().createChat`.
+ *
+ * Not through the scoped client: the page declares no `/api/chat/slots`. The
+ * create names the app (`app_launch`, and `embed_app` as the scoped client's own
+ * create does), and the gateway holds it to that app's `permissions.chatLaunch`:
+ * the declared key prefix, agents, folder and memory modes, nothing else, never a
+ * slot another app or the person owns (`dashboard/app_chat_launch.py`).
+ */
+function createChatLauncher(appName: string, sessionKey: string | undefined): (opts: ChatLaunchCreate) => Promise<string> {
+  return async opts => {
+    // The host's binding, as the scoped client sends it, so a restricted-session
+    // check sees the surface the launch came from.
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    if (sessionKey) headers.set('X-Session-Key', sessionKey)
+    const res = await sendScoped('/api/chat/slots', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        name: opts.slotKey,
+        agent: opts.agent,
+        memory_mode: opts.memoryMode ?? 'persistent',
+        ...(opts.title ? { title: opts.title } : {}),
+        ...(opts.folderId ? { folder_id: opts.folderId } : {}),
+        app_launch: appName,
+        embed_app: appName,
+      }),
+    })
+    const slot = await res.json().catch(() => null) as { key?: unknown } | null
+    return typeof slot?.key === 'string' && slot.key ? slot.key : opts.slotKey
+  }
+}
+
+/**
  * Stable defaults for the three props every caller was hand-writing identically.
  *
  * Module-scope constants, not inline literals: the provider memoizes its context
@@ -342,6 +400,8 @@ export function AppScopedApiProvider({
   notifyFn = hostNotify,
   sessionKey,
   slotPush,
+  approvedBrowserVerbs,
+  appEnabled,
   children,
 }: {
   allowedApiPaths: string[]
@@ -373,6 +433,10 @@ export function AppScopedApiProvider({
   sessionKey?: string
   /** The host's per-slot change signal (slotPush.ts). Omitted, embeds poll. */
   slotPush?: SlotPush
+  /** Published as `info.permissions.browser`: the owner-approved browser verbs. */
+  approvedBrowserVerbs?: string[]
+  /** Published as `info.enabled`: whether the app is turned on. */
+  appEnabled?: boolean
   children: ReactNode
 }) {
   const identity = useAppIdentity()
@@ -391,13 +455,15 @@ export function AppScopedApiProvider({
   // this object from a fetch, so a fresh identity every render would rebuild
   // the context — and with it the scoped API client — on every render.
   const updateKey = JSON.stringify(appUpdate ?? null)
+  const browserKey = JSON.stringify(approvedBrowserVerbs ?? null)
   const value = React.useMemo<AppSdkContextValue>(() => ({
     api: createScopedApi(allowedApiPaths, resolvedName, sessionKey, appDisplayName || resolvedName),
     info: {
       name: resolvedName,
       version: appVersion,
-      permissions: { api: allowedApiPaths, events: allowedEvents },
+      permissions: { api: allowedApiPaths, events: allowedEvents, ...(approvedBrowserVerbs ? { browser: approvedBrowserVerbs } : {}) },
       active,
+      ...(appEnabled === undefined ? {} : { enabled: appEnabled }),
       // Spread, so the key is ABSENT rather than explicitly undefined when the
       // host has no answer: `'update' in info` then separates "not consulted"
       // from "consulted, nothing newer", which is the distinction the field
@@ -413,8 +479,9 @@ export function AppScopedApiProvider({
     navigate: navigateFn,
     notify: notifyFn,
     slotPush,
+    launchChat: createChatLauncher(resolvedName, sessionKey),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
+  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, browserKey, appEnabled, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

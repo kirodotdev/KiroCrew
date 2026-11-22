@@ -1163,6 +1163,33 @@ describe('the authorization status feed', () => {
     )
   })
 
+  it('joins the shared-grant sentences the way the language does, with no space after 。 in Japanese', async () => {
+    const { i18next } = await import('../i18n/all')
+    const { i18nT } = await import('../i18n/t')
+    await i18next.changeLanguage('ja')
+    try {
+      mcpServers.mockResolvedValue([server({ status: 'ok' })])
+      connectionsStatus.mockResolvedValue({
+        schema_version: 1,
+        connections: [{ slug: 'notion', status: 'connected', grantPresent: true, grantSharedWith: ['atlassian'] }],
+      })
+      mount()
+
+      await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+      fireEvent.mouseEnter(await waitFor(() =>
+        within(card('notion')).getByRole('button', {
+          name: i18nT('pages.connectionsPage.shared_signin_for_provider', { provider: 'Notion' }),
+        }),
+      ))
+      const fact = i18nT('pages.connectionsPage.grant_shared_fact', { names: 'atlassian' })
+      const caveat = i18nT('pages.connectionsPage.grant_shared_caveat')
+      expect(fact.endsWith('。')).toBe(true)
+      expect(screen.getByRole('tooltip').textContent).toContain(fact + caveat)
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
   it('hedges the shared-grant note when the census is incomplete', async () => {
     mcpServers.mockResolvedValue([server({ status: 'ok' })])
     connectionsStatus.mockResolvedValue({

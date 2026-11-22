@@ -87,15 +87,17 @@ logger = logging.getLogger(__name__)
 def ensure_ffmpeg_in_path() -> None:
     """Add known ffmpeg directories to PATH if they contain an ffmpeg binary.
 
-    Probes each candidate dir with ``shutil.which("ffmpeg", path=d)`` — that
-    honours ``PATHEXT`` on Windows (so ``ffmpeg.exe`` resolves) while still
-    matching a plain ``ffmpeg`` on POSIX.
+    Probes each candidate dir through :func:`soffice_discovery.which_within` with
+    the name joined to the directory, the same probe :func:`_find_system_ffmpeg`
+    uses. ``PATHEXT`` still applies on Windows (so ``ffmpeg.exe`` resolves), but a
+    bare ``"ffmpeg"`` would let a working-directory ``ffmpeg.exe`` answer for every
+    candidate and prepend folders that hold nothing, or do not exist.
     """
     path_parts = os.environ.get("PATH", "").split(os.pathsep)
     for d in reversed(_FFMPEG_CANDIDATE_DIRS):
         if d in path_parts:
             continue
-        if shutil.which("ffmpeg", path=d):
+        if d and soffice_discovery.which_within(os.path.join(d, "ffmpeg"), d):
             os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
             path_parts.insert(0, d)
 

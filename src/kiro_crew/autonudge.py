@@ -456,6 +456,7 @@ class AutoNudgeService:
         emit_judge_notice: Callable[[NudgeLoop, str], Awaitable[None]] | None = None,
         worker_running: Callable[[str], bool] | None = None,
         worker_closed: Callable[[str], bool] | None = None,
+        pull_remote_reports: Callable[[str], Awaitable[Any]] | None = None,
     ) -> None:
         self._base_dir = base_dir or config_dir()
         # The durable store's state and file protocol (see autonudge_service.store).
@@ -488,6 +489,11 @@ class AutoNudgeService:
         #: different question: a closed worker is stale AT ONCE, where an idle one waits
         #: out the staleness window. Absent means "not closed", which keeps the window.
         self._worker_closed_resolver = worker_closed
+        #: ``conductor key -> pull that board's remote worker reports``, awaited at the
+        #: start of each work-ledger tick so the hold and the probe read them on that
+        #: tick. Injected because the pull needs ``DashboardState``. ``None`` pulls
+        #: nothing, which leaves local-only ledgers exactly as they are.
+        self._remote_report_puller = pull_remote_reports
         self._loops: dict[str, NudgeLoop] = {}
         self._timers: dict[str, asyncio.Task] = {}
         # Loop ids whose re-arm was requested while their fire window was open.
@@ -1267,14 +1273,17 @@ class AutoNudgeService:
         task.add_done_callback(_finish)
 
     def _worker_running(self, session_key: str) -> bool:
-        """Whether *session_key*'s slot has a turn in flight.
+        """Whether *session_key* owns proven current or queued work.
 
-        False when no resolver was injected, which is the direction that cannot
-        lose a signal: the work-ledger probe uses this for the "not running" half
-        of the staleness conjunction, so an unknown liveness produces a stall wake
-        the conductor may not have needed (one turn) rather than silence about a
-        worker that stopped without reporting (the task). A resolver that raises is
-        treated the same way -- a slot-table read must not kill a tick.
+        The injected resolver defines the positive liveness fact. The work-ledger
+        binding uses ``session_activity.session_work_pending``; another caller may
+        supply a narrower predicate. False when no resolver was injected, which is
+        the direction that cannot lose a signal: the work-ledger probe uses this
+        for the "not running" half of the staleness conjunction, so an unknown
+        liveness produces a stall wake the conductor may not have needed (one turn)
+        rather than silence about a worker that stopped without reporting (the task).
+        A resolver that raises is treated the same way -- a state read must not kill
+        a tick.
         """
         resolver = self._worker_running_resolver
         if resolver is None or not session_key:
@@ -1399,6 +1408,7 @@ class AutoNudgeService:
     _run_timer_callback = _firing._run_timer_callback
     _extend_for_open_ledger = _firing._extend_for_open_ledger
     _holds_for_person_wait = _firing._holds_for_person_wait
+    _pull_remote_reports = _firing._pull_remote_reports
     _run_fire_cycle = _firing._run_fire_cycle
     _settle_fire_cycle = _firing._settle_fire_cycle
     _finish_fire_cycle = _firing._finish_fire_cycle

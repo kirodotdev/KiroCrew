@@ -70,11 +70,36 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for each server: the rule table reads headers and encoded credentials in
 #: two modules of its own (``redaction_structured.headers`` and ``.encoded``) where
 #: ``.protection`` was one.
+#: Raised by 1 for each server: the line-cap split of ``security.argv_floor_ssh`` moved
+#: the ssh verb gate into the owner ``security.argv_floor_ssh_gate``, which the floor
+#: imports with the rest of its owners; the module count rose by that one file and nothing
+#: new loads.
+#: Raised by 1 again for all four: the ssh-to-self floor's substitution-body check lives in
+#: its own module, ``kiro_crew.security.argv_floor_ssh_bodies``, which the deny floor that
+#: every listing already loads imports.
+#: Raised by 1 for each server: ``edition_locks.relay_selected``, which the composition
+#: root asks, reads the relay switch through ``remote_control.hosting`` (a stdlib-only
+#: leaf), since an unset ``tunnel.relay_enabled`` decides by the Crew's credential; the
+#: module count rose by that one file and nothing else loads. The relay client itself
+#: loads only when a tunnel starts (``platform.bootstrap.LazyRelayTunnelProvider``).
+#: Raised by 1 for ``mcp-core`` (491 to 492): the resource-subscription tools'
+#: declarations live in their own ``kiro_crew.mcp_tools.catalog.resources``, which
+#: the core listing loads from ``mcp_tools.DOMAIN_MODULES`` like every other domain.
+#: Raised by 1 for ``mcp-core`` (492 to 493): a Heartbeat's active hours live in their
+#: own ``kiro_crew.member_goals_hours``, which keeps ``member_goals`` under the line cap
+#: and which ``member_goals`` (loaded by the listing's ``validation`` schemas) imports;
+#: the module count rose by that one file and nothing else loads.
+#: Raised by 3 for all four servers by the git/tar self-target floor: ``argv_floor`` imports
+#: every owner when ``kiro_crew.security`` loads so a patch through the facade reaches each
+#: holder of a name, and this PR adds three owner modules -- ``argv_floor_git_tar`` (the
+#: floor), ``argv_floor_tar`` (the line-cap split of its tar grammar) and
+#: ``argv_floor_ssh_operand`` (the line-cap split of the ssh operand reader). The security
+#: package loads before the list, so the owners cannot move behind it; nothing else loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 488,
-    "mcp-cron": 358,
-    "mcp-guide": 352,
-    "mcp-mate": 353,
+    "mcp-core": 496,
+    "mcp-cron": 364,
+    "mcp-guide": 358,
+    "mcp-mate": 359,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

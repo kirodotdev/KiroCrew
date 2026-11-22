@@ -429,7 +429,9 @@ async def test_slack_kill_now_posts_to_thread_not_session_key(
     orch = orch_fixture
     # stop_turn must invoke on_hard for the post_message branch to run
 
-    async def _fake_stop_turn(key, *, force=False, on_soft=None, on_hard=None):
+    async def _fake_stop_turn(
+        key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
+    ):
         if on_hard:
             await on_hard()
         return "hard"
@@ -1218,3 +1220,167 @@ class TestTransportApprovalAuth:
         assert dec._futures["rq1"].result() is True
         grant.assert_called_once()
         assert grant.call_args.args[0] == "thread-1"
+
+
+# ---------------------------------------------------------------------------
+# Home-tab action buttons: a new thread in the owner's DM with the bot
+# ---------------------------------------------------------------------------
+
+
+def _home_tab_click(
+    action_id: str = "options_choice_dash_1",
+    value: str = 'action::{"todo": 7}',
+    user_id: str = "U_OWNER",
+) -> dict:
+    """A ``block_actions`` payload from a Home-tab button: no channel, no message."""
+    return {
+        "type": "block_actions",
+        "user": {"id": user_id},
+        "team": {"id": "T1"},
+        "container": {"type": "view", "view_id": "V1"},
+        "view": {"type": "home", "id": "V1", "blocks": []},
+        "actions": [
+            {
+                "action_id": action_id,
+                "value": value,
+                "text": {"type": "plain_text", "text": "Done"},
+            }
+        ],
+    }
+
+
+class TestHomeTabActionButton:
+    @pytest.fixture
+    def home(self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch):
+        """The orchestrator with a DM to open, the owner allowlist and a recorded turn."""
+        from kiro_crew.slack import interactions
+
+        orch_fixture.slack.open_dm = AsyncMock(return_value="D_OWNER")
+        monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: uid == "U_OWNER")
+        turn = AsyncMock()
+        monkeypatch.setattr(interactions, "handle_message", turn)
+        return orch_fixture, turn
+
+    @staticmethod
+    async def _click(payload: dict, orch: MagicMock) -> None:
+        from kiro_crew.slack import interactions
+
+        await interactions.dispatch(payload)
+        await asyncio.gather(*list(orch._handler_tasks))
+
+    def _assert_nothing_happened(self, orch: MagicMock, turn: AsyncMock) -> None:
+        orch.slack.post_message.assert_not_called()
+        orch.slack.update_message.assert_not_called()
+        turn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_owner_click_starts_one_turn_in_a_new_dm_thread(self, home, audit) -> None:
+        orch, turn = home
+        await self._click(_home_tab_click(), orch)
+
+        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
+        # The label is a new top-level message: thread_ts None, never "".
+        orch.slack.post_message.assert_awaited_once_with("D_OWNER", "Done", None)
+        # The Home view is never edited by the click.
+        orch.slack.update_message.assert_not_called()
+        turn.assert_called_once()
+        args, kwargs = turn.call_args.args, turn.call_args.kwargs
+        assert args[2:6] == ("D_OWNER", "Done", None, "9999.000")
+        assert args[6] == "U_OWNER"
+        assert kwargs["team_id"] == "T1"
+        assert "[Action button clicked: " + '{"todo": 7}]' in kwargs["action_context"]
+        assert kwargs["interpret_commands"] is False
+        assert [r["resources"] for r in _audit_rows(audit, "slack.action")] == [
+            "options_choice_dash_1"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_non_owner_click_does_nothing(self, home) -> None:
+        orch, turn = home
+        await self._click(_home_tab_click(user_id="U_STRANGER"), orch)
+        orch.slack.open_dm.assert_not_called()
+        self._assert_nothing_happened(orch, turn)
+
+    @pytest.mark.asyncio
+    async def test_a_shared_users_click_is_refused_as_owner_only(
+        self, home, audit, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        orch, turn = home
+        # slack.shared_access: the dispatcher admits this person for card answers.
+        monkeypatch.setattr(interactions, "prime_shared_user", AsyncMock())
+        monkeypatch.setattr(interactions, "is_shared_user", lambda uid: uid == "U_SHARED")
+        monkeypatch.setattr(interactions, "is_shared_listed", lambda uid: uid == "U_SHARED")
+        await self._click(_home_tab_click(user_id="U_SHARED"), orch)
+        orch.slack.open_dm.assert_not_called()
+        self._assert_nothing_happened(orch, turn)
+        assert [
+            (r["caller_identity"], r["error"]) for r in _audit_rows(audit, "slack.interactive")
+        ] == [("U_SHARED", "owner-only action")]
+
+    @pytest.mark.asyncio
+    async def test_channels_governance_deny_drops_it_before_any_post(
+        self, home, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        orch, turn = home
+        monkeypatch.setattr(
+            interactions, "channel_inbound_permitted", AsyncMock(return_value=False)
+        )
+        await self._click(_home_tab_click(), orch)
+        orch.slack.open_dm.assert_not_called()
+        self._assert_nothing_happened(orch, turn)
+
+    @pytest.mark.asyncio
+    async def test_a_dm_allow_policy_admits_the_click(
+        self, home, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from slack_code_channel_policy_helpers import allow_only, policy_refusals
+
+        from kiro_crew.slack.channel_policy import channel_refusal
+
+        orch, turn = home
+        rows = allow_only(monkeypatch, "D*")
+        # The payload's own channel id is empty, which this policy refuses: the
+        # click must be judged on the DM it posts into instead.
+        assert channel_refusal("", operation="probe", caller="U_OWNER")
+        rows.clear()
+
+        await self._click(_home_tab_click(), orch)
+        orch.slack.post_message.assert_awaited_once_with("D_OWNER", "Done", None)
+        turn.assert_called_once()
+        assert policy_refusals(rows, "slack.interactive") == []
+
+    @pytest.mark.asyncio
+    async def test_a_policy_that_refuses_the_dm_drops_it_before_any_post(
+        self, home, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from slack_code_channel_policy_helpers import allow_only, policy_refusals
+
+        orch, turn = home
+        rows = allow_only(monkeypatch, "C*")
+        await self._click(_home_tab_click(), orch)
+        orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
+        self._assert_nothing_happened(orch, turn)
+        assert [r["resources"] for r in policy_refusals(rows, "slack.interactive")] == [
+            "channel=D_OWNER"
+        ]
+
+    @pytest.mark.parametrize(
+        "action_id", ["options_choice_0", "options_choice_12", "options_choice_x_done_1"]
+    )
+    @pytest.mark.asyncio
+    async def test_numbered_choice_and_done_marker_stay_a_no_op(self, home, action_id) -> None:
+        orch, turn = home
+        await self._click(_home_tab_click(action_id=action_id), orch)
+        orch.slack.open_dm.assert_not_called()
+        self._assert_nothing_happened(orch, turn)
+
+    @pytest.mark.asyncio
+    async def test_a_value_without_the_action_prefix_stays_a_no_op(self, home) -> None:
+        orch, turn = home
+        await self._click(_home_tab_click(value="just text"), orch)
+        orch.slack.open_dm.assert_not_called()
+        self._assert_nothing_happened(orch, turn)

@@ -56,6 +56,7 @@ from kiro_crew.constants import (
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.option_marker_scan import crosses_line, option_labels
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
     redact_credentials,
@@ -758,7 +759,7 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
     text = relocate_glued_tail_marker(text)
     match = OPTIONS_RE_TRAILER.search(text)
     if match:
-        choices = [c.strip() for c in match.group("labels").split("|") if c.strip()]
+        choices = option_labels(match.group("labels"))
         return text[: match.start()].rstrip(), choices
     if hide_partial:
         idx = text.rfind("[OPTIONS")
@@ -796,7 +797,7 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
             # that opener was never in flight -- which is why one viability
             # check here beats walking earlier occurrences.
             tail = text[idx + len("[OPTIONS") :]
-            if not tail or tail.startswith(":"):
+            if not tail or (tail.startswith(":") and not crosses_line(tail)):
                 # A LINE-LEADING Markdown wrapper run abutting the fragment is
                 # part of the marker-to-be (``**[OPTIONS: A``): cutting at the
                 # ``[`` alone publishes a stray ``**`` on this frame. Widen the

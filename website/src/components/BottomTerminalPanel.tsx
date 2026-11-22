@@ -31,7 +31,7 @@ import {
   useBottomTerminal, useTerminalHydratePending, addTab, removeTab, hasTab, setActiveTab, setTabsOrder,
   renameTab, capTerminalName,
   openBottomTerminal, closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
-  toggleTerminalPosition, toggleTerminalFullscreen, setTerminalFullscreen, useTerminalFullscreen, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
+  toggleTerminalPosition, toggleTerminalFullscreen, setTerminalFullscreen, useTerminalFullscreen, MIN_WIDTH, MAX_VH, MAX_VW,
   setTerminalCloseFailed, useTerminalCloseFailed,
   type TermTab,
 } from '../hooks/useBottomTerminal'
@@ -537,8 +537,6 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
     for (const t of tabs) disposeTerminalConnection(t.id)
   }, [tabs])
 
-  const atCap = tabs.length >= MAX_TERMINALS
-
   if (hydratePending) return null
 
   return (
@@ -599,10 +597,9 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
         </div>
         {/* + opens a new terminal tab instantly (no menu). */}
         <button
-          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
           onClick={() => addTab(activeSlotProject)}
-          disabled={atCap}
-          title={atCap ? i18nT('components.bottomTerminalPanel.maximum_terminals', { n: MAX_TERMINALS }) : i18nT('components.bottomTerminalPanel.new_terminal')}
+          title={i18nT('components.bottomTerminalPanel.new_terminal')}
           aria-label={i18nT('components.bottomTerminalPanel.new_terminal')}
         >
           <Plus size={15} />

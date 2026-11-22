@@ -334,6 +334,25 @@ async def test_refusals(
     assert backend.seen == []
 
 
+@pytest.mark.parametrize(("host_forward", "status"), [(True, 200), (False, 421)])
+@pytest.mark.asyncio
+async def test_a_container_host_forward_is_served_when_not_direct_local(
+    gateway: TestClient,
+    backend: _Backend,
+    monkeypatch: pytest.MonkeyPatch,
+    host_forward: bool,
+    status: int,
+) -> None:
+    """A forward from the container's host (link-local peer) is served; nothing else new is."""
+    from kiro_crew.dashboard import origin
+
+    monkeypatch.setattr(origin, "is_direct_local_request", lambda request: False)
+    monkeypatch.setattr(origin, "is_host_forwarded_request", lambda request: host_forward)
+    resp = await gateway.get("/", headers={"Host": _HOST})
+    assert resp.status == status
+    assert len(backend.seen) == (1 if host_forward else 0)
+
+
 @pytest.mark.asyncio
 async def test_default_port_host_is_served_only_by_port_80_dashboard(
     gateway: TestClient, backend: _Backend

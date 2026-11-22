@@ -7,8 +7,9 @@ import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
 import { isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout } from '../utils/terminalPopout'
-import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells, getTerminalInputWs } from '../utils/terminalRegistry'
+import { isTerminalAtLimit, onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells, getTerminalInputWs } from '../utils/terminalRegistry'
 import { errMessage } from '../utils/thunkError'
+import { noteTerminalRun, type TerminalRunOutcome, type TerminalRunReason, type TerminalRunSource } from '../utils/terminalRunNote'
 import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal } from './useBottomTerminal'
 
 /** The refs the Run-in-terminal handler reads at event time. They mirror the
@@ -125,6 +126,15 @@ export function useRunInTerminalBridge({
       // host answers, or that this host never answers): not ours to answer.
       if (typeof detail.scope === 'string' ? detail.scope !== scope : !answersUnscoped()) return
       if (typeof code !== 'string' || !code) return
+      // Execution scope covers nested chats too. Report only a command from
+      // this host's own transcript; the gateway checks that it is a Bot thread.
+      const ownerSlot = typeof detail.scope === 'string'
+        && typeof detail.originSlot === 'string' && detail.originSlot === slotRef?.current
+        ? detail.originSlot : undefined
+      const source: TerminalRunSource = detail.source === 'run_yourself' ? 'run_yourself' : 'code_block'
+      const report = (outcome: TerminalRunOutcome, reason?: TerminalRunReason) => {
+        if (ownerSlot) noteTerminalRun(ownerSlot, { command: code, outcome, reason, source })
+      }
       // Opt-in reuse focuses the terminal tab the user selected and copies the
       // command for a manual paste. Sending raw bytes into a live terminal is
       // unsafe: a partially typed shell command or a foreground program owns
@@ -172,6 +182,8 @@ export function useRunInTerminalBridge({
           window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', {
             detail: { reqId, ok: copied, copied },
           }))
+          if (copied) report('copied')
+          else report('failed', 'copy_failed')
         })
         return
       }
@@ -182,13 +194,16 @@ export function useRunInTerminalBridge({
       if (readyRef && !readyRef.current) {
         showActionError(i18nT('pages.chatPage.run_in_terminal_cwd_pending_error'))
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok: false } }))
+        report('failed', 'not_ready')
         return
       }
       if (runsHereRef && runsHereRef.current !== true) {
-        showActionError(runsHereRef.current === false
+        const remote = runsHereRef.current === false
+        showActionError(remote
           ? i18nT('pages.chatPage.run_in_terminal_remote_chat_error')
           : i18nT('pages.chatPage.run_in_terminal_placement_pending_error'))
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok: false } }))
+        report('failed', remote ? 'remote_chat' : 'not_ready')
         return
       }
       // When reuse is off — whether the user set it off, or its config query is
@@ -208,18 +223,12 @@ export function useRunInTerminalBridge({
       }
       const sessionId = addDockTerminal(cwdRef.current ?? undefined, slotRef?.current ?? undefined)
       let settled = false
-      const emit = (ok: boolean) => {
+      const emit = (ok: boolean, noTab = false) => {
         if (settled) return
         settled = true
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
-      }
-      if (!sessionId) {
-        // F3: no fresh tab could be minted (the terminal cap is full). The
-        // command is neither copied nor run, so say so through ErrorNotice
-        // rather than leaving only the button's error glyph
-        // (errors-use-error-notice).
-        showActionError(i18nT('pages.chatPage.run_in_terminal_no_tab_error'))
-        emit(false); return
+        if (ok) report('ran')
+        else report('failed', noTab ? 'no_tab' : 'not_sent')
       }
       // The shell is known only once `ready` has arrived, which is exactly when
       // this fires — so read it here, not at dispatch time.
@@ -230,6 +239,14 @@ export function useRunInTerminalBridge({
         emit(sendToTerminalSession(sessionId, text))
       }, () => {
         if (settled) return
+        if (isTerminalAtLimit(sessionId)) {
+          // F3: the gateway refused a fresh shell at its terminal ceiling. The
+          // command is neither copied nor run, so say so through ErrorNotice
+          // rather than leaving only the button's error glyph
+          // (errors-use-error-notice).
+          showActionError(i18nT('pages.chatPage.run_in_terminal_no_tab_error'))
+          emit(false, true); return
+        }
         // Local disposal removes the socket before notifying failure, but the
         // tab-close caller removes the tab afterwards. Socket ownership here
         // distinguishes that release from an error on an upgraded connection;

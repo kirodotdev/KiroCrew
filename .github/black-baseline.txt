@@ -116,7 +116,6 @@ src/kiro_crew/apps/module_loader.py
 src/kiro_crew/apps/scaffold.py
 src/kiro_crew/apps/teardown.py
 src/kiro_crew/artifact_source.py
-src/kiro_crew/beacon.py
 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/local_review.py
@@ -136,7 +135,6 @@ src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
 src/kiro_crew/dashboard/handlers/terminal.py
 src/kiro_crew/dashboard/handlers/themes.py
-src/kiro_crew/dashboard/handlers/tunnel.py
 src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/port_reclaim.py
 src/kiro_crew/dashboard/routes/skills.py
@@ -170,7 +168,6 @@ src/kiro_crew/knowledge/agent_source.py
 src/kiro_crew/knowledge/artifact_ingest.py
 src/kiro_crew/knowledge/connectors/__init__.py
 src/kiro_crew/knowledge/dedup.py
-src/kiro_crew/knowledge/extractor.py
 src/kiro_crew/knowledge/folder_watcher.py
 src/kiro_crew/knowledge/ingestion.py
 src/kiro_crew/knowledge/kiroignore.py
@@ -265,7 +262,6 @@ test/test_auto_research.py
 test/test_auto_research_handlers_coverage.py
 test/test_auto_research_onloop_db.py
 test/test_bang_command_catchall.py
-test/test_beacon.py
 test/test_beacon_status_endpoint.py
 test/test_bench_cli.py
 test/test_bench_corpus.py
@@ -328,7 +324,6 @@ test/test_cron.py
 test/test_cron_acp_retry.py
 test/test_cron_approval_mode.py
 test/test_cron_arbiter_items.py
-test/test_cron_context_meter_seed.py
 test/test_cron_count_from_disk.py
 test/test_cron_dedup.py
 test/test_cron_history.py
@@ -531,7 +526,6 @@ test/test_model_registry_parity.py
 test/test_module_loader.py
 test/test_native_subagent_spawn.py
 test/test_no_blocking_call_on_loop.py
-test/test_no_config_dir_in_async.py
 test/test_node_toolchain_resolution.py
 test/test_node_version_pins.py
 test/test_notification_bus.py
@@ -593,7 +587,6 @@ test/test_sandbox_first_party_exec.py
 test/test_sandbox_launcher_sweep.py
 test/test_sandbox_probe.py
 test/test_sandbox_remedy.py
-test/test_sandbox_unsandboxed_exec_consent.py
 test/test_scenarios_v2_logic.py
 test/test_search_sessions_cost.py
 test/test_sel.py

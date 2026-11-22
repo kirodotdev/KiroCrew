@@ -101,9 +101,12 @@ function waitForGateway({
       if (now() - start > maxWaitMs) {
         const e = new Error("Backend timeout");
         e.kind = "timeout";
+        e.waitedMs = maxWaitMs;
         return reject(e);
       }
-      onStatus(`Waiting for gateway… ${Math.round((now() - start) / 1000)}s`);
+      // The deadline is part of the line so a long first launch reads as
+      // progress toward a known end, not an open-ended spinner.
+      onStatus(`Waiting for gateway… ${Math.round((now() - start) / 1000)}s of ${Math.round(maxWaitMs / 1000)}s`);
       checkBackend()
         .then(() => { onStatus("Connected ✓"); resolve(); })
         .catch(() => setTimeoutFn(poll, pollIntervalMs));
@@ -146,7 +149,7 @@ function describeGatewayFailure(failure) {
   // this message names the host to check first, because reaching the crew is
   // what the user asked for.
   // `localStartBlocked` joins this family rather than overloading `disabled`:
-  // the setting is ON in that state and nothing was launched anyway, because
+  // the setting is ON in that state and no gateway runs anyway, because
   // the port this launch targets is not one a new gateway may bind.
   if (failure.disabled || failure.localStartBlocked) {
     if (failure.remoteHost) {
@@ -275,10 +278,10 @@ function describeGatewayFailure(failure) {
         + "KIROCREW_PORT set to a port number that has no remote host configured.";
     }
     if (failure.localStartBlocked === "foreign-holder") {
-      // Something answers there and this app can attribute it neither to itself
-      // nor to a crew recorded on that port. Adopting it would post this
-      // machine's local secret to it, because the mint only requires a literal
-      // loopback origin and a tunnel's local end is one.
+      // Something holds the port, answering or not, and this app can attribute
+      // it neither to itself nor to a crew recorded on that port. Adopting it
+      // would post this machine's local secret to it, because the mint only
+      // requires a literal loopback origin and a tunnel's local end is one.
       //
       // Worded as what this app knows rather than as what the holder is: it may
       // well BE a Kiro Crew gateway, reached over a tunnel from another machine.
@@ -475,9 +478,41 @@ function isPortInUse(text) {
   return /address already in use|already in use|EADDRINUSE/i.test(String(text));
 }
 
+/**
+ * Whether a boot-wait failure is a timeout on a gateway this app spawned and
+ * whose process is still running. Ownership alone is not enough: a stale-bundle
+ * relaunch can leave ownership "spawned" with the old child already exited and
+ * no failure filed, so the child's own exit state is read too.
+ *
+ * @param {{error?: {kind?: string}|null, ownTarget: boolean, ownership: string, child?: {exitCode: number|null, signalCode: string|null}|null}} o
+ * @returns {boolean}
+ */
+function isLiveSpawnedTimeout({ error, ownTarget, ownership, child }) {
+  return error?.kind === "timeout" && ownTarget && ownership === "spawned"
+    && !!child && child.exitCode === null && child.signalCode === null;
+}
+
+/**
+ * The timeout message for a gateway this app spawned that is still running but
+ * never answered. "Make sure 'kirocrew gateway' is running" is wrong here: the
+ * app started it and it has not exited, so the launch log beside this message
+ * is where its own account of what it was doing lives.
+ *
+ * @param {number} waitedMs  the deadline that elapsed
+ * @returns {string}
+ */
+function describeSpawnedGatewayTimeout(waitedMs) {
+  return `Kiro Crew started its gateway, but it did not answer within `
+    + `${Math.round(waitedMs / 1000)} seconds and is still running. The launch `
+    + "log below shows how far it got. Choose Retry to keep waiting for it, "
+    + "or Quit.";
+}
+
 module.exports = {
   DEFAULT_GATEWAY_WAIT_MS,
   LOCAL_GATEWAY_WAIT_MS,
+  describeSpawnedGatewayTimeout,
+  isLiveSpawnedTimeout,
   LTS_PRE_BIND_CHECKS_MS,
   LTS_PRE_BIND_HEADROOM_MS,
   gatewayWaitTimeoutMs,

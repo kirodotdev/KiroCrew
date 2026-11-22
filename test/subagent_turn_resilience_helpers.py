@@ -94,8 +94,11 @@ def _manager(sessions: MagicMock) -> SubagentManager:
     return mgr
 
 
-async def _spawn_and_wait(mgr: SubagentManager, task: str = "do work") -> SubagentInfo:
-    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+async def _spawn_and_wait(
+    mgr: SubagentManager, task: str = "do work", *, sel: MagicMock | None = None
+) -> SubagentInfo:
+    """Run one spawn to its end; *sel* is the SEL stand-in, for a test reading the audit."""
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel", sel or MagicMock()):
         info = mgr.spawn(task)
         assert info is not None
         # flake-ok: pre-existing unbounded await of a run's task, moved verbatim

@@ -544,18 +544,20 @@ def _spawn_run_receipt(
         # A verdict is keyed by (effort, text): a tasks[] object may override
         # the batch-wide level, so each line names the level its tasks asked for.
         for drop_ids, (lvl, drop_reason) in _collapse_effort_verdicts(effort_drops):
-            spawn_lines.append(f"ℹ reasoning_effort='{lvl}' dropped for {drop_ids}: {drop_reason}")
+            spawn_lines.append(
+                f"Note: reasoning_effort='{lvl}' dropped for {drop_ids}: {drop_reason}"
+            )
         for applied_ids, (lvl, applied_note) in _collapse_effort_verdicts(effort_applies):
             spawn_lines.append(
-                f"✓ reasoning_effort='{lvl}' applied for {applied_ids} ({applied_note})"
+                f"reasoning_effort='{lvl}' applied for {applied_ids} ({applied_note})"
             )
-        # Neither a ✓ nor "dropped": the outcome is decided after this result.
+        # Neither "applied" nor "dropped": the outcome is decided after this result.
         for pending_ids, (lvl, pending_note) in _collapse_effort_verdicts(effort_pendings):
-            spawn_lines.append(f"ℹ reasoning_effort='{lvl}' for {pending_ids}: {pending_note}")
+            spawn_lines.append(f"Note: reasoning_effort='{lvl}' for {pending_ids}: {pending_note}")
         # Memory cost of a pin: it is the user's setting, not the call's, that
         # usually carries it, so the receipt is where the caller first sees it.
         for note_ids, (_unused, note) in _collapse_effort_verdicts(runtime_notes or []):
-            spawn_lines.append(f"ℹ {note_ids}: {note}")
+            spawn_lines.append(f"Note: {note_ids}: {note}")
     if not parent_session and agent_ids:
         # Orphan alert: without a parent session key the subagents cannot
         # deliver completion events back to this conversation and will
@@ -564,7 +566,7 @@ def _spawn_run_receipt(
         # loudly so the agent/user can fall back to spawn_list +
         # result.txt polling instead of waiting forever.
         spawn_lines.append(
-            "⚠ parent_session UNRESOLVED — these subagents are orphaned: "
+            "Warning: parent_session UNRESOLVED — these subagents are orphaned: "
             "completion events will NOT arrive in this conversation. "
             "Poll spawn_list and read ~/.kiro/crew/subagents/<id>/result.txt "
             "instead. (Identity plumbing issue — check KIROCREW_HOST_PID / "
@@ -626,7 +628,7 @@ def _spawn_run_receipt(
             )
     if errors:
         if agent_ids:
-            spawn_lines.append(f"\n❌ {len(errors)} task(s) failed to start:")
+            spawn_lines.append(f"\nError: {len(errors)} task(s) failed to start:")
         elif transport_errors:
             # No confirmed starts: retain the Error prefix used by SEL and
             # callers even though other submissions remain uncertain.
@@ -641,7 +643,7 @@ def _spawn_run_receipt(
     if transport_errors:
         if agent_ids or errors:
             spawn_lines.append(
-                f"\n⚠ {len(transport_errors)} task(s) have unknown acceptance status:"
+                f"\nWarning: {len(transport_errors)} task(s) have unknown acceptance status:"
             )
         else:
             spawn_lines.append(
@@ -961,13 +963,17 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why  # noqa: F401
     from kiro_crew.mcp_tools.spawn_parts.schemas import (  # noqa: F401
+        _BRIEF_LIMIT,
         _CORE,
         _MAX_ROSTER_NAMES,
         _SPAWN,
+        _TOOLLESS_MARK,
         _agent_roster_hint,
         _parent_allowlist_filter,
         _parent_template_for_roster,
+        _roster_with_tools_first,
         _subagent_reader,
+        _toolless_agent_names,
         schemas,
     )
     from kiro_crew.mcp_tools.spawn_parts.session_memory import (  # noqa: F401
@@ -975,6 +981,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _memory_count,
         _memory_mb,
         _memory_runtime_line,
+        _worker_line,
         render_session_memory,
     )
     from kiro_crew.mcp_tools.spawn_parts.wave import (  # noqa: F401
@@ -990,7 +997,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
     from kiro_crew import subagent_standalone  # noqa: F401
-    from kiro_crew.agent_discovery import list_agents  # noqa: F401
+    from kiro_crew.agent_discovery import (  # noqa: F401
+        SCOPE_GLOBAL,
+        _kiro_agents_dir,
+        _read_agent_spec,
+        list_agents,
+        spec_is_toolless,
+    )
     from kiro_crew.constants import (  # noqa: F401
         DEFAULT_SUBAGENT_MAX_TURNS,
         LEAKED_TOOL_CALL_NOTE,
@@ -1014,6 +1027,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.subagent_read_collected import post_mark_collected  # noqa: F401
     from kiro_crew.subagent_wait_reasons import queued_wait_text  # noqa: F401
     from kiro_crew.validation import (  # noqa: F401
+        MAX_LONG_STRING,
         MAX_MEDIUM_STRING,
         MAX_RESPONSE_LEN,
         MAX_SHORT_STRING,

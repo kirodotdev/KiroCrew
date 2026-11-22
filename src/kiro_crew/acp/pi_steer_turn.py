@@ -10,11 +10,17 @@ Every function here takes the client as its first argument and keeps its state i
 the fields ``AcpClient.__init__`` creates: ``_pi_steer_turn`` (the open turn's request
 id, or ``None``), ``_pi_steers_pending`` (sequence number -> the wrapped text the
 caller's pending entry is matched by) and ``_pi_steer_lock`` (serializes a write
-against the turn's close, so no file is written after its turn closed). Only the
-channel is read with a default, because every client reaches these entry points and
-only a pi launch mints one.
+against the turn's close, so no file is written after its turn closed). The
+channel, the gate nonce and the backend are read with a default, because every
+client reaches these entry points. Only a pi launch mints the channel; a strands
+launch sets the gate nonce too, which is why :func:`model_error` checks the backend.
 
-Fields read: ``_pi_steer_channel``, ``_session_id``, ``_turn_done``, ``_cancelled``.
+It also reads the extension's report of a failed model call (:func:`model_error`),
+which pi-acp never forwards, so the turn fails instead of ending as an empty reply.
+
+Fields read: ``backend``, ``_pi_steer_channel``, ``_pi_gate_nonce``, ``_session_id``,
+``_turn_done``, ``_cancelled``. Written: ``_last_steer_monotonic`` (:func:`steer`),
+``_last_stop_reason`` (:func:`raise_model_error`).
 """
 
 from __future__ import annotations
@@ -23,9 +29,10 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
-from kiro_crew.acp.harness.pi_steer import steer_echo_seq
+from kiro_crew.acp.harness.pi_steer import model_error_line, steer_echo_seq
+from kiro_crew.acp.transport_errors import _raise_acp_error
 from kiro_crew.acp.types import (
     EVENT_STEER_CONSUMED,
     MAX_STEERING_ANSWERS,
@@ -35,6 +42,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     wrap_user_message,
 )
+from kiro_crew.acp_backends import ACP_BACKEND_PI
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -147,6 +155,49 @@ async def steer(client: AcpClient, text: str) -> bool:
     return True
 
 
+def _notify_text(msg: JsonRpcMessage) -> str | None:
+    """The text of a pi-acp NOTIFY chunk, else ``None``.
+
+    An ``agent_message_chunk`` carrying ``_meta.piAcp.notify``, which only an extension
+    dialog produces, never model text.
+    """
+    params: Any = msg.params if isinstance(msg.params, dict) else {}
+    update = params.get("update")
+    if not isinstance(update, dict) or update.get("sessionUpdate") != UPDATE_AGENT_MESSAGE_CHUNK:
+        return None
+    meta = update.get("_meta")
+    pi_acp = meta.get("piAcp") if isinstance(meta, dict) else None
+    if not isinstance(pi_acp, dict) or "notify" not in pi_acp:
+        return None
+    content = update.get("content")
+    text = content.get("text") if isinstance(content, dict) else None
+    return text if isinstance(text, str) else None
+
+
+def model_error(client: AcpClient, msg: JsonRpcMessage) -> str | None:
+    """The failure line of the extension's failed-model-call notification, else ``None``.
+
+    Read only on a pi client with its launch's gate nonce, only off a NOTIFY chunk, and
+    only under that nonce. The frame carries no text for the turn.
+    """
+    nonce: str = getattr(client, "_pi_gate_nonce", "") or ""
+    is_pi = getattr(client, "backend", None) == ACP_BACKEND_PI
+    text = _notify_text(msg) if is_pi and nonce else None
+    return None if text is None else model_error_line(text, nonce)
+
+
+def raise_model_error(client: AcpClient, line: str) -> NoReturn:
+    """Fail the turn whose prompt answered ``end_turn`` after reporting *line*.
+
+    Raised through the shared classifier, as a JSON-RPC provider error would be, so
+    its wording and transient verdict are every other harness's.
+    """
+    client._last_stop_reason = ""
+    error = {"code": -32603, "message": "Internal error", "data": line}
+    _raise_acp_error(error, client._advertised_model_ids(), backend=client.backend)
+    raise AssertionError("unreachable: _raise_acp_error always raises")
+
+
 def echo_event(client: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None | bool:
     """Read the extension's consumed notification for a steer of this turn.
 
@@ -160,17 +211,8 @@ def echo_event(client: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None | bool
     channel = getattr(client, "_pi_steer_channel", None)
     if channel is None:
         return False
-    params: Any = msg.params if isinstance(msg.params, dict) else {}
-    update = params.get("update")
-    if not isinstance(update, dict) or update.get("sessionUpdate") != UPDATE_AGENT_MESSAGE_CHUNK:
-        return False
-    meta = update.get("_meta")
-    pi_acp = meta.get("piAcp") if isinstance(meta, dict) else None
-    if not isinstance(pi_acp, dict) or "notify" not in pi_acp:
-        return False
-    content = update.get("content")
-    text = content.get("text") if isinstance(content, dict) else None
-    if not isinstance(text, str):
+    text = _notify_text(msg)
+    if text is None:
         return False
     seq = steer_echo_seq(text, channel.nonce)
     if seq is None:

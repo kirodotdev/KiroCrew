@@ -23,6 +23,8 @@ from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _text_scrape_regresses_api_value,
 )
 
+pytestmark = pytest.mark.usefixtures("no_ambient_kiro_api_key")
+
 _ARN = "arn:aws:codewhisperer:us-east-1:1:profile/SHARED"
 # One IdC org, one shared profile: A and B differ only in their IdC userId.
 _IDENTITY = {"email": "dev@corp.com", "start_url": "https://corp.awsapps.com/start"}

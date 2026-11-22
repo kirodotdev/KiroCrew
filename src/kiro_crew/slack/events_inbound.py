@@ -4,7 +4,8 @@
 ``TrustedBotTurnLedger`` and the process-wide ``_trusted_bot_turns`` are the loop guard
 for mutually trusted gateways; ``_thread_follow_admits`` (with
 ``_addressed_to_someone_else``) decides whether thread-follow admits an unmentioned
-message; ``_dm_single_session_enabled`` says whether a 1:1 DM runs as one flat session;
+message; ``_dm_single_session_enabled`` says whether a 1:1 DM runs as one flat session
+and ``_dm_stop_flat_key`` which key a Stop there addresses;
 and ``_handle_message_deleted`` cancels a deleted message's queued or in-flight turn. The
 listener's ``_background_tasks`` set and ``_maybe_prompt_owner`` live here too, and
 importing this module sets the Slack SDK's WebSocket logger to WARNING, which drops its
@@ -25,10 +26,12 @@ from collections import OrderedDict
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.loader import ACTIVATION_REVIEW
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.sel import sel
 from kiro_crew.session import unlink_queued_temp_paths
 from kiro_crew.slack.enterprise import validated_self_user_id
-from kiro_crew.slack.handler import is_allowed_user
+from kiro_crew.slack.handler import is_allowed_user, is_shared_user
+from kiro_crew.slack.shared_access import prime_shared_user
 from kiro_crew.slack.transport_dispatch import flat_dm_session_key
 
 if TYPE_CHECKING:
@@ -160,13 +163,31 @@ def _dm_single_session_enabled(orch: GatewayOrchestrator, channel: str) -> bool:
     return orch._cfg.channel_config(channel).activation != ACTIVATION_REVIEW
 
 
+def _dm_stop_flat_key(orch: GatewayOrchestrator, channel: str, thread_ts: str | None) -> str | None:
+    """The flat DM key a Stop typed or pressed in *thread_ts* of *channel* addresses.
+
+    None when the DM is not single-session, and also when the thread's own session
+    holds a turn: a button click's turn runs there, outside the flat session, so
+    that Stop addresses the thread as it does with ``slack.dm_single_session`` off.
+    """
+    flat_key = flat_dm_session_key(
+        channel, thread_ts, enabled=_dm_single_session_enabled(orch, channel)
+    )
+    sessions = orch.sessions
+    if flat_key and thread_ts and sessions is not None:
+        if sessions.is_busy(canonical_key(thread_ts)):
+            return None
+    return flat_key
+
+
 async def _handle_message_deleted(orch: GatewayOrchestrator, event: dict) -> None:
     """Handle message_deleted subtype — cancel queued or in-flight messages."""
     deleted_ts = event.get("deleted_ts")
     _del_thread_ts = event.get("previous_message", {}).get("thread_ts")
     _del_channel = event.get("channel", "")
     _del_user = event.get("previous_message", {}).get("user", "")
-    if deleted_ts and _del_channel and is_allowed_user(_del_user):
+    await prime_shared_user(_del_user, orch)
+    if deleted_ts and _del_channel and (is_allowed_user(_del_user) or is_shared_user(_del_user)):
         # Same key the turn was queued under, or the cancellation misses it: a
         # deleted top-level message in a single-session DM belongs to the
         # channel's session, not to its own timestamp.

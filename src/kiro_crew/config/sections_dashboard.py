@@ -30,10 +30,10 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
 # The local editors the Markdown panel's "Open in <editor>" row can target
 # (``dashboard.remote_editor.editor``). Each id is the URL scheme of an editor
 # that keeps the ``vscode-remote`` authority, so the row's link is
-# ``<id>://vscode-remote/ssh-remote+<host><absolute path>``. The dashboard's own list,
+# ``<id>://vscode-remote/ssh-remote+<host><absolute path>:1``. The dashboard's own list,
 # with each editor's name, is ``REMOTE_EDITORS`` in
 # ``website/src/utils/remoteEditorUrl.ts``; keep the two equal.
-REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode",)
+REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode", "kiro")
 # ``dashboard.remote_editor.host``: a DNS name or ``~/.ssh/config`` alias, the
 # grammar the desktop app's editor-link check takes (``HOSTNAME_RE`` in
 # ``website/electron/validation.js``). Nothing that adds URL structure after
@@ -52,19 +52,31 @@ REMOTE_EDITOR_HOST_PATTERN = (
 # the browser's copy as a cache of this section, and
 # test_feature_previews_config.py pins the two lists equal.
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
+    # Has server behavior: kiro_crew.apps.browser_sdk.preview_on gates ctx.browser
+    # and every permissions.browser verb.
+    "app_browser_sdk",
     "artifact_deploy",
     "bridge_approvals",
     "chat_runtime_sharing",
+    # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,
+    # the connector socket, the chat choice and every start on it.
+    "connected_computers",
+    # Has server behavior: kiro_crew.auth.login.endpoints asks the edition for its
+    # IAM Identity Center sign-in profiles only while it is on.
+    "crew_client",
     "crew_oauth",
     "dashboard_stale_fields",
     "dashboard_stale_wake",
     "explore",
     "folder_conductor",
     "remote_crew_chat",
-    "secrets_vault",
     "session_environments",
     "session_harness",
+    "visual_refresh",
     "webhooks",
+    # Has server behavior: kiro_crew.widgets_preview gates `widgets` on
+    # dashboard_save (schema, tool and save route) and the guide agents read.
+    "widgets",
     "worker_grill",
 )
 
@@ -267,6 +279,15 @@ class DashboardConfig:
             "30 seconds in the MCP gateway process).",
         ),
     )
+    turn_cache_estimate: bool = field(
+        default=False,
+        metadata=_meta(
+            "Estimate cache rebuilds",
+            'Mark a reply in its footer as "Cache likely rebuilt" when the backend reports '
+            "no cache counts and the turn started after a pause longer than the model keeps "
+            "the conversation cached. Backends that report cache counts are unaffected.",
+        ),
+    )
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(
@@ -450,6 +471,18 @@ class DashboardConfig:
             "512 MB ceiling. A chat upload is held in memory while its type is "
             "checked, so a large value costs gateway memory per upload. Takes "
             "effect on the next upload; no restart.",
+        ),
+    )
+    attachment_sheet_digest: bool = field(
+        default=False,
+        metadata=_meta(
+            "Digest Attached CSV And TSV Files",
+            "When on, a CSV or TSV file attached in chat is followed in the prompt by "
+            "a short digest: column names, an inferred type for each column, a row "
+            "count and the first three rows. Only the first 256 KiB is read; each "
+            "prompt shows at most 3 files, 20 columns each, with cells cut to 40 "
+            "characters. Off by default: the agent then gets the path alone. Takes "
+            "effect on the next message; no restart.",
         ),
     )
     mcp_probe_timeout_secs: int = field(
@@ -717,6 +750,18 @@ class DashboardConfig:
             "while session summaries are on.",
         ),
     )
+    auto_open_conductor_board: bool = field(
+        default=True,
+        metadata=_meta(
+            "Auto-open the Board in the side panel",
+            "Open the right side panel on the Board tab the first time you open a "
+            "conductor mode chat. With this off, a conductor mode chat opens like "
+            "any other chat: its panel stays closed unless Keep the side panel "
+            "open is on, and the Board is still the panel's first tab. Turning "
+            "conductor mode on in a chat still opens the Board. This setting "
+            "does not apply on a phone.",
+        ),
+    )
     # Default TRUE: the chip strip shipped unconditionally before this switch
     # existed, so a config that never mentions the key must render exactly what
     # it rendered before.
@@ -766,8 +811,7 @@ class DashboardConfig:
                         "label": "Max terminal sessions",
                         "help": (
                             "Ceiling on concurrent terminal sessions across every chat, "
-                            "server-wide. Each chat's activity bar caps its own terminals "
-                            "below this. At the ceiling, opening a terminal ends the shell "
+                            "server-wide. At the ceiling, opening a terminal ends the shell "
                             "that has had no browser attached the longest (at least a "
                             "minute) and posts a notice; with none, the open is refused."
                         ),
@@ -953,9 +997,29 @@ class DashboardConfig:
         default="",
         metadata=_meta(
             "Theme Mode",
-            "Dashboard color mode preference: 'dark', 'light', or 'system'. "
-            "Empty = unset (frontend falls back to localStorage or 'system').",
-            enum=["", "dark", "light", "system"],
+            "Dashboard color mode preference: 'dark', 'light', 'system', or "
+            "'schedule' (light from theme_schedule_light, dark from "
+            "theme_schedule_dark). Empty = unset (frontend falls back to "
+            "localStorage or 'system').",
+            enum=["", "dark", "light", "system", "schedule"],
+        ),
+    )
+    theme_schedule_light: str = field(
+        default="",
+        metadata=_meta(
+            "Theme Schedule Light",
+            "24-hour HH:MM at which the 'schedule' theme mode turns light, read in "
+            "the time zone of the device showing the dashboard. Empty = never set "
+            "(07:00).",
+        ),
+    )
+    theme_schedule_dark: str = field(
+        default="",
+        metadata=_meta(
+            "Theme Schedule Dark",
+            "24-hour HH:MM at which the 'schedule' theme mode turns dark, read in "
+            "the time zone of the device showing the dashboard. Empty = never set "
+            "(19:00).",
         ),
     )
     sso_login_flags: str = field(
@@ -975,6 +1039,16 @@ class DashboardConfig:
             "Theme Color",
             "Dashboard color theme slug (e.g. 'kiro', 'emerald', 'monokai'). "
             "Empty = unset (frontend falls back to localStorage or 'kiro').",
+        ),
+    )
+    instance_label: str = field(
+        default="",
+        metadata=_meta(
+            "Instance Label",
+            "A short name for this gateway (e.g. 'pod-a', 'Lab box'), shown in the "
+            "browser tab title and favicon and sent as the origin of a session "
+            "transferred to another instance. Empty = unset (the tab title and "
+            "icon stay as they are and a transfer names the host).",
         ),
     )
     language: str = field(
@@ -1235,6 +1309,15 @@ class DashboardConfig:
         metadata=_meta(
             "Folder Suggestions Enabled",
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
+    folder_suggestions_auto_apply: bool = field(
+        default=False,
+        metadata=_meta(
+            "Folder Suggestions Auto Apply",
+            "While folder suggestions are on, file the session into the suggested "
+            "folder instead of asking first; the card then says where it went, with "
+            "an undo. Ignored while folder suggestions are off.",
         ),
     )
     project_tags_enabled: bool = field(

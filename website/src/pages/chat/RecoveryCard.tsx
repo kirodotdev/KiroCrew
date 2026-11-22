@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-react'
+import { Anchor, ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { DENY_REASON_MARKER } from '../../utils/denyReason'
@@ -267,10 +267,12 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
     // Its own copy rather than a reused interruption label: the turn ran to
     // completion and a Stop hook asked for another, so nothing was interrupted,
     // stalled or recovered. The hook's own instruction is the expandable body.
+    // The card stays in the transcript long after that turn ends, so neither
+    // line may say it is still running.
     return {
       kind,
-      title: i18nT('pages.chat.recoveryCard.continued_by_a_hook'),
-      detail: i18nT('pages.chat.recoveryCard.hook_requested_continuing'),
+      title: i18nT('pages.chat.recoveryCard.hook_asked_for_another_turn'),
+      detail: i18nT('pages.chat.recoveryCard.sent_after_the_previous_turn_ended'),
       chip: '',
       body,
     }
@@ -386,6 +388,7 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
 export type InjectKind =
   | 'cron'
   | 'mcp_app'
+  | 'resource'
   | 'recovery'
   | 'synthesis'
   | 'user_replay'
@@ -423,6 +426,9 @@ export const INJECT_KIND_OPENS_TURN: Readonly<Record<InjectKind, boolean>> = {
   // this, isFeatureRequestRefusal walks past it to an earlier user row and
   // mis-attributes an app turn's error to that older message.
   mcp_app: true,
+  // An MCP resource-subscription wake dispatches a turn of its own the same way
+  // an app message does (`session_deliver`'s `resource` origin).
+  resource: true,
   // A re-routed automation refusal is drained ALONE and dispatches a turn of
   // its own (chat_turn/queue_drain.py `_start_next_queued_turn`), carrying the originating
   // wake's provenance; so it OPENS a turn, and the interrupt-recovery and
@@ -476,9 +482,9 @@ export function opensTurn(row: ChatMessage): boolean {
 }
 
 /**
- * Decide which card, if any, an `inject` row gets. The single decision point
- * shared by ChatPage and the transcript-renderer registry, so the surfaces
- * cannot disagree.
+ * Decide which card, if any, an `inject` row gets. The single decision point,
+ * called by the app-sdk default registry that every surface draws through, so
+ * the surfaces cannot disagree.
  *
  * Returns a {@link ParsedRecovery} to render as a folded note, or null to mean
  * "not mine — let the caller's own renderer draw this row".
@@ -508,11 +514,9 @@ export function resolveInjectCard(m: { content: string; meta?: Record<string, un
   // early returns for those three were measured to be unreachable (the allowlist
   // already rejects them), so they are omitted rather than kept as dead code.
   // The behavioural contract for each is pinned in RecoveryCard.test.tsx.
-  // `automation_notice` is also NOT a note here: it is suppressed entirely on
-  // the Sessions page (transcriptRenderers `automation_notice_inject`) because
-  // the refusal's `notice` bar already shows it, and hidden in the crewmate DM
-  // by MACHINERY_ROLES — so it never needs a card.
-  if (kind !== 'recovery' && kind !== 'synthesis' && kind !== 'workflow' && kind !== 'heartbeat') return null
+  // `automation_notice` is not a note: the registry's `automation_notice_inject`
+  // row hides it, because the refusal's `notice` bar already shows it.
+  if (kind !== 'recovery' && kind !== 'synthesis' && kind !== 'workflow' && kind !== 'heartbeat' && kind !== 'resource') return null
 
   return {
     kind: 'generic',
@@ -560,9 +564,18 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
   // Synthesis is routine, but the retry glyph would misdescribe it — nothing is
   // being retried, several results are being folded into one. Layers says that.
   // A generic notice makes no claim at all about what happened, so it gets the
-  // neutral info glyph rather than borrowing another kind's meaning.
+  // neutral info glyph rather than borrowing another kind's meaning. A hook
+  // continuation retried nothing either; it wears the Hooks page's anchor.
   const Icon =
-    kind === 'synthesis' ? Layers : kind === 'generic' ? Info : routine ? RotateCcw : TriangleAlert
+    kind === 'synthesis'
+      ? Layers
+      : kind === 'generic'
+        ? Info
+        : kind === 'hook'
+          ? Anchor
+          : routine
+            ? RotateCcw
+            : TriangleAlert
 
   return (
     <div

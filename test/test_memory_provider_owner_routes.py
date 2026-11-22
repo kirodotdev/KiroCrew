@@ -579,3 +579,61 @@ def test_the_cli_learn_verbs_speak_to_the_gateway(monkeypatch, capsys) -> None:
     assert cli.provider_replaces() is False
     set_provider("replace", READONLY_ID)
     assert cli.provider_replaces() is True
+
+
+@pytest.mark.asyncio
+async def test_the_owners_egress_consent_names_the_install(served, monkeypatch) -> None:
+    from kiro_crew.memory_provider import consent
+
+    caps = served.fixture.capabilities()
+    remote = type(caps)(**{**caps.__dict__, "egress": "remote"})
+    monkeypatch.setattr(served.fixture, "connect", lambda want_mode=None: remote)
+    monkeypatch.setattr(served.fixture, "installed_at", "2026-11-10T09:00:00Z")
+    body = {"mode": "augment", "id": FIXTURE_ID, "egress_consent": True}
+    response = await handlers.api_memory_provider_put(
+        _owner(served, "/api/memory/provider", method="PUT", body=body)
+    )
+    assert response.status == 200
+    assert "installed_at" not in _json(response)
+    (grant,) = consent.read_grants()
+    assert grant["installed_at"] == "2026-11-10T09:00:00Z"
+    assert consent.has_egress_consent(served.fixture)
+
+
+def test_a_consent_for_an_install_that_changed_is_not_recorded(served, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.memory_provider import app_client, consent
+
+    replaced = SimpleNamespace(app_version="1.0.0", installed_at="2026-11-12T10:00:00Z")
+    monkeypatch.setattr(app_client, "provider_for_id", lambda _pid: replaced)
+    later = 1795262400.0  # 2026-11-21T12:00:00Z, after the stamp
+    assert not handlers._grant_for_checked_install(FIXTURE_ID, "1.0.0", "", later)
+    assert consent.read_grants() == []
+    assert handlers._grant_for_checked_install(FIXTURE_ID, "1.0.0", "2026-11-12T10:00:00Z", later)
+    assert len(consent.read_grants()) == 1
+
+
+@pytest.mark.parametrize(
+    ("checked_since", "granted"),
+    [
+        (1794477600.0, False),  # the switch began in the install's own second
+        (1794477600.9, False),  # same second, later in it
+        (1794477599.0, False),  # the install is stamped after the switch began
+        (1794477601.0, True),  # an install older than the switch
+    ],
+)
+def test_an_install_stamped_in_the_switchs_second_is_refused(
+    served, monkeypatch, checked_since, granted
+) -> None:
+    """``installedAt`` has one-second resolution, so a reinstall in the second the
+    switch began cannot be told from the install it checked."""
+    from types import SimpleNamespace
+
+    from kiro_crew.memory_provider import app_client, consent
+
+    stamp = "2026-11-12T10:00:00Z"  # 1794477600
+    current = SimpleNamespace(app_version="1.0.0", installed_at=stamp)
+    monkeypatch.setattr(app_client, "provider_for_id", lambda _pid: current)
+    assert handlers._grant_for_checked_install(FIXTURE_ID, "1.0.0", stamp, checked_since) is granted
+    assert len(consent.read_grants()) == (1 if granted else 0)

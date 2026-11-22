@@ -151,6 +151,22 @@ def test_the_projection_covers_what_each_kind_meets(matcher, covered):
     assert hook_gated_capabilities((matcher,)) == covered
 
 
+def test_a_pipe_matcher_covers_its_parts_and_everything_its_whole_text_may_name():
+    union = hook_gated_capabilities(("fs_write",)) | hook_gated_capabilities(("execute_bash",))
+    covered = hook_gated_capabilities(("fs_write|execute_bash",))
+    assert union <= covered
+    # Read whole, as the gate also reads it, it is a literal naming no known tool:
+    # it may meet a call's title on any tool.
+    assert covered == set(HOOK_GATEABLE_CAPABILITIES)
+    # Whole, ``@srv/a|fs_write`` names no one tool of ``srv``, so it keeps the server.
+    kw = {"mcp_servers": ("srv",), "mcp_tool_names": lambda s: ["a", "b"]}
+    parts = hook_gated_capabilities(("@srv/a",), **kw) | hook_gated_capabilities(("fs_write",))
+    covered = hook_gated_capabilities(("@srv/a|fs_write",), **kw)
+    assert covered == parts | {kas_permissions.HOOK_GATED_MCP_PREFIX + "srv/*"}
+    # The gate reads a matcher with a glob character whole, so this one is too.
+    assert hook_gated_capabilities(("fs_*|execute_bash",)) == set(HOOK_GATEABLE_CAPABILITIES)
+
+
 # ── P1-5: an @server or wildcard MCP hook asks on that server only ──────────
 
 

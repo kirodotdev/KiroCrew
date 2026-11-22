@@ -9,10 +9,11 @@ fail") from state readable on this host, and returns one finding::
 ``fix`` is ``{"card": {"kind", "params"}}`` when a change card can make the
 change, or ``{"steps": [...]}`` for something only a person can do.
 
-Every probe is strictly read-only: it never calls a ``_doctor_*`` function or
-anything with a repair or atomic-write path, opens SQLite read-only (reading a
-live write-ahead log when one exists), and never returns a secret value, a
-token or a whole MCP spec. Each
+Every probe leaves settings and data as they were: it never calls a
+``_doctor_*`` function or anything with a repair path, opens SQLite read-only
+(reading a live write-ahead log when one exists), and never returns a secret
+value, a token or a whole MCP spec. The one write is in the crew-log probe: the
+first listing of a unit writes its ``status`` savepoint beside the log. Each
 runs under its own deadline on a worker thread, and a probe that raises or
 overruns reports ``unknown`` instead of failing the diagnosis.
 """
@@ -161,7 +162,8 @@ def _crew_log_units(now_ms: int) -> list[dict[str, Any]]:
     """``[{unit, slot, open, entries: [{type, time, data}]}]`` for recent units.
 
     Reads through the same reader the crew-log routes serve from
-    (:mod:`kiro_crew.crew_log.read`), which opens logs for reading only.
+    (:mod:`kiro_crew.crew_log.read`), which opens logs for reading only; the first
+    listing of a unit writes its ``status`` savepoint beside the log.
     """
     from kiro_crew.crew_log import read as crew_read
 
@@ -508,7 +510,12 @@ def probe_agent_spec_dead_paths(ctx: ProbeContext) -> dict[str, Any]:
         for d in r.dead
     ]
     unreadable = [r.spec for r in report.unreadable]
-    if not dead and not unreadable:
+    # The default agent's rebuild leaves out a server whose program it cannot find,
+    # so its spec holds no dead path for it: the rebuild's own record names it.
+    from kiro_crew.mcp_dropped_servers import load_dropped
+
+    dropped = [{"server": name, "program": rec["command"]} for name, rec in load_dropped().items()]
+    if not dead and not unreadable and not dropped:
         return finding(pid, OK, "Every MCP command and path in the agent specs exists.")
     steps = []
     if any(d["managed"] for d in dead):
@@ -517,12 +524,28 @@ def probe_agent_spec_dead_paths(ctx: ProbeContext) -> dict[str, Any]:
         steps.append("Reinstall the MCP server or package that wrote the other specs.")
     if unreadable:
         steps.append("Fix or remove the unreadable spec files.")
+    summary = []
+    if dead or unreadable:
+        summary.append(
+            "An agent spec points an MCP server at a command or path that no longer exists; "
+            "that server fails to start."
+        )
+    if dropped:
+        summary.append(
+            "The default agent left out these MCP servers because their program is not on "
+            "this computer: " + ", ".join(d["server"] for d in dropped)
+        )
+        steps += [
+            "Install each left-out server's program, or set its full path as the server's "
+            "command on the MCP Servers page, then start a new chat with the default agent.",
+            "A program found only through the server's own env PATH, or under a Node "
+            "version installed after the gateway started, needs a gateway restart.",
+        ]
     return finding(
         pid,
         PROBLEM,
-        "An agent spec points an MCP server at a command or path that no longer exists; "
-        "that server fails to start.",
-        {"dead": dead, "unreadable": unreadable},
+        " ".join(summary),
+        {"dead": dead, "unreadable": unreadable, "dropped": dropped},
         _steps(*steps),
     )
 
@@ -656,12 +679,15 @@ def probe_embedding_coverage(ctx: ProbeContext) -> dict[str, Any]:
 
 def probe_remote_crew_unreachable(ctx: ProbeContext) -> dict[str, Any]:
     pid = "remote_crew_unreachable"
+    from kiro_crew.atomic_write import read_bytes_with_retry
     from kiro_crew.config.loader import config_dir
 
     path = config_dir() / "instances.json"
     if not path.is_file():
         return finding(pid, OK, "No Remote Crew is configured.")
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    # Bytes, as InstancesRegistry._read reads it: json.loads then accepts a BOM,
+    # UTF-16 and UTF-32, and a Windows sharing violation is retried.
+    raw = json.loads(read_bytes_with_retry(path))
     items = raw.get("instances") if isinstance(raw, dict) else None
     instances = [i for i in items or [] if isinstance(i, dict) and i.get("id")]
     if not instances:

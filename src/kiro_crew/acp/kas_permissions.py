@@ -148,7 +148,9 @@ KAS_SPELLINGS: dict[str, str] = {"invoke_sub_agent": "use_subagent"}
 #: every such call raises a permission request; Crew then answers the ones the spec
 #: granted itself, after its own checks (:func:`crew_answered_builtins`, the gate's
 #: ``spec-builtin-grant`` row), which is how the spec's grant still means "no
-#: prompt" here without taking the call past the deny floor.
+#: prompt" here without taking the call past the deny floor. ``code`` is the
+#: exception: Crew never answers it as a whole, so each ``code`` call reaches the
+#: same tiers as on kiro-cli.
 WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
     {
         # Filesystem reads.
@@ -215,6 +217,11 @@ CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
 #: gate can judge (:func:`kiro_crew.acp.kas_spec_denies.with_unjudged_denies`).
 CREW_UNJUDGED_DENIES_KEY = "_crewShellUnjudgedDenies"
 
+#: Set on the session agent's entry of a batch that kept the folder PreToolUse hooks of its
+#: agent or left out a folder sub-agent target for them (maybe one a scheduled batch leaves
+#: out for another reason too): ``kas_project_hooks.scheduled_turn_reprojects`` reads it.
+CREW_FOLDER_PRE_TOOL_KEY = "_crewFolderPreToolHooks"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
@@ -224,6 +231,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_ANSWERED_WRITES_KEY,
         CREW_SPEC_DENIES_KEY,
         CREW_UNJUDGED_DENIES_KEY,
+        CREW_FOLDER_PRE_TOOL_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
         CREW_ANSWERED_PATHS_KEY,
@@ -576,14 +584,12 @@ def crew_answered_paths(tools_settings: Any) -> list[str]:
     return _usable_allowed_paths(tools_settings)[:_MAX_ALLOWED_PATHS]
 
 
-def _paths_not_all_carried(paths: Any, tools_settings: Any, tool: str) -> bool:
-    """Whether some of *tool*'s ``allowedPaths`` cannot be answered: an entry is
-    unusable, or the bound cuts the list. Those paths keep prompting."""
-    keys = READ_SETTINGS_KEYS if tool in READ_SETTINGS_KEYS else WRITE_SETTINGS_KEYS
+def _paths_not_all_carried(paths: Any) -> bool:
+    """Whether some of an ``allowedPaths`` value cannot be answered: it is not a list,
+    or an entry is unusable. Those paths keep prompting. An entry past the bound is
+    named on its own (``kas_unread_commands.name_unreadable_entries``)."""
     return bool(paths) and (
-        not isinstance(paths, list)
-        or any(allowed_paths_mod.parse(p) is None for p in paths)
-        or len(_usable_allowed_paths(tools_settings, keys)) > _MAX_ALLOWED_PATHS
+        not isinstance(paths, list) or any(allowed_paths_mod.parse(p) is None for p in paths)
     )
 
 
@@ -596,6 +602,7 @@ def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None)
     """The :data:`WITHHELD_FROM_AUTO_APPROVE` built-ins *allowed_tools* grants, and
     each one whose capabilities an unscoped ``allow`` in *authored_permissions*
     covers (no ``match``, or an empty one: every resource, as KAS reads it).
+    Never ``code``.
 
     Withholding a built-in from the KAS policy keeps its calls at ``ask``, so
     each one raises ``session/request_permission`` and reaches Crew's gate. The
@@ -625,6 +632,9 @@ def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None)
         for name, capabilities in _ANSWERED_CAPABILITIES.items()
         if capabilities <= granted
     )
+    # ``code`` starts language servers and edits files, so on KAS it is never
+    # answered as a whole: each call reaches the same tiers as on kiro-cli.
+    out.discard("code")
     return frozenset(out)
 
 
@@ -1017,6 +1027,15 @@ def _asking_only(refs: str, outcome: str, reason: str) -> None:
     """The ``audit_decision`` of :func:`projection_accepts`: a question, not a refusal."""
 
 
+class RefusalReason:
+    """An ``audit_decision`` that keeps why a block is refused and reports nothing."""
+
+    why = ""
+
+    def __call__(self, refs: str, outcome: str, reason: str) -> None:
+        """A left-out allow is not a refusal of the block: nothing to keep."""
+
+
 def projection_accepts(raw: Any) -> bool:
     """Whether :func:`parse_user_permissions` would relay *raw* rather than refuse it whole.
 
@@ -1051,6 +1070,9 @@ def _refuse_block(
     every grant in it."""
     if audit_decision is _asking_only:
         return
+    if isinstance(audit_decision, RefusalReason):
+        audit_decision.why = audit_decision.why or why
+        return
     audit_decision("the authored `permissions` block", "withheld", f"refused: {why}")
     logger.warning(
         "agent %r: refusing its whole `permissions` block -- %s. None of it travels; "
@@ -1067,7 +1089,7 @@ _DROPPED: dict[str, Any] = {}
 
 def _drop_rule(agent_id: str, where: str, count: int, audit_decision: _AuditDecision) -> None:
     """Report one authored ``allow`` left out for an ``exclude`` list too long to send."""
-    if audit_decision is _asking_only:
+    if audit_decision is _asking_only or isinstance(audit_decision, RefusalReason):
         return
     audit_decision(
         f"the authored `permissions` {where}",
@@ -1867,7 +1889,7 @@ def tools_settings_to_permissions(
             if tool in READ_SETTINGS_KEYS:
                 # No rule: Crew's gate answers a covered read (`crew_answered_read_paths`).
                 handled.add("allowedPaths")
-                if _paths_not_all_carried(settings.get("allowedPaths"), tools_settings, tool):
+                if _paths_not_all_carried(settings.get("allowedPaths")):
                     lost.append(f"{tool}.allowedPaths")
             # Kept apart so they never cost the denies above their place: they
             # travel only when the whole block still fits (below).
@@ -1886,9 +1908,9 @@ def tools_settings_to_permissions(
                 # usable `allowedPaths` do not cover (`spec_write_allowlist`).
                 handled.add("fallbackAction")
                 # No rule: Crew's gate answers a covered write (`crew_answered_paths`).
-                # Named when an entry is unusable or the bound cuts the list.
+                # Named when an entry is unusable.
                 handled.add("allowedPaths")
-                if _paths_not_all_carried(settings.get("allowedPaths"), tools_settings, tool):
+                if _paths_not_all_carried(settings.get("allowedPaths")):
                     lost.append(f"{tool}.allowedPaths")
                 if settings.get("fallbackAction") not in (
                     None,
@@ -1897,13 +1919,13 @@ def tools_settings_to_permissions(
                 ) and not _write_falls_back_to_deny(settings):
                     lost.append(f"{tool}.fallbackAction")
         elif family == "web_fetch":
-            # KAS matches a host only, so a `blocked` regex is carried here as a host
-            # deny, and `trusted` (an allow) is named. A `blocked` entry with no host
-            # deny is named; with `agent.kas_fail_closed_web_fetch_blocked` on, one
-            # deny over "*" takes the key's place and refuses every fetch. Crew's
-            # gate grants a plain-URL `trusted` entry itself
-            # (`kas_spec_denies.web_fetch_gate`); the session notice drops it then,
-            # and a crewmate's policy check reads only this KAS side.
+            # KAS matches a host only, so a `blocked` regex is carried here as a host deny
+            # and `trusted` (an allow) is named. A `blocked` entry with no host deny is
+            # named unless the gate refuses it (`kas_spec_denies.gate_refused_blocked`);
+            # with `agent.kas_fail_closed_web_fetch_blocked` on, one deny over "*" takes
+            # the key's place and refuses every fetch. Crew's gate grants a plain-URL
+            # `trusted` entry itself (`kas_spec_denies.web_fetch_gate`); the session
+            # notice drops it then, and a crewmate's policy check reads only this side.
             handled.add("blocked")
             blocked = converted(f"{tool}.blocked", settings.get("blocked"), _url_glob)
             if f"{tool}.blocked" in lost and fails_closed_on_uncarried_blocked():

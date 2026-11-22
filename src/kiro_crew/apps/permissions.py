@@ -341,6 +341,14 @@ _DESKTOP_CAPABILITY_WORDS = {
     "gatewayChoice": "switch among your gateways",
 }
 
+#: How the install summary words each ``permissions.browser`` verb. An install
+#: approves none of them: the owner approves each on the app's page.
+_BROWSER_VERB_WORDS = {
+    "view": "see the page you and the Bot are browsing",
+    "read": "read that page",
+    "act": "click and type for you",
+}
+
 
 def format_permissions_summary(manifest: AppManifest) -> str:
     """Format a human-readable permissions summary for display during install."""
@@ -366,6 +374,12 @@ def format_permissions_summary(manifest: AppManifest) -> str:
         lines.append("  Chat:      runs its own chat sessions, listed under the app")
     if perms.hiddenSessions:
         lines.append("  Chat list: keeps its own chats out of your session list")
+    if perms.chatLaunch is not None:
+        launch = perms.chatLaunch
+        where = f" in the {launch.folder!r} folder" if launch.folder else ""
+        lines.append(f"  Chats:     may open chats for you with {', '.join(launch.agents)}{where}")
+        modes = ", ".join(launch.memory_modes)
+        lines.append(f"             chat keys start with {launch.key_prefix!r}; memory: {modes}")
     if perms.workerAutoApprove:
         lines.append("  Auto-approve: tool calls in its own background sessions (bounded)")
     if perms.reachableByUserSessions:
@@ -374,6 +388,9 @@ def format_permissions_summary(manifest: AppManifest) -> str:
     if perms.desktopCapabilities:
         words = ", ".join(_DESKTOP_CAPABILITY_WORDS[c] for c in perms.desktopCapabilities)
         lines.append(f"  Desktop:   may {words}")
+    if perms.browser:
+        words = ", ".join(_BROWSER_VERB_WORDS[v] for v in perms.browser)
+        lines.append(f"  Browser:   asks to {words} (approved later on the app's page)")
     if perms.webhookSource:
         lines.append(
             f"  Webhooks:  accepts requests from outside services, which can start work"

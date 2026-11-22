@@ -15,7 +15,7 @@ The app will:
 
 1. Reuse an existing gateway if one is already reachable and actually serving
    (`/api/ready` 200) — a gateway draining after `/api/shutdown` still answers
-   `/api/status`, so it is never adopted; the app waits for the port to clear
+   `/api/live`, so it is never adopted; the app waits for the port to clear
    and spawns fresh instead. Before reusing a same-family gateway on a fixed-path
    POSIX install, the app detects whether its sole listener is an older gateway
    from the current bundled backend path. If so, it warns that updated features
@@ -78,7 +78,7 @@ and each facade composes cohesive owners under `runtime/<area>/`:
 |---|---|---|
 | `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, the macOS launchd job check that tells a service from an orphan, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app, or stopping its gateway that outlived it) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) · `home-lock.js` (whether a pid holds this data folder's `gateway.lock`, the CLI's pid-pinned stop, the CLI's port stop of an orphaned gateway, the `gateway-pid` lock probe) · `holder-decision.js` (what a launch does about a gateway already on its port: adopt, wait out a drain, warn about an older bundled one, stop and restart an orphaned older one or a stuck one, refuse one it cannot attribute) · `successor-handoff.js` (restarting through a successor copy that must serve before this one exits, whether the failure dialog may offer Start Local Gateway, the `/api/health`, any-responder and `/api/ready` probes) · `failure-dialog.js` (the gateway-failure window and its installing auto-retry, the restart-required dialog, the reveal before the token prompt and both dialogs) · `shutdown.js` (the graceful and pre-update stops, the bounded and the wedge tree kills) · `reconnect.js` (the liveness recoveries that wait instead of killing: an external gateway, an adopted one) · `remote-switch.js` (first-run setup's switch to a crew on another machine: stop the gateway this app spawned, save the crew, turn the local gateway off, reconnect) · `respawn-owner.js` (the one respawn in flight that liveness recovery, the failure dialog's retries and a failed update install's recovery all join, and its hand-over to an update install) · `user-restart.js` (Settings → About's Restart gateway: stop the gateway this app spawned with liveness disarmed, respawn it, reconnect the main window to the page it was on) | All gateway state (child, ownership, start failure, liveness monitor, update handoff) and the getters and setters owners reach it through, the spawn site and its environment, the port occupancy and identity probes every decision reads, the launch and connect flows and their failure wording, the liveness monitor, and the choice of recovery with the kill-and-respawn of its own child |
 | `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
-| `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install, and the download-time freshness gate that re-checks the feed before a click's download) · `freshness-gate.js` (composed by the feed lane: the check lifecycle (claim, settle, abandon) and `verifyStageIsLatest`, the pre-install verdict that re-checks the feed so only the newest build is installed) · `managed-lane.js` (the marker-driven check, the arm click and the quit-time apply) · `managed-exec.js` (the hardened marker-command executor, shared by the lane and the start-time apply) · `update-arm.js` (the armed-update record in the app's store) · `armed-apply.js` + `startup-apply.js` (the apply of a leftover arm at the next app start, before the gateway spawns) · `gateway-arm.js` (best-effort client for the gateway's own armed record) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
+| `auto-update.js` (`initAutoUpdate` and 17 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install, and the download-time freshness gate that re-checks the feed before a click's download) · `freshness-gate.js` (composed by the feed lane: the check lifecycle (claim, settle, abandon) and `verifyStageIsLatest`, the pre-install verdict that re-checks the feed so only the newest build is installed) · `managed-lane.js` (the marker-driven check, the arm click and the quit-time apply) · `managed-exec.js` (the hardened marker-command executor, shared by the lane and the start-time apply) · `update-arm.js` (the armed-update record in the app's store) · `armed-apply.js` + `startup-apply.js` (the apply of a leftover arm at the next app start, before the gateway spawns) · `install-splash.js` (the boot splash window shown while that apply's command runs; `main.js` composes it, as it does `gateway-probe.js`) · `gateway-arm.js` (best-effort client for the gateway's own armed record) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
 | `crash-collector.js` (`armCrashCollector`, `collectCrashReports`, `crashNoticeSummary`) | `runtime/crash/ownership.js` · `artifact-parsers.js` · `candidates.js` · `persistence.js` · `scan.js` | The export surface and `crashNoticeSummary`, the one renderer-facing view |
 
 Three rules keep this layout safe to change:
@@ -135,8 +135,9 @@ that is an app's own shell code (`{ app: true }`) hands its chords to the host s
 What the host keeps per app on this computer (the user's shortcut bindings) is `app-window-prefs.js`,
 in its own `app-window-prefs.json` store. It names no app and runs no app code, and a new app never
 gets a directory of its own here. `mochi/` and `crew-companion/` predate it and
-shrink as each moves onto it; `test/app-window-host-independence.test.js` holds
-both rules. Contract: `docs/system-specs/modules/app-kit-platform.md` §35.
+shrink as each moves onto it, and each stands down whenever its app's record is
+one the host serves (`hostOwnsAppWindows`); `test/app-window-host-independence.test.js`
+holds all three rules. Contract: `docs/system-specs/modules/app-kit-platform.md` §35.
 
 ## Install as macOS App
 
@@ -425,6 +426,14 @@ left as the user set it.
   `showTrayIcon` key in this app's config file; only `false` hides the icon
   (`tray-icon.js`), and the icon appears or disappears as soon as either
   setting changes.
+- **Minimize to tray** (off by default, Windows and Linux) makes minimizing
+  hide the window to the tray instead of the taskbar; click the tray icon to
+  bring it back. It is offered on Windows, and on Linux only when the desktop
+  has a tray (a StatusNotifier host on the session bus, asked with the
+  `dbus-send` in a fixed system directory, never one found on `PATH`; GNOME
+  has none without an extension). It stays off while
+  **Show tray icon** is off. The choice is the `minimizeToTray` key; only
+  `true` turns it on (`minimize-to-tray.js`).
 - **GPU rendering.** Hardware acceleration is on by default, except in a
   Windows RDP session (`SESSIONNAME` starting with `RDP-`), where it starts
   off. The decision, first match wins (`disable-gpu.js`):
@@ -469,7 +478,7 @@ left as the user set it.
   (`chromium-sandbox-notice.js`).
 - External links open in your default browser
 - **`kirocrew://` links.** The installer registers the scheme, and `deep-link.js`
-  accepts exactly four shapes, refusing everything else with a logged reason:
+  accepts exactly five shapes, refusing everything else with a logged reason:
   `kirocrew://` (bring the window forward), `kirocrew://chat?sid=<slot key>`
   (open that session; what `kirocrew open` builds),
   `kirocrew://chat?crew=<crew id>&sid=<slot key>` (open that session on a

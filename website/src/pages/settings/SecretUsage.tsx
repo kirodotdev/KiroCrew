@@ -6,8 +6,7 @@ import { Card, CardTitle } from '../../components/ui'
 import { api, type SecretsUsageResponse, type SecretUsagePlace } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
-import { whenPreviewFlagSaved } from '../../hooks/usePreviewFlagServerSync'
-import { PREVIEW_SECRETS_VAULT } from '../../utils/previewFlags'
+import { FieldRow, FieldRows } from '../../components/ui/field-row'
 
 /** Under the panel's `['secrets']` key, so every vault write that refreshes
  *  the list refreshes where its items are used too. */
@@ -31,12 +30,7 @@ function useSecretUsage() {
     // (a grant approved on Schedule, a server added) with no vault write here.
     staleTime: 0,
     refetchOnMount: 'always',
-    // Same order as the panel's list: the route answers only once the gateway
-    // has the preview switch's save.
-    queryFn: async () => {
-      await whenPreviewFlagSaved(PREVIEW_SECRETS_VAULT)
-      return api.secretsUsage()
-    },
+    queryFn: () => api.secretsUsage(),
   })
 }
 
@@ -51,20 +45,19 @@ function placesFor(data: SecretsUsageResponse | undefined, name: string): Secret
 
 function PlaceRow({ place }: { place: SecretUsagePlace }) {
   return (
-    <div className="grid grid-cols-1 items-center gap-x-4 gap-y-1 border-t border-border py-2.5 first:border-t-0 first:pt-0 last:pb-0 sm:grid-cols-[140px_minmax(0,1fr)]">
-      <div className="text-[13px] text-muted">{i18nT(KIND_KEYS[place.kind])}</div>
-      <div className="flex min-w-0 items-center gap-2.5 text-[13.5px] text-text-strong">
-        <span className="truncate">{place.name}</span>
-        {place.key && <code className="ml-auto truncate font-mono text-[12px] text-muted">{place.key}</code>}
-      </div>
-    </div>
+    <FieldRow label={i18nT(KIND_KEYS[place.kind])}>
+      <span className="truncate">{place.name}</span>
+      {place.key && <code className="ml-auto truncate font-mono text-[12px] text-muted">{place.key}</code>}
+    </FieldRow>
   )
 }
 
-/** The places the gateway's scan found reading item *name*. The scan covers
- *  known readers only, so its empty state says no use was found, never that
- *  nothing uses the item; it shows only when every kind of place was checked. */
-export function SecretUsageCard({ name, allowAgentHandoff }: { name: string; allowAgentHandoff: boolean }) {
+/** The places the gateway's scan found reading item *name*, after the hosts
+ *  browser sign-in offers a login at (*signInHosts*, from its websites). The
+ *  scan covers known readers only, so its empty state says no use was found,
+ *  never that nothing uses the item; it shows only when every kind of place
+ *  was checked. */
+export function SecretUsageCard({ name, allowAgentHandoff, signInHosts = [] }: { name: string; allowAgentHandoff: boolean; signInHosts?: string[] }) {
   const { data, isLoading, isError, error } = useSecretUsage()
   const places = placesFor(data, name)
   const skipped = data?.incomplete ?? []
@@ -78,8 +71,17 @@ export function SecretUsageCard({ name, allowAgentHandoff }: { name: string; all
         <p className="text-[13px] text-muted">{i18nT('settings.secrets.loading')}</p>
       ) : (
         <>
-          {places.map(place => <PlaceRow key={`${place.kind}\u0000${place.name}\u0000${place.key}`} place={place} />)}
-          {places.length === 0 && !incomplete && <p className="text-[13px] text-muted">{i18nT('settings.secrets.usage_none')}</p>}
+          {(signInHosts.length > 0 || places.length > 0) && (
+            <FieldRows>
+              {signInHosts.map(host => (
+                <FieldRow key={host} label={i18nT('settings.secrets.usage_kind_browser_signin')}>
+                  <span className="truncate">{i18nT('settings.secrets.usage_signs_in_at', { host })}</span>
+                </FieldRow>
+              ))}
+              {places.map(place => <PlaceRow key={`${place.kind}\u0000${place.name}\u0000${place.key}`} place={place} />)}
+            </FieldRows>
+          )}
+          {places.length === 0 && signInHosts.length === 0 && !incomplete && <p className="text-[13px] text-muted">{i18nT('settings.secrets.usage_none')}</p>}
           {incomplete && <ErrorNotice variant="inline" askAgent={allowAgentHandoff} message={i18nT('settings.secrets.usage_incomplete', { places: fmtList(skipped.map(kind => i18nT(KIND_KEYS[kind] ?? KIND_KEYS.setting))) })} />}
         </>
       )}

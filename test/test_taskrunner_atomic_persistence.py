@@ -12,11 +12,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from kiro_crew import atomic_write, platform_compat
 from kiro_crew import taskrunner as taskrunner_facade
 from kiro_crew.config import paths
 from kiro_crew.config.loader import KiroCrewConfig
@@ -25,6 +30,7 @@ from kiro_crew.session_work_dir import data_home_id
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
 from kiro_crew.taskrunner_parts import run_registry
 from kiro_crew.testing.wait import await_until
+from kiro_crew.workflow_memory import TaskSnapshotError
 
 
 def _make_runner(work_dir: Path) -> TaskRunner:
@@ -336,6 +342,75 @@ class TestLoadRunsResilience:
         # read can still recover it.
         assert runs_file.exists()
         assert not (tmp_path / "runs.json.corrupt").exists()
+
+    @staticmethod
+    def _hold_runs_json(monkeypatch, failures: int | None = None) -> list[str]:
+        """Fail the rename of runs.json like a Windows sharing violation; return the attempts."""
+        attempts: list[str] = []
+        real_replace = os.replace
+
+        def replace(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if Path(src).name == "runs.json":
+                attempts.append(str(dst))
+                if failures is None or len(attempts) <= failures:
+                    raise PermissionError(13, "sharing violation", str(src))
+            return real_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, "replace", replace)
+        return attempts
+
+    def test_corrupt_file_held_open_is_fenced_and_survives(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        # Windows: another process holds runs.json without delete sharing, so the
+        # rename to .corrupt fails. The corrupt bytes are the only copy, so the
+        # next snapshot must not write over them.
+        runs_file = tmp_path / "runs.json"
+        original = b'[{"run_id": "r-1", "tasks": [ TRUNCATED'
+        runs_file.write_bytes(original)
+        attempts = self._hold_runs_json(monkeypatch)
+
+        runner = _make_runner(tmp_path)
+        with caplog.at_level("ERROR"):
+            runner._load_runs()
+
+        assert attempts
+        assert runner._runs == {}
+        assert runner._snapshot_recovery_incomplete is True
+        assert not (tmp_path / "runs.json.corrupt").exists()
+        assert not any("preserved as" in r.getMessage() for r in caplog.records)
+        with pytest.raises(TaskSnapshotError):
+            runner._commit_snapshot(runner._next_persist_seq(), "[]")
+        assert runs_file.read_bytes() == original
+
+    def test_corrupt_file_rename_is_retried_on_windows(self, tmp_path: Path, monkeypatch) -> None:
+        # A short scan that releases the file must not cost the registry its sidecar.
+        runs_file = tmp_path / "runs.json"
+        original = b'[{"run_id": "r-1", "tasks": ['
+        runs_file.write_bytes(original)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        # Rebind atomic_write's own `time` name so only its backoff sleep is stubbed.
+        clock = types.SimpleNamespace(**{n: getattr(time, n) for n in dir(time) if n[:2] != "__"})
+        clock.sleep = lambda _s: None
+        monkeypatch.setattr(atomic_write, "time", clock)
+        attempts = self._hold_runs_json(monkeypatch, failures=2)
+
+        runner = _make_runner(tmp_path)
+        runner._load_runs()
+
+        assert len(attempts) == 3
+        assert runner._snapshot_recovery_incomplete is False
+        assert (tmp_path / "runs.json.corrupt").read_bytes() == original
+        assert not runs_file.exists()
+
+    def test_corrupt_file_preserved_message_names_the_sidecar(self, tmp_path: Path, caplog) -> None:
+        (tmp_path / "runs.json").write_text("[{", encoding="utf-8")
+        runner = _make_runner(tmp_path)
+        with caplog.at_level("ERROR"):
+            runner._load_runs()
+
+        assert runner._snapshot_recovery_incomplete is False
+        assert any("preserved as" in r.getMessage() for r in caplog.records)
 
 
 class TestRegistryPerDataHome:

@@ -29,7 +29,7 @@ its **Credentials** section reports whether anything is actually configured.
 | Exfiltration shapes | `curl -d @file`, `wget --post-file`, `/dev/tcp/` redirects | Reading a local file into an outbound request body is indistinguishable from exfiltration, whatever the destination. |
 | Destructive operations | `rm -rf /`, `terraform destroy`, `TRUNCATE TABLE`, `aws … delete-*` | Irreversible. These are disable-able if you want them (see below); the credential ones are not. The SQL rules match the statement's text anywhere on the line, so a heredoc or `printf` that merely writes the words is refused too — see **Statement text, not just statements** below. |
 | Self-protection | minting a dashboard token, killing the gateway, an inline interpreter that imports Kiro Crew | Prevents the agent from escalating its own access or shutting down its supervisor. |
-| ssh to this machine | `ssh` to `localhost`, `scp`/`sftp`/`rsync` to a loopback address or one of this host's own names | sshd runs outside the agent sandbox, so a connection back to this host is an unsandboxed login shell. A target not yet classified as remote is refused too. |
+| ssh to this machine | `ssh` to `localhost`, `scp`/`sftp`/`rsync` to a loopback address or one of this host's own names; `git` or `tar` over an ssh transport to the same targets (`git clone localhost:repo`, `git fetch ssh://127.0.0.1/repo`, `tar -cf localhost:out.tar dir`, or a `GIT_SSH_COMMAND`/`core.sshCommand`/`ext::`/`--rsh-command` value that dials this host) | sshd runs outside the agent sandbox, so a connection back to this host is an unsandboxed login shell. A target not yet classified as remote is refused too. Local `git` work, a clone of a local path or an http(s) URL, a fetch from another host and a local `tar` archive are not affected. |
 
 The full built-in rule list, with a human-readable description per rule, is in
 the dashboard under **Settings → Security**.
@@ -136,10 +136,12 @@ Two limits are deliberate:
 
 - The agent cannot edit any of this. The files live on the sensitive-path floor,
   which is what stops a prompt-injected agent from rewriting its own ceiling.
-- On a host with an enterprise governance policy, the credential, sensitive-file,
-  self-protection, git-publish, reverse-shell and pipe-to-shell categories are
-  **pinned** and cannot be disabled — including by "disable all". Your
-  organization's policy composes with your settings on a tightest-wins basis.
+- On a host with an enterprise governance policy, every built-in rule that
+  policy pins (a `commands`-scope deny whose pattern is the rule's own regex, for
+  example credential, self-protection or git-publish rules) is **pinned** and
+  cannot be disabled — including by "disable all". Which rules are pinned is the
+  policy's choice, and `kirocrew policy show` lists them. Your organization's
+  policy composes with your settings on a tightest-wins basis.
 
 Both are about what you may change. What the rules can *see* is a separate
 limit, and the tighter one: see **What this tier cannot see** above before you

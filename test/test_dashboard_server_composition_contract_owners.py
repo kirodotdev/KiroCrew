@@ -100,6 +100,9 @@ class _Watchdog:
         self.calls.append(("claim", threading.current_thread().name))
         return sum(1 for name, _ in self.calls if name == "claim") == 1
 
+    def default_executor_live(self, loop: asyncio.AbstractEventLoop) -> bool:
+        return True
+
     def beat(self) -> None:
         self.calls.append(("beat", threading.current_thread().name))
 
@@ -563,7 +566,7 @@ async def test_a_prior_crash_dump_is_reported_once_with_its_stacks(
     ]
     state.notify.assert_called_once_with(
         "heartbeat",
-        "⚠️ Gateway restarted after an event-loop stall",
+        "Warning: Gateway restarted after an event-loop stall",
         "The previous gateway stopped responding and exited 2.0h ago, then restarted. "
         "Work in flight at that moment was interrupted and not saved. "
         f"It was running cron nightly. Thread stacks: {dump}",
@@ -904,7 +907,7 @@ async def test_a_raising_cleanup_step_does_not_skip_the_crew_log_drain(
     """aiohttp stops at the first cleanup hook that raises, so each step contains its own.
 
     The steps here are registered in the order the dashboard entrypoint uses: the Kiro
-    services, the remote puller, then the instance tunnels and the crew-log drain. Every
+    services, then the instance tunnels and the crew-log drain. Every
     one before the drain raises, the way a network close or a gone process does at
     shutdown; the drain must still write out the session logs' buffered appends.
     """
@@ -920,19 +923,11 @@ async def test_a_raising_cleanup_step_does_not_skip_the_crew_log_drain(
         async def shutdown(self) -> None:
             raise ProcessLookupError("ssh child already gone")
 
-        async def stop(self) -> None:
-            raise OSError("socket closed under the puller")
-
-    puller = types.ModuleType("kiro_crew.dashboard.handlers.remote_puller")
-    puller.stop = _Raises().stop  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, puller.__name__, puller)
-
     app = web.Application()
     app["kiro_prerequisite_service"] = _Raises()
     app["kas_login_service"] = _Raises()
     state = types.SimpleNamespace(instances_manager=_Raises())
     server._register_kiro_service_shutdown(app)
-    app.on_cleanup.append(server._stop_remote_puller)
     server._register_instances_hooks(app, state, 0)
     app.on_cleanup.freeze()
 
@@ -940,7 +935,7 @@ async def test_a_raising_cleanup_step_does_not_skip_the_crew_log_drain(
         await app.on_cleanup.send(app)
 
     assert drained == [True]
-    for what in ("Kiro prerequisite", "KAS login", "Remote report puller", "Instance tunnel"):
+    for what in ("Kiro prerequisite", "KAS login", "Instance tunnel"):
         assert what in caplog.text
 
 

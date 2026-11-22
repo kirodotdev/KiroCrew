@@ -474,6 +474,22 @@ class TestFireDispatch:
         assert [h.name for h, _c, _e in recorder] == ["all-tools"]
 
     @pytest.mark.asyncio
+    async def test_a_tool_matcher_takes_pipe_separated_alternatives(self, tmp_path, recorder):
+        store = ScriptHookStore(tmp_path)
+        store.create(
+            {
+                "name": "write-or-shell",
+                "command": "true",
+                "event": HOOK_EVENT_PRE_TOOL_USE,
+                "matcher": "fs_write|execute_bash",
+            }
+        )
+        for tool, fired in (("execute_bash", True), ("fs_write", True), ("fs_read", False)):
+            recorder.clear()
+            await store.fire(HOOK_EVENT_PRE_TOOL_USE, tool_name=tool)
+            assert bool(recorder) is fired, tool
+
+    @pytest.mark.asyncio
     async def test_post_tool_use_uses_the_tool_matcher_too(self, tmp_path, recorder):
         store = ScriptHookStore(tmp_path)
         store.create(

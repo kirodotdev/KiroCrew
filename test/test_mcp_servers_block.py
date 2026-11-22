@@ -78,6 +78,16 @@ class TestRender:
         assert "do not wait" in settled
         assert "do not wait" not in render({"connecting": ("github",)})
 
+    def test_only_a_failed_server_points_the_user_to_its_error(self):
+        failed = render({"failed": ("broken",)})
+        assert "if the dashboard's MCP Servers page lists it, Test on its row" in failed
+        assert "the chat menu's MCP servers list shows this session's error" in failed
+        others = render(
+            {"needs_sign_in": ("locked",), "disabled": ("off",), "registry_dropped": ("banned",)}
+        )
+        assert "MCP Servers page" not in others
+        assert "chat menu" not in others
+
     def test_every_state_has_its_own_row_and_the_actionable_one_is_first(self):
         block = render(
             {

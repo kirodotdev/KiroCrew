@@ -104,6 +104,8 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     Accepts ``{"content": "new text"}`` and replaces the content of the
     matching queue item in place (order preserved).  Broadcasts a
     ``queue_edit`` WebSocket event so all connected clients update in sync.
+    An optional ``holder`` names the saving editor, whose hold alone the save
+    releases (400 when it is not a string or is too long).
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -121,6 +123,11 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     content = body.get("content")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content must be a non-empty string"}, status=400)
+    from kiro_crew.dashboard.queue_edit_hold import holder_of, release_and_drain
+
+    holder, holder_err = holder_of(body)
+    if holder_err is not None:
+        return holder_err
     queued = next((i for i in slot._queue if i.get("id") == queue_id), None)
     from kiro_crew.dashboard import responsive_chat
 
@@ -169,10 +176,9 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         frame["editRev"] = edit_rev
     state.broadcast_ws("queue_edit", frame)
     # The edit is stored, so the hold its open editor placed can go: a turn
-    # that ended while the person typed starts now, with these words.
-    from kiro_crew.dashboard.queue_edit_hold import release_and_drain
-
-    release_and_drain(state, slot, entry)
+    # that ended while the person typed starts now, with these words. Only
+    # this editor's hold: another tab may still have the card open.
+    release_and_drain(state, slot, entry, holder)
     state.push_slots_update()
     sel().log_tool_invocation(
         session_key=f"dashboard:{name}",

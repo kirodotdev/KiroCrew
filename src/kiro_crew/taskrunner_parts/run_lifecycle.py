@@ -104,6 +104,9 @@ async def _reserve_start(self: TaskRunner, task_id: str) -> None:
         prior = self._tasks.get(task_id)
         if prior is not None and not prior.done():
             raise ValueError("Cannot start while the previous run is still finishing")
+        settling = self._stop_settles.get(task_id)
+        if settling is not None and not settling.done():
+            raise ValueError("Cannot start while the previous run is still finishing")
         self._start_ids_in_flight.add(task_id)
 
 
@@ -178,7 +181,7 @@ async def run(
         await self._workflow_begin(run)
         await self._workflow_rebind(run)
         await self._apersist_runs()  # persist immediately so crash recovery works
-        await self._notify("\U0001f680 Task started", f"Spec: `{spec_path.name}`", run=run)
+        await self._notify("Task started", f"Spec: `{spec_path.name}`", run=run)
         if source == "yaml":
             run.tasks = _decompose_yaml_with_audit(
                 spec_content, task_id, source=source, spec_name=spec_path.name
@@ -211,7 +214,7 @@ async def run(
         if not run.tasks:
             run.status = "failed"
             run.error = "Failed to decompose spec into tasks"
-            await self._notify("\u274c Task failed", run.error, run=run)
+            await self._notify("Error: Task failed", run.error, run=run)
             return run
         await self._workflow_set_plan(run)
         await self._apersist_runs()  # persist tasks so resume works after crash
@@ -233,17 +236,13 @@ async def run(
                     [t for t in run.tasks if t.status == TaskStatus.PASSED]
                 )
                 logger.info("Resuming: %d/%d tasks done", skipped, len(run.tasks))
-                await self._notify(
-                    "\U0001f504 Resuming", f"{skipped}/{len(run.tasks)} done", run=run
-                )
+                await self._notify("Resuming", f"{skipped}/{len(run.tasks)} done", run=run)
                 pending = [t for t in run.tasks if t.status == TaskStatus.PENDING]
                 if pending:
                     pending[0].description = resume_ctx + "\n\n" + pending[0].description
         save_progress(run)
         task_list = "\n".join(f"  {t.index}. {t.title}" for t in run.tasks)
-        await self._notify(
-            "\U0001f4cb Plan ready", f"{len(run.tasks)} task(s):\n{task_list}", run=run
-        )
+        await self._notify("Plan ready", f"{len(run.tasks)} task(s):\n{task_list}", run=run)
         await self._taskq_begin_run(run)
         watchdog_task = asyncio.create_task(self._watchdog_loop(run))
         await self._execute_tasks(run, history_key)
@@ -251,7 +250,7 @@ async def run(
             run.status = "completed"
             run.finished_at = time.time()
             await self._apersist_runs()
-            await self._notify("\u2705 Task completed", format_completion_summary(run), run=run)
+            await self._notify("Task completed", format_completion_summary(run), run=run)
     except asyncio.CancelledError:
         # Always a cancellation, never read as the stop: the stop ends a run
         # through failures, while a cancel can come from an operator by a path
@@ -269,7 +268,7 @@ async def run(
             logger.exception("Task runner error")
             run.status = "failed"
             run.error = str(exc)
-            await self._notify("\u274c Task error", str(exc), run=run)
+            await self._notify("Error: Task error", str(exc), run=run)
     finally:
         try:
             await asyncio.shield(self._cleanup_run_sessions(run))
@@ -600,6 +599,58 @@ def cancel(self: TaskRunner, task_id: str | None = None, *, exact: bool = False)
                 _settle_if_stop_frozen(self, run)
 
 
+async def cancel_paused(self: TaskRunner, task_id: str) -> bool:
+    """End one named PAUSED or PLANNED run as cancelled; True only once that is persisted.
+
+    A plan waiting for approval is ``planned`` with its Workflows run paused, and has
+    no worktree yet. A paused run has no driver task to settle it, and ``cancel()`` (with or without
+    an id) must keep leaving paused runs resumable, so this is a separate, awaited
+    call for a deliberate stop. The settle is registered in ``_stop_settles`` under
+    ``_start_lock``, where ``_reserve_start`` looks: a resume cannot begin while the
+    run's worktree is being finalized, and a call that finds a start already
+    reserved, or a run that is neither, returns False. If persisting fails, the run
+    goes back to the status it had and the error propagates, so the cancel can be
+    repeated.
+    """
+    async with self._start_lock:
+        run = self._runs.get(task_id)
+        prior = self._tasks.get(task_id)
+        if (
+            run is None
+            or run.status not in ("paused", "planned")
+            or task_id in self._start_ids_in_flight
+            or task_id in self._stop_settles
+            or (prior is not None and not prior.done())
+        ):
+            return False
+        target: Project = run
+        steps = [(step, step.status) for step in target.tasks]
+        finished_at = target.finished_at
+        was = target.status
+
+        async def _end() -> None:
+            try:
+                # No git cleanup: the pause already did it, and a run recovered as
+                # paused keeps its worktree for a resume. Removing it again could
+                # delete a checkout that has since taken that path.
+                await self._settle_stopped_run(target, finalize_git=False)
+            except BaseException:
+                target.status = was
+                target.finished_at = finished_at
+                for step, status in steps:
+                    step.status = status
+                raise
+
+        target.status = "cancelling"
+        self._reset_incomplete_tasks(target)
+        settle = asyncio.ensure_future(_end())
+        self._stop_settles[task_id] = settle
+        settle.add_done_callback(_observe_background_completion)
+    # Shielded: the write finishes, or rolls back, even if this caller is cancelled.
+    await asyncio.shield(settle)
+    return True
+
+
 def pause(self: TaskRunner, task_id: str) -> None:
     """Pause a running task. Sets status to 'pausing'; the finally block sets 'paused'."""
     run = self._runs.get(task_id)
@@ -638,7 +689,7 @@ def _settle_if_stop_frozen(runner: TaskRunner, run: Project) -> None:
     settle.add_done_callback(_observe_background_completion)
 
 
-async def _settle_stopped_run(self: TaskRunner, run: Project) -> None:
+async def _settle_stopped_run(self: TaskRunner, run: Project, *, finalize_git: bool = True) -> None:
     """End a stop-frozen run as its driver's ``finally`` would have, after a pause or cancel."""
     try:
         run.status = "paused" if run.status == "pausing" else "cancelled"
@@ -646,7 +697,7 @@ async def _settle_stopped_run(self: TaskRunner, run: Project) -> None:
         save_progress(run)
         await self._apersist_runs()
         await self._taskq_end_run(run)
-        if run.branch_name:
+        if run.branch_name and finalize_git:
             try:
                 await git_coord.finalize(run)
             except Exception:
@@ -680,7 +731,7 @@ async def _ensure_resumable_workspace(self: TaskRunner, run: Project, verb: str)
     run.finished_at = time.time()
     await self._apersist_runs()
     await self._notify(
-        f"\u274c {verb.capitalize()} failed",
+        f"Error: {verb.capitalize()} failed",
         "Workspace could not be restored",
         run=run,
     )

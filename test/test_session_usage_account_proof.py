@@ -33,6 +33,8 @@ from session_usage_helpers import (
 
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
 
+pytestmark = pytest.mark.usefixtures("no_ambient_kiro_api_key")
+
 
 class TestIdentityIsNotStale:
     """Identity must be re-resolved on every refresh, never memoized.

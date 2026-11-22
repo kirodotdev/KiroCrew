@@ -781,6 +781,11 @@ _EVENT_PERMISSION_REQUEST_KIND = "permission_request"
 #: owes the in-band notice that corrects kiro-cli's "User denied tool
 #: execution". ``hook_deny`` is not here: its reason is the gate's own.
 _WEBHOOK_DENY_NOTICE: dict[str, tuple[str, str]] = {
+    "web_ask_rule": (
+        DENY_CAUSE_SURFACE_POLICY,
+        "the organization's policy asks a person before this web call, and a webhook "
+        "turn has no person to ask",
+    ),
     "no_hook_store": (
         DENY_CAUSE_SURFACE_POLICY,
         "this webhook turn has no hook gate to authorize a tool call, so every call is refused",
@@ -1022,6 +1027,14 @@ async def _run_hook_inner(
                     approve = False
                     deny_error = "child_low_fidelity"
             if approve:
+                # An organisation's ``ask`` on a KAS web call (``web_ask_rule``):
+                # nobody is attached to a webhook turn, so it is refused.
+                from kiro_crew.web_ask_rule import held_phrases
+
+                if held_phrases(event):
+                    approve = False
+                    deny_error = "web_ask_rule"
+            if approve:
                 # An auto-approve tier is a statement about a PROGRAM name,
                 # and the shell re-resolves that name through a PATH that can
                 # lead with agent-writable directories. Verify it
@@ -1133,6 +1146,15 @@ async def _run_hook_inner(
             _complete_event = event
             break
     state.sessions.record_success(session_key)  # sync; record_failure is async
+    # Per-interaction telemetry, only for a completion that landed: the loop
+    # above also ends on a failed one (e.g. ``error: compaction failed``).
+    from kiro_crew.llm_helpers import record_interaction_event
+    from kiro_crew.messaging.dispatch import stop_reason_landed
+
+    if _complete_event is not None and stop_reason_landed(
+        str(getattr(_complete_event, "stop_reason", "") or "")
+    ):
+        record_interaction_event(client, session_key, "webhook")
 
     # ── Per-turn usage row: attribute webhook spend. ──
     try:

@@ -11,11 +11,12 @@ from typing import Any
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.browser_harness import install as harness_install
 from kiro_crew.browser_harness.supervisor import HarnessSupervisor
 from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import browser_harness_status as routes
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _OWNER = "the-owner"
 
@@ -367,3 +368,36 @@ async def test_redownload_installs_only_after_kiros_chromium_has_stopped(
         if job is not None and not job.done():
             job.cancel()
     assert sup.replacing_chromium is False
+
+
+@requires_symlinks
+@pytest.mark.asyncio
+async def test_status_reinstalls_an_install_whose_interpreter_an_update_removed(
+    sel, sup, tmp_path, monkeypatch
+) -> None:
+    """The page shows the engine installing again, not an Install button to click."""
+    prefix = harness_install.harness_prefix(tmp_path)
+    python = harness_install.venv_python(prefix)
+    python.parent.mkdir(parents=True)
+    python.symlink_to(tmp_path / "pruned-runtime" / "bin" / "python3")
+    marker = {"version": harness_install.HARNESS_VERSION, "lock_sha256": "x"}
+    (prefix / harness_install.MARKER_FILE).write_text(json.dumps(marker), encoding="utf-8")
+    release = asyncio.Event()
+
+    async def fake_install(home, progress, *, components, refresh=False):
+        await await_until(release, what="the repair's install released")
+        return harness_install.install_state(home)
+
+    monkeypatch.setattr(harness_install, "install", fake_install)
+    monkeypatch.setattr(routes, "_auto_skipped", lambda _env: False)
+    req = _owner("/api/browser/status", sup)
+    try:
+        body = _payload(await routes.api_browser_harness_status(req))
+        assert body["installed"] is False
+        assert body["installing"] is True
+        assert body["install_job"]["components"][0] == harness_install.COMPONENT_HARNESS
+    finally:
+        release.set()
+        task = getattr(req.app["state"], "_browser_harness_install_task", None)
+        if task is not None:
+            await await_until(task, what="the repair's install finished")

@@ -32,11 +32,13 @@ OLD = "flush the widget cache after a rebuild"
 NEW = "flush the widget cache after every rebuild"
 
 
-async def _edit(state, vector_store, rule: str, replaces: dict) -> dict:
+async def _edit(
+    state, vector_store, rule: str, replaces: dict, *, category: str = "knowledge"
+) -> dict:
     request = MagicMock()
     request.app = {"state": state}
     request.headers = {"X-Session-Key": "dashboard:ui"}
-    attach_body(request, {"rule": rule, "category": "knowledge", "replaces": replaces})
+    attach_body(request, {"rule": rule, "category": category, "replaces": replaces})
     state.conversation_log = ConversationLog()
     state._background_tasks = set()
     with (
@@ -81,6 +83,20 @@ async def test_an_edit_at_the_cap_rewrites_its_row_and_evicts_nothing(tmp_path) 
     assert [le.rule for le in after] == [NEW if r == OLD else r for r in before]
     # The row keeps its tier: an edit changes the text, not what the rule is.
     assert after[-1].applies == LESSON_APPLIES_ALWAYS
+
+
+async def test_an_edit_of_a_row_stored_outside_the_three_categories_keeps_it(tmp_path) -> None:
+    store = LessonStore(base_dir=tmp_path)
+    # Written straight to the file, as the consolidation and task-runner writers store
+    # whatever category their extractor returned; the Memory tab sends it back.
+    store._write_all([Lesson(ts="t0", rule=OLD, category="workflow")])
+    state = MagicMock()
+    state.lessons = store
+
+    body = await _edit(state, None, NEW, {"rule": OLD, "repo_scope": ""}, category="workflow")
+
+    assert (body["ok"], body["outcome"]) == (True, "replaced")
+    assert [(le.rule, le.category) for le in store.load_all()] == [(NEW, "workflow")]
 
 
 async def test_an_edit_onto_another_rows_text_changes_nothing(tmp_path) -> None:

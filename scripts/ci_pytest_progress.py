@@ -213,8 +213,9 @@ class Progress:
         """On an xdist worker, whether its channel had stopped receiving.
 
         A worker's loop ends cleanly on a shutdown command or on its channel
-        closing; this tells the two apart. execnet is unpinned and the flag is
-        private, so a missing one records nothing rather than failing the run.
+        closing; this tells the two apart. The flag is private to execnet, which
+        pyproject.toml pins beside pytest-xdist; a missing one records nothing
+        rather than failing the run.
         """
         for plugin in self.config.pluginmanager.get_plugins():
             if type(plugin).__name__ == "WorkerInteractor":

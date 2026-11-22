@@ -177,8 +177,12 @@ def readonly_base_name(name: str) -> str | None:
     return match.group("base") if match else None
 
 
-def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
+def unavailable_mode_explanation(agent: str, *, kiro_cli_engine: bool = False) -> tuple[str, str]:
     """``(cause, remedy)`` for kiro-cli not advertising *agent* as a mode.
+
+    *kiro_cli_engine* says the refusing session runs on the Kiro CLI harness, the
+    one launch that drives kiro-cli's v2 engine: only there can the present-file
+    answer name the v3 agent format (:func:`_ordinary_mode_explanation`).
 
     Completes the "Agent mode ... is not available" refusal the ACP layer raises,
     which puts the cause before its "Refusing to run the backend default mode"
@@ -203,7 +207,7 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
     """
     base = readonly_base_name(agent)
     if base is None or not _is_published_readonly_spec(agent):
-        return _ordinary_mode_explanation(agent)
+        return _ordinary_mode_explanation(agent, kiro_cli_engine=kiro_cli_engine)
     return (
         f"{agent!r} is the read-only spec Kiro Crew derives from {base!r} for side "
         "replies: a side turn writes it, `kirocrew setup` does not, and kiro-cli lists "
@@ -217,6 +221,24 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
 #: so a file that sets both is a duplicate field to its strict parser and the
 #: whole agent is dropped, while Python's ``json`` (last key wins) reads it fine.
 _ALIASED_SPEC_KEYS = (("includeMcpJson", "useLegacyMcpJson"),)
+
+#: Fields of the agent format kiro-cli's v3 engine reads, and the two of the older
+#: format. A file that sets one of the first and neither of the second is one
+#: kiro-cli may list as "(v3 format)"; the check only decides when the refusal
+#: points at that listing, never states kiro-cli's rule as the cause.
+_V3_FORMAT_FIELDS = ("permissions", "excludedTools", "includePowers")
+_V2_FORMAT_FIELDS = ("allowedTools", "toolsSettings")
+
+
+def _kas_offered() -> bool:
+    """Whether a spawn naming backend ``kas`` would be admitted here now. Wording only."""
+    from kiro_crew.kiro_on_kas_notice import kas_backend_offered
+
+    try:
+        return kas_backend_offered()
+    except Exception:  # noqa: BLE001 -- wording only; the refusal is raised regardless
+        logger.debug("could not tell whether backend kas is offered", exc_info=True)
+        return False
 
 
 def _shell_quoted(path: Path) -> str:
@@ -235,17 +257,22 @@ def _home_relative(path: Path) -> str:
         return str(path)
 
 
-def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
+def _ordinary_mode_explanation(agent: str, *, kiro_cli_engine: bool = False) -> tuple[str, str]:
     """``(cause, remedy)`` for an agent that is not a published read-only spec.
 
     A missing ``~/.kiro/agents/<agent>.json`` keeps the "likely missing" answer,
     except when *agent* is the configured ``agent.default_agent`` and not a spec
-    setup writes: :func:`missing_default_agent_explanation` names the setting.
-    A file that IS present was found but not listed, which means kiro-cli refused
+    setup writes: :func:`missing_default_agent_explanation` names the setting,
+    and except for a Bot's agent: :func:`bot_agent_explanation` names the
+    dashboard. A file that IS present was found but not listed, which means kiro-cli refused
     it or started before it was written, so the answer says that and points at
     ``kiro-cli agent validate``, the one check that reports kiro-cli's own parse
     error. A file that sets a key and its alias together names both
-    keys, since that is a parse failure Python's ``json`` cannot see.
+    keys, since that is a parse failure Python's ``json`` cannot see. On the Kiro
+    CLI harness (*kiro_cli_engine*), a file shaped like the v3 agent format
+    (:data:`_V3_FORMAT_FIELDS`, none of :data:`_V2_FORMAT_FIELDS`) is pointed at
+    kiro-cli's own ``agent list``, which marks such a file, and at backend ``kas``,
+    which serves it; ``validate`` passes such a file, so it is not the remedy there.
     """
     from kiro_crew.agent import kiro_agents_dir_path
     from kiro_crew.agent_discovery import _read_agent_spec
@@ -271,7 +298,7 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
         logger.debug("could not read %s to word a mode refusal", target, exc_info=True)
         return missing
     if not present:
-        return missing_default_agent_explanation(agent) or missing
+        return bot_agent_explanation(agent) or missing_default_agent_explanation(agent) or missing
     # Name the file that was probed: ``KIRO_HOME`` can move kiro-cli's agents
     # directory away from ``~/.kiro/agents``, and the command has to validate the
     # file kiro-cli dropped, not a copy at the default path.
@@ -287,11 +314,58 @@ def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
                     f"Remove {alias!r} and keep {key!r}, then start a new session. "
                     f"{validate} shows kiro-cli's own verdict.",
                 )
+        if (
+            kiro_cli_engine
+            and any(data.get(k) for k in _V3_FORMAT_FIELDS)
+            and not any(k in data for k in _V2_FORMAT_FIELDS)
+        ):
+            return (
+                f"its {display} is present, but kiro-cli did not list it. If `kiro-cli "
+                "agent list` marks it (v3 format), it is an agent for kiro-cli's v3 "
+                "engine, and Kiro Crew's Kiro CLI backend runs kiro-cli's v2 engine.",
+                (
+                    "Spawn it with backend 'kas', which runs kiro-cli's v3 engine."
+                    if _kas_offered()
+                    else "No backend offered on this host runs kiro-cli's v3 engine."
+                ),
+            )
     return (
         f"its {display} is present, but kiro-cli did not list it: kiro-cli's own "
         "parser rejected the file, or kiro-cli started before the file was written.",
         f"Run {validate} to see kiro-cli's parse error. If it passes, start a new "
         "session so a fresh kiro-cli lists the agent.",
+    )
+
+
+def bot_agent_explanation(agent: str) -> tuple[str, str] | None:
+    """``(cause, remedy)`` when *agent* is a Bot's agent, kept outside the agents folder.
+
+    A Bot chats on the mate conductor and works through the mate worker, and a
+    Bot may own its file; all three live in ``mates/agents/``
+    (:func:`kiro_crew.config.paths.mate_agents_dir`), which kiro-cli does not
+    list and ``kirocrew setup --agent-only`` does not write, so the setup remedy
+    cannot fix one. The dashboard runs a Bot's chat, so the remedy points there.
+
+    ``None`` for any other name, and on any probe failure. Blocking I/O (two
+    stats): run it off the event loop. Never raises, since it only words a refusal.
+    """
+    # Deferred for import weight: mcp-core loads this module before it lists its
+    # tools, and test_mcp_listing_import_budget caps what that path imports.
+    from kiro_crew.agent_files import is_mate_service_agent
+    from kiro_crew.config.paths import mate_agents_dir
+    from kiro_crew.mate_worker import _mate_file_on_disk
+
+    try:
+        if not (is_mate_service_agent(agent) or _mate_file_on_disk(agent)):
+            return None
+        folder = _home_relative(mate_agents_dir())
+    except Exception:  # noqa: BLE001 -- wording only; the refusal is raised regardless
+        logger.debug("could not check whether %r is a Bot's agent", agent, exc_info=True)
+        return None
+    return (
+        f"{agent!r} is a Bot's agent, which Kiro Crew keeps in {folder}/, not in the "
+        "agents folder kiro-cli lists, and `kirocrew setup --agent-only` does not write it.",
+        "Chat with the Bot from the dashboard's Bots page.",
     )
 
 

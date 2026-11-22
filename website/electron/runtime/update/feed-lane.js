@@ -29,12 +29,14 @@ function showNotice(Notification, title, body) {
   try { new Notification({ title, body }).show(); } catch { /* notifications optional */ }
 }
 
-// The quit-time notification for an install refused because a gateway from
-// this app's bundle kept running. Main-process copy is English-only (outside
-// the renderer catalogs, like the other update notifications here).
+// The "Update not installed" body. `stopCommand` stops a gateway from this
+// app's bundle that kept running; without one the holder is unidentified and no
+// command is named. Main-process copy is English-only (outside the renderer
+// catalogs, like the other update notifications here).
 function gatewayStillRunningNotificationBody(stopCommand) {
-  const command = stopCommand || "kirocrew stop";
-  return `The background gateway Kiro Crew started earlier is still running. To install the update, run “${command}” in Terminal, then reopen Kiro Crew. It stops only that gateway; your chats and settings are kept.`;
+  return stopCommand
+    ? `The background gateway Kiro Crew started earlier is still running. To install the update, run “${stopCommand}” in Terminal, then reopen Kiro Crew. It stops only that gateway; your chats and settings are kept.`
+    : "Something Kiro Crew could not identify may still be using its gateway, so the update was not installed. The update stays ready and installs when you reopen Kiro Crew once its gateway is free.";
 }
 
 /**

@@ -237,7 +237,9 @@ def test_kirocrew_markers_load_bundled_profile(tmp_path):
     assert prof["source"] == "kirocrew"
     assert prof["single_commit"] is True
     assert prof["base_branch"] == "main"
-    assert prof["setup"] == ["(cd website && npx playwright install chromium)"]
+    assert prof["setup"] == [
+        "(cd website && node ./node_modules/playwright/cli.js install chromium)"
+    ]
     assert all("playwright install" not in gate for gate in prof["gates"])
     assert prof["readiness"]["status_context"] == "PR Readiness"
     models = {r["name"]: r["model"] for r in prof["reviewers"]}
@@ -437,8 +439,15 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
     # not provision optional native runtimes, just as it does not grant Linux
     # namespaces or supply the Darwin kernel. Its absence is not FAISS evidence.
     exempt_scripts = {
+        # Reads the open main-red issue over the GitHub API on a pull request
+        # run and lists what PR CI deselects. It judges no code and its input
+        # exists only once CI runs on a pushed head.
+        "scripts/ci_main_red_skip.py",
         # Chooses WHICH tests to run for the changed surface; not itself a gate.
         "scripts/ci-surface-tests.py",
+        # Decides whether a pull request is docs-only, and so which lanes run
+        # and which tests read the changed docs; not itself a gate.
+        "scripts/docs_only.py",
         # Linux-only E2E orchestration, not a static scan: boots isolated
         # gateways and browsers after CI provisions its namespace capability.
         # Keep real E2E proof in CI, not in the repeated local scan floor.
@@ -460,6 +469,11 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # lives under .github/scripts). Network orchestration with no verdict of
         # its own, for the same reason as the barrier it probes.
         "scripts/cancel-superseded-run.sh",
+        # Reads the AI review lanes' check-runs for the pull request head over
+        # the GitHub API and holds ci.yml's heavy jobs on a published BLOCK (it
+        # lives under .github/scripts). It judges no code and its input exists
+        # only once the review workflows have run on a pushed head.
+        "scripts/ai-block-hold.sh",
         # Computes which test_*.py files a non-leaf PR added or modified (via git
         # diff against base.sha from the pull_request event payload). The scope
         # depends on the PR base commit, which only exists once the PR event
@@ -640,6 +654,10 @@ def test_scoped_frontend_gate_keeps_the_lanes_npm_test_used_to_carry():
         )
 
 
+# A whole-tree scan: CI's surface selector and the related-set checks read every
+# test file, about 37 s of CPU alone and 86-90 s on a loaded shard, so the
+# suite-wide 120 s is no margin. The tree_scan group gives it that group's 300 s.
+@pytest.mark.xdist_group(name="tree_scan_scoped_runner_self_test")
 def test_scoped_runner_self_test_passes():
     """The runner's escalations are its whole contract, so CI runs its self-test.
 
@@ -697,6 +715,45 @@ def test_floor_typechecks_the_way_ci_does():
         "the floor reaches type-checking through an npm script, so a package.json "
         "edit can silently change what this gate runs"
     )
+
+
+def _shell_words(command: str) -> list[str]:
+    """*command* split the way the shell would, so a quoted `npx` stays one word."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def test_profile_runs_website_tools_from_the_locked_install():
+    """Each website tool runs from the package `website/package-lock.json` installed.
+
+    In a worktree without `npm ci`, a bare `npx <name>` downloads the newest
+    registry package of that name. For `tsc` that is an unrelated package called
+    `tsc`, not TypeScript. `npx --no-install` still runs a globally installed
+    binary of that name first. Naming the package's own entry point under
+    `./node_modules/` is the one form that fails when the locked install is
+    missing.
+    """
+    assert "npx" in _shell_words("(cd website && npx eslint src/)")
+    assert "npx" not in _shell_words("grep -oE 'npx eslint' ci.yml")
+
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    commands = data["setup"] + data["gates"]
+    for command in commands:
+        assert "npx" not in _shell_words(command), f"{command!r} lets npx pick the binary"
+
+    locked = json.loads((REPO_ROOT / "website" / "package-lock.json").read_text(encoding="utf-8"))
+    referenced = {
+        match.group(1)
+        for command in commands
+        for word in _shell_words(command)
+        if (match := re.match(r"\./node_modules/((?:@[^/]+/)?[^/.][^/]*)/", word))
+    }
+    assert referenced, "found no ./node_modules/ entry point in the profile"
+    for package in sorted(referenced):
+        assert (
+            f"node_modules/{package}" in locked["packages"]
+        ), f"the profile runs {package!r}, which website/package-lock.json does not lock"
 
 
 def test_typecheck_script_actually_type_checks():

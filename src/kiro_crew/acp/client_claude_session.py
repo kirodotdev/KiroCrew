@@ -450,7 +450,8 @@ def _claude_session_needs_options(self: ClaudeAcpClient) -> bool:
     """Whether this session is only safe on an adapter that honours the session options.
 
     Its project tier is left out, it is a Side Chat, its spec declares
-    ``"tools": []``, or its worker's built-in tools are narrowed: each of those
+    ``"tools": []``, or its built-in tools are narrowed (a worker's excludes or a
+    named agent's ``tools`` list): each of those
     rides ``_meta.claudeCode.options``, which an adapter below the floor may ignore.
     """
     return bool(
@@ -594,8 +595,9 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
 
     A Bot's worker session (``members.is_crewmate_worker_session``) gets
     ``strictMcpConfig`` too, so a worker runs only the servers its spec grants.
-    One whose crewmate file excludes a native tool gets ``tools`` limited to the
-    built-ins of the native tools it keeps (``SessionProjection.builtin_tools``).
+    One whose crewmate file excludes a native tool, and a named agent whose spec
+    ``tools`` list leaves out a built-in, gets ``tools`` limited to the built-ins
+    of the native tools it keeps (``SessionProjection.builtin_tools``).
 
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
@@ -632,6 +634,14 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
             inline = getattr(self, "_session_mcp_inline_settings", None)
         if isinstance(inline, dict) and inline:
             options["settings"] = dict(inline)
+    adopted = getattr(self, "_adopted_substitute_model", None)
+    if adopted and adopted == self._model:
+        # The model a substitution retry names rides the flag tier as well as the
+        # seed: a seed a sibling session shares is not rewritten, and the flag tier
+        # outranks the user's settings the refused default came from.
+        carried_settings = dict(options.get("settings") or {})
+        carried_settings["model"] = adopted
+        options["settings"] = carried_settings
     # The spec's shell and write allowlists' ask rules ride the envelope whether or
     # not ``settings.local.json`` is Crew's: a declined project file still loads,
     # and its allow rules would otherwise approve those calls without a request.
@@ -700,9 +710,10 @@ def _claude_session_meta(self: ClaudeAcpClient) -> dict[str, Any]:
         options["allowDangerouslySkipPermissions"] = False
     worker_tools = getattr(self, "_claude_worker_builtin_tools", None)
     if worker_tools is not None:
-        # A worker whose crewmate file excludes a native tool keeps only the
-        # built-ins of the native tools it keeps; a narrower list already set
-        # (``"tools": []``) stays as narrow.
+        # A worker whose crewmate file excludes a native tool, or a named agent
+        # whose spec ``tools`` list leaves one out, keeps only the built-ins of the
+        # native tools it keeps; a narrower list already set (``"tools": []``)
+        # stays as narrow.
         options["tools"] = [t for t in options.get("tools", worker_tools) if t in worker_tools]
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
@@ -886,9 +897,10 @@ async def _pin_claude_starting_mode(self: ClaudeAcpClient, resp: dict) -> None:
     A session whose spec declares ``"tools": []`` is stopped below the same
     floor, since its empty ``tools`` option is what removes the built-ins, but
     is not pinned: it mounts no tool, so its mode approves nothing. A crewmate
-    worker whose native-tool excludes narrow ``tools``
-    (``_claude_worker_builtin_tools``) is stopped below the floor for the same
-    reason; above it, its mode is handled as any other session's.
+    worker whose native-tool excludes narrow ``tools``, or a named agent whose
+    spec ``tools`` list does (``_claude_worker_builtin_tools``), is stopped below
+    the floor for the same reason; above it, its mode is handled as any other
+    session's.
 
     Observed on claude-agent-acp 0.84.0
     (``test/fixtures/claude_mode_pin/``): ``session/new`` and
@@ -1014,35 +1026,60 @@ def _harness_session_meta(self: ClaudeAcpClient, mcp_servers: Any) -> dict[str, 
 async def _retry_after_model_substitution(
     self: ClaudeAcpClient, new_params: dict[str, Any], session_resp: dict, substitute: str
 ) -> dict:
-    """Adopt the model a substitution advisory names, re-seed, and re-issue ``session/new`` once.
+    """Name a served model in the seed and re-issue ``session/new`` once after a substitution advisory.
 
     The admin-tier policy advisory ("Model X is restricted ... Using Y instead.")
     comes back as a ``-32603`` error frame with no sessionId, so the first attempt
     created nothing. ``_wait_for_response`` recorded *substitute* in
-    ``self._last_substitution_model``; this pins ``self._model`` to it, re-seeds
-    ``settings.local.json`` (the adapter builds a fresh SettingsManager per
-    ``session/new``, so the new model takes effect), rebuilds the array and the
-    envelope, and re-issues ONCE. Returns the retry's response, which the caller
-    still treats as a failure when it carries no sessionId.
+    ``self._last_substitution_model``. The refused model is the one the seed left
+    to the user's settings, not necessarily this session's pin, so the retry names
+    the pin when the backend serves it and *substitute* otherwise
+    (``_substitution_retry_model``). This sets ``self._model`` to that model,
+    re-seeds ``settings.local.json`` with it (the adapter builds a fresh
+    SettingsManager per ``session/new``, so it takes effect), rebuilds the array
+    and the envelope, and re-issues. A pin adopted in an earlier start and refused
+    now is not named again (that helper names *substitute*). When the seed
+    already names *substitute*, the backend refused it as named and a retry
+    cannot help: *session_resp* is returned unchanged. When the retry named the pin and the backend refuses that
+    too, it falls back ONCE to the model the second advisory offers. Returns the
+    last response, which the caller still treats as a failure when it carries no
+    sessionId.
     """
+    model = self._substitution_retry_model(substitute)
+    if model == getattr(self, "_adopted_substitute_model", None):
+        return session_resp
+    resp = await self._reissue_naming_model(new_params, model)
+    fallback = self._last_substitution_model
+    if resp.get("sessionId") or model == substitute or not fallback or fallback == model:
+        return resp
+    # The served pin was refused as well. A session on the model the backend
+    # offers beats one that never starts, so fall back to it once; the seed then
+    # names it, and nothing retries again.
+    return await self._reissue_naming_model(new_params, fallback)
+
+
+async def _reissue_naming_model(
+    self: ClaudeAcpClient, new_params: dict[str, Any], model: str
+) -> dict:
+    """Re-seed ``settings.local.json`` naming *model*, rebuild the array and envelope, re-issue."""
     # Redact the substitute name before logging. It is parsed straight from the
     # untrusted ACP backend advisory (data.details "Using X instead") and the
     # gateway log fans out to the dashboard activity feed and Slack -- mirror the
     # dual-redaction discipline applied to the source advisory in _wait_for_response.
-    _sub_log, _ = redact_exfiltration_urls(str(substitute))
+    _sub_log, _ = redact_exfiltration_urls(str(model))
     _sub_log, _ = redact_credentials(_sub_log)
     logger.warning(
         "ACP session/new returned a substitution advisory with no session; "
         "adopting gateway-served model %r and retrying session creation.",
         _sub_log,
     )
-    self._model = substitute
-    # Named so the re-seed writes ``model`` even on a cold advertised-model cache:
-    # without it the user's own settings still name the restricted model and the
-    # retry is refused the same way.
-    self._adopted_substitute_model = substitute
+    self._model = model
+    # Named so the re-seed writes ``model`` warm cache or cold: without it the
+    # user's own settings still name the restricted model and the retry is
+    # refused the same way.
+    self._adopted_substitute_model = model
     # Re-seed settings.local.json so the fresh SettingsManager the adapter builds
-    # for the retry resolves the substitute model (it merges settings sources each
+    # for the retry resolves that model (it merges settings sources each
     # session/new).
     try:
         await asyncio.to_thread(self._write_claude_local_settings)
@@ -1140,7 +1177,8 @@ def _local_settings_exclusion(self: ClaudeAcpClient) -> tuple[bool, dict[str, An
 def _note_worker_builtin_tools(
     self: ClaudeAcpClient, builtin_tools: tuple[str, ...] | None
 ) -> None:
-    """Keep the built-ins a crewmate worker's projection allows, carried as claude's ``tools`` option."""
+    """Keep the built-ins a worker's or a named agent's projection allows, carried as
+    claude's ``tools`` option."""
     self._claude_worker_builtin_tools = builtin_tools
 
 

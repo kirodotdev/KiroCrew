@@ -15,12 +15,14 @@ import asyncio
 import functools
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiohttp import web
 
 from kiro_crew import conductor_patrol, session_ledger
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import session_control_queue as scq
+from kiro_crew.dashboard import session_control_run_queued as scrq
 from kiro_crew.dashboard import session_send_receipts
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew_routes
 from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
@@ -37,6 +39,7 @@ from kiro_crew.metrics.session_control_calls import (
     record_session_control_call,
 )
 from kiro_crew.sel import sel
+from kiro_crew.tracing import workers as trace_workers
 from kiro_crew.validation import MAX_BROADCAST_TARGETS, MAX_SHORT_STRING
 
 logger = logging.getLogger(__name__)
@@ -531,6 +534,15 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if not dry_run and isinstance(result, dict):
+        # Before the first message: that starts the worker's first turn, which takes
+        # the link this registers.
+        trace_workers.created(
+            getattr(state, "sessions", None),
+            _read_session_key(request),
+            str(result.get("target") or ""),
+            trace_workers.OP_CREATE,
+        )
     if failover_from is not None and isinstance(result, dict):
         # Moved by agent.acp_failover, as a spawn is: the caller asked for one
         # harness and the session runs on another vendor's, so the reply says so.
@@ -634,6 +646,13 @@ async def api_session_control_fork(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if isinstance(result, dict):
+        trace_workers.created(
+            getattr(state, "sessions", None),
+            _read_session_key(request),
+            str(result.get("target") or ""),
+            trace_workers.OP_FORK,
+        )
     return web.json_response(result)
 
 
@@ -1204,6 +1223,7 @@ async def api_session_control_adopt(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    _trace_manager_change(request, state, trace_workers.OP_ADOPT, result, "parent", "parent")
     return web.json_response(result)
 
 
@@ -1219,15 +1239,20 @@ async def api_session_control_handoff(request: web.Request) -> web.Response:
         recipient = body.get("to")
         if not isinstance(recipient, str) or not recipient.strip():
             raise sc.SessionControlError("to is required", code="recipient_required")
+        bind = body.get("bind", False)
+        if not isinstance(bind, bool):
+            raise sc.SessionControlError("bind must be a boolean", code="invalid_bind")
         result = await sc.handoff_target(
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
             to=recipient.strip(),
             caller_fenced=_carried_fence(request),
+            bind=bind,
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    _trace_manager_change(request, state, trace_workers.OP_HANDOFF, result, "manager", "manager")
     return web.json_response(result)
 
 
@@ -1248,7 +1273,24 @@ async def api_session_control_release(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    _trace_manager_change(request, state, trace_workers.OP_RELEASE, result, "parent", "")
     return web.json_response(result)
+
+
+def _trace_manager_change(
+    request: web.Request, state: "DashboardState", op: str, result: Any, old: str, new: str
+) -> None:
+    """A committed adopt, handoff or release as a span; *old* and *new* name the result's
+    keys for the previous and the new manager (``previous_<old>``, ``<new>``)."""
+    if isinstance(result, dict):
+        trace_workers.manager_changed(
+            getattr(state, "sessions", None),
+            _read_session_key(request),
+            op,
+            str(result.get("target") or ""),
+            str(result.get(f"previous_{old}") or ""),
+            str(result.get(new) or "") if new else "",
+        )
 
 
 # ``read_message``, not ``read``: the op names the TOOL the agent called
@@ -1352,6 +1394,35 @@ async def api_session_control_queue(request: web.Request) -> web.Response:
             action=action,
             entry=entry.strip(),
             position=position,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+# ``run_queued`` folds to ``other`` like ``queue``.
+@_counted("run_queued")
+async def api_session_control_run_queued(request: web.Request) -> web.Response:
+    """POST /api/session-control/run-queued — run one of the caller's queued messages now."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here: `run_queued_target` warms after its own SEL prewarm, for
+    # the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        queue_id = body.get("queue_id")
+        if not isinstance(queue_id, str) or not queue_id.strip():
+            raise sc.SessionControlError("queue_id is required", code="bad_request")
+        if len(queue_id) > MAX_SHORT_STRING:
+            raise sc.SessionControlError("queue_id must be a short string", code="bad_request")
+        result = await scrq.run_queued_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            queue_id=queue_id.strip(),
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:

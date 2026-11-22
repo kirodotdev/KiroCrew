@@ -594,6 +594,39 @@ async def test_registry_install_forwards_initial_state_to_external_registration(
     assert json.loads(record_path.read_text(encoding="utf-8"))["enabled"] is not start_disabled
 
 
+@pytest.mark.parametrize("confirmed", [True, False])
+@pytest.mark.asyncio
+async def test_an_owner_tier_confirmed_install_is_owner_designated_for_the_clone(
+    home, monkeypatch, confirmed
+):
+    # A cross-repo app that an owner-tier registry re-confirmed is cloned as owner
+    # designated, so a private GitHub repository there may go on to the host's gh
+    # sign-in (`_git_clone_or_pull` with index_originated=False). An unconfirmed
+    # row stays index-originated and anonymous, and never reaches gh.
+    from unittest.mock import AsyncMock
+
+    _seed_agent({"apps_allow_third_party": True})
+    source = home / "app-sources" / "chorus"
+    source.mkdir(parents=True)
+    manifest = {"name": "chorus", "version": "1.0.0", "resources": "app"}
+    (source / "app.json").write_text(json.dumps(manifest), encoding="utf-8")
+    clone = AsyncMock(return_value={"ok": True, "pkg_dir": source})
+    monkeypatch.setattr(reg_mod, "get_registry_app", lambda name: _row(resources="app"))
+    monkeypatch.setattr(reg_mod, "_fetch_app_manifest", AsyncMock(return_value=manifest))
+    monkeypatch.setattr(reg_mod, "_clone_build_app", clone)
+    monkeypatch.setattr(reg_mod, "app_source_dir", lambda name: source)
+    monkeypatch.setattr(reg_mod, "_resolved_clone_commit", lambda path: "")
+    monkeypatch.setattr(reg_mod, "_owner_designated_repo_target", lambda entry: "")
+    monkeypatch.setattr(reg_mod, "_owner_tier_confirmed", AsyncMock(return_value=confirmed))
+    monkeypatch.setattr(reg_mod, "is_clone_host_trusted", lambda url: True)
+    monkeypatch.setattr(reg_mod, "_sweep_stale_checkouts", AsyncMock())
+
+    result = await reg_mod.install_from_registry("chorus")
+
+    assert result["ok"] is True, result
+    assert clone.await_args.kwargs["index_originated"] is (not confirmed)
+
+
 class _Lifecycle:
     """The real ``_install_transaction`` with every side-effecting step faked."""
 
@@ -627,11 +660,14 @@ class _Lifecycle:
         if not install_ok:
             self.install_result["error"] = "provenance write failed"
 
-        async def _install(name, log_lines=None, *, resolved_entry=None, start_disabled=False):
+        async def _install(
+            name, log_lines=None, *, resolved_entry=None, start_disabled=False, via="store"
+        ):
             self.calls.append("install")
             self.install_kwargs = {
                 "resolved_entry": resolved_entry,
                 "start_disabled": start_disabled,
+                "via": via,
             }
             if cancel_at == "before_landing":
                 raise asyncio.CancelledError
@@ -683,7 +719,11 @@ async def test_install_transaction_requests_a_disabled_record(monkeypatch, enabl
     entry = _row()
 
     assert (await di._install_transaction("chorus", entry, enabled=enabled))["ok"] is True
-    assert life.install_kwargs == {"resolved_entry": entry, "start_disabled": True}
+    assert life.install_kwargs == {
+        "resolved_entry": entry,
+        "start_disabled": True,
+        "via": "default",
+    }
     assert life.install_kwargs["resolved_entry"] is entry
 
 

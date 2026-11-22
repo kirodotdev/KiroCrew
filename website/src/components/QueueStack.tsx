@@ -56,6 +56,18 @@ export function isAppMessageQueued(m: ChatMessage): boolean {
   return m.meta?.kind === 'mcp_app_message'
 }
 
+/** Queue-entry kinds whose text the server wrote: an MCP-App message and a
+ *  resource wake. The same set `queue_edit_by_id` refuses to edit. */
+const SERVER_WRITTEN_QUEUED_KINDS: ReadonlySet<string> = new Set(['mcp_app_message', 'resource_wake'])
+
+/** A queued entry the server wrote, not the person. Its card offers no edit,
+ *  and a cancel never puts its text in the composer: the next send would
+ *  record the server's words, untrusted excerpts included, as the person's. */
+export function isServerWrittenQueued(m: ChatMessage | undefined): boolean {
+  const kind = m?.meta?.kind
+  return typeof kind === 'string' && SERVER_WRITTEN_QUEUED_KINDS.has(kind)
+}
+
 /** Display text for a queued entry: an app-message entry drops its machine
  *  envelope so the queue card wears the same skin the transcript row will —
  *  two skins for one message read as two different messages. */
@@ -513,6 +525,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   const editingRow = useRef<ChatMessage | null>(null)
   // The queue id whose editor is open and holds its entry on the server.
   const openEditRef = useRef<string | null>(null)
+  // The card whose pencil press sent its hold ahead of the open editor's blur
+  // release; cleared when an editor opens, released if the press never clicks.
+  const preHeldRef = useRef<string | null>(null)
 
   // Reset expanded when queue drains to trivial size
   useEffect(() => {
@@ -534,6 +549,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   onEditOpenRef.current = onEditOpen
   useEffect(() => () => {
     if (openEditRef.current) onEditOpenRef.current?.(openEditRef.current, false)
+    if (preHeldRef.current) onEditOpenRef.current?.(preHeldRef.current, false)
   }, [])
   // The hold lapses on its own deadline, so an editor left open renews it; a
   // closed or killed tab stops renewing and the queue moves on soon after.
@@ -547,8 +563,25 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   const openEdit = (queueId: string) => {
     if (openEditRef.current && openEditRef.current !== queueId) onEditOpen?.(openEditRef.current, false)
     openEditRef.current = queueId
+    // Held again even after its press: a press hold that outlived its press
+    // may have lapsed, and on a live one a second hold only renews it.
+    const pressed = preHeldRef.current
+    preHeldRef.current = null
+    if (pressed && pressed !== queueId) onEditOpen?.(pressed, false)
     onEditOpen?.(queueId, true)
     setEditingId(queueId)
+  }
+  // The press fires before the open editor's blur releases its card.
+  const preHoldEdit = (queueId: string) => {
+    if (!openEditRef.current || openEditRef.current === queueId || preHeldRef.current === queueId) return
+    if (preHeldRef.current) onEditOpen?.(preHeldRef.current, false)
+    preHeldRef.current = queueId
+    onEditOpen?.(queueId, true)
+  }
+  const dropPreHold = (queueId: string) => {
+    if (preHeldRef.current !== queueId) return
+    preHeldRef.current = null
+    onEditOpen?.(queueId, false)
   }
 
   const commitEdit = (queueId: string, content: string, pastes?: PasteBlock[]) => {
@@ -702,12 +735,17 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
             const held = heldRowShown(m, i)
             // Per-card actions show on the front single card or when expanded.
             const showActions = (expanded || messages.length === 1) && !!queueId
-            // App-message entries are read-only-but-visible: the backend
-            // refuses queue_edit_by_id for system-injection kinds (the user's
-            // replacement words would drain app-authored), so the card must
-            // not offer the pencil. Cancel/interrupt/reorder stay: they change
-            // WHEN or WHETHER the entry runs, never who authored its text.
+            // Server-written entries are read-only-but-visible: the backend
+            // refuses queue_edit_by_id for them (the user's replacement words
+            // would drain server-authored), so the card must not offer the
+            // pencil. Cancel/interrupt/reorder stay: they change WHEN or
+            // WHETHER the entry runs, never who authored its text.
             const isAppEntry = isAppMessageQueued(m)
+            const isServerWritten = isServerWrittenQueued(m)
+            // Its user row is already in the conversation (the server's
+            // `meta.written`): the queue refuses an edit or cancel of it, so the
+            // card offers only Send now.
+            const isWritten = m.meta?.written === true
             const displayText = queuedDisplayText(m)
             const notDurable = m.meta?.durable === false
             // The card hides the knowledge envelope, so this chip is what says
@@ -865,12 +903,14 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                           </button>
                         </>
                       )}
-                      {onEdit && showActions && !isAppEntry && (
+                      {onEdit && showActions && !isServerWritten && !isWritten && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.edit_queued_message')}
                           aria-label={i18nT('components.queueStack.edit_queued_message')}
                           disabled={isPending}
+                          onMouseDown={(e) => { if (e.button === 0 && !e.ctrlKey) preHoldEdit(queueId!) }}
+                          onMouseLeave={() => dropPreHold(queueId!)}
                           onClick={(e) => { e.stopPropagation(); editingRow.current = m; openEdit(queueId!) }}
                         >
                           <Pencil size={13} />
@@ -887,10 +927,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
                           <Zap size={13} fill="currentColor" />
                         </button>
                       )}
-                      {onCancel && showActions && (
+                      {onCancel && showActions && !isWritten && (
                         <button
                           className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                          title={i18nT(isAppEntry ? 'components.queueStack.cancel_queued_message' : 'components.queueStack.cancel_and_move_back_to_input')}
+                          title={i18nT(isServerWritten ? 'components.queueStack.cancel_queued_message' : 'components.queueStack.cancel_and_move_back_to_input')}
                           aria-label={i18nT('components.queueStack.cancel_queued_message')}
                           disabled={isPending}
                           onClick={(e) => { e.stopPropagation(); onCancel(queueId!) }}

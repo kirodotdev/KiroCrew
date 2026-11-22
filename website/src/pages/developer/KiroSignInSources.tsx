@@ -8,7 +8,7 @@ import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
-import { closeRelayCrews } from '../../hooks/useRelayViewerCrews'
+import { RELAY_VIEWER_CREWS_KEY, closeRelayCrews } from '../../hooks/useRelayViewerCrews'
 import { i18nT } from '../../i18n/t'
 
 /** Cache key of `GET /api/kas-login/sources`: which stored sign-in sessions run as. */
@@ -48,6 +48,9 @@ export function useKiroSignOut(identity: string, onSignedOut: () => void) {
       // Open relay Crew windows ran as this sign-in: close them now, not at
       // their next renewal.
       void closeRelayCrews()
+      // The Team Crews list was the signed-out account's: drop it rather than
+      // keep listing its Crews as online until the next poll.
+      void queryClient.resetQueries({ queryKey: RELAY_VIEWER_CREWS_KEY })
       void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
       void queryClient.invalidateQueries({ queryKey: SOURCES_QUERY_KEY })
       // The signed-out account's model list goes with it: the gateway forgot its

@@ -18,13 +18,15 @@ the stdio server itself and relays each message to that url with the recorded
 headers added (:mod:`kiro_crew.kas_http_bridge`).
 
 Standard library only and at the top of the package: the engine starts this once
-per server, so it must not import the ACP stack. The bridge path adds only the
-package's trust bootstrap (:mod:`kiro_crew._ssl_compat`). It prints no env value.
+per server, so it must not import the ACP stack. The bridge path adds the
+package's trust bootstrap (:mod:`kiro_crew._ssl_compat`) and, once a request
+fails, :mod:`kiro_crew.asset_downloader`. It prints no env value.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -192,6 +194,35 @@ def _stdio_launch(
     return [command, *args], {**environ, **env}
 
 
+def _unstartable(command: str, exc: OSError) -> NoReturn:
+    """End the launch with the one line both platforms print when the command won't start."""
+    reason = exc.strerror or exc
+    print(
+        f"kirocrew: MCP server command {command!r} could not be started: {reason}",
+        file=sys.stderr,
+        flush=True,
+    )
+    raise SystemExit(127) from None
+
+
+def windows_child_command(command: str, env: dict[str, str]) -> str | None:
+    """The file a Windows launcher should start for *command*, or ``None``.
+
+    A bare name is looked up only in the absolute entries of *env*'s ``PATH``, by
+    full path: on Windows a bare-name ``shutil.which`` searches the current
+    directory first, and so does ``CreateProcess``, so neither is given a bare
+    name. ``PATHEXT`` still applies. A command with a directory part is used as
+    given. ``None`` means nothing was found, and the caller must not start it.
+    """
+    if os.path.dirname(command):
+        return shutil.which(command) or command
+    for entry in env.get("PATH", "").split(os.pathsep):
+        found = shutil.which(os.path.join(entry, command)) if os.path.isabs(entry) else None
+        if found:
+            return found
+    return None
+
+
 def _spawn_child(argv: list[str], env: dict[str, str]) -> NoReturn:
     """Windows has no in-place exec: run the server as a child on this process's stdio.
 
@@ -199,8 +230,13 @@ def _spawn_child(argv: list[str], env: dict[str, str]) -> NoReturn:
     launcher stays alive as the server's parent and exits with its status, the
     shape ``mcp_gateway.stub_fallback._fallback_spawn_child`` uses.
     """
-    resolved = shutil.which(argv[0], path=env.get("PATH")) or argv[0]
-    proc = subprocess.Popen([resolved, *argv[1:]], env=env, stdin=0, stdout=1, stderr=2)
+    resolved = windows_child_command(argv[0], env)
+    if resolved is None:
+        _unstartable(argv[0], FileNotFoundError(errno.ENOENT, "not found on its PATH"))
+    try:
+        proc = subprocess.Popen([resolved, *argv[1:]], env=env, stdin=0, stdout=1, stderr=2)
+    except OSError as exc:
+        _unstartable(argv[0], exc)
     try:
         rc = proc.wait()
     except BaseException:
@@ -242,13 +278,7 @@ def main(argv: list[str] | None = None) -> NoReturn:
         # nosemgrep: python.lang.security.audit.dangerous-os-exec-tainted-env-args.dangerous-os-exec-tainted-env-args
         os.execvpe(launch[0], launch, env)
     except OSError as exc:
-        print(
-            f"kirocrew: MCP server command {launch[0]!r} could not be started: "
-            f"{exc.strerror or exc}",
-            file=sys.stderr,
-            flush=True,
-        )
-        raise SystemExit(127) from None
+        _unstartable(launch[0], exc)
     raise SystemExit(1)
 
 

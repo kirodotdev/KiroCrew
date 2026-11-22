@@ -62,6 +62,7 @@ function renderBand(initial: BandProps, setProject = vi.fn(async () => {})) {
     activeSlot: p.activeSlot,
     sidebarOnScreen: true,
     folderSuggestionAccept: () => {},
+    folderSuggestionUndo: async () => {},
     folderSuggestionDecline: () => {},
     slotFolderId: p.folderId,
     slotProject: p.project,

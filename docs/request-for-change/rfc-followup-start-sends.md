@@ -3,8 +3,8 @@ title: The follow-up card's Start sends its prompt
 status: implemented
 author: Pearcekieser, with kirocrew-contributor
 created: 2026-10-30
-last-audited: 2026-11-14
-audited-at: 1d08e941b3
+last-audited: 2026-11-20
+audited-at: cdb601611f
 doc-pr: 26380
 implementation-prs: [25926]
 tracking-issues: [25925]

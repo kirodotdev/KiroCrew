@@ -56,11 +56,10 @@ def test_set_orch_cfg_auto_speak_defaults_false_when_missing(tmp_path, monkeypat
     assert _vc.auto_speak is False
 
 
-def test_set_orch_cfg_reads_auto_speak_from_raw(tmp_path, monkeypatch):
-    # Ensure disk fallback isn't used when cfg.raw is present.
-    _cfg_file(tmp_path, monkeypatch, {"auto_speak": False})
-    cfg = SimpleNamespace(raw={"voice_reply": {"auto_speak": True}})
-    set_orch_cfg(cfg)
+def test_set_orch_cfg_reads_auto_speak_from_the_files(tmp_path, monkeypatch):
+    # The files are read even when a config object is supplied.
+    _cfg_file(tmp_path, monkeypatch, {"auto_speak": True})
+    set_orch_cfg(SimpleNamespace(to_dict=lambda: {"voice_reply": {"auto_speak": False}}))
     assert _vc.auto_speak is True
 
 
@@ -254,9 +253,9 @@ def test_load_voice_reply_config_keeps_defaults_when_config_missing(tmp_path, mo
     assert _vc.global_enabled is False
 
 
-def test_load_voice_reply_config_prefers_cfg_raw_over_disk(tmp_path, monkeypatch):
-    _cfg_file(tmp_path, monkeypatch, {"auto_speak": False})
-    load_voice_reply_config(SimpleNamespace(raw={"voice_reply": {"auto_speak": True}}))
+def test_load_voice_reply_config_reads_the_files_not_the_config_object(tmp_path, monkeypatch):
+    _cfg_file(tmp_path, monkeypatch, {"auto_speak": True})
+    load_voice_reply_config(SimpleNamespace(to_dict=lambda: {"voice_reply": {"auto_speak": False}}))
     assert _vc.auto_speak is True
 
 

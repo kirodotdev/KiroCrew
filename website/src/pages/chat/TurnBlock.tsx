@@ -5,6 +5,8 @@ import type { DisplayItem, TurnItem } from './types'
 import { uniqueRowKeys } from '../../chat-core/transcript/rowKeys'
 import { useStableMessageKey } from '../../chat-core/transcript/useStableMessageKey'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { isJumpTarget, useJumpReveal } from '../../hooks/JumpRevealContext'
+import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { useSearchHighlight } from '../../hooks/SearchHighlightContext'
 import { ExpandStepsContext } from '../../hooks/useToolCallsStartExpanded'
 import { isWorkflowRunTool } from './WorkflowRunCard'
@@ -18,10 +20,12 @@ import { parseRecoveryMessage } from './RecoveryCard'
 import { isDiffToolMessage } from './toolDiff'
 import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
+import { extractSteeringAcks } from '../../app-sdk/protocol/steering'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
 import { isSpecHooksRunNowhereNotice, useSpecHooksRunNowhereDismissed } from './SpecHooksNotice'
+import { isToolCallRow } from '../../lib/toolRowContract'
 
 /**
  * Where a turn's live-browser card goes. The card belongs to the turn's FIRST
@@ -91,7 +95,7 @@ const isTool = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
   it.kind === 'single' && it.msg.role === 'tool' && !isWorkflowRunItem(it) &&
   !isSpawnRunItem(it) && !isMcpAppItem(it, appToolCallIds) && !isDiffCardItem(it) &&
   !isAskAnsweredItem(it)
-const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')
+const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !isToolCallRow(it.msg.content)
 const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 'assistant' || it.msg.role === 'streaming' || it.msg.role === 'file')
 /**
  * "Always visible" items — must render inline regardless of TurnBlock collapse state.
@@ -212,7 +216,7 @@ const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>, pinn
 /** How many tool-call rows a RUNNING turn keeps open. */
 const LIVE_ACTIVITY_WINDOW = 5
 
-/** A hidden ✅/🚫 completion row renders nothing in every host, so it is
+/** A hidden Approved:/Refused: completion row renders nothing in every host, so it is
  *  never folded and never counted: one call is one step. A notice the user
  *  dismissed draws nothing either, so it is not a step to expand onto. */
 const isCountedRow = (it: TurnItem, noticeDismissed: boolean) =>
@@ -255,6 +259,28 @@ function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, 
 
 const NO_ACTIVE_KEYS: ReadonlySet<string> = new Set()
 
+/** Row `k`'s activity reporter: each call marks the row live and returns the
+ *  undo. Built here, outside the component, because the block caches it for
+ *  its whole life: a closure made during a render keeps that render's scope
+ *  (its items and row elements) alive through V8's shared closure context. */
+function makeRowReporter(
+  k: string,
+  activeCounts: Map<string, number>,
+  setActiveKeys: (update: (s: ReadonlySet<string>) => ReadonlySet<string>) => void,
+): RowActivityReporter {
+  return () => {
+    const n = (activeCounts.get(k) ?? 0) + 1
+    activeCounts.set(k, n)
+    if (n === 1) setActiveKeys(s => new Set(s).add(k))
+    return () => {
+      const m = (activeCounts.get(k) ?? 1) - 1
+      if (m > 0) { activeCounts.set(k, m); return }
+      activeCounts.delete(k)
+      setActiveKeys(s => { if (!s.has(k)) return s; const next = new Set(s); next.delete(k); return next })
+    }
+  }
+}
+
 /** The tool call rendered an MCP App (persisted on the message), so its row may host one again. */
 const NEVER_LIVE = (): boolean => false
 const hadMcpApp = (it: TurnItem) => it.kind === 'single' && it.msg.meta?.mcp_app === true
@@ -263,9 +289,12 @@ const hadMcpApp = (it: TurnItem) => it.kind === 'single' && it.msg.meta?.mcp_app
  *  value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 
-/** Strip OPTIONS/markdown formatting and return plain text content length */
+/** Strip steering notes, OPTIONS/markdown formatting, and format chars; return visible text length. */
 function substantiveLength(text: string): number {
-  return stripOptionMarkers(text).replace(/[#*_`>\-|]/g, '').trim().length
+  return stripOptionMarkers(extractSteeringAcks(text).cleaned)
+    .replace(/\p{Cf}/gu, '')
+    .replace(/[#*_`>\-|]/g, '')
+    .trim().length
 }
 
 /**
@@ -549,17 +578,7 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   const reporterFor = (k: string): RowActivityReporter => {
     let r = reporters.current.get(k)
     if (!r) {
-      r = () => {
-        const n = (activeCounts.current.get(k) ?? 0) + 1
-        activeCounts.current.set(k, n)
-        if (n === 1) setActiveKeys(s => new Set(s).add(k))
-        return () => {
-          const m = (activeCounts.current.get(k) ?? 1) - 1
-          if (m > 0) { activeCounts.current.set(k, m); return }
-          activeCounts.current.delete(k)
-          setActiveKeys(s => { if (!s.has(k)) return s; const next = new Set(s); next.delete(k); return next })
-        }
-      }
+      r = makeRowReporter(k, activeCounts.current, setActiveKeys)
       reporters.current.set(k, r)
     }
     return r
@@ -626,10 +645,46 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     }
     return false
   }, [items, term, currentMessageIdx, fold.rows])
+  // The message a jump just highlighted opens the fold the same way, so the
+  // reader lands on a row they can see.
+  const { ts: revealTs, mid: revealMid, seq: revealSeq, claimScroll, scrollerEl } = useJumpReveal()
+  const jumpInFold = useMemo(() => {
+    if (!revealTs) return false
+    for (const i of fold.rows) {
+      const it = items[i]
+      if (it.kind === 'single' ? isJumpTarget(it.msg, revealTs, revealMid) : it.kind === 'group' && it.msgs.some(m => isJumpTarget(m, revealTs, revealMid))) return true
+    }
+    return false
+  }, [items, revealTs, revealMid, fold.rows])
+  const jumpInTurn = useMemo(
+    () => !!revealTs && items.some(it => it.kind === 'single' ? isJumpTarget(it.msg, revealTs, revealMid) : it.msgs.some(m => isJumpTarget(m, revealTs, revealMid))),
+    [items, revealTs, revealMid],
+  )
   // Held in a ref so an inline parent callback cannot re-fire this effect.
   const setOpenRef = useRef(setOpen)
   setOpenRef.current = setOpen
-  useEffect(() => { if (matchInFold) setOpenRef.current(true) }, [matchInFold])
+  useEffect(() => { if (matchInFold || jumpInFold) setOpenRef.current(true) }, [matchInFold, jumpInFold, revealSeq])
+  // The jump scrolls to this whole turn, which can be taller than the viewport;
+  // bring the highlighted row itself into view, once any fold hiding it has
+  // opened.
+  // shortcut: waits out the 200 ms fold transition on a timer; move to the row's
+  // transitionend if the fold's timing ever changes.
+  useEffect(() => {
+    if (!jumpInTurn || !revealTs) return
+    const t = setTimeout(() => {
+      // The transcript's own row, not the measuring farm's off-screen copy.
+      const rows = document.querySelectorAll<HTMLElement>('[data-jump-target]')
+      const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]'))
+      if (!row) return
+      // The jump's settle poll centres the whole turn each frame; end it first.
+      claimScroll()
+      row.scrollIntoView({ block: 'center' })
+    }, 250)
+    // A reader who scrolls while the fold opens has taken over: the row scroll
+    // must not pull them back, as the jump's own settle poll does not.
+    const detach = attachUserScrollIntent(scrollerEl() ?? undefined, () => clearTimeout(t))
+    return () => { clearTimeout(t); detach() }
+  }, [jumpInTurn, revealTs, revealSeq, claimScroll, scrollerEl])
 
   const candidateSet = useMemo(() => new Set(candidates), [candidates])
   const count = fold.rows.size

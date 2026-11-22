@@ -163,6 +163,26 @@ async def test_picking_kiro_cli_stores_kiro_and_the_response_says_kiro(tmp_confi
 
 
 @pytest.mark.asyncio
+async def test_a_harness_the_launch_refuses_on_this_host_is_not_saved(
+    tmp_config, monkeypatch
+) -> None:
+    """The save refuses an enforced harness with the launch's own sentence."""
+    from kiro_crew import sandbox
+    from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+
+    monkeypatch.setattr(sandbox, "credential_mask_applies", lambda _mode: False)
+    app = _make_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await _patch(client, "agent.acp_backend", ACP_BACKEND_CODEX)
+        assert response.status == 409
+        body = await response.json()
+    assert body["code"] == "acp_backend_sandbox_refused"
+    assert body["error"] == sandbox_floor_refusal(ACP_BACKEND_CODEX, "auto")
+    assert "acp_backend" not in json.loads(tmp_config.read_text(encoding="utf-8"))["agent"]
+
+
+@pytest.mark.asyncio
 async def test_patching_an_empty_harness_stores_no_choice(tmp_config) -> None:
     """``""`` is "no choice": stored as is, it resolves to the KAS default."""
     from kiro_crew.acp_backends import ACP_BACKEND_KAS
@@ -1702,7 +1722,7 @@ class TestTelemetryEnabledPatch:
         _arm(app, _live_state())
         metrics_provider.watch_config()
         try:
-            with patch("kiro_crew.metrics.provider.shutdown") as reset:
+            with patch("kiro_crew.metrics.provider._detach", return_value=None) as reset:
                 async with TestClient(TestServer(app)) as c:
                     # False: the default is on, so writing true would change nothing.
                     assert (await _patch(c, "telemetry.enabled", False)).status == 200
@@ -1716,14 +1736,14 @@ class TestTelemetryEnabledPatch:
     async def test_unrelated_field_leaves_the_recorder_alone(self, tmp_config) -> None:
         # Rebuilding the recorder flushes and restarts the exporter thread, so it
         # must not ride along on every unrelated config write.
-        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+        with patch("kiro_crew.metrics.provider._detach", return_value=None) as reset:
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "session.timeout_secs", 600)).status == 200
         reset.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rejected_value_leaves_the_recorder_alone(self, tmp_config) -> None:
-        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+        with patch("kiro_crew.metrics.provider._detach", return_value=None) as reset:
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "telemetry.enabled", "yes")).status == 400
         reset.assert_not_called()
@@ -1732,7 +1752,7 @@ class TestTelemetryEnabledPatch:
     async def test_recorder_reset_failure_does_not_fail_the_write(self, tmp_config) -> None:
         # The value is already durable by this point; a flush that raises must not
         # report the save as failed and send the UI's switch back.
-        with patch("kiro_crew.metrics.provider.shutdown", side_effect=RuntimeError("boom")):
+        with patch("kiro_crew.metrics.provider._detach", side_effect=RuntimeError("boom")):
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "telemetry.enabled", True)).status == 200
         data = json.loads(tmp_config.read_text(encoding="utf-8"))
@@ -1859,7 +1879,7 @@ class TestTelemetryEnabledEgressGate:
     @pytest.mark.asyncio
     async def test_refused_enable_does_not_touch_the_recorder(self, tmp_config) -> None:
         self._seed_endpoint(tmp_config, "http://otel.internal:4318/v1/metrics")
-        with patch("kiro_crew.metrics.provider.shutdown") as reset:
+        with patch("kiro_crew.metrics.provider._detach", return_value=None) as reset:
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "telemetry.enabled", True)).status == 409
         reset.assert_not_called()

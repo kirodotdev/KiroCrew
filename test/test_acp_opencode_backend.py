@@ -153,6 +153,10 @@ def test_the_handshake_is_the_spec_dialect():
 # ── The routing seed ─────────────────────────────────────────────────────────
 
 
+# The clean seed: every tool asks, and opencode's own ``task`` tool is denied, last.
+_ASK_SEED = {"*": "ask", "task": {"*": "deny"}}
+
+
 class TestRoutingSeed:
     """The setting travels in the environment, and it never eats operator config."""
 
@@ -162,7 +166,7 @@ class TestRoutingSeed:
 
     def test_the_seed_carries_the_declared_setting(self):
         seed = json.loads(self._seed())
-        assert seed == {"permission": "ask"}
+        assert seed == {"permission": _ASK_SEED}
 
     def test_an_operators_other_keys_survive(self, monkeypatch):
         """Merged over the ambient value, not substituted for it.
@@ -176,7 +180,7 @@ class TestRoutingSeed:
         )
         seed = json.loads(self._seed())
         assert seed["model"] == "ollama/qwen3:8b"
-        assert seed["permission"] == "ask", "Crew's permission setting must win the merge"
+        assert seed["permission"] == _ASK_SEED, "Crew's permission setting must win the merge"
 
     @pytest.mark.parametrize("ambient", ["not json at all", '"a string"', "[1, 2]"])
     def test_an_unusable_ambient_value_still_yields_the_seed(self, monkeypatch, ambient):
@@ -187,7 +191,7 @@ class TestRoutingSeed:
         """
         monkeypatch.setenv(_ENV_CONFIG, ambient)
         seed = json.loads(self._seed())
-        assert seed == {"permission": "ask"}
+        assert seed == {"permission": _ASK_SEED}
 
     def test_nothing_is_written_into_the_work_dir(self, monkeypatch, tmp_path):
         """The whole reason the seed is an env value: a session leaves no trace in a
@@ -764,7 +768,7 @@ def test_the_read_back_vouches_for_the_seed_the_session_carries(monkeypatch, tmp
     rig = _OpencodeLaunchRig(monkeypatch, tmp_path)
     rig.run()
     seed = rig.args_of("verify")[1]
-    assert json.loads(seed) == {"permission": "ask"}
+    assert json.loads(seed) == {"permission": _ASK_SEED}
     env: dict[str, str] = {}
     rig.adapter.apply_spawn_env(env)
     assert env == {_ENV_CONFIG: seed}

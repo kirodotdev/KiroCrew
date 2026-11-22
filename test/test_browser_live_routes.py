@@ -35,6 +35,7 @@ ROUTES = (
     "/api/browser/input/release",
     "/api/browser/input/event",
     "/api/browser/ask/answer",
+    "/api/browser/media",
 )
 RECORDING_ROUTES = (
     "/api/browser/live/{session}/recordings",
@@ -318,9 +319,9 @@ async def test_the_slice_binds_the_hub_to_the_owner_senders_and_registers_cleanu
     assert route_slice._close_live_hub in app.on_cleanup
     posts = {r.resource.canonical for r in app.router.routes() if r.method == "POST"}
     assert posts == set(ROUTES)
-    # The turn replay's three reads (aiohttp adds a HEAD beside every GET).
+    # The turn replay's three reads and the media state read (aiohttp adds a HEAD beside every GET).
     gets = {r.resource.canonical for r in app.router.routes() if r.method == "GET"}
-    assert gets == set(RECORDING_ROUTES)
+    assert gets == set(RECORDING_ROUTES) | {"/api/browser/media"}
     assert {r.method for r in app.router.routes()} == {"POST", "GET", "HEAD"}
 
 

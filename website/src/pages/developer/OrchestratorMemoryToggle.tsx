@@ -6,6 +6,7 @@ import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsToggle } from '../../components/settings'
 import { Badge } from '../../components/ui'
+import { resolveLegacyHighlightId } from '../../hooks/useSettingHighlight'
 
 export const ORCHESTRATOR_MEMORY_CONFIG_KEY = 'agent.orchestrator_memory'
 
@@ -53,7 +54,9 @@ export function OrchestratorMemoryToggle() {
 export function OrchestratorMemoryDeepLink({ onOpen }: { onOpen: () => void }) {
   const [params] = useSearchParams()
   const highlight = params.get('highlight')
-  const wanted = highlight === `key:${ORCHESTRATOR_MEMORY_CONFIG_KEY}` || highlight === 'agent.orchestrator-memory'
+  const wanted =
+    highlight === `key:${ORCHESTRATOR_MEMORY_CONFIG_KEY}` ||
+    (highlight !== null && resolveLegacyHighlightId(highlight) === 'agent.kiro-memory')
   const callback = useRef(onOpen)
   callback.current = onOpen
   useEffect(() => {

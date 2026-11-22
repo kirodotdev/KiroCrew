@@ -573,6 +573,8 @@ _COUNT_ROW_FIELDS = frozenset(
         "executor",
     }
 )
+#: Fields a fixture row names only where they are set.
+_OPTIONAL_ROW_FIELDS = frozenset({"crew_root", "cron_run_read_only"})
 _TRANSCRIPTS = {
     "interrupted": _interrupted,
     "interrupted_long_ago": _interrupted_long_ago,
@@ -606,6 +608,8 @@ def _build_from_facts(state, entries: list[dict], monkeypatch) -> None:
             building.add(slot.key)
         if "executor" in facts:
             slot.executor = facts["executor"]
+        if facts.get("cron_run_read_only"):
+            slot.cron_run_read_only = True
         if "mode" in facts:
             slot.mode = facts["mode"]
         if "agent" in facts:
@@ -646,13 +650,15 @@ def test_the_server_total_is_the_count_the_sidebar_reads_from_the_shared_fixture
             assert entry["key"] not in payload, f"{entry['key']} is in the slots payload"
             continue
         assert (
-            _COUNT_ROW_FIELDS <= set(want) <= _COUNT_ROW_FIELDS | {"crew_root"}
+            _COUNT_ROW_FIELDS <= set(want) <= _COUNT_ROW_FIELDS | _OPTIONAL_ROW_FIELDS
         ), f"{entry['key']}: name every field the count reads"
         # ``crew_root`` is on a worker's row only; a row the fixture gives none
         # must carry none, or the sidebar would drop a row this case counts.
+        # ``cron_run_read_only`` is named only on the row that is marked.
         got = {field: payload[entry["key"]].get(field) for field in _COUNT_ROW_FIELDS}
         got["crew_root"] = payload[entry["key"]].get("crew_root") or None
-        assert got == {"crew_root": None, **want}, entry["key"]
+        got["cron_run_read_only"] = payload[entry["key"]].get("cron_run_read_only")
+        assert got == {"crew_root": None, "cron_run_read_only": False, **want}, entry["key"]
 
     crew = case.get("crew_mode", False)
     picked = mod.collect_interrupted_idle(state, crew_mode=crew)
@@ -1087,7 +1093,7 @@ def test_a_candidate_waits_for_memory_preparation_startup_has_not_published(
     preparing = [True]
     monkeypatch.setattr(memory_startup, "memory_startup_preparing", lambda: preparing[0])
     # A zero poll only yields, so the waits below are a count of loop turns.
-    monkeypatch.setattr(mod, "_MEMORY_TASK_POLL_SECONDS", 0)
+    monkeypatch.setattr(memory_startup, "_TASK_PUBLICATION_POLL_SECONDS", 0)
     state = _make_state(tmp_path)
     _interrupted(state.get_or_create_slot("a"))
 
@@ -1141,6 +1147,51 @@ def test_no_resumed_turn_starts_while_memory_preparation_runs(tmp_path, dispatch
 
     assert len(outcome["resumed"]) == mod.RESUME_ALL_MAX_RUNNING + 2
     assert dispatched.started.await_count == mod.RESUME_ALL_MAX_RUNNING + 2
+
+
+def test_a_run_ends_once_the_backstop_fails_a_wedged_preparation(tmp_path, dispatched, monkeypatch):
+    """The backstop fails the fence but cannot cancel the worker thread, so the
+    published task stays pending. Each candidate is then reported failed, the run
+    sends its one frame, and a later press starts a new run instead of getting
+    409. No recovery entry is queued: the drain would park it behind that task.
+    """
+    from kiro_crew import memory_startup
+
+    monkeypatch.setattr(memory_startup, "_active", None)
+    # A zero recheck only yields, so the waits below are a count of loop turns.
+    monkeypatch.setattr(memory_startup, "_FENCE_RECHECK_SECONDS", 0)
+    state = _make_state(tmp_path)
+    for i in range(6):
+        _interrupted(state.get_or_create_slot(f"s{i}"))
+
+    async def drive():
+        frames = _frames(state)
+        startup = memory_startup.MemoryStartup.begin()
+        try:
+            state.memory_startup_task = asyncio.get_running_loop().create_future()
+            status, _body = mod.start_resume_all(state, {"app": ""})
+            assert status == 202
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert frames.call_count == 0, "a live pass still holds them"
+            startup.fail(TimeoutError("memory preparation did not finish"))
+            await _drain(state)
+            ((_event, outcome),) = [c.args for c in frames.call_args_list]
+            second, _body = mod.start_resume_all(state, {"app": ""})
+            await _drain(state)
+            return outcome, second
+        finally:
+            startup.stop()
+            startup.release()
+
+    outcome, second = asyncio.run(drive())
+
+    assert outcome["resumed"] == [] and outcome["skipped"] == []
+    assert sorted(f["slot"] for f in outcome["failed"]) == [f"s{i}" for i in range(6)]
+    assert {f["error"] for f in outcome["failed"]} == {"MemoryStartupUnavailable"}
+    assert dispatched.started.await_count == 0
+    assert all(not slot._queue for slot in state._slots.values())
+    assert second == 202, "the first run ended, so a later press is not a 409"
 
 
 @pytest.mark.asyncio

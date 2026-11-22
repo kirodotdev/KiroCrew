@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import reducer, {
   setWarm,
   setActiveId,
+  relayPaneOpened,
+  relayPaneClosed,
   removeWarm,
   setPaneReady,
   setUnread,
@@ -160,5 +162,30 @@ describe('instancesSlice', () => {
     s = reducer(s, setPaneReady('a'))
     s = reducer(s, removeWarm('a'))
     expect(s.ready).toEqual({})
+  })
+
+  it('a relay pane opening adds its tab once, fronts it, and leaves no instance active', () => {
+    let s = reducer({ ...initial, activeId: 'ssh', pendingPaneSlot: { id: 'ssh', key: 'k' } }, relayPaneOpened({ id: 'r1', name: 'One' }))
+    s = reducer(s, relayPaneOpened({ id: 'r2', name: 'Two' }))
+    s = reducer(s, relayPaneOpened({ id: 'r1', name: 'One' }))
+    expect(s.relayTabs).toEqual([{ id: 'r1', name: 'One' }, { id: 'r2', name: 'Two' }])
+    expect(s.relayLive).toEqual(['r1', 'r2'])
+    expect(s.relayActive).toBe('r1')
+    expect(s.activeId).toBeNull()
+    expect(s.pendingPaneSlot).toBeNull()
+    expect(reducer(s, setActiveId('ssh')).relayActive).toBeNull()
+    expect(reducer(s, setActiveId(null)).relayActive).toBeNull()
+  })
+
+  it('a relay pane closing drops its tab, and the active one leaves no relay tab active', () => {
+    let s = reducer(initial, relayPaneOpened({ id: 'r1', name: 'One' }))
+    s = reducer(s, relayPaneOpened({ id: 'r2', name: 'Two' }))
+    s = reducer(s, relayPaneClosed('r1'))
+    expect(s.relayTabs?.map(t => t.id)).toEqual(['r2'])
+    expect(s.relayLive).toEqual(['r2'])
+    expect(s.relayActive).toBe('r2')
+    s = reducer(s, relayPaneClosed('r2'))
+    expect(s.relayTabs).toEqual([])
+    expect(s.relayActive).toBeNull()
   })
 })

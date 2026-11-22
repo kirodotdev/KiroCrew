@@ -7,7 +7,7 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import { readIndexCss } from './indexCssSource'
 import InstanceTabBar from '../components/InstanceTabBar'
-import EmbeddedHostBridge from '../components/EmbeddedHostBridge'
+import EmbeddedHostBridge, { parseHostModel } from '../components/EmbeddedHostBridge'
 import type { HostModel } from '../store/instancesSlice'
 import { isDesktopAppPane, noteHostOrigin } from '../lib/hostRelay'
 
@@ -26,6 +26,7 @@ const model = (over: Partial<HostModel> = {}): HostModel => ({
   self: null,
   macInset: false,
   winInset: false,
+  linuxInset: false,
   electron: true,
   pinnedCrews: [],
   stableOrder: false,
@@ -73,6 +74,58 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       expect.objectContaining({ type: 'mc-switch-instance', id: null }),
       HUB,
     )
+  })
+
+  it('lists the Remote Crews the window relays and sends a pick up as a relay: id (row 72)', async () => {
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const relay = { crewType: 'TEAM', presence: 'CONNECTED', relayConnectionStatus: 'CONNECTED', lastSeenAt: null, current: false }
+    const store = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ relayCrews: [{ ...relay, endpointId: 'ep-1', name: 'Team Lab', open: false }, { ...relay, endpointId: 'ep-2', name: 'Build', open: true }] }),
+      },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    // The group is a React.lazy chunk (embeddedTeamCrewsGroups.tsx -> TeamCrewsGroup.tsx):
+    // its first import in a cold worker can take longer than findBy's 1 s default.
+    // Wait on one of its rows: the heading above it is the menu's own and draws at once.
+    expect(await screen.findByRole('menuitem', { name: 'Connect Team Lab' }, { timeout: 5000 })).toBeTruthy()
+    // One list: the pane's own crew and the relayed rows share one heading.
+    expect(screen.getAllByText('Remote Crews')).toHaveLength(1)
+    expect(screen.queryByText('My Crews')).toBeNull()
+    expect(screen.getByRole('menuitem', { name: 'Build', description: 'Connected' })).toBeTruthy()
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Connect Team Lab' }))
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-switch-instance', id: 'relay:ep-1' }), HUB)
+  })
+
+  it("says when the window's Remote Crews read failed, with or without rows (#40306)", async () => {
+    const relay = { crewType: 'TEAM', presence: 'CONNECTED', relayConnectionStatus: 'CONNECTED', lastSeenAt: null, current: false, open: false }
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model({ relayCrews: [], relayCrewsFailed: true }) },
+    })
+    const { unmount } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(await screen.findByText("Couldn't load your Shared Crews.", {}, { timeout: 5000 })).toBeTruthy()
+    unmount()
+    const kept = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ relayCrews: [{ ...relay, endpointId: 'ep-1', name: 'Team Lab' }], relayCrewsFailed: true }),
+      },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store: kept })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(await screen.findByText(/Couldn't refresh your Shared Crews/, {}, { timeout: 5000 })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Connect Team Lab' })).toBeTruthy()
+  })
+
+  it('shows no Remote Crews group when the window relays none (an older host)', async () => {
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model() } })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(screen.getByRole('menuitemradio', { name: /Cloud One/ })).toBeTruthy()
+    expect(screen.queryByText('Remote Crews')).toBeNull()
   })
 
   it('renders nothing when the parent has not relayed a model yet', () => {
@@ -187,6 +240,33 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     })
     const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
     expect(container.querySelector('.tb-crew-active-chip')).not.toBeNull()
+  })
+
+  it('reads a relayed SSM crew as Private · SSM, and a crew from an older host as its host alone', async () => {
+    const store = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ tabs: [
+          { id: 'cd-1', name: 'Cloud One', sshHost: 'i-0abc', state: 'connected', unread: 0, transport: 'ssm' },
+          { id: 'cd-2', name: 'Old Host', sshHost: 'old-alias', state: 'connected', unread: 0 },
+        ] }),
+      },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    const ssm = screen.getByRole('menuitemradio', { name: /Cloud One/ })
+    expect(ssm.querySelector('[data-testid="crew-row-private"]')?.textContent).toBe('Private · SSM · i-0abc')
+    const old = screen.getByRole('menuitemradio', { name: /Old Host/ })
+    expect(old.querySelector('[data-testid="crew-row-private"]')).toBeNull()
+    expect(old.textContent).toContain('old-alias')
+  })
+
+  it('keeps only a known transport from a relayed model', () => {
+    const parsed = parseHostModel({ type: 'mc-host-model', tabs: [
+      { id: 'a', name: 'A', sshHost: 'h', transport: 'ssm' },
+      { id: 'b', name: 'B', sshHost: 'h', transport: 'telnet' },
+    ] })
+    expect(parsed?.tabs.map(t => t.transport)).toEqual(['ssm', undefined])
   })
 
   it('titles a relayed crew with no machine without an empty "()" (#34698)', async () => {
@@ -362,6 +442,51 @@ describe('EmbeddedHostBridge (option B relay)', () => {
     await waitFor(() => expect(store.getState().instances.host?.tabs).toHaveLength(1))
     expect(store.getState().instances.host?.winInset).toBe(true)
     expect(document.documentElement.classList.contains('embedded-win-inset')).toBe(true)
+  })
+
+  it('applies the Linux caption inset when the host relays linuxInset, and drops it when not', async () => {
+    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    const { unmount } = renderWithProviders(<EmbeddedHostBridge />, { store })
+    const send = (over: Partial<HostModel>) => act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', { source: window.parent, data: { type: 'mc-host-model', ...model(over) } }),
+      )
+    })
+
+    send({ linuxInset: true })
+    await waitFor(() => expect(store.getState().instances.host?.linuxInset).toBe(true))
+    expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(true)
+    expect(document.documentElement.classList.contains('embedded-win-inset')).toBe(false)
+
+    send({ linuxInset: false })
+    await waitFor(() => expect(store.getState().instances.host?.linuxInset).toBe(false))
+    expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(false)
+
+    send({ linuxInset: true })
+    await waitFor(() => expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(true))
+    unmount()
+    expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(false)
+  })
+
+  it('treats a host model without linuxInset as no Linux inset (older host)', async () => {
+    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore()
+    renderWithProviders(<EmbeddedHostBridge />, { store })
+    const { linuxInset: _omit, ...older } = model()
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { source: window.parent, data: { type: 'mc-host-model', ...older } }))
+    })
+    await waitFor(() => expect(store.getState().instances.host?.tabs).toHaveLength(1))
+    expect(store.getState().instances.host?.linuxInset).toBe(false)
+    expect(document.documentElement.classList.contains('embedded-linux-inset')).toBe(false)
+  })
+
+  it('keeps the embedded Linux reserves in lock-step with the local .linux-electron rule (CSS pin)', () => {
+    const css = readIndexCss()
+    expect(css).toMatch(/\.linux-electron header\.topbar-glass\{padding-right:112px\}/)
+    expect(css).toMatch(/\.embedded-linux-inset header\.topbar-glass\{padding-right:112px\}/)
+    expect(css).toMatch(/\.embedded-linux-inset \.mc-focus-mode \.focus-caption-reserve\{padding-right:112px\}/)
   })
 
   it('keeps the embedded Windows reserves in lock-step with the local .win-electron rule (CSS pin)', () => {

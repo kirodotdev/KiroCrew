@@ -29,6 +29,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "readiness_sweep_scan.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "pr-readiness-sweep.yml"
+READINESS = ROOT / ".github" / "workflows" / "pr-readiness.yml"
 
 
 def _load():
@@ -229,6 +230,50 @@ def test_the_failure_class_matches_the_workflows_spelling_exactly() -> None:
         re.findall(r"\b(failure|timed_out|cancelled|action_required|stale|startup_failure)\b", text)
     )
     assert listed == {c.lower() for c in scan.FAILURE_CONCLUSIONS}
+
+
+def test_the_monitored_workflows_are_readinesss_workflow_run_list() -> None:
+    # A lane added to readiness's trigger list must also hold the debounce.
+    doc = yaml.safe_load(READINESS.read_text(encoding="utf-8"))
+    on = doc.get("on") or doc[True]
+    assert set(on["workflow_run"]["workflows"]) == scan.MONITORED_WORKFLOWS
+
+
+@pytest.mark.parametrize(
+    ("workflow", "running"),
+    [("CI", 1), ("macOS Tests (on demand)", 0), (None, 1)],
+)
+def test_only_a_monitored_or_non_actions_check_run_counts_as_running(
+    monkeypatch, capsys, fast, workflow: str | None, running: int
+) -> None:
+    # A queued `macOS Tests (on demand)` check-run, a workflow readiness never
+    # reads, does not hold the re-fire once every lane has finished. A
+    # check-run with no workflow run (another app's check) is still counted,
+    # and a finished unmonitored one is still evidence.
+    def node(status: str, at: str | None, name: str | None) -> dict[str, Any]:
+        run = None if name is None else {"workflow": {"name": name}}
+        return {
+            "__typename": "CheckRun",
+            "status": status,
+            "conclusion": "SUCCESS" if at else None,
+            "completedAt": at,
+            "checkSuite": {"workflowRun": run},
+        }
+
+    pr = _pr(
+        12,
+        statuses=[],
+        checks=[
+            node("COMPLETED", "2026-09-15T05:00:00Z", "CI"),
+            node("COMPLETED", "2026-09-15T05:10:00Z", "macOS Tests (on demand)"),
+            node("QUEUED", None, workflow),
+        ],
+    )
+    records, _, _ = _run(monkeypatch, FakeGh([_page([pr])]), capsys)
+    assert records[0]["running_checks"] == running
+    assert records[0]["newest_completed_check_at"] == "2026-09-15T05:10:00Z"
+    for query in (scan.PR_PAGE_QUERY, scan.CONTEXTS_PAGE_QUERY):
+        assert "checkSuite { workflowRun { workflow { name } } }" in query
 
 
 def test_a_rollup_past_one_page_is_followed_by_cursor_never_rest(monkeypatch, capsys, fast) -> None:

@@ -61,6 +61,13 @@ const TURN_NON_FAULT_OUTCOMES = new Set([
   'unclassified',
 ])
 
+/**
+ * Startup outcomes that are NOT faults. A start that Stop, a closed chat or a
+ * reset cancelled never failed, so it stays out of the count, as a cancelled
+ * turn does.
+ */
+const STARTUP_NON_FAULT_OUTCOMES = new Set(['ready', 'cancelled'])
+
 // Seconds to one decimal from 1s up, whole milliseconds below; a missing or
 // non-finite reading is a dash rather than "NaNms".
 const fmtMs = (ms?: number | null): string =>
@@ -952,7 +959,7 @@ export default function TelemetryPanel() {
   // count has no such ceiling — the first real failure moves 0 to 1.
   const startupTotal = s ? Object.values(s.outcome).reduce((a, b) => a + b, 0) : 0
   const startupFaults = s
-    ? Object.entries(s.outcome).reduce((n, [k, v]) => (k === 'ready' ? n : n + v), 0)
+    ? Object.entries(s.outcome).reduce((n, [k, v]) => (STARTUP_NON_FAULT_OUTCOMES.has(k) ? n : n + v), 0)
     : 0
 
   const hasStartup = !!(s && s.overall.count > 0)

@@ -2,7 +2,7 @@
 // *.test.js file, so `node --test test/*.test.js` does not run it.)
 //
 // Holds the registrar load/harness scaffolding every ipc-registrar suite needs:
-// the module sources read once at load, the channel inventories, the fake store
+// the module sources read once at load, the preload channel scan, the fake store
 // and hotkey stubs, loadRegistrar, harness, and the small per-channel helpers.
 
 "use strict";
@@ -22,74 +22,41 @@ const GATEWAY_SOURCE = fs.readFileSync(
   "utf8",
 );
 
-const SHELL_HANDLES = [
-  "app-menu:execute",
-  "app-menu:items",
-  "browser:annotate",
-  "browser:close",
-  "browser:get-state",
-  "browser:navigate",
-  "browser:open",
-  "browser:set-bounds",
-  "browser:set-inactive",
-  "browser:set-overlay",
-  "close-action:get",
-  "close-action:set",
-  "crash-reports:get",
-  "crash-reports:reveal",
-  "dashboard:can-pick-folder",
-  "dashboard:open-file",
-  "dashboard:pick-folder",
-  "external-terminal:detect",
-  "external-terminal:open",
-  "first-run:can-use-remote-crew",
-  "first-run:use-remote-crew",
-  "gateway:can-restart",
-  "gateway:restart",
-  "global-hotkey:get",
-  "image:copy-at",
-  "local-gateway:get",
-  "local-gateway:set",
-  "pane:clear-http-cache",
-  "relay-crew:close-all",
-  "relay-crew:open",
-  "relay-crew:open-pane",
-  "relay-crew:pane-bounds",
-  "relay-crew:pane-close",
-  "relay-crew:pane-inactive",
-  "relay-crew:pane-overlay",
-  "remote-crew:forward-pane-ports",
-  "tray-icon:get",
-  "tray-icon:set",
-  "wsl:detect",
-  "zoom:get",
-  "zoom:set",
-  "zoom:step",
-].sort();
+// The channels the preload scripts call, read from their source: every
+// `ipcRenderer.invoke("x")` needs an `ipcMain.handle("x")` and every
+// `ipcRenderer.send("x")` / `sendSync("x")` an `ipcMain.on("x")` somewhere in
+// the main process. A channel passed through a variable is not seen here.
+const PRELOAD_FILES = fs.readdirSync(ROOT)
+  .filter((name) => name.endsWith(".js"))
+  .filter((name) => /\bipcRenderer\b/.test(fs.readFileSync(path.join(ROOT, name), "utf8")))
+  .filter((name) => name !== "ipc-registrar.js");
 
-const SHELL_LISTENERS = [
-  "badge:set",
-  "dev-mode-changed",
-  "focus-mode-chrome",
-  "focus-mode-watch-cursor",
-  "memory-sample",
-  "mic:denied",
-  "theme-accent-changed",
-  "theme-mode-changed",
-  "theme-splash-changed",
-  "titlebar-overlay-theme",
-  "window-control",
-].sort();
+function preloadChannels() {
+  const invoked = new Set();
+  const sent = new Set();
+  for (const name of PRELOAD_FILES) {
+    const text = fs.readFileSync(path.join(ROOT, name), "utf8");
+    for (const [, kind, channel] of text.matchAll(/ipcRenderer\.(invoke|send|sendSync)\(\s*"([^"]+)"/g)) {
+      (kind === "invoke" ? invoked : sent).add(channel);
+    }
+  }
+  return { invoked, sent };
+}
 
-const UPDATE_HANDLES = [
-  "update:check",
-  "update:download",
-  "update:get-info",
-  "update:install",
-  "update:relaunch",
-  "update:set-auto-download",
-  "update:set-channel",
-].sort();
+// Channels the main process registers outside the registrar, read from source:
+// `ipcMain.on("x")` / `webContents.ipc.on("x")` literals in every other
+// electron module (gateway-owned `boot-complete`, `navigate-ready`, ...).
+function channelsRegisteredOutsideRegistrar() {
+  const owned = new Set();
+  for (const name of fs.readdirSync(ROOT)) {
+    if (!name.endsWith(".js") || name === "ipc-registrar.js" || PRELOAD_FILES.includes(name)) continue;
+    const text = fs.readFileSync(path.join(ROOT, name), "utf8");
+    for (const [, channel] of text.matchAll(/\b(?:ipcMain|\.ipc)\.(?:on|once|handle)\(\s*"([^"]+)"/g)) {
+      owned.add(channel);
+    }
+  }
+  return owned;
+}
 
 function fakeStore(initial = {}) {
   const data = { ...initial };
@@ -222,7 +189,10 @@ function harness({
   // What the fake native folder dialog answers: a value, or a function of the
   // call's arguments so a test can hold the dialog open.
   dialogResult = { canceled: true, filePaths: [] },
+  // Whether the fake shell.openExternal rejects, as when no browser is registered.
+  openExternalRejects = false,
   externalTerminal = undefined,
+  downloadExpectations = undefined,
   internalSecret = "",
   getRequiredChannel = undefined,
   relayCrewOpenerOverride = null,
@@ -306,6 +276,10 @@ function harness({
         if (onOpenPath) onOpenPath();
         if (openPathThrows) throw new Error("shell.openPath blew up");
         return openPathResult;
+      },
+      openExternal: async (...args) => {
+        shellCalls.push(["openExternal", ...args]);
+        if (openExternalRejects) throw new Error("no browser registered");
       },
     },
     webContents: { getAllWebContents: () => [liveContents, destroyedContents] },
@@ -451,6 +425,7 @@ function harness({
     },
     glog: (line) => logs.push(line),
     ...(externalTerminal ? { externalTerminal } : {}),
+    ...(downloadExpectations ? { downloadExpectations } : {}),
     ...(getRequiredChannel ? { getRequiredChannel } : {}),
     relayCrewOpenerOverride,
     // Like main.js's readInternalSecret: the secret belongs to one gateway
@@ -514,6 +489,15 @@ function wslEvent(url = "http://localhost:5476/system/services") {
   };
 }
 
+// Senders the three-gate local-dashboard check refuses: [label, harness
+// options, sender URL].
+const PICK_REJECTIONS = [
+  ["wrong origin", {}, "https://remote.example/chat"],
+  ["remote window", { wslOwner: { fake: "remote-window" }, wslGatewayLocal: false }, undefined],
+  ["foreign port owner", { primaryPortOwner: "foreign" }, undefined],
+  ["unknown port owner", { primaryPortOwner: "unknown" }, undefined],
+];
+
 async function assertWslRejected(invoke) {
   await assert.rejects(invoke, (error) => {
     assert.equal(error && error.message, WSL_RESTRICTED_ERROR);
@@ -521,15 +505,97 @@ async function assertWslRejected(invoke) {
   });
 }
 
+// Review list: every main-process IPC channel the renderer can reach. A new
+// channel is a new surface renderer content can call, so it is added here on
+// purpose; the preload cross-checks in ipc-registrar.test.js catch a channel
+// that one side has and the other lacks.
+const SHELL_HANDLES = [
+  "app-menu:execute",
+  "app-menu:items",
+  "browser:annotate",
+  "browser:close",
+  "browser:get-state",
+  "browser:navigate",
+  "browser:open",
+  "browser:set-bounds",
+  "browser:set-inactive",
+  "browser:set-overlay",
+  "close-action:get",
+  "close-action:set",
+  "crash-reports:get",
+  "crash-reports:reveal",
+  "dashboard:can-pick-folder",
+  "dashboard:open-file",
+  "dashboard:pick-folder",
+  "external-terminal:detect",
+  "external-terminal:open",
+  "first-run:can-use-remote-crew",
+  "first-run:use-remote-crew",
+  "gateway:can-restart",
+  "gateway:restart",
+  "global-hotkey:get",
+  "image:copy-at",
+  "local-gateway:get",
+  "local-gateway:set",
+  "minimize-to-tray:get",
+  "minimize-to-tray:set",
+  "pane:clear-http-cache",
+  "relay-crew:close-all",
+  "relay-crew:open",
+  "relay-crew:open-pane",
+  "relay-crew:open-requests",
+  "relay-crew:pane-bounds",
+  "relay-crew:pane-close",
+  "relay-crew:pane-inactive",
+  "relay-crew:pane-overlay",
+  "relay-crew:prewarm-pane",
+  "remote-crew:forward-pane-ports",
+  "tray-icon:get",
+  "tray-icon:set",
+  "wakatime:open-in-browser",
+  "wsl:detect",
+  "zoom:get",
+  "zoom:set",
+  "zoom:step",
+].sort();
+
+const SHELL_LISTENERS = [
+  "badge:set",
+  "dev-mode-changed",
+  "focus-mode-chrome",
+  "focus-mode-watch-cursor",
+  "memory-sample",
+  "mic:denied",
+  "theme-accent-changed",
+  "theme-mode-changed",
+  "theme-splash-changed",
+  "titlebar-overlay-theme",
+  "window-control",
+].sort();
+
+const UPDATE_HANDLES = [
+  "update:can-relaunch",
+  "update:check",
+  "update:download",
+  "update:get-info",
+  "update:install",
+  "update:relaunch",
+  "update:set-auto-download",
+  "update:set-channel",
+].sort();
+
 module.exports = {
   ROOT,
   MODULE_PATH,
   SOURCE,
   MAIN_SOURCE,
   GATEWAY_SOURCE,
+  PRELOAD_FILES,
   SHELL_HANDLES,
   SHELL_LISTENERS,
   UPDATE_HANDLES,
+  preloadChannels,
+  channelsRegisteredOutsideRegistrar,
   fakeStore,
   makeHotkeyStub,
   loadRegistrar,
@@ -539,4 +605,5 @@ module.exports = {
   WSL_RESTRICTED_ERROR,
   wslEvent,
   assertWslRejected,
+  PICK_REJECTIONS,
 };

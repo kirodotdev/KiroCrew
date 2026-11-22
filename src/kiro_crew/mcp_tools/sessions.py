@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -26,6 +27,7 @@ from kiro_crew.context import RECALL_ROLES
 from kiro_crew.history import ConversationLog, TranscriptBusy, TranscriptWithheld
 from kiro_crew.history_search import search_coverage_note, split_title_scope
 from kiro_crew.mcp_tools.catalog.sessions import (  # noqa: F401
+    TOOL_CALL_OUTPUT_MAX_CHARS,
     schemas,
 )
 from kiro_crew.validation import (
@@ -200,7 +202,7 @@ def _crew_list_sessions(crew: str, limit: int, session_key: str) -> str:
         if r.get("messages") is not None:
             meta_bits.append(f"~{r['messages']} msgs")
         if r.get("created"):
-            meta_bits.append(str(r["created"])[:16])
+            meta_bits.append(f"created {str(r['created'])[:16]}")
         lines.append("\n---")
         lines.append(f"**{title}**  ·  `{key}`")
         if meta_bits:
@@ -388,6 +390,9 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
         return "Invalid session_key."
 
     crew = args.get("crew")
+    tool_call_id = args.get("tool_call_id")
+    if crew and tool_call_id:
+        return "tool_call_id reads this gateway's transcripts only; call it without crew."
     if crew:
         # Remote crew scope: read the transcript from that crew over the tunnel.
         # The local key guard above still applies as defense-in-depth; the
@@ -439,6 +444,9 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
                 outcome="denied_cross_workspace",
             )
             return "Access denied: that conversation belongs to a different workspace."
+
+    if tool_call_id:
+        return _get_tool_call_output(cl, key, tool_call_id, session_key)
 
     # RECALL_ROLES rather than a literal, because this is the one surface whose
     # whole purpose is reading a past session: a breadcrumb appended with
@@ -498,6 +506,59 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
         metadata={"message_count": len(messages)},
     )
     return output
+
+
+def _get_tool_call_output(cl: ConversationLog, key: str, call_id: str, session_key: str) -> str:
+    """One tool row's stored output, by ``meta.tool_call_id``, from *key*'s transcript.
+
+    The row was redacted when it was stored; the reply is cut to
+    ``TOOL_CALL_OUTPUT_MAX_CHARS`` and redacted again here, so one read cannot undo a
+    trim. Read through the guarded derivation seam, rotated archives included, so a
+    transcript tightened to private after the checks above is still refused.
+    """
+
+    def _log(outcome: str) -> None:
+        mcp_core.sel().log_tool_invocation(
+            session_key=session_key,
+            source="mcp",
+            tool_name="get_chat_session",
+            outcome=outcome,
+            metadata={"tool_call_id": True},
+        )
+
+    try:
+        rows, _keys = cl.derive_messages_chained_full_with_keys(key)
+    except TranscriptBusy:
+        _log("busy")
+        return "That conversation is being written right now; try again in a moment."
+    except TranscriptWithheld:
+        _log("refused_incognito")
+        return "That conversation is private (incognito/temporary) and cannot be read."
+    for row in reversed(rows):
+        meta = row.get("meta")
+        if row.get("role") == "tool" and isinstance(meta, dict):
+            if meta.get("tool_call_id") == call_id:
+                output = meta.get("output")
+                label = str(row.get("content") or "").strip()
+                text = output if isinstance(output, str) and output else "(no output stored)"
+                if len(text) > TOOL_CALL_OUTPUT_MAX_CHARS:
+                    cut = len(text) - TOOL_CALL_OUTPUT_MAX_CHARS
+                    text = text[:TOOL_CALL_OUTPUT_MAX_CHARS] + f"\n…[{cut:,} more chars not shown]"
+                _log("success")
+                return mcp_core._redact_history_output(
+                    f"Tool call `{call_id}` ({label}) output:\n\n{text}"
+                )
+    _log("not_found")
+    return "No tool call with that tool_call_id in that conversation."
+
+
+def _utc_minute(stamp: object) -> str:
+    """*stamp* as a UTC minute; a naive ISO value is read as local time, an unparsable one is cut to 16 chars."""
+    try:
+        parsed_utc = datetime.fromisoformat(str(stamp)).astimezone(UTC)
+    except (ValueError, OverflowError, OSError):
+        return str(stamp)[:16]
+    return f"{parsed_utc:%Y-%m-%dT%H:%M} UTC"
 
 
 def list_sessions(name: str, args: dict[str, Any]) -> str:
@@ -570,12 +631,16 @@ def list_sessions(name: str, args: dict[str, Any]) -> str:
         agent = r.get("agent")
         msgs = r.get("messages", 0)
         created = r.get("created", "")
+        last_active = r.get("modified")
         meta_bits = []
         if agent:
             meta_bits.append(f"agent={agent}")
         meta_bits.append(f"~{msgs} msgs")
+        if isinstance(last_active, int | float) and last_active > 0:
+            last_active_utc = datetime.fromtimestamp(last_active, UTC)
+            meta_bits.append(f"last active {last_active_utc:%Y-%m-%dT%H:%M} UTC")
         if created:
-            meta_bits.append(str(created)[:16])
+            meta_bits.append(f"created {_utc_minute(created)}")
         lines.append("\n---")
         lines.append(f"**{title}**  ·  `{key}`")
         lines.append(f"_{'  ·  '.join(meta_bits)}_")

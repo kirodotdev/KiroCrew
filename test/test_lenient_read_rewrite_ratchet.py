@@ -58,6 +58,7 @@ import re
 from pathlib import Path
 
 import pytest
+import source_corpus
 
 # The tree-wide tests share one cached scan, so they run on one worker per run.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_lenient_read_rewrite_ratchet")
@@ -351,8 +352,9 @@ def load_modules(root: Path, sources: dict[str, str] | None = None) -> dict[str,
 @functools.cache
 def _src_scan() -> tuple[dict[str, _Module], dict[str, list[int]]]:
     """``src/`` is read once per worker for every tree-wide test."""
-    modules = load_modules(_SRC)
-    found = rewrites_from_lenient_reads(modules)
+    with source_corpus.untraced():
+        modules = load_modules(_SRC)
+        found = rewrites_from_lenient_reads(modules)
     # The cache outlives this module's tests on the worker; keep the readers, not the text.
     for module in modules.values():
         module.text = None

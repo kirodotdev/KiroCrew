@@ -126,6 +126,110 @@ describe('selectionRetention', () => {
       expect(drifted.anchorOffset).toBe(6)
       expect(drifted.focusOffset).toBe(9)
     })
+    it('puts a start at a reply\'s first character back in the reply when its row re-renders, not at the end of the prompt above it', () => {
+      const sc = build()
+      const row = sc.querySelector('[data-display-index="4"]')!
+      row.replaceChildren(nodes('<p>prompt </p><p id="r">start row text</p>'))
+      const settled = selection(document.getElementById('r')!.firstChild!, t('b'))
+      const last = rowEndpoints(sc, settled)
+      // The row re-renders: same text, new nodes.
+      row.replaceChildren(nodes('<p>prompt </p><p>start row text</p>'))
+      const drifted = selection(sc, t('b'))
+      expect(restoreEndpointToTranscript(sc, drifted, last)).toBe(true)
+      expect(drifted.anchorNode).toBe(row.lastChild!.firstChild)
+      expect(drifted.anchorOffset).toBe(0)
+    })
+    it('puts a parked start back in its own message after older history renumbered the rows', () => {
+      const sc = build()
+      const settled = selection(t('a'), t('b'))
+      settled.anchorOffset = 6
+      const last = rowEndpoints(sc, settled)
+      // A page of three older rows lands above: every row is renumbered, and
+      // the start row re-renders with new nodes while it is scrolled away.
+      const rows = Array.from(sc.querySelectorAll<HTMLElement>('[data-display-index]'))
+      for (const row of rows) row.dataset.displayIndex = String(Number(row.dataset.displayIndex) + 3)
+      sc.prepend(nodes('<div data-display-index="4"><p>older four</p></div><div data-display-index="5"><p>older five</p></div><div data-display-index="6"><p>older six</p></div>'))
+      const startRow = rows[0]
+      startRow.replaceChildren(nodes('<p>start row text</p>'))
+      const drifted = selection(sc, t('b'))
+      drifted.anchorOffset = 0
+      drifted.focusOffset = 3
+      expect(restoreEndpointToTranscript(sc, drifted, last)).toBe(true)
+      const anchorRow = drifted.anchorNode!.parentElement!.closest('[data-display-index]')!
+      expect(anchorRow.textContent).toBe('start row text')
+      expect(drifted.anchorNode).toBe(startRow.firstChild!.firstChild)
+      expect(drifted.anchorOffset).toBe(6)
+      expect(drifted.focusOffset).toBe(3)
+    })
+    it('puts a parked start back in its row when the landing drew that row again as a new element', () => {
+      const sc = build()
+      const settled = selection(t('a'), t('b'))
+      settled.anchorOffset = 6
+      const last = rowEndpoints(sc, settled)
+      // The topmost turn gains its opening prompt from the page: the row is
+      // keyed afresh and remounts as a new element while three older rows land
+      // above. The end row keeps its element and takes its new number.
+      const endRow = sc.querySelector<HTMLElement>('[data-display-index="5"]')!
+      endRow.dataset.displayIndex = '8'
+      sc.querySelector('[data-display-index="4"]')!.remove()
+      sc.prepend(nodes('<div data-display-index="4"><p>older four</p></div><div data-display-index="5"><p>older five</p></div><div data-display-index="6"><p>older six</p></div><div data-display-index="7"><p>prompt </p><p>start row text</p></div>'))
+      const drifted = selection(sc, t('b'))
+      drifted.anchorOffset = 0
+      drifted.focusOffset = 3
+      expect(restoreEndpointToTranscript(sc, drifted, last)).toBe(true)
+      const startRow = sc.querySelector('[data-display-index="7"]')!
+      expect(drifted.anchorNode!.parentElement!.closest('[data-display-index]')).toBe(startRow)
+      // Back at its own character in the reply, not in the prompt the row
+      // gained in front of it.
+      expect(drifted.anchorNode).toBe(startRow.lastChild!.firstChild)
+      expect(drifted.anchorOffset).toBe(6)
+      expect(drifted.focusOffset).toBe(3)
+    })
+    it('keeps a start at the first character of a redrawn row in the reply, not at the end of its new prompt', () => {
+      const sc = build()
+      const settled = selection(t('a'), t('b'))
+      const last = rowEndpoints(sc, settled)
+      const endRow = sc.querySelector<HTMLElement>('[data-display-index="5"]')!
+      endRow.dataset.displayIndex = '8'
+      sc.querySelector('[data-display-index="4"]')!.remove()
+      sc.prepend(nodes('<div data-display-index="4"><p>older four</p></div><div data-display-index="5"><p>older five</p></div><div data-display-index="6"><p>older six</p></div><div data-display-index="7"><p>prompt </p><p>start row text</p></div>'))
+      const drifted = selection(sc, t('b'))
+      drifted.focusOffset = 3
+      expect(restoreEndpointToTranscript(sc, drifted, last)).toBe(true)
+      // The point sits where the prompt's text meets the reply's: it stays on
+      // the reply's side, where the start sat (the first character of its node).
+      const startRow = sc.querySelector('[data-display-index="7"]')!
+      expect(drifted.anchorNode).toBe(startRow.lastChild!.firstChild)
+      expect(drifted.anchorOffset).toBe(0)
+    })
+    it('puts a parked start back in a row drawn again in place while no page landed', () => {
+      const sc = build()
+      const settled = selection(t('a'), t('b'))
+      settled.anchorOffset = 6
+      const last = rowEndpoints(sc, settled)
+      // The row is keyed afresh with the same number (no row above it changed).
+      const old = sc.querySelector('[data-display-index="4"]')!
+      old.replaceWith(nodes('<div data-display-index="4"><p>start row text</p></div>'))
+      const drifted = selection(sc, t('b'))
+      expect(restoreEndpointToTranscript(sc, drifted, last)).toBe(true)
+      const startRow = sc.querySelector('[data-display-index="4"]')!
+      expect(drifted.anchorNode).toBe(startRow.firstChild!.firstChild)
+      expect(drifted.anchorOffset).toBe(6)
+    })
+    it('leaves a start whose row is gone alone rather than choosing another row', () => {
+      const sc = build()
+      const settled = selection(t('a'), t('b'))
+      settled.anchorOffset = 6
+      const last = rowEndpoints(sc, settled)
+      // The start row unmounts and no row carries its number; an older row
+      // landing above has renumbered the end row.
+      sc.querySelector('[data-display-index="4"]')!.remove()
+      sc.querySelector<HTMLElement>('[data-display-index="5"]')!.dataset.displayIndex = '6'
+      sc.prepend(nodes('<div data-display-index="4"><p>older row text</p></div>'))
+      const drifted = selection(sc, t('b'))
+      expect(restoreEndpointToTranscript(sc, drifted, last)).toBe(false)
+      expect(drifted.anchorNode).toBe(sc)
+    })
     it('leaves a fresh long-press alone', () => {
       const sc = build()
       const fresh = selection(t('a'), t('title'))

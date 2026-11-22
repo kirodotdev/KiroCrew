@@ -271,6 +271,10 @@ export function useVirtualChat<T>(
   // It is compared as the setter will commit it: a retained selection range
   // widens every write, so the raw target can differ from the committed range
   // forever, and an update per re-run would loop until React aborts the render.
+  // That range still names the pre-landing rows here, and it is not moved in
+  // this render: a render React discards must leave no trace. Part 1 moves it
+  // with the committed re-base, and the next window write trims the rows the
+  // stale range held through this one commit.
   if (shift.shiftStageRef.current === 'awaiting-rebase' && shift.prependCountRef.current !== 0) {
     const d = shift.prependCountRef.current
     const base = windowRangeRef.current
@@ -333,10 +337,11 @@ export function useVirtualChat<T>(
   // follow's placement pins.
   const compensation = useShiftCompensation({
     itemCount, windowRange, heightCommit, offsetIndex, scrollerRef, elIndexRef, itemsRef, anchorIdOf,
-    setWindowRange, shift, follow, pinning, reading, ops,
+    setWindowRange, shiftRetainedRange: view.shiftRetainedRange, shift, follow, pinning, reading, ops,
   })
   useFollowPlacementPins({
-    itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, setWindowRange, follow, pinning,
+    itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, getStableIdRef,
+    setWindowRange, shiftRetainedRange: view.shiftRetainedRange, follow, pinning,
   })
 
   // Passive effects: the DOM observers.

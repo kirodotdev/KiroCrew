@@ -26,6 +26,7 @@ import type { useHistoryPane } from './history'
 import type { useHoverHold } from './hoverHold'
 import type { useLaneCycle, useSidebarLane } from './lanes'
 import type { useSidebarModels } from './models'
+import type { CreatorFilterMenuView } from './creatorFilterMenu'
 import type { usePinnedKeyboardReorder, usePinnedSessionOrder } from './pinnedOrder'
 import type { useFolderRename, useSessionAutoTitle, useSessionRename } from './rename'
 import type { useSidebarResize } from './resize'
@@ -73,6 +74,10 @@ export interface ChatSidebarProps {
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
   onSelectSlot?: (key: string) => void
+  /** The chat page is in Split View. A click on the open chat's row then means
+   *  "leave the split for this chat", so it does not toggle the side panel and
+   *  the row offers no tooltip saying it would. */
+  splitMode?: boolean
   /**
    * Render session rows WITHOUT Framer layout projection (`layout`/`layoutId`).
    *
@@ -125,13 +130,17 @@ export interface ChatSidebarProps {
    *  incognito/temporary sessions or for the already-active session. */
   onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
   /** Whether staging a session reference has a composer to land in right now —
-   *  the same predicate `chatDropTarget` is gated on, passed through on its own
+   *  `chatDropTarget`'s gate outside Split View, passed through on its own
    *  because the row menu's "Reference in chat" item needs the boolean (the drop
    *  zone needs the element). False/omitted hides the menu item: an embed
    *  sessions list, split view, or no active slot has no composer, so the row
    *  would stage a reference nothing renders. The per-row incognito/temporary/
    *  self refusals are decided in the row from `sessionRefBlockReason`. */
   canStageSessionRef?: boolean
+  /** Split View only: show a session dropped on a pane (`leafId`) in that pane.
+   *  Set, the drag's targets in `chatDropTarget` are the panes, not the
+   *  composer; unset, Split View panes take no drop. */
+  onShowSessionInPane?: (leafId: string, key: string) => void
   /** Where a crew row's window opens, for a host with no chat pane of its
    *  own (embed/sessions). Omit to open it over this page's pane. */
   onOpenPeerSession?: (instanceId: string, key: string) => void
@@ -163,6 +172,7 @@ export interface SidebarScope {
   chatDropTarget: ChatSidebarProps['chatDropTarget']
   onDropSessionRef: ChatSidebarProps['onDropSessionRef']
   canStageSessionRef: ChatSidebarProps['canStageSessionRef']
+  onShowSessionInPane: ChatSidebarProps['onShowSessionInPane']
   staticRows: ChatSidebarProps['staticRows']
 
   // Its own state and what it derives
@@ -220,10 +230,15 @@ export interface SidebarScope {
   filterSortOpen: boolean | 'folders'
   setFilterSortOpen: SetState<boolean | 'folders'>
   folders: ChatFolder[]
+  /** Every folder, including the Bot homes `folders` leaves out: for readers
+   *  that name a folder the Sessions list may not draw (History search groups). */
+  allFolders: ChatFolder[]
   foldersFailed: boolean
   foldersError: Error | null
   refetchFolders: UseQueryResult<ChatFolder[]>['refetch']
   modelFilterInverted: boolean
+  /** The "Sort & filter" menu's "Started by" section and chip. */
+  creatorFilter: CreatorFilterMenuView
   shownCrewGroups: CrewGroup[]
   sidebarRows: SidebarRows
   listNarrowed: SidebarRows['listNarrowed']
@@ -417,6 +432,7 @@ export interface SidebarScope {
   tagColumnsEnabled: ReturnType<typeof useBoardColumns>['tagColumnsEnabled']
   hideEmptyFolderBody: ReturnType<typeof useBoardColumns>['hideEmptyFolderBody']
   countSubfolderContents: ReturnType<typeof useBoardColumns>['countSubfolderContents']
+  hideEmptyFolders: ReturnType<typeof useBoardColumns>['hideEmptyFolders']
   orderedColumns: ReturnType<typeof useBoardColumns>['orderedColumns']
 
   // From `useSidebarResize`
@@ -445,6 +461,10 @@ export interface SidebarScope {
 
   // From `useColumnMatches`
   columnMatches: ReturnType<typeof useColumnMatches>['columnMatches']
+
+  /** Every folder that a live session of the full slot store is filed in,
+   *  including the sessions this list leaves out (`selectFoldersHoldingSessions`). */
+  foldersHoldingSessions: ReadonlySet<string>
 
   // From `useFolderVisibility`
   slotFolders: ReturnType<typeof useFolderVisibility>['slotFolders']

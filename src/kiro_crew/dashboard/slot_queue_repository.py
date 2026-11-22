@@ -147,6 +147,42 @@ def is_held_queue_entry(item: dict[str, Any]) -> bool:
     )
 
 
+#: Marks the entry a ``session_run_queued`` chose on a running target. The verb
+#: promotes it and stops the turn, and the turn's end drain reads this mark to run
+#: exactly that entry next, past the child-work hold as the idle Run now does. The
+#: mark lives on the entry, so it ends when the entry runs or leaves the queue.
+#: Process-local like :data:`RESTORED_SEND_CHOSEN_KEY`: the writer never emits it.
+RUN_NOW_CHOSEN_KEY = "_run_now_chosen"
+
+
+def clear_run_now_choice(slot: Any) -> None:
+    """Drop every :data:`RUN_NOW_CHOSEN_KEY` mark on *slot*; a later choice replaces it."""
+    for item in getattr(slot, "_queue", None) or ():
+        if isinstance(item, dict):
+            item.pop(RUN_NOW_CHOSEN_KEY, None)
+
+
+def run_now_chosen_id(slot: Any) -> str | None:
+    """The id of the queued entry :data:`RUN_NOW_CHOSEN_KEY` marks on *slot*, if any.
+
+    An entry a person has since edited carries their stamp and is theirs, so its
+    mark does not run it past the hold.
+    """
+    # Deferred: chat_delivery imports this module.
+    from kiro_crew.dashboard.chat_delivery import queue_entry_is_user_origin
+
+    return next(
+        (
+            item.get("id")
+            for item in getattr(slot, "_queue", None) or ()
+            if isinstance(item, dict)
+            and item.get(RUN_NOW_CHOSEN_KEY)
+            and not queue_entry_is_user_origin(item)
+        ),
+        None,
+    )
+
+
 _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
     "id",
     "content",
@@ -995,20 +1031,25 @@ class SlotQueueRepository:
             # the linked-thread mirror suppressed, so a human on the mirrored
             # channel never sees what the user typed. Refused, not re-kinded:
             # the entry is not a user prompt to begin with. Scoped to the app
-            # kind and the gateway's own prompts (a workflow follow-up, a
-            # heartbeat prompt): other system kinds (queued cron text among
-            # them) were editable before this endpoint existed, and taking that
-            # away is not this feature's call. The frontend withholds the same
-            # set: the app card's pencil (`isAppMessageQueued`), a gateway
-            # prompt's whole card (`isNonInteractiveQueued`).
+            # kind, a resource wake and the gateway's own prompts (a workflow
+            # follow-up, a heartbeat prompt): other system kinds (queued cron
+            # text among them) were editable before this endpoint existed, and
+            # taking that away is not this feature's call. The frontend withholds
+            # the same set: the server-written cards' pencil
+            # (`isServerWrittenQueued`), a gateway prompt's whole card
+            # (`isNonInteractiveQueued`).
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
             from kiro_crew.dashboard.chat_utils_injected_rows import (
                 AUTOMATION_STEER_META,
                 GATEWAY_PROMPT_INJECT_KINDS,
+                RESOURCE_WAKE_KIND,
             )
 
             kind = item.get("kind")
-            if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
+            if (
+                kind in (MCP_APP_MESSAGE_KIND, RESOURCE_WAKE_KIND)
+                or kind in GATEWAY_PROMPT_INJECT_KINDS
+            ):
                 return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors

@@ -1,4 +1,7 @@
-"""Tests for per-interaction telemetry at the two chat-success sites.
+"""Tests for per-interaction telemetry at the dashboard and Slack chat sites.
+
+Every other landed-turn engine is pinned structurally by
+``test_interaction_telemetry_surfaces.py``.
 
 A stub ``TelemetryProvider`` installed via a test ``PlatformContext`` must
 receive exactly one ``interaction`` event per successful dashboard turn and per

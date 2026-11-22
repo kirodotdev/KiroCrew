@@ -1,11 +1,10 @@
 """``memory.rule_authority_order``: the rule block ordered by who taught each rule.
 
 Pinned: ``off`` renders today's block byte for byte and records no stage field;
-``shadow`` renders the same block and records which rule ids the authority order
-would add or drop; ``enforce`` puts user-taught rules first, request relevance
-inside a level, on the default and the private store alike, under the same cap
-and omission line; an unknown value reads as ``off``; and the receipt's stage
-field stays inside every kind-routing cap.
+``enforce`` puts user-taught rules first, request relevance inside a level, on
+the default and the private store alike, under the same cap and omission line;
+an unknown value, the removed ``shadow`` included, reads as ``enforce``; and the
+receipt's stage field stays inside every kind-routing cap.
 """
 
 from __future__ import annotations
@@ -97,22 +96,6 @@ class TestTheModes:
         assert STAGE not in off_receipts and STAGE not in default_receipts
         assert off_receipts == default_receipts
 
-    def test_shadow_keeps_the_block_and_records_what_would_change(self, store):
-        taught, inferred = _seed(store)
-        off, off_receipts = _block(store, "off")
-        shadow, receipts = _block(store, "shadow")
-        assert shadow == off
-        assert receipts[injection_receipts.LESSONS] == off_receipts[injection_receipts.LESSONS]
-        stage = receipts[STAGE]
-        assert stage["mode"] == "shadow"
-        assert stage["policy"] == memory_rule_authority.POLICY_VERSION
-        shown = set(off_receipts[injection_receipts.LESSONS]["ids"])
-        assert stage["would_add"], "the cut should have dropped a user-taught rule"
-        assert set(stage["would_add"]) <= _keys(store, taught) - shown
-        assert set(stage["would_drop"]) <= _keys(store, inferred) & shown
-        # Ids only, never text.
-        assert all(key.startswith("lesson.") for key in stage["would_add"] + stage["would_drop"])
-
     def test_enforce_puts_user_taught_rules_first_under_the_same_cap(self, store):
         taught, inferred = _seed(store)
         off, _ = _block(store, "off")
@@ -161,24 +144,33 @@ class TestTheModes:
 
 class TestTheFlag:
     @pytest.mark.parametrize("raw", [None, "", "ENFORCE", "on", 1, True, ["enforce"]])
-    def test_an_unknown_value_reads_as_off(self, raw):
-        assert rule_authority_order_mode_from(raw) == "off"
-        assert _build_memory_config({"rule_authority_order": raw}).rule_authority_order == "off"
+    def test_an_unknown_value_reads_as_the_default_enforce(self, raw):
+        assert rule_authority_order_mode_from(raw) == "enforce"
+        assert _build_memory_config({"rule_authority_order": raw}).rule_authority_order == "enforce"
 
-    @pytest.mark.parametrize("mode", ["off", "shadow", "enforce"])
+    @pytest.mark.parametrize("mode", ["off", "enforce"])
     def test_a_known_value_is_kept(self, mode):
         assert _build_memory_config({"rule_authority_order": mode}).rule_authority_order == mode
 
-    def test_the_default_is_off(self):
-        assert MemoryConfig().rule_authority_order == "off"
-
-    def test_an_unknown_value_renders_todays_block(self, store):
+    def test_a_stored_shadow_reads_as_the_default_enforce(self, store):
+        assert rule_authority_order_mode_from("shadow") == "enforce"
+        assert _build_memory_config({"rule_authority_order": "shadow"}).rule_authority_order == (
+            "enforce"
+        )
         _seed(store)
-        assert _block(store, "sideways") == _block(store, "off")
+        assert _block(store, "shadow") == _block(store, "enforce")
+
+    def test_the_default_is_enforce(self):
+        assert MemoryConfig().rule_authority_order == "enforce"
+        assert _build_memory_config({}).rule_authority_order == "enforce"
+
+    def test_an_unknown_value_renders_the_default_enforce_block(self, store):
+        _seed(store)
+        assert _block(store, "sideways") == _block(store, "enforce")
 
     def test_a_recall_child_gets_the_mode(self):
-        args = lessons_args(None, "q", 0, None, None, True, 0, 0, 0, "shadow")
-        assert args["authority_order"] == "shadow"
+        args = lessons_args(None, "q", 0, None, None, True, 0, 0, 0, "enforce")
+        assert args["authority_order"] == "enforce"
 
 
 # -- the receipt's stage field -----------------------------------------------
@@ -190,7 +182,7 @@ def _stage_line(now: datetime, *, policy: int = 1, ids: int = 2) -> dict:
     receipts = {
         injection_receipts.LESSONS: {"ids": ["lesson.a"], "omitted": 0},
         STAGE: {
-            "mode": "shadow",
+            "mode": "enforce",
             "policy": policy,
             "would_add": [f"lesson.{i:012x}" for i in range(ids)],
             "would_drop": [],
@@ -240,7 +232,7 @@ class TestTheStageFieldCaps:
         line = _stage_line(_NOW)
         injection_receipts.write_line(line)
         assert _written(receipt_dir)[0][STAGE]["would_add"] == line[STAGE]["would_add"]
-        counts = _log(receipt_dir)["counts"][_NOW.date().isoformat()][STAGE]["shadow"]
+        counts = _log(receipt_dir)["counts"][_NOW.date().isoformat()][STAGE]["enforce"]
         assert counts == {"lines": 1, "would_add": 2, "would_drop": 0}
 
     def test_rows_per_day_cap_then_counters_only(self, receipt_dir):
@@ -255,7 +247,7 @@ class TestTheStageFieldCaps:
         plain = _stage_line(_NOW + timedelta(seconds=len(rows) - 1))
         del plain[STAGE]
         assert capped == plain
-        day = _log(receipt_dir)["counts"][_NOW.date().isoformat()][STAGE]["shadow"]
+        day = _log(receipt_dir)["counts"][_NOW.date().isoformat()][STAGE]["enforce"]
         assert day["lines"] == memory_kind_routing.SAMPLES_PER_DAY + extra
 
     def test_total_rows_cap(self, receipt_dir, monkeypatch):
@@ -303,11 +295,11 @@ class TestTheStageFieldCaps:
 
 class TestTheRecord:
     def test_a_stage_record_needs_a_collection(self):
-        injection_receipts.record_stage(STAGE, mode="shadow", policy=1, would_add=["lesson.a"])
+        injection_receipts.record_stage(STAGE, mode="enforce", policy=1, would_add=["lesson.a"])
 
     def test_an_unknown_stage_is_a_programming_error(self):
         with pytest.raises(ValueError):
-            injection_receipts.record_stage("nope", mode="shadow", policy=1)
+            injection_receipts.record_stage("nope", mode="enforce", policy=1)
         with pytest.raises(ValueError):
             injection_receipts.record(STAGE, ())
 
@@ -316,7 +308,7 @@ class TestTheRecord:
             injection_receipts.replay(
                 {
                     STAGE: {
-                        "mode": "shadow",
+                        "mode": "enforce",
                         "policy": 1,
                         "would_add": ["lesson.a", 3, None],
                         "would_drop": "lesson.b",
@@ -325,7 +317,7 @@ class TestTheRecord:
                 }
             )
         assert sink[STAGE] == {
-            "mode": "shadow",
+            "mode": "enforce",
             "policy": 1,
             "would_add": ["lesson.a"],
             "would_drop": [],
@@ -363,7 +355,7 @@ class TestBothRenderersPassTheMode:
         return store.get_lessons_context.call_args.kwargs
 
     @pytest.mark.parametrize("member", [True, False])
-    @pytest.mark.parametrize("mode", ["shadow", "enforce"])
+    @pytest.mark.parametrize("mode", ["enforce"])
     def test_a_stage_mode_reaches_the_store(self, monkeypatch, mode, member):
         assert self._render(monkeypatch, mode, member=member)["authority_order"] == mode
 

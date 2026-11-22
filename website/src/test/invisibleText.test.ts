@@ -118,7 +118,7 @@ describe('ChatPage inline chain consults the skip (source contract)', () => {
     // lastTextIdx must agree with the renderer's skip, or those affordances
     // silently vanish for the rest of a quiet monitor run.
     expect(src).toMatch(
-      /role === 'assistant' && !isHiddenInvisibleAssistantRow\(messages\[i\]\)/,
+      /role === 'assistant' && !isHiddenReplyAt\(messages\[i\], messages, i\)/,
     )
   })
 
@@ -131,7 +131,7 @@ describe('ChatPage inline chain consults the skip (source contract)', () => {
     const i = src.indexOf('const handleRegenerate = useCallback(')
     expect(i).toBeGreaterThan(-1)
     const body = src.slice(i, src.indexOf('api.regenerateSlot', i))
-    expect(body).toMatch(/if \(messages\[i\]\.role === 'user' \|\| isGatewayPromptRow\(messages\[i\]\)\) break/)
+    expect(body).toMatch(/if \(messages\[i\]\.role === 'user' \|\| injectOpensTurn\(messages\[i\]\)\) break/)
     expect(body).toMatch(/if \(messages\[i\]\.role !== 'assistant'\) continue/)
     expect(body).toMatch(/if \(isSystemNoticeRow\(messages\[i\]\)\) continue/)
     expect(body).not.toContain('isHiddenInvisibleAssistantRow')

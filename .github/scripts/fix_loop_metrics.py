@@ -334,6 +334,44 @@ HARVEST_GATE_ACTIVE_ISO = "2026-08-31T08:01:43Z"
 GATE_WORKFLOW = "code-review.yml"
 
 
+def _gate_runs_from_check_runs(repo: str, head_sha: str) -> list[dict]:
+    """The GATE_WORKFLOW runs on ``head_sha`` that the head's check-runs name.
+
+    The ``head_sha`` listing is a filtered search that can answer no runs for a
+    head whose runs exist, so an empty answer is read through the head's
+    check-runs (every row, ``filter=all``): an Actions job's check-run names its
+    run as ``details_url`` = ``.../<repo>/actions/runs/<run id>/job/<job id>``.
+    Each named run is read through ``gh_json``, so a named run that cannot be
+    read raises instead of being taken as absent.
+    """
+    pages = gh_json(
+        "api",
+        "--method",
+        "GET",
+        "--paginate",
+        "--slurp",
+        f"repos/{repo}/commits/{head_sha}/check-runs?per_page=100&filter=all",
+    )
+    marker = f"/{repo}/actions/runs/"
+    ids: set[int] = set()
+    for page in pages:
+        for row in page.get("check_runs") or []:
+            url = str(row.get("details_url") or "")
+            if marker in url:
+                rid = url.split(marker, 1)[1].split("/", 1)[0]
+                if rid.isdigit():
+                    ids.add(int(rid))
+    runs = []
+    for rid in sorted(ids):
+        run = gh_json("api", f"repos/{repo}/actions/runs/{rid}")
+        if (
+            run.get("path") == f".github/workflows/{GATE_WORKFLOW}"
+            and run.get("head_sha") == head_sha
+        ):
+            runs.append(run)
+    return runs
+
+
 def gate_ran_on(repo: str, head_sha: str) -> bool:
     """Whether the harvest gate actually evaluated this PR.
 
@@ -358,9 +396,10 @@ def gate_ran_on(repo: str, head_sha: str) -> bool:
     False when no such run exists on the head -- a PR whose workflows are still
     awaiting maintainer approval was never asked.
 
-    One API call per candidate PR (~100 a week). A failed call raises, per this
-    module's contract: a report that silently drops a PR understates its own
-    denominator.
+    One API call per candidate PR (~100 a week), plus, when that listing answers
+    no run, one paginated check-runs read and one read per run they name
+    (see _gate_runs_from_check_runs). A failed call raises, per this module's
+    contract: a report that silently drops a PR understates its own denominator.
     """
     if not head_sha:
         return False
@@ -369,6 +408,8 @@ def gate_ran_on(repo: str, head_sha: str) -> bool:
         f"repos/{repo}/actions/workflows/{GATE_WORKFLOW}/runs" f"?head_sha={head_sha}&per_page=100",
     )
     runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+    if not runs:
+        runs = _gate_runs_from_check_runs(repo, head_sha)
     return any(
         str(r.get("created_at") or "") >= HARVEST_GATE_ACTIVE_ISO
         for r in runs
@@ -652,7 +693,7 @@ LOCAL_COMMAND_JOBS = frozenset(
         # avoidable as one red only in a lint job.
         "Backend Ratchets & Boundaries",
         "Frontend Ratchets & i18n",
-        # fast-gate.yml's fourteen stdlib gates run as steps of this one job,
+        # fast-gate.yml's fifteen stdlib gates run as steps of this one job,
         # so a red on any of them reaches the census under this single name.
         "Source Gates",
         "Static Ratchet Gate",

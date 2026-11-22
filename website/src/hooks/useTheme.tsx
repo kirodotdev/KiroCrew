@@ -19,6 +19,14 @@ import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
 import {
+  normalizeThemeSchedule,
+  readStoredThemeSchedule,
+  scheduledMode,
+  type ThemeSchedule,
+} from '../utils/themeSchedule'
+import { useThemeSchedule } from './useThemeSchedule'
+import { useThemeModeOverride } from './themeModeOverride'
+import {
   adoptServerLiquidGlass,
   readLiquidGlass,
   type TranslucentPanelsStored,
@@ -46,10 +54,9 @@ import {
 } from './themeCss'
 
 import { i18nT } from '../i18n/t'
-import { PRIVACY_NOTICE_VERSION } from '../components/privacyNotice'
 import type { ThemeLoaderIconName } from '../themeLoaderIcons'
 
-export type ModePreference = 'dark' | 'light' | 'system'
+export type ModePreference = 'dark' | 'light' | 'system' | 'schedule'
 export type ResolvedMode = 'dark' | 'light'
 export type ColorTheme = string  // built-in slug or 'custom-{slug}'
 
@@ -193,8 +200,10 @@ function getSystemMode(): ResolvedMode {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
-function resolveMode(pref: ModePreference): ResolvedMode {
-  return pref === 'system' ? getSystemMode() : pref
+function resolveMode(pref: ModePreference, schedule: ThemeSchedule = readStoredThemeSchedule()): ResolvedMode {
+  if (pref === 'system') return getSystemMode()
+  if (pref === 'schedule') return scheduledMode(schedule)
+  return pref
 }
 
 /**
@@ -523,6 +532,11 @@ export interface ThemeContextValue {
   preference: ModePreference
   cycle: () => void
   setTheme: (pref: ModePreference) => void
+  /** The times Scheduled mode switches at, in the device's time zone. */
+  schedule: ThemeSchedule
+  setSchedule: (schedule: ThemeSchedule) => void
+  /** The last `setSchedule` save was refused; this device still uses those times. */
+  scheduleSaveFailed: boolean
   colorTheme: ColorTheme
   setColorTheme: (t: ColorTheme) => void
   /**
@@ -578,31 +592,11 @@ export interface ThemeContextValue {
   themeVersion: number
   onboarded: boolean
   importOnboarded: boolean
-  /**
-   * Has the user seen the mandatory first-run Privacy chapter?
-   *
-   * Server-backed like `onboarded` / `importOnboarded`, because the GATEWAY reads
-   * it: the boot-time heartbeat withholds its first send until this is true, and
-   * the gateway cannot see localStorage. A browser-local-only flag would leave
-   * the beacon waiting forever on a signal that never reaches it.
-   *
-   * localStorage stays as the render cache so first run does not flash the
-   * chapter while the boot fetch is in flight.
-   */
-  privacyAcked: boolean
-  /**
-   * The Privacy notice version the user acknowledged, from the server only
-   * (`dashboard.privacy_ack_version`); `null` until theme boot answers. Compared
-   * with `PRIVACY_NOTICE_VERSION` to show a changed notice once to existing users.
-   */
-  privacyAckVersion: number | null
   themeBootReady: boolean
   /** The boot read answered. `themeBootReady` also turns true when it failed. */
   themeBootRead: boolean
   markOnboarded: () => void
   markImportOnboarded: () => void
-  /** Persists the ack (and the notice version unless told not to); rejects, marking nothing, when the write fails. */
-  markPrivacyAcked: (ack?: { noticeVersion?: boolean; kiroTelemetry?: boolean }) => Promise<void>
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
   /** Refetch the installed-theme catalog once; `true` when it now reflects the
@@ -931,17 +925,6 @@ function useThemeState(): ThemeContextValue {
   const [importOnboarded, setImportOnboarded] = useState(
     () => !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded'),
   )
-  // Seeded from `mc-onboarded` as well as its own flag: a user who finished
-  // first run before this chapter existed (or on another machine) has no reason
-  // to be shown it now.
-  const [privacyAcked, setPrivacyAcked] = useState(
-    () => !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded'),
-  )
-  // The notice version the user acknowledged, from the SERVER only. `null` until
-  // theme boot answers. Deliberately no localStorage seed: `mc-onboarded` and
-  // `mc-privacy-acked` describe an older notice, and counting them as this one
-  // would skip exactly the existing users the new text is for.
-  const [privacyAckVersion, setPrivacyAckVersion] = useState<number | null>(null)
   const legacyOnboardedRef = useRef(
     !!localStorage.getItem('mc-onboarded') && !localStorage.getItem('mc-import-onboarded'),
   )
@@ -1131,11 +1114,13 @@ function useThemeState(): ThemeContextValue {
       translucent_panels?: TranslucentPanelsStored
       onboarded?: boolean
       import_onboarded?: boolean
-      privacy_acked?: boolean
-      privacy_ack_version?: number
-      kiro_telemetry_ack_version?: number
     }) => api.updateThemeConfig(body),
   })
+  // Its own observer: a mode or colour write right after would drop this save's onError.
+  const { mutate: persistSchedule } = useMutation({
+    mutationFn: (body: { schedule_light: string; schedule_dark: string }) => api.updateThemeConfig(body),
+  })
+  const { schedule, setSchedule, adoptSchedule, saveFailed: scheduleSaveFailed } = useThemeSchedule(mode, setResolved, persistSchedule)
 
   // Fetch workspace theme config from server on boot.
   // Server is the source of truth; localStorage is a render cache.
@@ -1188,25 +1173,21 @@ function useThemeState(): ThemeContextValue {
     const onboarding = legacyMigrationStartedRef.current
       ? 'keep'
       : needsLegacyMigration ? 'migrate' : 'adopt'
+    // Saved as a pair; a workspace that never saved one keeps this browser's.
+    const servedSchedule = bootData.schedule_light || bootData.schedule_dark
+      ? normalizeThemeSchedule(bootData.schedule_light, bootData.schedule_dark)
+      : null
+    if (servedSchedule) adoptSchedule(servedSchedule)
     if (modeChanged) {
       setMode(bootData.mode as ModePreference)
-      setResolved(resolveMode(bootData.mode as ModePreference))
+      setResolved(resolveMode(bootData.mode as ModePreference, servedSchedule ?? schedule))
     }
     if (colorChanged) setColorThemeState(bootData.color)
-    if (typeof bootData.privacy_ack_version === 'number') {
-      setPrivacyAckVersion(bootData.privacy_ack_version)
-    }
     if (onboarding === 'migrate') {
       setOnboarded(true)
       setImportOnboarded(true)
-      setPrivacyAcked(true)
     } else if (onboarding === 'adopt') {
-      if (typeof bootData.onboarded === 'boolean') {
-        setOnboarded(bootData.onboarded)
-        // A completed first run also covers the Privacy chapter (see the effect).
-        if (bootData.onboarded) setPrivacyAcked(true)
-      }
-      if (bootData.privacy_acked === true) setPrivacyAcked(true)
+      if (typeof bootData.onboarded === 'boolean') setOnboarded(bootData.onboarded)
       if (typeof bootData.import_onboarded === 'boolean') setImportOnboarded(bootData.import_onboarded)
     }
     if (!themeBootReady) setThemeBootReady(true)
@@ -1230,9 +1211,8 @@ function useThemeState(): ThemeContextValue {
     }
     if (onboarding === 'migrate') {
       legacyMigrationStartedRef.current = true
-      safeSetItem('mc-privacy-acked', '1')
       persistTheme(
-        { onboarded: true, import_onboarded: true, privacy_acked: true },
+        { onboarded: true, import_onboarded: true },
         {
           onSuccess: () => {
             safeSetItem('mc-import-onboarded', '1')
@@ -1244,17 +1224,10 @@ function useThemeState(): ThemeContextValue {
       if (typeof data.onboarded === 'boolean') {
         if (data.onboarded) {
           safeSetItem('mc-onboarded', '1')
-          // A completed first run passed through the Privacy chapter (or
-          // predates it) — the server flag is the durable record of both.
-          safeSetItem('mc-privacy-acked', '1')
         } else {
           localStorage.removeItem('mc-onboarded')
         }
       }
-      // Server value wins so a second machine does not re-show a chapter this
-      // user already passed. Only ever set forward from the server: clearing it
-      // locally would re-open the chapter mid-session on a stale read.
-      if (data.privacy_acked === true) safeSetItem('mc-privacy-acked', '1')
       if (typeof data.import_onboarded === 'boolean') {
         if (data.import_onboarded) {
           safeSetItem('mc-import-onboarded', '1')
@@ -1280,6 +1253,10 @@ function useThemeState(): ThemeContextValue {
     && customThemes.some((t) => t.value === colorTheme)
     && !customThemeDataMap.has(activeSlugForFailure)
 
+  // A relay Crew in front paints its own mode over this one, unsaved (themeModeOverride.ts).
+  const modeOverride = useThemeModeOverride()
+  // What is painted, and what every reader of the context's `theme` gets (top-bar art).
+  const painted = modeOverride ?? resolved
   useEffect(() => {
     // A kept custom selection whose pack is listed but whose detail failed has
     // no injected `[data-theme="custom-<slug>-<mode>"]` block to match, so the
@@ -1290,27 +1267,33 @@ function useThemeState(): ThemeContextValue {
     // A pack whose detail is merely pending (no error yet) keeps its custom
     // attribute, as does the render-cache seed path.
     const unstyledFailure = installedThemeLoadFailed
-    applyTheme(unstyledFailure ? DEFAULT_COLOR_THEME : colorTheme, resolved, mode)
+    // The shell reads `data-mode` for a Scheduled preference (`data-mode-pref`), so while a
+    // borrowed mode is painted it is handed the person's own resolved mode as the preference:
+    // the process-wide native theme never takes the borrowed one.
+    const shellPref = modeOverride !== null && mode === 'schedule' ? resolved : mode
+    applyTheme(unstyledFailure ? DEFAULT_COLOR_THEME : colorTheme, painted, shellPref)
     bumpThemeVersion()
-  }, [resolved, colorTheme, mode, bumpThemeVersion, installedThemeLoadFailed])
+  }, [painted, modeOverride, resolved, colorTheme, mode, bumpThemeVersion, installedThemeLoadFailed])
 
   // Tell the Electron shell which mode PREFERENCE is active, so it can set
   // `nativeTheme.themeSource` to match ('system' under Auto). Pushed on change
   // rather than only pulled on window focus so switching Dark → Auto un-pins
   // `prefers-color-scheme` immediately; Chromium then fires a change event on
   // the media query below if the effective value moved. No-op in a browser.
+  // Scheduled has no OS-side equivalent, so the shell is pinned to what it resolved to.
   useEffect(() => {
     const bridge = window.electronAPI
-    bridge?.setThemeMode?.(mode)
-  }, [mode])
+    bridge?.setThemeMode?.(mode === 'schedule' ? resolved : mode)
+  }, [mode, resolved, modeOverride])
 
-  // Sync the Windows titleBarOverlay colors whenever the resolved dark/light
+  // Sync the Windows titleBarOverlay colors whenever the painted dark/light
   // mode changes. The overlay strip must match the dashboard chrome at all
-  // times; sending on `resolved` (not `mode`) handles Auto switching correctly.
+  // times, a Remote Crew's lent mode included; the shell stores it on this
+  // window only, so no other window and no native theme takes it.
   useEffect(() => {
     const bridge = window.electronAPI
-    bridge?.setTitleBarOverlayTheme?.(resolved)
-  }, [resolved])
+    bridge?.setTitleBarOverlayTheme?.(painted)
+  }, [painted])
 
   // Read the target token, not body.backgroundColor: the body's colour
   // transition can still be between palettes when this frame runs.
@@ -1326,16 +1309,17 @@ function useThemeState(): ThemeContextValue {
 
   // Report the resolved accent to the Electron shell (if present) so the NEXT
   // launch's boot splash (loading.html) paints in the user's chosen colour.
-  // Reads the computed --accent after paint; a no-op in a plain browser.
+  // Reads the computed --accent after paint; a no-op in a plain browser. Not while a
+  // relay Crew's mode is painted over the person's own: the shell saves this one.
   useEffect(() => {
     const bridge = window.electronAPI
-    if (!bridge?.setThemeAccent) return
+    if (!bridge?.setThemeAccent || modeOverride !== null) return
     const id = requestAnimationFrame(() => {
       const hex = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
       if (hex) bridge.setThemeAccent!(hex)
     })
     return () => cancelAnimationFrame(id)
-  }, [resolved, colorTheme, themeVersion])
+  }, [resolved, colorTheme, themeVersion, modeOverride])
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1385,10 +1369,14 @@ function useThemeState(): ThemeContextValue {
     persistTheme({ mode: pref })
   }, [persistTheme])
 
+  // From Scheduled, a toggle is a manual pick of the other appearance: a hop to
+  // Auto would often change nothing on screen.
   const cycleMode = useCallback(() => {
-    const next: ModePreference = mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
+    const next: ModePreference = mode === 'schedule'
+      ? (resolved === 'dark' ? 'light' : 'dark')
+      : mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
     setMode_(next)
-  }, [mode, setMode_])
+  }, [mode, resolved, setMode_])
 
   const setColorTheme = useCallback((t: ColorTheme) => {
     // No-op a same-value re-select: nothing changes, and flipping themeSwitching
@@ -1617,38 +1605,14 @@ function useThemeState(): ThemeContextValue {
     setImportOnboarded(true)
   }, [])
 
-  // Persisted server-side as well as locally: the gateway gates the first
-  // heartbeat on `dashboard.privacy_acked`, and the CLI notice and a later notice
-  // change read `dashboard.privacy_ack_version`, so a local-only mark would leave
-  // the server believing the user was never told. Resolves only once
-  // the server stored it, and marks nothing locally before that: the Privacy
-  // chapter stays open on a failed write instead of claiming the user was told.
-  // `noticeVersion: false` records only that the chapter was passed: the text
-  // shown did not say local recording is on, so the version stays where it was.
-  // `kiroTelemetry` records that the text shown named the build's Kiro telemetry
-  // destination: only that acknowledgement lets it export (`kiro_export.notice_shown`).
-  const markPrivacyAcked = useCallback(async (
-    { noticeVersion = true, kiroTelemetry = false }: { noticeVersion?: boolean; kiroTelemetry?: boolean } = {},
-  ) => {
-    await api.updateThemeConfig(
-      noticeVersion
-        ? {
-            privacy_acked: true,
-            privacy_ack_version: PRIVACY_NOTICE_VERSION,
-            ...(kiroTelemetry ? { kiro_telemetry_ack_version: PRIVACY_NOTICE_VERSION } : {}),
-          }
-        : { privacy_acked: true },
-    )
-    safeSetItem('mc-privacy-acked', '1')
-    setPrivacyAcked(true)
-    if (noticeVersion) setPrivacyAckVersion(PRIVACY_NOTICE_VERSION)
-  }, [])
-
   return {
-    theme: resolved,
+    theme: painted,
     preference: mode,
     cycle: cycleMode,
     setTheme: setMode_,
+    schedule,
+    setSchedule,
+    scheduleSaveFailed,
     colorTheme,
     setColorTheme,
     themeSwitching,
@@ -1667,13 +1631,10 @@ function useThemeState(): ThemeContextValue {
     themeVersion,
     onboarded,
     importOnboarded,
-    privacyAcked,
-    privacyAckVersion,
     themeBootReady,
     themeBootRead: !!bootData,
     markOnboarded,
     markImportOnboarded,
-    markPrivacyAcked,
     addCustomTheme,
     deleteCustomTheme,
     loadCustomThemes,

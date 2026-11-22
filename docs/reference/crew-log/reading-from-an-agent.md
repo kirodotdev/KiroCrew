@@ -67,6 +67,7 @@ Every failure is a typed code, never a traceback.
 | `bad_range` | The requested seq range is not readable as one. |
 | `forbidden` | The caller may not read that unit. See below. |
 | `unavailable` | Nothing answered — the gateway is not reachable. |
+| a storage code | The store refused the read itself, with its own code from [errors.md](errors.md): `invalid_id` (HTTP 400), `unknown_entry_type` (HTTP 409), any other (HTTP 422). |
 
 The tools are advertised whether or not the flag is on. An agent must learn the
 flag state from `crew_log_disabled`, which says how to switch it on; a missing tool
@@ -147,10 +148,19 @@ The refusals, and what each rules out:
 - **A target in an excluded class by its live slot.** The record states what the
   session was when its log opened; this catches one it acquired afterwards, such as
   a channel link added mid-conversation. Both tests run and either refuses.
+- **A target in another workspace.** A dispatched unit is read only by a caller in
+  the workspace its log records in the session class. A log that records a different
+  workspace, records none, or spans more than one is refused, because a dispatch
+  edge outlives a workspace switch.
 
-Every read is audited under the same SEL action names the browser routes use —
+Every grant is checked again after the entries are read and before they are
+returned, so a caller or target whose class or workspace moved during the read is
+refused rather than answered.
+
+Every read is audited under a `session_crew_log.*` SEL action name —
 `session_crew_log.list`, `session_crew_log.resolve`, `session_crew_log.read`,
-`session_crew_log.projection` — and the call itself lands as a `tool/called` entry
+`session_crew_log.projection`, the last two shared with the browser routes — and
+the call itself lands as a `tool/called` entry
 in the calling session's own crew log.
 
 Every REFUSAL is audited under those names too, including the two that reject a

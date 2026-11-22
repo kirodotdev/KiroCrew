@@ -106,6 +106,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RESERVED_DEFAULT_MEMBER,
         _absence_is_confirmed,
         _as_epoch,
+        _build_roster,
         _live_slot_has_person_rows,
         _live_slot_has_rows,
         _logged_slugs,
@@ -134,14 +135,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_workspace_project,
         _seed_member_approval,
         api_member_thread,
+        retire_stale_member_slot,
     )
     from kiro_crew.dashboard.handlers.members_thread_turns import (  # noqa: F401
         _FRESH_START_POLL_SECS,
         _FRESH_START_STOP_WAIT_SECS,
+        _drop_queue_entries,
         _queue_pending,
         _turn_busy,
         _turn_ends_within,
         _work_pending,
+        _written_held_ids,
         api_member_fresh_start,
         api_member_greet,
     )
@@ -169,8 +173,15 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.dashboard.chat_utils import (  # noqa: F401
         effective_session_key,
     )
+    from kiro_crew.dashboard.conditional_get import (  # noqa: F401
+        conditional_json_response,
+    )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
         require_owner_dashboard_request,
+    )
+    from kiro_crew.dashboard.handlers.crew_board_flight import (  # noqa: F401
+        BoardAnswer,
+        shared_board,
     )
     from kiro_crew.dashboard.slot_approval_seed import (  # noqa: F401
         seed_slot_approval,

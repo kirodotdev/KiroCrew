@@ -8,6 +8,7 @@ validation modules.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import logging
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -67,6 +68,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "memory_stores",
         "default_memory_store",
         "apps",
+        "templates",
         "stt",
         "computer_use",
         "aws",
@@ -93,6 +95,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "timezone",
         "auto_update",
         "registries",
+        "market_registries",
         "connections_ui",
     }
 )
@@ -224,7 +227,18 @@ _RETIRED_SECTION_KEYS_WARNED: dict = {
 #: dropped on save just as ``agent.<key>`` was. Captured one level deeper, as
 #: ``{section: {record_name: {key: value}}}``. ``hooks`` is NOT here: it is
 #: emitted raw (``"hooks": self.hooks``) and round-trips whole.
-_RECORD_MAP_SECTIONS: frozenset = frozenset({"agents", "workspaces", "memory_stores", "apps"})
+_RECORD_MAP_SECTIONS: frozenset = frozenset(
+    {"agents", "workspaces", "memory_stores", "apps", "templates"}
+)
+
+#: Digests of the ``(section, key list)`` pairs :func:`capture_extra_section_keys` has
+#: logged in this process. The gateway rebuilds the config several times a second from
+#: an unchanged file, so each distinct set of unmodelled keys is named once, not on
+#: every load. A config write can carry any key names, so an entry is a 16-byte digest
+#: and the count is bounded: when full the memory is cleared, which costs at most one
+#: repeat of a line that is still true.
+_LOGGED_EXTRA_KEY_SETS_MAX = 256
+_logged_extra_key_sets: set[bytes] = set()
 
 
 def _unknown_keys_of(raw: dict, obj: object, recognized_extra: frozenset) -> dict:
@@ -264,19 +278,29 @@ def capture_extra_section_keys(data: dict, cfg: object) -> dict:
     clobber a live value.
     """
     captured = _collect_extra_section_keys(data, cfg)
+    # A key set is remembered only when its line is written, so turning DEBUG on
+    # later still shows it.
+    if not logger.isEnabledFor(logging.DEBUG):
+        return captured
     for section, unknown in captured.items():
-        if section in _RECORD_MAP_SECTIONS:
-            logger.debug(
-                "config: preserving unmodelled %s record key(s) on round-trip: %s",
-                section,
-                ", ".join(f"{n}.{k}" for n, ks in sorted(unknown.items()) for k in ks),
-            )
-        else:
-            logger.debug(
-                "config: preserving unmodelled %s key(s) on round-trip: %s",
-                section,
-                ", ".join(sorted(unknown)),
-            )
+        record_map = section in _RECORD_MAP_SECTIONS
+        names = (
+            ", ".join(f"{n}.{k}" for n, ks in sorted(unknown.items()) for k in ks)
+            if record_map
+            else ", ".join(sorted(unknown))
+        )
+        seen = hashlib.sha256(f"{section}\0{names}".encode("utf-8", "replace")).digest()[:16]
+        if seen in _logged_extra_key_sets:
+            continue
+        if len(_logged_extra_key_sets) >= _LOGGED_EXTRA_KEY_SETS_MAX:
+            _logged_extra_key_sets.clear()
+        _logged_extra_key_sets.add(seen)
+        logger.debug(
+            "config: preserving unmodelled %s %s on round-trip: %s",
+            section,
+            "record key(s)" if record_map else "key(s)",
+            names,
+        )
     return captured
 
 
@@ -319,10 +343,11 @@ def warn_misspelled_section_keys(data: dict, cfg: object) -> None:
 def warn_retired_section_keys(data: dict) -> None:
     """One WARNING naming retired keys the operator changed from their old default.
 
-    The keys are inert (nothing reads them) and the next ``save()`` drops them
-    (:data:`_SECTION_KEYS_DELIBERATELY_DROPPED`); this line is the only notice
-    an operator who set one gets. Silent when none is present, and for a key
-    still at the default an older build wrote into every config it saved.
+    The keys are inert (nothing reads them) and the next ``save()`` or locked write
+    to ``config.json`` drops them (:data:`_SECTION_KEYS_DELIBERATELY_DROPPED`); this
+    line is the only notice an operator who set one gets. Silent when none is
+    present, and for a key still at the default an older build wrote into every
+    config it saved.
     """
     found: list[str] = []
     for section, defaults in sorted(_RETIRED_SECTION_KEYS_WARNED.items()):
@@ -346,12 +371,11 @@ def drop_retired_section_keys(data: dict) -> bool:
     """Remove the retired keys from a raw config document, in place.
 
     ``save()`` drops them because it rebuilds the document from the model; a
-    write that edits the raw dict under ``update_config_locked`` (a dashboard
-    save, ``kirocrew config set``) does not, so without this the keys outlived
-    every such save. Only :data:`_SECTION_KEYS_RETIRED` and
-    :data:`_MAP_ENTRIES_RETIRED` are touched: a RENAMED
-    spelling is still read as the live value when the canonical key is absent,
-    so a raw write must keep it. Returns whether anything was removed.
+    write that edits the raw dict does not, so ``update_config_locked`` calls
+    this for every write to ``config.json``. Only :data:`_SECTION_KEYS_RETIRED`
+    and :data:`_MAP_ENTRIES_RETIRED` are touched: a RENAMED spelling is still
+    read as the live value when the canonical key is absent, so a raw write
+    must keep it. Returns whether anything was removed.
     """
     removed = False
     for section, keys in _SECTION_KEYS_RETIRED.items():

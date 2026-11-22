@@ -7,8 +7,7 @@ and Amazon Polly. `voice_reply.DEFAULT_PROVIDER` selects the
 built-in engine unless configuration selects a valid provider, because it is the
 only one that needs nothing installed on macOS and Windows.
 `chat_voice.api_voice_synthesize()` sends built-in-engine output as one WAV
-chunk and streams Polly sentences as MP3. The local `piper` provider was removed
-([#23154](https://github.com/kirodotdev/KiroCrew/issues/23154)).
+chunk and streams Polly sentences as MP3. There is no local `piper` provider (`speech_providers.REMOVED_PROVIDERS`).
 Every synthesis has a request identity so the browser can reject audio from a
 stopped request.
 
@@ -165,9 +164,11 @@ reports blocked playback, the crewmate's replies reveal their action rows, as
 the Sessions chat's do. At `chat_done` with no streaming row, the tail falls
 back only to an assistant row of the turn that ended (`replyOfLastTurn` stops
 at the turn's opener), so a turn that failed before any reply text reads
-nothing aloud instead of an earlier reply. In a crewmate thread that row must
-also be one the chat draws as speech (`isCrewmateSpeech`), so a status row it
-hides, such as a compaction notice, is never read aloud.
+nothing aloud instead of an earlier reply. In a Sessions chat that row must
+also be one the transcript draws (`isHiddenReplyAt`), so an invisible-only or
+policy-block steering-only row cannot displace the visible reply above it; in a
+crewmate thread it must be one the chat draws as speech (`isCrewmateSpeech`),
+so a status row it hides, such as a compaction notice, is never read aloud.
 A crewmate reply's More menu offers the same Read aloud as a Sessions reply
 (`website/src/pages/chat/speakReply.ts`, wired by `ChatPaneTranscript` for a
 crewmate pane only).
@@ -203,6 +204,15 @@ any chunk count (Windows refuses one over 32,767 characters). When the stitch
 fails (no ffmpeg, a non-zero exit, a timeout), every chunk has still been sent, so
 `voice_complete` is broadcast without `audio` or `audioMime`, a WARNING is
 logged, and the HTTP response is unchanged.
+When a voice child (the stitch's ffmpeg, a built-in engine, the system voice
+probe) is cancelled or passes its timeout (30 s for the stitch), it goes to
+`platform_compat.kill_and_reap()`: the child is killed and waited for, up to
+`REAP_TIMEOUT_SECS` (10 s), in a shielded task, so a repeat cancel cannot cut
+the wait short. Only then are its temp files removed: Windows refuses to remove
+a file the child still holds, which would leave the stitch's list file, its
+output and the chunks in the temp folder. The cancel is raised afterwards; a
+cancel that lands on the reap after a timeout is raised too, instead of the
+timeout's result.
 The built-in engine broadcasts its completed WAV. Only the explicit Polly
 provider reaches the Polly branch; a future provider cannot silently reach a
 paid AWS service. Both event types echo the synthesis `request_id`, and carry
@@ -387,7 +397,14 @@ the Web Speech queue, and its final `setVoicePlaying(false)` clears
 
 Configuration is stored under `voice_reply` in the Crew configuration file.
 `slack.handler.load_voice_reply_config()` (defined in `slack/handler_runtime/voice.py`)
-loads the live `_VoiceConfig`, which stays module state of `slack/handler.py`. A
+loads the live `_VoiceConfig`, which stays module state of `slack/handler.py`, at
+boot, and the live config watcher re-applies it on every change under `voice_reply`
+in config.json (`apply_voice_reply_change`, with config.local.json merged over it).
+The watcher fingerprints both files, but for a section config.json has, the live
+view keeps config.json's own value (`base_shadow`), so an edit to
+config.local.json alone applies at restart; when config.json has no
+`voice_reply` section, the overlay's section is carried as an unknown section
+(`_extra_sections`) and its edit applies live (see [config](config.md)). A
 `PUT /api/voice/config` validates the whole patch first, then persists it as a
 locked delta read-modify-write (`run_config_write` → `update_config_locked`)
 that sets only the named keys inside `voice_reply`, so voice settings owned by
@@ -467,7 +484,7 @@ not be re-checked, or the consent changed during the check) returns no audio for
 that sentence, and the next sentence is checked again.
 
 
-On the same `raise_refusal=True` path, the one Polly failure #17511 reports —
+On the same `raise_refusal=True` path, the one Polly failure a user can fix —
 the chosen voice or engine is not offered in the request's region, which AWS
 rejects identically for every sentence — is matched from the CLI stderr
 (`_classify_polly_failure`) and raises
@@ -560,6 +577,11 @@ surface can show:
 `slack.handler` accepts `!voice` thread commands (`_bang_voice`,
 `slack/handler_runtime/commands.py`) for enabling and disabling a
 thread, toggling global replies, and choosing a voice, engine, speed, or pitch.
+`!voice global` toggles `voice_reply.enabled` in config.json under the config write
+lock first and changes the live flag only after the write lands; when
+config.local.json sets that key, the overlay's value stays live and the reply says
+so. `!voice off` clears the thread's own setting and does not silence a thread
+while `voice_reply.enabled` is `true`.
 Both Slack turn paths call `_reply_by_voice()` (`slack/handler_runtime/voice.py`)
 once the answer is out: the default transport path
 (`transport_dispatch.handle_message_transport()`, `messaging.use_transport`) and

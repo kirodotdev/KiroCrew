@@ -150,21 +150,23 @@ def _service_tools_referenced_in_src() -> dict[str, tuple[str, ...]]:
     ``_release_source_corpus_after_module`` drops at teardown.
     """
     found: dict[str, list[str]] = {}
-    for path, _text, tree in source_corpus.parsed_candidates():
-        if "_vendor" in path.parts:
-            continue
-        skip = _docstring_nodes(tree)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+    with source_corpus.untraced():
+        for path, _text, tree in source_corpus.parsed_candidates():
+            if "_vendor" in path.parts:
                 continue
-            if id(node) in skip:
-                continue
-            token = node.value
-            if not token or any(c.isspace() for c in token):
-                continue
-            name = pathlib.PurePath(token.replace("\\", "/")).name
-            if name in _SERVICE_TOOL_VOCABULARY:
-                found.setdefault(name, []).append(f"{path.relative_to(_REPO_ROOT)}:{node.lineno}")
+            skip = _docstring_nodes(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                    continue
+                if id(node) in skip:
+                    continue
+                token = node.value
+                if not token or any(c.isspace() for c in token):
+                    continue
+                name = pathlib.PurePath(token.replace("\\", "/")).name
+                if name in _SERVICE_TOOL_VOCABULARY:
+                    site = f"{path.relative_to(_REPO_ROOT)}:{node.lineno}"
+                    found.setdefault(name, []).append(site)
     # Frozen on the way out: the result is cached and shared by every caller.
     return {name: tuple(sites) for name, sites in found.items()}
 

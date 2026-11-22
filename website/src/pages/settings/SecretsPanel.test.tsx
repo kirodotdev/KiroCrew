@@ -18,9 +18,6 @@ vi.mock('../../hooks/useContainerWidth', () => ({
   useContainerWidth: () => [{ current: null }, 1200],
 }))
 vi.mock('../../hooks/useIsMobile', () => ({ useIsMobile: () => false, useIsNarrowViewport: () => false }))
-// The switch's gateway write the list waits for: settled unless a case holds it.
-let previewSaved: Promise<void> = Promise.resolve()
-vi.mock('../../hooks/usePreviewFlagServerSync', () => ({ whenPreviewFlagSaved: () => previewSaved }))
 
 /**
  * The panel talks to `/api/secrets` through the shared `api` client, which issues
@@ -62,6 +59,8 @@ let listManagedError = false
 let listUsage: Record<string, Array<{ kind: string; name: string; key: string }>> = {}
 /** When set, the next `/api/secrets` GET rejects — drives the error path. */
 let listShouldFail = false
+/** What `/api/auth/me` says about the viewer: undefined reads as "unknown". */
+let ownerOk: boolean | undefined
 
 /**
  * Fill a partial `Response` literal out to the shape the transport reads.
@@ -144,6 +143,7 @@ function recordCall(input: RequestInfo | URL, init?: RequestInit): FetchCall {
 function installFetch() {
   return stubFetch((input, init) => {
     const { url, method } = recordCall(input, init)
+    if (method === 'GET' && url === '/api/auth/me') return Promise.resolve(okJson({ owner_ok: ownerOk }))
     if (method === 'GET' && url === '/api/secrets') {
       if (listShouldFail) return Promise.reject(new Error('boom'))
       return Promise.resolve(okJson(listBody()))
@@ -196,7 +196,7 @@ async function openAdd(user: ReturnType<typeof userEvent.setup>) {
 }
 
 beforeEach(() => {
-  previewSaved = Promise.resolve()
+  ownerOk = undefined
   calls = []
   listNames = []
   listManaged = []
@@ -224,22 +224,6 @@ describe('SecretsPanel rail', () => {
   it('opens on the Add pane when the vault is empty', async () => {
     mount()
     expect(await screen.findByLabelText('Secret name')).toBeInTheDocument()
-  })
-
-  it('reads the list only after the preview switch has reached the gateway', async () => {
-    // Read before the write lands, the gateway still lists names only, which
-    // would show every login as a plain secret.
-    let release: () => void = () => {}
-    previewSaved = new Promise<void>(resolve => { release = resolve })
-    listNames = ['GITHUB']
-    listItems = [{ name: 'GITHUB', type: 'login', revision: 'r1', fields: { username: 'octo', urls: [] } }]
-    mount()
-    await act(async () => {})
-    expect(calls.some(c => c.method === 'GET' && c.url === '/api/secrets')).toBe(false)
-    expect(screen.getByText(S.loading)).toBeInTheDocument()
-    await act(async () => release())
-    expect(await screen.findByRole('option', { name: /GITHUB/ })).toHaveTextContent('octo')
-    expect(calls.some(c => c.method === 'GET' && c.url === '/api/secrets')).toBe(true)
   })
 
   it('groups managed credentials apart from custom items and shows a status per row', async () => {
@@ -358,7 +342,7 @@ describe('SecretsPanel add pane', () => {
     const user = userEvent.setup()
     mount()
     await openAdd(user)
-    await user.click(screen.getByRole('radio', { name: /Login/ }))
+    await user.click(screen.getByRole('tab', { name: /Login/ }))
     await user.type(screen.getByLabelText('Secret name'), 'GITHUB')
     await user.type(screen.getByLabelText(S.username_label), 'octocat')
     await user.type(screen.getByLabelText(S.password_label), 'pw-1')
@@ -382,7 +366,7 @@ describe('SecretsPanel add pane', () => {
     const user = userEvent.setup()
     mount()
     await openAdd(user)
-    await user.click(screen.getByRole('radio', { name: /Login/ }))
+    await user.click(screen.getByRole('tab', { name: /Login/ }))
     await user.type(screen.getByLabelText('Secret name'), 'GITHUB')
     await user.type(screen.getByLabelText(S.password_label), 'pw-1')
     await user.type(screen.getByLabelText(S.add_website), '  https://github.com  ')
@@ -412,7 +396,8 @@ describe('SecretsPanel add pane', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(calls.some(c => c.method === 'POST')).toBe(true))
     expect(screen.getByLabelText('Secret name')).toBeDisabled()
-    expect(screen.getByRole('radio', { name: /Login/ })).toBeDisabled()
+    // The type the save writes stays selected; the others wait for it.
+    expect(screen.getByRole('tab', { name: /Login/ })).toHaveAttribute('aria-disabled', 'true')
     listNames = ['MY_KEY']
     await act(async () => release())
   })
@@ -421,7 +406,7 @@ describe('SecretsPanel add pane', () => {
     const user = userEvent.setup()
     mount()
     await openAdd(user)
-    await user.click(screen.getByRole('radio', { name: /Note/ }))
+    await user.click(screen.getByRole('tab', { name: /Note/ }))
     await user.type(screen.getByLabelText('Secret name'), 'WIFI')
     await user.type(screen.getByLabelText(S.text_label), 'ssid=home')
     await user.click(screen.getByRole('button', { name: 'Save' }))
@@ -501,6 +486,12 @@ describe('SecretsPanel item pane', () => {
     // The rail row and the pane both name the user; the pane's is the definition term's value.
     expect(screen.getAllByText('octocat')).toHaveLength(2)
     expect(screen.getByText('https://github.com')).toBeInTheDocument()
+    // Used by names the host browser sign-in offers the login at.
+    expect(await screen.findByText(S.usage_signs_in_at.replace('{{host}}', 'github.com'))).toBeInTheDocument()
+    // A login has no tool card; its references wait behind the closed Advanced.
+    expect(screen.queryByText(S.use_in_tool_title)).toBeNull()
+    expect(screen.queryByText('secret://GITHUB')).toBeNull()
+    await user.click(screen.getByRole('button', { name: S.advanced_title }))
     expect(screen.getByText('secret://GITHUB')).toBeInTheDocument()
     expect(screen.getByText('secret://GITHUB#username')).toBeInTheDocument()
     // A login keeps no one-time-password seed, so there is nothing to show.
@@ -518,7 +509,36 @@ describe('SecretsPanel item pane', () => {
     mount()
     await user.click(await screen.findByRole('option', { name: /OPENAI_API_KEY/ }))
     expect(await screen.findByText('secret://OPENAI_API_KEY')).toBeInTheDocument()
+    expect(screen.getByText(S.use_in_tool_title)).toBeInTheDocument()
     expect(screen.queryByText(/secret:\/\/OPENAI_API_KEY#/)).not.toBeInTheDocument()
+  })
+
+  it('puts the authorize command with the real name behind Advanced', async () => {
+    const user = userEvent.setup()
+    listNames = ['OPENAI_API_KEY', 'MY KEY']
+    mount()
+    await user.click(await screen.findByRole('option', { name: /OPENAI_API_KEY/ }))
+    const command = 'kirocrew secrets authorize OPENAI_API_KEY https://api.example.com'
+    await screen.findByText('secret://OPENAI_API_KEY')
+    expect(screen.queryByText(command)).toBeNull()
+    await user.click(screen.getByRole('button', { name: S.advanced_title }))
+    expect(screen.getByText(command)).toBeInTheDocument()
+    // A name a shell would split keeps the placeholder: quoting differs per shell.
+    await user.click(screen.getByRole('option', { name: /MY KEY/ }))
+    await user.click(await screen.findByRole('button', { name: S.advanced_title }))
+    expect(screen.getByText('kirocrew secrets authorize NAME https://api.example.com')).toBeInTheDocument()
+  })
+
+  it('keeps the placeholder for a name with a shell pattern or a leading dash', async () => {
+    const user = userEvent.setup()
+    listNames = ['A$&B', '-TOKEN']
+    mount()
+    await user.click(await screen.findByRole('option', { name: /A\$&B/ }))
+    await user.click(await screen.findByRole('button', { name: S.advanced_title }))
+    expect(screen.getByText('kirocrew secrets authorize NAME https://api.example.com')).toBeInTheDocument()
+    await user.click(screen.getByRole('option', { name: /-TOKEN/ }))
+    await user.click(await screen.findByRole('button', { name: S.advanced_title }))
+    expect(screen.getByText('kirocrew secrets authorize NAME https://api.example.com')).toBeInTheDocument()
   })
 
   it('edits a login through the typed write, prefilling only what the list showed', async () => {
@@ -677,6 +697,12 @@ describe('SecretsPanel item pane', () => {
     await user.click(await screen.findByRole('button', { name: 'Delete secret my key/1' }))
     expect(screen.getByText(/Permanently delete/)).toBeInTheDocument()
     expect(calls.some(c => c.method === 'DELETE')).toBe(false)
+    // The stock transparent Btn has no edge on the confirm's danger tint until hovered.
+    for (const name of ['Delete', 'Cancel']) {
+      expect(screen.getByRole('button', { name })).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(screen.getByRole('button', { name })).not.toHaveClass('bg-transparent')
+      expect(screen.getByRole('button', { name })).not.toHaveClass('border-border')
+    }
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByText(/Permanently delete/)).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Delete secret my key/1' }))
@@ -895,5 +921,16 @@ describe('SecretsPanel on an expired session', () => {
     expect(await screen.findByText(/owner authorization required/)).toBeInTheDocument()
     expect(banner()).toBeNull()
     expect(isAuthBannerShown()).toBe(false)
+  })
+})
+
+describe('SecretsPanel — a teammate', () => {
+  it('shows one owner-only notice instead of the vault and its Add row', async () => {
+    ownerOk = false
+    listNames = ['GITHUB_TOKEN']
+    mount()
+    expect(await screen.findByTestId('secrets-owner-only')).toHaveTextContent("Only the Crew's owner can see or change secrets.")
+    expect(screen.queryByText('GITHUB_TOKEN')).toBeNull()
+    expect(screen.queryByText(/Add secret/)).toBeNull()
   })
 })

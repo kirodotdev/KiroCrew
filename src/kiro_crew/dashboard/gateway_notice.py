@@ -113,6 +113,7 @@ GATEWAY_NOTICE_CHANNEL_MESSAGE_NOT_RUN = "channel_message_not_run"
 GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE = "crew_name_undispatchable"
 GATEWAY_NOTICE_CODE_CHANNEL_WORKTREE_NOT_READY = "code_channel_worktree_not_ready"
 GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY = "remote_crew_read_only"
+GATEWAY_NOTICE_CRON_RUN_READ_ONLY = "cron_run_read_only"
 GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
 # A chat that keeps its record's agent after its Bot was set to another one
 # (``member_rebind_notice``). ``notice_args``: ``bot``, ``agent`` (what a new
@@ -182,6 +183,9 @@ GATEWAY_NOTICE_HARNESS_TASK_STOPPED = "harness_task_stopped"
 # category Claude Code named (``rate_limit``), empty when it named none, and
 # ``status``, the HTTP status (int), absent for a request that got no response.
 GATEWAY_NOTICE_HARNESS_API_RETRY = "harness_api_retry"
+
+# The resource-subscription wake budget row (``dashboard/resource_wakes``).
+GATEWAY_NOTICE_RESOURCE_WAKE_BUDGET_PAUSED = "resource_wake_budget_paused"
 
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).

@@ -74,7 +74,7 @@ if ! retry fetch_history; then
     "fetched without credentials, so the repository must be public or readable without them."
   exit 1
 fi
-# A history still shallow here would give a wrong merge-base and commit count.
+# A history still shallow here would give a wrong merge-base.
 if [ "$(git rev-parse --is-shallow-repository)" != false ]; then
   echo "::error::The history of $BASE_TIP and $HEAD_SHA is still shallow after the fetch"
   exit 1

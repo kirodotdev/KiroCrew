@@ -5,7 +5,8 @@ The crewmate modules (``mate_config``, ``mate_worker``, ``mate_worker_kit``,
 custom-agent specs the way a session would: the hardened reader in
 ``acp.kas_agents`` and the per-session MCP switch-off in ``acp.session_mcp``.
 The shared execution-prompt reader (``context_assembly.agent_spec``) takes KAS's
-prompt spelling, ``file://`` expansion and path check here too.
+prompt spelling, ``file://`` expansion and path check here too, and a script cron's
+MCP client (``cron_script_mcp``) reads how KAS's header bridge dials a remote entry.
 Application code may not import ``kiro_crew.acp``
 (``scripts/check_agent_sdk_boundary.py``), so this module is the one seam they
 reach those reads through.
@@ -130,8 +131,14 @@ def authored_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
     return client_mcp_array.authored_agent_spec_is_toolless(agent, work_dir)
 
 
-def authored_spec_toolless_verdict(agent: str, work_dir: Any = None) -> bool | None:
+def authored_spec_toolless_verdict(
+    agent: str, work_dir: Any = None, *, backend: str | None = None
+) -> bool | None:
     """Like :func:`authored_spec_is_toolless`, but ``None`` when no spec exists. Blocking.
+
+    *backend* is the backend the caller's session starts on. On KAS the background
+    helper is judged as KAS is sent it (``client_mcp_array.kas_lite_spec_is_toolless``);
+    any other backend, or no backend, judges the file as the harness loads it.
 
     ``False`` means a spec exists and it mounts something, or it exists and the
     reader will not answer for it: two specs declaring the name (ambiguous), a
@@ -146,11 +153,16 @@ def authored_spec_toolless_verdict(agent: str, work_dir: Any = None) -> bool | N
 
     from kiro_crew.acp import client_mcp_array, session_mcp
     from kiro_crew.agent import agent_spec_path, kiro_agents_dir_path
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
     from kiro_crew.agent_spec_format import agent_spec_candidates
     from kiro_crew.config.paths import project_agents_dir
 
     spec = session_mcp.agent_spec_snapshot(agent, work_dir=work_dir)
     if spec is not None:
+        if backend == ACP_BACKEND_KAS:
+            sent = client_mcp_array.kas_lite_spec_is_toolless(agent, work_dir)
+            if sent is not None:
+                return sent
         return client_mcp_array.spec_is_toolless(spec)
     try:
         if agent_spec_path(agent) is not None:
@@ -260,3 +272,25 @@ def deferred_call_arguments(params: Any, server: str, tool: str) -> tuple[Any, b
     from kiro_crew.acp._dispatch import _workspace_call_arguments
 
     return _workspace_call_arguments(params, server, tool)
+
+
+def remote_bridge_url(url: str) -> str:
+    """*url* as KAS's header bridge dials it: a plain ``http`` loopback host in its
+    canonical spelling, userinfo dropped (``acp.kas_env_launch.bridge_url``)."""
+    from kiro_crew.acp import kas_env_launch
+
+    return kas_env_launch.bridge_url(url)
+
+
+def plain_http_headers_refused(url: str) -> bool:
+    """Whether headers bound for *url* are refused because they would travel in
+    cleartext: a plain ``http`` url to a host KAS does not accept (not loopback),
+    while the operator's ``agent.kas_refuse_plain_http_mcp_headers`` opt-in is on
+    (``acp.kas_env_launch.refuses_plain_http_headers``, off by default)."""
+    from kiro_crew.acp import kas_env_launch
+
+    return (
+        url.strip().lower().startswith("http://")
+        and not kas_env_launch.kas_accepts_url(url)
+        and kas_env_launch.refuses_plain_http_headers()
+    )

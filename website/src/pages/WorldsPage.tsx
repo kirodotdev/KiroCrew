@@ -1,6 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect } from 'react'
-import { Sparkles, PictureInPicture2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, Sparkles, PictureInPicture2 } from 'lucide-react'
 import { useAgentSync } from '../hooks/useAgentSync'
 import { usePopoutSync } from '../hooks/usePopoutSync'
 import { SCENES, SCENE_STORAGE_KEY, SCENE_LAYOUT_SCALE, type SceneKey } from './scenes/config'
@@ -107,7 +107,7 @@ export default function WorldsPage() {
                 color: 'var(--text-muted, #999)', fontSize: 16, lineHeight: 1,
               }}
             >
-              {collapsed ? '▼' : '▲'}
+              {collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
             </button>
             <button
               onClick={openPopout}

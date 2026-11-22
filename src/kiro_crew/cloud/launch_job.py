@@ -38,7 +38,7 @@ from typing import Callable, List, Mapping, Optional, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.cloud import sizes
+from kiro_crew.cloud import instance_types, sizes
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import mkdirs_owner_only
@@ -204,6 +204,14 @@ class LaunchJob:
     target_unreadable: bool = False
     # Explicit EC2 subnet (the VPC follows from it); empty = network auto-discovery.
     subnet_id: str = ""
+    # The owner chose to launch without the Kiro sign-in (at create time, or with
+    # Skip on the sign-in step). A crew on another harness works without one, so
+    # this is a choice, not a failure: the step reads skipped, and the crew is not
+    # badged "Needs sign-in". Persisted so the choice survives a restart.
+    signin_skipped: bool = False
+    # A custom EC2 instance type the built-in lane launches instead of the
+    # ``size_key`` tier; empty = the tier.
+    instance_type: str = ""
 
     @property
     def terminal(self) -> bool:
@@ -233,6 +241,8 @@ class LaunchJob:
             "updated_at": self.updated_at,
             "login_target": self.login_target.to_dict(),
             "subnet_id": self.subnet_id,
+            "signin_skipped": self.signin_skipped,
+            "instance_type": self.instance_type,
         }
 
     @classmethod
@@ -277,6 +287,8 @@ class LaunchJob:
             login_target=login_target,
             target_unreadable=target_unreadable,
             subnet_id=str(d.get("subnet_id") or ""),
+            signin_skipped=bool(d.get("signin_skipped", False)),
+            instance_type=str(d.get("instance_type") or ""),
         )
 
 
@@ -352,6 +364,8 @@ class LaunchJobStore:
         step_labels: Optional[Mapping[str, str]] = None,
         login_target: Optional[KiroLoginTarget] = None,
         subnet_id: str = "",
+        skip_signin: bool = False,
+        instance_type: str = "",
     ) -> LaunchJob:
         """Build + persist a fresh PENDING job.
 
@@ -364,8 +378,14 @@ class LaunchJobStore:
 
         ``login_target`` is the Kiro identity the crew signs in as; ``None`` is
         the default (Builder ID) target, exactly the pre-field behaviour.
+
+        A custom ``instance_type`` is the size the launch uses, so the job records
+        ``size_key`` as ``instance_types.CUSTOM_TIER_KEY`` rather than the tier the
+        form happened to have selected.
         """
-        if provider_id == BUILTIN_PROVISIONER_ID:
+        if instance_type:
+            size_key = instance_types.CUSTOM_TIER_KEY
+        elif provider_id == BUILTIN_PROVISIONER_ID:
             sizes.get_tier(size_key)  # raises KeyError with the valid set if unknown
         job = LaunchJob(
             id=_new_job_id(),
@@ -376,6 +396,8 @@ class LaunchJobStore:
             steps=default_steps(step_labels),
             login_target=login_target or KiroLoginTarget(),
             subnet_id=subnet_id,
+            signin_skipped=skip_signin,
+            instance_type=instance_type,
         )
         # Claim ownership BEFORE the file exists. `reap_orphans` spares only jobs this
         # process owns, and it runs off the event loop: a reap already in flight can
@@ -523,12 +545,28 @@ class LaunchJobStore:
         state honest — the stack itself may well have finished in AWS, so the
         message points at the crew list rather than claiming nothing happened.
 
+        A cancelled job whose provision step is still ``active`` lost its rollback
+        to a restart, so that step is failed with a "may still be billing" error.
+
         Call once per process, after the store is constructed. Returns the ids
         reaped, for logging.
         """
         reaped: List[str] = []
         for job in self.list():
-            if job.terminal or job.id in self._owned:
+            if job.id in self._owned:
+                continue
+            if job.status == CANCELLED and job.step(STEP_PROVISION).state == STEP_ACTIVE:
+                job.step(STEP_PROVISION).state = STEP_FAILED
+                prior = f"{job.error} " if job.error else ""
+                job.error = (
+                    f"{prior}Interrupted — Kiro Crew restarted while removing the "
+                    f"{_resource_noun(job)} {job.tag}. Check your crews — it may still "
+                    "be running and billing."
+                )
+                self.save(job)
+                reaped.append(job.id)
+                continue
+            if job.terminal:
                 continue
             if job.step(STEP_CONNECT).state == STEP_DONE:
                 # Only a sign-in RETRY (:func:`run_signin_retry`) is non-terminal
@@ -565,7 +603,7 @@ class LaunchJobStore:
                 # "Needs sign-in".
                 job.error = (
                     ""
-                    if job.signin_detected
+                    if job.signin_detected or job.signin_skipped
                     else (
                         "Interrupted — Kiro Crew restarted while the Kiro sign-in was "
                         "running. If you already approved the code, check now; "
@@ -708,6 +746,27 @@ def _show_detail(job: "LaunchJob", store: "LaunchJobStore", step: LaunchStep, te
     store.save(job)
 
 
+def _provision_detail_writers(
+    job: "LaunchJob", store: "LaunchJobStore", step: LaunchStep
+) -> "tuple[Callable[[str], None], Callable[[str], None]]":
+    """The provision step's two detail writers: the network fallback and the sub-step.
+
+    The step shows the fallback sentence, if any, and the current sub-step on its
+    own line below it, so a sub-step never hides the network the launcher picked.
+    The two arrive on different threads (``ec2.deploy`` and the engine's poller),
+    hence the lock.
+    """
+    lines = {"fallback": "", "progress": ""}
+    lock = threading.Lock()
+
+    def write(key: str, text: str) -> None:
+        with lock:
+            lines[key] = text
+            _show_detail(job, store, step, "\n".join(v for v in lines.values() if v))
+
+    return functools.partial(write, "fallback"), functools.partial(write, "progress")
+
+
 def _target_unsupported_message(engine: "LaunchEngine", job: "LaunchJob") -> str:
     return (
         f"provisioner {job.provider_id!r} cannot sign in as {job.login_target.describe()}: "
@@ -802,6 +861,94 @@ ABORT_UNCONFIRMED_NOTE = (
     "instance, or delete it."
 )
 
+#: The sign-in step's detail when the owner skipped it.
+SIGNIN_SKIPPED_DETAIL = "Skipped."
+#: Appended when a skip could not confirm the remote login stopped.
+SKIP_ABORT_UNCONFIRMED_DETAIL = (
+    " The sign-in already started on the instance was not confirmed stopped, so "
+    "approving that code may still sign the crew in."
+)
+
+
+class SigninSkip(threading.Event):
+    """A skip request accepted only until the worker finishes the sign-in step."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._guard = threading.Lock()
+        self._open = True
+
+    def request(self) -> bool:
+        with self._guard:
+            if not self._open:
+                return False
+            self.set()
+            return True
+
+    def close(self) -> None:
+        with self._guard:
+            self._open = False
+
+
+class _EitherSet(threading.Event):
+    """Set when either of two events is: the sign-in wait ends on a cancel OR a skip.
+
+    Every handle's ``wait`` polls ``is_set()`` between attempts, so overriding it
+    (and ``wait``, for a caller that blocks on it) is the whole contract.
+    """
+
+    def __init__(self, first: threading.Event, second: threading.Event) -> None:
+        super().__init__()
+        self._events = (first, second)
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._events)
+
+    def set(self) -> None:
+        # Whoever holds the wait's event and sets it means "stop": a cancel.
+        self._events[0].set()
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            left = 0.2 if deadline is None else min(0.2, deadline - time.monotonic())
+            if left <= 0:
+                return False
+            self._events[0].wait(left)
+        return True
+
+
+class _SkippedSignin:
+    """The handle a skipped sign-in step holds: no login was started, so there is
+    nothing to wait on, close or stop."""
+
+    already_logged_in = False
+    url = ""
+    code = ""
+    ports: list = []
+    error = ""
+
+    def wait(self, cancel: threading.Event) -> bool:
+        return False
+
+    def close(self) -> None:
+        return None
+
+    def abort(self) -> bool:
+        return True
+
+
+_SKIPPED_SIGNIN = _SkippedSignin()
+
+
+def _mark_signin_skipped(job: "LaunchJob", step: LaunchStep, *, stopped: bool = True) -> None:
+    """Record a skipped sign-in: skipped, not failed, and no code left on screen."""
+    job.signin_skipped = True
+    job.signin_detected = False
+    job.signin = None
+    step.state = STEP_SKIPPED
+    step.detail = SIGNIN_SKIPPED_DETAIL + ("" if stopped else SKIP_ABORT_UNCONFIRMED_DETAIL)
+
 
 def mark_signed_in(job: "LaunchJob", detail: str = "Signed in.") -> None:
     """Record a CONFIRMED sign-in consistently, wherever it was confirmed.
@@ -829,7 +976,7 @@ def mark_signed_in(job: "LaunchJob", detail: str = "Signed in.") -> None:
     s.detail = detail
     c = job.step(STEP_CONNECT)
     if c.state == STEP_DONE:
-        c.detail = "Added to Your crews."
+        c.detail = "Added to My Crews."
 
 
 def _abort_signin(handle: SigninHandle, job: "Optional[LaunchJob]" = None) -> bool:
@@ -879,11 +1026,14 @@ def _rollback_cancelled_stack(
 
     Ack, then confirm: the cancelled state is saved BEFORE the delete is awaited,
     and "removed" is written only once AWS confirms, so a delete that later reaches
-    DELETE_FAILED is never reported as "Removed".
+    DELETE_FAILED is never reported as "Removed". The provision step stays
+    ``active`` while the delete runs, so a reader of the saved job can tell the
+    removal is still going; it ends ``done`` on a confirmed delete, else ``failed``.
 
     Best-effort and never raises: this runs while unwinding a cancellation.
     """
     step = job.step(STEP_PROVISION)
+    step.state = STEP_ACTIVE
     step.detail = f"Removing {job.tag}…"
     store.save(job)
     # Anything already recorded (e.g. an unconfirmed abort of the remote login)
@@ -892,6 +1042,7 @@ def _rollback_cancelled_stack(
     try:
         confirmed = engine.teardown(tag=job.tag, profile=job.profile, region=job.region)
     except Exception as exc:  # noqa: BLE001 - reported on the job, never propagated
+        step.state = STEP_FAILED
         job.error = (
             f"{prior}Cancelled, but the {_resource_noun(job)} {job.tag} could not be removed "
             f"automatically ({str(exc)[:200]}). Delete it from your crews — or with "
@@ -900,6 +1051,7 @@ def _rollback_cancelled_stack(
         logger.warning("Could not roll back stack %s after cancellation: %s", job.tag, exc)
         return
     if confirmed:
+        step.state = STEP_DONE
         step.detail = f"Removed {job.tag} after cancellation."
         if job.error == ABORT_UNCONFIRMED_NOTE:
             # The note warns that a login left polling could still sign the crew
@@ -908,6 +1060,7 @@ def _rollback_cancelled_stack(
             # to inspect a machine that is gone.
             job.error = ""
         return
+    step.state = STEP_FAILED
     job.error = (
         f"{prior}Cancelled, and the delete of {_resource_noun(job)} {job.tag} was requested but "
         "did NOT confirm (it may be DELETE_FAILED). Check your crews — it may still be "
@@ -1015,6 +1168,7 @@ def run_launch(
     engine: LaunchEngine,
     *,
     cancel: Optional[threading.Event] = None,
+    skip_signin: Optional[threading.Event] = None,
 ) -> LaunchJob:
     """Drive ``job`` through the launch steps, persisting after each transition.
 
@@ -1023,9 +1177,20 @@ def run_launch(
     and the device-code prompt is visible while the job is ``AWAITING_SIGNIN``.
     Never raises for an expected failure: a failed step sets ``status=FAILED``
     with the error recorded on that step; a cancel sets ``status=CANCELLED``.
+
+    The sign-in step is skipped when ``job.signin_skipped`` was set at create
+    time, or when *skip_signin* is set while it runs: the remote login is then
+    stopped, the step reads skipped, and the launch goes on to connect.
     """
     cancel = cancel or threading.Event()
+    skip_signin = skip_signin or threading.Event()
+
+    def _close_skip() -> None:
+        if isinstance(skip_signin, SigninSkip):
+            skip_signin.close()
+
     if job.terminal:
+        _close_skip()
         return job
 
     def _check_cancel() -> None:
@@ -1063,15 +1228,32 @@ def run_launch(
         # 2) Provision (create instance + install; blocks until healthy)
         _check_cancel()
         s = _activate(STEP_PROVISION)
-        # Only the built-in EC2 engine takes a subnet; the handler refuses it elsewhere.
+        # Only the built-in EC2 engine takes a subnet or a custom instance type; the
+        # handler refuses both elsewhere.
         extra: dict = {"subnet_id": job.subnet_id} if job.subnet_id else {}
+        if job.instance_type:
+            extra["instance_type"] = job.instance_type
+        show_fallback, show_progress = _provision_detail_writers(job, store, s)
         if _accepts_keyword(engine.provision, "on_network_fallback"):
             # A network the engine picked for the user is named on this step
             # before the stack is created, not after.
-            extra["on_network_fallback"] = functools.partial(_show_detail, job, store, s)
-        job.instance_id = engine.provision(
-            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **extra
-        )
+            extra["on_network_fallback"] = show_fallback
+        if _accepts_keyword(engine.provision, "on_progress"):
+            extra["on_progress"] = show_progress
+        if _accepts_keyword(engine.provision, "cancelled"):
+            # The engine may retry a refused launch in another zone; a cancel
+            # stops that retry instead of waiting out every zone.
+            extra["cancelled"] = cancel.is_set
+        try:
+            job.instance_id = engine.provision(
+                tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **extra
+            )
+        except Exception:
+            # A provision that failed after the owner cancelled is a cancel: the
+            # cancel path rolls the stack back and records CANCELLED, not FAILED.
+            if cancel.is_set():
+                raise LaunchCancelled() from None
+            raise
         s.detail = job.instance_id
         s.state = STEP_DONE
         store.save(job)
@@ -1079,7 +1261,11 @@ def run_launch(
         # 3) Sign in to Kiro (device code exposed as state while awaiting)
         _check_cancel()
         s = _activate(STEP_SIGNIN)
-        handle = _begin_signin_with_target(engine, job)
+        # Skipped before any login started: nothing is started on the box.
+        skipped_early = job.signin_skipped or skip_signin.is_set()
+        handle: SigninHandle = (
+            _SKIPPED_SIGNIN if skipped_early else _begin_signin_with_target(engine, job)
+        )
         started = handle
         # A sign-in that was REFUSED (verified identity mismatch on a reused
         # instance) is recorded here and raised only after register(): failing
@@ -1088,7 +1274,12 @@ def run_launch(
         # (``cloud logout`` on the instance) needs the crew to be visible.
         signin_error = str(getattr(handle, "error", "") or "")
         try:
-            if signin_error:
+            if signin_error or handle.already_logged_in or not handle.url:
+                _close_skip()
+            if handle is _SKIPPED_SIGNIN:
+                _mark_signin_skipped(job, s)
+                store.save(job)
+            elif signin_error:
                 job.signin_detected = False
                 s.state = STEP_FAILED
                 s.detail = signin_error
@@ -1098,30 +1289,47 @@ def run_launch(
                 s.state = STEP_DONE
                 s.detail = "Already signed in."
                 store.save(job)
+            elif skip_signin.is_set():
+                # A skip can arrive while the login starts, before it has a URL.
+                _mark_signin_skipped(job, s, stopped=_abort_signin(handle))
+                store.save(job)
             elif handle.url:
                 job.signin = SigninPrompt(
                     url=handle.url, code=handle.code, ports=list(handle.ports or [])
                 )
                 job.status = AWAITING_SIGNIN
                 store.save(job)  # UI now shows the URL + code
-                signed = handle.wait(cancel)
+                signed = handle.wait(_EitherSet(cancel, skip_signin))
+                # Close acceptance before the last read, so a request cannot be
+                # accepted after the worker has decided to keep an unsigned code.
+                _close_skip()
                 _check_cancel()
-                # Keep the prompt when the wait ran out: the code is still valid
-                # for a while, the user may be mid-approval, and the message below
-                # tells them to finish from the dashboard — which is only possible
-                # if the dashboard still has the URL and code to show. Clearing it
-                # here is what made "finish it from the dashboard" a dead end.
-                if signed:
-                    job.signin = None
-                job.signin_detected = signed
-                job.status = RUNNING
-                s.state = STEP_DONE if signed else STEP_SKIPPED
-                s.detail = (
-                    "Signed in."
-                    if signed
-                    else "Not signed in yet — finish it in the sign-in box below."
-                )
-                store.save(job)
+                if not signed and skip_signin.is_set():
+                    # Skipped while the code was showing. Stop the remote login
+                    # like a cancel does, so a later approval of that code cannot
+                    # sign the crew in behind the owner's back; the crew itself
+                    # stays and goes on to connect.
+                    _mark_signin_skipped(job, s, stopped=_abort_signin(handle))
+                    job.status = RUNNING
+                    store.save(job)
+                else:
+                    # Keep the prompt when the wait ran out: the code is still
+                    # valid for a while, the user may be mid-approval, and the
+                    # message below tells them to finish from the dashboard --
+                    # which is only possible if the dashboard still has the URL
+                    # and code to show. Clearing it here is what made "finish it
+                    # from the dashboard" a dead end.
+                    if signed:
+                        job.signin = None
+                    job.signin_detected = signed
+                    job.status = RUNNING
+                    s.state = STEP_DONE if signed else STEP_SKIPPED
+                    s.detail = (
+                        "Signed in."
+                        if signed
+                        else "Not signed in yet — finish it in the sign-in box below."
+                    )
+                    store.save(job)
             else:
                 # No device-code URL (e.g. social-login) — do not block; surface it.
                 job.signin_detected = False
@@ -1129,12 +1337,13 @@ def run_launch(
                 s.detail = "Sign in from the dashboard once it opens."
                 store.save(job)
         finally:
+            _close_skip()
             try:
                 handle.close()
             except Exception:  # pragma: no cover - best effort
                 logger.info("sign-in handle close failed (non-fatal)", exc_info=True)
 
-        # 4) Register in the Instances hub so it appears under "Your crews"
+        # 4) Register in the Instances hub so it appears under "My Crews"
         _check_cancel()
         s = _activate(STEP_CONNECT)
         registration_error = ""
@@ -1160,9 +1369,9 @@ def run_launch(
             # when the sign-in did not confirm; the card's icon shows a waiting key in
             # that case and this is the sentence under it.
             s.detail = (
-                "Added to Your crews."
-                if job.signin_detected
-                else "Added to Your crews. Sign in to Kiro on the crew after you connect."
+                "Added to My Crews."
+                if job.signin_detected or job.signin_skipped
+                else "Added to My Crews. Sign in to Kiro on the crew after you connect."
             )
             store.save(job)
 
@@ -1199,6 +1408,7 @@ def run_launch(
         return job
 
     except LaunchCancelled:
+        _close_skip()
         # Stop the remote login BEFORE the step rewrite and BEFORE the rollback,
         # and regardless of whether the rollback will confirm. The teardown below
         # can end in DELETE_FAILED — a state this code reports rather than rules
@@ -1220,6 +1430,7 @@ def run_launch(
         store.save(job)
         return job
     except Exception as exc:  # noqa: BLE001 - recorded on the job, never propagated
+        _close_skip()
         active = next((s for s in job.steps if s.state == STEP_ACTIVE), None)
         if active is not None:
             active.state = STEP_FAILED
@@ -1295,6 +1506,8 @@ def run_signin_retry(
     # card shows a spinner while this step is active, so the old code is not on
     # screen beside the new one.
     job.signin_detected = False
+    # Asking to sign in now replaces an earlier choice to skip it.
+    job.signin_skipped = False
     job.status = RUNNING
     store.save(job)
     # Held separately from ``handle`` so the cancel path below can reach it

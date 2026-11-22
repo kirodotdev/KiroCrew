@@ -11,11 +11,14 @@ user-surface provenance gate that keeps a borrowed slot safe from a headless
 caller.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from kiro_crew import mcp_core, session_directive
 from kiro_crew.config import paths
 from kiro_crew.dashboard import chat_tag_grants
+from kiro_crew.dashboard import session_directive_apply as sda
 from kiro_crew.dashboard.chat_tags import agent_tag_policy
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 
@@ -902,6 +905,38 @@ class TestChatTagApplier:
         assert result.startswith("Error:")
         assert slot.tags == ["todo"]  # unchanged
         assert state.pushes == 0
+
+    @pytest.mark.asyncio
+    async def test_headless_refusal_reaches_the_person_and_the_crewmate(self, monkeypatch):
+        """The tool already answered "requested" over its own pipe, so a refusal
+        that only overwrites the tool_result row leaves the agent reporting a tag
+        change that never landed. It gets the notice row a refused loop arm gets,
+        and a crewmate's next turn carries it."""
+        surfaced = MagicMock()
+        monkeypatch.setattr("kiro_crew.dashboard.state.append_and_surface", surfaced)
+        queued: list[str] = []
+        slot = _FakeSlot(key="member-ops", tags=["todo"])
+        slot.queue_append = lambda text, **kw: queued.append(text)
+        result = await apply_session_directive(
+            _FakeState(_VOCAB),
+            slot,
+            "dashboard:member-ops",
+            "chat_tag",
+            {"set_state": "review"},
+            producer_is_user_facing=False,
+            producer_turn_actor="cron",
+        )
+        assert result.startswith("Error: chat_tag only works from a user-facing session")
+        assert slot.tags == ["todo"]
+        surfaced.assert_called_once()
+        _state, _slot, role, text, _cls = surfaced.call_args.args
+        assert role == "notice"
+        assert text == (
+            f"{sda.USER_ORIGIN_REFUSAL_NOTICE_PREFIX}this turn was started by a cron job, so "
+            "its chat_tag call was refused and nothing changed. To do it, send the request "
+            "yourself in this chat."
+        )
+        assert queued == [f"[Automation notice] {text}"]
 
     @pytest.mark.asyncio
     async def test_slotless_caller_refused(self):

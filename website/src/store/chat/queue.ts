@@ -89,25 +89,27 @@ export function hydrateQueuedBubbles(
   const pinned = (m: ChatMessage) => m.role === 'queued' && !!m.meta?.responsiveSend
     && (preserveLiveQueue || listed.has(m.meta?.queueId as string))
   const live = preserveLiveQueue ? list.filter(m => m.role === 'queued' && !pinned(m)) : []
-  // A pinned row keeps its place but takes the listing's durable verdict, which
-  // a drain, an edit or a reorder may have changed since its push.
-  const verdicts = new Map((queue ?? []).map(q => [q.queueId, q.durable]))
+  // A pinned row keeps its place but takes the listing's marks, which a drain,
+  // an edit or a reorder may have changed since its push: its durable verdict
+  // and its restored, held and written marks (a held entry waits for the
+  // person, so the chat must draw it as a card they can act on).
+  const listing = new Map((queue ?? []).map(q => [q.queueId, q]))
   const base = list.filter((m) => m.role !== 'queued' || pinned(m)).map((m) => {
-    const id = m.meta?.queueId as string
-    if (m.role !== 'queued' || !verdicts.has(id)) return m
+    const entry = listing.get(m.meta?.queueId as string)
+    if (m.role !== 'queued' || !entry) return m
     const meta = { ...m.meta }
-    delete meta.durable
-    return { ...m, meta: verdicts.get(id) === false ? { ...meta, durable: false } : meta }
+    for (const key of ['durable', 'restored', 'held', 'written'] as const) delete meta[key]
+    return { ...m, meta: { ...meta, ...(entry.durable === false ? { durable: false } : {}), ...(entry.restored ? { restored: true } : {}), ...(entry.held ? { held: true } : {}), ...(entry.written ? { written: true } : {}) } }
   })
   const liveIds = new Set([...live, ...base.filter(m => m.role === 'queued')].map(m => m.meta?.queueId))
-  for (const { content, queueId, ts, kind, appLabel, quote, restored, held, ...attachments } of queue ?? []) {
+  for (const { content, queueId, ts, kind, appLabel, quote, restored, held, written, ...attachments } of queue ?? []) {
     if (liveIds.has(queueId)) continue
     // The lists ride the row's meta under the same keys a user row carries
     // them, so a cancel on THIS tab restores a spaced path exactly even
     // though the send happened on another tab or before a reload. The paste
     // blocks ride the same way, so the card draws the `[ Paste #N ]` token
     // the sent bubble draws, not the expanded wire text.
-    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(restored ? { restored } : {}), ...(held ? { held } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content, attachments.sendId) } })
+    appendCorrelatedQueue(base, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(kind ? { kind } : {}), ...(appLabel ? { appLabel } : {}), ...(restored ? { restored } : {}), ...(held ? { held } : {}), ...(written ? { written } : {}), ...(quote ? { quote } : {}), ...attachments, ...queueEntryPastes(content, attachments.sendId) } })
   }
   for (const row of live) appendCorrelatedQueue(base, row)
   return base
@@ -258,6 +260,11 @@ export const queueReducers = {
       const { banner: _b, ...rest } = msgs[idx].meta ?? {}
       msgs[idx].meta = rest
     }
+    if (msgs[idx].meta?.automationSteer !== undefined) {
+      // An edited entry holds the editor's words; the server drops its automation origin too.
+      const { automationSteer: _a, ...rest } = msgs[idx].meta ?? {}
+      msgs[idx].meta = rest
+    }
     msgs[idx].content = content
     // The card's commit names the blocks whose tokens the edit kept, in token
     // order (`pastes`); the row takes exactly that set. Named, not inferred
@@ -320,9 +327,10 @@ export const queueReducers = {
       // blocks so the card shows the token.
       // `kind` and `appLabel` too, as hydration keeps them: a cron or app card
       // classifies by them (not editable, not restored into the composer).
-      // `durable: false` too: the card's "won't survive a restart" label.
+      // `durable: false` too: the card's "won't survive a restart" label, and
+      // `written`, so a requeued send whose row is written offers only Send now.
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...(tags.automationSteer === true ? { automationSteer: true } : {}), ...(tags.durable === false ? { durable: false } : {}), ...(tags.written === true ? { written: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content, queueEntrySendId(meta).sendId) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

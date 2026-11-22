@@ -34,7 +34,7 @@ import copy
 import hashlib
 import logging
 import threading
-from typing import Iterable
+from typing import Any, Iterable
 
 from kiro_crew.apps.builtin_host_grants import config_top_keys as _builtin_config_top_keys
 from kiro_crew.config.fields import _coerce_bool
@@ -58,10 +58,10 @@ from kiro_crew.config.fields import _coerce_bool
 # stays the in-memory-only consumer the extension registry below requires.
 _APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 
-# Top-level config.json sections THIS CORE itself writes and reads, but does not
-# model as a dataclass field. The settings UI persists them into config.json and
-# a core module reads them back on startup -- so, exactly like the keys save()
-# stamps (CONFIG_RESERVED_TOP_KEYS), the product wrote them itself and warning
+# Top-level config.json sections THIS CORE reads, but does not model as a
+# dataclass field: the settings UI persists them, or the docs tell the operator to
+# write them, and a core module reads them back -- so, exactly like the keys save()
+# stamps (CONFIG_RESERVED_TOP_KEYS), the product put them there and warning
 # "unrecognized" about them is a false positive. They differ from the reserved
 # keys in that they carry live operator settings that must survive save(): the
 # loader captures them into _extra_sections and re-emits them via to_dict(), so
@@ -84,7 +84,11 @@ _APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 #     connections/oauth_clients.py::_config_client_id; the
 #     ``connections.tool_aliases`` gate is read by
 #     agent_materialization/mcp_aliases.py. No SCHEMA_REGISTRY entry.
-_CORE_OWNED_TOP_KEYS: frozenset = frozenset({"voice_reply", "connections"})
+#   * sel -- the operator's raise of the security event log's keep count,
+#     ``sel.keep``, written by hand as configuration.md says and read by
+#     sel_rotation._read_operator_keep in every process that trims the log. No
+#     SCHEMA_REGISTRY entry, so Crew never writes a default copy of it.
+_CORE_OWNED_TOP_KEYS: frozenset = frozenset({"voice_reply", "connections", "sel"})
 
 try:
     import jsonschema
@@ -296,11 +300,24 @@ def _actual_type_name(value: object) -> str:
 #:   absent, drop a stored ``false``. Preserved, ``_coerced_section`` records
 #:   ``mcp_gateway`` as degraded and both gates read it as off.
 #:
+#: * ``tunnel.relay_enabled``: unset (the default) hosts a Crew that has a team
+#:   key or a workload identity, so repairing a quoted ``"false"`` to absent would
+#:   turn such a Crew ON. Preserved, the value is not a boolean, and the section
+#:   builder (``section_builders._relay_enabled``) reads anything but a boolean or
+#:   ``null`` as off, which is the gate every relay reader asks.
+#:
+#: * ``tunnel.relay_lease_region``: a value the person did not give (absent, null,
+#:   empty or blank) leases from us-east-1; any value they gave must be a known
+#:   Region, or the relay refuses and sends nothing. So a given bad value is preserved,
+#:   never repaired to ``""``: the section builder passes it through and
+#:   ``RelaySettings.validate`` refuses it, naming the setting.
+#:
 #: Exact-match only: this is a per-path judgment, not a subtree rule. The
-#: registry is only half of a fix — a preserved value changes nothing unless
-#: the loader RECORDS the degradation and a gate reads
-#: ``KiroCrewConfig.degraded_sections``. Both halves exist for every path
-#: listed here; adding a path without them just keeps evidence nobody reads.
+#: registry is only half of a fix — a preserved value changes nothing unless a
+#: gate reads it: for most paths the loader RECORDS the degradation and a gate
+#: reads ``KiroCrewConfig.degraded_sections``; for ``tunnel.relay_enabled`` and
+#: ``tunnel.relay_lease_region`` the section builder and its reader are the gate
+#: (bullets above). Adding a path without a gate just keeps evidence nobody reads.
 _FAIL_CLOSED_PATHS = frozenset(
     {
         "agent",
@@ -313,6 +330,8 @@ _FAIL_CLOSED_PATHS = frozenset(
         "hooks",
         "hooks.confirm_tools",
         "mcp_gateway",
+        "tunnel.relay_enabled",
+        "tunnel.relay_lease_region",
     }
 )
 
@@ -418,7 +437,7 @@ def _coerce_legacy_numeric_values(data: dict, schema: dict) -> None:
 # KiroCrewConfig.load() is called on per-message / per-request hot paths (skill
 # triggering, context build, dashboard handlers). The expensive part is NOT the
 # dataclass construction — it is reading config.json (+ config.local.json),
-# json.loads, _deep_merge, and the full jsonschema.validate against the whole
+# json.loads, _deep_merge, and the full JSON Schema validation against the whole
 # config schema. We cache ONLY that validated, merged dict, keyed on a cheap
 # fingerprint (path + st_mtime_ns + st_size + st_mode) of both files, computed by
 # the loader. On a cache hit load() still builds fresh dataclasses from a deep
@@ -610,6 +629,27 @@ def prime_extension_config_keys() -> None:
     refresh_installed_plugin_config_keys()
 
 
+#: ``(schema, validator)`` for the last schema validated. Holding the schema keeps
+#: its ``id`` from being reused; a different schema object builds a new validator.
+_VALIDATOR_CACHE: list[tuple[dict, Any]] = []  # process-cache-ok: keyed by schema object identity
+
+
+def _schema_validator(schema: dict) -> Any:
+    """A validator for *schema*, checked against its meta-schema once and reused.
+
+    ``jsonschema.validate`` checks the schema and builds a validator on every
+    call; the config schema is built once at import, so that work would repeat
+    on every config load.
+    """
+    if _VALIDATOR_CACHE and _VALIDATOR_CACHE[0][0] is schema:
+        return _VALIDATOR_CACHE[0][1]
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator = validator_cls(schema)
+    _VALIDATOR_CACHE[:] = [(schema, validator)]
+    return validator
+
+
 def validate_config_data(data: dict) -> dict:
     """Validate *data* against the config JSON Schema.
 
@@ -635,9 +675,9 @@ def validate_config_data(data: dict) -> dict:
     # must be excluded — otherwise every load of a config Kiro Crew has ever
     # saved warns about Kiro Crew's own bookkeeping. A section a builtin app owns
     # and reads from the file directly (_APP_OWNED_TOP_KEYS), or that this core
-    # writes and reads without a dataclass model (_CORE_OWNED_TOP_KEYS), is not
-    # in the registry either and is excluded for the same reason: the product
-    # told the operator to write it, or wrote it itself. Excluded only in the
+    # reads without a dataclass model (_CORE_OWNED_TOP_KEYS), is not in the
+    # registry either and is excluded for the same reason: the product told the
+    # operator to write it, or wrote it itself. Excluded only in the
     # shape the reader keeps -- a JSON object. A reader keeps only a dict and
     # silently falls back on anything else, so a scalar written by hand would
     # otherwise lose the one warning that tells the operator it is being ignored.
@@ -797,12 +837,9 @@ def validate_config_data(data: dict) -> dict:
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)
 
     # 5. Run jsonschema validation
-    try:
-        jsonschema.validate(data, JSON_SCHEMA)
-    except jsonschema.ValidationError:
+    validator = _schema_validator(JSON_SCHEMA)
+    if not validator.is_valid(data):
         # Collect all errors (including nested ones)
-        validator_cls = jsonschema.validators.validator_for(JSON_SCHEMA)
-        validator = validator_cls(JSON_SCHEMA)
         for err in validator.iter_errors(data):
             dot_path = _dot_path_from_json_path(err.absolute_path)
             if not dot_path:

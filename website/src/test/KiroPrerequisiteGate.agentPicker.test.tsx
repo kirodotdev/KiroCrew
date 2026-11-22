@@ -3,10 +3,11 @@
  * shipped locale, and which probe verdicts leave Use enabled. Choosing an agent
  * is in KiroPrerequisiteGate.agentChoice.test.tsx.
  */
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import KiroPrerequisiteGate from '../components/KiroPrerequisiteGate'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 
 vi.mock('../utils/clipboard', () => ({
   copyToClipboard: vi.fn().mockResolvedValue(true),
@@ -310,5 +311,167 @@ describe('KiroPrerequisiteGate shared probe eligibility', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }))
     expect(await screen.findByRole('radio', { name: 'OpenAI Codex' })).toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull()
+  })
+})
+
+/**
+ * The configured-agent notice says WHY the setup check found the agent not
+ * ready (#34676). Kiro Agent has no picker row, so the notice is the only text
+ * about it: each reason gets its own sentence, a spec problem never reads as
+ * the sandbox one, and the independent agent's row below is unchanged.
+ */
+describe('KiroPrerequisiteGate configured-agent notice reason', () => {
+  const SANDBOX = /This host cannot provide that sandbox/
+  // Lost-run ceiling for each test's first wait, which follows the gate's read
+  // chain (status, then config, then probe), in place of the default one second.
+  const GATE_READS_LAND = namedCeiling('GATE_READS_LAND', 5000)
+  const render = () => renderWithProviders(
+    <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'kas' } })
+  })
+
+  it.each([
+    {
+      label: 'missing agent specs',
+      over: { missing_agent_specs: ['kirocrew.json'] },
+      says: /Kiro Agent runs on Kiro Crew's agent specs, which are not installed on the gateway host/,
+      command: 'kirocrew setup --agent-only',
+      sandbox: false,
+    },
+    {
+      label: 'rejected agent specs',
+      over: { rejected_agent_specs: ['kirocrew.json'] },
+      says: /They are on the gateway host, but they could not be loaded/,
+      command: 'kirocrew setup --agent-only --clean',
+      sandbox: false,
+    },
+    {
+      label: 'no OS sandbox and unsandboxed exec not permitted',
+      over: { sandbox_backend_available: false, unsandboxed_exec_permitted: false },
+      says: SANDBOX,
+      command: 'kirocrew doctor',
+      sandbox: true,
+    },
+    {
+      label: 'sandbox blocked for Kiro Agent',
+      over: { sandbox_backend_available: false, unsandboxed_exec_permitted: true, sandbox_blocked_backends: ['kas'] },
+      says: SANDBOX,
+      command: 'kirocrew doctor',
+      sandbox: true,
+    },
+  ])('$label: the notice names the reason and its command', async ({ over, says, command, sandbox }) => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status(over))
+    vi.mocked(api.acpBackends).mockResolvedValue({
+      backends: [
+        probe({ id: 'kas', policy_id: 'kas', independent_setup: false }),
+        probe({ installed: 'missing', install_command: 'npm install -g x' }),
+      ],
+    })
+    render()
+    // A Kiro harness config starts the picker collapsed.
+    fireEvent.click(await screen.findByRole(
+      'button', { name: 'Use other coding agents' }, GATE_READS_LAND,
+    ))
+
+    await screen.findByText(/is set to use Kiro Agent, which isn't ready/)
+    const reason = await screen.findByTestId('configured-agent-not-ready-reason')
+    expect(reason).toHaveTextContent(says)
+    expect(within(reason).getByText(command, { selector: 'code' })).toBeInTheDocument()
+    if (sandbox) expect(reason).toHaveTextContent(SANDBOX)
+    else expect(reason).not.toHaveTextContent(SANDBOX)
+    // The independent agent's row reads exactly as it does with no notice: its
+    // own install detail, and that detail only under the row.
+    const row = screen.getByTestId('other-agent-detail')
+    expect(row).toHaveTextContent('Install Claude Code on the gateway host.')
+    expect(within(row).getByText('npm install -g x', { selector: 'code' })).toBeInTheDocument()
+    expect(row).not.toHaveTextContent(SANDBOX)
+    expect(reason).not.toHaveTextContent('npm install -g x')
+    expect(screen.getAllByText('npm install -g x')).toHaveLength(1)
+  })
+
+  it.each([
+    { label: 'a workload pod with no sandbox and no opt-in', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: false }, shown: true },
+    { label: 'a host with no sandbox that is not a workload pod', over: { sandbox_backend_available: false, unsandboxed_exec_permitted: false }, shown: false },
+    { label: 'a workload pod whose sandbox works but blocks Kiro Agent', over: { container_boundary_hint: true, sandbox_backend_available: true, sandbox_blocked_backends: ['kas'] }, shown: false },
+    { label: 'a workload pod whose configured agent is enforced (the opt-in cannot unblock it)', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: false, sandbox_blocked_backends: ['kas'] }, shown: false },
+    { label: 'a workload pod that already opted in', over: { container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: true, sandbox_blocked_backends: ['kas'] }, shown: false },
+  ])('$label: the default view names the unsandboxed setting only for the pod case', async ({ over, shown }) => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status(over))
+    vi.mocked(api.acpBackends).mockResolvedValue({
+      backends: [
+        probe({ id: 'kas', policy_id: 'kas', independent_setup: false }),
+        probe({ installed: 'missing', install_command: 'npm install -g x' }),
+      ],
+    })
+    render()
+    // The default view, with "Use other coding agents" still closed.
+    const toggle = await screen.findByRole('button', { name: 'Use other coding agents' }, GATE_READS_LAND)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    const hint = screen.queryByTestId('workload-pod-no-sandbox')
+    if (!shown) {
+      expect(hint).toBeNull()
+      fireEvent.click(toggle)
+      await screen.findByTestId('configured-agent-not-ready-reason')
+      expect(screen.queryByTestId('workload-pod-no-sandbox')).toBeNull()
+      return
+    }
+    expect(hint).toHaveTextContent('Kubernetes Restricted pod')
+    expect(within(hint!).getByText('kirocrew config set agent.sandbox_allow_unsandboxed_exec true', { selector: 'code' })).toBeInTheDocument()
+    expect(within(hint!).getByRole('link', { name: /the container is the boundary/ }).getAttribute('href'))
+      .toContain('docker.md#a-team-crew-pod-the-container-is-the-boundary')
+    // Opening the panel does not say it a second time.
+    fireEvent.click(toggle)
+    await screen.findByTestId('configured-agent-not-ready-reason')
+    expect(screen.getAllByTestId('workload-pod-no-sandbox')).toHaveLength(1)
+  })
+
+  it('says the pod hint once when the configured agent\'s own row is the one open', async () => {
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'claude' } })
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      container_boundary_hint: true, sandbox_backend_available: false, unsandboxed_exec_permitted: false,
+    }))
+    vi.mocked(api.acpBackends).mockResolvedValue({ backends: [probe({})] })
+    render()
+    expect(await screen.findByTestId('workload-pod-no-sandbox', {}, GATE_READS_LAND)).toBeInTheDocument()
+    const toggle = screen.getByRole('button', { name: 'Use other coding agents' })
+    if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle)
+    await screen.findByTestId('other-agent-detail')
+    expect(screen.getAllByTestId('workload-pod-no-sandbox')).toHaveLength(1)
+  })
+
+  it('carries its own Check again for the configured agent, apart from the open row\'s', async () => {
+    // "Press Check again" in the notice needs a button bound to Kiro Agent: it
+    // has no row, and the open row's Check again rechecks Claude Code.
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status())
+    vi.mocked(api.acpBackends).mockResolvedValue({
+      backends: [
+        probe({ id: 'kas', policy_id: 'kas', independent_setup: false, installed: 'unknown' }),
+        probe({ installed: 'missing', install_command: 'npm install -g x' }),
+      ],
+    })
+    vi.mocked(api.acpBackendRecheck).mockRejectedValueOnce(new ApiError(500, 'Probe failed'))
+    render()
+    fireEvent.click(await screen.findByRole(
+      'button', { name: 'Use other coding agents' }, GATE_READS_LAND,
+    ))
+
+    const reason = await screen.findByTestId('configured-agent-not-ready-reason')
+    expect(reason).toHaveTextContent(/could not confirm that Kiro Agent is installed/)
+    // The unverified copy ends with the switch-later line, so the screen says it once.
+    expect(screen.getAllByText(/switch agents/)).toHaveLength(1)
+    expect(screen.queryByText('You can switch agents at any time in Settings > Agent Harness.')).toBeNull()
+
+    fireEvent.click(within(reason).getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(api.acpBackendRecheck).toHaveBeenCalledWith('kas'))
+    expect(api.acpBackendRecheck).toHaveBeenCalledTimes(1)
+    // Its failure reads in the notice only, never under the open row.
+    expect(await within(reason).findByTestId('configured-agent-recheck-error'))
+      .toHaveTextContent('The check for Kiro Agent failed.')
+    expect(screen.queryByTestId('other-agent-recheck-error')).toBeNull()
   })
 })

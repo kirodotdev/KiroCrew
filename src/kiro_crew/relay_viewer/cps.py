@@ -22,6 +22,7 @@ import json
 import logging
 import string
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
@@ -124,6 +125,22 @@ class CrewEndpoint:
     last_seen_at: Optional[float] = None
 
 
+class CrewList(tuple[CrewEndpoint, ...]):
+    """The Crews :func:`list_crew_endpoints` kept, as a tuple, with what it left out.
+
+    ``off_domain`` counts the entries left out only because their address is not
+    under ``tunnel.relay_viewer_relay_domain``: without that setting they would
+    have been kept, so a non-zero count says the setting does not match the relay.
+    """
+
+    off_domain: int
+
+    def __new__(cls, crews: Iterable[CrewEndpoint] = (), off_domain: int = 0) -> "CrewList":
+        listed = super().__new__(cls, crews)
+        listed.off_domain = off_domain
+        return listed
+
+
 @dataclass(frozen=True)
 class CrewAccessToken:
     access_token: str = field(repr=False)
@@ -143,18 +160,30 @@ class _Answer:
 
 
 async def list_crew_endpoints(
-    cps_url: str, bearer: str, *, crew_domain: str = "", token_type: str = ""
-) -> tuple[CrewEndpoint, ...]:
+    cps_url: str,
+    bearer: str,
+    *,
+    crew_domain: str = "",
+    token_type: str = "",
+    profile_arn: str = "",
+) -> CrewList:
     """Every Crew this person can open, in the service's order, checked entry by entry.
 
-    *crew_domain* is the relay's domain, lower case. When set, an entry is kept
+    *crew_domain* is a dev relay domain, lower case. When set, an entry is kept
     only when its host is exactly ``<endpointId>.<crew_domain>`` with no port.
-    Empty keeps the host check that has no domain. *token_type* is
-    ``EXTERNAL_IDP`` for an external IdP sign-in, else empty.
+    Empty trusts the address CPS lists: any ``https://<endpointId>.<host>`` with no
+    port is kept, so a new relay Region needs no release. *token_type* is
+    ``EXTERNAL_IDP`` for an external IdP sign-in, else empty. *profile_arn* is
+    sent as ``profileArn`` on every page when set, which CPS needs to tell which
+    account is asking; with it CPS lists the personal Crews of that profile
+    only. Empty sends no profile. The answer counts the entries the domain alone
+    left out (:class:`CrewList`).
     """
     crews: dict[str, CrewEndpoint] = {}
     dropped = 0
-    body: dict[str, Any] = {}
+    off_domain = 0
+    profile: dict[str, Any] = {"profileArn": profile_arn} if profile_arn else {}
+    body: dict[str, Any] = dict(profile)
     for _ in range(MAX_PAGES):
         answer = await _call(cps_url, bearer, LIST_TARGET, body, token_type)
         payload = answer.payload
@@ -176,12 +205,14 @@ async def list_crew_endpoints(
             crew = _crew_endpoint(raw, crew_domain)
             if crew is None or crew.endpoint_id in crews:
                 dropped += 1
+                if crew is None and crew_domain and _crew_endpoint(raw, "") is not None:
+                    off_domain += 1
             else:
                 crews[crew.endpoint_id] = crew
         token = payload.get("nextToken")
         if not (isinstance(token, str) and 0 < len(token) <= NEXT_TOKEN_MAX_CHARS):
             break
-        body = {"nextToken": token}
+        body = {**profile, "nextToken": token}
     else:
         logger.warning(
             "relay viewer: the Crew list has more than %d pages; showing those", MAX_PAGES
@@ -196,7 +227,7 @@ async def list_crew_endpoints(
                 else ""
             ),
         )
-    return tuple(crews.values())
+    return CrewList(crews.values(), off_domain)
 
 
 async def create_crew_access_token(
@@ -245,15 +276,18 @@ def _crew_endpoint(raw: Any, crew_domain: str) -> Optional[CrewEndpoint]:
         return None
     if not isinstance(url, str) or crew_url_problem(url) is not None:
         return None
-    # The token goes only to this origin, so it must be this endpoint's own name.
-    # With the relay's domain set, it must be exactly that name under the domain,
-    # on the default port.
-    # shortcut: one relay domain, change to a list when the viewer must reach a second relay region.
+    # The token goes only to this origin, so it must be this endpoint's own name,
+    # on the default port. The domain after it is the one CPS lists, trusted as is
+    # (crew_url_problem has already refused userinfo, a path and a trailing dot).
+    # A dev relay domain pins it: exactly that name under the domain.
     parts = urlsplit(url)
+    if parts.port is not None:
+        return None
+    host = parts.hostname or ""
     if crew_domain:
-        if parts.port is not None or parts.hostname != f"{endpoint}.{crew_domain}":
+        if host != f"{endpoint}.{crew_domain}":
             return None
-    elif not (parts.hostname or "").startswith(f"{endpoint}."):
+    elif not host.startswith(f"{endpoint}."):
         return None
     crew_type = raw.get("crewType")
     if not is_display_name(name) or not isinstance(crew_type, str) or crew_type not in CREW_TYPES:

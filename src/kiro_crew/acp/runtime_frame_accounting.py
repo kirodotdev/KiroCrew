@@ -32,6 +32,7 @@ from kiro_crew.acp.codex_subagent_wire import (
 from kiro_crew.acp.session_handle import NATIVE_CHILD_ROSTER_CAP
 from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
+    JsonRpcMessage,
 )
 from kiro_crew.metrics.events import DROPPED_FRAMES, emit_counter
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
@@ -73,6 +74,36 @@ _DROP_NO_SESSION = "-"
 # string: an absent `method`, or a value of the wrong JSON type (see
 # _drop_key_part).
 _DROP_KEY_PLACEHOLDER = "?"
+
+#: Notifications kiro-cli sends at every ``session/new`` and ``session/load`` that
+#: Crew does not read (``classify_notification`` skips them on a registered
+#: session). Those that name the session arrive before it is registered, and those
+#: that name none arrive while a fresh runtime has no session yet (measured on
+#: kiro-cli 3.5.0). The reader drops them uncounted: counting them measured session
+#: starts and buried real routing loss in ``method_class=other``.
+KAS_UNREAD_SESSION_START_NOTICES = frozenset(
+    (
+        "_kiro/memory/syncStatus",
+        "_kiro/powers/items_changed",
+        "_kiro/sessions/changed",
+        "_kiro/steering/documents_changed",
+    )
+)
+
+
+def is_unread_session_start_notice(msg: JsonRpcMessage) -> bool:
+    """Whether *msg* is a notification named in :data:`KAS_UNREAD_SESSION_START_NOTICES`.
+
+    ``method`` is backend-controlled and unvalidated (``JsonRpcMessage.from_dict``), so a
+    non-string is refused before the set lookup: an unhashable one would raise inside
+    ``_reader_loop`` and mark the runtime dead.
+    """
+    return (
+        msg.id is None
+        and isinstance(msg.method, str)
+        and msg.method in KAS_UNREAD_SESSION_START_NOTICES
+    )
+
 
 # SEL/metric reason for a permission request auto-rejected while the last
 # subagent roster named more children than NATIVE_CHILD_ROSTER_CAP. Distinct
@@ -218,6 +249,10 @@ def unrouted_child_frames(self: AcpRuntime) -> int:
     ``routes_roster_children_to`` holds only at the instant it is asked. The
     owner of a lost frame is not always known, so every session on the runtime
     reads the same count.
+
+    A turn replayed for a ``session/load`` that asked for its replay
+    (``require_replay``, the KAS resume) is not counted: the load drops its own
+    replay by design (``_note_dropped_frame``).
     """
     return self._unrouted_child_frames
 
@@ -399,7 +434,9 @@ def _end_roster_overflow_episode(self: AcpRuntime) -> None:
     self._roster_overflow_summary_at = 0.0
 
 
-def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) -> None:
+def _note_dropped_frame(
+    self: AcpRuntime, session_id: object, method: object, *, replay: bool = False
+) -> None:
     """Count one unroutable frame, flushing a summary at most once per interval.
 
     Replaces a per-frame log line (see the drop-accounting constants above).
@@ -410,15 +447,24 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
     Both arguments are backend-controlled and deliberately typed `object`:
     they are normalized through `_drop_key_part`, which is the only thing
     that keeps a wrong-typed value from raising in the shared reader.
+
+    *replay* marks a turn the engine replayed for a ``session/load`` of this
+    session that asked for its replay and is still in flight
+    (``_load_replay_frames``, kept only with ``require_replay``). The load
+    drops its own replay by design, so the frame is counted
+    ``method_class=replay``, apart from the hang signature, and is no frame
+    lost on its way to a session.
     """
     key = (_drop_key_part(session_id), _drop_key_part(method))
     # Hang-resilience series: classify the drop by method so dashboards
     # can alert on the hang signature (dropped permission requests or
     # updates). ``method_class`` is a
-    # closed 3-value enum — the raw method (backend-controlled) never
+    # closed 4-value enum — the raw method (backend-controlled) never
     # becomes an attribute value.
     _m = method if isinstance(method, str) else ""
-    if _m == METHOD_REQUEST_PERMISSION:
+    if replay:
+        _mclass = "replay"
+    elif _m == METHOD_REQUEST_PERMISSION:
         _mclass = "permission"
     elif _m in self._notification_aliases().session_update:
         # EVERY session-update spelling this host uses classifies as
@@ -429,7 +475,7 @@ def _note_dropped_frame(self: AcpRuntime, session_id: object, method: object) ->
         _mclass = "update"
     else:
         _mclass = "other"
-    if session_id != _DROP_NO_SESSION and _mclass != "other":
+    if session_id != _DROP_NO_SESSION and _mclass in ("permission", "update"):
         # A frame of the kind a native sub-agent streams, lost on its way to a
         # session (``unrouted_child_frames``).
         self._unrouted_child_frames += 1

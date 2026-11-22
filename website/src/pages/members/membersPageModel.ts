@@ -93,9 +93,11 @@ export const ROSTER_MAX = 420
 const ROSTER_DEFAULT = 264
 export const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
 export const CREW_DASHBOARD_TAB_ID = 'crew-dashboard'
-/** Standing host tabs in SidePanel. Files comes from the pinned view block;
- * Dashboard is the one host-owned leading tab. Profile is a sibling surface. */
-export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_DASHBOARD_TAB_ID]
+export const CREW_SESSIONS_TAB_ID = 'crew-sessions'
+/** Standing host tabs in SidePanel, in strip order. Files comes from the pinned
+ * view block; Dashboard and Sessions are host-owned leading tabs. Dashboard is
+ * first, so it is the strip's fallback focus. Profile is a sibling surface. */
+export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_DASHBOARD_TAB_ID, CREW_SESSIONS_TAB_ID]
 /** Chat-panel views this page withholds from the strip and the + menu
  *  (`SidePanel.hiddenViews`). The unfed half is DERIVED, not enumerated: every
  *  view `VIEW_DATA_SOURCE` classifies as `chat-transcript` (Changes / Issues /
@@ -107,7 +109,7 @@ export const CREW_PANEL_TAB_IDS: readonly string[] = [CREW_DASHBOARD_TAB_ID]
  *  generic chat session summary would be a third, unrelated summary. Exported so the test pins the set. */
 export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEWS, 'summary']
 /** Everything this page withholds once the thread is confirmed. The rule: the
- *  STANDING tabs here are Dashboard (the host-owned leading tab) and Files (the
+ *  STANDING tabs here are Dashboard and Sessions (the host-owned leading tabs) and Files (the
  *  one pinned view this page keeps, labelled Workspace here); the + menu offers
  *  the views a mate's owner works in (Side Chat, Terminal, Browser and any
  *  app-contributed tab), bound to the member's own slot. Withheld, then: the
@@ -117,7 +119,7 @@ export const MEMBERS_UNFED_VIEWS: readonly ViewKind[] = [...CHAT_TRANSCRIPT_VIEW
  *  dashboard lives
  *  in the permanent Dashboard tab, not a second chat view) and Artifacts — a
  *  PINNED standing tab on the chat page, and this page's standing set is
- *  Dashboard + Files, so it is the one withdrawal versus the plain chat panel.
+ *  Dashboard, Sessions + Files, so it is the one withdrawal versus the plain chat panel.
  *  Withdrawing the Artifacts LIST does not withdraw an artifact DOCUMENT: a
  *  `/artifacts/<slug>` link in a crewmate's reply opens its own tab here
  *  (`onArtifactOpen` → `openArtifactGuarded`), and `SidePanel.isWithheld`

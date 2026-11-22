@@ -59,6 +59,7 @@ from kiro_crew.platform.wheel_engine import (
     WheelUpdateNotReady,
     WheelUpdateSnapshotFailed,
 )
+from kiro_crew.platform.wheel_engine_contract import _PUT_OFF_REASON
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -505,9 +506,40 @@ def classify(exc: BaseException | None) -> WheelApplyOutcome:
 class _Running:
     cancel: ApplyCancel
     future: asyncio.Future[Path]
+    version: str = ""
+    # A routine install nobody asked for (``refuse_if_unattended_off``).
+    unattended: bool = False
 
 
 _IN_FLIGHT: set[_Running] = set()
+
+
+def _user_put_off(version: str, config: object | None = None) -> bool:
+    """Whether the update prompt's "Remind me tomorrow" or "Skip this version"
+    holds *version* now, read from *config* or from a fresh load."""
+    from kiro_crew.update_deferral import user_deferred_update
+
+    if config is None:
+        from kiro_crew.config import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    return user_deferred_update(config, version)
+
+
+def stop_put_off_applies(config: object) -> int:
+    """Stop each unattended apply whose version *config* says the user put off.
+
+    The update coordinator reads the deferral only before it starts a build, and
+    a build runs for minutes while the prompt is on screen, so an answer given
+    during it would otherwise be installed anyway. A person's approve and a
+    floor's mandatory update are left running. Returns how many were stopped.
+    """
+    stopped = 0
+    for running in list(_IN_FLIGHT):
+        if running.unattended and _user_put_off(running.version, config):
+            running.cancel.set(_PUT_OFF_REASON)
+            stopped += 1
+    return stopped
 
 
 def applies_in_flight() -> int:
@@ -562,7 +594,9 @@ async def run_wheel_apply(
 
     *refuse_if_unattended_off* is for a routine install nobody asked for: it is
     refused at the swap, as ``deferred``, when the security policy has turned
-    unattended installs off since the caller decided to install. A person's
+    unattended installs off, or the user put *version* off in the update prompt,
+    since the caller decided to install; :func:`stop_put_off_applies` ends it
+    sooner, as ``cancelled``, the moment that answer is saved. A person's
     approve and a floor's mandatory update leave it False.
 
     ``busy`` at once, without queueing, when this process already runs one,
@@ -609,6 +643,10 @@ async def run_wheel_apply(
 
             if not unattended_apply_allowed():
                 raise WheelUpdateNotReady("the security policy turned off unattended installs")
+            # The prompt stays open while this builds, so its answer can land
+            # after the coordinator decided to install.
+            if _user_put_off(version):
+                raise WheelUpdateNotReady(f"{version} was {_PUT_OFF_REASON}")
 
     def _before_promote() -> None:
         # Read at the swap, after the download and build: before the memory copy
@@ -653,7 +691,7 @@ async def run_wheel_apply(
             await asyncio.shield(asyncio.to_thread(wheel_engine.release_update_lock, held_lock_fd))
         raise
     future.add_done_callback(_retrieve)
-    running = _Running(cancel, future)
+    running = _Running(cancel, future, version, refuse_if_unattended_off)
     _IN_FLIGHT.add(running)
     try:
         try:
@@ -711,6 +749,7 @@ __all__ = [
     "shown_failure_text",
     "snapshot_memory_before_update",
     "snapshot_refusal",
+    "stop_put_off_applies",
     "stop_wheel_applies",
     "userns_reattach_after_apply",
     "userns_reattach_needed",

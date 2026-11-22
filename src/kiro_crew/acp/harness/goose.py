@@ -40,6 +40,7 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.types import METHOD_SESSION_CLOSE, METHOD_SESSION_UPDATE, UPDATE_CURRENT_MODE
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 __all__ = [
     "GooseHarness",
@@ -92,10 +93,10 @@ _SIDE_CONFIG_DROPPED_KEYS = ("extensions",)
 def side_home_supported() -> bool:
     """Whether a goose Side Chat session can be given a goose home of its own here.
 
-    POSIX only. On Windows goose keeps its secrets under ``%APPDATA%``, outside
-    the credential leaf the sensitive-path deny names for it, and linking the
-    user's config entries needs a symlink privilege; a goose side turn there keeps
-    running ``REJECT_ALL``.
+    POSIX only. On Windows goose keeps its config under ``%APPDATA%``, which
+    :func:`goose_config_dir` does not resolve, and linking the user's config
+    entries needs a symlink privilege; a goose side turn there keeps running
+    ``REJECT_ALL``.
     """
     return os.name != "nt"
 
@@ -144,7 +145,8 @@ def _build_side_goose_root(source_config_dir: Path, parent: Path) -> Path:
     elif root.exists():
         shutil.rmtree(root)
     config_dir = root / "config"
-    config_dir.mkdir(parents=True, mode=0o700)
+    mkdirs_owner_only(root)
+    config_dir.mkdir(mode=0o700)
     if source_config_dir.is_dir():
         for entry in sorted(source_config_dir.iterdir()):
             # Case-folded: on case-insensitive storage ``Permission.yaml`` is the
@@ -477,6 +479,7 @@ class GooseHarness(MembershipHarness):
         mcp_servers: list[dict[str, Any]],
         *,
         zero_tools: bool = False,
+        builtin_tools: tuple[str, ...] | None = None,
         stub_token: str = "",
     ) -> dict[str, Any] | None:
         """No envelope; record the servers this request places on the session.

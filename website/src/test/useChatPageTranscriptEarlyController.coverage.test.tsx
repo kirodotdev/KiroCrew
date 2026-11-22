@@ -293,4 +293,54 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
     // The old far path: an instant scroll through the mounted-row poll.
     expect(far.scrollToDisplayIndex).not.toHaveBeenCalled()
   })
+
+  it('keeps a far pinned jump on its prompt when a page lands mid-glide and renumbers the rows', () => {
+    // The prompt is row 2 when the jump starts. Three older rows land during the
+    // travel and it becomes row 5, which the height index places 500px lower. A
+    // glide that kept steering for row 2 would settle on the older row that took
+    // that number.
+    const estimates: Record<number, number> = { 2: 900, 5: 1400 }
+    const far = renderEarly(() => true, (index) => estimates[index] ?? null)
+    const geometry = mountGeometry(2)
+    const items: DisplayItem[] = [
+      single(0, 'user', 'first prompt'),
+      single(1, 'assistant', 'reply'),
+      single(2, 'user', 'target prompt'),
+    ]
+    const older: DisplayItem[] = [0, 1, 2].map((idx) => ({
+      kind: 'single',
+      idx,
+      msg: message('assistant', `older ${idx}`, `2026-08-29T00:00:0${idx}.000Z`),
+    }))
+    act(() => {
+      far.scrollerRef.current = geometry.scroller
+      far.result.current.pinFoldRef.current = geometry.fold
+      far.result.current.pinCardRef.current = geometry.card
+      far.result.current.displayItemsRef.current = items
+      far.result.current.onPinCollapsedHeight(60)
+      far.result.current.scrollToPinnedPrompt(2)
+    })
+    flushFrame(0)
+    act(() => { far.result.current.displayItemsRef.current = [...older, ...items] })
+    for (let t = 16; frames.length > 0 && t < 4000; t += 16) flushFrame(t)
+    // Estimate 1400 minus the chrome (198).
+    expect(geometry.scrollTop).toBe(1202)
+    expect(far.estimateRowTopRef.current).toHaveBeenLastCalledWith(5)
+  })
+
+  it('answers false and moves nothing for a message no row on screen draws', () => {
+    const early = renderEarly(() => true, () => 600)
+    const geometry = mountGeometry(2)
+    act(() => {
+      early.scrollerRef.current = geometry.scroller
+      early.result.current.displayItemsRef.current = [single(0, 'user', 'first prompt'), single(1, 'assistant', 'reply')]
+    })
+    const elsewhere = message('user', 'not on screen', '2026-08-31T00:00:00.000Z')
+    let answer = true
+    act(() => { answer = early.result.current.navToMessage(elsewhere, { behavior: 'auto', align: 'center' }) })
+    expect(answer).toBe(false)
+    expect(early.mountIndexRef.current).not.toHaveBeenCalled()
+    expect(frames).toHaveLength(0)
+    expect(geometry.scrollTop).toBe(200)
+  })
 })

@@ -16,14 +16,16 @@ in ``paths_lists`` and the resolver in ``paths_resolver``, both below it.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import NamedTuple
+from typing import Generic, NamedTuple, TypeVar
 
 from kiro_crew.agent_sdk import host_auth, native_allow_stores
 
@@ -182,6 +184,52 @@ class _BuiltTargets(set[str]):
     #: Fail-safe: an unknown build is treated as having traversed a symlink, so a
     #: caller that cannot prove otherwise gets the short expiry.
     resolution_differed: bool = True
+    #: :func:`_target_ancestors` of this set, computed on first use. The set is never
+    #: mutated after the build, so the answer is that of the cached set for its life.
+    ancestors: frozenset[str] | None = None
+
+
+def _target_ancestors(targets: set[str]) -> frozenset[str]:
+    """Every ``t[:i]`` with ``t[i] == os.sep``, for each target *t*.
+
+    A directory *d* contains a target, in :func:`path_contains_sensitive`'s sense
+    (``t.startswith(d + os.sep)``), exactly when *d* is in this set, so that gate
+    looks a candidate up here instead of scanning every target. Kept on a built
+    set so it is paid once per build; a plain ``set`` (a test double) pays it per
+    call, which only costs time.
+    """
+    cached = getattr(targets, "ancestors", None)
+    if cached is not None:
+        return cached
+    found: set[str] = set()
+    for target in targets:
+        i = target.find(os.sep)
+        while i != -1:
+            found.add(target[:i])
+            i = target.find(os.sep, i + 1)
+    ancestors = frozenset(found)
+    if isinstance(targets, _BuiltTargets):
+        targets.ancestors = ancestors
+    return ancestors
+
+
+def _has_target_ancestor(cand_cf: str, targets: set[str]) -> bool:
+    """True when *cand_cf* is a target or lies under one.
+
+    The same answer as ``any(cand_cf == t or cand_cf.startswith(t + os.sep) for t
+    in targets)``: ``cand_cf.startswith(t + os.sep)`` holds exactly when *t* is
+    ``cand_cf[:i]`` for an *i* with ``cand_cf[i] == os.sep``, so the candidate's own
+    ancestors are looked up instead. The cost follows the path's depth, not the
+    number of targets.
+    """
+    if cand_cf in targets:
+        return True
+    i = cand_cf.find(os.sep)
+    while i != -1:
+        if cand_cf[:i] in targets:
+            return True
+        i = cand_cf.find(os.sep, i + 1)
+    return False
 
 
 def _home_dir_targets_uncached(
@@ -495,9 +543,10 @@ def _anchor_targets(
 # request rather than once per leaf (``_child_realpath.realpaths_sharing_folders``:
 # about 250 ``lstat`` calls for the read list in a home with no links, where one
 # ``realpath`` per leaf makes 1,800 to 3,900). A path with a link anywhere on the way
-# goes to ``os.path.realpath`` whole. A build is therefore one view of those folders,
-# and nothing read in it is kept for the next: the expiry below still decides how
-# old a served set can be.
+# goes to ``os.path.realpath`` whole. On Windows each folder's answer is kept for the
+# build, and a missing leaf is its parent's answer joined. A build is therefore one
+# view of those folders, and nothing read in it is kept for the next: the expiry
+# below still decides how old a served set can be.
 #
 # The TTL is therefore sized as small as it can be while still doing its job.
 # The FLOOR is 0.1s, NOT a "few seconds", because a skills walk issues thousands
@@ -714,8 +763,17 @@ def _home_targets_tier(home_dirs: list[str]) -> str:
         return "write"
     if home_dirs == _KEYSTONE_ARTIFACT_PARENTS:
         return "keystone-artifact"
-    if home_dirs == _app_readonly_dir_rows():
-        return "app-readonly-dirs"
+    # The app-declared rows are named from their last listing, never by taking one: a
+    # label must not cost a listing, nor a pool submission from an inline caller.
+    readonly = _APP_READONLY_ROWS.last_listed()
+    if readonly is not None and home_dirs == list(readonly):
+        return _APP_READONLY_ROWS.name
+    if (masks := _APP_CREDENTIAL_MASK_ROWS.last_listed()) is not None:
+        if home_dirs == list(masks.rows):
+            return _APP_CREDENTIAL_MASK_ROWS.name
+        # The artifact parents with the installed apps' folded in (paths._matches_gate_rows).
+        if home_dirs == _KEYSTONE_ARTIFACT_PARENTS + list(masks.artifact_parents):
+            return f"keystone-artifact + {_APP_CREDENTIAL_MASK_ROWS.name}"
     return f"unnamed {len(home_dirs)}-entry"
 
 
@@ -1044,7 +1102,23 @@ def _resolved_root_key() -> _ResolvedRoots:
     return roots
 
 
-def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]:
+def _decision_roots(*, inline: bool = False) -> _ResolvedRoots:
+    """Resolve the anchor roots for ONE gate decision.
+
+    A decision matches a path against several lists (the gate's own, the apps'
+    masks, the keystone artifact parents). A gate resolves the roots here once
+    and hands the answer to every :func:`_home_dir_targets` lookup, so no lookup
+    resolves them on its own. Nothing is kept past the decision, so the
+    roots are still fresh for each one. *inline* is :func:`_home_dir_targets`'s.
+    """
+    if inline:
+        return _resolve_root_anchors(str(Path.home()))
+    return _resolved_root_key()
+
+
+def _home_dir_targets(
+    home_dirs: list[str], *, inline: bool = False, roots: _ResolvedRoots | None = None
+) -> set[str]:
     """TTL-cached :func:`_home_dir_targets_uncached`.
 
     Keyed on the *home_dirs* list plus the RESOLVED home and crew-home roots
@@ -1062,6 +1136,10 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
     wedged mount blocks the calling thread here rather than raising a stall --
     which is what the same thread's own ``os.walk`` on that mount does anyway.
 
+    *roots* is :func:`_decision_roots`'s answer, from a gate that looks up several
+    lists for one decision; ``None`` resolves them here. Either way they were
+    resolved for this decision, never kept across decisions.
+
     ponytail: the returned set is the cached instance, not a copy — both
     callers only iterate it. A future caller that MUTATES the result would
     poison the cache for every other caller; copy here if that ever happens.
@@ -1072,7 +1150,8 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
     if inline:
-        roots = _resolve_root_anchors(str(Path.home()))
+        if roots is None:
+            roots = _resolve_root_anchors(str(Path.home()))
         cached = _home_targets_cache.get((tuple(home_dirs),) + roots)
         if cached is not None and time.monotonic() < cached[0]:
             return cached[1]
@@ -1081,7 +1160,9 @@ def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]
             # captured before another worker's potentially slow rebuild.
             roots = _resolve_root_anchors(str(Path.home()))
             return _cached_home_dir_targets(home_dirs, roots, inline=True)
-    return _cached_home_dir_targets(home_dirs, _resolved_root_key(), inline=False)
+    if roots is None:
+        roots = _resolved_root_key()
+    return _cached_home_dir_targets(home_dirs, roots, inline=False)
 
 
 def _cached_home_dir_targets(
@@ -1168,29 +1249,182 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     return targets
 
 
-#: How long the event loop reuses one listing of the apps' ``agentReadOnlyDirs`` rows.
-#: Only a declaration added within this window can be missing from the tool gate: a
-#: listing never drops a fence that stood when it was taken, and a running agent's OS
-#: sandbox reads the declarations only at its spawn anyway.
-_APP_READONLY_ROWS_TTL_SECS = 1.0
-#: The listing's deadline: the anchor rebuild's budget, under its own name so a test can
+#: How long one listing of the apps' declared rows is reused (where it is reused at all,
+#: :class:`_AppRowsListing`). Only a declaration added within this window, by a change
+#: the gateway did not record itself, can be missing from the tool gate: a listing never
+#: drops a fence that stood when it was taken, a recorded install, update or uninstall
+#: retires it at once (``credential_masks.declarations_generation``), and a running
+#: agent's OS sandbox reads the declarations only at its spawn anyway.
+_APP_ROWS_TTL_SECS = 1.0
+#: A listing's deadline: the anchor rebuild's budget, under its own name so a test can
 #: hold the listing without cutting the rebuild short too.
-_APP_READONLY_ROWS_BUDGET_SECS = _PATH_RESOLVE_REBUILD_TIMEOUT_SECS
-#: The clock the listing's expiry is read from, patched by tests.
-_app_readonly_rows_clock = time.monotonic
-_app_readonly_rows_lock = threading.Lock()
-#: ``(expiry, KIROCREW_HOME, rows)`` of the last listing, which only the event loop reuses.
-_app_readonly_rows_cache: tuple[float, str, tuple[str, ...]] | None = None
-#: ``(KIROCREW_HOME, future, missed a deadline)`` of the listing in flight on the
-#: ``mc-pathres`` threads.
-_app_readonly_rows_pending: tuple[str, Future[tuple[str, ...]], bool] | None = None
+_APP_ROWS_BUDGET_SECS = _PATH_RESOLVE_REBUILD_TIMEOUT_SECS
+#: The clock a listing's expiry is read from, patched by tests.
+_app_rows_clock = time.monotonic
+#: What one kind of listing holds.
+_Listed = TypeVar("_Listed")
+
+
+class _AppRowsListing(Generic[_Listed]):
+    """One kind of app-declared tool-gate rows: how it is listed, and its last listing.
+
+    *lister* scans ``apps/`` and stats each manifest and record, so it runs on the
+    ``mc-pathres`` threads within :data:`_APP_ROWS_BUDGET_SECS` (or on the calling
+    thread, for a caller that is already on its own worker thread). *reuse_off_loop*
+    says whether a thread with no event loop reuses a fresh listing too, or takes its
+    own every time.
+    """
+
+    def __init__(self, name: str, lister: Callable[[], _Listed], *, reuse_off_loop: bool):
+        self.name = name
+        self.lister = lister
+        self.reuse_off_loop = reuse_off_loop
+        self.lock = threading.Lock()
+        #: ``(expiry, KIROCREW_HOME, declarations generation, rows)`` of the last listing.
+        self.cache: tuple[float, str, int, _Listed] | None = None
+        #: ``(KIROCREW_HOME, generation it started at, future, missed a deadline)`` of the
+        #: listing in flight.
+        self.pending: tuple[str, int, Future[_Listed], bool] | None = None
+
+    def last_listed(self) -> _Listed | None:
+        """The last listing, without listing (for a log label only)."""
+        cached = self.cache
+        return None if cached is None else cached[3]
+
+    def reset(self) -> None:
+        """Forget the last listing and any listing in flight (tests)."""
+        with self.lock:
+            self.cache = None
+            self.pending = None
+
+
+def _declarations_generation() -> int:
+    from kiro_crew.apps import credential_masks  # call time: security never loads apps
+
+    return credential_masks.declarations_generation()
+
+
+def _list_for_home(lister: Callable[[], _Listed], home: str) -> _Listed:
+    """Run *lister* for the ``KIROCREW_HOME`` a listing was submitted for, or refuse.
+
+    A pooled listing can start after its submitter's environment changed, and listing
+    then would resolve, and create, a data home no check asked about. So it refuses as a
+    stall instead, which the waiting check turns into a refusal.
+    """
+    if os.environ.get("KIROCREW_HOME", "") != home:
+        listed = home or str(Path.home())
+        raise PathResolutionStalled(listed, _stall_prefix(listed))
+    return lister()
+
+
+def _listed_rows(listing: _AppRowsListing[_Listed], *, inline: bool = False) -> _Listed:
+    """*listing*'s rows, listed within a deadline, or from a fresh listing to reuse.
+
+    The listing reads the filesystem, so a caller takes it on the ``mc-pathres``
+    threads and waits at most :data:`_APP_ROWS_BUDGET_SECS`. A listing that misses it
+    raises :class:`PathResolutionStalled`, which every gate turns into a refusal, and
+    stays the one listing in flight for its data home and declarations generation:
+    later callers refuse at once rather than wait again or start another, so a wedged
+    listing holds one thread and costs one deadline, not one per call. *inline* lists
+    on the calling thread instead, for :func:`is_sensitive_resolved_path`'s
+    worker-thread caller, which must make no pool submission. A listing is reused for
+    at most :data:`_APP_ROWS_TTL_SECS`, on the event loop always and elsewhere when
+    *listing* says so.
+
+    Rows are only ever served for the declarations generation current when they are
+    returned: a check never joins a listing begun before the last recorded install,
+    update or uninstall, and a listing such a change overtook is discarded and taken
+    again, within the same deadline. One overtaken twice refuses as a stall.
+    """
+    home = os.environ.get("KIROCREW_HOME", "")
+    deadline = time.monotonic() + _APP_ROWS_BUDGET_SECS
+    for _attempt in range(2):
+        generation = _declarations_generation()
+        with listing.lock:
+            cached = listing.cache if (listing.reuse_off_loop or _on_event_loop()) else None
+            if (
+                cached is not None
+                and cached[1] == home
+                and cached[2] == generation
+                and _app_rows_clock() < cached[0]
+            ):
+                return cached[3]
+            if inline:
+                pending = None
+            else:
+                pending = listing.pending
+                if (
+                    pending is None
+                    or pending[0] != home
+                    or pending[1] != generation
+                    or pending[2].done()
+                ):
+                    future = path_resolve_executor().submit(
+                        functools.partial(_list_for_home, listing.lister, home)
+                    )
+                    pending = (home, generation, future, False)
+                    listing.pending = pending
+        if pending is None:
+            rows = listing.lister()
+        else:
+            budget = 0.0 if pending[3] else max(0.0, deadline - time.monotonic())
+            try:
+                rows = pending[2].result(timeout=budget)
+            except FuturesTimeoutError:
+                with listing.lock:
+                    if listing.pending is pending:
+                        listing.pending = (*pending[:3], True)
+                listed = home or str(Path.home())
+                raise PathResolutionStalled(listed, _stall_prefix(listed)) from None
+        current = _declarations_generation() == generation
+        with listing.lock:
+            if (
+                pending is not None
+                and listing.pending is not None
+                and listing.pending[2] is pending[2]
+            ):
+                listing.pending = None
+            if current:
+                listing.cache = (_app_rows_clock() + _APP_ROWS_TTL_SECS, home, generation, rows)
+        if current:
+            return rows
+    listed = home or str(Path.home())
+    raise PathResolutionStalled(listed, _stall_prefix(listed))
 
 
 def _list_app_readonly_dir_rows() -> tuple[str, ...]:
-    """List the declared rows: scans ``apps/`` and stats each manifest and record."""
+    """List the ``agentReadOnlyDirs`` rows: scans ``apps/``, stats each manifest and record."""
     from kiro_crew.apps import agent_readonly_dirs  # call time: security never loads apps
 
     return agent_readonly_dirs.write_protected_home_paths()
+
+
+class _AppMaskRows(NamedTuple):
+    """The installed apps' ``credentialMasks`` as gate rows, less what the static lists hold."""
+
+    #: Fenced with everything beneath them, as a ``_SENSITIVE_HOME_DIRS`` row is.
+    rows: tuple[str, ...]
+    #: Whose ``.tmp`` / ``.lock`` children are fenced, as a ``_KEYSTONE_ARTIFACT_PARENTS`` one's.
+    artifact_parents: tuple[str, ...]
+
+
+def _list_app_credential_mask_rows() -> _AppMaskRows:
+    """List the installed apps' ``credentialMasks`` as gate rows, the same way.
+
+    Only a declared leaf's own directory takes the artifact rule, as in
+    ``_KEYSTONE_ARTIFACT_PARENTS``: a directory fenced because its declaration could not
+    be read holds every temp a write stages in it, and the one it sits in is not the
+    app's data. A row the static lists already hold is left out (a built-in's record
+    repeats its shipped declaration), so with only the built-ins there is nothing to match.
+    """
+    from kiro_crew.apps import credential_masks  # call time: security never loads apps
+
+    listed = credential_masks.tool_gate_home_rows()
+    parents = {row.rsplit("/", 1)[0] for row in listed.declared}
+    return _AppMaskRows(
+        tuple(sorted({*listed.declared, *listed.unreadable}.difference(_SENSITIVE_HOME_DIRS))),
+        tuple(sorted(parents.difference(_KEYSTONE_ARTIFACT_PARENTS))),
+    )
 
 
 def _on_event_loop() -> bool:
@@ -1201,43 +1435,32 @@ def _on_event_loop() -> bool:
     return True
 
 
-def _app_readonly_dir_rows() -> list[str]:
-    """The ``agentReadOnlyDirs`` apps declare, as write-only rows, listed within a deadline.
+#: The write gate's ``agentReadOnlyDirs`` rows. It runs once per file-edit call, so only
+#: the event loop reuses a listing; any other thread lists afresh, as the sandbox does at
+#: a spawn. The lister is looked up at call time so a test can patch it.
+_APP_READONLY_ROWS = _AppRowsListing(
+    "app-readonly-dirs", lambda: _list_app_readonly_dir_rows(), reuse_off_loop=False
+)
+#: The read gate's rows for the installed apps' ``credentialMasks`` (the shipped
+#: built-ins' are static rows in ``paths_lists``). That gate runs on every file a bulk
+#: walk or indexer opens from its worker thread, so every thread reuses a listing.
+_APP_CREDENTIAL_MASK_ROWS = _AppRowsListing(
+    "app-credential-masks", lambda: _list_app_credential_mask_rows(), reuse_off_loop=True
+)
 
-    The listing reads the filesystem, so every caller takes it on the ``mc-pathres``
-    threads and waits at most the anchor rebuild's budget. A listing that misses it
-    raises :class:`PathResolutionStalled`, which every gate turns into a refusal, and
-    stays the one listing in flight for its data home: later callers refuse at once
-    rather than wait again or start another, so a wedged listing holds one thread and
-    costs one deadline, not one per call.
-    The write gate runs on the event loop once per file-edit call, so there the rows
-    come from a listing at most ``_APP_READONLY_ROWS_TTL_SECS`` old; any other thread
-    takes a new listing unless one is already in flight, as the sandbox does at a spawn.
-    """
-    global _app_readonly_rows_cache, _app_readonly_rows_pending
-    home = os.environ.get("KIROCREW_HOME", "")
-    with _app_readonly_rows_lock:
-        cached = _app_readonly_rows_cache if _on_event_loop() else None
-        if cached is not None and cached[1] == home and _app_readonly_rows_clock() < cached[0]:
-            return list(cached[2])
-        pending = _app_readonly_rows_pending
-        if pending is None or pending[0] != home or pending[1].done():
-            pending = (home, path_resolve_executor().submit(_list_app_readonly_dir_rows), False)
-            _app_readonly_rows_pending = pending
-    try:
-        rows = pending[1].result(timeout=0 if pending[2] else _APP_READONLY_ROWS_BUDGET_SECS)
-    except FuturesTimeoutError:
-        with _app_readonly_rows_lock:
-            if _app_readonly_rows_pending is pending:
-                _app_readonly_rows_pending = (home, pending[1], True)
-        listed = home or str(Path.home())
-        raise PathResolutionStalled(listed, _stall_prefix(listed)) from None
-    with _app_readonly_rows_lock:
-        if _app_readonly_rows_pending is not None and _app_readonly_rows_pending[1] is pending[1]:
-            _app_readonly_rows_pending = None
-        _app_readonly_rows_cache = (
-            _app_readonly_rows_clock() + _APP_READONLY_ROWS_TTL_SECS,
-            home,
-            rows,
-        )
+
+def _app_readonly_dir_rows() -> list[str]:
+    """The ``agentReadOnlyDirs`` apps declare, as write-only rows (:func:`_listed_rows`)."""
+    rows: tuple[str, ...] = _listed_rows(_APP_READONLY_ROWS)
     return list(rows)
+
+
+def _app_credential_mask_rows(*, inline: bool = False) -> _AppMaskRows:
+    """The installed apps' ``credentialMasks``, as read+write rows (:func:`_listed_rows`).
+
+    Every installed tree's and retained record's declaration, adopted former built-ins
+    included, at both data-home prefixes; a manifest that is there but does not read
+    cleanly fences its app's whole data directory instead
+    (``credential_masks.tool_gate_crew_leaves``).
+    """
+    return _listed_rows(_APP_CREDENTIAL_MASK_ROWS, inline=inline)

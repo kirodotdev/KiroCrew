@@ -294,6 +294,21 @@ class TestValidateConfigData:
         assert data["session"]["pool_size"] == 5
         assert data["agent"]["subagent_cost_gb"] == 0.25
 
+    def test_schema_validator_is_reused_per_schema_object(self) -> None:
+        first = {"type": "object", "properties": {"n": {"type": "integer"}}}
+        second = {"type": "object", "properties": {"n": {"type": "string"}}}
+        validator = validation._schema_validator(first)
+        assert validation._schema_validator(first) is validator
+        # A different schema object is validated by its own rules.
+        assert not validation._schema_validator(second).is_valid({"n": 1})
+        assert validation._schema_validator(first).is_valid({"n": 1})
+
+    def test_schema_validator_rejects_a_broken_schema(self) -> None:
+        import jsonschema
+
+        with pytest.raises(jsonschema.SchemaError):
+            validation._schema_validator({"type": 12})
+
 
 class TestLoaderBackCompatReexport:
     """The C3 symbols remain importable from ``kiro_crew.config.loader``."""

@@ -5,8 +5,10 @@ import { cancelQueuedMessage, editQueuedMessage, queueEntryAttachments } from '.
 import { restoreQueuedContent } from '../utils/fileTokens'
 import { quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
 import { markDictated } from '../chat-core/composer/dictationProvenance'
+import { isServerWrittenQueued } from '../components/QueueStack'
 import type { ChatMessage } from '../types'
 import type { PasteBlock } from '../utils/pasteTokens'
+import { secureRandomId } from '../utils/secureId'
 
 /** Pre-serialization composer state of a send the server QUEUED, written by the
  *  host's send path when the `queued: true` receipt names the entry. */
@@ -229,12 +231,12 @@ export function useQueuedMessageActions({
   const onCancel = useCallback((queueId: string) => {
     if (!slot) return
     const msg = allQueuedRef.current.find(m => queueIdOf(m) === queueId)
-    // An app-authored entry is cancellable (that is the user's undo for an
-    // unwanted app message) but never draft-restored: merging the app
-    // envelope into the human composer would corrupt the draft AND launder
-    // app text into user authorship on the next send.
-    const isAppEntry = (msg?.meta?.kind as string) === 'mcp_app_message'
-    if (msg?.content && !isAppEntry) {
+    // A server-written entry (an MCP-App message, a resource wake) is
+    // cancellable (that is the user's undo for an unwanted one) but never
+    // draft-restored: merging its envelope into the human composer would
+    // corrupt the draft AND launder server text into user authorship on the
+    // next send.
+    if (msg?.content && !isServerWrittenQueued(msg)) {
       // Restore by QUEUE IDENTITY: the record was stored under the queue id
       // the send receipt returned, which is the id this cancel carries — so a
       // hit is this card's own pre-send state by construction, whatever its
@@ -312,18 +314,20 @@ export function useQueuedMessageActions({
     )
   }, [slot, markPending])
 
-  // One card's hold, save and release go out one after another: sent side by
+  // This editor's id on the server: closing here releases only its own hold.
+  const [holder] = useState(secureRandomId)
+  // A slot's holds, saves and releases go out one after another: sent side by
   // side, a close could reach the server before its own open and leave a hold
-  // that no editor owns.
-  const editChains = useRef(new Map<string, Map<string, Promise<unknown>>>())
-  const inOrder = useCallback(<T,>(slotKey: string, queueId: string, send: () => Promise<T>): Promise<T> => {
-    let chains = editChains.current.get(slotKey)
-    if (!chains) editChains.current.set(slotKey, chains = new Map())
-    const prev = chains.get(queueId)
+  // that no editor owns, and moving from card A's editor to card B's could
+  // land A's release before B's hold and let the queue run B's old words.
+  const editChains = useRef(new Map<string, Promise<unknown>>())
+  const inOrder = useCallback(<T,>(slotKey: string, send: () => Promise<T>): Promise<T> => {
+    const chains = editChains.current
+    const prev = chains.get(slotKey)
     const next = prev ? prev.then(send, send) : send()
     const tail = next.catch(() => undefined)
-    chains.set(queueId, tail)
-    tail.then(() => { if (chains.get(queueId) === tail) chains.delete(queueId) })
+    chains.set(slotKey, tail)
+    tail.then(() => { if (chains.get(slotKey) === tail) chains.delete(slotKey) })
     return next
   }, [])
 
@@ -333,19 +337,19 @@ export function useQueuedMessageActions({
     if (!trimmed) return
     // Optimistically update the card; the WS event reconciles other clients.
     dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed, ...(pastes ? { pastes } : {}) }))
-    const save = inOrder(slot, queueId, () => api.editQueuedMessage(slot, queueId, trimmed))
+    const save = inOrder(slot, () => api.editQueuedMessage(slot, queueId, trimmed, holder))
     // A refused or lost save never reaches the server's release, so the hold
     // its open editor placed is released here instead of waiting out the deadline.
-    save.catch(() => inOrder(slot, queueId, () => api.holdQueuedMessageEdit(slot, queueId, false)).catch(() => undefined))
+    save.catch(() => inOrder(slot, () => api.holdQueuedMessageEdit(slot, queueId, false, holder)).catch(() => undefined))
     run(queueId, save)
-  }, [slot, dispatch, run, inOrder])
+  }, [slot, dispatch, run, inOrder, holder])
 
   // Fire-and-forget like the rest: a failed hold leaves the drain as it was
   // before holds existed, and a 404 means the entry already left the queue.
   const onEditOpen = useCallback((queueId: string, open: boolean) => {
     if (!slot) return
-    inOrder(slot, queueId, () => api.holdQueuedMessageEdit(slot, queueId, open)).catch(() => undefined)
-  }, [slot, inOrder])
+    inOrder(slot, () => api.holdQueuedMessageEdit(slot, queueId, open, holder)).catch(() => undefined)
+  }, [slot, inOrder, holder])
 
   const onReorder = useCallback((queueId: string, direction: 'next' | 'later') => {
     if (!slot) return

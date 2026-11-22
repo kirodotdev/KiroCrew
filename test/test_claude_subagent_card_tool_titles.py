@@ -103,7 +103,10 @@ def _session_of(frames: list[dict[str, Any]]) -> str:
 
 
 def _client(frames: list[dict[str, Any]], backend: str) -> AcpClient:
-    """A real client whose next prompt reads *frames*, then the prompt's answer."""
+    """A real client whose next prompt reads *frames*, then the prompt's answer.
+
+    A later prompt on the same client (opencode's run resumes a turn that ended on
+    a refused call) reads the answer alone."""
     client = AcpClient(acp_backend=backend)
     client._session_id = _session_of(frames)
     script: list[tuple[str, JsonRpcMessage]] = [
@@ -113,10 +116,13 @@ def _client(frames: list[dict[str, Any]], backend: str) -> AcpClient:
         )
         for frame in frames
     ]
-    script.append(("complete", JsonRpcMessage(id=1, result={"stopReason": STOP_REASON_END_TURN})))
+    complete = ("complete", JsonRpcMessage(id=1, result={"stopReason": STOP_REASON_END_TURN}))
+    script.append(complete)
+    prompts = [0]
 
     async def _fake_loop(req_id, timeout):
-        for item in script:
+        prompts[0] += 1
+        for item in script if prompts[0] == 1 else [complete]:
             yield item
 
     client._prompt_loop = _fake_loop  # type: ignore[assignment]

@@ -237,6 +237,70 @@ def _read_codex_mcp_disable_overrides(config_file: Path) -> dict[str, dict[str, 
     return overrides
 
 
+def _codex_project_config_files(work_dir: str | Path | None) -> list[Path]:
+    """The project ``.codex/config.toml`` files codex layers for *work_dir*, root first.
+
+    codex walks up from the session's cwd to the nearest directory holding
+    ``.git`` (its default ``project_root_markers``) and reads
+    ``.codex/config.toml`` in every directory from there down to the cwd; with no
+    marker it reads the cwd's alone. Blocking: call it through ``asyncio.to_thread``.
+
+    shortcut: reads the spawn's *work_dir* only, so a session started in another
+    cwd on the same process keeps that folder's project servers; walk each
+    session's cwd if a helper ever runs outside its spawn folder.
+    """
+    if work_dir is None:
+        return []
+    try:
+        cwd = Path(work_dir).resolve()
+    except OSError:
+        return []
+    chain = [cwd, *cwd.parents]
+    for depth, folder in enumerate(chain):
+        with contextlib.suppress(OSError):
+            if (folder / ".git").exists():
+                chain = chain[: depth + 1]
+                break
+    else:
+        chain = [cwd]
+    return [folder / ".codex" / "config.toml" for folder in reversed(chain)]
+
+
+def _read_codex_helper_disable_overrides(
+    codex_home: Path, work_dir: str | Path | None
+) -> dict[str, dict[str, Any]]:
+    """:func:`_read_codex_mcp_disable_overrides` over the user and project layers.
+
+    The user ``config.toml`` first, then each project layer, so a project entry
+    that redefines a user server's name carries the project's transport.
+    Blocking: call it through ``asyncio.to_thread``.
+    """
+    overrides: dict[str, dict[str, Any]] = {}
+    for config_file in (codex_home / "config.toml", *_codex_project_config_files(work_dir)):
+        overrides.update(_read_codex_mcp_disable_overrides(config_file))
+    return overrides
+
+
+def _spawn_spec_is_toolless(agent: str, work_dir: str | Path | None) -> bool:
+    """True when *agent*'s spec mounts nothing (``client_mcp_array.spec_is_toolless``).
+
+    Judged on the spec this session's MCP array is built from (the mirrored read,
+    ``session_mcp._session_spec_and_snapshot_for``), project checkout first, so a
+    project-only helper keeps its ``includeMcpJson``. codex keys ``agent`` and
+    ``spec_generation`` in its process key, so no other spec shares this process.
+    Blocking; fails closed: an unreadable spec answers False.
+    """
+    from kiro_crew.acp.client_mcp_array import spec_is_toolless
+    from kiro_crew.acp.spec_tools_allowlists import session_allowlist_spec
+
+    try:
+        spec = session_allowlist_spec(agent, work_dir)
+    except Exception:
+        logger.debug("codex spawn: spec for %r unreadable; MCP left on", agent, exc_info=True)
+        return False
+    return spec_is_toolless(spec)
+
+
 #: The variable codex-acp reads for the ``codex`` binary it runs ``app-server`` from.
 #: Unset or empty, the adapter runs the Codex it ships as an npm dependency.
 CODEX_PATH_ENV = "CODEX_PATH"
@@ -598,7 +662,9 @@ class CodexHarness(MembershipHarness):
     #: spawn, or empty string when no override was computed.  Consumed by
     #: :meth:`apply_spawn_env` which runs on the spawn worker after the full env
     #: (including ``agent.env``) is assembled.
-    _bg_codex_config: str = ""
+    #: ``(home, work_dir)`` of a helper spawn (background agent or tool-less spec),
+    #: whose MCP servers :meth:`apply_spawn_env` disables; ``None`` otherwise.
+    _helper_spawn: tuple[Path, str | Path | None] | None = None
 
     backend = ACP_BACKEND_CODEX
 
@@ -699,46 +765,42 @@ class CodexHarness(MembershipHarness):
         from kiro_crew.session import BACKGROUND_AGENT as _bg_agent  # circular at module scope
 
         is_background = ctx.agent == _bg_agent
+        # A tool-less helper (a spec that mounts nothing) gets the same override:
+        # it can call no MCP tool, so the operator's servers would start for
+        # nothing. codex keys agent and spec_generation per process,
+        # so no chat shares it.
+        is_helper = is_background or await asyncio.to_thread(
+            _spawn_spec_is_toolless, ctx.agent, ctx.work_dir
+        )
 
-        # For background sessions: read config.toml once, off the event loop, and
-        # build the CODEX_CONFIG override that disables every configured MCP
-        # server.  Stored in self._bg_codex_config and consumed by apply_spawn_env
-        # after the full env (including agent.env) is assembled, so it can see
-        # whether CODEX_CONFIG is already set and leave an existing value alone.
+        # For helper sessions apply_spawn_env reads the user config.toml and the
+        # project .codex/config.toml layers and builds the CODEX_CONFIG override
+        # that disables every configured MCP server. It runs on the runtime's
+        # off-loop hop with the child's composed environment (agent.env and the
+        # runtime's extra_env merged), so the CODEX_HOME it reads is the one the
+        # child gets, and an existing CODEX_CONFIG is left alone.
         #
         # Names are read once, at spawn, while codex re-reads config.toml on
         # every thread/start. Each entry therefore carries its own transport
         # placeholder (see _DISABLED_STDIO_COMMAND), so a server removed or
-        # renamed later, or one read from a CODEX_HOME that agent.env then
-        # replaces, is an orphan that still parses instead of failing every
-        # background session/new.
+        # renamed later is an orphan that still parses instead of failing every
+        # helper session/new.
         #
         # Known residuals: a server renamed after spawn starts its fleet again
         # under the new name until the runtime recycles, and one that switches
         # between command and url under the same name conflicts with the
-        # placeholder until then. Project-level .codex/config.toml overrides
-        # are not covered. This override is lost in a session/new or
+        # placeholder until then. This override is lost in a session/new or
         # session/load that carries mcpServers. codex-acp's createSessionConfig
         # sets the mcp_servers key of the config overrides that it sends to
         # codex to those servers alone, and codex loads the config.toml
         # servers beneath the overrides, so that session starts the
-        # config.toml servers too. A
-        # foreground session, a Bot's worker included, gets no override at all,
-        # so codex starts the config.toml servers beside the servers Crew
-        # mounts. A mounted server takes the place of a config.toml server with
-        # the same name (DISABLE_MCP_CONFIG_FILTERING below). codex-acp 2.3.0
-        # has no per-session channel that would narrow them.
-        self._bg_codex_config = ""
-        if is_background:
-            _codex_home = Path(ctx.environ.get(_CODEX_HOME_ENV) or str(ctx.home / ".codex"))
-            _overrides = await asyncio.to_thread(
-                _read_codex_mcp_disable_overrides, _codex_home / "config.toml"
-            )
-            if _overrides:
-                self._bg_codex_config = json.dumps(
-                    {"mcp_servers": _overrides},
-                    separators=(",", ":"),
-                )
+        # config.toml servers too. A session whose spec mounts anything, a
+        # Bot's worker included, gets no override at all, so codex starts the
+        # config.toml servers beside the servers Crew mounts. A mounted server
+        # takes the place of a config.toml server with the same name
+        # (DISABLE_MCP_CONFIG_FILTERING below). codex-acp 2.3.0 has no
+        # per-session channel that would narrow them.
+        self._helper_spawn = (ctx.home, ctx.work_dir) if is_helper else None
 
         return SpawnPlan(
             argv=list(argv),
@@ -840,20 +902,24 @@ class CodexHarness(MembershipHarness):
         # every unwrapped tier, so this child always runs inside Crew's wrap. An
         # adapter that does not know the flag ignores it and keeps read-only.
         env["CODEX_ACP_EXTERNAL_SANDBOX"] = "true"
-        # Inject CODEX_CONFIG to disable the per-session MCP fleet for background
-        # sessions.  apply_spawn_env runs after agent.env is merged (launch.py:1014),
-        # so checking env.get here correctly sees operator/agent.env values and will
-        # not overwrite them.  A skipped injection is logged: without it the
-        # background runtime starts the full MCP fleet per session again.
-        if self._bg_codex_config:
-            if env.get("CODEX_CONFIG"):
+        # Inject CODEX_CONFIG to disable the per-session MCP fleet for helper
+        # sessions. apply_spawn_env runs after agent.env and extra_env are merged,
+        # so env holds the child's own CODEX_HOME and any operator CODEX_CONFIG,
+        # which is never overwritten. A skipped injection is logged: without it
+        # the helper runtime starts the full MCP fleet per session again.
+        # Blocking file reads; the runtime calls this on its off-loop hop.
+        if self._helper_spawn is not None:
+            home, work_dir = self._helper_spawn
+            codex_home = Path(env.get(_CODEX_HOME_ENV) or str(home / ".codex"))
+            overrides = _read_codex_helper_disable_overrides(codex_home, work_dir)
+            if overrides and env.get("CODEX_CONFIG"):
                 logger.warning(
-                    "codex background runtime: CODEX_CONFIG is already set, so the "
+                    "codex helper runtime: CODEX_CONFIG is already set, so the "
                     "MCP-server disable override was not applied; configured MCP "
-                    "servers will start for every background session"
+                    "servers will start for every helper session"
                 )
-            else:
-                env["CODEX_CONFIG"] = self._bg_codex_config
+            elif overrides:
+                env["CODEX_CONFIG"] = json.dumps({"mcp_servers": overrides}, separators=(",", ":"))
 
     @property
     def verifies_agent_activation(self) -> bool:

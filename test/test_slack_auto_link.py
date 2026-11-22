@@ -510,7 +510,7 @@ class TestSharedHelper:
         assert state.slack_client.post_message.await_count == 2
         assert state.slack_client.post_message.await_args_list[1].args == (
             "D_OWNER",
-            "🔗 Session linked from dashboard — continuing here.",
+            "Session linked from dashboard — continuing here.",
             "ts_once",
         )
         assert "already_linked" not in first

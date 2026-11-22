@@ -98,7 +98,9 @@ class TestLlmCronAdmission:
         assert job.run_never_started is True
         assert job.last_status == "error"
         assert job.last_error == "gateway admission is closed"
-        assert job.last_result == ""
+        # A message job keeps the previous result: it is the next run's
+        # "do NOT repeat" context.
+        assert job.last_result == "stale result"
         assert job.consecutive_failures == 2
         stream.assert_not_awaited()
 
@@ -295,7 +297,7 @@ class TestModelFallback:
             return (provider_mock, True, False)
 
         result, _ = await _run_llm_callback(gw, job, get_or_create_side_effect=_side_effect)
-        assert result.startswith("⚠️")
+        assert result.startswith("Warning:")
         assert "claude-fancy-model" in result
         assert "Agent response here" in result
 
@@ -486,7 +488,7 @@ class TestThrottleFallbackCronWiring:
         ), f"expected the chain story in a failure alert, got {bodies!r}"
         # The delivered detail stays bounded by the cap even with the story
         # appended (the budget trims the error part). +60 absorbs the fixed
-        # "❌ Job failed:\n" / "❌ Job failed (suppressed — same error):\n"
+        # "Error: Job failed:\n" / "Error: Job failed (suppressed — same error):\n"
         # prefixes around exc_detail — the bound under test is exc_detail's.
         from kiro_crew.slack.gateway import _CRON_FAILURE_DETAIL_CAP
 

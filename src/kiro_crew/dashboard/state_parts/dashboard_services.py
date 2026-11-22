@@ -441,13 +441,14 @@ async def request_approval(
     run_task_id: str = "",
     task_index: int | None = None,
     on_host_decision: Callable[[str], object] | None = None,
+    person_only: bool = False,
 ) -> bool:
     """Request interactive approval and deny on timeout or cancellation.
 
     A task runner gate passes ``run_task_id`` and ``task_index``; the
     record carries them so ``GET /api/approvals`` names the gate's run
     and task. *on_host_decision* is for a caller that records who decided;
-    see ``ApprovalCoordinator.request``.
+    see ``ApprovalCoordinator.request``, which also reads *person_only*.
     """
     return await _approvals_for(self).request(
         self,
@@ -463,6 +464,7 @@ async def request_approval(
         run_task_id=run_task_id,
         task_index=task_index,
         on_host_decision=on_host_decision,
+        person_only=person_only,
     )
 
 
@@ -994,6 +996,20 @@ async def acknowledge_notifications_where(
 async def clear_notifications(self: DashboardState) -> None:
     """Clear memory and clients before awaiting the durable rewrite."""
     await _notifications_for(self).clear(self)
+
+
+async def clear_visible_notifications(
+    self: DashboardState, hidden: Callable[[dict[str, Any]], bool]
+) -> tuple[bool, list[Any]]:
+    """Persist, then clear the notes *hidden* does not withhold; ``(persisted, cleared)``."""
+    return await _notifications_for(self).clear_visible(self, hidden)
+
+
+async def acknowledge_visible_notifications(
+    self: DashboardState, hidden: Callable[[dict[str, Any]], bool]
+) -> bool:
+    """Persist, then acknowledge the unread notes *hidden* does not withhold."""
+    return await _notifications_for(self).acknowledge_visible(self, hidden)
 
 
 def ensure_context_snapshots_loaded(self: DashboardState) -> bool:

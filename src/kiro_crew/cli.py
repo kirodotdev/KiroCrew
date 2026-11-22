@@ -10,7 +10,7 @@ Commands:
     kirocrew update               Update Kiro Crew via git fetch + rebuild
     kirocrew cron list|add|remove Manage scheduled jobs
     kirocrew spawn run "task"     Spawn a background subagent
-    kirocrew spawn list           List subagents
+    kirocrew spawn list           List subagents that no session started
     kirocrew learn add|list|remove Save and manage learned corrections
     kirocrew setup                Interactive setup wizard
     kirocrew doctor               Verify setup
@@ -179,6 +179,10 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
         ).acquire()
     except GatewayLockError as lock_err:
         print(f"👻 {lock_err}", file=sys.stderr)
+        # The same refusal as the gateway's own lock below, and the same notice.
+        from kiro_crew.data_home_owner import print_if_data_home_not_owned
+
+        print_if_data_home_not_owned(config_dir())
         sys.exit(LIVE_HOLDER_EXIT_CODE if lock_err.live_holder else 1)
     try:
         _start_gateway_log_after_lock()
@@ -472,7 +476,8 @@ def main() -> None:
             "Seed $KIROCREW_HOME from the named fixture BEFORE starting the "
             "gateway (dev tool). Fixture must exist under "
             "src/kiro_crew/tests_fixtures/. The gateway then runs normally "
-            "against the populated $KIROCREW_HOME. Refuses when "
+            "against the populated $KIROCREW_HOME, with --no-tunnel forced "
+            "on. Refuses when "
             "$KIROCREW_HOME is the main gateway home (~/.kiro/crew) or "
             "when the target is non-empty (use --seed-replace to wipe + re-seed)."
         ),
@@ -535,16 +540,17 @@ def main() -> None:
         action="store_true",
         help=(
             "Convenience alias for --port auto --no-open --json-ready "
-            "--approval reads. An explicit --port or --approval value "
+            "--no-tunnel --approval reads. An explicit --port or --approval value "
             "overrides the bundle's default (e.g. --test-mode --approval "
-            "yolo uses yolo). The boolean flags --no-open and --json-ready "
-            "are forced on by --test-mode and cannot be opted out of."
+            "yolo uses yolo). The boolean flags --no-open, --json-ready and "
+            "--no-tunnel are forced on by --test-mode and cannot be opted out of."
         ),
     )
 
     cli_parser_gateway.register_setup_parser(sub)
     cli_parser_gateway.register_manifest_parser(sub)
     cli_parser_agent.register_cron_parser(sub)
+    cli_parser_agent.register_resource_subs_parser(sub)
     cli_parser_agent.register_spawn_parser(sub)
     cli_parser_agent.register_models_parser(sub)
     cli_parser_agent.register_run_parser(sub, _jail_opts)
@@ -579,6 +585,7 @@ def main() -> None:
     cli_parser_gateway.register_open_parser(sub)
     cli_parser_gateway.register_logout_parser(sub)
     cli_parser_gateway.register_status_parser(sub)
+    cli_parser_gateway.register_usage_parser(sub)
 
     # mcp-cron (MCP server — spawned by the agent backend, not user-facing)
     sub.add_parser("mcp-cron")
@@ -765,6 +772,8 @@ def main() -> None:
         from kiro_crew.mcp_gateway.agent_socket import record_boot_agent_socket
 
         record_boot_agent_socket()
+        # Before the platform boot below can resolve the Kiro home.
+        _isolate_test_mode_kiro_home(args)
 
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE, before any subcommand spins up
@@ -851,6 +860,7 @@ def main() -> None:
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
+        from kiro_crew import cli_chat_runs
         from kiro_crew.cli_chat_headless import EXIT_USAGE as _headless_usage
         from kiro_crew.cli_chat_headless import main as _headless_main
         from kiro_crew.cli_chat_headless import (
@@ -858,12 +868,30 @@ def main() -> None:
         )
 
         if getattr(args, "headless", False):
+            if args.list_chats or args.continue_chat:
+                print("Error: --list and --continue are not --headless flags", file=sys.stderr)
+                sys.exit(_headless_usage)
             sys.exit(_headless_main(args))
         stray = _headless_stray(args)
         if stray:
             print(f"Error: {stray} needs --headless", file=sys.stderr)
             sys.exit(_headless_usage)
-        _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
+        if args.list_chats:
+            cli_chat_runs.print_runs()
+            return
+        try:
+            message = resolve_chat_message(args.message)
+        except StdinMessageError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        run = cli_chat_runs.ChatRun(agent=args.agent or "")
+        try:
+            if args.continue_chat:
+                run.resume = cli_chat_runs.choose_resume(args.agent)
+            _run_chat(message, args.model, agent=args.agent, run=run)
+        except cli_chat_runs.CannotContinue as exc:
+            print(f"\nError: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "gateway":
         # The gateway's status lines are plain print() calls. Off a terminal
         # (systemd journal, launchd file, the Desktop supervisor's log fd, a
@@ -910,6 +938,13 @@ def main() -> None:
         # running. Only while SIGALRM is at its default disposition, the same
         # ownership rule the watchdog applies when it arms.
         disarm_inherited_alarm()
+        # The same rule for children: the ones the predecessor started are still
+        # this pid's after the exec, but nothing in this image owns them, so
+        # each would stay a zombie for the gateway's lifetime. Collect only the
+        # pids the predecessor named (reexec_children).
+        from kiro_crew.reexec_children import adopt_inherited_children
+
+        adopt_inherited_children()
         # Install crash breadcrumbs (atexit + excepthook) before asyncio.run
         # so any fatal exception writes to crash.log.
         # The asyncio loop handler is installed later inside run().
@@ -942,6 +977,11 @@ def main() -> None:
             ).acquire()
         except GatewayLockError as exc:
             print(f"👻 {exc}", file=sys.stderr)
+            # Files an earlier root run left are named here: this start ends before
+            # the after-ready notice that would name them.
+            from kiro_crew.data_home_owner import print_if_data_home_not_owned
+
+            print_if_data_home_not_owned(config_dir())
             # A live holder is a sibling gateway already serving this home, so
             # retrying can only meet the same refusal: exit the code the systemd
             # unit's RestartPreventExitStatus= names (service/linux_unit.py) and let
@@ -992,6 +1032,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _cron
 
         _cron(args)
+    elif args.command == "resource-subs":
+        from kiro_crew.cli_resource_subs import resource_subs
+
+        resource_subs(args)
     elif args.command == "spawn":
         from kiro_crew.cli_commands import _spawn
 
@@ -1080,9 +1124,26 @@ def main() -> None:
 
         run_computer(getattr(args, "computer_args", []))
     elif args.command == "eval":
-        from kiro_crew.cli_commands import _run_eval
+        from kiro_crew.agent_sdk.drivers.acp_vocab import AcpError, AcpRuntimeError
+        from kiro_crew.agent_sdk.host_auth import for_terminal
+        from kiro_crew.cli_commands import _eval_run_flag_refusal, _run_eval, _run_eval_tasks
+        from kiro_crew.terminal_safe import safe_terminal_line
 
-        asyncio.run(_run_eval(args))
+        _eval_refusal = _eval_run_flag_refusal(args)
+        if _eval_refusal:
+            print(f"Error: {_eval_refusal}", file=sys.stderr)
+            sys.exit(2)
+        if args.scenarios[:1] == ["run"]:
+            sys.exit(_run_eval_tasks(args))
+        try:
+            asyncio.run(_run_eval(args))
+        except (AcpError, AcpRuntimeError) as exc:
+            # The backend refused to start a scenario or judge session (a signed-out
+            # kiro-cli, a KAS engine that cannot be installed). Its text names what
+            # failed, so that one line is the output; the traceback is logged at DEBUG.
+            logger.debug("eval: the backend refused to start a session", exc_info=True)
+            print(f"Error: {safe_terminal_line(for_terminal(str(exc)))}", file=sys.stderr)
+            sys.exit(1)
     elif args.command == "security":
         from kiro_crew.cli_commands import _security
 
@@ -1187,6 +1248,10 @@ def main() -> None:
         from kiro_crew.cli_server import _status
 
         _status(args)
+    elif args.command == "usage":
+        from kiro_crew.cli_commands import _usage_report
+
+        _usage_report(args)
     elif args.command == "consolidate":
         _consolidate_cmd(args)
     elif args.command == "config":
@@ -1245,6 +1310,7 @@ def main() -> None:
 from kiro_crew import cli_parser_admin, cli_parser_agent, cli_parser_gateway  # noqa: E402
 from kiro_crew.cli_bench import bench_cmd, register_bench_parser  # noqa: E402
 from kiro_crew.cli_chat import _run_chat  # noqa: E402
+from kiro_crew.cli_chat_stdin import StdinMessageError, resolve_chat_message  # noqa: E402
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices  # noqa: E402, F401
 from kiro_crew.cli_cloud import handle_cloud  # noqa: E402
 from kiro_crew.cli_config import _config_cmd  # noqa: E402
@@ -1254,6 +1320,7 @@ from kiro_crew.cli_gateway_boot import (  # noqa: E402
     _diagnostic_bind_address,
     _diagnostic_port,
     _install_child_watcher,
+    _isolate_test_mode_kiro_home,
     _refuse_unpersistable_data_home,
     _resolve_gateway_args,
 )

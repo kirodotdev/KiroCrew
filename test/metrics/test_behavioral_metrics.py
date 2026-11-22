@@ -99,6 +99,110 @@ from kiro_crew.metrics.recorder import MetricsRecorder
             {"via": "organic"},
             {"Feature": "milestone", "Activity": "features_completed", "via": "organic"},
         ),
+        (
+            "kirocrew.app.installed",
+            {"app": "weather-app", "via": "store"},
+            {"Feature": "app", "Activity": "installed", "Entity": "weather-app", "via": "store"},
+        ),
+        (
+            "kirocrew.app.updated",
+            {"app": "weather-app", "via": "store", "entity_version": "1.1.0"},
+            {
+                "Feature": "app",
+                "Activity": "updated",
+                "Entity": "weather-app",
+                "via": "store",
+                "entity_version": "1.1.0",
+            },
+        ),
+        (
+            "kirocrew.app.uninstalled",
+            {"app": "private", "entity_version": "private", "keep_data": "true"},
+            {
+                "Feature": "app",
+                "Activity": "uninstalled",
+                "Entity": "private",
+                "entity_version": "private",
+                "keep_data": "true",
+            },
+        ),
+        (
+            "kirocrew.app.session_started",
+            {"app": "weather-app", "entity_version": "1.2.0", "kind": "subagent"},
+            {
+                "Feature": "app",
+                "Activity": "session_started",
+                "Entity": "weather-app",
+                "entity_version": "1.2.0",
+                "kind": "subagent",
+            },
+        ),
+        (
+            "kirocrew.app.run_time",
+            {"app": "weather-app", "entity_version": "2.1.0", "duration": "le_1m"},
+            {
+                "Feature": "app",
+                "Activity": "run_time",
+                "Entity": "weather-app",
+                "entity_version": "2.1.0",
+                "duration": "le_1m",
+            },
+        ),
+        (
+            "kirocrew.app.credits",
+            {"app": "weather-app", "entity_version": "2.1.0"},
+            {
+                "Feature": "app",
+                "Activity": "credits",
+                "Entity": "weather-app",
+                "entity_version": "2.1.0",
+            },
+        ),
+        (
+            "kirocrew.app.present",
+            {
+                "app": "weather-app",
+                "entity_version": "1.1.0",
+                "status": "disabled",
+                "backend": "stopped",
+            },
+            {
+                "Feature": "app",
+                "Activity": "present",
+                "Entity": "weather-app",
+                "entity_version": "1.1.0",
+                "status": "disabled",
+                "backend": "stopped",
+            },
+        ),
+        (
+            "kirocrew.app.opened",
+            {"app": "weather-app", "entity_version": "1.2.3", "surface": "page"},
+            {
+                "Feature": "app",
+                "Activity": "opened",
+                "Entity": "weather-app",
+                "entity_version": "1.2.3",
+                "surface": "page",
+            },
+        ),
+        (
+            "kirocrew.app.foreground_time",
+            {
+                "app": "private",
+                "entity_version": "private",
+                "surface": "popout",
+                "duration": "le_1m",
+            },
+            {
+                "Feature": "app",
+                "Activity": "foreground_time",
+                "Entity": "private",
+                "entity_version": "private",
+                "surface": "popout",
+                "duration": "le_1m",
+            },
+        ),
     ],
 )
 def test_each_metric_gets_its_shape(name, attrs, expected):
@@ -109,7 +213,10 @@ def test_each_metric_gets_its_shape(name, attrs, expected):
 
 def test_every_metric_is_covered_by_the_shape_table_above():
     """A new entry must come with a row in the parametrized table."""
-    assert len(BEHAVIORAL_METRICS) == 9
+    (table,) = [m for m in test_each_metric_gets_its_shape.pytestmark if m.name == "parametrize"]
+    covered = {name for name, _attrs, _expected in table.args[1]}
+    assert BEHAVIORAL_METRICS, "BEHAVIORAL_METRICS is empty"
+    assert sorted(BEHAVIORAL_METRICS - covered) == []
 
 
 def test_a_missing_activity_attribute_reads_other():

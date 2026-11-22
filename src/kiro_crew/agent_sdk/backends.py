@@ -958,11 +958,12 @@ def apply_selectable_denials(denied: Set[str]) -> FrozenSet[str]:
     counterpart to :func:`register_selectable_backend`: rather than adding a second
     gate somewhere downstream, the ``agent_backend`` governance scope narrows this
     registry (``agent_backend_governance.narrow_selectable_backends``, driven from
-    ``bootstrap_context`` at boot AND from ``policy_distribution.apply_ceiling``
-    whenever a ceiling is installed at runtime). Everything downstream —
-    ``resolve_selected_backend``, the PATCH allowlist, ``GET /api/config/schema``,
-    the provider factory — then reads the narrowed answer with no code of its own,
-    which is what keeps selectability at exactly one gate (harness-parity H4) and
+    ``bootstrap_context`` at each process boot; a ceiling installed at runtime by
+    ``policy_distribution.apply_ceiling`` deliberately does not re-run it).
+    Everything downstream — ``resolve_selected_backend``, the PATCH allowlist,
+    ``GET /api/config/schema``, the provider factory — then reads the narrowed
+    answer with no code of its own, which is what keeps selectability at exactly
+    one gate (harness-parity H4) and
     the Kiro construction path free of an adapter-driven conditional (H13).
 
     ASSIGNS rather than subtracts, so calling it again with a smaller ``denied``
@@ -1026,6 +1027,15 @@ def revoke_kiro_cli_offers_kas() -> None:
 def kiro_cli_offers_kas() -> bool:
     """Whether :func:`confirm_kiro_cli_offers_kas` ran in this process and still stands."""
     return _kiro_cli_offers_kas
+
+
+def kiro_cli_pick_verdict_open() -> bool:
+    """Whether a Kiro CLI pick could still move onto KAS: no v3 confirmed, KAS still selectable.
+
+    A gap or a refusal marks KAS unservable (except where KAS is the governance
+    floor), so in practice an unknown verdict is what leaves this true.
+    """
+    return not _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends()
 
 
 def ensure_kiro_cli_kas_verdict() -> None:

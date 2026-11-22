@@ -6,6 +6,7 @@ token to its own jobs through ``handlers.cron._refuse_foreign_app_job`` (pinned
 by ``test/test_r12_cron_app_ownership_gate.py``). These tests pin the same rule
 on the routes that READ a job or surface its result:
 
+* ``GET /api/crons/{id}``
 * ``GET /api/crons/{id}/history`` and ``GET /api/crons/{id}/history/{run_id}``
 * ``GET /api/crons/{id}/script``
 * ``POST /api/crons/{id}/to-chat``
@@ -106,7 +107,7 @@ async def _seed(svc: CronService) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
     for key, created_by in (("owner", ""), ("a", f"app:{APP_A}"), ("b", f"app:{APP_B}")):
         job = await svc.add_job_async(
-            f"job-{key}", f"task {key}", every_secs=3600, created_by=created_by
+            f"job-{key}", f"{MARK} task {key}", every_secs=3600, created_by=created_by
         )
         rec = CronRunRecord(
             job_id=job.id,
@@ -143,6 +144,7 @@ def _server(svc: CronService, app_claim: str) -> web.Application:
     )
     app.router.add_get("/api/crons", h.api_crons)
     app.router.add_get("/api/crons/history", h.api_cron_history_all)
+    app.router.add_get("/api/crons/{job_id}", h.api_cron_get)
     app.router.add_get("/api/crons/{job_id}/history", h.api_cron_history)
     app.router.add_get("/api/crons/{job_id}/history/{run_id}", h.api_cron_history_detail)
     app.router.add_get("/api/crons/{job_id}/script", h.api_cron_script_source)
@@ -158,6 +160,7 @@ async def _call(svc: CronService, app_claim: str, method: str, path: str):
 
 
 ROUTES = {
+    "job": ("GET", "/api/crons/{job}", "crons.get"),
     "history": ("GET", "/api/crons/{job}/history", "crons.history"),
     "history_detail": ("GET", "/api/crons/{job}/history/{run}", "crons.history_detail"),
     "script": ("GET", "/api/crons/{job}/script", "crons.script_source"),
@@ -292,3 +295,26 @@ async def test_all_history_owner_sees_every_job(svc) -> None:
     assert status == 200
     assert body["total"] == 3
     assert {r["job_id"] for r in body["runs"]} == {ids[k][0] for k in ("owner", "a", "b")}
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+async def test_all_history_serves_own_runs_that_left_the_index(svc, tmp_path, filtered) -> None:
+    # A busy job pushes an app's runs out of the capped shared index; the app
+    # still lists every run its own job file keeps.
+    ids = await _seed(svc)
+    own_job = ids["a"][0]
+    for i in range(3):
+        await svc.get_history().append(
+            CronRunRecord(job_id=own_job, started_at=i, finished_at=i, summary=f"own-{i}")
+        )
+    index = tmp_path / "cron-history" / "_index.jsonl"
+    kept = [ln for ln in index.read_text().splitlines() if json.loads(ln)["job_id"] != own_job]
+    index.write_text("\n".join(kept) + "\n")
+
+    query = f"?job_id={own_job}" if filtered else ""
+    status, text = await _call(svc, APP_A, "GET", f"/api/crons/history{query}")
+    body = json.loads(text)
+    assert status == 200, text
+    assert body["total"] == 4
+    assert [r["job_id"] for r in body["runs"]] == [own_job] * 4
+    assert f"{MARK}-summary-owner" not in text and f"{MARK}-summary-b" not in text

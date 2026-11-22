@@ -16,6 +16,9 @@ from kiro_crew.dashboard.chat_utils import chunk_generation
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 from kiro_crew.dashboard.state import _ChatSlot
 
+#: Contract: the wire keys of the ``to_dict`` projection, in order, that the REST and
+#: WebSocket snapshots send and the dashboard reads. Adding, dropping or moving a
+#: key changes what every client receives, so the record changes with it.
 _TO_DICT_KEYS = (
     "key",
     "title",
@@ -39,6 +42,8 @@ _TO_DICT_KEYS = (
     # "runs locally" from "the field is missing on an older gateway".
     "executor",
     "instance_id",
+    # A cron run's transcript reopened read-only, also on every slot.
+    "cron_run_read_only",
     # The row's identity, resolved server-side. `<instance_id>:<peer_key>` for a
     # remote-bound session, the slot key otherwise. The peer's own slot key is NOT
     # projected; this is what the sidebar needs from it.
@@ -70,10 +75,13 @@ _TO_DICT_KEYS = (
     "pending_approval_info",
     "last_activity_ts",
     "last_agent_ts",
+    "unread_ts",
+    "unread_failed",
     "waiting_for_input",
     "needs_input",
     "interrupted",
     "interrupted_stale",
+    "interrupted_by_sign_in",
     "stop_state",
     "wait_state",
     "created",

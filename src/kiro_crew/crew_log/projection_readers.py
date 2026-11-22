@@ -93,16 +93,21 @@ def fold_slot_checkpoint(name: str, unit_ids: Sequence[str], *, slot: str = "") 
     if slot and fold_spec.bind_slot is not None:
         fold_spec.bind_slot(state, slot)
     reached = 0
-    for unit_id in unit_ids:
-        handle = open_session_log(unit_id)
-        if handle is None:
-            continue
-        grown = advance(
-            Checkpoint(name=name, last_seq=0, state=state),
-            handle.iter_from(1, known=KNOWN_TYPES),
-        )
-        state = grown.state
-        reached = grown.last_seq
+    from kiro_crew.crew_log import read_budget
+
+    # A cold fold pass, counted as one (see ``read_budget.fold_scope``); a pass never raises.
+    with read_budget.fold_scope(slot, name):
+        read_budget.note_origin("cold")
+        for unit_id in unit_ids:
+            handle = open_session_log(unit_id)
+            if handle is None:
+                continue
+            grown = advance(
+                Checkpoint(name=name, last_seq=0, state=state),
+                handle.iter_from(1, known=KNOWN_TYPES),
+            )
+            state = grown.state
+            reached = grown.last_seq
     return Checkpoint(name=name, last_seq=reached, state=state)
 
 
@@ -533,16 +538,21 @@ def fold_tree_checkpoint(name: str, root: str) -> Checkpoint:
         fold_spec.bind_slot(state, root)
     state["omitted"] = state.get("omitted", 0) + dropped
     reached = 0
-    for unit_id in units:
-        handle = open_session_log(unit_id)
-        if handle is None:
-            continue
-        grown = advance(
-            Checkpoint(name=name, last_seq=0, state=state),
-            handle.iter_from(1, known=KNOWN_TYPES),
-        )
-        state = grown.state
-        reached = grown.last_seq
+    from kiro_crew.crew_log import read_budget
+
+    # A cold fold pass, counted as one (see ``read_budget.fold_scope``); a pass never raises.
+    with read_budget.fold_scope(root, name):
+        read_budget.note_origin("cold")
+        for unit_id in units:
+            handle = open_session_log(unit_id)
+            if handle is None:
+                continue
+            grown = advance(
+                Checkpoint(name=name, last_seq=0, state=state),
+                handle.iter_from(1, known=KNOWN_TYPES),
+            )
+            state = grown.state
+            reached = grown.last_seq
     return Checkpoint(name=name, last_seq=reached, state=state)
 
 

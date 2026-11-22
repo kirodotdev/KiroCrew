@@ -527,13 +527,14 @@ describe('WorkerKitPane', () => {
   })
 
   it.each([
-    ['the gateway gave up on it', new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","detail":""}')],
-    ['the dashboard deadline ended it', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })],
-  ])('names a stalled read of the file as the load error when %s, never its raw text', async (_case, error) => {
+    ['the gateway gave up on it', new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","detail":""}'), /load this bot.s capabilities/],
+    ['the gateway timed it out', new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","detail":"","reason":"timed_out"}'), /did not finish loading in time/],
+    ['the dashboard deadline ended it', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }), /did not finish loading in time/],
+  ])('names a stalled read of the file as the load error when %s, never its raw text', async (_case, error, text) => {
     mockKit.get.mockRejectedValue(error)
     renderPane()
     const notice = await screen.findByTestId('worker-kit-error')
-    expect(notice).toHaveTextContent(/load this bot.s capabilities/)
+    expect(notice).toHaveTextContent(text)
     expect(notice).not.toHaveTextContent(/capabilities_unavailable|deadline exceeded/)
   })
 

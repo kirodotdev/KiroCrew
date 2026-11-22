@@ -209,13 +209,14 @@ async def _open(env: Env) -> list[dict[str, Any]]:
 # ── The kickoff picker ────────────────────────────────────────────────────
 
 
-def test_the_kickoff_carries_a_picker_preselected_with_the_conductor(env: Env) -> None:
+def test_the_kickoff_carries_a_picker_preselected_with_the_default_agent(env: Env) -> None:
+    env.default_agent = "kirocrew"
     blocks = asyncio.run(_open(env))
     select = _select(blocks)
     assert select is not None and select["type"] == "static_select"
     assert [o["value"] for o in select["options"]] == env.agents
-    # Zero config: the auto "Code channels" folder's agent.
-    assert _initial(blocks) == "kirocrew-conductor"
+    # Zero config: the owner's default agent, not the conductor.
+    assert _initial(blocks) == "kirocrew"
     # The kickoff's own text is still its first block and its fallback text.
     kickoff_text = env.slack.posts[0][1]
     assert blocks[0]["text"]["text"] == kickoff_text
@@ -487,6 +488,60 @@ def test_kirocrew_agent_name_switches_the_channel(env: Env) -> None:
     assert "via=command" in _rows(env, "allowed")[0]["resources"]
 
 
+def test_an_alias_command_reaches_the_picker_while_slack_command_is_the_default(
+    env: Env,
+) -> None:
+    """``/kirocrew-<alias>`` is the app's own command whatever ``slack.command``
+    says, so ``/kirocrew-alice agent`` in a code channel switches it."""
+    env.orch.slack_command = "kirocrew"
+    slot = _bind(env)
+    replies: list[str] = []
+
+    async def respond(reply: str) -> None:
+        replies.append(reply)
+
+    payload = {**_slash("agent builder"), "command": "/kirocrew-alice"}
+    assert asyncio.run(commands.handle_slash(env.orch, payload, respond)) is True
+    assert replies == [agent_picker.SWITCHED_TEXT.format(agent="builder")]
+    assert slot.agent == "builder"
+    assert env.orch.slack_command == "kirocrew-alice"  # pickers name it from now on
+
+
+def test_a_custom_command_reaches_the_picker_after_an_alias_was_adopted(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shown name moved to ``kirocrew-alice``; the live ``slack.command``
+    (``crew``) is still the app's command."""
+
+    def live(orch: Any = None) -> Any:
+        cfg = env.cfg(orch)
+        cfg.slack.command = "crew"
+        return cfg
+
+    monkeypatch.setattr(commands, "live_config", live)
+    env.orch.slack_command = "kirocrew-alice"
+    slot = _bind(env)
+    replies: list[str] = []
+
+    async def respond(reply: str) -> None:
+        replies.append(reply)
+
+    payload = {**_slash("agent builder"), "command": "/crew"}
+    assert asyncio.run(commands.handle_slash(env.orch, payload, respond)) is True
+    assert replies == [agent_picker.SWITCHED_TEXT.format(agent="builder")]
+    assert slot.agent == "builder"
+
+
+def test_a_name_the_manifest_cannot_render_is_not_the_apps_command(env: Env) -> None:
+    _bind(env)
+
+    async def respond(reply: str) -> None:
+        raise AssertionError(reply)
+
+    payload = {**_slash("agent builder"), "command": "/kirocrewx"}
+    assert asyncio.run(commands.handle_slash(env.orch, payload, respond)) is False
+
+
 @pytest.mark.parametrize("via", ["command", "select"])
 def test_picking_a_template_over_a_same_named_crewmate_switches(env: Env, via: str) -> None:
     """A folder or Slack default can resolve a channel to the ``builder``
@@ -521,6 +576,7 @@ def test_the_kickoff_options_say_what_each_agent_does(env: Env) -> None:
         "builder",
     ]
     env.agents.append("my-helper")
+    env.default_agent = "kirocrew"
     env.agent_descriptions = {
         "builder": "Builds and tests changes in your repo",
         "kirocrew-conductor": "Splits a goal into work items <!channel> " + "word " * 40,

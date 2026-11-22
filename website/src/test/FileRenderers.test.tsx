@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { columnLetter, CsvViewer, detectFileType, HtmlViewer, JsonlViewer, JsonViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
 import { consumeChatHandoff, installSoftNavigate, __resetNavSeamForTests } from '../utils/errorReport'
@@ -987,6 +988,46 @@ describe('OfficeViewer structured blocks', () => {
     renderWithQuery(<OfficeViewer filePath="/home/user/docs/narrow.docx" />)
     await waitFor(() => expect(screen.getByText('Region')).toBeInTheDocument())
     expect(screen.queryByTestId('office-table-cols-truncated')).toBeNull()
+  })
+
+  /** `hidden` px of table beyond the right edge of a 320px scroller. jsdom does
+   *  no layout, so the geometry the scroller reads is stubbed. */
+  function stubTableGeometry(hidden: number) {
+    const proto = window.HTMLElement.prototype
+    vi.spyOn(proto, 'clientWidth', 'get').mockReturnValue(320)
+    vi.spyOn(proto, 'scrollWidth', 'get').mockReturnValue(320 + hidden)
+    vi.spyOn(proto, 'scrollLeft', 'get').mockReturnValue(0)
+  }
+
+  const WIDE_TABLE = { type: 'table', rows: [['Region', 'Owner', 'Total'], ['EU', 'Platform team', '12']] }
+
+  it('makes a clipped document table, whose cells hold nothing focusable, a named Tab stop', async () => {
+    // Cells are plain text, so without its own stop the scroller is unnamed,
+    // or skipped by an engine that does not focus scrollers itself.
+    stubTableGeometry(240)
+    stubByFormat([WIDE_TABLE], null)
+    renderWithQuery(<OfficeViewer filePath="/home/user/docs/wide.docx" />)
+    const region = await screen.findByRole('region', { name: 'Table' })
+    expect(region).toHaveAttribute('tabindex', '0')
+    expect(region.querySelector('table')).not.toBeNull()
+    // The real key path: one Tab from the stop before the table -- the
+    // document's own scroll region, which scrolls only vertically -- lands on it.
+    const user = userEvent.setup()
+    screen.getByRole('region', { name: 'wide.docx' }).focus()
+    await user.tab()
+    expect(region).toHaveFocus()
+  })
+
+  it('leaves a document table that fits out of the Tab order', async () => {
+    stubTableGeometry(0)
+    stubByFormat([WIDE_TABLE], null)
+    const { container } = renderWithQuery(<OfficeViewer filePath="/home/user/docs/wide.docx" />)
+    await waitFor(() => expect(screen.getByText('Region')).toBeInTheDocument())
+    const scroller = container.querySelector('table')!.parentElement!
+    expect(scroller).not.toHaveAttribute('tabindex')
+    expect(scroller).not.toHaveAttribute('role')
+    expect(scroller).not.toHaveAttribute('aria-label')
+    expect(screen.queryByRole('region', { name: 'Table' })).toBeNull()
   })
 
   it('skips a block type this build does not know', async () => {

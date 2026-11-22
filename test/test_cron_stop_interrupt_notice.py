@@ -81,7 +81,7 @@ async def test_a_gateway_stop_tells_the_owner_about_the_run_it_cut(tmp_path, mon
     gw.dashboard_state.notify.assert_called_once()
     kind, title, body = gw.dashboard_state.notify.call_args.args
     assert (kind, title) == ("cron", "Cron: nightly-sync")
-    assert body.startswith(f"⏹ {_FINISHED_NOTE}.")
+    assert body.startswith(f"Stopped: {_FINISHED_NOTE}.")
     assert "The job runs again at its next scheduled time" in body
     assert gw.dashboard_state.notify.call_args.kwargs["meta"] == {"job_id": job.id}
     gw.slack.post_message.assert_awaited_once()
@@ -138,7 +138,7 @@ async def test_the_notice_says_when_the_job_runs_again(schedule: CronSchedule, t
     await gw._alert_cron_interrupted(job, _FINISHED_NOTE)
 
     _, _, body = gw.dashboard_state.notify.call_args.args
-    assert body == f"⏹ {_FINISHED_NOTE}.{tail}"
+    assert body == f"Stopped: {_FINISHED_NOTE}.{tail}"
     assert gw._deliver_failure_alert.await_args.kwargs["plain"].endswith(f"{_FINISHED_NOTE}.{tail}")
 
 
@@ -172,7 +172,7 @@ async def test_a_paused_job_is_not_promised_a_next_run(
 
     _, _, body = gw.dashboard_state.notify.call_args.args
     assert body == (
-        f"⏹ {_FINISHED_NOTE}. The job is paused, so it does not run again until you"
+        f"Stopped: {_FINISHED_NOTE}. The job is paused, so it does not run again until you"
         " resume it in Schedule."
     )
     stored = svc.get_job(job.id)
@@ -218,7 +218,7 @@ async def test_a_pause_or_resume_from_another_process_is_told_right(
         )
     else:
         tail = " The job is paused, so it does not run again until you resume it in Schedule."
-    assert body == f"⏹ {_FINISHED_NOTE}.{tail}"
+    assert body == f"Stopped: {_FINISHED_NOTE}.{tail}"
     stored = svc.get_job(job.id)
     assert stored is not None and stored.enabled is paused_at_start
 

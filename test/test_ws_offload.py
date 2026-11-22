@@ -691,6 +691,8 @@ async def test_sse_dashboard_event_serves_warm_cache_without_inline_counts(monke
     app = web.Application()
     app["state"] = state
     req = make_mocked_request("GET", "/api/stream", app=app)
+    # The auth middleware's positive mark; a reader with none is refused.
+    req["is_dashboard_user"] = True
 
     await updates_mod.api_stream(req)
 

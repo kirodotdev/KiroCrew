@@ -45,6 +45,7 @@ from pathlib import Path
 
 import pytest
 from git_maintenance_helpers import GIT_MAINTENANCE_OFF_CONFIG, git_maintenance_off_entries
+from git_repo_templates import copy_repo
 
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
 
@@ -143,8 +144,24 @@ def test_the_template_origin_keeps_auto_maintenance_off(_repo_pair_template) -> 
         assert (key, _git(template_origin, "config", "--local", "--get", key)) == (key, value)
 
 
+@pytest.fixture(scope="session")
+def _feature_clone_template(tmp_path_factory, _repo_pair_template) -> Path:
+    """The ``feature_clone`` pair, built once: the base pair plus the feature commit."""
+    root = tmp_path_factory.mktemp("preflight-perm-feature")
+    copy_repo(Path(_repo_pair_template[0]).parent, root)
+    clone_dir = str(root / "work")
+    _git(clone_dir, "remote", "set-url", "origin", str(root / "origin.git"))
+    _git(clone_dir, "reset", "--hard", "HEAD")
+
+    _git(clone_dir, "checkout", "-b", "feature/perm-check")
+    Path(clone_dir, "fix.py").write_text("# fix\n")
+    _git(clone_dir, "add", "fix.py")
+    _git(clone_dir, "commit", "-m", "fix: the bug")
+    return root
+
+
 @pytest.fixture
-def feature_clone(tmp_path, _repo_pair_template) -> str:
+def feature_clone(tmp_path, _feature_clone_template) -> str:
     """A clone on a feature branch, one commit ahead of a fresh origin/main.
 
     Copied from the session template so every test gets its own origin. The
@@ -152,19 +169,8 @@ def feature_clone(tmp_path, _repo_pair_template) -> str:
     detached-HEAD / protected-branch / stale-base checks all pass and only the
     write-permission gate decides the verdict.
     """
-    template_clone, template_origin = _repo_pair_template
-    origin_dir = str(tmp_path / "origin.git")
-    clone_dir = str(tmp_path / "work")
-    shutil.copytree(template_origin, origin_dir)
-    shutil.copytree(template_clone, clone_dir)
-    _git(clone_dir, "remote", "set-url", "origin", origin_dir)
-    _git(clone_dir, "reset", "--hard", "HEAD")
-
-    _git(clone_dir, "checkout", "-b", "feature/perm-check")
-    Path(clone_dir, "fix.py").write_text("# fix\n")
-    _git(clone_dir, "add", "fix.py")
-    _git(clone_dir, "commit", "-m", "fix: the bug")
-    return clone_dir
+    copy_repo(_feature_clone_template, tmp_path)
+    return str(tmp_path / "work")
 
 
 # Each scenario is a mapping the fake gh consults. Keys describe the gh call:

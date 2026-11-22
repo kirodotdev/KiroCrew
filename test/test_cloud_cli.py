@@ -1028,12 +1028,14 @@ class TestIamBoundary:
         assert fake.policies[drifted_arn] == permissive
         assert "create-policy" not in fake.verbs()
         out = capsys.readouterr().out
-        assert f"'{drifted}' does NOT match" in out
+        assert f"policy named '{drifted}' already exists" in out
         # The other two are still verified and reported.
         assert out.count(" ready: arn:aws:iam::") == 2
         # A refusal must not be followed by advice to drop the create grant.
         assert "now that all three boundaries exist" not in out
         assert "Keep the iam:CreatePolicy action" in out
+        # The statement is named together with the policy that holds it.
+        assert "IamInstanceBoundaryCreateOnce statement in the applied launcher policy" in out
 
     def test_a_denied_create_names_the_admin_step_and_the_rest_still_run(self, fake_iam, capsys):
         from kiro_crew.cloud import iam

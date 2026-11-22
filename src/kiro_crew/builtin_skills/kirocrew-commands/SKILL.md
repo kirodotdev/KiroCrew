@@ -33,6 +33,20 @@ derivatives) and are no-ops everywhere else; `--path` is refused for
 world-writable locations and for shared interpreters such as `/usr/bin/python3`,
 which would over-grant.
 
+## Kiro Crew's Own Engine (KAS)
+
+Signs in and runs without kiro-cli: `kas` installs Kiro Crew's own engine bundle and holds its own Kiro identity in the vault.
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew kas install` | Download this release's pinned KAS engine and Node runtime (`--force` replaces an installed copy; `--from DIR` installs offline; `--version`/`--url` need `--unpinned` to leave the pin) |
+| `kirocrew kas status` | Show the pinned engine, what is installed, and the route |
+| `kirocrew kas remove` | Delete installed engine versions (`--version V` for one, `--yes` skips the confirmation) |
+| `kirocrew kas login` | Sign the vault in with a device code, no browser needed on this host (`--provider builder_id\|idc\|google\|github`, default `builder_id`; `idc` needs `--start-url`, and takes `--region`) |
+| `kirocrew kas whoami` | Show which Kiro identity the vault is signed in as (`--format text\|json`) |
+| `kirocrew kas logout` | Remove every Kiro identity from the vault |
+| `kirocrew kas route` | Print which program owns the Kiro sign-in here: `kas-bundle` or `kiro-cli` |
+
 ## Gateway (Server)
 
 | Command | Description |
@@ -55,6 +69,10 @@ which would over-grant.
 | `kirocrew stop --port 9999` | Stop gateway on specific port |
 | `kirocrew restart` | Restart gateway (service-aware) |
 | `kirocrew status` | Show runtime stats (uptime, sessions, crons, lessons) |
+| `kirocrew usage` | Recent credit spend per day; `--by model\|agent\|channel\|session`, `--days N` / `--since YYYY-MM-DD`, `--json` |
+| `kirocrew trace show KEY` | Print one traced turn as a waterfall of its model calls, tool calls and sub-agents, read from the local span files (written while `telemetry.traces_enabled` is on); `KEY` is a turn id, session key or id, ACP session id or trace id |
+| `kirocrew gateway-pid` | Print the PID holding this home's gateway lock (JSON) |
+| `kirocrew open SESSION` | Open the desktop app on a session through a `kirocrew://` deep link (`SESSION` is the `?sid=` value in the dashboard URL); `--print` shows the URL and opens nothing |
 
 The token in a `--json-ready` line grants dashboard access for up to 20 hours, so
 captured stdout from a test harness is a credential: keep it out of logs and
@@ -70,6 +88,7 @@ transcripts.
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
 | `kirocrew logs -f` | Follow (tail) live log output |
 | `kirocrew logs -n 50` | Show last N lines |
+| `kirocrew tmp reclaim PATH…` | Remove each named /tmp or /var/tmp entry of yours once it is idle and unused (`--dry-run` removes nothing) |
 
 ## Pods (Isolated Worktree Test Instances)
 
@@ -92,6 +111,7 @@ Scheduler. `<wt>` is a worktree name
 | `kirocrew pod url <wt>` | Print the pod's base URL |
 | `kirocrew pod logs <wt> -n N` | Tail the pod's journal |
 | `kirocrew pod down <wt>` | Evict the pod and delete its isolated HOME |
+| `kirocrew pod restart <wt>` | Restart a pod in place, keeping its home; `--memory` and `--cpu` apply new ceilings (`--json`, `--wait-secs`) |
 | `kirocrew pod prune` | Bulk-reclaim orphaned pod HOMEs (`--older-than 3d` by default, `--all`, `--dry-run`, `--json`) |
 | `kirocrew pod scenarios` | List the seed scenarios `pod up --seed <scenario>` accepts (`--json`) |
 | `kirocrew pod exec <wt> -- <args>` | Run a kirocrew command against a pod, using the pod's own binary and data |
@@ -116,16 +136,21 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 | `kirocrew token` | Print a dashboard URL with auth token (TTL: 20h) |
 | `kirocrew token --ttl 1h` | Token with custom TTL (e.g. 1h, 30m) |
 | `kirocrew logout` | Revoke all active dashboard sessions |
+| `kirocrew desktop tunnel --host HOST` | Keep the desktop app's SSH forward to a remote crew alive (client-only mode); `--local-port` is the loopback port the app connects to, `--remote-port` the one the crew listens on over there |
 | `kirocrew manifest` | Generate Slack app manifest with your alias |
 | `kirocrew manifest --url` | Print one-click Slack app creation URL |
+| `kirocrew remote-control status` | Show whether personal Remote Control is on (`--json`); a personal sign-in is on by default |
+| `kirocrew remote-control on` | Turn personal Remote Control back on after an `off`; it connects after Kiro Crew restarts |
+| `kirocrew remote-control off` | Turn personal Remote Control off; it stays off across restarts |
 
 ## Chat
 
 | Command | Description |
 |---------|-------------|
 | `kirocrew chat` | Interactive chat (REPL mode) |
-| `kirocrew chat -m "message"` | Single message (non-interactive) |
-| `kirocrew chat --model MODEL_ID` | Use a specific model (default `auto`; any id the model picker lists) |
+| `kirocrew chat -m "message"` | Single message (non-interactive); `-m -` reads it from a piped stdin (up to 1 MiB) |
+| `kirocrew chat --model MODEL_ID` | Use a specific model (default from config; `kirocrew models` lists the names) |
+| `kirocrew chat --headless -m "task"` | Run one unattended task on this data home's running gateway and exit with a result code; never reads the terminal. `--message-file PATH` reads the seed from a file, `--mode conductor`, `--approval-mode trust`, `--until-done` (with `--idle-grace SECS`, default 900), `--cwd DIR`, `--timeout SECS` (exit 4), `--budget CREDITS` (exit 5), `--json`. A request for a person ends the run (exit 3) |
 
 When `kirocrew chat` asks to run a tool, answer `y` to allow that call once or
 `n` to deny it, the same keys `kiro-cli chat` uses. `o` denies it and lets you
@@ -134,7 +159,7 @@ type a reply to the agent instead. Anything else denies.
 ## Browsing (`browser` MCP tool)
 
 Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
-`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|dialog|reflex|ask`.
+`op=navigate|back|snapshot|read|click|drag|scroll|type|fill|paste|press_key|dispatch_key|hover|select_option|upload|wait_for|wait_for_element|wait_for_network_idle|console|screenshot|tabs|dialog|reflex|js|cdp|http_get|iframe_target|ask`.
 It drives one browser the gateway owns (the user's own Chrome where there is
 one, Edge on Windows without Chrome, otherwise Kiro's headless Chromium), and the
 user watches the page live in the chat, where one click takes over. It opens
@@ -145,7 +170,10 @@ public `http(s)` URLs only, plus loopback origins the user listed under
 |----|-------------|
 | `navigate {url}` | Open a page (returns URL and title) |
 | `snapshot` | The page as an outline with element refs (`e5`); re-run after every page change |
-| `click {ref \| x,y}` / `type {ref, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field |
+| `read {ref?, offset?}` | Read the page's text, not only the screen; `ref` scopes it to one element and a long page names the next `offset`. An unselected tab or a closed section (`details`) is left out, so click the tab or open the section first. |
+| `click {ref \| x,y}` / `type {ref?, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field. `type {ref?, steps: [{text} \| {key, modifiers?}]}` runs ordered text and key steps in one call |
+| `paste {ref?, text, html?}` | Put rich content (a table, headings, lists) into the field as a clipboard paste would, without touching the user's clipboard; refused where `type` is |
+| `upload {ref \| x,y, path, via?}` | Give the page local files: `path` is one absolute path or a list of up to 10, each a file, a folder or a glob (at most 100 files, 25 MiB in all). `via`: `input` (default) for a file field the snapshot marks `[file]`, `chooser` for the file picker a button opens, `drop` for a drop zone; a folder goes only onto a drop zone. It asks on a card unless the user trusted acting on that site |
 | `screenshot` | Write a PNG, return its absolute path; show it with `![..](path)` |
 | `tabs {action: list\|switch\|new}` | The tabs the agent opened, and only those |
 
@@ -180,7 +208,7 @@ leftover prefix without touching it.
 | `kirocrew spawn run --crew NAME "task"` | Run as a Bot (its memory and template); an unknown name is refused |
 | `kirocrew spawn run --agent NAME "task"` | Run under a named agent template; an unknown name is refused |
 | `kirocrew spawn run --model ID "task"` | Run on a model id; it outranks the member's and the template's pin |
-| `kirocrew spawn list` | List active subagents |
+| `kirocrew spawn list` | List subagents that no session started (CLI and app runs) |
 
 ## Cron Jobs
 
@@ -209,8 +237,19 @@ leftover prefix without touching it.
 | `kirocrew cron adopt JOB_ID --session-of SESSION` | Give the job an owning chat session, so that session manages it and receives its results |
 | `kirocrew cron adopt JOB_ID --release` | Clear the owning session, returning the job to CLI/dashboard-only management |
 | `kirocrew cron trigger JOB_ID` | Trigger a job immediately |
+| `kirocrew cron history JOB_ID` | Show a job's past runs, newest first (read-only); `-n N` (default 20), `--status error` keeps every run that did not succeed, `--run RUN_ID` prints one full record with its trace, `--json` |
+| `kirocrew cron history --all` | Read every job's runs, newest first |
 | `kirocrew cron preview SCRIPT` | Run a script cron locally with real MCP tools; notifications and session and crew-log calls are printed, not made |
 | `kirocrew cron preview SCRIPT -m "msg" -e K=V` | Preview with an input message / extra env vars |
+
+## MCP Resource Subscriptions
+
+A session subscribes with the `resource_subscribe` MCP tool once `mcp_gateway.resource_subscriptions.enabled` is on (off by default; needs a restart). These commands are the operator's view.
+
+| Command | Description |
+|---------|-------------|
+| `kirocrew resource-subs list` | List every session's MCP resource subscriptions |
+| `kirocrew resource-subs remove ID` | Remove one subscription by its id (the `rsub_...` id `list` shows) |
 
 ## Learning & Memory
 
@@ -232,13 +271,19 @@ leftover prefix without touching it.
 | `kirocrew memory export --store <name>` | Export a named store's rows instead |
 | `kirocrew memory import file.json` | Import memory from JSON |
 | `kirocrew memory import --store <name> file.json` | Import into a named store instead |
+| `kirocrew memory import-text notes.md` | Offer the facts in a text or Markdown file and save the ones you confirm |
 | `kirocrew memory migrate` | Migrate legacy markdown memory to vector store |
 | `kirocrew memory backup [--keep N]` | Back up active memory stores now |
 | `kirocrew memory backups [--store <name>]` | List memory backups, newest first |
 | `kirocrew memory restore [--store <name>] [--from FILE \| --cancel-pending]` | Restore a store from a backup (default: its newest) |
 | `kirocrew memory carve --store <name>` | Filter or count a crew store's memory by carve facets (`--scope`, `--surface`, `--crew`, `--session-key`) |
 | `kirocrew memory retired [--restore ID]` | List episodes a semantic write superseded, and restore one |
+| `kirocrew memory forget KEY` | Delete one semantic memory key after you confirm it (owner only; needs a terminal and the running gateway; not on native Windows). `--superseded-by KEY` records the live key that replaces it |
 | `kirocrew memory show [preferences\|projects\|history]` | Show the markdown memory layer (default: all three; `--format md\|json`, `--since YYYY-MM-DD` for history) |
+| `kirocrew memory dream list` | Print the Dreaming approval list of what a run proposed, read-only (`--store`, `--json`) |
+| `kirocrew memory dream run` | Ask the gateway for a Dreaming run now; it still waits for idle |
+| `kirocrew memory shadow report` | Per shadow memory stage, show its flag, window, days, sessions and would-change rate, read-only (`--stage`, `--since YYYY-MM-DD` or `<n>d`, `--store`, `--json`) |
+| `kirocrew knowledge stats` | Count sources, documents and items in the knowledge library (read-only; `--json` for JSON) |
 | `kirocrew knowledge dedup` | Preview cross-source duplicate knowledge documents (dry-run) |
 | `kirocrew knowledge dedup --apply` | Actually collapse the duplicates |
 | `kirocrew consolidate` | List sessions with unconsolidated messages |
@@ -275,6 +320,9 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `kirocrew agent update NAME --display-name "Label"` | Change the name the dashboard shows (`""` clears it); the agent name stays |
 | `kirocrew agent delete NAME` | Delete an agent |
 | `kirocrew agent reset-model [--agent kirocrew]` | Clear a pinned model so the agent tracks the shipped default |
+| `kirocrew agent pin [NAME FILE]` | Choose which spec file an agent name runs when several declare it (`agent.spec_pins`); with no arguments, list the pins. `--clear` removes the pin for `NAME` |
+| `kirocrew agent validate [PATH]` | Check agent specs offline for unknown fields, wrong value shapes and malformed tools entries; exits 1 on a problem (`--allow-unknown-fields`, `--print-schema`) |
+| `kirocrew models [NAME]` | List the model names `--model` accepts, or check one name (`--json`, `--port`) |
 | `kirocrew workspace list` | List workspaces |
 | `kirocrew workspace create --name NAME --dir DIRNAME` | Create workspace (`--dir` is a **name under the data home**, not an absolute path) |
 | `kirocrew workspace create --name NAME --copy-from existing` | Copy from existing |
@@ -308,6 +356,7 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew app info NAME` | Show app details |
 | `kirocrew app init NAME` | Scaffold a new app (kebab-case name) |
 | `kirocrew app init NAME --backend --ui --cron` | Scaffold with backend, UI, and sample cron |
+| `kirocrew app import SOURCE` | Convert a manifest-declared plugin package into an app directory (`--out DIR`, `--name NAME` to override the derived name, `--install` to install it after writing) |
 | `kirocrew app dev NAME` | Toggle an app into dev mode (no-store UI serving + live reload on file change) |
 | `kirocrew app dev NAME --off` | Leave dev mode |
 | `kirocrew app mcp NAME` | Run an app's MCP server on stdio (spawned by kiro-cli, not for humans) |
@@ -320,6 +369,9 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew config get agent.provider` | Get specific value (dot-separated key) |
 | `kirocrew config set dashboard.url http://localhost:5476` | Set a config value (port is the KIROCREW_PORT env var, not a config key) |
 | `kirocrew config set --file config.json` | Load full config from JSON file |
+| `kirocrew config pending list` | Show each settings file changed outside Kiro Crew and held for review, and what changed (the default of `kirocrew config pending`; needs no dashboard) |
+| `kirocrew config pending apply FILE SIGNATURE` | Keep the outside change (`FILE` is the file name, e.g. `config.json`; `SIGNATURE` the version `kirocrew config pending` printed) |
+| `kirocrew config pending discard FILE SIGNATURE` | Put the saved version back |
 | `kirocrew config edit` | Open config in $EDITOR |
 | `kirocrew config defaults [KEYS…]` | Review stored values that still hold a superseded default |
 | `kirocrew config defaults [KEYS…] --adopt` | Remove those stored keys so the current defaults apply |
@@ -353,6 +405,8 @@ already-running app record -- restart it.
 |---------|-------------|
 | `kirocrew secrets import` | Dry-run the migration of plaintext `.env` credentials into the encrypted vault |
 | `kirocrew secrets import --apply` | Store the secrets and rewrite `.env` to `secret://` refs |
+| `kirocrew secrets authorize NAME https://api.example.com` | Authorize a Custom secret for one exact https origin, so agent write requests may carry it (`--header` sets the header, default `Authorization: Bearer`) |
+| `kirocrew secrets authorize NAME --remove` | Remove that authorization. `--reset` discards a policy that does not parse or verify; without it, `authorize` refuses rather than erase entries |
 | `kirocrew telemetry status` | Show exactly what the anonymous beacon sends, and whether it will |
 | `kirocrew telemetry disable` | Turn the anonymous beacon off permanently |
 | `kirocrew telemetry enable` | Turn the anonymous beacon back on |
@@ -372,6 +426,7 @@ already-running app record -- restart it.
 | `kirocrew bench lesson-recall` | Measure lesson ranking recall/MRR/nDCG against a golden set (deterministic) |
 | `kirocrew bench session-recall` | Measure session search recall/MRR against a golden set (deterministic) |
 | `kirocrew bench compare A B` | Diff two saved JSON reports; refuses to attribute a delta when the runs disagree on corpus |
+| `kirocrew acceptance-check --json CHECK REF` | Answer a goal acceptance check that an installed edition provides; prints the report as one JSON object (`CHECK` names the edition's check, `REF` the item it is about) |
 
 ## Governance Policy
 
@@ -469,11 +524,9 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `kirocrew snapshot --keep 7` | Keep N most recent snapshots (default: 7) |
 | `kirocrew snapshot --strict` | Exit 3 instead of 0 when the bundle omits entries it was asked to carry |
 | `kirocrew snapshot --list` | List existing snapshots |
-| `kirocrew restore` | Restore from most recent snapshot |
-| `kirocrew restore /path/to/snap.tar.gz` | Restore from specific snapshot |
-| `kirocrew restore --mode replace` | Replace mode (overwrite existing state) |
-| `kirocrew restore --mode merge` | Merge mode (keep existing state, add). Without `--mode`: merge when `memory.db` exists, else replace |
-| `kirocrew restore --dry-run` | Preview without applying |
+| `kirocrew restore /path/to/snap.tar.gz --mode merge` | Restore a snapshot, keeping existing state and adding to it. There is no default mode: without `--mode` a terminal is asked and a non-terminal is refused |
+| `kirocrew restore /path/to/snap.tar.gz --mode replace` | Replace mode (overwrite existing state) |
+| `kirocrew restore /path/to/snap.tar.gz --mode merge --dry-run` | Preview without applying |
 | `kirocrew restore --components memory,crons` | Restore specific components only |
 | `kirocrew restore --list-components` | List restorable components |
 | `kirocrew restore --force` | Restore even if gateway is running |
@@ -506,6 +559,15 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `/kirocrew users` | Open allowed users management modal |
 | `/kirocrew channels` | Open tracked channels modal |
 | `/kirocrew restart` | Restart the gateway (needs a systemd supervisor) |
+
+### Slack Code Channel Commands
+Answered in a code channel while `slack.code_channels` is on; elsewhere `agent` falls back to the app-wide selector above.
+
+| Command | Description |
+|---------|-------------|
+| `/kirocrew agent [<name>]` | List the channel session's agents, or switch it to one |
+| `/kirocrew approval [normal\|reads\|trust]` | Show or set the channel session's approval mode |
+| `/summarize`, `/wrap-up`, `/create-pr` | The channel's runtime commands |
 
 ## Environment Variables
 

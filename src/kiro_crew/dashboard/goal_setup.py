@@ -340,7 +340,7 @@ def tool_access_prompt(raised: bool = True) -> str:
 
 def schedule_tool_access_nudge(
     state: Any, slot_key: str, *, app: Any = None, session_key: str = "", card_member: str
-) -> None:
+) -> bool:
     """Raise the held request, reload the crewmate's conductor, then wake it.
 
     The opt-in card (``kiro_crew.mate_tool_access``) turned on this crewmate's
@@ -353,17 +353,18 @@ def schedule_tool_access_nudge(
     what happened.
     Only a crewmate's own pinned thread is told, and only for a card that turned
     on THAT crewmate's flag (*card_member*, the card's ``params.name``): a card for
-    another crewmate raised in this thread wakes nobody here.
+    another crewmate raised in this thread wakes nobody here. Returns whether the
+    wake was scheduled.
     """
     from kiro_crew.dashboard.crewmate_worker_reload import reload_if_idle
     from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
 
     slot = state.get_slot(slot_key) if state is not None else None
     if slot is None or not is_crewmate_thread(slot):
-        return
+        return False
     member = slot.agent
     if not member or card_member != member:
-        return
+        return False
 
     async def start() -> None:
         raised = False
@@ -392,24 +393,26 @@ def schedule_tool_access_nudge(
     task = asyncio.get_running_loop().create_task(start())
     _tasks(state)[f"{slot_key}:tool-access-start"] = task
     task.add_done_callback(lambda _t: _tasks(state).pop(f"{slot_key}:tool-access-start", None))
+    return True
 
 
-def schedule_capabilities_nudge(state: Any, slot_key: str, added: str, *, card_member: str) -> None:
+def schedule_capabilities_nudge(state: Any, slot_key: str, added: str, *, card_member: str) -> bool:
     """Tell the crewmate of thread *slot_key* that its capabilities card was applied.
 
     Once its thread is idle, through the same wait as the other goal nudges.
     Only a crewmate's own pinned thread is told, and only for a card that changed
     THAT crewmate's worker (*card_member*, the card's ``params.member``): a card
-    for another crewmate raised in this thread wakes nobody here.
+    for another crewmate raised in this thread wakes nobody here. Returns whether
+    the wake was scheduled.
     """
     from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
 
     slot = state.get_slot(slot_key) if state is not None else None
     if slot is None or not is_crewmate_thread(slot):
-        return
+        return False
     member = slot.agent
     if not member or card_member != member:
-        return
+        return False
 
     async def start() -> None:
         # The slug read loads the config, so it runs off the loop.
@@ -426,6 +429,7 @@ def schedule_capabilities_nudge(state: Any, slot_key: str, added: str, *, card_m
     task = asyncio.get_running_loop().create_task(start())
     _tasks(state)[f"{slot_key}:capabilities-start"] = task
     task.add_done_callback(lambda _t: _tasks(state).pop(f"{slot_key}:capabilities-start", None))
+    return True
 
 
 def removed_prompt(rec: dict[str, Any], goal_id: str, *, has_mate_tools: bool = True) -> str | None:

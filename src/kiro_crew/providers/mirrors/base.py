@@ -82,7 +82,7 @@ RESOURCES_NO_READER = (
     "no-reader: the harness is handed no spec file, so it loads neither scheme. "
     "skill:// still arrives as the skill directory Crew injects on every backend; "
     "file:// steering is not loaded from this field, since Crew's steering load "
-    "serves only the default agent, on claude and codex "
+    "serves only the default agent, on claude, codex, opencode and pi "
     "(ACP_BACKENDS_CREW_LOADS_SPEC_STEERING; folder steering and crew member "
     "context are separate routes); a custom agent's new session gets a notice "
     "naming those entries"
@@ -217,8 +217,10 @@ class SessionProjection:
     """The harness built-ins this session keeps, ``None`` for all of them.
 
     A client obligation the array cannot carry: claude takes it as the session's
-    ``tools`` option. Set only for a crewmate worker whose worker spec (base plus
-    crewmate file) excludes a native tool (``claude_worker_tools.claude_worker_builtin_tools``).
+    ``tools`` option. Set for a crewmate worker whose worker spec (base plus
+    crewmate file) excludes a native tool (``claude_worker_tools.claude_worker_builtin_tools``),
+    and for a named agent whose spec Crew does not write and whose ``tools`` list
+    leaves out a built-in (``claude_worker_tools.claude_agent_builtin_tools``).
     """
 
 

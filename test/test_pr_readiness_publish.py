@@ -120,6 +120,11 @@ if [ "$1" = "api" ]; then
     esac
   fi
   case "$*" in
+    *"/actions/runs?event=pull_request_target"*)
+      # Sensitive Change Review's own runs on the head. Matched ahead of the
+      # `event=pull_request` glob, which would answer it too.
+      [ -f "$FIXTURES/fail_pt_runs" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
+      cat "$FIXTURES/pt_runs.json"; exit 0 ;;
     *"/actions/runs?event=pull_request"*)
       [ -f "$FIXTURES/fail_runs" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
       cat "$FIXTURES/runs.json"; exit 0 ;;
@@ -160,6 +165,15 @@ if [ "$1" = "api" ]; then
 fi
 echo "gh stub: unhandled: $*" >&2
 exit 90
+"""
+
+# ``sleep`` stub on the same PATH as the ``gh`` stub. The retry helper's backoff
+# is a real shell ``sleep``, so each retry-exhausting read would cost 2+4 s of
+# wall clock. Recording the requested seconds instead keeps the backoff
+# schedule assertable (``Result.backoff``) without waiting it out.
+SLEEP_STUB = r"""#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$FIXTURES/sleeps"
+exit 0
 """
 
 
@@ -224,6 +238,12 @@ class Result:
         path = self._fixtures / "calls.txt"
         return path.read_text().splitlines() if path.exists() else []
 
+    @property
+    def backoff(self) -> list[int]:
+        """Seconds the retry helper asked to sleep, in order."""
+        path = self._fixtures / "sleeps"
+        return [int(line) for line in path.read_text().split()] if path.exists() else []
+
 
 class Runner:
     """Executes one readiness step against one fixture repository state."""
@@ -236,9 +256,10 @@ class Runner:
         bindir = root / "bin"
         for d in (self.fixtures, self.work, self.tmp, bindir):
             d.mkdir(parents=True)
-        stub = bindir / "gh"
-        stub.write_text(GH_STUB)
-        stub.chmod(0o755)
+        for name, body in (("gh", GH_STUB), ("sleep", SLEEP_STUB)):
+            stub = bindir / name
+            stub.write_text(body)
+            stub.chmod(0o755)
         (self.tmp / "pr-readiness-summary.md").write_text("## summary\n")
         self.summary = root / "step-summary.md"
         self.summary.write_text("")
@@ -298,7 +319,7 @@ class Runner:
             if on:
                 flag.write_text("1")
         (self.fixtures / "status_post_attempts.txt").unlink(missing_ok=True)
-        for stale in ("calls.txt", "deleted.txt", "added.txt", "published_status.json"):
+        for stale in ("calls.txt", "deleted.txt", "added.txt", "published_status.json", "sleeps"):
             (self.fixtures / stale).unlink(missing_ok=True)
 
         proc = subprocess.run(  # noqa: S603 - fixed argv, test-local stub
@@ -370,6 +391,7 @@ def test_an_unreadable_base_publishes_a_stamped_pending(runner: Runner) -> None:
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith(READ_FAILURE_TOKEN)
     assert "readiness: checking" in result.added
+    assert result.backoff == [2, 4]
 
 
 # ── Losing a label race must not withhold the verdict ────────────────────────
@@ -507,6 +529,8 @@ def _recheck_runner(
     ci_cancelled_twin: bool = False,
     fail_fork_checks: bool = False,
     codeql_pr_runs: tuple[dict[str, object], ...] = (),
+    sensitive_status: str = "completed",
+    sensitive_conclusion: str = "success",
 ) -> Runner:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     job_env = spec["jobs"]["readiness"]["env"]
@@ -566,6 +590,20 @@ def _recheck_runner(
     # same pull_request runs page.
     workflow_runs.extend(codeql_pr_runs)
     (runner.fixtures / "runs.json").write_text(json.dumps({"workflow_runs": workflow_runs}))
+    # Sensitive Change Review is read from its own `pull_request_target` run on
+    # the head, green by default.
+    sensitive_run = {
+        "id": 8,
+        "name": "Sensitive Change Review",
+        "event": "pull_request_target",
+        "path": ".github/workflows/sensitive-change-review.yml",
+        "status": sensitive_status,
+        "conclusion": sensitive_conclusion if sensitive_status == "completed" else None,
+        "run_started_at": "2026-08-07T19:00:20Z",
+        "head_repository": {"full_name": head_repo},
+        "head_branch": "feat/x",
+    }
+    (runner.fixtures / "pt_runs.json").write_text(json.dumps({"workflow_runs": [sensitive_run]}))
     # CodeQL is a `dynamic` run and its security verdict is a separate exact-SHA
     # check-run, so both pages back the publish re-check. Green by default, so a
     # test that says nothing about CodeQL keeps its own subject.
@@ -667,6 +705,42 @@ def test_a_success_with_every_lane_done_still_publishes_success(runner: Runner) 
     assert result.published["state"] == "success"
 
 
+@pytest.mark.parametrize(
+    ("status", "conclusion", "state", "label"),
+    [
+        ("completed", "failure", "failure", "readiness: action required"),
+        ("in_progress", "success", "pending", "readiness: checking"),
+    ],
+)
+def test_a_sensitive_review_re_run_since_the_evaluation_holds_the_success(
+    runner: Runner, status: str, conclusion: str, state: str, label: str
+) -> None:
+    """Sensitive Change Review is a `pull_request_target` run, so the
+    `pull_request` page cannot see a re-run of it. A green `pull_request` run of
+    the same path (a PR's own copy) on that page does not mask its verdict."""
+    _recheck_runner(runner, "completed", sensitive_status=status, sensitive_conclusion=conclusion)
+    page = json.loads((runner.fixtures / "runs.json").read_text())
+    page["workflow_runs"].append(
+        {
+            "id": 99,
+            "name": "Sensitive Change Review",
+            "event": "pull_request",
+            "path": ".github/workflows/sensitive-change-review.yml",
+            "status": "completed",
+            "conclusion": "success",
+            "run_started_at": "2026-08-07T19:00:30Z",
+            "head_repository": {"full_name": "kirodotdev/KiroCrew"},
+            "head_branch": "feat/x",
+        }
+    )
+    (runner.fixtures / "runs.json").write_text(json.dumps(page))
+    result = runner.run(pr_labels=("readiness: passed",))
+    assert result.published is not None
+    assert result.published["state"] == state
+    assert "Sensitive Change Review" in result.published["description"]
+    assert label in result.added
+
+
 def _listing_empty_but_check_runs_name(runner: Runner, run: dict[str, object]) -> None:
     """The head_sha listing answers no runs while the head's own check-runs name
     ``run`` through an Actions job's ``details_url``."""
@@ -722,6 +796,7 @@ def test_a_named_run_that_cannot_be_read_does_not_publish_success(runner: Runner
     result = runner.run()
     assert result.published is not None
     assert result.published["state"] == "pending"
+    assert result.backoff == [2, 4]
 
 
 # ── The fork re-check ────────────────────────────────────────────────────────
@@ -839,6 +914,7 @@ def test_an_unreadable_fork_check_list_publishes_a_stamped_pending(runner: Runne
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith(READ_FAILURE_TOKEN)
+    assert result.backoff == [2, 4]
 
 
 def test_a_same_repo_success_never_reads_the_fork_check_list(runner: Runner) -> None:
@@ -970,6 +1046,7 @@ def test_an_unreadable_lane_run_holds_anyway_and_stamps_the_read_failure(
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith(READ_FAILURE_TOKEN + " ")
     assert _held(runner)
+    assert result.backoff == [2, 4]
 
 
 def test_a_failed_hold_fails_the_run_loud_and_does_not_retry(
@@ -1020,6 +1097,7 @@ def test_an_unreadable_re_check_publishes_a_stamped_pending(runner: Runner) -> N
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith("[read-failed]")
+    assert result.backoff == [2, 4]
 
 
 def test_a_codeql_rerun_in_flight_holds_the_success(runner: Runner) -> None:
@@ -1203,6 +1281,7 @@ def test_an_unreadable_codeql_page_publishes_a_stamped_pending(runner: Runner) -
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith("[read-failed]")
+    assert result.backoff == [2, 4]
 
 
 def test_an_unreadable_codeql_check_publishes_a_stamped_pending(runner: Runner) -> None:
@@ -1210,6 +1289,7 @@ def test_an_unreadable_codeql_check_publishes_a_stamped_pending(runner: Runner) 
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert result.published["description"].startswith("[read-failed]")
+    assert result.backoff == [2, 4]
 
 
 def test_the_codeql_re_check_is_skipped_once_a_lane_already_downgraded(runner: Runner) -> None:

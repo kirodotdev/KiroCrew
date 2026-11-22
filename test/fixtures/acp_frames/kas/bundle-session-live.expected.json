@@ -14,8 +14,7 @@
           },
           "checkpoints": true,
           "executionTargets": [
-            "local",
-            "cloud-sandbox"
+            "local"
           ],
           "extensionMethods": [
             "_kiro/knowledge",
@@ -36,12 +35,15 @@
             "_kiro/session/compact",
             "_kiro/session/export",
             "_kiro/session/history",
+            "_kiro/session/recordRelationship",
             "_kiro/session/delete",
             "_kiro/session/rename",
             "_kiro/job/cancel",
             "_kiro/job/output",
+            "_kiro/job/moveToBackground",
             "_kiro/config/template",
             "_kiro/permissions/presets/list",
+            "_kiro/permissions/presets/stores",
             "_kiro/permissions/presets/add",
             "_kiro/permissions/presets/remove",
             "_kiro/configuration/getState",
@@ -59,40 +61,37 @@
             "_kiro/workflow/resumeAll",
             "_kiro/workflow/retry",
             "_kiro/workflow/update",
-            "_kiro/workflow/resume",
-            "_kiro/sourceProviders/list",
-            "_kiro/sourceProviders/listResources"
+            "_kiro/workflow/resume"
           ],
           "logging": {
             "channels": [
               {
-                "filePath": "~/.kiro/logs/20261110T230813262-3498583/kiro.log",
+                "filePath": "~/.kiro/logs/20261117T021542088-64730/kiro.log",
                 "name": "kiro"
               },
               {
-                "filePath": "~/.kiro/logs/20261110T230813262-3498583/mcp.log",
+                "filePath": "~/.kiro/logs/20261117T021542088-64730/mcp.log",
                 "name": "mcp"
               },
               {
-                "filePath": "~/.kiro/logs/20261110T230813262-3498583/powers.log",
+                "filePath": "~/.kiro/logs/20261117T021542088-64730/powers.log",
                 "name": "powers"
               }
             ],
-            "logDir": "~/.kiro/logs/20261110T230813262-3498583"
+            "logDir": "~/.kiro/logs/20261117T021542088-64730"
           },
           "modelFallbackReporting": true,
           "policyNotifications": true,
           "replayMarking": true,
           "sessionList": true,
           "sessionListScopes": [
-            "workspace",
-            "user"
+            "workspace"
           ],
           "sessionSources": [
-            "local",
-            "remote"
+            "local"
           ],
-          "sourceProviders": true
+          "sourceProviders": false,
+          "strictSessionLoad": true
         }
       },
       "loadSession": true,
@@ -235,34 +234,29 @@
                     "origin": "bundled"
                   }
                 },
+                "source": "bundled",
+                "welcomeMessage": "You are using Default v2, an experimental agent mode."
+              }
+            },
+            "description": "Adaptive agent that plans, delegates, and verifies as the task demands",
+            "name": "Default v2",
+            "value": "default-v2"
+          },
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
                 "source": "bundled"
               }
             },
             "description": "Behavioral, narrative code review of a local or PR diff. Writes a review document and a verdict.",
             "name": "semantic_reviewer",
             "value": "semantic_reviewer"
-          }
-        ],
-        "type": "select"
-      },
-      {
-        "category": "model",
-        "currentValue": "auto",
-        "id": "model",
-        "name": "Model",
-        "options": [
-          {
-            "_meta": {
-              "kiro": {
-                "hasEffort": false,
-                "rateMultiplier": 1,
-                "rateUnit": "Credit",
-                "thinkingToggleable": false
-              }
-            },
-            "description": "Models chosen by task for optimal usage and consistent quality",
-            "name": "Auto",
-            "value": "auto"
           }
         ],
         "type": "select"
@@ -303,7 +297,24 @@
         "type": "select"
       },
       {
-        "currentValue": "enabled",
+        "currentValue": "off",
+        "description": "Let other sessions message this session, and let it message them",
+        "id": "sessionToolsMessaging",
+        "name": "Session messaging",
+        "options": [
+          {
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "currentValue": "disabled",
         "id": "contentCollection",
         "name": "Content Collection",
         "options": [
@@ -333,10 +344,17 @@
         "bug-fix",
         "plan",
         "autonomous",
+        "default-v2",
         "semantic_reviewer"
       ]
     },
     "session_id": "kas-bundle-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
   },
   {
     "frame": "response",

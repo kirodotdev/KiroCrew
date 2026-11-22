@@ -1,0 +1,367 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "authStatus": {},
+        "claudeCode": {
+          "promptQueueing": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {},
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        }
+      }
+    },
+    "agent_version": "0.94.0",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_auth/status_update",
+    "params": {
+      "authStatus": {
+        "detail": "ANTHROPIC_API_KEY",
+        "kind": "api_key",
+        "label": "Anthropic API key"
+      }
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "description": "Claude handles permission decisions",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Accepts all permissions",
+            "name": "Bypass permissions",
+            "value": "bypassPermissions"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "",
+        "description": "AI model to use",
+        "id": "model",
+        "name": "Model",
+        "options": [],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "default",
+        "description": "Available effort levels for this model",
+        "id": "effort",
+        "name": "Effort",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          },
+          {
+            "name": "Xhigh",
+            "value": "xhigh"
+          },
+          {
+            "name": "Max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model_config",
+        "currentValue": "off",
+        "description": "Faster responses on supported models",
+        "id": "fast",
+        "name": "Fast mode",
+        "options": [
+          {
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "bypassPermissions"
+      ]
+    },
+    "session_id": "claude-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      11,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "title": "Terminal",
+        "tool_call_id": "toolu_probe_1",
+        "tool_kind": "execute",
+        "wire_title": "Terminal"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_1",
+        "tool_output": "probe",
+        "tool_output_bytes": 5,
+        "tool_output_digest": "ba9c736f19e7f60b7f6764adb0b7908c0a2b394e09b6c09863528c7f2bc86095"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 8; echo SLEPT",
+          "description": "probe"
+        },
+        "title": "probe",
+        "tool_call_id": "toolu_probe_1",
+        "tool_input": "{\n  \"command\": \"sleep 8; echo SLEPT\",\n  \"description\": \"probe\"\n}",
+        "wire_title": "sleep 8; echo SLEPT"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      15,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "description": "probe",
+        "is_backgrounded": false,
+        "run_id": "probe-run-1",
+        "session_id": "claude-session-1",
+        "subtype": "task_started",
+        "task_id": "probe-task-1",
+        "task_type": "local_bash",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "uuid": "probe-msg-1"
+      },
+      "sessionId": "claude-session-1"
+    },
+    "raw_sdk_subtype": "task_started"
+  },
+  {
+    "action": "skip",
+    "frame": "_claude/sdkMessage",
+    "params": {
+      "message": {
+        "output_file": "",
+        "run_id": "probe-run-1",
+        "session_id": "claude-session-1",
+        "status": "completed",
+        "subtype": "task_notification",
+        "summary": "probe",
+        "task_id": "probe-task-1",
+        "tool_use_id": "toolu_probe_1",
+        "type": "system",
+        "uuid": "probe-msg-2"
+      },
+      "sessionId": "claude-session-1"
+    },
+    "raw_sdk_subtype": "task_notification"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_probe_1",
+        "tool_final": true,
+        "tool_output": "```console\nSLEPT\n```",
+        "tool_output_bytes": 20,
+        "tool_output_digest": "45d098611ad876a1a13773e0c17156b9db577564d5bda23779dcb6acf1fc8e9c",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      15,
+      1000000
+    ],
+    "usage_cost": 0.00022
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      11,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg_3",
+        "text": "STUB-OK"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "STUB-OK",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      12,
+      1000000
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      12,
+      1000000
+    ],
+    "usage_cost": 0.00030000000000000003
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      20,
+      7,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

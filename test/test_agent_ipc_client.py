@@ -86,6 +86,28 @@ def test_an_enforced_harness_gets_a_pickup_on_kirocrew_core_only(bound, backend)
     assert entry.runtime_pid() == _RESPAWNED_PID
 
 
+@pytest.mark.parametrize("backend", ["codex", "opencode", "goose", "pi"])
+def test_an_enforced_harness_gets_a_pickup_on_the_dashboard_server_too(bound, backend):
+    """Its tools reach the gateway as core's do, so its direct launch needs one."""
+    dashboard = {"name": "kirocrew-dashboard", "command": "kirocrew", "args": ["mcp"], "env": []}
+    (out,) = _issue([dashboard], backend=backend)
+    assert len(_env(out)[PICKUP_ENV]) == 64
+    (entry,) = bound._pickups.values()
+    assert entry.server == "kirocrew-dashboard" and entry.session_token == "tok"
+
+
+def test_a_broker_stub_for_the_dashboard_gets_no_pickup(bound):
+    stub = {
+        "name": "kirocrew-dashboard",
+        "command": sys.executable,
+        "args": ["-m", STUB_MODULE, "--server", "kirocrew-dashboard"],
+        "env": [],
+    }
+    (out,) = _issue([stub])
+    assert PICKUP_ENV not in _env(out) and GATEWAY_PID_ENV not in _env(out)
+    assert not bound._pickups
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -130,13 +152,29 @@ def test_the_caller_array_is_not_mutated(bound):
 
 
 def test_the_runtime_session_path_issues_the_pickup():
-    """Sessions are built by the runtime's mirrored projection, so issuance is there."""
+    """Create and resume issue on the array they send, after the member appends."""
     import inspect
 
-    from kiro_crew.acp import runtime_session_setup
+    from kiro_crew.acp import runtime_session_create, runtime_session_load, runtime_session_setup
 
-    source = inspect.getsource(runtime_session_setup._mirrored_session_mcp)
+    for fn in (runtime_session_create.create_session, runtime_session_load.load_session):
+        assert "_with_runtime_ipc_pickups(self, mcp_servers, stub_token)" in inspect.getsource(fn)
+    source = inspect.getsource(runtime_session_setup._with_runtime_ipc_pickups)
     assert "with_ipc_pickups(" in source and "session_token=stub_token" in source
+
+
+def test_the_dashboard_server_redeems_its_pickup_before_it_serves(monkeypatch):
+    """An issued pickup nobody redeems leaves every dashboard tool refused."""
+    from kiro_crew import mcp_dashboard
+
+    assert "kirocrew-dashboard" in ipc_pickup.PICKUP_SERVERS
+    calls: list[str] = []
+    monkeypatch.setattr(agent_ipc_client, "redeem_at_startup", lambda _port: calls.append("redeem"))
+    monkeypatch.setattr(
+        mcp_dashboard, "run_mcp_stdio_loop", lambda *_a, **_k: calls.append("serve")
+    )
+    mcp_dashboard.run_mcp_server()
+    assert calls == ["redeem", "serve"]
 
 
 # --- the server side ---------------------------------------------------------------

@@ -192,6 +192,11 @@ class TestSelection:
         selected = kas_wire.select_hooks(pool, trigger="preToolUse", tool_id="Bash")
         assert selected == [bash, star, unmatched]
 
+    def test_a_pipe_matcher_meets_each_alternative(self):
+        hook = _hook(matcher="Edit|Write")
+        assert kas_wire.select_hooks([hook], trigger="preToolUse", tool_id="Write") == [hook]
+        assert kas_wire.select_hooks([hook], trigger="preToolUse", tool_id="Read") == []
+
     def test_a_tool_matcher_is_withheld_when_no_tool_is_named(self):
         # Returning it would let the hook run for a tool its author excluded.
         bash = _hook(matcher="Bash*")

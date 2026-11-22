@@ -37,6 +37,7 @@ ASSEMBLERS: tuple[str, ...] = (
     "dashboard/goal_reminder.py",
     "dashboard/goal_setup.py",
     "dashboard/mate_thread_wakes.py",
+    "dashboard/mate_user_actions.py",
     "dashboard/mate_welcome.py",
     "dashboard/stale_wake.py",
     "mate_upgrade_notice.py",
@@ -303,6 +304,69 @@ def test_the_chip_guidance_offers_only_what_the_mate_can_do() -> None:
     assert "never ask you for a card" in prompt
     for word in _CHIP_JARGON:
         assert word in prompt.split("no internal word:", 1)[1], word
+
+
+def test_the_bot_speaks_as_one_bot_and_owns_its_workers_work() -> None:
+    """To the user there is one Bot: its workers are part of it, so it never says it
+    cannot do a task, and no message names its inner parts."""
+    words = " ".join(_conductor_prompt().split())
+    assert 'From the user\'s perspective, you are a single "bot"--that is all they know.' in words
+    assert "any work performed by a worker is also work performed by you." in words
+    assert '"I will handle this and report back to you"' in words
+    # The promise covers work a worker can do; a blocked task is still said plainly.
+    assert "This is about work a worker can do. When a rule blocks a task" in words
+    tail = words.split("Nothing else you write to the user says", 1)[1]
+    for word in ("worker", "session", "dispatch"):
+        assert word in tail.split(".", 1)[0], word
+
+
+#: A Bot's inner parts, which nothing it says to the user names.
+_INNER_PART = re.compile(r"\b(workers?|helpers?|sessions?|dispatch)\b", re.I)
+#: An instruction to say something to the user ("before you tell the user" is a
+#: condition on the Bot's own step, not something it says).
+_SAY_TO_USER = re.compile(
+    r"(?<!before you )\b(?:(?:tell|inform|ask|let|explain to|say to) (?:the user|them)|show them how)\b",
+    re.I,
+)
+#: Pieces whose inner-part words, after the instruction, describe what happens
+#: rather than what the Bot says.
+_SAYS_NO_INNER_PART_EXEMPT = {
+    # "Tell the user what needs fixing; once it is fixed, a new worker session
+    # starts the server again." The instruction ends at the semicolon.
+    "dispatch.worker_unusable",
+}
+
+
+def _inner_parts_the_bot_is_told_to_say(pieces: dict[str, str]) -> list[str]:
+    found = []
+    for key, text in pieces.items():
+        if key in _SAYS_NO_INNER_PART_EXEMPT:
+            continue
+        for sentence in re.split(r"(?<=\.)\s+", " ".join(text.split())):
+            for ask in _SAY_TO_USER.finditer(sentence):
+                hit = _INNER_PART.search(sentence[ask.end() :])
+                if hit:
+                    found.append(f"{key}: {hit.group(0)!r} in {sentence[:120]!r}")
+    return found
+
+
+def test_no_piece_tells_the_bot_to_name_its_inner_parts_to_the_user() -> None:
+    """The one-Bot rule says nothing the Bot writes names a worker, helper, session
+    or dispatch; a piece sent on the same turn that tells it to say one would give
+    it two orders it cannot both follow."""
+    assert _inner_parts_the_bot_is_told_to_say(_all_pieces()) == []
+
+
+def test_the_inner_part_check_sees_a_piece_that_names_one() -> None:
+    """Positive control: the old upgrade wording is reported."""
+    old = {
+        "upgrade_notice": "Tell the user this in everyday words: that work you take "
+        "on now goes to your worker."
+    }
+    assert _inner_parts_the_bot_is_told_to_say(old) == [
+        "upgrade_notice: 'worker' in 'Tell the user this in everyday words: that work you "
+        "take on now goes to your worker.'"
+    ]
 
 
 def test_no_piece_carries_an_example_chip_with_jargon() -> None:
@@ -646,12 +710,12 @@ def test_the_ledger_preview_fixture_renders_the_patrol_cleanly() -> None:
 
 def test_how_you_work_tells_the_bot_to_close_a_finished_one_off_worker() -> None:
     """A Bot opens one worker per task; without a close rule the finished
-    workers pile up in its panel as WAITING. The rule keeps a worker the Bot
-    will send to again (a standing scanner) open."""
+    workers pile up in its panel as WAITING. The rule keeps open only a worker
+    that gets the next step of its own task (a standing scanner)."""
     words = " ".join(crewmate_prompts.text("conductor.how_you_work").split())
     assert "once a one-off worker's report is handled" in words.lower()
     assert "close it with session_close" in words
-    assert "keep open only a worker you will send to again" in words
+    assert "keep open only a worker that will get the next step of its own task" in words
     assert "never close a worker that waits on the user" in words.lower()
     # The report turn names the worker's key, so the Bot can close it directly.
     assert "{key}" in crewmate_prompts.text("worker_report.session")

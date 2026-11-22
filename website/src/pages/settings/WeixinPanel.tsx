@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { QrCode, Loader2, Check, TriangleAlert, RefreshCw } from 'lucide-react'
 import { api, type WeixinConfigSave } from '../../api/client'
 import { WeixinLogo } from '../../components/WeixinLogo'
-import { SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
+import { SettingsCard, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useChannelFolderSave } from '../../hooks/useChannelFolderSave'
 import { TagListEditor } from './SlackPanel'
@@ -208,9 +208,11 @@ export function WeixinPanel() {
         </div>
       </div>
 
-      {/* status */}
+      {/* One group box: sign-in state, sign-in, and who can reach the agent are
+          rows of it, never boxes of their own inside the pane. */}
+      <SettingsCard>
       <div
-        className="flex items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2.5"
+        className="flex items-center gap-2"
         data-testid="weixin-status"
       >
         {isError ? (
@@ -238,7 +240,7 @@ export function WeixinPanel() {
       </div>
 
       {/* QR login */}
-      <div className="rounded-lg border border-border bg-card p-3.5">
+      <div>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.weixinPanel.sign_in_with_wechat')}</div>
@@ -334,12 +336,10 @@ export function WeixinPanel() {
           as the switch's accessible name) and the keyboard/AT semantics.
           data-testid lives on this wrapper because SettingsToggle exposes only
           data-setting-label — same move as weixin-dm-policy below. */}
-      {/* max-w: this panel has no SettingsCard, so an uncapped row would make
-          the whole pane width a Clickable save surface (this panel autosaves —
-          a stray click in the empty gap would silently disable the channel)
-          and push the switch far from its label. Content-scaling matches the
-          dm-policy select below. */}
-      <div data-testid="weixin-enabled" className="max-w-[380px]">
+      {/* A row of the group box above, so the box's 720px content width caps
+          the Clickable save surface (this panel autosaves; an uncapped row would
+          let a stray click in the empty gap disable the channel). */}
+      <div data-testid="weixin-enabled">
         <SettingsToggle
           label={i18nT('pages.settings.weixinPanel.enable_the_wechat_channel')}
           checked={!!data?.enabled}
@@ -354,7 +354,7 @@ export function WeixinPanel() {
             neighbouring control stays content-scaled. data-testid stays on this
             wrapper so the Playwright drive (scripts/test-weixin-panel.mjs)
             still finds the field. */}
-        <div className="block" data-testid="weixin-dm-policy" style={{ maxWidth: 280 }}>
+        <div className="block" data-testid="weixin-dm-policy">
           <SettingsSelect
             label={i18nT('pages.settings.weixinPanel.who_can_message_the_bot')}
             options={['open', 'allowlist', 'disabled']}
@@ -404,7 +404,7 @@ export function WeixinPanel() {
           button) pass neither. Renaming does not strand the folder it creates:
           the channel's folder is found by its stamp, so a new name relabels that
           same folder instead of building a second one. */}
-      <div className="border-t border-border mt-4 pt-4" data-testid="weixin-session-folder">
+      <div data-testid="weixin-session-folder">
         <SettingsToggle
           label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
           hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
@@ -464,8 +464,9 @@ export function WeixinPanel() {
           testId="weixin-session-folder-error"
         />
       </div>
+      </SettingsCard>
 
-      <p className="text-[11.5px] text-muted m-0">
+      <p className="text-[11.5px] text-muted m-0 px-4 max-w-[720px]">
         <Trans
           i18nKey="pages.settings.weixinPanel.group_chats_not_supported_setup_guide"
           components={{

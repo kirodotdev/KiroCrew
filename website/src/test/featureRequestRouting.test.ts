@@ -207,3 +207,45 @@ describe('feature-request routing', () => {
     expect(kirocrewCommands(FEATURE_REQUEST_PROMPT_FALLBACK)).toEqual(kirocrewCommands(skill))
   })
 })
+
+// An issue filed through `gh issue create --body-file` skips the issue form, so
+// the draft's `###` headings are the only thing that makes it read like a form
+// issue, and triage reads its answers by those headings. Each draft is held to
+// its form's field labels, in the form's order.
+describe('feature-request draft matches the issue forms', () => {
+  const formLabels = (file: string): string[] =>
+    (parse(read(`.github/ISSUE_TEMPLATE/${file}`)).body as { type: string; attributes: { label?: string } }[])
+      .filter((field) => field.type !== 'markdown')
+      .map((field) => field.attributes.label ?? '')
+
+  const draftHeadings = (marker: string): string[] => {
+    const block = skillBlocks.find(
+      (node) => node.type === 'code' && node.value.includes('### Existing issues') && node.value.includes(marker),
+    )
+    expect(block, `no draft block in the skill carries "### ${marker}"`).toBeDefined()
+    const text = block && block.type === 'code' ? block.value : ''
+    return [...text.matchAll(/^### (.+)$/gm)].map((match) => match[1])
+  }
+
+  it.each([
+    ['feature_request.yml', 'Problem'],
+    ['bug_report.yml', 'What happened'],
+  ])('the skill drafts %s with its field labels as headings', (file, marker) => {
+    expect(draftHeadings(marker)).toEqual(formLabels(file))
+  })
+
+  // Both drafts share field names (Existing issues, Anything else), so each
+  // form's labels are read in order from the sentence that introduces that draft.
+  it.each([
+    ['feature_request.yml', 'A feature request:'],
+    ['bug_report.yml', 'A bug report:'],
+  ])('the prompt fallback names the %s fields in order', (file, intro) => {
+    let at = FEATURE_REQUEST_PROMPT_FALLBACK.indexOf(intro)
+    expect(at, `the fallback is missing "${intro}"`).toBeGreaterThan(-1)
+    for (const label of formLabels(file)) {
+      const next = FEATURE_REQUEST_PROMPT_FALLBACK.indexOf(label, at)
+      expect(next, `the fallback is missing ${label} after the ${file} fields before it`).toBeGreaterThan(-1)
+      at = next + label.length
+    }
+  })
+})

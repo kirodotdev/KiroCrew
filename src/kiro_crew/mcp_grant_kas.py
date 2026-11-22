@@ -24,9 +24,10 @@ boolean.
 
 The entry name mirrors an undocumented engine internal,
 ``calculateConnectionHash`` in ``@kiro/agent``'s ``acp-server.js`` (checked
-against KAS 2.36.0 and 2.37.1): sha256 over the trimmed, lower-cased url, ``|``,
-the sorted ``name:value`` headers joined by ``|``, and a ``|cimd:`` suffix when
-the oauth config names a client-metadata url but no client id. Crew never sends
+against KAS 2.36.0, 2.37.1 and 3.5.0 for the browser flow): sha256 over the
+trimmed, lower-cased url, ``|``, the sorted ``name:value`` headers joined by
+``|``, and a ``|cimd:`` suffix when the oauth config names a client-metadata url
+but no client id. Crew never sends
 a url entry's headers to the engine (they are stripped, or the entry becomes a
 local bridge). It does send the ``oauth`` block (``kas_engine_features.carry_oauth``),
 but never its ``clientMetadataUrl``, so no entry gets the ``|cimd:`` suffix and the
@@ -56,6 +57,9 @@ GRANT_STORE_PARTS = ("kas", "mcp-grants")
 _KEY_PREFIX = "kiro.mcp"
 _TOKENS_KIND = "tokens"
 _CLIENT_KIND = "client"
+_PATH_CLIENT_KIND = "kiro-path-client"
+#: The engine entry kinds that outlive its process: the sign-in and the client registration.
+PERSISTED_KINDS = (_TOKENS_KIND, _CLIENT_KIND, _PATH_CLIENT_KIND)
 # The ASCII characters JavaScript's ``String.prototype.trim`` removes. Python's
 # ``str.strip()`` with no argument also removes \x1c-\x1f, which the engine keeps.
 _JS_TRIM_ASCII = " \t\n\v\f\r"
@@ -132,14 +136,14 @@ def kas_tokens_entry_name(mcp_url: str) -> str:
     return f"{_KEY_PREFIX}.{kas_connection_hash(mcp_url)}.{_TOKENS_KIND}"
 
 
-def kas_saved_sign_in_names(mcp_url: str) -> tuple[str, str]:
-    """The vault entries one saved sign-in is: its ``tokens`` and its ``client``.
+def kas_saved_sign_in_names(mcp_url: str) -> tuple[str, ...]:
+    """The vault entries one saved sign-in is: its ``tokens`` and client registration.
 
-    The two kinds the engine's store persists; a Disconnect removes both, as a
-    kiro-cli Disconnect removes its token and registration pair.
+    One name per persisted kind. A Disconnect removes them all, as a kiro-cli
+    Disconnect removes its token and registration pair.
     """
     digest = kas_connection_hash(mcp_url)
-    return (f"{_KEY_PREFIX}.{digest}.{_TOKENS_KIND}", f"{_KEY_PREFIX}.{digest}.{_CLIENT_KIND}")
+    return tuple(f"{_KEY_PREFIX}.{digest}.{kind}" for kind in PERSISTED_KINDS)
 
 
 def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool | None:
@@ -177,7 +181,7 @@ def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool 
 
 
 async def forget_kas_grant(mcp_url: str, *, store_root: Path | None = None) -> None:
-    """Delete the engine's ``tokens`` and ``client`` entries for *mcp_url*.
+    """Delete the engine's ``tokens`` and client registration entries for *mcp_url*.
 
     By name only, so no entry is decrypted. Refuses a linked store directory, as
     the store does. For Crew-owned sign-in taking custody of a url (one grant).
@@ -193,8 +197,8 @@ async def forget_kas_grant(mcp_url: str, *, store_root: Path | None = None) -> N
     if linked:
         return
     vault = SecretVault(store_root)
-    for kind in (_TOKENS_KIND, "client"):
-        await vault.delete(f"{_KEY_PREFIX}.{kas_connection_hash(mcp_url)}.{kind}")
+    for name in kas_saved_sign_in_names(mcp_url):
+        await vault.delete(name)
 
 
 async def kas_grant_observed(mcp_url: str) -> bool | None:

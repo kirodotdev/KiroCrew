@@ -127,7 +127,7 @@ test("classifyStartFailure: client-only outranks an incomplete bundle", () => {
 });
 
 test("classifyStartFailure: a launch refused its own port is client-only too", () => {
-  // The setting is ON in these states and nothing was launched anyway, because
+  // The setting is ON in these states and no gateway runs anyway, because
   // the port this launch targets is not one a new gateway may bind. The dialog
   // reads this same answer to decide whether to offer "Start Local Gateway", and
   // both messages name that button -- so a kind of "failed" here would print a

@@ -1,16 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, renderHook, act } from '@testing-library/react'
+import { render, screen, waitFor, renderHook, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { ALL_UNAVAILABLE } from '../../api/sharedCrewUi'
 import type { CrewModeResponse } from '../../api/sharedCrewMode'
-import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from './CreatorFilter'
+import { loadCreatorFilter, saveCreatorFilter } from '../../api/sharedCrewMode'
+import { SharedCrewReadNotices, useSharedCrewListView } from './CreatorFilter'
 import { SessionCreatorByline, SharedCrewBylineContext } from './SessionCreatorByline'
 
 vi.mock('../../api/client', () => ({
-  api: { sharedCrewSessions: vi.fn(), sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn() },
+  api: { sharedCrewPeople: vi.fn(), sharedCrewCapabilities: vi.fn(), sharedCrewMode: vi.fn() },
 }))
-const sessions = vi.mocked(api.sharedCrewSessions)
 const people = vi.mocked(api.sharedCrewPeople)
 const caps = vi.mocked(api.sharedCrewCapabilities)
 const modeApi = vi.mocked(api.sharedCrewMode)
@@ -51,149 +51,15 @@ beforeEach(() => {
   modeApi.mockResolvedValue(modeBody('network'))
 })
 
-describe('CreatorFilteredSessions', () => {
-  it('asks the server to filter and page, and shows the server counts', async () => {
-    sessions.mockResolvedValueOnce({ schema_version: 1, items: [{ key: 'k1', title: 'One', attribution: attribution('Bob') }], total_matching: 120, hidden_by_filter: 30, next_cursor: 'c2' })
-    sessions.mockResolvedValueOnce({ schema_version: 1, items: [{ key: 'k2', title: 'Two' }], total_matching: 120, hidden_by_filter: 30, next_cursor: '' })
-    const onOpen = vi.fn()
-    mount(<CreatorFilteredSessions creator="mine" q=" deploy " connected onOpen={onOpen} onClear={() => {}} />)
-    expect(await screen.findByText('One')).toBeInTheDocument()
-    expect(sessions).toHaveBeenLastCalledWith({ creator: 'mine', q: 'deploy', cursor: undefined, limit: 50 })
-    expect(screen.getByTestId('creator-filter-counts').textContent).toMatch(/120 matching · 30 hidden by this filter/)
-    fireEvent.click(screen.getByRole('button', { name: 'More' }))
-    expect(await screen.findByText('Two')).toBeInTheDocument()
-    expect(sessions).toHaveBeenLastCalledWith({ creator: 'mine', q: 'deploy', cursor: 'c2', limit: 50 })
-    // The second page renders what the server sent: no client-side filtering.
-    expect(screen.getByText(/Unattributed/)).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Two'))
-    expect(onOpen).toHaveBeenCalledWith('k2', 'Two')
-  })
-
-  it('keeps keyboard focus on a paging button when the pressed one leaves', async () => {
-    sessions.mockImplementation(async ({ cursor }) => cursor === 'c2'
-      ? { schema_version: 1, items: [{ key: 'k2', title: 'Two' }], total_matching: 2, hidden_by_filter: 0, next_cursor: '' }
-      : { schema_version: 1, items: [{ key: 'k1', title: 'One' }], total_matching: 2, hidden_by_filter: 0, next_cursor: 'c2' })
-    mount(<CreatorFilteredSessions creator="mine" q="" connected onOpen={() => {}} onClear={() => {}} />)
-    expect(await screen.findByText('One')).toBeInTheDocument()
-    // More leaves on the last page, so focus lands on Back.
-    const more = screen.getByRole('button', { name: 'More' })
-    more.focus()
-    fireEvent.click(more)
-    expect(await screen.findByText('Two')).toBeInTheDocument()
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Back' })))
-    expect(screen.queryByRole('button', { name: 'More' })).toBeNull()
-    // Back leaves on the first page, so focus lands on More.
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
-    expect(await screen.findByText('One')).toBeInTheDocument()
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More' })))
-    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull()
-  })
-
-  it('leaves focus where the user moved it while a page was loading', async () => {
-    let finish!: (v: Awaited<ReturnType<typeof api.sharedCrewSessions>>) => void
-    sessions.mockResolvedValueOnce({ schema_version: 1, items: [{ key: 'k1', title: 'One' }], total_matching: 2, hidden_by_filter: 0, next_cursor: 'c2' })
-    sessions.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-    mount(<><button type="button">Elsewhere</button><CreatorFilteredSessions creator="mine" q="" connected onOpen={() => {}} onClear={() => {}} /></>)
-    expect(await screen.findByText('One')).toBeInTheDocument()
-    const more = screen.getByRole('button', { name: 'More' })
-    more.focus()
-    fireEvent.click(more)
-    await waitFor(() => expect(sessions).toHaveBeenCalledTimes(2))
-    const elsewhere = screen.getByRole('button', { name: 'Elsewhere' })
-    elsewhere.focus()
-    await act(async () => { finish({ schema_version: 1, items: [{ key: 'k2', title: 'Two' }], total_matching: 2, hidden_by_filter: 0, next_cursor: '' }) })
-    expect(await screen.findByText('Two')).toBeInTheDocument()
-    expect(document.activeElement).toBe(elsewhere)
-  })
-
-  it('leaves focus on Back when the user moved there while More was loading', async () => {
-    let finish!: (v: Awaited<ReturnType<typeof api.sharedCrewSessions>>) => void
-    sessions.mockResolvedValueOnce({ schema_version: 1, items: [{ key: 'k1', title: 'One' }], total_matching: 3, hidden_by_filter: 0, next_cursor: 'c2' })
-    sessions.mockResolvedValueOnce({ schema_version: 1, items: [{ key: 'k2', title: 'Two' }], total_matching: 3, hidden_by_filter: 0, next_cursor: 'c3' })
-    sessions.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-    mount(<CreatorFilteredSessions creator="mine" q="" connected onOpen={() => {}} onClear={() => {}} />)
-    expect(await screen.findByText('One')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'More' }))
-    expect(await screen.findByText('Two')).toBeInTheDocument()
-    // On a middle page both buttons show; press More, then move to Back.
-    const more = screen.getByRole('button', { name: 'More' })
-    more.focus()
-    fireEvent.click(more)
-    await waitFor(() => expect(sessions).toHaveBeenCalledTimes(3))
-    const back = screen.getByRole('button', { name: 'Back' })
-    back.focus()
-    await act(async () => { finish({ schema_version: 1, items: [{ key: 'k3', title: 'Three' }], total_matching: 3, hidden_by_filter: 0, next_cursor: 'c4' }) })
-    expect(await screen.findByText('Three')).toBeInTheDocument()
-    expect(document.activeElement).toBe(back)
-  })
-
-  it('re-reads a cached creator page when returning to the filter', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
-    const page = { schema_version: 1, items: [{ key: 'k1', title: 'One' }], total_matching: 1, hidden_by_filter: 0, next_cursor: '' }
-    sessions.mockResolvedValue(page)
-    const tree = (show: boolean) => (
-      <QueryClientProvider client={qc}>
-        {show && <CreatorFilteredSessions creator="mine" q="" connected onOpen={() => {}} onClear={() => {}} />}
-      </QueryClientProvider>
-    )
-    const { rerender } = render(tree(true))
-    expect(await screen.findByText('One')).toBeInTheDocument()
-    rerender(tree(false))
-    sessions.mockResolvedValue({ ...page, items: [{ key: 'k2', title: 'Two' }] })
-    rerender(tree(true))
-    expect(await screen.findByText('Two')).toBeInTheDocument()
-    expect(sessions).toHaveBeenCalledTimes(2)
-  })
-
-  it('sends the older unknown spelling as unattributed, and degrades when the route is not served', async () => {
-    sessions.mockResolvedValue(null)
-    const onClear = vi.fn()
-    mount(<CreatorFilteredSessions creator="unknown" q="" connected onOpen={() => {}} onClear={onClear} />)
-    expect(await screen.findByTestId('creator-filter-unavailable')).toBeInTheDocument()
-    expect(sessions).toHaveBeenLastCalledWith({ creator: 'unattributed', q: undefined, cursor: undefined, limit: 50 })
-    fireEvent.click(screen.getByRole('button', { name: 'Show all sessions' }))
-    expect(onClear).toHaveBeenCalled()
-  })
-
-  it('labels the verified viewer You and unattended work by its trigger', async () => {
-    sessions.mockResolvedValueOnce({
-      schema_version: 1, total_matching: 2, hidden_by_filter: 0, next_cursor: '',
-      items: [
-        { key: 'mine', title: 'Mine', attribution: attribution('Me', 'p_me') },
-        { key: 'cron', title: 'Nightly', attribution: { creator: UNKNOWN, availability: 'legacy_missing', created_at: null, trigger: { kind: 'scheduled', ref: 'abc12345', name: 'Nightly digest', configured_by: null } } },
-      ],
-    })
-    mount(<CreatorFilteredSessions creator="all" q="" connected onOpen={() => {}} onClear={() => {}} />, 'p_me')
-    expect(await screen.findByText('Mine', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
-    expect(screen.getByTestId('creator-filter-row-mine').textContent).toContain('You')
-    expect(screen.getByTestId('creator-filter-row-cron').textContent).toContain('Scheduled: Nightly digest')
-    expect(screen.getByTestId('creator-filter-row-cron').textContent).not.toContain('Unattributed')
-  })
-
-  it('shows an error through the shared notice', async () => {
-    sessions.mockRejectedValue(new Error('boom'))
-    mount(<CreatorFilteredSessions creator="all" q="" connected onOpen={() => {}} onClear={() => {}} />)
-    await waitFor(() => expect(screen.getByTestId('creator-filter-error')).toBeInTheDocument())
-  })
-})
-
-describe('CreatorFilterBar', () => {
-  it('offers All, Mine, the people seen and Unattributed', async () => {
-    people.mockResolvedValue({ schema_version: 1, directory: { state: 'unavailable' }, people: [
-      { principal: human('p_b', 'Bob'), sources: ['observed'], is_viewer: false },
-      { principal: human('p_me', 'Me'), sources: ['observed'], is_viewer: true },
-    ] })
-    // The older `unknown` value shows as the Unattributed choice.
-    mount(<CreatorFilterBar value="unknown" onChange={() => {}} />)
-    const root = await screen.findByTestId('creator-filter', {}, { timeout: CHAIN_TIMEOUT_MS })
-    await waitFor(() => expect(root.textContent).toContain('Unattributed'))
-    expect(root.textContent).not.toContain('Unknown')
-  })
-
-  it('a failed People read shows the error notice beside the choices', async () => {
+describe('SharedCrewReadNotices', () => {
+  it('a failed People read shows the error notice at the top of the list', async () => {
     people.mockRejectedValue(new Error('people read failed'))
     modeApi.mockResolvedValue(modeBody('network'))
-    mount(<CreatorFilterBar value="all" onChange={() => {}} />)
+    function Probe() {
+      useSharedCrewListView()
+      return <SharedCrewReadNotices />
+    }
+    mount(<Probe />)
     expect(await screen.findByTestId('creator-filter-people-error', {}, { timeout: CHAIN_TIMEOUT_MS })).toHaveTextContent('people read failed')
   })
 })
@@ -204,8 +70,9 @@ describe('useSharedCrewListView', () => {
     const { result } = renderHook(() => useSharedCrewListView(), { wrapper: wrapper() })
     await waitFor(() => expect(modeApi).toHaveBeenCalled())
     await waitFor(() => expect(result.current.bylines.hidden).toBe(true))
-    expect(result.current.filterAvailable).toBe(false)
-    expect(result.current.filter).toBe('all')
+    expect(result.current.creatorFilterShown).toBe(false)
+    expect(result.current.noticesAvailable).toBe(false)
+    expect(result.current.creatorKeys.size).toBe(0)
   })
 
   it('hides the filter and bylines with the Shared Crew preview off, reading no mode or People', async () => {
@@ -215,8 +82,8 @@ describe('useSharedCrewListView', () => {
     await waitFor(() => expect(caps).toHaveBeenCalled())
     await act(async () => {})
     expect(result.current.bylines.hidden).toBe(true)
-    expect(result.current.filterAvailable).toBe(false)
-    expect(result.current.filter).toBe('all')
+    expect(result.current.creatorFilterShown).toBe(false)
+    expect(result.current.creatorKeys.size).toBe(0)
     expect(modeApi).not.toHaveBeenCalled()
     expect(people).not.toHaveBeenCalled()
   })
@@ -236,7 +103,7 @@ describe('useSharedCrewListView', () => {
     await waitFor(() => expect(modeApi).toHaveBeenCalled(), { timeout: CHAIN_TIMEOUT_MS })
     await act(async () => {})
     expect(result.current.bylines.hidden).toBe(true)
-    expect(result.current.filterAvailable).toBe(false)
+    expect(result.current.creatorFilterShown).toBe(false)
   })
 
   it('shows the filter and bylines once a teammate joins', async () => {
@@ -246,10 +113,10 @@ describe('useSharedCrewListView', () => {
     ] })
     const { result } = renderHook(() => useSharedCrewListView(), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.bylines.hidden).toBe(false), { timeout: CHAIN_TIMEOUT_MS })
-    expect(result.current.filterAvailable).toBe(true)
+    expect(result.current.creatorFilterShown).toBe(true)
   })
 
-  it('never guesses a mode it could not read: no bylines, no filter, the bar shows the error', async () => {
+  it('never guesses a mode it could not read: no bylines, no filter, the notice shows the error', async () => {
     // A team path is set up and another person is seen, so a guessed mode would be network.
     caps.mockResolvedValue({
       ...ALL_UNAVAILABLE,
@@ -270,15 +137,14 @@ describe('useSharedCrewListView', () => {
       const view = useSharedCrewListView()
       return (
         <>
-          <span data-testid="probe">{`${view.bylines.hidden}|${view.filter}|${view.filterAvailable}`}</span>
-          {view.filterAvailable && <CreatorFilterBar value={view.filter} onChange={view.setFilter} />}
+          <span data-testid="probe">{`${view.bylines.hidden}|${view.creatorKeys.size}|${view.creatorFilterShown}|${view.noticesAvailable}`}</span>
+          {view.noticesAvailable && <SharedCrewReadNotices />}
         </>
       )
     }
     render(<W><Probe /></W>)
     await waitFor(() => expect(screen.getByTestId('creator-filter-mode-error')).toBeInTheDocument())
-    expect(screen.getByTestId('probe').textContent).toBe('true|all|true')
-    expect(screen.queryByTestId('creator-filter')).toBeNull()
+    expect(screen.getByTestId('probe').textContent).toBe('true|0|false|true')
     expect(screen.getByTestId('creator-filter-mode-error').textContent).toContain('mode route missing')
     // Showing the error does not re-ask the route.
     expect(modeApi).toHaveBeenCalledTimes(1)
@@ -287,22 +153,45 @@ describe('useSharedCrewListView', () => {
   it('remembers the selection per Crew and labels the viewer', async () => {
     modeApi.mockResolvedValue(modeBody('network', 'crew-a'))
     const first = renderHook(() => useSharedCrewListView(), { wrapper: wrapper() })
-    await waitFor(() => expect(first.result.current.filterAvailable).toBe(true))
+    await waitFor(() => expect(first.result.current.creatorFilterShown).toBe(true))
     expect(first.result.current.bylines).toEqual({ hidden: false, viewerId: 'p_me' })
-    act(() => first.result.current.setFilter('unknown'))
-    expect(first.result.current.filter).toBe('unattributed')
+    act(() => first.result.current.toggleCreator('unattributed'))
+    act(() => first.result.current.toggleCreator('p_tm'))
+    expect([...first.result.current.creatorKeys]).toEqual(['unattributed', 'p_tm'])
+    act(() => first.result.current.toggleCreator('p_tm'))
+    expect([...first.result.current.creatorKeys]).toEqual(['unattributed'])
     first.unmount()
 
     // Same Crew again: the choice comes back.
     const again = renderHook(() => useSharedCrewListView(), { wrapper: wrapper() })
-    await waitFor(() => expect(again.result.current.filter).toBe('unattributed'))
+    await waitFor(() => expect([...again.result.current.creatorKeys]).toEqual(['unattributed']))
+    act(() => again.result.current.clearCreators())
+    expect(again.result.current.creatorKeys.size).toBe(0)
+    expect(window.localStorage.getItem('kc.shared-crew.creator-filter.crew-a')).toBeNull()
     again.unmount()
 
     // Another Crew keeps its own (default) choice.
+    window.localStorage.setItem('kc.shared-crew.creator-filter.crew-a', '["mine"]')
     modeApi.mockResolvedValue(modeBody('network', 'crew-b'))
     const other = renderHook(() => useSharedCrewListView(), { wrapper: wrapper() })
-    await waitFor(() => expect(other.result.current.filterAvailable).toBe(true))
-    expect(other.result.current.filter).toBe('all')
+    await waitFor(() => expect(other.result.current.creatorFilterShown).toBe(true))
+    expect(other.result.current.creatorKeys.size).toBe(0)
+  })
+
+  it('reads the older one-choice value as a one-key selection', () => {
+    const store = window.localStorage
+    store.setItem('kc.shared-crew.creator-filter.c', 'unknown')
+    expect(loadCreatorFilter('c')).toEqual(['unattributed'])
+    store.setItem('kc.shared-crew.creator-filter.c', 'p_bob')
+    expect(loadCreatorFilter('c')).toEqual(['p_bob'])
+    store.setItem('kc.shared-crew.creator-filter.c', 'all')
+    expect(loadCreatorFilter('c')).toEqual([])
+    store.setItem('kc.shared-crew.creator-filter.c', '["mine","p_b","not a key","mine"]')
+    expect(loadCreatorFilter('c')).toEqual(['mine', 'p_b'])
+    store.setItem('kc.shared-crew.creator-filter.c', '[broken')
+    expect(loadCreatorFilter('c')).toEqual([])
+    saveCreatorFilter('c', ['p_b', 'mine'])
+    expect(store.getItem('kc.shared-crew.creator-filter.c')).toBe('["p_b","mine"]')
   })
 })
 

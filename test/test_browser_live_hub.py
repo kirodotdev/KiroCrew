@@ -7,12 +7,17 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from browser_live_helpers import SESSION, FakeRelay
+from browser_live_helpers import SESSION, FakeClock, FakeRelay, frame_event, make_jpeg
 
 from kiro_crew.browser_harness import live_hub as lh
 from kiro_crew.browser_harness import screencast as sc
 from kiro_crew.browser_harness.takeover import InputEventError
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import (
+    FALLBACK_TIMEOUT_SECS,
+    async_wait_until,
+    await_until,
+    until_parked,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -39,6 +44,9 @@ class FakeStream:
 
     async def set_visible(self, visible: bool) -> None:
         self.calls.append(("visible", visible))
+
+    async def restart(self) -> None:
+        self.calls.append(("restart", None))
 
     async def set_takeover(self, active: bool) -> None:
         self.calls.append(("takeover", active))
@@ -259,16 +267,236 @@ async def test_input_is_scaled_by_the_frame_the_card_drew_not_the_newest(hub) ->
     # The same point on the 640 px frame the card may draw next is the same CSS point.
     await h.input_event("chat-1", {**click, "x": 202, "y": 212, "w": 640})
     assert (relay.calls[-1][1]["x"], relay.calls[-1][1]["y"]) == (404, 424)
-    # A wheel is scaled the same way.
+    # A wheel is scaled the same way (it glides: its steps add up to the turn).
     await h.input_event("chat-1", {"type": "wheel", "x": 404, "y": 424, "dy": 100, "w": 1280})
-    assert relay.calls[-1][1]["deltaY"] == 100
     # A card that sends no width keeps the stream's own ratio (the old behaviour).
     await h.input_event("chat-1", click)
+    steps = [c[1]["deltaY"] for c in relay.calls if c[1].get("type") == "mouseWheel"]
+    assert sum(steps) == 100, steps
     assert relay.calls[-1][1]["x"] == 808
+    # One glide fed from a 1280 px frame and then a 640 px frame: each turn and the
+    # pointer spot keep their own frame's scale (200 CSS px, at (404, 424)).
+    relay.calls.clear()
+    await h.input_event("chat-1", {"type": "wheel", "x": 404, "y": 424, "dy": 100, "w": 1280})
+    await h.input_event("chat-1", {"type": "wheel", "x": 202, "y": 212, "dy": 50, "w": 640})
+    await h.input_event("chat-1", {**click, "w": 1280})
+    wheels = [c[1] for c in relay.calls if c[1].get("type") == "mouseWheel"]
+    assert sum(w["deltaY"] for w in wheels) == 200, wheels
+    assert {(w["x"], w["y"]) for w in wheels} == {(404, 424)}, wheels
     # Before any frame metadata (device_width 0) the width cannot be used.
     stream.device_width = 0.0
     await h.input_event("chat-1", {**click, "w": 1280})
     assert relay.calls[-1][1]["x"] == 808
+
+
+async def test_a_refused_move_is_logged_and_a_dropped_glide_sends_nothing_more() -> None:
+    """A move the page refused costs one pointer position and never raises; a glide
+    whose owner is gone clears its turns, and a dropped settle forgets the rest."""
+
+    async def refused() -> int:
+        raise RuntimeError("page refused the move")
+
+    await lh._settle([asyncio.ensure_future(refused())])
+    sess = SimpleNamespace(
+        wheel_marks=[(0.0, 0, 100)],
+        wheel_sent=[0, 40],
+        wheel_now=False,
+        wheel_task=None,
+        lock=SimpleNamespace(owner="agent"),
+        stream=None,
+    )
+    await lh._wheel_glide(sess, None, None)  # type: ignore[arg-type]
+    assert (sess.wheel_marks, sess.wheel_sent) == ([], [0, 0])
+    gate = asyncio.Event()
+    sess.wheel_marks, sess.wheel_sent = [(0.0, 0, 100)], [0, 40]
+    sess.wheel_task = asyncio.ensure_future(gate.wait())
+    settling = asyncio.ensure_future(lh._wheel_settle(sess, drop=True))  # type: ignore[arg-type]
+    await async_wait_until(lambda: sess.wheel_now)
+    assert (sess.wheel_marks, sess.wheel_sent) == ([], [0, 0])
+    gate.set()
+    await settling
+
+
+@pytest.fixture
+def glide_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The wheel glide on a clock only its own waits move: a stalled loop never
+    makes a turn look finished. Returns the clock's one-element cell."""
+    from kiro_crew.browser_harness import live_hub_wheel
+
+    now = [0.0]
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(live_hub_wheel, "_clock", lambda: now[0])
+    monkeypatch.setattr(live_hub_wheel, "_sleep", sleep)
+    return now
+
+
+async def test_a_wheel_turn_glides_and_a_press_lands_after_it(hub, glide_clock) -> None:
+    """r19 (video review, Stack Overflow u4r8b f187-227): Chrome takes a CDP wheel as
+    one jump, so the page moved once per wheel event and a 30 fps film repeated
+    frames 4 times in 0.6 s. A turn goes out in steps, one a frame, easing out; a
+    press sent meanwhile lands after the rest of the turn."""
+    h, _wire = hub
+    relay = FakeRelay()
+    real_send = relay.send
+    third = asyncio.Event()
+
+    def wheels() -> list[Any]:
+        return [c[1]["deltaY"] for c in relay.calls if c[1].get("type") == "mouseWheel"]
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        out = await real_send(method, params, session_id)
+        if len(wheels()) >= 3:
+            third.set()
+        return out
+
+    relay.send = send  # type: ignore[method-assign]
+    await h.start_stream(
+        "chat-1", relay, "a", browser="kiro_chromium", headless=True, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    await h.input_event("chat-1", {"type": "wheel", "x": 10, "y": 10, "dy": 300})
+    await await_until(third, what="the turn's first steps")
+    steps = wheels()
+    assert steps[0] < 300 and all(x > 0 for x in steps), steps
+    await h.input_event(
+        "chat-1", {"type": "mouse", "action": "down", "x": 10, "y": 10, "button": "left"}
+    )
+    assert sum(wheels()) == 300
+    assert relay.calls[-1][1]["type"] == "mousePressed"
+
+
+async def test_a_turn_at_another_spot_lands_after_the_first_turn_finished(hub, glide_clock) -> None:
+    """A second pane scrolled before the first glide ends: every step of the first
+    turn goes to the first spot, and the second turn's steps to its own."""
+    h, _wire = hub
+    relay = FakeRelay()
+    await h.start_stream(
+        "chat-1", relay, "a", browser="kiro_chromium", headless=True, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    await h.input_event("chat-1", {"type": "wheel", "x": 10, "y": 10, "dy": 300})
+    await h.input_event("chat-1", {"type": "wheel", "x": 500, "y": 400, "dy": 100})
+    await h.input_event(
+        "chat-1", {"type": "mouse", "action": "down", "x": 1, "y": 1, "button": "left"}
+    )
+    wheels = [c[1] for c in relay.calls if c[1].get("type") == "mouseWheel"]
+    first = [w["deltaY"] for w in wheels if (w["x"], w["y"]) == (10, 10)]
+    second = [w["deltaY"] for w in wheels if (w["x"], w["y"]) == (500, 400)]
+    assert (sum(first), sum(second)) == (300, 100), wheels
+    assert len(first) + len(second) == len(wheels), wheels
+    assert all(w["x"] == 10 for w in wheels[: len(first)]), wheels
+
+
+async def test_a_press_waiting_behind_a_move_is_released_by_the_hand_back_that_raced_it(
+    hub,
+) -> None:
+    """A press that waits for a move in flight while a hand-back starts: the press
+    goes into the held input that hand-back releases, never into the fresh one."""
+    h, _wire = hub
+    relay = FakeRelay()
+    real_send = relay.send
+    gate = asyncio.Event()
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        if isinstance(params, dict) and params.get("type") == "mouseMoved":
+            await gate.wait()
+        return await real_send(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    await h.start_stream(
+        "chat-1", relay, "a", browser="kiro_chromium", headless=True, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    sess = h._sessions["chat-1"]
+    await h.input_event("chat-1", {"type": "mouse", "action": "move", "x": 5, "y": 5})
+    press = asyncio.ensure_future(
+        h.input_event(
+            "chat-1", {"type": "mouse", "action": "down", "x": 5, "y": 5, "button": "left"}
+        )
+    )
+    await until_parked(gate)
+    for _ in range(5):  # the press reads its held input, then waits for the move
+        await asyncio.sleep(0)
+    assert not press.done()
+    released = sess.held
+    sess.held = type(released)()  # what a hand-back's _take_held does meanwhile
+    gate.set()
+    await press
+    assert released and not sess.held
+
+
+def test_a_gliding_wheel_eases_out_evenly_frame_by_frame() -> None:
+    """r19 (video review, Stack Overflow u4r10, u4r17): the film showed 71, 0, 123 and
+    185, 0, 176 px a frame; a first step that large made Chrome take two frames for it.
+    Over even frames a glide starts small, rises for a few frames, then every step is
+    smaller than the one before, none of them 0, and they add up to the turn."""
+    marks = [(0.0, 0, 380)]
+    pos = [lh._wheel_target(marks, k / 60)[1] for k in range(1, 60)]
+    steps = [b - a for a, b in zip([0.0, *pos], pos)]
+    steps = [s for s in steps if s >= 0.5]
+    assert steps[0] < 30, steps
+    peak = steps.index(max(steps))
+    assert 1 <= peak <= 4, steps
+    assert all(b < a for a, b in zip(steps[peak:], steps[peak + 1 :])), steps
+    assert round(pos[-1]) == 380, pos[-1]
+    # r19 (u4r20): at 30 frames a second, each frame moves less than twice the one
+    # next to it, from the second frame of the turn until under 2 px are left.
+    film = [lh._wheel_target(marks, k / 30)[1] for k in range(0, 40)]
+    moves = [b - a for a, b in zip(film, film[1:])]
+    body = [m for m in moves[1:] if m >= 2]
+    assert all(max(a, b) / min(a, b) <= 2 for a, b in zip(body, body[1:])), body
+
+
+def test_a_wheel_turn_that_comes_mid_glide_speeds_the_page_up_smoothly() -> None:
+    """r19 (video review, u4r20): a turn that came late in another's glide was sent
+    almost at once (205 px in one frame between steps of 30): each turn now glides on
+    its own curve from when it came, and the two add up."""
+    marks = [(0.0, 0, 100), (0.15, 0, 100)]
+    film = [lh._wheel_target(marks, k / 60)[1] for k in range(0, 60)]
+    moves = [b - a for a, b in zip(film, film[1:])]
+    assert max(moves) < 25, moves
+    assert round(film[-1]) == 200
+
+
+async def test_wheel_steps_keep_going_while_the_page_is_slow_to_take_one(hub, glide_clock) -> None:
+    """r19 (video review, u4r20 f185): each step waited for the page to take the one
+    before; a page that took 40-70 ms got no step for a whole frame, so the film stood
+    still and then jumped twice as far. Steps go out up to WHEELS_IN_FLIGHT ahead."""
+    h, _wire = hub
+    relay = FakeRelay()
+    real_send = relay.send
+    gate = asyncio.Event()
+    started: list[float] = []
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        if isinstance(params, dict) and params.get("type") == "mouseWheel":
+            started.append(asyncio.get_running_loop().time())
+            await gate.wait()  # the page is busy and takes no step yet
+        return await real_send(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    await h.start_stream(
+        "chat-1", relay, "a", browser="kiro_chromium", headless=True, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    await h.input_event("chat-1", {"type": "wheel", "x": 10, "y": 10, "dy": 300})
+    await until_parked(gate, count=lh.WHEELS_IN_FLIGHT)
+    # WHEELS_IN_FLIGHT steps are with the page before it took the first; no more.
+    assert len(started) == lh.WHEELS_IN_FLIGHT, started
+    # Three step gaps later the glide still waits for the page.
+    loop = asyncio.get_running_loop()
+    await async_wait_until(lambda: loop.time() >= started[-1] + 3 * lh.WHEEL_MIN_GAP_S)
+    assert len(started) == lh.WHEELS_IN_FLIGHT, started
+    gate.set()
+    await h.input_event(
+        "chat-1", {"type": "mouse", "action": "down", "x": 10, "y": 10, "button": "left"}
+    )
+    wheels = [c[1]["deltaY"] for c in relay.calls if c[1].get("type") == "mouseWheel"]
+    assert sum(wheels) == 300 and relay.calls[-1][1]["type"] == "mousePressed", wheels
 
 
 async def test_input_is_refused_without_a_claim_or_without_a_stream(hub) -> None:
@@ -753,6 +981,97 @@ async def test_a_turn_that_browses_after_a_reopen_joins_the_running_stream(hub) 
     assert sess.stream is None and wire.events[-1][1]["state"] == "done"
 
 
+class StillPageRelay(LedgerRelay):
+    """Chrome showing a still page: each screencast start answers with one frame of
+    it, and nothing more comes until the page changes (measured on Chromium: a
+    start answers in about 10 ms, then 0 frames in 3 s of a still page)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pushes: list[asyncio.Future[Any]] = []
+
+    async def send(
+        self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None
+    ) -> dict[str, Any]:
+        answer = await super().send(method, params, session_id)
+        if method == "Page.startScreencast" and self.on_event is not None:
+            self.pushes.append(asyncio.ensure_future(self.on_event(frame_event(make_jpeg(64, 40)))))
+        return answer
+
+    async def drained(self) -> None:
+        while not all(p.done() for p in self.pushes):
+            await asyncio.gather(*self.pushes, return_exceptions=True)
+
+
+class OrderedWire(Wire):
+    """Events and frames in the one order they went out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.order: list[str] = []
+
+    async def publish(self, name: str, data: Any) -> int:
+        self.order.append(f"event:{data.get('turn_id')}")
+        return await super().publish(name, data)
+
+    async def send_frame(self, blob: bytes) -> int:
+        self.order.append("frame")
+        return await super().send_frame(blob)
+
+
+def _real_stream(*a: Any, **k: Any) -> sc.LiveStream:
+    clock = FakeClock()
+    return sc.LiveStream(*a, clock=clock, sleep=clock.sleep, auto_control=False, **k)
+
+
+async def test_a_turn_that_joins_a_running_stream_gets_a_picture_of_a_still_page_at_once() -> None:
+    wire = OrderedWire()
+    h = lh.LiveHub(clock=lambda: 100.0)
+    h.bind(wire.publish, wire.send_frame)
+    relay = StillPageRelay()
+
+    async def settle() -> None:
+        await _settled(h)
+        await relay.drained()
+        await _settled(h)
+
+    h.turn_started("chat-1", "t1")
+    h.bind_target("chat-1", "tgt")
+    await h.start_stream(
+        "chat-1", relay, "tgt", browser="user_chrome", headless=False, stream_factory=_real_stream
+    )
+    h.turn_ended("chat-1")
+    await settle()
+    # The view folded and came back (a stayLive app view, or Open live): one picture.
+    assert await h.reopen("chat-1", relay, stream_factory=_real_stream) == lh.REOPEN_LIVE
+    await settle()
+    stream = h.get("chat-1").stream
+    assert stream is not None and stream.casting
+    wire.order.clear()
+
+    # The next turn joins that stream on a page that is not changing: the card opens
+    # the turn with no picture, and the frame that answers the restart follows its
+    # event, so it lands on the new turn.
+    h.turn_started("chat-1", "t2")
+    await settle()
+    assert h.get("chat-1").stream is stream
+    assert wire.order[0] == "event:t2" and wire.order.count("frame") == 1, wire.order
+
+    # No card sees the view: nothing is asked of Chrome, and the cast stays stopped.
+    await h.set_visible("chat-1", True, "tab-a")
+    await h.set_visible("chat-1", False, "tab-a")
+    await settle()
+    starts = len(relay.methods("Page.startScreencast"))
+    h.turn_ended("chat-1")
+    await settle()
+    assert await h.reopen("chat-1", relay, stream_factory=_real_stream) == lh.REOPEN_LIVE
+    wire.order.clear()
+    h.turn_started("chat-1", "t3")
+    await settle()
+    assert "frame" not in wire.order and h.get("chat-1").stream.casting is False
+    assert len(relay.methods("Page.startScreencast")) == starts
+
+
 class _Clock:
     def __init__(self) -> None:
         self.t = 1000.0
@@ -1062,6 +1381,40 @@ async def test_a_hung_page_is_bounded_by_the_release_deadline_and_the_lock_still
     assert _types(relay.calls).count("keyUp") == 0 and relay.entered.is_set()
 
 
+async def test_the_stream_knows_the_person_drives_before_their_press_lands(hub) -> None:
+    """r19 (craigslist u6m5 in the pod): a slider press took 40 ms to land, the stream
+    was told of the input only after it, and the frame sent meanwhile waited 160 ms for
+    the recorder's mask query: the thumb stood 9 frames at the drag's start."""
+    h, _wire = hub
+    relay = FakeRelay()
+    real_send = relay.send
+    gate = asyncio.Event()
+    sending = asyncio.Event()
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        if (params or {}).get("type") == "mousePressed":
+            sending.set()
+            await gate.wait()
+        return await real_send(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    stream = h._sessions["chat-1"].stream
+    down = asyncio.ensure_future(
+        h.input_event(
+            "chat-1",
+            {"type": "mouse", "action": "down", "x": 10, "y": 10, "button": "left", "clicks": 1},
+        )
+    )
+    await await_until(sending, what="the press to reach the page")
+    assert stream.inputs == 1, "told only after the press landed"
+    gate.set()
+    await await_until(down, what="the press to finish")
+
+
 async def test_a_slow_input_in_flight_lands_and_is_released_before_the_lock_opens(
     hub, monkeypatch
 ) -> None:
@@ -1185,3 +1538,48 @@ async def test_the_visible_tab_set_is_capped(hub, monkeypatch) -> None:
     await h.set_visible("chat-1", True, "b")
     await h.set_visible("chat-1", True, "c")
     assert h.get("chat-1").visible_tabs == {"a", "b"}
+
+
+async def test_a_drag_s_moves_go_out_before_the_page_took_the_last_one_but_a_press_waits(
+    hub,
+) -> None:
+    """r19 (video review, craigslist drag in the pod): each move waited for the page to
+    take the one before (12-59 ms while the slider's handler ran), so the newest
+    position reached it every 28-58 ms. Moves go out ahead of the page's ack, two at
+    most; a release of the button waits for them, so it never overtakes a move."""
+    h, _wire = hub
+    relay = FakeRelay()
+    real_send = relay.send
+    gate = asyncio.Event()
+    sent: list[str] = []
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        kind = (params or {}).get("type", "")
+        sent.append(kind)
+        if kind == "mouseMoved":
+            await gate.wait()  # the page is busy: no move is taken yet
+        return await real_send(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    move = {"type": "mouse", "action": "move", "x": 10, "y": 20, "button": "left"}
+    # Two moves return at once, both already sent, though the page took neither.
+    for x in (10, 20):
+        await asyncio.wait_for(h.input_event("chat-1", {**move, "x": x}), FALLBACK_TIMEOUT_SECS)
+    assert sent.count("mouseMoved") == 2, sent
+    # A third waits for the first to be taken.
+    third = asyncio.ensure_future(h.input_event("chat-1", {**move, "x": 30}))
+    up = asyncio.ensure_future(
+        h.input_event(
+            "chat-1", {"type": "mouse", "action": "up", "x": 30, "y": 20, "button": "left"}
+        )
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not third.done() and "mouseReleased" not in sent, sent
+    gate.set()
+    await asyncio.wait_for(asyncio.gather(third, up), FALLBACK_TIMEOUT_SECS)
+    assert sent.count("mouseMoved") == 3 and sent[-1] == "mouseReleased", sent

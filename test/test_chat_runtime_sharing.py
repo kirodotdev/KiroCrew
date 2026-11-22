@@ -1886,8 +1886,9 @@ class TestTheCodexSpawnEnvIsCoveredByTheKey:
 
     ``DISABLE_MCP_CONFIG_FILTERING`` and ``CODEX_ACP_EXTERNAL_SANDBOX`` are constants.
     ``CODEX_CONFIG`` (every configured MCP server disabled) is set only for the
-    background agent, and ``agent`` is a key field, so a background spawn and a chat
-    spawn can never be one process. ``CODEX_HOME`` reaches the child from the
+    background agent and for a spec that mounts nothing. ``agent`` and
+    ``spec_generation`` are key fields on codex, so neither spawn can be one process
+    with a chat. ``CODEX_HOME`` reaches the child from the
     gateway's environment or ``agent.env``, which the key already holds.
     """
 

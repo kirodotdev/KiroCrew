@@ -36,7 +36,8 @@ class CodeChannelDefaultsConfig:
     :func:`kiro_crew.slack.features.resolve_code_channel_session`):
 
     * agent / model / effort: the explicit value here, else the folder's own
-      ``default_agent``, else the agent Slack already uses;
+      ``default_agent``, else the agent Slack already uses; with ``conductor_mode``
+      on (where conductor mode is offered) the agent is the conductor mode agent;
     * project: the folder's ``project_dir``, else the project bound to the thread
       the channel was opened from, else none.
     """
@@ -97,6 +98,81 @@ class CodeChannelDefaultsConfig:
             tags=["slack"],
         ),
     )
+    conductor_mode: bool | None = field(
+        default=None,
+        metadata=_meta(
+            "Always use conductor mode",
+            "Run every new code channel in conductor mode, on the conductor mode agent "
+            "(agent.crew_mode_agent). It overrides the code-channel default agent "
+            "and the folder's agent for new code channels; a session already "
+            "running keeps its agent. Applies only where conductor mode is "
+            "offered (every build but LTS). A conductor hands work to helper agents, so "
+            "slack.code_channel_dispatch should be on too. Off when unset; a "
+            "missing or malformed value reads as off.",
+            tags=["slack"],
+        ),
+    )
+
+
+def is_slack_user_id(value: object) -> bool:
+    """A Slack member id: ``U`` or ``W`` then 1 to 19 upper-case letters or digits.
+
+    Validated by ``USER_ID_RE``, the pattern the messaging schemas use. A bot id
+    (``B...``) and a workspace id (``T...``) never match.
+    """
+    # Here, not at the top: a module-level name would be a facade owner name the
+    # config.sections facade must bind, and not the kiro_crew.validation facade
+    # either, which imports config.sections, which imports this module.
+    from kiro_crew.validation_parts.input_bounds import USER_ID_RE
+
+    return isinstance(value, str) and USER_ID_RE.fullmatch(value) is not None
+
+
+def shared_user_ids(raw: object) -> list[str]:
+    """``slack.shared_access.user_ids`` as stored ids: trimmed, well-formed, deduped.
+
+    A non-list reads as empty and a malformed entry is dropped, so a hand edit can
+    never admit an id the gateway would not have accepted.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        value = item.strip() if isinstance(item, str) else ""
+        if is_slack_user_id(value) and value not in out:
+            out.append(value)
+    return out
+
+
+@dataclass
+class SlackSharedAccessConfig:
+    """The owner's opt-in to let named Slack users drive this Crew as the owner.
+
+    Read on every Slack event, so a removal or a switch-off applies to the next one.
+    Separate from ``allowed_users``, which stays inert: turning this on never admits
+    a stale allowlist entry.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Share Slack Access",
+            "Let the Slack users listed in user_ids use this Crew's Slack bot. They act "
+            "as you: with your files, git and cloud credentials and connected tools. "
+            "Off by default; applies to the next Slack event.",
+            tags=["slack"],
+        ),
+    )
+    user_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Shared Slack Users",
+            "Slack member IDs (U... or W...) allowed to use the bot while shared access "
+            "is on. Each is checked with Slack before it is used: same workspace as the "
+            "bot, a person, not deactivated, not the owner.",
+            tags=["slack"],
+        ),
+    )
 
 
 @dataclass
@@ -127,12 +203,22 @@ class SlackConfig:
         default="kirocrew",
         metadata=_meta(
             "Command",
-            "Slack slash command trigger word.",
-            # Boot-read: the trigger is registered in the Slack app MANIFEST, so
-            # a local reload cannot make Slack route a new word. Applying it
-            # in-process would only change the help text and report success for a
-            # command that still does not exist on Slack's side.
-            restart=True,
+            "Slash command name shown in Slack help. The gateway also answers "
+            "/kirocrew and any /kirocrew-<alias> the app registers.",
+            # Live: Slack routes only commands the app MANIFEST registers, and the
+            # gateway answers every manifest-shaped name (``/kirocrew`` and
+            # ``/kirocrew-<alias>``) whatever this says. This adds a custom name
+            # and is the name help text shows; the Slack applier refreshes it.
+        ),
+    )
+    setup_guide_url: str = field(
+        default="",
+        metadata=_meta(
+            "Setup Guide URL",
+            "Your organization's own Slack setup guide (for example, how to get a "
+            "workspace you may install apps in). The Slack setup wizard links it on "
+            "its first step. https:// only; any other value is ignored. Empty = no link.",
+            tags=["slack"],
         ),
     )
     forward_to_agent_callback: str = field(
@@ -203,6 +289,15 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    show_timing_footer: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Timing Footer",
+            'Post the "Finished in … · ctx …%" line after each reply. Turn it off for a '
+            "cleaner chat; choice buttons and the Link to Dashboard button still post.",
+            tags=["slack"],
+        ),
+    )
     dm_single_session: bool = field(
         default=False,
         metadata=_meta(
@@ -216,6 +311,17 @@ class SlackConfig:
             "mode. Group channels and group DMs are unaffected. Off by default: "
             "turning it on routes the next DM to a different session than the "
             "previous one.",
+            tags=["slack"],
+        ),
+    )
+    home_tab_builtin: bool = field(
+        default=True,
+        metadata=_meta(
+            "Built-in Home Tab",
+            "Publish the Kiro Crew status page to the bot's Slack Home tab each "
+            "time an allowed user opens it. Turn it off to keep a Home view you "
+            "publish yourself with the same bot: the tab then stays as you "
+            "published it. Read at each open, so a change needs no restart.",
             tags=["slack"],
         ),
     )
@@ -254,7 +360,9 @@ class SlackConfig:
         metadata=_meta(
             "Session Folder",
             "Optional sidebar folder for sessions that start on this channel. "
-            "Empty (the default) leaves them unfiled; any other value is the "
+            "Empty (the default) files them in a 'Slack' folder, created on "
+            "first use, while Show Slack Conversations In The Session List is "
+            "on, and leaves them unfiled while it is off; any other value is the "
             "folder name, created when these settings are saved and marked with "
             "the channel's brand mark. A configured folder that no longer exists "
             "leaves conversations unfiled until the next save recreates it.",
@@ -262,19 +370,20 @@ class SlackConfig:
         ),
     )
     show_in_session_list: bool = field(
-        default=True,
+        default=False,
         metadata=_meta(
             "Show Slack Conversations In The Session List",
             "List conversations that start in Slack (threads, DMs, channel "
-            "mentions) in the dashboard's session list. Off removes them from "
-            "the list only: they keep working in Slack, stay in History and "
-            "search, still raise approvals and notifications, and come back "
-            "when this is turned on again; nothing is closed or deleted. The "
-            "conversation open in the dashboard, and one waiting on an approval "
-            "or an answer, keep their rows. Sessions started "
-            "in the dashboard and linked to Slack, and Slack code channel "
-            "sessions with their helper agents, are always listed. On by "
-            "default; no restart.",
+            "mentions) in the dashboard's session list. Off (the default) "
+            "keeps them out of the list only: they keep working in Slack, stay "
+            "in History and search, and still raise approvals and "
+            "notifications; nothing is closed or deleted. The conversation "
+            "open in the dashboard, and one waiting on an approval or an "
+            "answer, keep their rows. On, and with no Session Folder set, new "
+            "ones are filed in a 'Slack' folder, created on first use. "
+            "Sessions started in the dashboard and linked to Slack, and Slack "
+            "code channel sessions with their helper agents, are always listed "
+            "and stay in their own folders. No restart.",
             tags=["slack"],
         ),
     )
@@ -318,11 +427,12 @@ class SlackConfig:
             "Only on turns the owner started, only for workers it created itself, "
             "one level deep, filed in the channel's folder, with the channel's own "
             "approval mode and never more; channels shared beyond this workspace "
-            "are excluded. Needs slack.code_channels on as well; turning that on "
-            "does not turn this on. Off keeps the full channel containment: a "
-            "conductor in a code channel cannot hand off work. Off by default, and "
-            "a missing, unreadable or malformed value reads as off. Takes effect "
-            "on the next call; no restart.",
+            "are excluded. Needs slack.code_channels on as well; a save that first "
+            "turns that on from the settings page turns this on with it, unless a "
+            "value is already stored (an explicit off is kept). Off keeps the full "
+            "channel containment: a conductor in a code channel cannot hand off "
+            "work. Off when unset, and a missing, unreadable or malformed value "
+            "reads as off. Takes effect on the next call; no restart.",
             tags=["slack"],
         ),
     )
@@ -341,6 +451,27 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    slack_mcp: bool = field(
+        default=False,
+        metadata=_meta(
+            "Slack Tools For Your Agents",
+            "Let the same Slack app serve Slack's MCP server, so each person can "
+            "connect their agents to Slack as themselves. Adds "
+            "settings.is_mcp_enabled, oauth_config.pkce_enabled and the redirect URL "
+            "http://localhost:48106/callback to the generated app manifest, and "
+            "replaces its user scopes with the read-only ones Slack's MCP server "
+            "needs (search, history, channel and user lists, files, canvases, "
+            "lists); off, the manifest is unchanged. "
+            "PKCE cannot be turned off again in Slack without Slack support, the "
+            "app must stay internal (not publicly distributed), each person still "
+            "connects on the Slack card under Settings > Connections with the "
+            "app's Client ID and Client Secret, and Slack ends those "
+            "sign-ins after 30 days. The settings page shows this switch only "
+            "while Connections offers the Slack card, or while it is on. The "
+            "gateway runs nothing for it. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
     code_channel_defaults: CodeChannelDefaultsConfig = field(
         default_factory=CodeChannelDefaultsConfig,
         metadata=_meta(
@@ -348,6 +479,14 @@ class SlackConfig:
             "Folder, agent, model, reasoning effort and approval mode a new "
             "code-channel session starts with. Takes effect on the next new code "
             "channel; no restart.",
+            tags=["slack"],
+        ),
+    )
+    shared_access: SlackSharedAccessConfig = field(
+        default_factory=SlackSharedAccessConfig,
+        metadata=_meta(
+            "Shared Access",
+            "Let other Slack users drive this Crew as you. Off by default.",
             tags=["slack"],
         ),
     )

@@ -12,7 +12,7 @@
 
 import { api } from '../api/client'
 import { updateSlot } from '../store/dashboardSlice'
-import type { AppDispatch } from '../store'
+import type { AppDispatch, RootState } from '../store'
 import { performSlotSwitch } from './slotSwitch'
 
 export function performAgentSlotSwitch(
@@ -34,13 +34,24 @@ export function performAgentSlotSwitch(
         : await api.chatSlotAgent(slot, agent)
       return { agent: r?.agent ?? agent, agentKind: r?.agent_kind, workspace: r?.workspace }
     },
-    (value) => dispatch(updateSlot({
-      key: slot, agent: value.agent,
-      // Absent means the response did not name it (an older gateway); the
-      // write then leaves the slot's stored value alone rather than clobber.
-      ...(value.agentKind !== undefined ? { agent_kind: value.agentKind } : {}),
-      // An absent workspace means the response did not name one; the write
-      // must then leave the slot's workspace untouched rather than clobber.
-      ...(value.workspace !== undefined ? { workspace: value.workspace } : {}),
-    })))
+    (value) => dispatch((d: AppDispatch, getState: () => RootState) => {
+      // A slot frame that landed before this answer already carries the new
+      // binding and its root stamp; keep that stamp. Otherwise the stamp
+      // describes the agent the chat just left, so drop it until the next
+      // frame stamps the new one: `showsAsCrewMode` then reads the row as
+      // unstamped rather than a stale `false`.
+      const row = getState().dashboard.slots.find(s => s.key === slot)
+      const stampIsCurrent = !!row && row.agent === value.agent
+        && (value.agentKind === undefined || row.agent_kind === value.agentKind)
+      d(updateSlot({
+        key: slot, agent: value.agent,
+        ...(stampIsCurrent ? {} : { crew_mode_root: undefined }),
+        // Absent means the response did not name it (an older gateway); the
+        // write then leaves the slot's stored value alone rather than clobber.
+        ...(value.agentKind !== undefined ? { agent_kind: value.agentKind } : {}),
+        // An absent workspace means the response did not name one; the write
+        // must then leave the slot's workspace untouched rather than clobber.
+        ...(value.workspace !== undefined ? { workspace: value.workspace } : {}),
+      }))
+    }))
 }

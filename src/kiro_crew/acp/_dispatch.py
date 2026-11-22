@@ -659,6 +659,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.acp._dispatch_parts.permission_requests import (  # noqa: F401
         _DENY_BEHAVIORS,
         _DENY_OPTION_IDS,
+        _KAS_MANAGED_SCOPES,
         _KAS_NON_COMMAND_TOOLS,
         _KAS_REMOTE_WRAPPER_ID_PREFIX,
         _KAS_REMOTE_WRAPPER_SERVER,
@@ -687,6 +688,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_mcp_tool_approval,
         is_strands_side_read,
         kas_consent_tool,
+        kas_managed_ask,
         pi_mcp_title,
         reject_option_id,
         strands_envelope_identity,
@@ -756,6 +758,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         antigravity_gate_params,
         antigravity_unverifiable_params,
         classify_tool_call,
+        claude_mcp_stamp,
         codex_tool_name,
         harness_tool_name,
         is_shell_kind,

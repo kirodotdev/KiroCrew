@@ -57,6 +57,7 @@ from typing import Any
 from kiro_crew.browser_harness import decide as _decide
 from kiro_crew.browser_harness import ops as _ops
 from kiro_crew.browser_harness import reflex_space as _space
+from kiro_crew.browser_harness.keys import NAMED_KEYS
 from kiro_crew.browser_harness.reflex_space import Move, Space
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ MODES = ("step", "realtime", "virtual_time")
 #: Caps on what one call may ask for. ``max_seconds`` stays inside the route's slow
 #: op budget, so a loop always ends with its own summary, never a route timeout.
 MAX_ACTIONS = 40
+#: Values the targeted ``type`` may pick from; more are dropped.
+MAX_VALUES = 20
 MAX_STEPS = 300
 DEFAULT_STEPS = 60
 MAX_SECONDS = 45.0
@@ -240,7 +243,7 @@ def parse(args: dict[str, Any]) -> Plan | dict[str, Any]:
     for key in _strings(args.get("keys")):
         if key == "Space":
             key = " "
-        if key not in _ops._NAMED_KEYS and len(key) != 1:
+        if key not in NAMED_KEYS and len(key) != 1:
             return _ops.refusal("bad_key", f"unknown key in `keys`: {key!r}")
         name = "Space" if key == " " else key
         moves.append(
@@ -280,7 +283,7 @@ def parse(args: dict[str, Any]) -> Plan | dict[str, Any]:
             return _ops.refusal("bad_ref", f"not a valid ref in `click`: {ref!r}")
     if refs and "click" not in targets:
         targets = ("click", *targets)
-    values = [v[:_VALUE_CAP] for v in _strings(args.get("values"))][:20]
+    values = [v[:_VALUE_CAP] for v in _strings(args.get("values"))][:MAX_VALUES]
     if "type" in targets and not values:
         return _ops.refusal("bad_value", "`targets` with type needs `values` to type")
     reads = _reads(args.get("read"))

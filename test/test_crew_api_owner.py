@@ -109,6 +109,9 @@ def test_each_owner_route_wraps_the_handler_of_the_twin_it_names():
     }
     for path, item in CONTRACT["paths"].items():
         for method, operation in item.items():
+            if "x-crew-wraps" not in operation:
+                # No ``/api/*`` twin; test_crew_api_grant_requests.py pins its owner gate.
+                continue
             twin_method, twin_path = operation["x-crew-wraps"].split(" ", 1)
             wrapped = table[(method.upper(), path)]
             assert wrapped.__wrapped__ is table[(twin_method, twin_path)]
@@ -123,6 +126,19 @@ async def test_the_roster_matches_the_contract(tmp_path):
     header_schemas = CONTRACT["components"]["headers"]
     for name in ("X-Request-Id", "Crew-API-Version"):
         Draft202012Validator(header_schemas[name]["schema"]).validate(headers[name])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("teammate", ["relay", "ssm", "tailscale"])
+async def test_teammates_keep_the_owner_roster_access(tmp_path, monkeypatch, teammate):
+    from test_shared_crew_teammate_owner_access import _publish
+
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
+    req = _request(_owner_state(tmp_path), BOTS)
+    _publish(req, teammate)
+    status, body, _headers = await _call(_members_route(), req)
+    assert status == 200
+    _validator("#/components/schemas/BotRoster").validate(body)
 
 
 @pytest.mark.asyncio

@@ -92,9 +92,9 @@ curl --fail -o ui/src/kirocrew-app-sdk.d.ts http://localhost:5476/vendor/kirocre
 ```
 
 Use your dashboard's address if it is not the default, and fetch the file again
-after you upgrade Kiro Crew. It names some libraries the host uses: keep
-`skipLibCheck: true` in your `tsconfig.json`, as the Vite template does, or
-install their types.
+after you upgrade Kiro Crew. It names some libraries the host uses: set
+`skipLibCheck: true` in the `tsconfig.json` you type-check with (the scaffold
+writes none), or install their types.
 
 ```tsx
 import { useAppApi, useAppEvents } from '@kirocrew/app-sdk'
@@ -211,7 +211,7 @@ Available in `@kirocrew/app-sdk`:
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
 | `useAppNotifications()` | This app's own bell notifications (`items`, `unread`, `status`) and `ack(ts)` / `ackAll()` to clear them; declare `/api/notifications/own` in `permissions.api`; needs `APP_SDK_LEVEL >= 4` |
-| `useChatLauncher()` | Open a new chat or target `slotKey`; set `autoSend: false` for an unsent draft |
+| `useChatLauncher()` | `openChat`: open a new chat or target `slotKey`; set `autoSend: false` for an unsent draft. `createChat`: create or reopen the person's chat your manifest's `permissions.chatLaunch` declares, without declaring `/api/chat/slots`, and resolve to its key; seam level 10, so feature-detect `createChat` ([API reference](api-reference.md#app-sdk-hooks-dashboard-ui)) |
 
 `useAppInfo().active` tells your app whether its host surface is the one the user is
 looking at. A routed `ui.pages` page is always the visible surface, so it reads `true`.

@@ -7,6 +7,7 @@ smaller handler hardening around them.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -27,6 +28,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import http_api as http_api_mod
 from kiro_crew.apps.builtins.dev_fleet import live as live_mod
+from kiro_crew.apps.builtins.dev_fleet import live_service as live_service_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
@@ -905,7 +907,257 @@ def test_gateway_unit_resolves_live_outside_pods(monkeypatch, tmp_path):
     home = tmp_path / ".kirocrew"
     home.mkdir(parents=True)
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert mod._gateway_unit_name() == "kirocrew.service"
+
+
+def test_gateway_unit_finds_the_live_unit_file_the_host_has(monkeypatch, tmp_path):
+    """A host whose user unit file is ``kirocrew-gateway.service`` gets that name and
+    the make-live drop-in beside it; ``kirocrew.service`` wins when both files exist."""
+    unit_dir = _unit_dir_host(monkeypatch, tmp_path)
+    (unit_dir / "kirocrew-gateway.service").write_text("[Service]\n")
     assert mod._gateway_unit_name() == "kirocrew-gateway.service"
+    assert mod._dropin_path() == unit_dir / "kirocrew-gateway.service.d" / "make-live.conf"
+    (unit_dir / "kirocrew.service").write_text("[Service]\n")
+    # No probe has named a running unit yet, so the first name answers.
+    assert mod._gateway_unit_name() == "kirocrew.service"
+
+
+def _unit_dir_host(monkeypatch, tmp_path: Path) -> Path:
+    """A Linux host outside a pod with an empty user unit directory, which it returns.
+
+    No probe has recorded a running unit, and ``systemctl`` resolves."""
+    home = tmp_path / ".kirocrew"
+    home.mkdir(parents=True)
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    unit_dir = tmp_path / "xdg" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(live_service_mod, "_LIVE_GATEWAY_UNIT_RUNNING", None)
+    monkeypatch.setattr(live_service_mod, "_read_cgroup", lambda pid: _OUTSIDE_BOTH_UNITS)
+    monkeypatch.setattr(live_service_mod, "_parent_pid", lambda pid: None)
+    monkeypatch.setattr(live_service_mod.sys, "platform", "linux")
+    monkeypatch.setattr(live_service_mod.shutil, "which", lambda name: "/bin/systemctl")
+    return unit_dir
+
+
+# A ``/proc/self/cgroup`` of a gateway that runs outside both user units.
+_OUTSIDE_BOTH_UNITS = "0::/user.slice/user-1000.slice/session-2.scope\n"
+_USER_APP_SLICE = "/user.slice/user-1000.slice/user@1000.service/app.slice"
+
+
+def _systemctl_states(monkeypatch, states: dict[str, str]) -> list[list[str]]:
+    """Answer each ``systemctl --user is-active`` with *states*, in argument order.
+
+    A unit absent from *states* is ``inactive``. rc is 0 when one unit is running,
+    else 3, as systemctl does. Every other command answers rc 0. Returns the argv log."""
+    seen: list[list[str]] = []
+
+    async def _fake(cmd, **kwargs):
+        seen.append(list(cmd))
+        if cmd[:3] == ["systemctl", "--user", "is-active"]:
+            got = [states.get(unit, "inactive") for unit in cmd[3:]]
+            running = {"active", "reloading", "refreshing"}.intersection(got)
+            return (0 if running else 3, "".join(f"{g}\n" for g in got), "")
+        return (0, "", "")
+
+    monkeypatch.setattr(runtime_mod, "_run_cmd", _fake)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_gateway_unit_is_the_running_one_when_both_unit_files_exist(monkeypatch, tmp_path):
+    """With both unit files and only ``kirocrew-gateway.service`` running, the status,
+    the restart and the drop-in all name ``kirocrew-gateway.service``."""
+    unit_dir = _unit_dir_host(monkeypatch, tmp_path)
+    for name in ("kirocrew.service", "kirocrew-gateway.service"):
+        (unit_dir / name).write_text("[Service]\n")
+    seen = _systemctl_states(monkeypatch, {"kirocrew-gateway.service": "active"})
+
+    assert await live_service_mod._live_user_unit_status() == "ok"
+    assert ["systemctl", "--user", "cat", "kirocrew-gateway.service"] in seen
+    assert ["systemctl", "--user", "is-active", "kirocrew-gateway.service"] in seen
+    assert mod._gateway_unit_name() == "kirocrew-gateway.service"
+    assert mod._dropin_path() == unit_dir / "kirocrew-gateway.service.d" / "make-live.conf"
+    seen.clear()
+    ok, _reason = await live_service_mod._gateway_backend().restart_detached()
+    assert ok
+    assert seen[-1][-1] == "kirocrew-gateway.service"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["activating", "deactivating"])
+async def test_a_relaunching_unit_file_does_not_hide_the_running_unit(monkeypatch, tmp_path, state):
+    """A ``kirocrew.service`` that is between relaunch attempts is not the running
+    unit: ``kirocrew-gateway.service``, which is active, answers."""
+    unit_dir = _unit_dir_host(monkeypatch, tmp_path)
+    for name in ("kirocrew.service", "kirocrew-gateway.service"):
+        (unit_dir / name).write_text("[Service]\n")
+    seen = _systemctl_states(
+        monkeypatch, {"kirocrew.service": state, "kirocrew-gateway.service": "active"}
+    )
+
+    assert await live_service_mod._live_user_unit_status() == "ok"
+    assert ["systemctl", "--user", "is-active", "kirocrew-gateway.service"] in seen
+    assert mod._gateway_unit_name() == "kirocrew-gateway.service"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("own_state", "cgroup"),
+    [
+        ("active", f"0::{_USER_APP_SLICE}/kirocrew-gateway.service\n"),
+        (
+            "deactivating",
+            f"12:pids:{_USER_APP_SLICE}/kirocrew-gateway.service\n"
+            f"1:name=systemd:{_USER_APP_SLICE}/kirocrew-gateway.service\n",
+        ),
+    ],
+    ids=["cgroup-v2-active", "cgroup-v1-deactivating"],
+)
+async def test_the_unit_that_holds_the_gateway_answers_in_any_state(
+    monkeypatch, tmp_path, own_state, cgroup
+):
+    """A ``kirocrew.service`` that relaunches is ``active`` for a moment of each
+    attempt. The unit whose cgroup holds this process still answers, also while it
+    stops, and no ``is-active`` probe runs."""
+    unit_dir = _unit_dir_host(monkeypatch, tmp_path)
+    for name in ("kirocrew.service", "kirocrew-gateway.service"):
+        (unit_dir / name).write_text("[Service]\n")
+    monkeypatch.setattr(live_service_mod, "_read_cgroup", lambda pid: cgroup)
+    seen = _systemctl_states(
+        monkeypatch, {"kirocrew.service": "active", "kirocrew-gateway.service": own_state}
+    )
+
+    assert await live_service_mod._settle_live_gateway_unit() == "kirocrew-gateway.service"
+    assert not [cmd for cmd in seen if cmd[:3] == ["systemctl", "--user", "is-active"]]
+    assert mod._gateway_unit_name() == "kirocrew-gateway.service"
+    assert mod._dropin_path() == unit_dir / "kirocrew-gateway.service.d" / "make-live.conf"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("running", ["reloading", "refreshing"])
+async def test_a_reloading_unit_is_the_running_one(monkeypatch, tmp_path, running):
+    """``is-active`` exits 0 for ``reloading`` and ``refreshing`` too, so a unit in
+    either state is the running one."""
+    unit_dir = _unit_dir_host(monkeypatch, tmp_path)
+    for name in ("kirocrew.service", "kirocrew-gateway.service"):
+        (unit_dir / name).write_text("[Service]\n")
+    _systemctl_states(
+        monkeypatch, {"kirocrew.service": "activating", "kirocrew-gateway.service": running}
+    )
+
+    assert await live_service_mod._settle_live_gateway_unit() == "kirocrew-gateway.service"
+
+
+@pytest.mark.parametrize(
+    ("text", "unit"),
+    [
+        (f"0::{_USER_APP_SLICE}/kirocrew.service\n", "kirocrew.service"),
+        (f"0::{_USER_APP_SLICE}/kirocrew-gateway.service/payload\n", "kirocrew-gateway.service"),
+        (f"0::{_USER_APP_SLICE}/kirocrew-cl-0a1b.scope\n", None),
+        ("0::/system.slice/kirocrew.service\n", None),
+        (
+            "11:pids:/user.slice/user-1000.slice/user@1000.service\n"
+            f"1:name=systemd:{_USER_APP_SLICE}/kirocrew-gateway.service\n",
+            "kirocrew-gateway.service",
+        ),
+        (_OUTSIDE_BOTH_UNITS, None),
+        ("", None),
+        ("no fields here\n", None),
+    ],
+    ids=[
+        "unit",
+        "delegated",
+        "client-scope",
+        "system-unit",
+        "cgroup-v1-controller-first",
+        "session",
+        "empty",
+        "malformed",
+    ],
+)
+def test_user_unit_in_cgroup_reads_the_path_under_the_user_manager(text, unit):
+    """Only a path component equal to a unit name, below ``user@<uid>.service``,
+    picks that unit."""
+    present = ["kirocrew.service", "kirocrew-gateway.service"]
+    assert live_service_mod._user_unit_in_cgroup(text, present) == unit
+
+
+def test_own_gateway_unit_walks_from_the_backend_scope_to_the_gateway(monkeypatch):
+    """The gateway starts the Dev Fleet backend in a transient scope through a
+    wrapper, so the gateway two parents up names the unit."""
+    scope = f"0::{_USER_APP_SLICE}/run-r0a1b.scope\n"
+    cgroups = {
+        "self": scope,
+        "200": scope,
+        "100": f"0::{_USER_APP_SLICE}/kirocrew-gateway.service\n",
+    }
+    parents = {"self": "200", "200": "100", "100": "1"}
+    monkeypatch.setattr(live_service_mod, "_read_cgroup", lambda pid: cgroups.get(pid, ""))
+    monkeypatch.setattr(live_service_mod, "_parent_pid", lambda pid: parents.get(pid))
+    present = ["kirocrew.service", "kirocrew-gateway.service"]
+    assert live_service_mod._own_gateway_unit(present) == "kirocrew-gateway.service"
+
+
+def test_own_gateway_unit_stops_after_the_walk_limit(monkeypatch):
+    """A chain of parents with no unit ends after ``_CGROUP_WALK`` reads."""
+    reads: list[str] = []
+
+    def _read(pid):
+        reads.append(pid)
+        return _OUTSIDE_BOTH_UNITS
+
+    monkeypatch.setattr(live_service_mod, "_read_cgroup", _read)
+    monkeypatch.setattr(live_service_mod, "_parent_pid", lambda pid: "7")
+    assert live_service_mod._own_gateway_unit(["kirocrew.service"]) is None
+    assert len(reads) == live_service_mod._CGROUP_WALK
+
+
+def test_parent_pid_reads_the_field_after_the_command_name(monkeypatch):
+    """A command name can hold ``) `` and spaces, so the parse starts after the last ``)``."""
+    stats = {"/proc/42/stat": b"42 (a) b c) S 7 42 42 0 -1\n", "/proc/1/stat": b"1 (init) S 0 1\n"}
+    monkeypatch.setattr(
+        live_service_mod, "open", lambda path, *_a, **_k: io.BytesIO(stats[path]), raising=False
+    )
+    assert live_service_mod._parent_pid("42") == "7"
+    assert live_service_mod._parent_pid("1") is None
+
+
+def test_an_unreadable_proc_file_reads_as_empty(monkeypatch):
+    """A read that fails gives "" and no parent, so the ``is-active`` probe decides."""
+
+    def _refuse(*_args, **_kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(live_service_mod, "open", _refuse, raising=False)
+    assert live_service_mod._read_cgroup("self") == ""
+    assert live_service_mod._parent_pid("self") is None
+
+
+@pytest.mark.asyncio
+async def test_both_stopped_unit_files_give_the_first_name(monkeypatch, tmp_path):
+    """With both unit files and neither running, ``kirocrew.service`` answers and is
+    reported as not running."""
+    unit_dir = _unit_dir_host(monkeypatch, tmp_path)
+    for name in ("kirocrew.service", "kirocrew-gateway.service"):
+        (unit_dir / name).write_text("[Service]\n")
+    seen = _systemctl_states(monkeypatch, {})
+
+    assert await live_service_mod._live_user_unit_status() == "user_unit_inactive"
+    assert ["systemctl", "--user", "cat", "kirocrew.service"] in seen
+    assert mod._gateway_unit_name() == "kirocrew.service"
+
+
+@pytest.mark.asyncio
+async def test_gateway_unit_with_one_unit_file_asks_the_manager_nothing(monkeypatch, tmp_path):
+    """A stat decides when only one unit file exists, so no ``is-active`` probe runs."""
+    unit_dir = _unit_dir_host(monkeypatch, tmp_path)
+    (unit_dir / "kirocrew-gateway.service").write_text("[Service]\n")
+    seen = _systemctl_states(monkeypatch, {"kirocrew.service": "active"})
+
+    assert await live_service_mod._settle_live_gateway_unit() == "kirocrew-gateway.service"
+    assert seen == []
 
 
 @pytest.mark.asyncio

@@ -262,28 +262,34 @@ def _clean_approval_state():
 # ──────────────────────────────────────────────────────────────────────
 # set_orch_cfg — voice_reply provider validation
 # ──────────────────────────────────────────────────────────────────────
-class _Cfg:
-    def __init__(self, voice_reply: dict):
-        self.raw = {"voice_reply": voice_reply}
+def _Cfg(voice_reply: dict, tmp_path, monkeypatch) -> object:
+    """Write *voice_reply* to a config.json the loader reads; return a config stand-in."""
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"voice_reply": voice_reply}))
+    monkeypatch.setattr(h, "config_path", lambda: path)
+    monkeypatch.setattr(h, "config_local_path", lambda: tmp_path / "config.local.json")
+    return object()
 
 
 class TestSetOrchCfgProviderValidation:
-    def test_unknown_provider_falls_back_to_local(self, monkeypatch, caplog):
+    def test_unknown_provider_falls_back_to_local(self, tmp_path, monkeypatch, caplog):
         # Flipped from a "polly" fallback: an unrecognised provider value must
         # not land on a PAID cloud service. Local costs nothing and degrades
         # visibly; a cloud fallback bills an account nobody chose.
         monkeypatch.setattr(h, "_vc", h._VoiceConfig())
         monkeypatch.setattr(h, "_orch_cfg", None, raising=False)
         with caplog.at_level("WARNING"):
-            h.set_orch_cfg(_Cfg({"enabled": True, "provider": "ploly"}))
+            h.set_orch_cfg(_Cfg({"enabled": True, "provider": "ploly"}, tmp_path, monkeypatch))
         assert h._vc.provider == voice_reply.DEFAULT_PROVIDER
         assert h._vc.provider != voice_reply.PROVIDER_POLLY
         assert "ploly" in caplog.text
 
-    def test_valid_provider_is_kept_and_enabled_implies_auto_reply(self, monkeypatch):
+    def test_valid_provider_is_kept_and_enabled_implies_auto_reply(self, tmp_path, monkeypatch):
         monkeypatch.setattr(h, "_vc", h._VoiceConfig())
         monkeypatch.setattr(h, "_orch_cfg", None, raising=False)
-        h.set_orch_cfg(_Cfg({"enabled": True, "provider": "polly", "voice_id": "Amy"}))
+        h.set_orch_cfg(
+            _Cfg({"enabled": True, "provider": "polly", "voice_id": "Amy"}, tmp_path, monkeypatch)
+        )
         assert h._vc.provider == "polly"
         assert h._vc.global_enabled is True
         # auto_reply_to_voice defaults to the value of `enabled`.

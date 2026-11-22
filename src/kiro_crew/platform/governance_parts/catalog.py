@@ -122,6 +122,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
         profile_always_permitted=("trust", "trust_reads"),
     ),
     "mcp": ScopeSpec(RULESET, matcher="mcp"),
+    # Which KGL web terms (``web_fetch``, ``web_search``) a KAS permission request
+    # may be approved for with no person asked: trust, YOLO or any other
+    # auto-approve. The LTS policy fetch denies a term an ``ask`` rule names, so
+    # that request always reaches the approval card (``kiro_crew.web_ask_rule``).
+    # An absent scope permits both (unchanged behavior).
+    "unattended_web_tools": ScopeSpec(RULESET, matcher="identifier"),
     "apps": ScopeSpec(RULESET, matcher="identifier"),
     # Which app versions may be installed and loaded, as ``<app>@<version>``
     # (``{"mode": "allow", "allow": ["file-explorer@1.*"]}``). Asked by
@@ -180,8 +186,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # the empty string internally, which no identifier matcher can carry.
     #
     # Consulted by ``kiro_crew.agent_backend_governance`` at exactly ONE place: it
-    # recomputes the ``acp_backends`` registry, from ``bootstrap_context`` at boot and
-    # from ``policy_distribution.apply_ceiling`` on every runtime ceiling install.
+    # recomputes the ``acp_backends`` registry from ``bootstrap_context`` at each
+    # process boot (a runtime ceiling install deliberately does not re-run it).
     # Deliberately NOT consulted at provider construction — harness-parity H13 forbids
     # the Kiro construction path gaining a conditional in service of an adapter, and a
     # test asserts ``create_provider_factory`` contains no governance call. The
@@ -506,7 +512,9 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # hosted provider, each local preset id, ``sagemaker``). ``capability.provider_id``
     # names the configured one, and every check that reads this row for the configured
     # provider asks it too, so a refused model is neither selectable nor used. ``none``
-    # is never asked, and neither is an endpoint the owner wrote by hand.
+    # is never asked, and neither is an endpoint the owner wrote by hand. An LTS
+    # build refuses hosted Jev and every hand-written endpoint in code, whatever
+    # this list says (``capability.edition_refuses``).
     "capabilities.decisions": ScopeSpec(
         CAPABILITY,
         capability_default=True,

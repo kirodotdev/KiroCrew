@@ -17,7 +17,8 @@
  * synchronous; `usePreviewFlagServerSync` fills the cache from the server copy
  * and sends each toggle to the server through the writer it registers with
  * {@link setPreviewFlagPersister}.
- * A flag has no server behavior of its own unless its own note says so.
+ * A flag has no server behavior of its own unless its own note says so
+ * (for example {@link PREVIEW_CONNECTED_COMPUTERS}).
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
  * polished, delete its `previewFlag` from the registry entry and its card from
@@ -57,6 +58,18 @@ export interface PreviewFlagChange {
 
 /** Developer-only Session Environments configuration. Reveals settings, not runtime availability. */
 export const PREVIEW_SESSION_ENVIRONMENTS = `${PREVIEW_FLAG_PREFIX}session-environments`
+
+/**
+ * Connected computers: a chat's files and commands run on the user's own
+ * computer while the agent stays on the gateway.
+ *
+ * Unlike most flags here this one has SERVER behavior: each gateway reads its
+ * own copy, and while it is off the backend refuses enrollment, the connector
+ * socket, the chat's environment choice and every start on a computer, and
+ * turning it off ends the live connections (`kiro_crew.connected_computers`).
+ * Hiding the UI is the smaller half. Default OFF.
+ */
+export const PREVIEW_CONNECTED_COMPUTERS = `${PREVIEW_FLAG_PREFIX}connected-computers`
 
 /** Inbound webhooks (`/webhooks`): functional, not yet polished enough to ship. */
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
@@ -210,19 +223,6 @@ export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-sta
 export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-sharing`
 
 /**
- * The Secrets vault redesign: Settings > Secrets as a list-detail pane
- * (`SecretsPanel.tsx`) that also stores logins and notes.
- *
- * Default OFF, and OFF is the single-page panel on `main`
- * (`SecretsPanelLegacy.tsx`), with the tab hosting no sub-nav. The gateway reads
- * the same switch (`dashboard.feature_previews.secrets_vault`) for
- * `GET /api/secrets`: off, the listing is names only with no `items`, as before.
- * The typed write is not gated: it is additive, so a plain `{name, value}`
- * write keeps its old shape and the legacy panel works against it unchanged.
- */
-export const PREVIEW_SECRETS_VAULT = `${PREVIEW_FLAG_PREFIX}secrets-vault`
-
-/**
  * Worker grill: a conductor may offer to let two or three workers grill a costly
  * choice before it picks a path, answer a pick with a `[GRILL: {...}]` card line,
  * and dispatch one moderator worker that runs the fast talk
@@ -235,6 +235,38 @@ export const PREVIEW_SECRETS_VAULT = `${PREVIEW_FLAG_PREFIX}secrets-vault`
 export const PREVIEW_WORKER_GRILL = `${PREVIEW_FLAG_PREFIX}worker-grill`
 
 /**
+ * App browser SDK (rfc-app-sdk-browser.md): the `permissions.browser` verbs an app may use on
+ * the browser tabs of its own slots, and the backend's `ctx.browser`. Has SERVER
+ * behavior: off, the gateway builds no `ctx.browser` and an approved verb has no
+ * effect (`apps/browser_sdk.py`). The app page reads it only to say so. Default OFF.
+ */
+export const PREVIEW_APP_BROWSER_SDK = `${PREVIEW_FLAG_PREFIX}app-browser-sdk`
+
+/**
+ * Phone widgets: Bots may write home-screen widgets for the Kiro Mobile app.
+ * Has SERVER behavior: off, agents are not told about widgets and
+ * `dashboard_save` refuses them with `widgets_preview_off`
+ * (`kiro_crew/widgets_preview.py`). Nothing in the dashboard reads this key.
+ * Default OFF.
+ */
+export const PREVIEW_WIDGETS = `${PREVIEW_FLAG_PREFIX}widgets`
+
+/**
+ * Visual refresh: a restyle of the dashboard that lands on `main` in pieces.
+ * Default OFF, and OFF is the dashboard as it is on `main`. Nothing reads it
+ * yet; shipping the refresh to everyone (retiring the flag) is its own decision.
+ */
+export const PREVIEW_VISUAL_REFRESH = `${PREVIEW_FLAG_PREFIX}visual-refresh`
+
+/**
+ * Company sign-in: an edition may give an IAM Identity Center start URL its own
+ * sign-in profile. Has SERVER behavior: off, the gateway asks the edition for no
+ * profile (`kiro_crew/auth/login/endpoints.py`), and the sign-in form shows no
+ * company warning. Default OFF, and OFF is `main`.
+ */
+export const PREVIEW_CREW_CLIENT = `${PREVIEW_FLAG_PREFIX}crew-client`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -243,6 +275,7 @@ export const PREVIEW_WORKER_GRILL = `${PREVIEW_FLAG_PREFIX}worker-grill`
  * {@link PREVIEW_INSTANCE_SESSIONS} is left out: the gateway never keeps it.
  */
 export const PREVIEW_FLAGS: readonly string[] = [
+  PREVIEW_CONNECTED_COMPUTERS,
   PREVIEW_WEBHOOKS,
   PREVIEW_ARTIFACT_DEPLOY,
   PREVIEW_REMOTE_CREW_CHAT,
@@ -255,8 +288,11 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
-  PREVIEW_SECRETS_VAULT,
   PREVIEW_WORKER_GRILL,
+  PREVIEW_APP_BROWSER_SDK,
+  PREVIEW_VISUAL_REFRESH,
+  PREVIEW_WIDGETS,
+  PREVIEW_CREW_CLIENT,
 ]
 
 /**

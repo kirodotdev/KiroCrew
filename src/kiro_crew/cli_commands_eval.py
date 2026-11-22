@@ -381,3 +381,136 @@ async def _run_eval(args: argparse.Namespace) -> None:
         # the command, so `kirocrew eval && next` stops and a script can gate on it.
         # The report is already on disk.
         sys.exit(1)
+
+
+#: Flags that only mean something after ``kirocrew eval run`` (dest names).
+_EVAL_RUN_ONLY = (
+    "suite",
+    "tier",
+    "harness",
+    "case_ids",
+    "eval_home",
+    "out",
+    "json",
+    "check",
+    "use_operator_credentials",
+)
+#: Scenario flags ``kirocrew eval run`` does not take (dest names).
+_SCENARIO_ONLY = (
+    "all_scenarios",
+    "judge",
+    "eval_dir",
+    "eval_file",
+    "agent",
+    "baseline",
+    "max_drop",
+    "junit",
+)
+
+
+def _eval_run_flag_refusal(args: argparse.Namespace) -> str:
+    """Why this ``kirocrew eval`` invocation mixes the two forms, or "" when it does not."""
+    names = list(getattr(args, "scenarios", None) or [])
+    if names[:1] == ["run"]:
+        if len(names) > 1:
+            return f"kirocrew eval run takes no scenario names (got {' '.join(names[1:])})"
+        stray = [n for n in _SCENARIO_ONLY if getattr(args, n, None)]
+        if stray:
+            return f"kirocrew eval run does not take --{stray[0].replace('_', '-')}"
+        return ""
+    stray = [n for n in _EVAL_RUN_ONLY if getattr(args, n, None)]
+    if stray:
+        return f"--{stray[0].replace('_', '-')} needs kirocrew eval run"
+    return ""
+
+
+def _run_eval_tasks(args: argparse.Namespace) -> int:
+    """``kirocrew eval run --suite tasks``: run or ``--check`` the task cases; the exit code.
+
+    Exit: 0 every scored run passed, 1 a run FAILED (or none was scored), 2 usage,
+    3 preflight refused (rfc-builtin-eval.md §3.4).
+    """
+    import os
+
+    from kiro_crew.eval import tasks
+
+    suite = getattr(args, "suite", None) or ""
+    if suite != "tasks" and not (suite and Path(suite).expanduser().is_dir()):
+        print("Error: --suite must be 'tasks' or a suite directory.", file=sys.stderr)
+        return 2
+    suite_dir = tasks.resolve_suite(args.suite)
+    try:
+        cases = tasks.find_cases(suite_dir, args.tier or "all", list(args.case_ids or []))
+    except tasks.CaseError as exc:
+        print(safe_terminal_line(f"Error: {exc}"), file=sys.stderr)
+        return 2
+    if not cases:
+        print(safe_terminal_line(f"Error: no cases under {suite_dir}/cases."), file=sys.stderr)
+        return 2
+    if args.check:
+        problems = tasks.check_cases(cases)
+        for line in problems:
+            print(safe_terminal_line(f"FAIL {line}"), file=sys.stderr)
+        print(
+            f"{len(cases) - len({p.split(':')[0] for p in problems})}/{len(cases)} cases bite and are solvable"
+        )
+        return 1 if problems else 0
+    try:
+        arms = tasks.resolve_harnesses(args.harness or "all")
+    except ValueError as exc:
+        print(safe_terminal_line(f"Error: {exc}"), file=sys.stderr)
+        return 2
+    operator = bool(getattr(args, "use_operator_credentials", False))
+    if operator:
+        import copy
+
+        arms = [copy.copy(arm) for arm in arms]  # never the shared ARMS instances
+        for arm in arms:
+            arm.operator_credentials = True
+        print(safe_terminal_line(tasks.OPERATOR_RISK_LINE), file=sys.stderr)
+    if not args.eval_home:
+        print(
+            "Error: --suite tasks needs --eval-home DIR; each run gets a fresh home under it.",
+            file=sys.stderr,
+        )
+        return 2
+    eval_root = Path(args.eval_home).expanduser().resolve()
+    if eval_root == suite_dir or suite_dir in eval_root.parents or eval_root in suite_dir.parents:
+        print("Error: --eval-home must not contain or sit inside the case suite.", file=sys.stderr)
+        return 2
+    out_dir = (Path(args.out).expanduser() if args.out else Path.cwd() / "eval_results").resolve()
+    if out_dir == suite_dir or suite_dir in out_dir.parents:
+        # The suite is fingerprinted after every run; results written into it would
+        # read as tampering and stop the batch.
+        print("Error: --out must not be the case suite or sit inside it.", file=sys.stderr)
+        return 2
+    env = dict(os.environ)
+    refusals = tasks.preflight(arms, env)
+    if refusals:
+        for line in refusals:
+            print(safe_terminal_line(f"Refused: {line}"), file=sys.stderr)
+        return 3
+    from kiro_crew.owner_only_files import mkdirs_owner_only
+
+    mkdirs_owner_only(eval_root)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    records = tasks.run_batch(
+        cases, arms, args.repeat, eval_root, out_dir, suite_dir, args.model or "", env
+    )
+    rows = tasks.summarize(records, tasks.requested_runs(cases, args.repeat))
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    summary: dict[str, object] = {
+        "timestamp": ts,
+        "suite": "tasks",
+        "credentials": tasks.OPERATOR_RISK_LINE if operator else "eval-only",
+        "summary": rows,
+        "runs": records,
+    }
+    report_path, json_path = write_eval_artifacts(out_dir, ts, tasks.format_summary(rows), summary)
+    if args.json:
+        print(json.dumps({"timestamp": ts, "summary": rows, "report": str(json_path)}))
+    else:
+        print(tasks.format_summary(rows))
+        print(f"\nResults saved to:\n  {report_path}\n  {json_path}")
+    scored = [r for r in records if r["verdict"] != "VOID"]
+    return 0 if scored and all(r["verdict"] == "PASSED" for r in scored) else 1

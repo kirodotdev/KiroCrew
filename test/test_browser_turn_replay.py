@@ -385,6 +385,38 @@ async def test_a_held_frame_is_dropped_when_its_boxes_cannot_be_proved(answer_no
     assert len(sink.recorded) == 1
 
 
+async def test_a_card_box_refresh_while_the_person_drove_voids_the_held_frames_proof() -> None:
+    """No query brackets the frames sent while the person drives (the card's query runs
+    beside them), so a refresh in that stretch leaves the held frame unproved even
+    when the boxes it reads match: a code typed and submitted then is never kept."""
+    stream, _relay, sink = await _held_frame({"result": {"value": [[0, 0, 10, 10]]}})
+    await stream._refresh_card_boxes()
+    assert await stream.flush_held() is False
+    assert len(sink.recorded) == 1
+
+
+async def test_a_frame_the_person_drives_is_never_recorded_and_voids_the_proof() -> None:
+    """With the card mask off no query runs while the person drives: a frame then (a
+    code typed into a plain ``name="otp"`` field, cleared on submit with no
+    navigation) is dropped, and the next one needs two fresh matching queries."""
+    stream, relay, clock, _sink = make_stream(config=sc.LiveConfig(mask_passwords=False))
+    sink = RecordingProbeSink()
+    sink.stream = stream
+    stream.sink = sink
+    relay.answers["Runtime.evaluate"] = {"result": {"value": []}}
+    await stream.start()
+    await relay.on_event(frame_event(jpeg(size=(1280, 800))))
+    assert len(sink.recorded) == 1
+    stream.note_input()
+    clock.now += 0.1
+    await relay.on_event(frame_event(jpeg((5, 5, 5), size=(1280, 800))))
+    assert len(sink.recorded) == 1 and stream._held is None
+    clock.now += sc.RECORD_INPUT_QUIET_S + 0.1
+    assert await stream.flush_held() is False
+    await relay.on_event(frame_event(jpeg((9, 9, 9), size=(1280, 800))))
+    assert sink.recorded[-1][3] is False  # one fresh query is not yet a pair
+
+
 async def test_a_held_frame_of_another_size_is_dropped() -> None:
     stream, _relay, sink = await _held_frame(
         {"result": {"value": [[0, 0, 10, 10]]}}, size=(640, 400)
@@ -607,6 +639,18 @@ def test_text_that_did_not_land_is_kept_as_a_length(code: str) -> None:
     assert ev["args"] == {"name": "type", "chars": 7, "secret": True}
 
 
+def test_a_paste_records_as_typing_and_never_keeps_its_html() -> None:
+    def event(text: str, result: dict) -> dict:
+        args = {"text": text, "html": f"<b>{text}</b>"}
+        return rc.agent_event("paste", args, result, ts=1, label="", url="", scale=1)
+
+    landed = event("a b", {"ok": True, "handled": True})
+    assert landed["op"] == "type"
+    assert landed["args"] == {"name": "paste", "chars": 3, "text": "a b"}
+    refused = event("hunter2", {"ok": False, "code": "password_field"})
+    assert refused["args"] == {"name": "paste", "chars": 7, "secret": True}
+
+
 def test_a_refused_key_press_keeps_no_character() -> None:
     ev = rc.agent_event(
         "press_key",
@@ -637,10 +681,11 @@ def test_a_refused_key_press_keeps_no_character() -> None:
         ({"text": "hunter2-SECRET", "ref": "e2"}, {"ok": False, "code": "password_field"}),
     ],
 )
-async def test_a_secret_type_keeps_its_length_only(tmp_path: Path, args, result) -> None:
+@pytest.mark.parametrize("op", ["type", "fill"])
+async def test_a_secret_type_keeps_its_length_only(tmp_path: Path, args, result, op) -> None:
     rec, store, _clock = make_recorder(tmp_path)
     rec.turn_started(KEY, TURN)
-    rec.event(KEY, rc.agent_event("type", args, result, ts=1, label="", url="", scale=1))
+    rec.event(KEY, rc.agent_event(op, args, result, ts=1, label="", url="", scale=1))
     rec.turn_ended(KEY)
     await rec.flush()
     (event,) = store.turn_detail(KEY, TURN)["events"]

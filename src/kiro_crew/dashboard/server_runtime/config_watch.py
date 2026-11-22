@@ -7,16 +7,13 @@ once the listener serves.
 from __future__ import annotations
 
 import asyncio
+import functools
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
 if TYPE_CHECKING:
-    from kiro_crew.dashboard.server import (
-        DashboardState,
-        KiroCrewConfig,
-        logger,
-    )
+    from kiro_crew.dashboard.server import DashboardState, KiroCrewConfig, logger
 
 
 def _register_config_watch(
@@ -48,6 +45,12 @@ def _register_config_watch(
     if initial is not None:
         model_registry.apply_operator_windows(initial.agent.model_context_tokens)
     live.bind("agent.model_context_tokens", model_registry.apply_operator_windows)
+
+    from kiro_crew.notifications import config_syntax_note
+
+    # A save that leaves a config file unparseable keeps the settings in force; the
+    # bell says so, and where the file breaks, until a later save parses.
+    live.watch().tear_reporter = functools.partial(config_syntax_note.publish_tear, state)
 
     async def _switch_provider(cfg: KiroCrewConfig) -> None:
         # Refresh agent artifacts so the target provider is immediately usable.
@@ -257,6 +260,11 @@ def _register_config_watch(
         # reaches the others without a reload.
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
+            # Connected computers has server behavior: switching it off ends its
+            # live sockets (scheduled off this cycle). A no-op while it stays off.
+            from kiro_crew.connected_computers import disable as connected_computers
+
+            connected_computers.apply(change)
 
     def _push_command_bar(change: ConfigChange) -> None:
         # What the quick-search shortcut opens is read from the shared config query
@@ -295,20 +303,21 @@ def _register_config_watch(
         if chat_runtime_sharing_enabled(change.old) != after:
             record_toggled(after)
 
+    def _stop_put_off_update(change: ConfigChange) -> None:
+        # "Remind me tomorrow" or "Skip this version" answered while an
+        # unattended build of that version runs: stop it now, not at the swap.
+        if change.old is None or not change.touched("dashboard.update_nudge"):
+            return
+        from kiro_crew.platform import wheel_apply
+
+        if wheel_apply.stop_put_off_applies(change.new):
+            logger.info("Stopped an unattended update the user put off")
+
     def _push_app_settings(change: ConfigChange) -> None:
         # The app session mute and the per-app model picker read ``apps`` off the
         # ``kirocrewConfig`` query, which only a refresh frame invalidates.
         if change.touched("apps"):
             state.push_refresh("config")
-
-    def _push_mate_listing(change: ConfigChange) -> None:
-        # Each mate thread's row carries its Bot's "Show in my Sessions list"
-        # switch (crew_mode.stamp_rows), so a flip from any writer re-sends the
-        # slot list and refreshes the roster so every dashboard's lists and
-        # Bot Settings switch follow it.
-        if any(p.endswith(".show_sessions_in_list") for p in change.under("agents")):
-            state.push_slots_update()
-            state.push_refresh("agents")
 
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
@@ -332,6 +341,11 @@ def _register_config_watch(
         from kiro_crew import crewmate_harness_notice
 
         await crewmate_harness_notice.deliver(state, change.new)
+
+    async def _apply_voice_reply(change: ConfigChange) -> None:
+        from kiro_crew.slack.handler import apply_voice_reply_change
+
+        await apply_voice_reply_change(change)
 
     subs = [
         live.subscribe(
@@ -377,8 +391,12 @@ def _register_config_watch(
             callback=_count_chat_runtime_sharing_toggle,
             name="dashboard.chat_runtime_sharing_toggle",
         ),
+        live.subscribe(
+            "dashboard.update_nudge",
+            callback=_stop_put_off_update,
+            name="dashboard.update_nudge",
+        ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
-        live.subscribe("agents", callback=_push_mate_listing, name="agents.show_sessions_in_list"),
         live.subscribe(
             "dashboard.command_bar_enabled",
             callback=_push_command_bar,
@@ -389,6 +407,9 @@ def _register_config_watch(
             callback=_push_channels_switch,
             name="dashboard.channels_enabled",
         ),
+        # Slack's live voice state follows the file, so a CLI or hand edit of
+        # voice_reply (enabled above all) reaches a running gateway.
+        live.subscribe("voice_reply", callback=_apply_voice_reply, name="voice_reply"),
         live.subscribe(
             "dashboard.terminal.enabled",
             callback=_apply_terminal_enabled,
@@ -412,6 +433,14 @@ def _register_config_watch(
             await live.watch().stop()
         except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
             logger.warning("Config watcher stop failed during shutdown", exc_info=True)
+        # Connected computers: close remote connector sockets; records are kept.
+        # Nothing to close (a no-op) unless the preview was on.
+        from kiro_crew.connected_computers.disable import shutdown as connected_shutdown
+
+        try:
+            await connected_shutdown()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Connected computers shutdown failed", exc_info=True)
         lifecycle = getattr(state, "_dynamic_cards", None)
         if lifecycle is not None:
             try:

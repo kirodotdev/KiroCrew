@@ -643,18 +643,24 @@ def test_native_settings_sources_repeated_permissive_reads_do_not_hide_a_restric
     permissive = json.dumps({"mcpServers": {}}).encode("utf-8")
     saved = {}
 
+    def save_later(path, data):
+        # Two replaces inside one pass can land on a recycled inode number and
+        # one coarse timestamp tick, so each save is stamped a second after the
+        # file it replaces, as a writer saving at a later moment would be.
+        staged = path.with_name("mcp.json.tmp")
+        staged.write_bytes(data)
+        later = path.stat().st_mtime_ns + 1_000_000_000
+        os.utime(staged, ns=(later, later))
+        os.replace(staged, path)
+
     def swap_in_permissive(n, path):
         if n <= 2:
             saved["restrictive"] = path.read_bytes()
-            staged = path.with_name("mcp.json.tmp")
-            staged.write_bytes(permissive)
-            os.replace(staged, path)
+            save_later(path, permissive)
 
     def swap_back(n, path):
         if n <= 2:
-            staged = path.with_name("mcp.json.tmp")
-            staged.write_bytes(saved["restrictive"])
-            os.replace(staged, path)
+            save_later(path, saved["restrictive"])
 
     session_mcp, reads = _bracket_fixture(
         tmp_path, monkeypatch, swap_in_permissive, after_read=swap_back
@@ -664,6 +670,51 @@ def test_native_settings_sources_repeated_permissive_reads_do_not_hide_a_restric
 
     assert len(reads) == 3
     assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
+
+
+def _open_descriptors_on(inode):
+    """Descriptors this process holds on ``(st_dev, st_ino)`` *inode*."""
+    held = []
+    for name in os.listdir("/dev/fd"):
+        try:
+            st = os.fstat(int(name))
+        except OSError:
+            continue
+        if (st.st_dev, st.st_ino) == inode:
+            held.append(int(name))
+    return held
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows file ids are not reused; nothing is held")
+def test_native_settings_sources_pins_the_sampled_inode_across_a_pass(tmp_path, monkeypatch):
+    """The file sampled before a pass stays open until the sample after it.
+
+    A freed inode's number may go to the next file created, and a swap-back in the
+    same timestamp tick with the same size would then sample EQUAL to the file the
+    pass started on, keeping a pass that read the swapped-in copy. Holding the
+    first sample's descriptor keeps the replaced inode allocated, so its number
+    cannot come back while the pass runs.
+    """
+    replaced = []
+    pinned = []
+
+    def replace_first(n, path):
+        if n != 1:
+            return
+        st = path.stat()
+        replaced.append((st.st_dev, st.st_ino))
+        _replace_with_same_content(path)
+        pinned.append(bool(_open_descriptors_on(replaced[0])))
+
+    session_mcp, reads = _bracket_fixture(tmp_path, monkeypatch, replace_first)
+
+    sources = session_mcp.native_settings_sources(tmp_path)
+
+    assert pinned == [True]
+    assert len(reads) == 2
+    assert sources[1].servers["kirocrew-core"]["disabledTools"] == ["workflow_run"]
+    # The held descriptor is released once its pass is judged.
+    assert _open_descriptors_on(replaced[0]) == []
 
 
 def test_native_settings_sources_refuses_files_that_never_hold_still(tmp_path, monkeypatch):
@@ -743,7 +794,7 @@ def test_native_settings_sources_refuses_when_no_identity_can_be_taken(tmp_path,
 
     session_mcp, reads = _bracket_fixture(tmp_path, monkeypatch, lambda n, path: None)
 
-    def refuse(raw):
+    def refuse(raw, **_kw):
         raise PermissionError("Blocked: file path was refused")
 
     monkeypatch.setattr(hooks, "safe_file_identity", refuse)

@@ -10,7 +10,7 @@
  * toolbar (clamping, copy, send-to-chat redaction handoff), the module-level
  * theme/font observers, and the teardown + delete-session exports.
  */
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, act, waitFor, cleanup, within } from '@testing-library/react'
 import { renderWithProviders, renderHookWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
@@ -53,6 +53,13 @@ const xt = vi.hoisted(() => {
     scrollListeners: (() => void)[] = []
     /** Controls `remeasureAndFit`'s laid-out-pane guard. */
     offsetParent: unknown = {}
+    osc52Handler: ((data: string) => boolean) | undefined
+    parser = {
+      registerOscHandler: (id: number, handler: (data: string) => boolean) => {
+        if (id === 52) this.osc52Handler = handler
+        return { dispose: () => { if (id === 52) this.osc52Handler = undefined } }
+      },
+    }
 
     constructor(options: FakeOptions) {
       // Proxy fontFamily so writes are observable without hiding the value.
@@ -92,6 +99,18 @@ const xt = vi.hoisted(() => {
     onSelectionChange(cb: () => void) {
       this.selectionListeners.push(cb)
       return { dispose: () => { this.selectionListeners = this.selectionListeners.filter(c => c !== cb) } }
+    }
+    onData() { return { dispose() {} } }
+    modes = { mouseTrackingMode: 'none' }
+    keyListeners: ((e: { key: string, domEvent: KeyboardEvent }) => void)[] = []
+    onKey(cb: (e: { key: string, domEvent: KeyboardEvent }) => void) {
+      this.keyListeners.push(cb)
+      return { dispose: () => { this.keyListeners = this.keyListeners.filter(c => c !== cb) } }
+    }
+    /** A key xterm sends to the program. */
+    pressKey(key: string) {
+      const domEvent = new KeyboardEvent('keydown', { key })
+      for (const cb of this.keyListeners) cb({ key, domEvent })
     }
     onScroll(cb: () => void) {
       this.scrollListeners.push(cb)
@@ -137,11 +156,13 @@ const registry = vi.hoisted(() => ({
   displaced: { value: false },
   invalidCwd: { value: false },
   wrongMachine: { value: false },
+  atLimit: { value: false },
   useTerminalConnStatus: vi.fn<() => 'connected' | 'reconnecting' | 'disconnected' | undefined>(),
   useTerminalManualRetry: vi.fn<() => boolean>(),
   useTerminalDisplaced: vi.fn<() => boolean>(),
   useTerminalInvalidCwd: vi.fn<() => boolean>(),
   useTerminalWrongMachine: vi.fn<() => boolean>(),
+  useTerminalAtLimit: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string, manual?: boolean, cwd?: string) => void>(),
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
@@ -149,6 +170,7 @@ registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.va
 registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
 registry.useTerminalInvalidCwd.mockImplementation(() => registry.invalidCwd.value)
 registry.useTerminalWrongMachine.mockImplementation(() => registry.wrongMachine.value)
+registry.useTerminalAtLimit.mockImplementation(() => registry.atLimit.value)
 vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
@@ -315,6 +337,7 @@ beforeEach(() => {
   registry.displaced.value = false
   registry.invalidCwd.value = false
   registry.wrongMachine.value = false
+  registry.atLimit.value = false
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
   xt.FakeSearchAddon.instances = []
@@ -347,8 +370,12 @@ describe('CliPanel mount', () => {
     expect(container.querySelector('.xterm')).not.toBeNull()
     expect(fit.fit).toHaveBeenCalled()
     // The fifth and sixth arguments are the remote-workspace slot and the chat
-    // a local shell belongs to; this bare panel has neither.
-    expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(sessionId, term, fit, '/srv/app', undefined, undefined)
+    // a local shell belongs to; this bare panel has neither. The seventh is the
+    // terminal's OSC 52 copy handle, which the connection suspends during a replay.
+    expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(
+      sessionId, term, fit, '/srv/app', undefined, undefined,
+      expect.objectContaining({ suspend: expect.any(Function), resume: expect.any(Function) }),
+    )
     // A visible pane takes focus. open() has just measured the cell, so no
     // re-measure toggle follows it (that would render every row twice more).
     expect(term.focusCalls).toBe(1)
@@ -674,6 +701,18 @@ describe('CliPanel disconnected banner', () => {
     expect(within(banner).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
   })
 
+  it('names the gateway terminal limit and offers Reconnect for after one closes', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.atLimit.value = true
+    const { sessionId } = mount({ cwd: '/w' })
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.at_limit_message'))
+    expect(screen.queryByText(DISCONNECTED_LABEL)).toBeNull()
+    // Close another terminal, then Reconnect.
+    fireEvent.click(screen.getByRole('button', { name: RECONNECT_LABEL }))
+    expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
+  })
+
   it('shows the localized invalid-cwd error immediately and allows explicit recovery', () => {
     registry.connStatus.value = 'disconnected'
     registry.invalidCwd.value = true
@@ -975,6 +1014,92 @@ describe('CliPanel copy action', () => {
   afterEach(() => {
     if (origExecCommand) Object.defineProperty(document, 'execCommand', origExecCommand)
     else delete (document as unknown as Record<string, unknown>).execCommand
+  })
+
+  describe('OSC 52 copy results', () => {
+    beforeEach(() => { vi.spyOn(performance, 'now').mockReturnValue(10_000) })
+    afterEach(() => { vi.restoreAllMocks() })
+
+    async function copyFromTerminal(term: InstanceType<typeof xt.FakeTerminal>) {
+      await act(async () => {
+        term.pressKey('y')
+        expect(term.osc52Handler!(`c;${btoa('terminal copy')}`)).toBe(true)
+      })
+    }
+
+    it('shows a dismissable inline error at the terminal top-right when copying fails', async () => {
+      const writeText = vi.fn(() => Promise.reject(new Error('denied')))
+      setClipboard({ writeText })
+      stubExecCommand(false)
+      const { term } = mount()
+      await copyFromTerminal(term)
+      expect(writeText).toHaveBeenCalledExactlyOnceWith('terminal copy')
+      const notice = screen.getByTestId('cli-panel-osc52-copy-error')
+      expect(notice).toHaveAttribute('role', 'alert')
+      expect(notice).toHaveTextContent(COPY_FAILED_LABEL)
+      expect(within(notice).getByRole('button', { name: i18nT('components.askAgent.ask_the_agent') })).toBeInTheDocument()
+      expect(notice).toHaveClass('absolute', 'top-2', 'right-2', 'z-20')
+      expect(notice.parentElement).toBe(term.element!.parentElement!.parentElement)
+      fireEvent.click(within(notice).getByRole('button', { name: i18nT('components.errorNotice.dismiss') }))
+      expect(screen.queryByTestId('cli-panel-osc52-copy-error')).toBeNull()
+    })
+
+    it('clears a failed OSC 52 copy notice after a successful copy', async () => {
+      setClipboard(undefined)
+      stubExecCommand(false)
+      const { term } = mount()
+      await copyFromTerminal(term)
+      expect(screen.getByTestId('cli-panel-osc52-copy-error')).toBeInTheDocument()
+      const writeText = vi.fn(() => Promise.resolve())
+      setClipboard({ writeText })
+      await copyFromTerminal(term)
+      expect(writeText).toHaveBeenCalledExactlyOnceWith('terminal copy')
+      expect(screen.queryByTestId('cli-panel-osc52-copy-error')).toBeNull()
+    })
+
+    it('shows a short-lived status notice at the terminal top-right when a copy succeeds', async () => {
+      // Only the timer is faked: vitest's default fake set includes
+      // requestAnimationFrame, which the pane's deferred reads depend on.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      onTestFinished(() => { vi.useRealTimers() })
+      const writeText = vi.fn(() => Promise.resolve())
+      setClipboard({ writeText })
+      const { term } = mount()
+      await copyFromTerminal(term)
+      expect(writeText).toHaveBeenCalledExactlyOnceWith('terminal copy')
+      const notice = screen.getByTestId('cli-panel-osc52-copied')
+      expect(notice).toHaveAttribute('role', 'status')
+      expect(notice).toHaveTextContent(i18nT('components.cliPanel.osc52_copied'))
+      expect(notice).toHaveClass('absolute', 'top-2', 'right-2', 'z-20')
+      expect(notice.parentElement).toBe(term.element!.parentElement!.parentElement)
+      expect(screen.queryByTestId('cli-panel-osc52-copy-error')).toBeNull()
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+      expect(screen.queryByTestId('cli-panel-osc52-copied')).toBeNull()
+    })
+
+    it('replaces the copied notice with the failure notice when a later copy fails', async () => {
+      setClipboard({ writeText: vi.fn(() => Promise.resolve()) })
+      const { term } = mount()
+      await copyFromTerminal(term)
+      expect(screen.getByTestId('cli-panel-osc52-copied')).toBeInTheDocument()
+      setClipboard(undefined)
+      stubExecCommand(false)
+      await copyFromTerminal(term)
+      expect(screen.getByTestId('cli-panel-osc52-copy-error')).toBeInTheDocument()
+      expect(screen.queryByTestId('cli-panel-osc52-copied')).toBeNull()
+    })
+
+    it('routes cached terminal results to its remounted pane without notifying another session', async () => {
+      const first = mount()
+      first.unmount()
+      const other = mount()
+      const again = mount({ sessionId: first.sessionId })
+      setClipboard(undefined)
+      stubExecCommand(false)
+      await copyFromTerminal(first.term)
+      expect(within(again.container).getByTestId('cli-panel-osc52-copy-error')).toBeInTheDocument()
+      expect(within(other.container).queryByTestId('cli-panel-osc52-copy-error')).toBeNull()
+    })
   })
 
   it('copies the captured text, confirms, then dismisses the toolbar', async () => {

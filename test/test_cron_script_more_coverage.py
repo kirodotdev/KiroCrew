@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -847,6 +848,11 @@ class TestMcpToolClientStderrTail:
 
 
 class TestMcpToolClientClose:
+    @pytest.fixture(autouse=True)
+    def _posix_stop_path(self, _floor_monkeypatch):
+        # These pin the terminate() shape; the Windows tree stop has its own tests.
+        _floor_monkeypatch.setattr(cron_script.platform_compat, "IS_WINDOWS", False)
+
     def _client(self, mcp_spawn, **proc_kwargs):
         mcp_spawn.proc = _FakeProc(out_lines=[_HANDSHAKE_OK], **proc_kwargs)
         return McpToolClient("kirocrew-core")
@@ -1083,7 +1089,14 @@ def script_run(monkeypatch, tmp_path):
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
     monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda port: "unit-secret")
     restricted: list[str] = []
-    monkeypatch.setattr(cron_script.platform_compat, "restrict_to_owner", restricted.append)
+    test_thread = threading.get_ident()
+
+    def _restrict(path):
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            restricted.append(path)
+
+    monkeypatch.setattr(cron_script.platform_compat, "restrict_to_owner", _restrict)
     state = SimpleNamespace(
         script=script,
         proc=None,
@@ -1564,7 +1577,7 @@ class TestRunCommandSandboxed:
 
         assert result == {
             "status": "error",
-            "output": "❌ Command timed out after 3s",
+            "output": "Error: Command timed out after 3s",
             "exit_code": -1,
         }
         assert killed == [command_run.proc]

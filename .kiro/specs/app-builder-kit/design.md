@@ -154,4 +154,4 @@ strict without blocking app-specific fields.
 - Screenshot Evidence gate — gallery route makes capture cheap; SHA-pinned screenshots in PR.
 - jscpd 0% — kit consolidates clones; kit components must not copy from each other.
 - catalogParity — all new `i18nT()` keys land in every locale file.
-- PR Hygiene — single squashed commit per PR.
+- PR Hygiene — Conventional Commits title and the template's sections.

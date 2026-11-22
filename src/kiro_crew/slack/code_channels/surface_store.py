@@ -3,8 +3,10 @@
 One small JSON document, ``routing/slack-code-channel-surface.json`` under the
 Kiro Crew data home, keyed by channel id. It holds pointers and
 digests only: the agent's own context-bar items, the plan canvas id, the digest of
-the command set last registered, which message is the current wrap-up, and the
-pinned work board's ts, digest and already-sent alert tokens. The
+the command set last registered, which message is the current wrap-up, the
+pinned work board's ts, digest and already-sent alert tokens, the view tabs this
+gateway opened, the plan-canvas comment ids already delivered, the message last
+recorded as the live summary and the refusals already told. The
 wrap-up and archive STAMPS live on the binding (``Binding.wrapped_up_at`` /
 ``archived_at``), not here. Never message
 content beyond the agent's short context-bar labels.
@@ -81,12 +83,37 @@ class SurfaceRecord:
     board_digest: str = ""
     board_pinned: bool = False
     board_alerts: tuple[str, ...] = ()
+    #: The board message's permalink (``chat.getPermalink``) and the ts it was
+    #: read for: read once per board message, which the context bar links to.
+    board_link: str = ""
+    board_link_ts: str = ""
+    #: The view tabs this gateway opened (``key``/``view_id``/``type``/``at``):
+    #: the only views it may ever remove to make room (:mod:`.views`).
+    views: tuple[dict[str, str], ...] = ()
+    #: Plan-canvas comments and replies already handed to the session (or passed
+    #: over): ``<ts> <comment id>`` / ``<ts> <comment id>:<reply ts>``, bounded.
+    #: Never pruned from a listing (Slack's is capped and leaves out resolved
+    #: threads); past the bound the oldest by ts go and :attr:`canvas_floor`
+    #: rises over them.
+    canvas_seen: tuple[str, ...] = ()
+    #: Every comment or reply at or before this Slack ts counts as seen ("" for
+    #: none): it only rises, so an entry evicted from :attr:`canvas_seen` never
+    #: reads as new again.
+    canvas_floor: str = ""
+    #: The plan canvas whose comments are read from its first one (set when this
+    #: gateway creates it); a canvas from before comment read-back is baselined.
+    canvas_baseline: str = ""
+    #: The message last recorded as the channel's ``summary_message`` live.
+    summary_message_ts: str = ""
+    #: Channel-level Slack refusals the people were already told about (once each).
+    notices: tuple[str, ...] = ()
     updated_at: float = field(default=0.0)
 
 
 _FIELDS = {f.name for f in fields(SurfaceRecord)}
+_STRING_TUPLES = ("board_alerts", "canvas_seen", "notices")
 #: Fields read apart from the scalar check: the lists, and the work board's one bool.
-_NON_SCALAR = frozenset({"context_bar", "board_alerts", "board_pinned"})
+_NON_SCALAR = frozenset({"context_bar", "views", "board_pinned", *_STRING_TUPLES})
 #: The type each scalar field must have on disk (the fields above are checked apart).
 _SCALAR_TYPES: dict[str, type | tuple[type, ...]] = {
     f.name: ((int, float) if f.type in ("float", float) else str)
@@ -106,23 +133,29 @@ def _from_dict(raw: Any) -> SurfaceRecord | None:
     if not isinstance(raw, dict) or not isinstance(raw.get("channel_id"), str):
         return None
     data = {k: v for k, v in raw.items() if k in _FIELDS}
-    bar = data.get("context_bar", [])
-    # A bar this build can't read in full is an unreadable row, never a
-    # silently shortened one that the next write would make permanent.
-    if not isinstance(bar, list) or not all(
-        isinstance(item, dict) and all(isinstance(v, str) for v in item.values()) for item in bar
-    ):
+    for list_name in ("context_bar", "views"):
+        items = data.get(list_name, [])
+        # A list this build can't read in full is an unreadable row, never a
+        # silently shortened one that the next write would make permanent.
+        if not isinstance(items, list) or not all(
+            isinstance(item, dict) and all(isinstance(v, str) for v in item.values())
+            for item in items
+        ):
+            return None
+        data[list_name] = tuple({str(k): v for k, v in item.items()} for item in items)
+    # A view entry needs its key and view id (views.make_room reads both).
+    if not all(item.get("key") and item.get("view_id") for item in data["views"]):
         return None
-    data["context_bar"] = tuple({str(k): v for k, v in item.items()} for item in bar)
     for name, kinds in _SCALAR_TYPES.items():
         if name in data and (not isinstance(data[name], kinds) or isinstance(data[name], bool)):
             return None  # a wrong-typed value is an unreadable row, never written back
     if not isinstance(data.get("board_pinned", False), bool):
         return None  # a wrong-typed value is an unreadable row, never written back
-    values = data.get("board_alerts", [])
-    if not isinstance(values, list) or not all(isinstance(a, str) for a in values):
-        return None  # an unreadable row, never silently shortened
-    data["board_alerts"] = tuple(values)
+    for name in _STRING_TUPLES:
+        values = data.get(name, [])
+        if not isinstance(values, list) or not all(isinstance(a, str) for a in values):
+            return None  # an unreadable row, never silently shortened
+        data[name] = tuple(values)
     try:
         return SurfaceRecord(**data)
     except TypeError:
@@ -236,21 +269,39 @@ class SurfaceStore:
                 raise SurfaceStoreUnavailable(str(self.path))
             return self._records.get(channel_id)
 
+    def loaded_get(self, channel_id: str) -> SurfaceRecord | None:
+        """The record from the snapshot already in memory, WITHOUT loading or locking.
+
+        For a synchronous gate that must never touch the disk or wait on a writer
+        (it may run inside a no-suspension window on the event loop): ``None``
+        before the store is loaded, which such a gate reads as "not ours" and
+        refuses. A commit replaces the snapshot dict whole, so the read is safe.
+        """
+        if not self._loaded:
+            return None
+        return self._records.get(channel_id)
+
     def update(self, channel_id: str, **changes: Any) -> SurfaceRecord:
         """Apply *changes* to the channel's record (made when missing); returns it."""
         unknown = set(changes) - _FIELDS
         if unknown:
             raise TypeError(f"unknown surface fields: {sorted(unknown)}")
-        if "context_bar" in changes:
-            changes["context_bar"] = tuple(dict(i) for i in changes["context_bar"])
+        for name in ("context_bar", "views"):
+            if name in changes:
+                changes[name] = tuple(dict(i) for i in changes[name])
         changes.setdefault("archived_at", 0.0)  # a channel written to is live
-        if "board_alerts" in changes:
-            changes["board_alerts"] = tuple(str(a) for a in changes["board_alerts"])
+        for name in _STRING_TUPLES:
+            if name in changes:
+                changes[name] = tuple(str(a) for a in changes[name])
         with self._lock:
             if not self._ensure_loaded():
                 raise SurfaceStoreUnavailable(str(self.path))
             current = self._records.get(channel_id) or SurfaceRecord(channel_id=channel_id)
             stored = replace(current, **changes, updated_at=time.time())
+            if _from_dict(json.loads(json.dumps(asdict(stored)))) is None:
+                # Never persist what the loader refuses: one such row leaves the
+                # whole file unreadable on the next start, for every channel.
+                raise ValueError(f"surface record for {channel_id} would not load back")
             self._commit({**self._records, channel_id: stored}, written=channel_id)
             return stored
 

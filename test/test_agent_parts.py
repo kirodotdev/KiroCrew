@@ -298,23 +298,33 @@ def test_the_rewrapped_spec_lock_reads_the_facade_logger(
 # ── 2. a patch of the facade reaches every owner reader ─────────────────────
 
 
+@functools.lru_cache(maxsize=1)
 def _spellings() -> dict[str, str]:
     """The facade's dotted name, plus ``<module>.<alias>`` for each src module that binds it
-    at module level -- another spelling of the same object a test can patch through."""
+    at module level -- another spelling of the same object a test can patch through.
+
+    Built once per worker: ``"agent"`` matches most of the tree, so each build parses
+    it. Callers only read the result.
+    """
     spellings = {FACADE: FACADE}
-    for path, text in source_corpus.iter_candidate_sources(require_all=("agent",)):
-        if not path.is_relative_to(_SRC):
-            continue
-        module = ".".join(path.relative_to(_SRC.parent).with_suffix("").parts)
-        for node in ast.parse(text).body:
-            if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew" and not node.level:
-                for alias in node.names:
-                    if alias.name == "agent":
-                        spellings[f"{module}.{alias.asname or alias.name}"] = FACADE
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == FACADE and alias.asname:
-                        spellings[f"{module}.{alias.asname}"] = FACADE
+    with source_corpus.untraced():
+        for path, text in source_corpus.iter_candidate_sources(require_all=("agent",)):
+            if not path.is_relative_to(_SRC):
+                continue
+            module = ".".join(path.relative_to(_SRC.parent).with_suffix("").parts)
+            for node in ast.parse(text).body:
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "kiro_crew"
+                    and not node.level
+                ):
+                    for alias in node.names:
+                        if alias.name == "agent":
+                            spellings[f"{module}.{alias.asname or alias.name}"] = FACADE
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == FACADE and alias.asname:
+                            spellings[f"{module}.{alias.asname}"] = FACADE
     return spellings
 
 
@@ -331,19 +341,23 @@ def _test_tree_files() -> list[Path]:
 
 @functools.lru_cache(maxsize=1)
 def _corpus_patched_names() -> frozenset[str]:
-    """Every name the test trees patch on the facade, scanned once per worker."""
+    """Every name the test trees patch on the facade, scanned once per worker.
+
+    The scan is test-side code that coverage does not report, so it runs untraced.
+    """
     spellings = _spellings()
     found: set[str] = set()
-    for path in _test_tree_files():
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if not facade_mirror_scan._mentions(text, spellings):
-            continue
-        found |= facade_mirror_scan.text_patched_names(text, spellings).get(FACADE, set())
-        if facade_mirror_scan.needs_syntax_tree(text, spellings):
-            try:
-                found |= facade_mirror_scan.patched_names(text, spellings).get(FACADE, set())
-            except SyntaxError:
+    with source_corpus.untraced():
+        for path in _test_tree_files():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if not facade_mirror_scan._mentions(text, spellings):
                 continue
+            found |= facade_mirror_scan.text_patched_names(text, spellings).get(FACADE, set())
+            if facade_mirror_scan.needs_syntax_tree(text, spellings):
+                try:
+                    found |= facade_mirror_scan.patched_names(text, spellings).get(FACADE, set())
+                except SyntaxError:
+                    continue
     return frozenset(found)
 
 
@@ -355,7 +369,9 @@ def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
     monkeypatch.syspath_prepend(str(root / "scripts"))
     leaf_test_scope = importlib.import_module("leaf_test_scope")
     this_file = Path(__file__).resolve().relative_to(root).as_posix()
-    assert this_file in leaf_test_scope.corpus_gates(root)
+    with source_corpus.untraced():
+        gates = leaf_test_scope.corpus_gates(root)
+    assert this_file in gates
 
 
 def test_the_spellings_include_a_materialization_owner_binding_of_the_facade() -> None:
@@ -621,14 +637,15 @@ def test_the_importer_check_sees_every_spelling(source: str, flagged: bool) -> N
 
 
 def _owner_importers(src: Path) -> list[str]:
-    return sorted(
-        path.relative_to(src.parent).as_posix()
-        for path in sorted(src.rglob("*.py"))
-        if path.parent.name != "agent_parts"
-        and path != src / "agent.py"
-        and "agent_parts" in (text := path.read_text(encoding="utf-8"))
-        and _imports_an_owner(text)
-    )
+    with source_corpus.untraced():
+        return sorted(
+            path.relative_to(src.parent).as_posix()
+            for path in sorted(src.rglob("*.py"))
+            if path.parent.name != "agent_parts"
+            and path != src / "agent.py"
+            and "agent_parts" in (text := path.read_text(encoding="utf-8"))
+            and _imports_an_owner(text)
+        )
 
 
 def test_nothing_but_the_facade_imports_an_owner() -> None:

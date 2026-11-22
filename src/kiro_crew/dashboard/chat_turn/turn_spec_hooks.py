@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
 from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
+from kiro_crew.agent_sdk.kas_telemetry_notice import notice_gets_row
 from kiro_crew.agent_sdk.spec_hooks import (
     _MAX_SPEC_HOOKS,
+    CRON_SESSION_KEY_PREFIX,
     OverlongHookCommand,
     crew_fired_spec_hooks,
     kas_hook_checkout,
@@ -220,8 +222,8 @@ async def _prepare_spec_hooks(
     entries, and one where nothing applies the spec's ``toolsSettings``
     (``spec_tools_settings_applied_nowhere``) gets one naming what of it goes
     unapplied, and one that drops a remote MCP server's ``oauth`` block gets one
-    naming those servers, and a claude one that leaves the spec's `tools` or `model`
-    unapplied gets one naming them. None of them runs silently.
+    naming those servers, and a claude one that leaves the spec's `model` pin
+    unapplied gets one naming it. None of them runs silently.
     """
     if is_new and spec_steering_read_nowhere(client):
         await _notice_unread_steering(state, slot, client, agent)
@@ -439,14 +441,15 @@ async def _surface_kas_project_hooks(
     Only for a KAS session whose agent is project-only and sets ``hooks``
     (:func:`kas_project_hooks_state`). When they run because kiro-cli trusts the
     folder, the row shows once per folder (``project_hooks_consent``). The other
-    paths (sub-agent, task runner, channel) never show it: they only read the
-    stored choice. Best-effort: a failed check renders nothing.
+    paths (sub-agent, task runner, channel, a cron result tab) never show it: they
+    only read the stored choice. Best-effort: a failed check renders nothing.
     """
     from kiro_crew.project_hooks_consent import mark_kiro_cli_notice_shown
 
     checkout = kas_hook_checkout(client)
     agent = session_agent(client, agent)
-    if not checkout or not agent:
+    cron_tab = provider_session_key(client).startswith(CRON_SESSION_KEY_PREFIX)
+    if not checkout or not agent or cron_tab:
         return
     try:
         found = await asyncio.to_thread(kas_project_hooks_state, agent, checkout)
@@ -715,7 +718,7 @@ def _project_hook_files_notice_is_new(
     Every new backend session of a chat (a reconnect, a reload, a restart) would
     show it again, and nothing in the chat changes the files, so the chat shows it
     once. It shows again only for another folder or another set of file names. The
-    mark is saved on the chat's metadata line, as ``_telemetry_notice_is_new``'s is.
+    mark is saved on the chat's metadata line, as ``notice_gets_row``'s is.
     """
     key = json.dumps([project_dir, names])
     mark = hashlib.sha256(key.encode()).hexdigest()[:16]
@@ -831,7 +834,7 @@ async def _notice_unread_steering(
     """One notice row naming the custom agent's ``file://`` steering *client* never loads.
 
     Only a custom agent: Crew's steering load serves the default agent alone. On
-    Claude Code and Codex it sends the default agent's entries and steering trees
+    Claude Code, Codex, OpenCode and Pi it sends the default agent's entries and steering trees
     itself, and elsewhere folder steering or member essentials can carry them, so
     a row there could claim a loss that did not happen. Best-effort: a spec that
     cannot be read renders no row rather than failing the turn.
@@ -858,14 +861,16 @@ async def _notice_unread_steering(
 
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose adapter is too old to take a mid-turn
-    message, one whose KAS drops its agent's prompt, and one whose goose, codex, claude or
-    pi adapter is outside its tested range: the chat runs, and each row names the installed version, the
+    message, one whose KAS drops its agent's prompt, and one whose goose, codex, claude,
+    pi or deepseek adapter is outside its tested range: the chat runs, and each row names the installed version, the
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
-    key names it lost, never a value. One more on a KAS session told to turn telemetry
-    off, since Crew cannot confirm the engine applied it; a chat shows that one once
-    (``_telemetry_notice_is_new``). One more on a claude session that runs in Default
-    instead of the Auto it asked for, naming the ways back. One more on a codex
+    key names it lost, never a value. One more on a KAS session whose folder's telemetry
+    opt-out was not applied, once per chat; the notice that Crew cannot confirm KAS
+    turned telemetry off is a row only when it follows another telemetry row in the
+    chat, since the bell carries it once per install (``notice_gets_row``). One more
+    on a claude session that runs in Default instead of the Auto it asked for, naming
+    the ways back. One more on a codex
     session whose spec declares ``"tools": []``, which Crew enforces only at the
     permission request. One more on a session whose adapter release has a known
     problem a newer release fixes (``KNOWN_LIMITATIONS``)."""
@@ -877,31 +882,16 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
         "withheld_credentials_notice",
         "telemetry_unconfirmed_notice",
         "kiro_cli_model_notice",
+        "engine_fallback_notice",
         "mode_pinned_notice",
         "zero_tool_ban_notice",
     ):
         notice = getattr(client, name, "")
         if not (isinstance(notice, str) and notice):
             continue
-        if name == "telemetry_unconfirmed_notice" and not _telemetry_notice_is_new(slot, notice):
+        if name == "telemetry_unconfirmed_notice" and not notice_gets_row(slot, notice):
             continue
         append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
-
-
-def _telemetry_notice_is_new(slot: "_ChatSlot", notice: str) -> bool:
-    """Whether *slot*'s chat has yet to show telemetry *notice*; marks it shown.
-
-    Every KAS session a chat creates or reloads carries the notice, and nothing the
-    user does in the chat ends it, so the chat shows it once. It shows again only
-    when the text differs from the last one shown: the opt-out stopped applying to
-    this chat, or applies again. The mark is saved on the chat's metadata line, so
-    a restart does not repeat the notice.
-    """
-    mark = hashlib.sha256(notice.encode()).hexdigest()[:16]
-    if slot._telemetry_notice_shown == mark:
-        return False
-    slot._telemetry_notice_shown = mark
-    return True
 
 
 #: Notice text per ``settings_withheld_cause`` answer (see ``LLMProvider``).
@@ -1183,9 +1173,9 @@ async def _fire(
                             "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
                         },
                     )
-                elif r.stderr:
+                else:
                     # Non-zero, non-block on a non-gating event: warn only.
-                    logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[-200:])
+                    logger.warning("Hook %s (%s) failed: %s", r.hook_name, event, detail)
     except Exception as exc:
         if event == HOOK_EVENT_PRE_TOOL_USE:
             logger.warning("Hook fire error during blocking event %s: %s", event, exc)
@@ -1479,7 +1469,9 @@ async def _turn_stop_hook(turn: _ChatTurn) -> None:
                 for _failed in await _slack_upload(
                     state.slack_client, _mirror_chan, _mirror_post_ts or "", _mirror_files
                 ):
-                    _mirror_notes.append(f"⚠ Couldn't upload: {_local_file_name(_failed.dest)}")
+                    _mirror_notes.append(
+                        f"Warning: Couldn't upload: {_local_file_name(_failed.dest)}"
+                    )
             if _mirror_notes:
                 await _post_rendered("\n".join(_mirror_notes))
             if _mirror_options:

@@ -34,6 +34,8 @@ from kiro_crew.dashboard.revocation_gen import (
     bump_revocation_gen,
     current_revocation_gen,
     current_revocation_gen_or_none,
+    persist_next_revocation_gen,
+    publish_revocation_gen,
 )
 from kiro_crew.dashboard.token_secret import _get_secret
 from kiro_crew.sel import sel as _sel_fn
@@ -583,6 +585,12 @@ def generate_token(
     return f"{encoded_payload}.{signature}"
 
 
+#: The ``aud`` claim of a connected computer's connector credential.
+CONNECTOR_AUDIENCE = "kirocrew-connected-computer"
+#: :func:`validate_token`'s refusal reason for a connector credential.
+CONNECTOR_CREDENTIAL_REASON = "connector credential"
+
+
 def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, str, str]:
     """Return ``(valid, user_id, reason)``.
 
@@ -604,6 +612,11 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
         data = json.loads(payload_bytes)
     except Exception:
         return False, "", "invalid payload"
+    # A connected computer's credential is accepted only by its own socket
+    # (``connected_computers.connector_token``): never as a dashboard link, session,
+    # app token or logout subject, so no dashboard path can use or revoke it.
+    if isinstance(data, dict) and data.get("aud") == CONNECTOR_AUDIENCE:
+        return False, "", CONNECTOR_CREDENTIAL_REASON
     exp_field = "session_exp" if use_session_exp else "exp"
     if time.time() > data.get(exp_field, data.get("exp", 0)):
         return False, "", "token expired"
@@ -1255,9 +1268,12 @@ def revoke_all_sessions() -> None:
     Emits a SEL audit event before clearing state so the revocation is recorded.
     Raises ``OSError`` (fail-closed) when the persisted revocation counter
     cannot be read or the bumped value cannot be written — see
-    ``bump_revocation_gen``. On failure the generation is unchanged (in memory
-    and on disk) so no token is ever minted with an unpersisted generation;
-    the in-memory link/IP/consumed state has still been cleared.
+    ``bump_revocation_gen``. On failure nothing changes: the generation (in
+    memory and on disk) and the in-memory link/IP/consumed state are left as
+    they were, so no token is ever minted with an unpersisted generation and
+    every pin stays in force for the cookies the old generation still accepts.
+    It blocks on the counter's disk write, so the gateway's logout awaits
+    :func:`revoke_all_sessions_async` instead.
     """
     _sel_fn().log_api_access(
         caller="system",
@@ -1266,12 +1282,35 @@ def revoke_all_sessions() -> None:
         source="token_auth",
         resources="action=revoke_all",
     )
-    _state.clear_all()
     # Bump the persisted revocation generation so already-issued cookies (which
-    # the cleared per-process nonce store cannot touch) are rejected on their
-    # next request. Both access-cookie and refresh-token validation check the
-    # gen, so this ends established browser sessions AND their refresh chains.
+    # the per-process nonce store cannot touch) are rejected on their next
+    # request. Both access-cookie and refresh-token validation check the gen, so
+    # this ends established browser sessions AND their refresh chains.
     bump_revocation_gen()
+    _state.clear_all()
+
+
+async def revoke_all_sessions_async() -> None:
+    """:func:`revoke_all_sessions` for the event loop: only the counter write leaves it.
+
+    A slow disk then delays the caller, not the loop. Publishing the new generation
+    and clearing the link/IP/consumed state stay on the loop, one right after the
+    other, so no loop handler sees a half-done logout and every pin stays in force
+    while the write is in flight. The state is cleared only when this logout advances
+    the live generation: a logout a newer one already published over leaves it alone,
+    and one that raises ``OSError`` as :func:`revoke_all_sessions` does changes nothing.
+    """
+    _sel_fn().log_api_access(
+        caller="system",
+        operation="dashboard_sessions_revoked",
+        outcome="ok",
+        source="token_auth",
+        resources="action=revoke_all",
+    )
+    new_gen = await asyncio.to_thread(persist_next_revocation_gen)
+    # A superseded logout must not clear pins bound since the newer one cleared.
+    if publish_revocation_gen(new_gen):
+        _state.clear_all()
 
 
 def parse_duration(s: str) -> int | None:

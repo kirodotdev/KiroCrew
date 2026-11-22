@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -67,6 +68,14 @@ _KIRO_PROBE_TIMED_OUT_RESPONSE = {
     "try again in a moment.",
     "code": KIRO_PROBE_TIMED_OUT_CODE,
 }
+# A KAS turn Crew's own sign-in may not serve (:func:`kas_turn_verdict`). kiro-cli is
+# never asked for it, so this is not kiro-cli's code: the remedy is another sign-in.
+KAS_TURN_REFUSED_CODE = "kas_turn_refused"
+
+#: :func:`kas_turn_verdict`'s answers.
+KAS_TURN_READY = "ready"
+KAS_TURN_REFUSED = "refused"
+KAS_TURN_NOT_KAS_ROUTE = "not_kas_route"
 
 
 def is_probe_timeout_refusal(refusal: web.Response) -> bool:
@@ -229,6 +238,44 @@ def _kas_bundle_turn_sync(session_key: str | None, config: object = None) -> boo
         return False
 
 
+def _workload_active() -> bool:
+    from kiro_crew import workload_identity
+
+    return workload_identity.active()
+
+
+def _kas_turn_sync(session_key: str | None, config: object = None) -> bool:
+    """True when the turn on *session_key* starts on the KAS harness and can start.
+
+    The backend and the route are chosen as :func:`_kas_bundle_turn_sync` chooses
+    them. The relay route needs nothing more here; the bundle route also needs an
+    installed engine, as there. Blocking (config reads and a stat); never raises,
+    and an unreadable answer is False.
+    """
+    try:
+        from kiro_crew.agent_sdk import kas_bundle
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.crewmate_harness import route_pin
+        from kiro_crew.dashboard.chat_handlers import configured_backend_for_session
+        from kiro_crew.members import session_backend_pick
+
+        on_disk = KiroCrewConfig.load()
+        if config is None:
+            config = on_disk
+        if configured_backend_for_session(session_key, config) == ACP_BACKEND_KAS:
+            pick = session_backend_pick(session_key)
+            if not kas_bundle.kas_spawn_takes_bundle(
+                on_disk.agent, route_pin(config, session_key, pick)
+            ):
+                return True
+            return kas_bundle.installed_bundle() is not None  # type: ignore[misc]
+        return False
+    except Exception as exc:  # noqa: BLE001 - an unreadable answer keeps the kiro-cli gate
+        logger.debug("Kiro readiness: KAS route probe failed (%s)", type(exc).__name__)
+        return False
+
+
 def turn_gate_target(state: object, slot_key: object) -> tuple[bool, str | None]:
     """``(harness_turn, session_key)`` for a gate in front of a turn on *slot_key*.
 
@@ -251,6 +298,48 @@ def turn_gate_target(state: object, slot_key: object) -> tuple[bool, str | None]
         return False, None
 
 
+def _provider_runtime(provider: object) -> object:
+    """The ACP runtime a live session's provider runs on, or ``None``.
+
+    The session map holds the ``AcpProvider`` wrapper; the runtime lives on the
+    ``AcpSessionProvider`` it exposes as ``client``. A bare session provider
+    carries the runtime itself. Any other shape reads no runtime.
+    """
+    inner = provider
+    if getattr(provider, "_runtime", None) is None:
+        inner = getattr(provider, "client", None)
+    return getattr(inner, "_runtime", None)
+
+
+def live_turn_backend(state: object, session_key: str | None) -> str | None:
+    """The harness the LIVE session on *session_key* runs on, or ``None`` (no live
+    session, or one this cannot read). Reads only in-memory state. Never raises."""
+    try:
+        sessions = getattr(state, "sessions", None)
+        if sessions is None or session_key is None:
+            return None
+        provider = sessions.get_provider(session_key)
+        backend = getattr(_provider_runtime(provider), "acp_backend", None)
+        return backend if isinstance(backend, str) else None
+    except Exception as exc:  # noqa: BLE001 - unreadable reads as no live session
+        logger.debug("Kiro readiness: live session backend unreadable (%s)", type(exc).__name__)
+        return None
+
+
+async def _live_provider_dead(state: object, session_key: str | None) -> bool:
+    """Whether *session_key*'s provider process has exited, as ``get_or_create`` asks
+    (``SessionManager.is_provider_alive``). Unknown (no session, unreadable) is
+    not dead, so the live reads below decide as before. Never raises."""
+    sessions = getattr(state, "sessions", None)
+    if session_key is None or sessions is None:
+        return False
+    try:
+        return await sessions.is_provider_alive(session_key) is False
+    except Exception as exc:  # noqa: BLE001 - unknown is not dead
+        logger.debug("Kiro readiness: provider liveness unreadable (%s)", type(exc).__name__)
+        return False
+
+
 def live_turn_route(state: object, session_key: str | None) -> bool | None:
     """Whether the LIVE session on *session_key* is Crew's KAS engine bundle.
 
@@ -264,7 +353,8 @@ def live_turn_route(state: object, session_key: str | None) -> bool | None:
     * ``None``: no live session (no session map, no key, no provider). The turn
       cold-starts, and the configured selection decides its route.
     * ``True``: the live process is the engine bundle, so its turn spawns no
-      kiro-cli.
+      kiro-cli; or, on a workload host, any KAS runtime, whose token Crew answers
+      with the Crew's JWT-SVID.
     * ``False``: a live session on any other route, or one whose route cannot be
       read (another provider type, a runtime not spawned yet). It keeps the
       kiro-cli gate: a retained kiro-cli session would fail auth after the
@@ -283,14 +373,12 @@ def live_turn_route(state: object, session_key: str | None) -> bool | None:
             return None
         from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 
-        # The session map holds the ``AcpProvider`` wrapper; the runtime lives on
-        # the ``AcpSessionProvider`` it exposes as ``client``. A bare session
-        # provider carries the runtime itself. Any other shape reads no runtime.
-        inner = provider
-        if getattr(provider, "_runtime", None) is None:
-            inner = getattr(provider, "client", None)
-        runtime = getattr(inner, "_runtime", None)
+        runtime = _provider_runtime(provider)
         on_kas = getattr(runtime, "acp_backend", None) == ACP_BACKEND_KAS
+        if on_kas and _workload_active():
+            # On a workload host every KAS runtime, relay included, asks Crew for
+            # its token, which is the Crew's JWT-SVID (``kiro_crew.workload_identity``).
+            return True
         return on_kas and getattr(runtime, "_kas_engine_bundle", False) is True
     except Exception as exc:  # noqa: BLE001 - an unreadable live session keeps the gate
         logger.debug("Kiro readiness: live session route unreadable (%s)", type(exc).__name__)
@@ -319,8 +407,17 @@ async def kas_crew_signin_ready(
     refused before history is rewritten. Fresh on every call: there is no latch
     to go stale. Never raises.
     """
+    from kiro_crew import workload_identity
+
     if live_route is False:
         return False
+    if workload_identity.active():
+        # On a workload host every KAS route asks Crew for the token, relay
+        # included, and Crew answers with the Crew's JWT-SVID, never the vault.
+        # A turn on any other harness, live or cold, keeps the kiro-cli gate.
+        if live_route is None and not await asyncio.to_thread(_kas_turn_sync, session_key, config):
+            return False
+        return await asyncio.to_thread(workload_identity.ready)
     if live_route is None and not await asyncio.to_thread(
         _kas_bundle_turn_sync, session_key, config
     ):
@@ -337,6 +434,107 @@ async def kas_crew_signin_ready(
         logger.debug("Kiro readiness: Crew sign-in cannot serve the turn (%s)", type(exc).__name__)
         return False
     return True
+
+
+def _stored_sign_in_registered() -> bool:
+    """``endpoints.stored_sign_in_registered``, imported off the loop (kiro_crew.auth)."""
+    from kiro_crew.auth.login.endpoints import stored_sign_in_registered
+
+    return stored_sign_in_registered()
+
+
+def _registered_kas_turn_sync(
+    session_key: str | None,
+    live_route: bool | None,
+    config: object,
+    live_backend: str | None,
+    may_replace: bool,
+) -> bool:
+    """Whether the turn runs on KAS while the stored sign-in is an edition's own.
+
+    That sign-in is one no local agent may run on (``KasHarness.resolve_spawn``
+    refuses it before any route). The backend is chosen as the spawn's provider
+    factory chooses it, with no route or install asked: the refusal holds on every
+    route, and before the engine is installed. A turn that only reuses a live
+    process (*may_replace* False) is judged by that process's own harness
+    (*live_backend*): a retained kiro-cli session is not this refusal's. Blocking;
+    never raises (an unreadable backend keeps the kiro-cli gate, as on ``main``).
+    """
+    from kiro_crew.auth.login.endpoints import stored_sign_in_registered
+
+    if not stored_sign_in_registered():
+        return False
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    if live_route:
+        return True
+    if not may_replace and live_backend is not None:
+        return live_backend == ACP_BACKEND_KAS
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.chat_handlers import configured_backend_for_session
+
+        cfg = config if config is not None else KiroCrewConfig.load()
+        return configured_backend_for_session(session_key, cfg) == ACP_BACKEND_KAS
+    except Exception as exc:  # noqa: BLE001 - an unreadable answer keeps the kiro-cli gate
+        logger.debug("Kiro readiness: KAS backend probe failed (%s)", type(exc).__name__)
+        return False
+
+
+async def kas_turn_verdict(
+    session_key: str | None,
+    live_route: bool | None = None,
+    *,
+    config: object = None,
+    live_backend: str | None = None,
+    may_replace: bool = True,
+    live_dead: Callable[[], Awaitable[bool]] | None = None,
+) -> str:
+    """Who authorizes the turn on *session_key*, and whether it may start.
+
+    * :data:`KAS_TURN_REFUSED`: the turn runs on KAS while the stored sign-in is on
+      an edition's own start URL (``crew_client`` preview). The caller answers 503
+      before any history is cut; kiro-cli is never asked.
+    * :data:`KAS_TURN_READY`: :func:`kas_crew_signin_ready`.
+    * :data:`KAS_TURN_NOT_KAS_ROUTE`: every other turn, which the kiro-cli gate
+      decides exactly as on ``main``.
+
+    Arguments as :func:`kas_crew_signin_ready`, plus *live_backend*
+    (:func:`live_turn_backend`) and *may_replace*: whether the turn may start a new
+    process in place of the live one (a rewind, edit or regenerate does), and
+    *live_dead*, asked only while an edition sign-in is stored: a dead provider is
+    replaced from the config (``SessionManager.get_or_create``), so its route and
+    backend do not name the turn. Never raises.
+    """
+    # Asked whatever the live process is: a live relay session (``live_route`` False)
+    # can still be replaced by a rerun's new spawn, which refuses this sign-in.
+    if await asyncio.to_thread(_stored_sign_in_registered):
+        dead = live_dead is not None and await live_dead()
+        route, backend = (None, None) if dead else (live_route, live_backend)
+        if await asyncio.to_thread(
+            _registered_kas_turn_sync, session_key, route, config, backend, may_replace
+        ):
+            return KAS_TURN_REFUSED
+    if await kas_crew_signin_ready(session_key, live_route, config=config):
+        return KAS_TURN_READY
+    return KAS_TURN_NOT_KAS_ROUTE
+
+
+async def workload_turns_ready() -> bool:
+    """Whether a workload host can serve a new chat turn with no kiro-cli login.
+
+    True when ``KIROCREW_WORKLOAD_IDENTITY`` is set, a new turn starts on KAS and
+    the JWT-SVID file is usable now (:func:`kas_crew_signin_ready` for a cold
+    start). The setup gate reads it beside the kiro-cli probe, so the people a
+    relay brings in to a fresh pod reach the chat instead of "The gateway owner
+    needs to finish setup". The probe itself stays kiro-cli's own answer. Blocking
+    reads run in a thread; never raises.
+    """
+    from kiro_crew import workload_identity
+
+    if not workload_identity.active():
+        return False
+    return await kas_crew_signin_ready(None)
 
 
 def _log_safe_path(request: object) -> str:
@@ -585,21 +783,41 @@ async def reject_if_kiro_unverified(
 
     state = request.app.get("state")
     live_route = None
+    live_backend = None
     if turn_reuses_session or may_keep_live_process:
         live_route = live_turn_route(state, session_key)
+        live_backend = live_turn_backend(state, session_key)
     if not turn_reuses_session and live_route:
         live_route = None
     # The configuration the provider factory allocates the turn's session from.
     applied = getattr(getattr(state, "sessions", None), "_cfg", None)
-    if harness_turn and await kas_crew_signin_ready(session_key, live_route, config=applied):
-        _clear_refusal_warning()
-        return None
-    service = _service(request)
-    if await kiro_verified_ready(service, max_age_secs=max_age_secs):
-        _clear_refusal_warning()
-        return None
-    timed_out = isinstance(service, KiroPrerequisiteService) and service.probe_timed_out
-    body = _KIRO_PROBE_TIMED_OUT_RESPONSE if timed_out else _KIRO_NOT_READY_RESPONSE
+    body = None
+    if harness_turn:
+        verdict = await kas_turn_verdict(
+            session_key,
+            live_route,
+            config=applied,
+            live_backend=live_backend,
+            may_replace=not turn_reuses_session or may_keep_live_process,
+            live_dead=lambda: _live_provider_dead(state, session_key),
+        )
+        if verdict == KAS_TURN_READY:
+            _clear_refusal_warning()
+            return None
+        if verdict == KAS_TURN_REFUSED:
+            # Crew's own sign-in alone decides this turn: kiro-cli is not asked, and a
+            # rerun's history is not cut for a turn the spawn would refuse. Deferred:
+            # kiro_crew.auth must not load on the handlers' import path.
+            from kiro_crew.auth.login.endpoints import LOCAL_AGENT_UNAVAILABLE
+
+            body = {"error": LOCAL_AGENT_UNAVAILABLE, "code": KAS_TURN_REFUSED_CODE}
+    if body is None:
+        service = _service(request)
+        if await kiro_verified_ready(service, max_age_secs=max_age_secs):
+            _clear_refusal_warning()
+            return None
+        timed_out = isinstance(service, KiroPrerequisiteService) and service.probe_timed_out
+        body = _KIRO_PROBE_TIMED_OUT_RESPONSE if timed_out else _KIRO_NOT_READY_RESPONSE
     _warn_refused_once(_log_safe_path(request), body["code"])
     return web.json_response(body, status=503)
 

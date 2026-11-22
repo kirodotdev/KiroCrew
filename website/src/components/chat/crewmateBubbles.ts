@@ -65,7 +65,7 @@ const MACHINERY_ROLES: ReadonlySet<string> = new Set([
   ...REASONING_ROLES,
 ])
 
-/** A turn's progress rows: tool calls (the 🔧 line and its hidden ✅ / 🚫
+/** A turn's progress rows: tool calls (the Tool: line and its hidden Approved: / Refused:
  *  siblings) and thinking. Never drawn in the chat; a run reads past them. */
 const PROGRESS_ROLES: ReadonlySet<string> = new Set(['tool', ...REASONING_ROLES])
 
@@ -103,7 +103,10 @@ export function isCrewmateSpeech(m: ChatMessage): boolean {
   if (m.role !== 'assistant') return false
   // A sub-agent completion envelope also reaches the transcript under the
   // assistant role (the Slack gateway's delivery-timeout and orphan variants).
-  return !isHiddenInvisibleAssistantRow(m) && !isSystemNoticeRow(m) && !isWorkflowCompletionMessage(m) && !isSubagentCompletionMessage(m)
+  // This chat draws neither file chips nor the Steered chip, so a row whose
+  // only content is one of those (a quiet turn that only wrote files, a reply
+  // that is only a steering note) says nothing here.
+  return !isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false }) && !isSystemNoticeRow(m) && !isWorkflowCompletionMessage(m) && !isSubagentCompletionMessage(m)
 }
 
 /** Whether a row is drawn in a crewmate's chat at all. */
@@ -150,7 +153,8 @@ export function filterCrewmateChat(messages: ChatMessage[]): ChatMessage[] {
  *  ones), every other queued row is dropped. A queued entry whose send already
  *  has its row -- a steer the turn did not take, requeued for the next one --
  *  is that same message, so it draws no second bubble. An injected entry (a
- *  cron notification, an MCP-App message) is not the person's speech either:
+ *  cron notification, an MCP-App message, a requeued work-ledger wake) is not
+ *  the person's speech either:
  *  its drained row is machinery this chat hides, so it draws no bubble. Same
  *  array identity back when `all` holds no queued row. */
 export function withQueuedAsBubbles(all: ChatMessage[], queued: ChatMessage[]): ChatMessage[] {
@@ -169,11 +173,12 @@ export function withQueuedAsBubbles(all: ChatMessage[], queued: ChatMessage[]): 
 /** A queued row the gateway injected rather than the person typed. Read from
  *  the structured tags the server writes at enqueue time, never from the text:
  *  the live row carries its `cls` labels (`cronLabel`, `appLabel`), the queue
- *  hydration carries the entry's `kind` (`queue.ts`). The person's own send
- *  has none of them, matching the backend's kind-only `is_system_injection_item`. */
+ *  hydration carries the entry's `kind` (`queue.ts`). A requeued automation
+ *  steer carries `automationSteer` on both. The person's own send has none of
+ *  them, matching the backend's kind-only `is_system_injection_item`. */
 function isInjectedQueued(m: ChatMessage): boolean {
   const meta = m.meta
-  return !!(meta?.kind || meta?.cronLabel || meta?.appLabel || meta?.injectKind)
+  return !!(meta?.kind || meta?.cronLabel || meta?.appLabel || meta?.injectKind || meta?.automationSteer)
 }
 
 /** Whether the person's send `sendId` is still waiting on the crewmate: its

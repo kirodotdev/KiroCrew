@@ -160,7 +160,7 @@ class TestLinuxServiceScopesUninstall:
         assert ["systemctl", "--user", "stop", _UNIT] in run.calls
         assert not fragment.exists()
         out = capsys.readouterr().out
-        assert "✅ kirocrew service stopped and removed." in out
+        assert "kirocrew service stopped and removed." in out
         assert f"system scope: removed ({system_unit})" in out
         assert f"user scope: removed ({fragment})" in out
 
@@ -390,7 +390,7 @@ class TestLinuxServiceScopesUninstall:
         out = capsys.readouterr().out
         assert "No kirocrew service was removed." in out
         assert "   system scope: not installed" in out
-        assert "   ⚠️ user scope: left in place (" in out
+        assert "   Warning: user scope: left in place (" in out
 
     def test_a_refused_user_disable_after_a_successful_stop_still_keeps_the_file(self, tmp_path):
         from kiro_crew.service import linux as svc_linux
@@ -443,9 +443,9 @@ class TestLinuxServiceScopesUninstall:
         assert report.unfinished == frozenset({"system"})
         assert rc == 1
         out = capsys.readouterr().out
-        assert "   ⚠️ system scope: left in place (" in out
+        assert "   Warning: system scope: left in place (" in out
         assert "   user scope: not installed" in out
-        assert "⚠️ user scope" not in out
+        assert "Warning: user scope" not in out
 
     def test_no_sudo_reports_the_system_unit_and_still_removes_the_user_unit(
         self, tmp_path, monkeypatch, capsys
@@ -481,8 +481,8 @@ class TestLinuxServiceScopesUninstall:
         assert not any(c[0] == "sudo" for c in run.calls), run.calls
         assert rc == 1
         out = capsys.readouterr().out
-        assert "✅ kirocrew service stopped and removed." in out
-        assert "   ⚠️ system scope: left in place (privilege unavailable: " in out
+        assert "kirocrew service stopped and removed." in out
+        assert "   Warning: system scope: left in place (privilege unavailable: " in out
         assert "'sudo' was not found" in out
         assert f"   user scope: removed ({fragment})" in out
 
@@ -585,8 +585,9 @@ class TestLinuxServiceScopesUninstall:
         )
         assert report.unfinished == frozenset({"system"})
         assert rc == 1
-        assert "⚠️ system scope: left in place (an active unit whose load state is masked" in (
-            capsys.readouterr().out
+        assert (
+            "Warning: system scope: left in place (an active unit whose load state is masked"
+            in (capsys.readouterr().out)
         )
 
     def test_a_running_masked_user_unit_is_refused_whole(self, tmp_path):

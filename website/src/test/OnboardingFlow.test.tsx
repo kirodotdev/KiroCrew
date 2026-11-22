@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import OnboardingFlow from '../components/OnboardingFlow'
@@ -18,6 +18,7 @@ vi.mock('../api/client', async importOriginal => {
         dashboard: { user_role: '', user_technical_level: '' },
       }),
       patchConfig: vi.fn().mockResolvedValue({}),
+      kasBundleStatus: vi.fn().mockResolvedValue({ chat_needs_sign_in: false }),
       themeBoot: vi.fn().mockResolvedValue({ mode: '', color: '', onboarded: false }),
       beaconStatus: vi.fn().mockResolvedValue({
         enabled: true,
@@ -35,9 +36,15 @@ const patchConfig = vi.mocked(api.patchConfig)
 const kirocrewConfig = vi.mocked(api.kirocrewConfig)
 
 // The flow saves its first-run step in localStorage so a reload resumes it;
-// the store outlives a test, so start each one from step 1.
+// the store outlives a test, so start each one from step 1. Every first-run
+// mount seeds the Translucent panels default, which writes localStorage and
+// the <html> attribute, so clear those too: a test reads them whatever ran
+// before it.
 beforeEach(() => {
   localStorage.removeItem('mc-onboarding-step')
+  localStorage.removeItem(LIQUID_GLASS_STORAGE_KEY)
+  localStorage.removeItem(LIQUID_GLASS_SEEDED_KEY)
+  document.documentElement.removeAttribute('data-reduce-transparency')
 })
 
 const advanceToStep2 = () => {
@@ -445,11 +452,69 @@ describe('OnboardingFlow — About You step', () => {
     expect(document.activeElement).not.toBe(first)
   })
 
+  it('a Tab from the page behind the scrim re-enters the dialog, either direction', () => {
+    // The chat composer behind the scrim focuses itself when its session
+    // loads; neither first nor last, so without the re-entry Tab walks the page behind.
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const dialog = screen.getByRole('dialog')
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter(el => !el.hasAttribute('disabled') && el.tabIndex >= 0)
+    const behind = document.createElement('textarea')
+    document.body.appendChild(behind)
+    try {
+      behind.focus()
+      fireEvent.keyDown(document, { key: 'Tab' })
+      expect(document.activeElement).toBe(focusable[0])
+      behind.focus()
+      fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+      expect(document.activeElement).toBe(focusable[focusable.length - 1])
+    } finally {
+      behind.remove()
+    }
+  })
+
+  it('leaves a Tab from the click-focusable step heading to the browser, either direction', () => {
+    // The heading is inside the dialog but not a Tab stop, so it is neither
+    // first nor last: the browser moves focus on, the trap does not claim it.
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const heading = screen.getByRole('heading', { level: 1, name: 'Pick your look' })
+    expect(heading.tabIndex).toBe(-1)
+    heading.focus()
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(true)
+    expect(document.activeElement).toBe(heading)
+    expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(true)
+    expect(document.activeElement).toBe(heading)
+  })
+
+  it('leaves a Tab inside another modal over the step to that modal, either direction', () => {
+    // A theme pack's consent dialog opens over the Customize step with its
+    // own trap; pulling its focus back to "Skip all" would strand its buttons.
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const other = document.createElement('div')
+    other.setAttribute('role', 'dialog')
+    other.setAttribute('aria-modal', 'true')
+    const button = document.createElement('button')
+    other.appendChild(button)
+    document.body.appendChild(other)
+    try {
+      button.focus()
+      expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(true)
+      expect(document.activeElement).toBe(button)
+      expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(true)
+      expect(document.activeElement).toBe(button)
+    } finally {
+      other.remove()
+    }
+  })
+
   it('re-seats focus inside the dialog when the save freeze lifts', async () => {
     // Every step-2 control is disabled during the save, so the browser drops
     // focus to <body>. On the failed-save path the modal stays open, and
-    // without re-seating focus the Tab trap's first/last comparisons stop
-    // matching and Tab escapes the aria-modal dialog.
+    // without re-seating focus it would sit on <body>, outside the aria-modal
+    // dialog with no visible ring, until the next Tab re-enters it.
     patchConfig.mockRejectedValueOnce(new Error('gateway down'))
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
@@ -479,12 +544,6 @@ describe('OnboardingFlow — About You step', () => {
 })
 
 describe('OnboardingFlow — Pick your look offers the Translucent panels switch', () => {
-  afterEach(() => {
-    localStorage.removeItem(LIQUID_GLASS_STORAGE_KEY)
-    localStorage.removeItem(LIQUID_GLASS_SEEDED_KEY)
-    document.documentElement.removeAttribute('data-reduce-transparency')
-  })
-
   it('shows the Settings switch between the mode row and the theme grid', () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     const sw = screen.getByRole('switch', { name: 'Translucent panels' })
@@ -605,8 +664,7 @@ describe('OnboardingFlow — end of the tour', () => {
   })
 
   // Walk 2 → 3 → 4 → 5. Popovers 3-4 advance with "Next"; popover 5 is the last
-  // step of first run and finishes with "Done". Privacy is NOT part of this flow
-  // — it is its own chapter before Customize (see PrivacyChapter.test.tsx).
+  // step of first run and finishes with "Done".
   const advanceToLastPopover = async () => {
     advanceToStep2()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
@@ -635,6 +693,21 @@ describe('OnboardingFlow — end of the tour', () => {
     expect(screen.queryByRole('button', { name: 'Skip' })).not.toBeInTheDocument()
   })
 
+  // The gateway's `chat_needs_sign_in` (`GET /api/kas-bundle`, the field the chat's
+  // sign-in prompt reads) decides the last card: "your agent is ready" only when
+  // no Kiro sign-in is missing.
+  it.each([
+    [true, /Settings → Kiro account/, /your agent is ready/],
+    [false, /your agent is ready/, /Settings → Kiro account/],
+  ])('words the last card from chat_needs_sign_in=%s', async (needed, shown, absent) => {
+    vi.mocked(api.kasBundleStatus).mockResolvedValueOnce({ chat_needs_sign_in: needed } as never)
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    await advanceToLastPopover()
+    await waitFor(() => expect(api.kasBundleStatus).toHaveBeenCalled())
+    expect(await screen.findByText(shown)).toBeInTheDocument()
+    expect(screen.queryByText(absent)).not.toBeInTheDocument()
+  })
+
   it('Done on the last popover finishes onboarding', async () => {
     const onComplete = vi.fn()
     const onSkipAll = vi.fn()
@@ -645,13 +718,12 @@ describe('OnboardingFlow — end of the tour', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(onComplete).toHaveBeenCalled())
-    // Finishing is NOT a skip — Privacy is already behind the user here.
+    // Finishing is NOT a skip.
     expect(onSkipAll).not.toHaveBeenCalled()
   })
 
-  // Privacy is mandatory, so every early exit has to be distinguishable from a
-  // completion: the host routes a skip back through the Privacy chapter when the
-  // user has not passed it yet (shell/boot/firstRun.tsx).
+  // Every early exit has to be distinguishable from a completion, so a host
+  // can route the two differently (shell/boot/firstRun.tsx).
   describe('abandoning the tour reports a SKIP, not a completion', () => {
     const cases: Array<[string, () => void]> = [
       ['"Skip all" on the Customize modal', () => {
@@ -721,7 +793,7 @@ describe('OnboardingFlow — end of the tour', () => {
     })
   })
 
-  it('does not render the privacy disclosure — it is its own chapter now', async () => {
+  it('does not render the privacy disclosure', async () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     await advanceToLastPopover()
 

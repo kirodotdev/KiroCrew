@@ -162,7 +162,7 @@ are ignored. The admin's security policy names the collector instead, as
 `capabilities.telemetry.otlp_endpoint`, and metrics go there (still only while
 collection is on). With no endpoint in the policy, no metrics leave the machine.
 The LTS build also sends no daily heartbeat, install receipt or
-feedback survey, and does not show the first-run Privacy chapter.
+feedback survey.
 
 #### Collectors a build ships
 
@@ -190,33 +190,27 @@ list to the Kiro telemetry endpoint (`https://telemetry.us-east-1.kiro.dev/v1/me
 next to any collector of your own. It is listed as `kiro-telemetry` in Settings ->
 Privacy and in `kirocrew telemetry status`.
 
-Unlike your own collectors, it exports while recording is on by default: no
-`"enabled": true` has to be written. It waits for one thing first: the privacy
-notice that names it has been shown. That is the dashboard's Privacy chapter at
-notice version 3 showing the line that names it (Keep on, or
-`kirocrew telemetry enable`, records `dashboard.kiro_telemetry_ack_version`), or
-the one-line notice that names it, printed on a terminal by a start with no
-dashboard (`gateway --no-dashboard`, `run`, `chat`). A line that goes to a log or
-a pipe does not count, and neither does a notice from before version 3, which
-said metrics stay on this machine.
+Unlike your own collectors, it exports whenever recording is on, by default or
+by choice: no `"enabled": true` has to be written, and nothing waits for a notice
+to be acknowledged. The data points carry a hash of the install id and nothing
+that names you (see below). Settings -> Privacy shows that it is on, and a start
+prints one line saying so, once per notice version.
 
-Because the notice names it, it does not stop the Settings switch or
-`kirocrew telemetry enable` from turning recording on. Only your own collectors
-do that.
+It does not stop the Settings switch or `kirocrew telemetry enable` from turning
+recording on. Only your own collectors do that.
 
 | Host | Sent? |
 |---|---|
-| Recording on (by default or by choice), notice version 3 shown | Yes |
-| Recording on, notice version 3 not shown yet | No |
-| Off only by a written `"enabled": false` (see below) | No, unless Turn on is chosen |
-| A dashboard gateway nobody opens (its stderr line goes to a log and does not count) | No, until someone clicks Keep on |
+| Recording on (by default or by choice) | Yes |
 | An upgrade that had turned the heartbeat off, `"enabled": false` or a non-bool value, `kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0`, or `DO_NOT_TRACK=1` | No: recording is off |
 | A policy's `otlp_hosts` list that does not permit `telemetry.us-east-1.kiro.dev` | No |
 | LTS build (the policy names the collector, or none) | No: not part of that build's list |
 | CI runner (`CI`, `GITHUB_ACTIONS`, ...) | No: not listed, same rule as the daily heartbeat |
 | A non-default `KIROCREW_HOME` (a dev home, a pod, a worktree preview) | Yes, by the same rules as any other home; the daily heartbeat still skips it |
 
-Builds before recording was on by default wrote `telemetry.enabled: false` into every new config, so a public-build install that is off only because of that written `false` (the heartbeat on, no env pin, no policy, not CI, the default data home) is shown the version 3 notice once, in an off form that names Kiro telemetry and offers Turn on performance metrics or Keep off. Until Turn on is chosen, only the daily heartbeat and official app install receipts are sent and no performance metrics are recorded; Keep off is not asked again. A start with no dashboard prints one line pointing at `kirocrew telemetry enable`, once, on a terminal.
+A written `"enabled": false` stays off, including the one builds before recording
+was on by default wrote into every new config. Kiro Crew does not ask about it
+again; turn recording on in Settings -> Privacy or with `kirocrew telemetry enable`.
 
 Each data point carries `ClientType=kiro-crew` and `machineId`, the same
 SHA-256 of the install id that every request carries as `x-kiro-machineid`
@@ -497,25 +491,55 @@ every attribute value on it comes from a closed set. Histograms,
 | Sessions and turns | `session.started`, `session.idle_expired`, `subagent.spawned`, `subagent.completed`, `context.compactions`, `turn.completed`, `turn.timeout.cause` |
 | Crew sessions | `crew.session.started`, `crew.turn.started`, `crew.session.tree.depth`, `crew.session.tree.child`, `crew.session_control.calls` |
 | Work ledger and conductor mode | `work.created`, `work.item_closed`, `work.dispatches`, `work.reports`, `crew_mode.turned_on`, `crew_mode.new_chats`, `crew_mode.runs_finished`, `crew_mode.steers_per_run`, `crew_mode.worker_waits` |
-| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.task.completed`, `channel.message.received`, `ui.control.clicked` |
+| Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.installed`, `app.updated`, `app.uninstalled`, `app.session_started`, `app.run_time`, `app.credits`, `app.present`, `app.opened`, `app.foreground_time`, `channel.message.received`, `ui.control.clicked` |
 | Inventory (gauges) | `inventory.crons.active`, `inventory.monitor_loops.active`, `inventory.skills.installed`, `inventory.memory.migrated`, `inventory.knowledge.documents`, `inventory.lessons`, `inventory.mcp.servers`, `inventory.config.toggle`, `inventory.probe.failures`, `inventory.members`, `inventory.voice.provider` |
 | Voice | `voice.stt.started`, `voice.stt.ended`, `voice.stt.errors`, `voice.unavailable`, `voice.tts.replies` |
 | Recommendations | `tips.feedback`, `feature_video.status`, `milestone.panel_opened`, `milestone.starter_clicked`, `milestone.reached`, `milestone.skipped`, `milestone.mark_all_done`, `milestone.notice_shown`, `milestone.features_completed` |
+| Chat runtime sharing | `chat_runtime_share.toggled`, `chat_runtime_share.placed`, `chat_runtime_share.processes`, `chat_runtime_share.tenants`, `chat_runtime_share.rss_sampled`, `chat_runtime_share.reclaimed`, `chat_runtime_share.process_died`, `chat_runtime_share.turn_started`, `chat_runtime_share.turn_ended`, `chat_runtime_share.kas_queued`, `kas.engine_install` |
+
+Retired: `app.task.completed` (Papyrus compiles) is not sent. Its manifest row
+stays, marked `deprecated`, and the name is not reused; a collector can still
+receive it from an older build.
 
 `PRODUCT_METRICS` groups its names by the question they answer. One group covers
 in-product recommendations (feature tips, the Explore panel, feature videos):
 
 | Metric | Attributes |
 |---|---|
-| `kirocrew.tips.feedback` | `Feature` = `tips`, `Activity` (the action: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`), `Entity` (a shipped curated tip id, a shipped feature doc name, or `other`), `source` (`curated` / `catalog` / `generated` / `other`) |
+| `kirocrew.tips.feedback` | `Feature` = `tips`, `Activity` (the action: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`), `Entity` (a shipped curated tip id, an edition tip id the edition lists in `TipsPool.metric_tip_ids`, a shipped feature doc name, or `other`), `source` (`curated` / `catalog` / `generated` / `other`) |
 | `kirocrew.feature_video.status` | `Feature` = `feature_video`, `Activity` (the status: `seen` / `dismissed` / `other`), `Entity` (a shipped feature key or `other`) |
 | `kirocrew.milestone.starter_clicked`, `.skipped` | `Feature` = `milestone`, `Activity` = the last name segment, `Entity` (a catalog milestone id, `all` or `other`), `surface`, and `send` on `starter_clicked` |
 | `kirocrew.milestone.reached` | `Feature` = `milestone`, `Activity` = `reached`, `Entity` (a catalog milestone id), `group`, `via`, `recommended_by` (`tip` / `explore` / `video` / `several` / `none`) |
 | `kirocrew.milestone.panel_opened`, `.mark_all_done`, `.notice_shown`, `.features_completed` | `Feature` = `milestone`, `Activity` = the last name segment, plus `group` on `notice_shown` and `via` on `features_completed` |
 
 These nine are the behavioral metrics (`BEHAVIORAL_METRICS` in
-`src/kiro_crew/metrics/behavioral_metrics.py`): each records one thing a person
-did. They are exported under the instrumentation scope `kiro.crew`, so a
+`src/kiro_crew/metrics/behavioral_metrics.py`), with nine more from the features
+group, `kirocrew.app.installed`, `kirocrew.app.updated`,
+`kirocrew.app.uninstalled`, `kirocrew.app.session_started`, `kirocrew.app.run_time`,
+`kirocrew.app.credits`, `kirocrew.app.present`, `kirocrew.app.opened` and `kirocrew.app.foreground_time`: `Feature` = `app`, `Activity` = the last name segment,
+`Entity` (a shipped built-in's or a store app's name, else `private`),
+`entity_version` (that app's version when it is `N.N.N`, `other` for a pre-release
+or build suffix, `private` for a private app), and `via` (`store` / `default` /
+`other`) on `installed` and `updated`, `keep_data` (`true` / `false`) on
+`uninstalled`, `kind` (the session's `session_kind`) on `session_started`, counted
+beside `kirocrew.session.started` when the session's provider is owned by an app.
+`run_time` (unit `s`) adds each finished turn's wall seconds,
+rounded up, in a session an app owns, with `duration`, that turn's bucket
+(`le_10s` / `le_1m` / `le_5m` / `le_15m` / `le_1h` / `le_4h` / `gt_4h` /
+`other`); a turn with no duration adds nothing. `credits` (unit `credit`) adds
+each finished turn's credits in a session an app owns, with no other
+attribute; a turn that billed no credits (zero, or a backend that bills in
+dollars) adds nothing. `present` counts each installed
+app once per UTC day, with `status` (`enabled` / `disabled` / `other`) and
+`backend` (`none` / `running` / `stopped` / `other`). `opened` carries `surface` (`page` / `popout` / `desktop` / `other`), and
+`surface` (`page` / `popout` / `other`) and `duration` (`le_10s`, `le_1m`, `le_5m`,
+`le_15m`, `le_1h`, `le_4h`, `gt_4h`, `other`) on `foreground_time`, whose value is
+the seconds an app page was visible (unit `s`, spans under 1 s not counted, one
+span cut to 24 h). `opened` and `foreground_time` count **owner views only**: the
+dashboard sends them through the owner-only `POST /api/telemetry/app-view`, so a
+non-owner's or a Shared Crew teammate's tabs add nothing, while `session.started` and the turn metrics count
+every session. Do not divide one population by the other. Each records one thing a person
+or an app did. They are exported under the instrumentation scope `kiro.crew`, so a
 collector can admit user behavior by scope without taking the inventory gauges.
 Every other metric uses the scope `kiro_crew`. `Feature` and `Activity` are
 constants or values the emit site already closed; `Entity` carries the closed
@@ -556,7 +580,7 @@ process. Releases before this split reported every count from 4 up as `4+`.
 | `kirocrew.chat_runtime_share.turn_started` | `tenants`, `delay` (`le_1s` … `gt_60s`, prompt written to first event), `shared` (`true` / `false`: whether the process was placed by sharing; every unshared turn, preview off included, reads `false`), `harness` |
 | `kirocrew.chat_runtime_share.turn_ended` | `tenants`, `outcome` (the `kirocrew.turn.completed` outcome set), `harness` |
 | `kirocrew.chat_runtime_share.kas_queued` | `tenants` |
-| `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `other`) |
+| `kirocrew.kas.engine_install` | `outcome` (`installed` / `failed` / `host_unsupported`), `caller` (`spawn` / `dashboard` / `startup` / `other`) |
 
 None carries a tip id, a video id, a timestamp or tip text. `recommended_by` is
 computed on the machine from a 14-day local record and only the label is sent;
@@ -588,6 +612,17 @@ Two tests in `test/metrics/test_metrics_schema.py` enforce the rule:
 - The manifest must only grow against its copy at the base commit. A removed or
   renamed row, a removed key or value, or a changed kind, unit, scope or
   temporality fails, even when the manifest was regenerated.
+
+CI also runs `scripts/check_metrics_schema_history.py` in its own job, Metric
+Schema Only Grows. It applies the same only-grows rule against the manifest at the pull
+request's merge base, with no package install, so the check does not depend on
+the test run finding a base commit. It loads the rule from the base commit, so
+a change cannot loosen the rule and drop a row at once. To run it locally:
+
+```bash
+METRICS_SCHEMA_BASE="$(git merge-base HEAD origin/main)" \
+  python3 scripts/check_metrics_schema_history.py
+```
 
 To add a metric, key or value: change the code, then regenerate the manifest
 and commit it in the same pull request.

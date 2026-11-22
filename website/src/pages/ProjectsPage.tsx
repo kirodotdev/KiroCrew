@@ -88,6 +88,7 @@ export function runStatusLabel(run: Pick<ProjectRun, 'running' | 'status'>): str
 export default function ProjectsPage() {
   const ime = useImeGuard()
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
+  const catalogRefreshTrigger = useAppSelector(s => s.dashboard.catalogRefreshTrigger)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const dispatch = useAppDispatch()
@@ -104,12 +105,12 @@ export default function ProjectsPage() {
   // The shared roster hook, not a direct `/api/agents` fetch: the hook is where
   // a failed fetch becomes readable state (`error`) instead of a silently empty
   // list, which #5990 showed is indistinguishable from a one-agent install.
-  // `refreshTrigger` keeps the existing behaviour of re-fetching the roster
-  // whenever the dashboard-wide refresh fires.
+  // `catalogRefreshTrigger` keeps the existing behaviour of re-fetching the roster
+  // whenever the dashboard-wide refresh fires for something that can change it.
   const {
     agents, defaultAgent: defaultAgentName,
     error: rosterError, reload: reloadRoster, reloading: rosterReloading,
-  } = useAgents(refreshTrigger)
+  } = useAgents(catalogRefreshTrigger)
   // A recovered roster must not be recovered for this page alone. `useAgents`
   // holds per-instance state and the app shell keeps its own copy, so the retry
   // bumps the shared refresh trigger — the same shape SchedulePage ships — and
@@ -591,14 +592,15 @@ export default function ProjectsPage() {
           value={workspaceDir}
           onChange={e => setWorkspaceDir(e.target.value)}
           placeholder={defaultWorkspaceDir || i18nT('pages.projectsPage.default_workspace_folder')}
-          title={i18nT('pages.projectsPage.root_folder_for_a_new_plan_leave_blank_to_use_th')}
+          // The full path first: the field is too narrow to show a long one.
+          title={[workspaceDir || defaultWorkspaceDir, i18nT('pages.projectsPage.root_folder_for_a_new_plan_leave_blank_to_use_th')].filter(Boolean).join('\n\n')}
           disabled={anyPlanning}
           // Keeps its 200px floor at every width so a row that cannot fit it
           // WRAPS the field onto its own line, where `flex-1` gives it the full
           // width. Letting it shrink instead would keep it on the line as an
-          // unusable sliver. From `sm` up the row has the room, so the field
-          // returns to its natural size.
-          className={`min-w-[200px] flex-1 sm:flex-initial px-2.5 py-1.5 text-[13px] font-mono ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}
+          // unusable sliver. From `sm` up it takes the rest of the row, so a
+          // long path stays readable.
+          className={`min-w-[200px] flex-1 px-2.5 py-1.5 text-[13px] font-mono ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}
         />
       </div>
       {mode === 'compose' ? (

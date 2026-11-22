@@ -8,13 +8,13 @@
  *
  *   - Settings lists the tab and renders the switch on it; the Developer page no
  *     longer offers the tab.
- *   - The chat's "Sign in to Kiro" affordance (`KIRO_SIGN_IN_PATH`) opens that
- *     tab and lands ON the sign-in card, whose anchor mounts late (after the
- *     tab's config query), consuming the highlight only once it has rung it.
+ *   - The chat's "Sign in to Kiro" affordance (`KIRO_SIGN_IN_PATH`) opens the
+ *     Kiro account tab and lands ON the sign-in card, whose anchor mounts late
+ *     (its lazy chunk), consuming the highlight only once it has rung it.
  *   - The old `/developer?tab=agent-backend` URL -- bookmarks, and tabs opened
- *     before this build -- is forwarded to the new tab WITH its highlight, so
- *     an old sign-in link still rings the card instead of dropping the reader
- *     on the Developer page's first tab.
+ *     before this build -- is forwarded to the Agent Harness tab, and an old
+ *     sign-in link (there or on the Agent Harness tab itself) to the Kiro
+ *     account tab, so it still rings the card.
  *
  * The switch itself is replaced by a sentinel; its own behaviour is pinned in
  * `AgentBackendTab.test.tsx`. Only placement, routing and landing are tested.
@@ -36,7 +36,24 @@ vi.mock('../pages/developer/AgentBackendTab', () => ({
     }, [])
     return (
       <div data-testid="agent-backend-tab">
-        {loaded ? <div data-testid="anchor" data-setting-key="kiro-sign-in" /> : 'Loading configuration…'}
+        {loaded ? null : 'Loading configuration…'}
+      </div>
+    )
+  },
+}))
+
+vi.mock('../pages/developer/KiroSignInCard', () => ({
+  KiroSignInCard: () => {
+    // Mounts the anchor late, standing in for the card's first status read --
+    // the case a first-tick lookup gets wrong.
+    const [loaded, setLoaded] = useState(false)
+    useEffect(() => {
+      const t = setTimeout(() => setLoaded(true), 250)
+      return () => clearTimeout(t)
+    }, [])
+    return (
+      <div data-testid="kiro-account-tab">
+        {loaded ? <div data-testid="anchor" data-setting-key="kiro-sign-in" /> : 'Checking…'}
       </div>
     )
   },
@@ -112,17 +129,21 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
 })
 
+/** Waits that cross SettingsPage's lazy `KiroSignInCard` import: a cold worker
+ *  can take past the default 1 s to load that chunk. */
+const LAZY_TAB = { timeout: 10_000 }
+
 async function expectCardRungAndHighlightConsumed() {
-  expect(await screen.findByTestId('agent-backend-tab')).toBeInTheDocument()
+  expect(await screen.findByTestId('kiro-account-tab', {}, LAZY_TAB)).toBeInTheDocument()
   // The anchor is not there yet: the highlight must survive, not be stripped
   // on the first tick as an unknown id.
   expect(loc()).toMatch(SIGN_IN_HIGHLIGHT)
-  const anchor = await screen.findByTestId('anchor')
-  await waitFor(() => expect(anchor.scrollIntoView).toHaveBeenCalledTimes(1))
+  const anchor = await screen.findByTestId('anchor', {}, LAZY_TAB)
+  await waitFor(() => expect(anchor.scrollIntoView).toHaveBeenCalledTimes(1), LAZY_TAB)
   expect(anchor.style.outlineOffset).toBe('4px')
   await waitFor(() => expect(loc()).not.toContain('highlight='))
   // The tab stays in the path; only the consumed highlight goes.
-  expect(loc()).toBe('/settings/agent')
+  expect(loc()).toBe('/settings/kiro-account')
 }
 
 describe('Settings > Agent Harness', () => {
@@ -140,14 +161,23 @@ describe('Settings > Agent Harness', () => {
     expect(await screen.findByTestId('agent-backend-tab', {}, { timeout: 5000 })).toBeInTheDocument()
   })
 
-  it('the chat sign-in link opens the tab and rings the Kiro sign-in card once it mounts', async () => {
-    expect(KIRO_SIGN_IN_PATH.startsWith('/settings/agent?')).toBe(true)
+  it('the chat sign-in link opens the Kiro account tab and rings the sign-in card once it mounts', async () => {
+    expect(KIRO_SIGN_IN_PATH.startsWith('/settings/kiro-account?')).toBe(true)
     renderAt(KIRO_SIGN_IN_PATH)
     await expectCardRungAndHighlightConsumed()
   })
 
-  it('forwards the old Developer-page sign-in link, highlight included', async () => {
+  it('forwards the old Developer-page sign-in link to the Kiro account tab', async () => {
     renderAt('/developer?tab=agent-backend&highlight=key%3Akiro-sign-in')
+    await expectCardRungAndHighlightConsumed()
+  })
+
+  it.each([
+    '/settings/agent?highlight=key%3Akiro-sign-in',
+    '/settings/agent?highlight=agent.kiro-sign-in',
+    '/settings?tab=agent&highlight=key%3Akiro-sign-in',
+  ])('forwards the old Agent Harness sign-in link %s to the Kiro account tab', async route => {
+    renderAt(route)
     await expectCardRungAndHighlightConsumed()
   })
 

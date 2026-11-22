@@ -10,6 +10,10 @@ declare global {
     platform?: string
     isElectron?: boolean
     linuxFrameless?: boolean
+    /** This shell answers frameless-Linux application-menu IPC. Optional:
+     *  absent on a shell older than the feature, whose `menuItems` guard is
+     *  still Windows-only and returns `[]` for a Linux window. */
+    linuxAppMenu?: boolean
     getPathForFile?: (file: File) => string
     windowControl?: (action: string) => void
   }
@@ -95,6 +99,10 @@ declare global {
      *  Chromium's gesture-scroll events (macOS only). Optional: absent in a
      *  browser and on an older shell. See lib/scrollTouch. */
     onScrollTouch?: (cb: (phase: unknown) => void) => () => void
+    /** macOS Natural scrolling: `true` on, `false` off, `null` not known yet
+     *  (macOS only). Optional: absent in a browser and on an older shell. See
+     *  lib/scrollTouch `shellNaturalScrolling`. */
+    getNaturalScrolling?: () => unknown
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
     onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
@@ -133,6 +141,20 @@ declare global {
     set: (show: boolean) => Promise<TrayIconState>
   }
 
+  /** Whether minimizing hides the window to the tray. Offered on Windows, and
+   *  on Linux when the desktop has a tray; it can be turned on only while the
+   *  tray icon shows. */
+  interface MinimizeToTrayState {
+    on: boolean
+    offered: boolean
+    canEnable: boolean
+  }
+
+  interface MinimizeToTrayAPI {
+    get: () => Promise<MinimizeToTrayState>
+    set: (on: boolean) => Promise<MinimizeToTrayState>
+  }
+
   /** First-run setup's "connect to a crew on another machine" exit. `start`
    *  opens the desktop app's remote-crew form; on "switching" the window is
    *  about to leave this page for the crew's dashboard. */
@@ -158,8 +180,17 @@ declare global {
     forwardPorts: (ports: number[]) => Promise<Record<string, 'up' | 'down'> | null>
   }
 
+  /** The count of new crashes and the newest one's time, never a path, file
+   *  name, module name, exception code or logs directory. */
+  interface CrashReportsSummary {
+    newCount: number
+    /** ISO 8601 UTC time of the newest new crash, or null when none parses.
+     *  Optional: absent on an older shell. */
+    lastCrashAt?: string | null
+  }
+
   interface CrashReportsAPI {
-    get: () => Promise<{ newCount: number }>
+    get: () => Promise<CrashReportsSummary>
     reveal: () => Promise<{ ok: boolean; error?: string }>
   }
 
@@ -192,6 +223,11 @@ declare global {
     available: () => Promise<boolean>
     /** The chosen absolute folder, or null when the user cancels; rejects when no dialog could be shown. */
     pick: () => Promise<string | null>
+  }
+
+  interface WakaTimeConnectAPI {
+    /** Opens this dashboard's WakaTime panel in the system browser; false when the OS hand-off failed. */
+    openInBrowser: () => Promise<boolean>
   }
 
   interface ZoomAPI {
@@ -367,6 +403,9 @@ declare global {
     /** A plain quit and relaunch with no update command of its own; an armed
      *  update is applied by the quit it triggers. Absent on an older shell. */
     relaunch?: () => Promise<UpdateResult>
+    /** Whether `relaunch` would be accepted from this window: false where the
+     *  shell's local-dashboard gate refuses it. Absent on an older shell. */
+    canRelaunch?: () => Promise<boolean>
     getInfo?: () => Promise<(UpdateInfo & { lastState?: UpdateState | null }) | undefined>
     setChannel?: (channel: string) => Promise<UpdateResult>
     setAutoDownload?: (enabled: boolean) => Promise<UpdateResult>
@@ -382,12 +421,14 @@ declare global {
     localGatewayAPI?: LocalGatewayAPI
     closeActionAPI?: CloseActionAPI
     trayIconAPI?: TrayIconAPI
+    minimizeToTrayAPI?: MinimizeToTrayAPI
     remoteCrewSetupAPI?: RemoteCrewSetupAPI
     gatewayRestartAPI?: GatewayRestartAPI
     remoteCrewPaneAPI?: RemoteCrewPaneAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI
+    wakatimeConnectAPI?: WakaTimeConnectAPI
     zoomAPI?: ZoomAPI
     browserAPI?: BrowserAPI
     updateAPI?: UpdateAPI

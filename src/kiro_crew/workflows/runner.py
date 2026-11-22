@@ -150,6 +150,24 @@ def clamp_run_timeout(value: Optional[int], *, default: int = DEFAULT_RUN_TIMEOU
     return max(MIN_RUN_TIMEOUT_SECS, min(secs, MAX_RUN_TIMEOUT_SECS))
 
 
+def _redact_then_cut(text: str, limit: int) -> str:
+    """*text* with recognized secrets scrubbed, then cut to *limit* characters
+    with a visible "…".
+
+    Redact BEFORE cutting. Cutting first can slice a token in half, which
+    destroys the pattern the redactors match on — and the surviving prefix is
+    still real key material (see the note in security.redact_credentials about
+    never emitting even a short prefix).
+    """
+    if _redact_exfil is not None:
+        text, _ = _redact_exfil(text)
+    if _redact_credentials is not None:
+        text, _ = _redact_credentials(text)
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    return text
+
+
 def describe_agent_error(exc: BaseException) -> str:
     """Bounded, redacted one-liner explaining why an agent call failed.
 
@@ -165,19 +183,9 @@ def describe_agent_error(exc: BaseException) -> str:
     and chat surfaces redact again on the way out); this is not a guarantee about
     arbitrary secret-looking text.
     """
-    text = f"{type(exc).__name__}: {exc}".strip()
-    # Redact BEFORE truncating. Truncating first can slice a token in half, which
-    # destroys the pattern the redactors match on — and the surviving prefix is
-    # still real key material (see the note in security.redact_credentials about
-    # never emitting even a short prefix). Order matters more than cost here:
-    # the text is one exception message, not a stream.
-    if _redact_exfil is not None:
-        text, _ = _redact_exfil(text)
-    if _redact_credentials is not None:
-        text, _ = _redact_credentials(text)
-    if len(text) > MAX_AGENT_ERROR_CHARS:
-        text = text[:MAX_AGENT_ERROR_CHARS] + "…"
-    return text
+    # Redacting the whole text costs more than cutting first, but it is one
+    # exception message, not a stream.
+    return _redact_then_cut(f"{type(exc).__name__}: {exc}".strip(), MAX_AGENT_ERROR_CHARS)
 
 
 def _fallback_label(prompt: str) -> str:
@@ -217,15 +225,7 @@ def _ceiling_error_text(base: str, in_flight: list, last_event_s_ago: float) -> 
         shown = in_flight[:CEILING_MAX_NAMED_AGENTS]
         parts = []
         for c in shown:
-            label = str(c["label"])
-            # Redact the COMPLETE label first: truncating first can leave a
-            # fragment of a secret too short for the redactors to match.
-            if _redact_exfil is not None:
-                label, _ = _redact_exfil(label)
-            if _redact_credentials is not None:
-                label, _ = _redact_credentials(label)
-            if len(label) > CEILING_MAX_LABEL_CHARS:
-                label = label[:CEILING_MAX_LABEL_CHARS] + "…"
+            label = _redact_then_cut(str(c["label"]), CEILING_MAX_LABEL_CHARS)
             parts.append(f'agent {c["agent_id"]} "{label}" still running')
         who = "; ".join(parts)
         if len(in_flight) > len(shown):
@@ -531,6 +531,7 @@ class _RunContext:
         self._prefix_rerun = replay_before > 0
         self._root_scope = _CallScope(self, ())
         self._failed_task_logs = 0
+        self._refusal_logs = 0
         self._budget_watch = BudgetWatch(budget.total, run_id=run_id)
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
@@ -683,8 +684,17 @@ class _RunContext:
                 # Structured output (C1–C3): re-ask until the model yields
                 # schema-valid JSON, or None after bounded retries. The producer
                 # is the same injected agent_fn (so prod/stub both flow through).
+                # Its text is what the schema validates, so a person-only directive
+                # refused in a turn that returns reaches the run's stream through
+                # ``_on_refusal`` instead (``agent_exec.step_text``). Added after
+                # the fingerprint, so a replay still matches.
+                step_opts = {
+                    **opts,
+                    "_on_refusal": lambda t: self._log_refusal(agent_id, call_label, t),
+                }
+
                 async def _produce(p: str) -> str:
-                    out = await self._agent_fn(p, opts)
+                    out = await self._agent_fn(p, step_opts)
                     text = out if isinstance(out, str) else json.dumps(out)
                     # Each re-ask is its own model turn: meter the prompt it sent.
                     self._note_spend(p, text)
@@ -809,9 +819,9 @@ class _RunContext:
 
         return await _pipeline(items, *[in_chain(s) for s in stages], limit=self._concurrency)
 
-    # Failed-task log events per run: enough to explain the failures, few enough
-    # that a pipeline over thousands of bad items cannot flood the event stream
-    # and the checkpoints that re-serialize it.
+    # Failed-task log events per run, and refused-directive ones (counted apart):
+    # enough to explain them, few enough that a pipeline over thousands of bad
+    # items cannot flood the event stream and the checkpoints that re-serialize it.
     _FAILED_TASK_LOG_LIMIT = 20
 
     def _note_spend(self, prompt: Any, result: Any) -> None:
@@ -828,6 +838,19 @@ class _RunContext:
         message = f"{where} {index} failed: {describe_agent_error(exc)}"
         if self._failed_task_logs == self._FAILED_TASK_LOG_LIMIT:
             message += " (further failed tasks in this run are not logged)"
+        self._record(self._stream.log(self.now, message=message))
+
+    def _log_refusal(self, agent_id: str, label: str, refusal: str) -> None:
+        # A ``schema=`` step's refused person-only directive; the SEL row the
+        # refusal wrote records every one, past the cap too. The label and the
+        # session key the refusal names are script-supplied, so each is bounded.
+        self._refusal_logs += 1
+        if self._refusal_logs > self._FAILED_TASK_LOG_LIMIT:
+            return
+        shown = _redact_then_cut(str(label), CEILING_MAX_LABEL_CHARS)
+        message = f'agent {agent_id} "{shown}": {_redact_then_cut(refusal, MAX_AGENT_ERROR_CHARS)}'
+        if self._refusal_logs == self._FAILED_TASK_LOG_LIMIT:
+            message += " (further refusals in this run are not logged)"
         self._record(self._stream.log(self.now, message=message))
 
     def _scope(self) -> _CallScope:

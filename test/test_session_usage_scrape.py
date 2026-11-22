@@ -26,6 +26,8 @@ import kiro_crew.dashboard.handlers.sessions as sessions_mod
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import finished
 
+pytestmark = pytest.mark.usefixtures("no_ambient_kiro_api_key")
+
 
 def _park_scrape_for_an_hour(monkeypatch) -> None:
     """Park the usage scrape an hour ahead of the product's monotonic clock.
@@ -322,6 +324,42 @@ class TestUnavailableReasonNamesTheRealRemedy:
             await sessions_mod._fetch_usage_bg()
         assert sessions_mod._usage_cache == {"available": False}
 
+    def _api_without_limit(self, monkeypatch, user_id=None):
+        api = sessions_mod.kiro_usage_api
+        result = api.UsageResult(None, api.AUTH_OTHER, user_id, plan_without_limit=True)
+        monkeypatch.setattr(api, "fetch_usage_limits", lambda **k: result)
+
+    @pytest.mark.asyncio
+    async def test_a_plan_without_a_limit_reports_it(self, monkeypatch):
+        # The API answered about this account with a used amount and no limit;
+        # the scrape found no table either.
+        self._api_without_limit(monkeypatch)
+        with self._scrape():
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache == {"available": False, "reason": "plan_without_limit"}
+
+    @pytest.mark.asyncio
+    async def test_a_switch_inside_the_refresh_drops_the_plan_reason(self, monkeypatch):
+        # The API read A's plan; B is signed in by the time the scrape failed.
+        self._api_without_limit(monkeypatch)
+        monkeypatch.setattr(
+            sessions_mod,
+            "_fetch_whoami",
+            AsyncMock(side_effect=[_IDENTITY_A, _IDENTITY_B, _IDENTITY_B]),
+        )
+        with self._scrape():
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache == {"available": False}
+
+    @pytest.mark.asyncio
+    async def test_another_user_of_the_org_drops_the_plan_reason(self, monkeypatch):
+        # Same e-mail and portal, but kiro-cli's store now names another userId.
+        self._api_without_limit(monkeypatch, user_id="user-a")
+        monkeypatch.setattr(sessions_mod.kiro_usage_api, "signed_in_user_id", lambda: "user-b")
+        with self._scrape():
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache == {"available": False}
+
     @pytest.mark.asyncio
     async def test_a_prior_good_value_for_this_account_is_kept_stale_over_the_reason(
         self, monkeypatch
@@ -503,7 +541,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
     def test_only_the_two_auth_class_states_map_to_signin_required(self):
         api = sessions_mod.kiro_usage_api
         mapping = {
-            state: sessions_mod._unavailable_reason(api.UsageResult(None, state))
+            state: sessions_mod._unavailable_reason(api.UsageResult(None, state), same_account=True)
             for state in (
                 api.AUTH_OK,
                 api.AUTH_NO_CREDENTIAL,
@@ -522,7 +560,8 @@ class TestUnavailableReasonNamesTheRealRemedy:
         # Fail-safe direction: an unrecognised state must not invent a
         # re-authentication demand for a user whose sign-in is fine.
         api = sessions_mod.kiro_usage_api
-        assert sessions_mod._unavailable_reason(api.UsageResult(None, "something-new")) is None
+        result = api.UsageResult(None, "something-new")
+        assert sessions_mod._unavailable_reason(result, same_account=True) is None
 
 
 class TestSpawnSuppressesConsoleWindow:

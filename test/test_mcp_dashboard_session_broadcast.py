@@ -197,9 +197,27 @@ class TestBroadcastReports:
         assert "Steered" in out
         assert "cut into its running turn" in out
 
-    def test_a_steer_that_fell_back_to_a_queue_says_so_for_that_target(self) -> None:
-        """The caller asked for an interruption and one target did not get one.
+    def test_a_held_steer_says_pending_steer_for_that_target(self) -> None:
+        """The caller asked for an interruption and one target has not taken it yet.
         Reporting a plain queue would leave it believing every target was cut into."""
+        out, _ = _bc(
+            {"message": "stop", "mode": "steer", "all": True},
+            {
+                "ok": True,
+                "mode": "steer",
+                "requested": 2,
+                "delivered": 2,
+                "results": [_row("chat-2", steered=True), _row("chat-3", pending_steer=True)],
+            },
+        )
+        assert "cut into its running turn" in out
+        assert "pending-steer" in out
+        assert "steer fell back to the queue" not in out
+
+    def test_a_steer_that_fell_back_to_a_queue_says_so_for_that_target(self) -> None:
+        """The caller asked for an interruption and one target did not get one, with
+        nothing holding it for a tool boundary. Reporting a plain queue would leave
+        it believing every target was cut into."""
         out, _ = _bc(
             {"message": "stop", "mode": "steer", "all": True},
             {
@@ -211,7 +229,7 @@ class TestBroadcastReports:
             },
         )
         assert "cut into its running turn" in out
-        assert "steer fell back to the queue" in out
+        assert "`chat-3` — queued until its turn ends (steer fell back to the queue)" in out
 
     def test_a_queue_broadcast_never_mentions_steering(self) -> None:
         out, _ = _bc(
@@ -326,6 +344,28 @@ class TestStatusReports:
         )
         assert "chat-2" in out and "rebase the PR" in out and "working" in out
         assert "chat-3" in out and "queued" in out and "2 queued" in out
+
+    def test_background_activity_says_what_keeps_the_worker_busy(self) -> None:
+        out, _ = _st(
+            {
+                "ok": True,
+                "caller": "chat-1",
+                "tree": "readable",
+                "sessions": [
+                    {
+                        "target": "chat-2",
+                        "title": "rebase the PR",
+                        "status": "working",
+                        "running": True,
+                        "activity": ["subagents", "workflow"],
+                        "queue_depth": 0,
+                        "source": "live",
+                    }
+                ],
+            }
+        )
+        line = next(line for line in out.splitlines() if "chat-2" in line)
+        assert "working, active: sub-agents, workflow" in line
 
     def test_an_idle_row_whose_loop_will_wake_it_says_wait(self) -> None:
         """An idle worker inside its own CI loop is not the one that needs a

@@ -117,6 +117,11 @@ def _name_max(directory: Path) -> int:
     return value if isinstance(value, int) and value > 0 else _DEFAULT_NAME_MAX
 
 
+def _inside_upload_dir(dest: Path, root: Path) -> bool:
+    """Whether *dest* still resolves inside *root* once symlinks are followed."""
+    return dest.resolve().is_relative_to(root.resolve())
+
+
 def _write_file_restricted(path: Path, data: bytes) -> None:
     """Write file with owner-only permissions (0o600)."""
     fd = os.open(
@@ -397,7 +402,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
             # Resolved before any byte is read because media streams straight
             # to this destination rather than buffering the part first.
             dest = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
-            if not dest.resolve().is_relative_to(upload_dir.resolve()):
+            if not await asyncio.to_thread(_inside_upload_dir, dest, upload_dir):
                 await _cleanup()
                 _sel().log_api_access(
                     caller=caller,

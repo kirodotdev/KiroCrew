@@ -90,6 +90,9 @@ export interface Slot {
   // offers (`is_interruption_stale`). The row and the composer still treat the
   // session as interrupted; only the "Resume N sessions" row leaves it out.
   interrupted_stale?: boolean
+  // The interrupted turn ended on a sign-in error with nothing after it
+  // (`newest_error_is_sign_in`), so the row names the sign-in first.
+  interrupted_by_sign_in?: boolean
   // The slot snapshot can report live child work before the detailed activity
   // map hydrates after reconnect. Never present that gap as an idle interruption.
   subagents_running?: boolean
@@ -124,6 +127,8 @@ export interface Slot {
    *  matter what the backend sends. */
   executor?: 'local' | 'remote'
   instance_id?: string
+  /** A read-only cron run transcript — see `ChatSlot` in ../../types. */
+  cron_run_read_only?: boolean
   created?: string
   /** Shared Crew creator, when the gateway records one. Display only. */
   attribution?: SessionAttribution | null

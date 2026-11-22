@@ -372,6 +372,22 @@ custom-rules:
       established in test_builtin_app_assets.py, test_platform_compat.py, and
       test_skill_home_paths.py.
 
+      AN OBJECT THAT OPENS SQLITE IN ITS CONSTRUCTOR IS CLOSED BY ITS TEST. On
+      CPython 3.11+ an unclosed `sqlite3.Connection` is a reference cycle, so a
+      dropped store keeps `db` + `-wal` + `-shm` open until the cyclic collector
+      runs, and on macOS (default `ulimit -n 256`) one xdist worker runs out of
+      descriptors and every later test on it fails with `EMFILE`. GitHub's
+      runners allow 10240 or more, so CI does not show it. FLAG an added or
+      changed test that builds a `SubagentManager`, `VectorMemoryStore`,
+      `KnowledgeStore`, or a new class that opens SQLite in `__init__`, with no
+      `close()` on every exit path, no `opened(...)` wrap and no opt-in close
+      fixture (`close_subagent_managers`). `SkillsLoader` is closed for every
+      test by the rootdir conftest's autouse
+      `_close_skills_loaders_the_test_opened`, so do not flag it; DO flag a
+      change that removes or narrows that fixture. See
+      docs/system-specs/common/testing-conventions.md § Close the SQLite
+      handles and skills loaders a test opens.
+
   - id: tests-are-deterministic
     blocking: true
     file-patterns:
@@ -387,7 +403,7 @@ custom-rules:
       on Linux, macOS and Windows runners under load, so a test that is only
       usually right reds unrelated pull requests. The contract is
       `docs/system-specs/common/testing-conventions.md` § Determinism contract
-      (D1-D12, named on each item below); each shape below has burned this
+      (D1-D13, named on each item below); each shape below has burned this
       repository before.
 
       FLAG, on added or changed test lines:
@@ -482,7 +498,11 @@ custom-rules:
           registered under that name in `sys.modules` before `exec_module`,
           never under the real name), and a
           `sys.modules` eviction without restoring both the entry and the
-          parent package's attribute in the same scope.
+          parent package's attribute in the same scope. A NEWLY ADDED
+          counting or recording spy set through `<mod>.os.<name>` (the stdlib
+          module itself) belongs here too when it counts every caller: count
+          only calls whose caller is the function under test, or set it on
+          the module's own `os` binding.
       12. (D11) A NEWLY ADDED autouse fixture that requests the shared
           `monkeypatch` (use `_floor_monkeypatch`), or a bare
           `monkeypatch.undo()` in a test body (scope the patch with
@@ -498,16 +518,51 @@ custom-rules:
           (testing-conventions § A host probe that asks a different program
           than the one under test).
 
-      14. A test that lets the HOST answer what the code reads: a real tool
+      14. (D13) A test that lets the HOST answer what the code reads: a real tool
           found on the inherited `PATH` or in a fixed install directory (the
-          operator's kiro-cli, a version-manager shim, a launcher), a system
-          tool's own shape (`sleep` can be a shebang script), an inherited
-          signal disposition (`nohup` ignores SIGHUP), host data files
-          (tzdata), or the layout and ownership of the real home. CI's runner
-          has none of these, so the test is green there and red on a
-          developer host. Pin the probe, give the test its own `HOME`, or spawn
+          operator's kiro-cli, a version-manager shim, a launcher), a command
+          name in fixture data that production resolves with `shutil.which`
+          (an MCP spec's `"command": "http"`), a system tool's own shape
+          (`sleep` can be a shebang script), an inherited signal disposition
+          (`nohup` ignores SIGHUP), host data files (tzdata), or the layout
+          and ownership of the real home. Linux CI, Windows CI and a developer
+          host each differ in these, so the test is green on one and red on
+          another. Pin the probe, give the test its own `HOME`, or spawn
           through the helper that fixes the trait (testing-conventions § What
           the host lends the suite, and must not).
+      15. A shell stand-in whose TERM/INT trap the test relies on, while the
+          step it `wait`s on stays in the process group the test signals
+          (`sleep 30 & wait $!` with no `set -m` / `setsid`). On macOS bash 3.2
+          the step dies of the same signal and the shell can exit without
+          running the trap. Also flag a stop of that stand-in bounded by a
+          product grace constant instead of the suite's safety net
+          (testing-conventions § Shell stand-ins that trap a group signal).
+      16. An assertion of WHICH check refused an input (`_denied_by(x) ==
+          "<rule-id>"`, `"<reason text>" in verdict`) where another check on
+          the path could answer first: the test's name or comment says its
+          point is only that the input is refused ("is refused", "without an
+          exception"), or the input is past the named rule's own bound with no
+          asserted precondition that it stays inside every OTHER limit. A
+          change that adds an earlier cap is green on its base, and once both
+          land the test reds every PR although nothing got through (#37820's
+          128-level nest, refused first by #37875's 32-level gate cap, fixed
+          in #37964). Assert the refusal alone (`is_denied(x) is not None`),
+          or test the rule at its own bound with the precondition asserted
+          (`depth <= _MAX_SUBSTITUTION_DEPTH`). A test whose subject is the
+          ordering of the checks, or a table whose rows each carry their
+          expected rule at that rule's bound, is fine (testing-conventions §
+          Refusal tests).
+      17. A probe of a crew log's kernel lock (`file_lock(..., wait=False)` on
+          a unit's `.lease`, or a helper that wraps one) made after
+          `assert_drained()` / `emit.flush()` alone, with no `eager.drain()`
+          before it. The eager folder writes savepoints under this process's
+          share of the same lease on its own thread, and the seal a
+          `session/closed` triggers is one of them, so the probe can read
+          "still owned" while the emitter has already let go: macOS reds
+          about once a day (#39402). Probe through `_owned_elsewhere` /
+          `_can_take_ownership` in `test/crew_log_emit_helpers.py`, which
+          drain the folder first, or drain it yourself (testing-conventions §
+          Filesystem tests).
 
       Allowed (do NOT flag):
       - a sleep inside a stub that simulates slow work while the test waits
@@ -670,7 +725,7 @@ custom-rules:
         session it returns None and changes nothing, so it is not an H13 change
         to the kiro construction path.
         A pin this gateway CAN start but that cannot run a full crewmate (no
-        crewmate chat or no worker kit: goose, opencode, strands, pi, deepseek, copilot)
+        crewmate chat or no worker kit: goose, opencode, strands, deepseek, copilot)
         is the other half of H17 (rfc-crewmate-harness-follows-settings.md
         5.8): it is not refused, and that crewmate's DM chat and workers run on
         KAS, with an error log line and an error bell note naming the crewmate,
@@ -992,6 +1047,16 @@ custom-rules:
         `test_boot_smoke.py`'s `_KNOWN_SECOND_BOOT_CHANGES` with its reason.
         The second-boot witness sees it only when the job lands late, so the
         PR that adds it usually passes and later PRs go red.
+      - A call that forwards its caller's own parameters by hand (`x=x`, usually a
+        re-entry such as `load_session(self, ..., channel_id=channel_id)`) and
+        leaves out one the callee also accepts. A keyword added to the callee later
+        is then dropped on that path; two green PRs shipped exactly this
+        (#37955 + #36872, fixed in #38108; `member_context` in #38105). When a diff
+        adds a parameter to a function, check every hand-spelled forwarding call
+        to it; when a diff adds such a call, expect every shared keyword passed or
+        a comment saying why not. `test/test_forwarding_calls_forward_every_keyword.py`
+        enforces the common shape; a new row in its `_ALLOWED_DROPS` needs a reason
+        that is true of the code.
 
       This rule is maintained by the pattern-harvest loop (fix PRs propose
       candidates in their "Pattern harvest" section; accepted ones land
@@ -1161,6 +1226,91 @@ custom-rules:
       still held after waiting 0.00s (one attempt)` until #16102 and #16465.
       Allowed (do NOT flag): a test that asserts the on-loop refusal itself.
 
+  - id: a-module-level-cache-ships-its-per-test-reset
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      A module-level mutable value that production code fills at runtime is
+      process state. Under xdist every later test on the same worker inherits
+      what an earlier test left in it, so the leak reds an unrelated test on
+      later PRs while the PR that added the value passes its own CI.
+
+      `test/test_process_cache_floor_ratchet.py` enforces the common shape, but
+      only in a CI run whose checkout already contains it (a PR whose last green
+      run is older than the ratchet merges without meeting it), and only for an
+      empty container whose name contains `cache`, `stores` or `memo`. This
+      rule is the review-time check for every shape, read from the base commit.
+
+      FLAG a name the diff ADDS at MODULE scope in `src/kiro_crew/` (outside
+      `tests/` and `*_tests/` trees) only when ALL three hold:
+      - it is bound to a mutable container (`{}`, `[]`, `set()`, `dict()`,
+        `OrderedDict()`, `defaultdict(...)`, a `Weak*Dictionary`, a `deque`),
+        a function decorated with `functools.lru_cache` / `functools.cache`, a
+        scalar flag or snapshot that a function rebinds with `global`, or an
+        instance of a class that keeps state in its attributes (a cache
+        object whose `.cache` / `.pending` a function fills);
+      - a function body writes it AFTER import, on a path a test drives
+        (item assignment or `del`, `.add`/`.append`/`.update`/`.setdefault`/
+        `.pop`/`.clear`, a `global` rebind, an assignment to the instance's
+        attribute, or a call to the cached function);
+      - what it holds after that write depends on per-test state that is NOT
+        part of the lookup key: a path under the data home or `tmp_path`, an
+        env var, config, the clock, a file's content or stat read inside the
+        function, or simply whether an earlier test reached the writer at all
+        (a warn-once / done-once flag). A later test can then read a value an
+        earlier test left. For a cached function, its arguments ARE the key:
+        a value that arrives as an argument does not meet this condition.
+
+      Such a name needs, in the SAME PR, a `@per_test_guard` function in
+      `test/conftest_resets.py` that puts it back to its cold value before and
+      after every test, re-bound in `test/conftest.py`'s `from conftest_resets
+      import (...)` block. Follow `_reset_subagent_not_due_memo`: look the module
+      up with `sys.modules.get(...)` so the floor does not import it, clear the
+      container (or `cache_clear()` the function, or `_floor_monkeypatch.setattr`
+      the flag to its initial value), yield, clear again. A reset only in the
+      new value's own test file does not count: the next file is the one that
+      inherits it.
+
+      Does NOT count (do NOT flag any of these):
+      - a CONSTANT: a dict, list or set literal with content, a `frozenset`,
+        `tuple`, `MappingProxyType`, enum or compiled regex that no function
+        writes after import, whatever its name or case;
+      - a REGISTRY filled only at import time (decorator registration, a loop
+        at module scope, `register(...)` calls in module bodies) from code,
+        never from per-test input;
+      - a memo with no side effect whose answer is fully determined by its
+        arguments, whatever those arguments are and wherever a test got them
+        (a regex built from a `home` string passed in, a parse of the text
+        passed in), or that reads only a packaged resource by package-relative
+        path. A cached function used for its SIDE effect (an `lru_cache` that
+        logs a warning once per key) is a warn-once flag and IS flagged;
+      - a value an existing per-test floor already resets: its name and its
+        module both appear in `conftest.py` or `test/conftest*.py`, the files
+        the ratchet reads. Check them at the PR head before flagging. A reset
+        only in `test/integration/conftest.py` does not count: it runs per
+        gateway boot, for integration tests only;
+      - a line carrying `# process-cache-ok: <reason>` whose reason is true of
+        the code (the marker is how the ratchet's excuse is spelled; a safe
+        value from the bullets above does not need it);
+      - a monotonic generation counter that caches key on: putting an older
+        number back can match an entry built under other settings, so it is
+        left unpinned on purpose;
+      - locks, `threading.Event`, loggers, `ContextVar`s (governed by their own
+        reset rules), `__all__`, and type aliases;
+      - a name the diff MOVES or RENAMES whose reset moves with it in the same
+        PR, and a name the diff only reads or deletes. A moved name listed in
+        `test/process_cache_floor_baseline.txt` with no reset IS flagged: the
+        ratchet keys its baseline on `path::name`, so the move needs the reset;
+      - code under `if __name__ == "__main__":` or a CLI entry that no test
+        imports and calls.
+      When unsure whether a value is per-test, say why in an advisory finding
+      instead of blocking.
+
+      Name the value, the line, and the writer in the finding. See
+      docs/system-specs/common/testing-conventions.md § Order dependence and
+      shared state, and D11.
+
   - id: persist-before-you-publish
     blocking: true
     file-patterns:
@@ -1251,7 +1401,9 @@ custom-rules:
       site is a ratchet: it exists so that adding an unreviewed instance of some
       class fails. Re-pinning it because the diff added a legitimate instance is
       correct. LOOSENING it so the diff fits is not, and it is the most
-      comfortable way to ship the defect the ratchet was written to catch.
+      comfortable way to ship the defect the ratchet was written to catch. A pin
+      that EVERY legitimate addition must move is not a ratchet but a change
+      detector (CHANGE DETECTORS below).
 
       FLAG, in a test the diff touches:
       - a universal assertion (`for site in sites: assert ok(site)`) replaced by
@@ -1275,6 +1427,10 @@ custom-rules:
       comment naming the roles moves with it; a slice/region marker is widened so
       an extracted fragment still executes with every name it references defined;
       the assertion is genuinely re-derived and stated to be stronger; a
+      pin that CHANGE DETECTORS below classifies as a change detector (never a
+      shrink-only ratchet, a review list of dangerous sites, or a contract)
+      replaced by a per-member property over a set the test derives from source,
+      with a non-empty check -- that removes a copy, not a check; a
       `skipif` on a test this diff adds, and on that test alone (not one
       moved, renamed or split out of an existing test), whose reason names a
       host capability (an OS, kernel or platform facility, or an external
@@ -1294,9 +1450,11 @@ custom-rules:
       hand-kept total asserted beside an exact table or set that already
       decides it; a message that tells the author to record "the amount over"
       a shared budget instead of the change's own delta. Do NOT flag a frozen
-      snapshot of a one-time event no later change edits. Moving a shared
-      number to a keyed record whose every key stays exact is tightening, not
-      loosening (testing-conventions.md § Merge-safe ratchets and counts).
+      snapshot of a one-time event no later change edits. In a shrink-only
+      ratchet, moving a shared number to a keyed record whose every key stays
+      exact is tightening, not loosening (testing-conventions.md § Merge-safe
+      ratchets and counts); for a scan of what exists, one line per item is
+      still a change detector (CHANGE DETECTORS below).
       `test/test_flake_pattern_ratchet.py` (K21) already refuses a new count
       pinned `==` an integer literal of 10 or more, or `==` / `!=` an ALL-CAPS
       `BASELINE` / `COUNT` / `TOTAL` / `EXPECTED` / `ROWS` constant, in a test
@@ -1307,6 +1465,37 @@ custom-rules:
 
       When a ratchet cannot be satisfied without loosening it, that is the
       finding — say so on the PR instead of editing the ratchet.
+
+      CHANGE DETECTORS. A test may not copy by hand what the source already holds and compare
+      the copy with it: the size or the members of a registry, the steps of a
+      workflow, a module's imports or exports, the rows a page draws. Such a
+      change detector finds no bug; only a legal addition turns it red, every
+      new entry must edit it, and two changes that each add one break `main`
+      (one shared number) or conflict (one shared list).
+
+      FLAG, in lines the diff ADDS:
+      - `len(REG) == <int>`, `toHaveLength(<int>)`, `.length).toBe(<int>)` or
+        a pinned total where REG comes from product code or a parsed repo file;
+      - a literal list, set, tuple, dict or fixture file that enumerates every
+        member of such a set, compared for equality with it, including one
+        written one entry per line.
+
+      The fix: derive the set from its source in the test, assert the property
+      every member must hold (the bug the copy was meant to catch), and assert
+      the derived set is non-empty (per source when there are several). A
+      relation between two sets that both come from source is fine.
+
+      Do NOT flag: a shrink-only ratchet or baseline (new bad sites fail,
+      removing one lowers its line); a review list of dangerous call sites a
+      new entry must be added to on purpose; a contract (wire values, a
+      telemetry schema, persisted settings values, a public API, a platform
+      fact) with a comment or `flake-ok` naming it; a frozen snapshot of a
+      one-time split; a count that is the OUTPUT of code run on the test's own
+      inputs. `test/test_flake_pattern_ratchet.py` K22 / J7 already refuse a
+      new literal pin of a `kiro_crew` / product-module ALL-CAPS registry;
+      flag what they cannot see: a list read from a workflow, a module's AST,
+      the DOM, or a lower-case or private registry
+      (testing-conventions.md § No change-detector tests).
 
   - id: a-stopwatch-is-not-a-barrier
     blocking: false
@@ -1672,3 +1861,33 @@ custom-rules:
       Allowed (do NOT flag): rows whose text is the model's or a tool's own
       output, rows a dedicated card draws from structured meta, and assistant
       rows carrying the compaction card's own notice markers.
+
+  - id: a-wheel-install-job-pins-its-python
+    blocking: false
+    file-patterns:
+      - ".github/workflows/**"
+    rule: |
+      A workflow job that installs this project (`pip install` of the built
+      wheel, of `.`, or of `-e .`) resolves the wheel's pins against whatever
+      interpreter runs pip. The runner image's own `python3` moves with the
+      image: on ubuntu 26.04 it is 3.14, where the only `pysqlite3-binary`
+      wheel is a version `setup.cfg` excludes, so the nightly platform-wheel
+      gate #39770 added failed on its first scheduled run (#40371). PR CI
+      never ran it, because `publish-cli.yml` runs only on the nightly and
+      release path. See "A job that installs the project's wheel pins its
+      Python" in docs/ci/ci-and-reviews.md.
+
+      - FLAG a new or edited step that runs `pip install` of this project, or
+        creates the venv such an install goes into, when the job has no
+        earlier SHA-pinned `actions/setup-python` step with an explicit
+        `python-version`, or when the step calls bare `python3` / `python`
+        instead of that step's interpreter.
+      - FLAG a PR that adds or changes a job in a workflow only the nightly
+        schedule, a release or a manual dispatch reaches (`nightly.yml`,
+        `publish-cli.yml`, `release.yml`, `release-lts.yml`, or a reusable
+        workflow only they call) when its description does not say how the
+        changed job was exercised or that it could not be.
+
+      Allowed (do NOT flag): stdlib-only steps that install nothing from this
+      project; installs of unrelated tools (`pip install zizmor`); comment-only
+      edits.

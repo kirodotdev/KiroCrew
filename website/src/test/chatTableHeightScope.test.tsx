@@ -48,6 +48,7 @@ vi.mock('../pages/chat/TranscriptScrollShell', async importOriginal => {
 })
 
 import VirtualTranscript from '../chat-core/transcript/VirtualTranscript'
+import { PANE_WIDTH_PROPERTY } from '../pages/chat/TranscriptScrollShell'
 import { HeightCache } from '../hooks/virtualizer/HeightCache'
 import { gcOrphanedStorage } from '../utils/storageGc'
 
@@ -115,11 +116,13 @@ it.each([
   ['side:chat-1-1', 'chat-1-1:tables1:side'],
   ['embed:chat-1-1', 'chat-1-1:tables1:embed'],
 ])('keeps %s anchor identity while rescoping desktop widths above the prose cap', (sessionId, scope) => {
-  const { unmount } = render(<VirtualTranscript items={[]} renderRow={() => null} sessionId={sessionId} />)
+  const { container, unmount } = render(<VirtualTranscript items={[]} renderRow={() => null} sessionId={sessionId} />)
   expect(observedCalls.at(-1)).toEqual({ sessionId, scope: `${scope}:w1216` })
 
   act(() => {
     paneWidth = 1020
+    // The real shell publishes the pane width on the same resize.
+    ;(container.firstElementChild as HTMLElement).style.setProperty(PANE_WIDTH_PROPERTY, '1020px')
     FakeResizeObserver.instance?.fire()
     vi.advanceTimersByTime(199)
   })

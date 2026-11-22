@@ -11,12 +11,15 @@ import { uiLocation } from '../../uiLocations/uiLocation'
  *  no Redux. `inlineHints={false}` lets a host that has no room beside the
  *  button render the force-stop and escape-hatch hints elsewhere. The armed Stop carries the
  *  composer's `composer.stop` find_ui marker unless `guideTarget={false}`. */
-export function StopControls({ stopState, killingEscaped, stopWithTap, terminalActive = false, inlineHints = true, guideTarget = true }: {
+export function StopControls({ stopState, killingEscaped, stopWithTap, terminalActive = false, inlineHints = true, guideTarget = true, escapeStops = false }: {
   stopState?: 'idle' | 'soft_pending' | 'killing'
   killingEscaped: boolean
   stopWithTap: () => void
   terminalActive?: boolean
   inlineHints?: boolean
+  /** Escape in this surface's message box also stops the turn (the composer's
+   *  stop key), so the armed Stop's tooltip names it. */
+  escapeStops?: boolean
   /** Whether the armed Stop is the guide's `composer.stop` target. That
    *  location lives on the chat page, so an embed inside an app passes
    *  `false`: otherwise every running embed would register a second target
@@ -69,7 +72,7 @@ export function StopControls({ stopState, killingEscaped, stopWithTap, terminalA
   const armed = {
     className: 'w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:text-danger-text hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all',
     onClick: stopWithTap,
-    title: i18nT('components.chatInput.stop_generation'),
+    title: escapeStops ? i18nT('components.chatInput.stop_generation_esc') : i18nT('components.chatInput.stop_generation'),
     'data-testid': 'stop-button-armed',
   }
   // gen-ui-index wants the marker spread straight onto a JSX element, so the

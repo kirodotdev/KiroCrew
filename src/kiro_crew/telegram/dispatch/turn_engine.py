@@ -36,6 +36,7 @@ from kiro_crew.executors import (
 )
 from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
+from kiro_crew.llm_helpers import record_interaction_event
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.commands import (
@@ -182,6 +183,7 @@ async def _run_turn(
     _turn_provider: object | None = None
     failure_reason: str | None = None
     attachment_temp_paths: list[str] = []
+    attachment_images: list[str] = []
     # Post-compaction re-injection bookkeeping for the finally: whether this
     # turn consumed the one-shot flag, and whether it landed (recorded success).
     _needs_reinjection = False
@@ -396,6 +398,7 @@ async def _run_turn(
                 self.client, msg.attachments, limits=limits
             )
             attachment_temp_paths = list(attachment_result.temp_paths)
+            attachment_images = list(attachment_result.image_paths)
             text = append_attachment_context(text, attachment_result)
         # Fold the replied-to message's quoted content onto the agent-facing
         # text HERE — after activation and command parsing, once per turn (an
@@ -575,6 +578,9 @@ async def _run_turn(
         _turn_landed = driver_turn_landed(driver)
         if _turn_landed:
             note_turn_landed(self.sessions, session_key)
+            # Per-interaction telemetry, on the landed verdict alone, on the
+            # provider this turn ran on (a retry may have swapped it).
+            record_interaction_event(_turn_provider, session_key, "telegram")
         if _unfinished:
             facade.Stats().inc_message_failed()
         else:
@@ -628,10 +634,30 @@ async def _run_turn(
             # writer were skipped.
             dashboard_restricted = await self._session_restricted(session_key)
             if not dashboard_restricted:
+                row_text = text
+                if attachment_images and self.conv_log is not None:
+                    # Stored before both writers below, so the live window and the
+                    # transcript name the same copy: the window re-serializes its
+                    # rows on every flush, so a row naming the temp file this turn
+                    # deletes would replace the copy on disk. A failed store
+                    # writes the row as it came in, rather than no row.
+                    try:
+                        row_text = await asyncio.to_thread(
+                            self.conv_log.store_ingested_images,
+                            session_key,
+                            text,
+                            attachment_images,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Telegram: keeping pictures failed session=%s",
+                            session_key,
+                            exc_info=True,
+                        )
                 # BOTH sinks and BOTH halves: a persist-side scrub is too late.
                 safe_text, safe_reply = await asyncio.to_thread(
                     lambda: (
-                        _redact_at_write_boundary("user", text),
+                        _redact_at_write_boundary("user", row_text),
                         _redact_at_write_boundary("assistant", accumulated),
                     )
                 )

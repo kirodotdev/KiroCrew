@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
 import json
 import logging
 import time
@@ -687,6 +688,42 @@ def _user_agent_spec(agent: str) -> dict[str, Any] | None:
         )
         return None
     return _read_agent_spec(path, operation="session_mcp_servers", source="unknown")
+
+
+def refuse_contested_agent_spec(agent: str | None) -> None:
+    """Refuse a start when differing user-level specs declare *agent*. Blocking.
+
+    :func:`_user_agent_spec` answers such a contest with ``None``, so a host that
+    reads its servers from here would start on Crew's control plane alone. This is
+    the one start check for every host that does not resolve the spec itself
+    (kiro-cli's native projection and KAS already refuse): it asks the resolver KAS
+    starts from, :func:`~kiro_crew.agent_discovery.declared_spec_claim`, and lets
+    its :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError` propagate,
+    a pin that names none of the claimants included. That message names every
+    file and the pin command, and the start's caller wraps it so
+    ``ambiguity_meta`` finds it on the cause chain.
+
+    No refusal, the start goes on as before, for: one file, identical copies, a
+    pin that picks a claimant, no file at all, or a directory that cannot be read.
+    A checkout spec for *agent* is no exemption: a mirrored session never lets an
+    untrusted checkout pick its servers (:func:`_project_mcp_trusted`), so it still
+    reads the user level, and the contest would still drop its servers.
+    """
+    from kiro_crew.agent import is_registered_agent_name, kiro_agents_dir_path
+    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+    from kiro_crew.config.paths import spec_dir_for
+
+    if not agent or not is_registered_agent_name(agent):
+        return
+    agents_dir = spec_dir_for(agent, kiro_agents_dir_path())
+    try:
+        declared_spec_claim(agents_dir, agent, operation="session_start_spec_check", source="acp")
+    except AmbiguousAgentSpecError as exc:
+        # No claimant on disk is the "no agent file" case, which is not refused here.
+        if exc.paths:
+            raise
+    except OSError:
+        return
 
 
 def _session_spec_and_snapshot_for(
@@ -1473,13 +1510,17 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
     # than session start. Bracket each pass with every file's identity: a pass
     # is kept only when no file was replaced or rewritten while it ran. Identity,
     # not content, is compared, so a file swapped away and back to equal content
-    # still voids the pass.
+    # still voids the pass. The first sample's descriptor is held until the
+    # second is taken: a freed inode's number may go to the very next file
+    # created, so a swap and swap-back inside one timestamp tick could
+    # otherwise return the first identity for a different file.
     paths = [path for _label, path, _read in reads]
     changed: tuple[str, Path, str] = (reads[0][0], reads[0][1], _UNREADABLE_CHURN)
     for _ in range(_NATIVE_SOURCES_BRACKETED_PASSES):
-        before = [_settings_file_identity(path) for path in paths]
-        sources = _read_native_sources_once(reads)
-        after = [_settings_file_identity(path) for path in paths]
+        with contextlib.ExitStack() as held:
+            before = [_settings_file_identity(path, hold=held) for path in paths]
+            sources = _read_native_sources_once(reads)
+            after = [_settings_file_identity(path) for path in paths]
         moved = [
             (
                 label,
@@ -1509,19 +1550,21 @@ _NATIVE_SOURCES_BRACKETED_PASSES = 4
 _IDENTITY_UNKNOWN = object()
 
 
-def _settings_file_identity(path: Path) -> Any:
+def _settings_file_identity(path: Path, *, hold: contextlib.ExitStack | None = None) -> Any:
     """``(st_dev, st_ino, st_mtime_ns, st_size)`` of *path*, ``None`` when absent.
 
-    An atomic replace always yields a new inode and an in-place write moves the
-    mtime or size, so two equal identities mean the file was neither replaced
-    nor rewritten in between. Every sample goes through
+    An atomic replace yields a new inode number while the replaced inode is
+    still open -- *hold* keeps the sample's descriptor open for that (POSIX;
+    see :func:`kiro_crew.hooks.safe_file_identity`) -- and an in-place write
+    moves the mtime or size, so two equal identities mean the file was neither
+    replaced nor rewritten in between. Every sample goes through
     :func:`kiro_crew.hooks.safe_file_identity`, which screens the path afresh
     and reads the identity from a no-reparse descriptor, so no sample follows a
     link swapped in after an earlier one. A refused or unopenable path returns
     :data:`_IDENTITY_UNKNOWN`.
     """
     try:
-        return _hooks.safe_file_identity(str(path))
+        return _hooks.safe_file_identity(str(path), hold=hold)
     except OSError:
         return _IDENTITY_UNKNOWN
 

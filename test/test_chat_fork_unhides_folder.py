@@ -21,7 +21,7 @@ from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard import chat_fork, create_rate_limit
 from kiro_crew.dashboard import session_control as sc
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import DeleteWitness, _save_slot_to_history
 from kiro_crew.dashboard.chat_utils import slot_history_key
 
 FOLDER_ID = "fold00000001"
@@ -131,7 +131,9 @@ async def test_a_fork_refused_at_acknowledgment_leaves_the_folder_hidden(
     """A source deleted during the destination save rolls the child back with a
     409. The un-hide comes after that boundary, so the folder stays hidden."""
     state, _parent, row = _seeded(tmp_path)
-    monkeypatch.setattr(chat_fork, "session_was_deleted", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        chat_fork, "session_delete_witness", lambda *_a, **_k: DeleteWitness.DELETED
+    )
 
     status, body = await _dashboard_fork(state)
 

@@ -44,8 +44,8 @@ reach them — [`../README.md`](../README.md) names the exception mechanism:
   source and Kiro Crew's current `mcp_grant.py` / Connections implementation, not
   from a published storage reference.
 
-`acp.md`, `hooks.md` and `steering.md` carry local additions on top of mirrored
-content; each is marked in the page. A re-fetch must preserve them.
+`acp.md`, `hooks.md`, `steering.md` and `mcp/README.md` carry local additions on
+top of mirrored content; each is marked in the page. A re-fetch must preserve them.
 
 ## Contents
 
@@ -60,13 +60,13 @@ content; each is marked in the page. A re-fetch must preserve them.
 | [chat/voice.md](chat/voice.md) | **Not a mirror**, and the one page here with no upstream source: Kiro Crew's own voice setup, speech-to-text in (local by default) and text-to-speech out (system by default, or Amazon Polly), across the dashboard and supported messaging channels. Its behavioral contracts live in [stt-streaming](../../system-specs/modules/stt-streaming.md) and [voice-streaming](../../system-specs/modules/voice-streaming.md); its settings reference is [configuration](../../../src/kiro_crew/docs/configuration.md). | n/a |
 | [steering.md](steering.md) | /docs/steering/ — plus local measurement of what kiro-cli does with `inclusion` | 2026-09-06 |
 | [skills.md](skills.md) | /docs/skills/ | 2026-09-06 |
-| [hooks.md](hooks.md) | /docs/hooks/ and its `types` and `actions` subpages — plus Kiro Crew's fail-closed `PreToolUse` exit contract, which has no upstream counterpart | 2026-09-06 |
+| [hooks.md](hooks.md) | /docs/hooks/ and its `types` and `actions` subpages — plus Kiro Crew's fail-closed `PreToolUse` exit contract and its notes on command length, output size and caching, which have no upstream counterpart | 2026-09-06 |
 | [autocomplete.md](autocomplete.md) | /docs/cli/autocomplete/ | 2026-09-06 |
 | [custom-agents/](custom-agents/) | /docs/custom-agents/ | 2026-09-06 |
 | [custom-agents/creating.md](custom-agents/creating.md) | /docs/custom-agents/creating/ | 2026-09-06 |
 | [custom-agents/configuration-reference.md](custom-agents/configuration-reference.md) | /docs/custom-agents/configuration-reference/ — the agent-spec schema `acp/kas_agents.py`'s `UNSUPPORTED_SPEC_KEYS` is measured against | 2026-09-06 |
-| [acp.md](acp.md) | /docs/cli/acp/ — plus a local row for `session/set_config_option` and the measured session-update names, which upstream's method table does not carry | 2026-09-06 |
-| [mcp/](mcp/) | /docs/mcp/ | 2026-09-06 |
+| [acp.md](acp.md) | /docs/cli/acp/ — plus local rows for `session/set_config_option`, `_kiro.dev/mcp/server_init_failure` and `_kiro.dev/agent/switched`, and the measured session-update names and everything below them, which upstream's method table does not carry | 2026-09-06 |
+| [mcp/](mcp/) | /docs/mcp/ — plus a local note that Kiro Crew adds a server on its **MCP Servers** page, not with `kiro-cli mcp add` | 2026-09-06 |
 | [mcp/configuration.md](mcp/configuration.md) | /docs/mcp/configuration/ | 2026-09-06 |
 | [mcp/examples.md](mcp/examples.md) | /docs/mcp/examples/ — [connecting a remote OAuth MCP server](../../guides/connecting-remote-oauth-mcp-server.md) is the first-party guide readers are sent to | 2026-09-06 |
 | [mcp/oauth-token-storage.md](mcp/oauth-token-storage.md) | **Not a mirror**: derived from the `aws/amazon-q-developer-cli` source and current Kiro Crew `mcp_grant.py` / Connections behavior | n/a |

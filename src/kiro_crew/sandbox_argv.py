@@ -63,6 +63,7 @@ from kiro_crew.sandbox_staging import (
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
     _materialize_refresh_chains_mask_target,
+    _materialize_signing_key_mask_target,
     _md_notebook_degraded_mask_dirs,
     _member_records_move,
     _migrate_md_notebook_legacy_state,
@@ -526,6 +527,81 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         if namespace
         else _literal_ancestor_guards((*seal_parents, *hidden_leaf_parents))
     )
+    # On the namespace backend, the folder of each app that declares a credential mask,
+    # ``apps/<app>``, is pinned AFTER every mask instead of with the other pins before
+    # them; the set of pinned folders stays the same. An update replaces that folder from
+    # the gateway's namespace and renames ``data/`` into the new one. A mount placed
+    # through a pin of the old folder stays on the old folder's mount, so a running
+    # session would read the restored credential plain. With the app folder unpinned
+    # while the rest are placed, ``data/``'s pin and the masks sit on the mount the rename
+    # keeps, and the app folder's pin, bound last, only adds one copy of them: one pin per
+    # app spelling, nothing pinned above another after the masks.
+    # shortcut: the replacement ``apps/<app>`` an update creates is not pinned in a
+    # session already running, so that session can rename it until its next spawn;
+    # closing that needs a layout change (one top-level credentials folder).
+    # Matched by the folder each guard resolves to, not by its spelling: a linked data
+    # home, or a seal walked through its link, reaches the same folder under another name.
+    # One spelling per folder: a second bind of the same folder would stack on the first
+    # and copy it, and either spelling's pin already refuses the rename.
+    app_dir_pins: dict[str, str] = {}
+    app_dir_ids: set[str] = set()
+
+    def _is_app_dir_pin(pin: str) -> bool:
+        # A link entry is pinned as itself (moving it retargets what resolves through
+        # it), so it stays with the pins placed first; only the directory moves.
+        return not os.path.islink(pin) and os.path.realpath(pin) in app_dir_ids
+
+    if namespace:
+        # A declared leaf is ``apps/<app>/data/<entry>`` (crew-relative, ``/``-separated
+        # by contract), read by its fixed components, so an app named ``data`` is found
+        # too; the move-aside spelling's folder is renamed, never replaced.
+        app_dirs = {
+            f"apps/{name}"
+            for name, _sep, rest in (
+                leaf.removeprefix("apps/").partition("/")
+                for leaf in app_leaves
+                if leaf.startswith("apps/")
+            )
+            if name and not name.startswith(".") and rest.startswith("data/")
+        }
+        app_dir_ids = {
+            os.path.realpath(target)
+            for target in (
+                *(
+                    os.path.join(home, f"{prefix}/{rel}")
+                    for prefix in _CREW_HOME_PREFIXES
+                    for rel in app_dirs
+                ),
+                *_relocated_crew_targets(tuple(sorted(app_dirs))),
+            )
+        }
+        after_masks = {g for g in readonly_ancestor_guards if _is_app_dir_pin(g)}
+        for guard in readonly_ancestor_guards:
+            if guard in after_masks:
+                app_dir_pins.setdefault(os.path.realpath(guard), guard)
+        readonly_ancestor_guards = tuple(
+            g for g in readonly_ancestor_guards if g not in after_masks
+        )
+    # A caller mask is guarded like a built-in hidden leaf on both backends: each directory
+    # above it that exists is guarded against rename (a missing one is skipped, see
+    # ``hidden_leaf_parents``); the namespace backend keeps only those this uid could rename.
+    caller_parents = tuple(
+        parent
+        for entry in request.extra_hidden_dirs
+        for parent in (os.path.dirname(os.path.abspath(entry)),)
+        if os.path.lexists(parent)
+    )
+    caller_ancestor_guards = (
+        _renameable_ancestor_guards(caller_parents, uid)
+        if namespace
+        else _literal_ancestor_guards(caller_parents)
+    )
+    # An app's folder is pinned AFTER the masks whichever list it came from (see above).
+    caller_after_masks = {g for g in caller_ancestor_guards if app_dir_ids and _is_app_dir_pin(g)}
+    for guard in caller_ancestor_guards:
+        if guard in caller_after_masks:
+            app_dir_pins.setdefault(os.path.realpath(guard), guard)
+    caller_ancestor_guards = tuple(g for g in caller_ancestor_guards if g not in caller_after_masks)
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     operator_paths, operator_exceptions = configured_readonly_layer()
     operator_readonly_probes = _operator_layer_probes(operator_paths, keep_unprobeable=True)
@@ -552,6 +628,19 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         if namespace
         else ()
     )
+    # A declaring app's folder among them is pinned after the masks too, for the reason
+    # above, whether or not the plan accepts the entry: one more pin costs one mount.
+    if app_dir_ids:
+        operator_app_dirs = tuple(
+            pin for _entry, pins in operator_parent_pins for pin in pins if _is_app_dir_pin(pin)
+        )
+        for pin in operator_app_dirs:
+            app_dir_pins.setdefault(os.path.realpath(pin), pin)
+        operator_parent_pins = tuple(
+            (entry, tuple(pin for pin in pins if pin not in operator_app_dirs))
+            for entry, pins in operator_parent_pins
+        )
+    mask_parent_pins = tuple(app_dir_pins.values())
     operator_exception_probes = _operator_layer_probes(operator_exceptions, keep_unprobeable=False)
     host_paths = [
         home,
@@ -592,6 +681,8 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         kiro_agents_targets=kiro_agents_targets,
         install_root_targets=install_root_targets,
         readonly_ancestor_guards=readonly_ancestor_guards,
+        caller_ancestor_guards=caller_ancestor_guards,
+        mask_parent_pins=mask_parent_pins,
         carveout_probes=carveout_probes,
         operator_readonly_probes=operator_readonly_probes,
         operator_exception_probes=operator_exception_probes,
@@ -818,10 +909,11 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
-    # The channel-credential file and the refresh-chain store have the same gap: an
-    # absent name gets no mask.
+    # The channel-credential file, the refresh-chain store and the signing key have the
+    # same gap: an absent name gets no mask.
     _materialize_env_mask_target(_required_targets)
     _materialize_refresh_chains_mask_target(_required_targets)
+    _materialize_signing_key_mask_target(_required_targets)
     # The directories apps declare read-only to agents: a linked one refuses the spawn, and
     # an absent one is created so its seal is never vacuous.
     _establish_app_readonly_dirs(_required_targets)

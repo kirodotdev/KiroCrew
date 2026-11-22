@@ -174,6 +174,16 @@ def test_a_screenshot_warning_reaches_the_model(monkeypatch: pytest.MonkeyPatch)
     assert out.endswith(f"\nWarning: {note}")
 
 
+def test_type_steps_objects_are_posted_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[tuple[str, str, dict, str, float]] = []
+    monkeypatch.setattr(mod, "_post_command", _capture_post(sent, 200, _ok({"steps": 2})))
+    args = {"steps": [{"text": "a"}, {"key": "Tab", "modifiers": ["Shift"]}]}
+    mod.browser("browser", {"op": "type", "args": args})
+    assert [(op, posted) for _, op, posted, _, _ in sent] == [("type", args)]
+    refused = {"ok": False, "code": "password_field", "error": "step 2 (x): no", "step": 2}
+    assert "step 2" in mod._settle("type", 200, refused)
+
+
 # --- the navigate gate -------------------------------------------------------
 
 
@@ -292,6 +302,18 @@ def test_not_installed_tells_the_user_where_to_install(monkeypatch: pytest.Monke
     assert out == mod._NOT_INSTALLED_TEXT
     assert "Settings -> Browser" in out
     assert "playwright" not in out.lower()
+
+
+def test_a_repair_under_way_reaches_the_agent_as_a_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    detail = "the browser engine is being reinstalled after an update; try again in a minute"
+    monkeypatch.setattr(
+        mod,
+        "_post_command",
+        _capture_post([], 200, {"ok": False, "code": "browser_repairing", "error": detail}),
+    )
+    out = mod.browser("browser", {"op": "snapshot"})
+    assert out != mod._NOT_INSTALLED_TEXT
+    assert "try again in a minute" in out
 
 
 class _Clock:
@@ -555,3 +577,71 @@ def test_post_command_maps_transport_errors_to_none(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(mod.mcp_core, "_api_urlopen", _http_error)
     assert mod._post_command("k", "snapshot", {}, "", 1.0) == (403, {"code": "x"})
+
+
+def test_a_popup_that_closed_during_snapshot_or_screenshot_is_reported() -> None:
+    """The route's ``popup_closed`` answer has no outline or path to print."""
+    closed = {"ok": True, "popup_closed": {"target_id": "P1", "returned_to": "T1", "hint": "h"}}
+    for op in ("snapshot", "screenshot"):
+        out = mod._result_text(op, closed)
+        assert out.startswith(f"Browser {op}: popup closed")
+        assert '"returned_to": "T1"' in out
+        assert "Browser snapshot of\n" not in out and "saved: \n" not in out
+
+
+def test_a_popup_the_op_opened_survives_the_snapshot_and_screenshot_text() -> None:
+    popup = {"target_id": "P1", "url": "https://idp.example/login", "title": "IdP", "hint": "h"}
+    snap = mod._result_text(
+        "snapshot",
+        {"ok": True, "url": "https://a.example/", "title": "A", "snapshot": "- x", "popup": popup},
+    )
+    shot = mod._result_text("screenshot", {"ok": True, "path": "/tmp/s.png", "popup": popup})
+    for out in (snap, shot):
+        assert '"popup": {"target_id": "P1"' in out
+    assert snap.endswith("\n- x")
+
+
+def test_a_refusal_carrying_the_popup_notice_shows_it_to_the_agent() -> None:
+    """The route clears the pending move on this answer, so its text must say so."""
+    payload = {
+        "ok": False,
+        "code": "wait_timeout",
+        "error": "the text did not appear",
+        "popup": {"target_id": "P1", "url": "https://idp.example/login", "hint": "h"},
+    }
+    out = mod._settle("wait_for", 200, payload)
+    assert out is not None and out.startswith("Error (wait_timeout): the text did not appear")
+    assert '"popup": {"target_id": "P1"' in out
+
+
+def test_a_snapshot_or_screenshot_that_ran_keeps_its_output_beside_popup_closed() -> None:
+    closed = {"target_id": "P1", "returned_to": "T1", "hint": "h"}
+    snap = mod._result_text(
+        "snapshot",
+        {
+            "ok": True,
+            "url": "https://a.example/",
+            "title": "A",
+            "snapshot": "- x",
+            "popup_closed": closed,
+        },
+    )
+    assert snap.startswith("Browser snapshot of https://a.example/ -- A")
+    assert snap.endswith("\n- x") and '"returned_to": "T1"' in snap
+    shot = mod._result_text(
+        "screenshot", {"ok": True, "path": "/tmp/s.png", "popup_closed": closed}
+    )
+    assert shot.startswith("Browser screenshot saved: /tmp/s.png") and '"returned_to": "T1"' in shot
+
+
+def test_a_huge_popup_note_is_capped_in_the_screenshot_and_failure_text() -> None:
+    """Both branches append the note after their own text, so each slices it itself."""
+    huge = {"target_id": "P1", "url": "https://idp.example/" + "a" * 100_000, "hint": "h"}
+    shot = mod._result_text("screenshot", {"ok": True, "path": "/tmp/s.png", "popup": huge})
+    prefix = "Browser screenshot saved: /tmp/s.png\nShow it with ![screenshot](/tmp/s.png)"
+    assert shot.startswith(prefix) and len(shot) <= len(prefix) + mod._RESULT_CAP
+    failed = mod._settle(
+        "wait_for", 200, {"ok": False, "code": "wait_timeout", "error": "e", "popup": huge}
+    )
+    assert failed is not None and failed.startswith("Error (wait_timeout): e")
+    assert len(failed) <= len("Error (wait_timeout): e") + mod._RESULT_CAP

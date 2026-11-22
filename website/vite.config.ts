@@ -1026,7 +1026,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 3810,
     // The Slack brand mark must remain a physical file. The gateway serves
     // /assets, while an inline SVG would also conflict with security review.
-    assetsInlineLimit: (filePath) => (filePath.endsWith('slack-logo.svg') || filePath.endsWith('discord-logo.svg') || filePath.endsWith('telegram-logo.svg') ? false : undefined),
+    // The sign-in dialog's Google and AWS marks stay files too: inlined, they
+    // sit in the main chunk every page loads, for a dialog most never open.
+    assetsInlineLimit: (filePath) => (['slack-logo.svg', 'discord-logo.svg', 'telegram-logo.svg', 'google-mark.svg', 'aws-mark.svg'].some((name) => filePath.endsWith(name)) ? false : undefined),
     rollupOptions: {
       // Multi-entry: the dashboard SPA plus every app window entry
       // discovered under src/apps/<app>/<name>.html (see appWindowEntries —

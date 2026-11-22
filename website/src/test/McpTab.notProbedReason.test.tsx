@@ -144,14 +144,14 @@ describe('McpTab: outdated rows without a reason are unchanged', () => {
     expect(screen.queryByTestId('mcp-not-probed-reason')).toBeNull()
   })
 
-  it('a quarantined row keeps its Failing badge and shows no reason line', async () => {
+  it('a quarantined row keeps its Quarantined badge and shows no reason line', async () => {
     mockApi.mcpServers.mockResolvedValue([
       server({ status: 'outdated', error: '', probeFailures: 3, probeFailing: true }),
     ])
     renderTab()
     const badge = await screen.findByText('Outdated', undefined, ROW_WAIT)
     expect(within(badge.parentElement!).queryByRole('button', { name: 'More information' })).toBeNull()
-    expect(screen.getByText('Failing')).toBeInTheDocument()
+    expect(screen.getByText('Quarantined')).toBeInTheDocument()
     expect(screen.queryByTestId('mcp-not-probed-reason')).toBeNull()
   })
 

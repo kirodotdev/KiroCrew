@@ -1,0 +1,2 @@
++99
+The sensitive-path gate resolves its anchor roots once per decision and hands them to every target-list lookup (_decision_roots, a roots argument threaded through _path_in_home_dirs, _is_keystone_publish_artifact, _matches_gate_rows and the write refusal), and its two matchers look the candidate's ancestors up in the target set instead of scanning every target (_has_target_ancestor, _target_ancestors cached on the built set). Issue #39162.

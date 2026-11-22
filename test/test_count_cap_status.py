@@ -116,17 +116,26 @@ async def test_terminal_create_cap_full_answers_409_with_its_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_terminal_ws_open_cap_full_answers_409_with_its_text() -> None:
+async def test_terminal_ws_open_cap_full_sends_its_code_on_the_socket() -> None:
+    # A browser cannot read a refused handshake, so the refusal rides the socket
+    # with the same code the create route answers, and no slot is taken.
     registry = {"s1": _make_session(), "s2": _make_session()}
     req = _make_request(registry=registry, session_id="new")
+    refusal_ws = MagicMock()
+    refusal_ws.prepare = AsyncMock()
+    close = AsyncMock()
     with (
         patch.object(terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}),
         patch.object(terminal, "_sel") as mock_sel,
+        patch.object(terminal.web, "WebSocketResponse", return_value=refusal_ws),
+        patch.object(terminal, "_close_terminal_ws_bounded", close),
     ):
         mock_sel.return_value.log_api_access = MagicMock()
         resp = await terminal.api_terminal_ws(req)
 
-    assert isinstance(resp, web.Response)
-    assert resp.status == 409
-    assert resp.text == "Max 2 terminal sessions"
+    assert resp is refusal_ws
+    refusal_ws.prepare.assert_awaited_once_with(req)
+    close.assert_awaited_once_with(
+        refusal_ws, error_message="Max 2 terminal sessions", error_code="terminal_max_sessions"
+    )
     assert set(registry) == {"s1", "s2"}

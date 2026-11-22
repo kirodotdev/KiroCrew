@@ -450,7 +450,6 @@ def sqlite_vector_search(
     q = [x / norm for x in query_embedding] if norm > 0 else query_embedding
     q_len = len(q)
 
-    blocked = store._ineligible_ids()
     if vm._HAS_NUMPY:
         scoring = store._episodic_scoring_set(q_len)
         if scoring is not None:
@@ -466,7 +465,6 @@ def sqlite_vector_search(
                 tag_filter,
                 relevance_filter,
                 vm.datetime.now(tz=timezone.utc),
-                blocked,
             )
 
     # Serialized via the locked helper — two threads running a statement at
@@ -668,7 +666,6 @@ def rank_from_scoring_set(
     tag_filter: list[str] | None,
     relevance_filter: bool,
     now: datetime,
-    blocked: set[str] | None = None,
 ) -> list[dict]:
     """Score, filter and rank from the resident set; resolve winner bodies.
 
@@ -693,12 +690,6 @@ def rank_from_scoring_set(
     sims_rounded = vm.np.round(sims, 4)
 
     keep = vm.np.ones(len(scoring.ids), dtype=bool)
-    if blocked:
-        keep &= vm.np.fromiter(
-            (record_meta.record_id_for("episode", mem_id) not in blocked for mem_id in scoring.ids),
-            dtype=bool,
-            count=len(scoring.ids),
-        )
     if tag_filter:
         wanted = {t.lower() for t in tag_filter}
         keep &= vm.np.fromiter(
@@ -717,6 +708,24 @@ def rank_from_scoring_set(
     surviving = vm.np.flatnonzero(keep)
     if surviving.size == 0:
         return []
+    # Eligibility only matters for the rows the masks kept, so look it up by
+    # their record ids (the record_id PRIMARY KEY) rather than scanning all of
+    # memory_record_meta, a table that grows with every revision and forget.
+    # A row with no identity has no metadata to block it and stays ranked.
+    surviving_ids = [
+        record_meta.record_identity_or_none("episode", scoring.ids[int(i)]) for i in surviving
+    ]
+    blocked = store._ineligible_ids([rid for rid in surviving_ids if rid is not None])
+    if blocked:
+        surviving = surviving[
+            vm.np.fromiter(
+                (rid is None or rid not in blocked for rid in surviving_ids),
+                dtype=bool,
+                count=len(surviving_ids),
+            )
+        ]
+        if surviving.size == 0:
+            return []
 
     # max(0, timedelta.days): a whole-day floor, and never negative for a row
     # stamped in the future.

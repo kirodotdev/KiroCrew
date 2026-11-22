@@ -3,9 +3,9 @@ title: Host Credential Vending for Masked Credentials
 status: draft
 author: zejiangg
 created: 2026-09-23
-last-audited: 2026-09-24
-audited-at: 3d2bfa8f45
-doc-pr:
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 12971
 implementation-prs: []
 tracking-issues: []
 supersedes: []

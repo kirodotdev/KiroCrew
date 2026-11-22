@@ -556,10 +556,17 @@ def _cron_gateway(client: _FakeClient):
     return gw
 
 
-def _run_cron(client: _FakeClient, *, sequence: list[str] | None = None):
+def _run_cron(
+    client: _FakeClient,
+    *,
+    sequence: list[str] | None = None,
+    persistent: bool = True,
+    fail_call: int | None = None,
+    job=None,
+):
     from kiro_crew.cron import CronJob, CronSchedule
 
-    job = CronJob(
+    job = job or CronJob(
         id="j1",
         name="poller",
         message="go",
@@ -567,6 +574,7 @@ def _run_cron(client: _FakeClient, *, sequence: list[str] | None = None):
         approval_mode="auto",
         channel="C123",
         agent_sequence=sequence or [],
+        persistent_session=persistent,
     )
     gw = _cron_gateway(client)
 
@@ -574,6 +582,8 @@ def _run_cron(client: _FakeClient, *, sequence: list[str] | None = None):
 
     async def fake_stream(provider, msg, **kwargs):
         calls["n"] += 1
+        if calls["n"] == fail_call:
+            raise RuntimeError("the step failed")
         if sequence and calls["n"] == 2:
             # The server is up by the second step: only step 1 lacked it.
             provider.mcp_session_report().record_event(EVENT_MCP_SERVER_INITIALIZED, "azure-devops")
@@ -620,12 +630,75 @@ def test_a_cron_run_still_missing_a_server_names_it_in_the_result():
     assert job.last_result.endswith("the agent answer")
 
 
+def test_the_next_run_of_a_cron_missing_the_same_server_does_not_repeat_the_note():
+    first = _run_cron(_FakeClient(slow_reports=False))
+    second = _run_cron(_FakeClient(slow_reports=False))
+
+    assert "azure-devops" in first.last_result
+    assert second.last_result == "the agent answer"
+
+
+def test_a_cron_whose_note_drops_out_still_treats_the_same_answer_as_a_duplicate():
+    """The warning leads only the first run, so it must not be part of the dedup key."""
+    job = _run_cron(_FakeClient(slow_reports=False))
+    posted = job.last_posted_hash
+    _run_cron(_FakeClient(slow_reports=False), job=job)
+
+    assert posted
+    assert job.last_posted_hash == posted
+    assert job.consecutive_dupes == 1
+
+
+def test_a_cron_whose_server_goes_missing_posts_the_same_answer_with_the_warning():
+    """A changed missing set is news: the same answer is not a duplicate then."""
+    job = _run_cron(_FakeClient(slow_reports=True))
+    posted = job.last_posted_hash
+    _run_cron(_FakeClient(slow_reports=False), job=job)
+
+    assert posted
+    assert job.last_posted_hash != posted
+    assert job.consecutive_dupes == 0
+    assert "azure-devops" in job.last_result
+    assert job.last_result.endswith("the agent answer")
+
+
+def test_a_stateless_cron_missing_the_same_server_does_not_repeat_the_note():
+    """Each fire of a stateless job gets its own session key; the note is the job's."""
+    first = _run_cron(_FakeClient(slow_reports=False), persistent=False)
+    second = _run_cron(_FakeClient(slow_reports=False), persistent=False)
+
+    assert "azure-devops" in first.last_result
+    assert second.last_result == "the agent answer"
+
+
 def test_a_sequence_cron_keeps_an_early_steps_missing_server_note():
     """The next step's reply replaces result_text; the stored result keeps the note."""
     job = _run_cron(_FakeClient(slow_reports=False), sequence=["kirocrew", "kirocrew"])
 
     assert "azure-devops" in job.last_result
     assert job.last_result.endswith("the second answer")
+
+
+def test_a_sequence_cron_whose_later_step_fails_still_names_the_server_next_fire():
+    """A run that stored no result printed no note, so the next fire still prints it."""
+    with pytest.raises(RuntimeError, match="the step failed"):
+        _run_cron(_FakeClient(slow_reports=False), sequence=["kirocrew", "kirocrew"], fail_call=2)
+    job = _run_cron(_FakeClient(slow_reports=False), sequence=["kirocrew", "kirocrew"])
+    again = _run_cron(_FakeClient(slow_reports=False), sequence=["kirocrew", "kirocrew"])
+
+    assert "azure-devops" in job.last_result
+    assert job.last_result.endswith("the second answer")
+    assert again.last_result == "the second answer"
+
+
+def test_a_sequence_cron_repeating_an_agent_does_not_repeat_the_note_next_fire():
+    """Both steps share one session key; the later clean step must not clear the run's note."""
+    first = _run_cron(_FakeClient(slow_reports=False), sequence=["kirocrew", "kirocrew"])
+    second = _run_cron(_FakeClient(slow_reports=False), sequence=["kirocrew", "kirocrew"])
+
+    assert "azure-devops" in first.last_result
+    assert "azure-devops" not in second.last_result
+    assert second.last_result == "the second answer"
 
 
 # ── A workflow agent step ───────────────────────────────────────────────────
@@ -669,6 +742,10 @@ class _WorkflowSessions:
 
     async def destroy(self, key):
         return None
+
+    async def recycle_if_sandbox_tightened(self, key):
+        # The sandbox tier never tightens in these tests.
+        return False
 
 
 @pytest.fixture()
@@ -734,7 +811,14 @@ async def test_an_unpooled_workflow_chain_waits_on_its_new_session_only(workflow
 # ── A heartbeat turn ────────────────────────────────────────────────────────
 
 
-async def _heartbeat_result(client: _FakeClient, monkeypatch, *, is_new: bool = True) -> str:
+async def _heartbeat_result(
+    client: _FakeClient,
+    monkeypatch,
+    *,
+    is_new: bool = True,
+    answer: str = "the agent answer",
+    deliver: str = "",
+) -> str:
     import kiro_crew.slack.gateway as gw_mod
 
     orch = gw_mod.GatewayOrchestrator.__new__(gw_mod.GatewayOrchestrator)
@@ -748,7 +832,7 @@ async def _heartbeat_result(client: _FakeClient, monkeypatch, *, is_new: bool = 
 
     async def fake_stream(provider, _message, **_kw):
         provider.prompted_with_tools = not provider.mcp_session_report().declared_not_ready()
-        return "the agent answer"
+        return answer
 
     started = {}
 
@@ -759,7 +843,7 @@ async def _heartbeat_result(client: _FakeClient, monkeypatch, *, is_new: bool = 
     monkeypatch.setattr(gw_mod, "persist_token_record_async", AsyncMock())
     monkeypatch.setattr(gw_mod.HeartbeatService, "start", fake_start)
     await orch._init_heartbeat()
-    return await started["on_task"]("check the queue", "")
+    return await started["on_task"]("check the queue", deliver)
 
 
 @pytest.mark.asyncio
@@ -781,8 +865,131 @@ async def test_a_heartbeat_still_missing_a_server_names_it_in_the_result(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_the_next_heartbeat_missing_the_same_server_does_not_repeat_the_note(monkeypatch):
+    await _heartbeat_result(_FakeClient(slow_reports=False), monkeypatch)
+    result = await _heartbeat_result(_FakeClient(slow_reports=False), monkeypatch)
+
+    assert result == "the agent answer"
+
+
+@pytest.mark.asyncio
+async def test_same_text_heartbeats_for_two_channels_each_carry_the_note(monkeypatch):
+    first = await _heartbeat_result(
+        _FakeClient(slow_reports=False), monkeypatch, deliver="slack:C1"
+    )
+    second = await _heartbeat_result(
+        _FakeClient(slow_reports=False), monkeypatch, deliver="slack:C2"
+    )
+
+    assert "azure-devops" in first
+    assert "azure-devops" in second
+
+
+@pytest.mark.asyncio
+async def test_a_kept_heartbeat_does_not_use_up_the_note_for_the_next_delivered_one(monkeypatch):
+    """A HEARTBEAT_KEEP result is not delivered, so the next result still carries the note."""
+    await _heartbeat_result(
+        _FakeClient(slow_reports=False), monkeypatch, answer="not done yet HEARTBEAT_KEEP"
+    )
+    result = await _heartbeat_result(_FakeClient(slow_reports=False), monkeypatch)
+
+    assert "azure-devops" in result
+    assert result.endswith("the agent answer")
+
+
+@pytest.mark.asyncio
 async def test_a_reused_heartbeat_session_does_not_wait_again(monkeypatch):
     client = _FakeClient(slow_reports=True)
     await _heartbeat_result(client, monkeypatch, is_new=False)
 
     assert client.waits == []
+
+
+# ── A sub-agent spawn ───────────────────────────────────────────────────────
+
+
+def _spawn_coordinator(client: _FakeClient, *, is_new: bool = True) -> MagicMock:
+    """A run coordinator whose manager hands *client* out on either arm."""
+    manager = MagicMock()
+    manager._create_shared_session = AsyncMock(return_value=client)
+    manager._ensure_dedicated_start_priced = AsyncMock()
+    manager._is_cc_provider = MagicMock(return_value=False)
+    manager._sessions.get_or_create = AsyncMock(return_value=(client, is_new, False))
+    return MagicMock(_manager=manager)
+
+
+@pytest.fixture()
+def spawn_facade(monkeypatch):
+    """The session re-checks ``acquire_session`` reads off ``kiro_crew.subagent``, inert."""
+    import kiro_crew.subagent as sa
+
+    async def keep(client, *_a, **_k):
+        return client
+
+    async def reproject(_sessions, _key, _agent, claimed, _claim):
+        return claimed
+
+    monkeypatch.setattr(sa, "replace_stale_shared_session", keep)
+    monkeypatch.setattr(sa, "invalidate_stale_kas_session", AsyncMock())
+    monkeypatch.setattr(sa, "reproject_claimed_session", reproject)
+
+
+async def _acquire(client: _FakeClient, *, shared: bool, is_new: bool = True) -> None:
+    from kiro_crew.subagent_manager import turn_session
+
+    info = MagicMock(id="sub1", parent_session_key="parent")
+    await turn_session.acquire_session(
+        _spawn_coordinator(client, is_new=is_new),
+        info,
+        "subagent:sub1",
+        "kirocrew",
+        parent_policy="auto",
+        extra_kwargs={},
+        use_session_sharing=shared,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared", [True, False], ids=["shared-runtime", "dedicated"])
+async def test_a_spawn_waits_for_its_slow_server_before_its_first_prompt(spawn_facade, shared):
+    """A spawn prompts as soon as its session opens, so the start's brief wait
+    left a routed server that takes a few seconds out of its first turn."""
+    client = _FakeClient(slow_reports=True)
+    await _acquire(client, shared=shared)
+
+    assert client.waits == [mcp_problems.UNATTENDED_MCP_WAIT_SECS]
+    assert client._report.declared_not_ready() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_on_a_reused_session_does_not_wait_again(spawn_facade):
+    client = _FakeClient(slow_reports=True)
+    await _acquire(client, shared=False, is_new=False)
+
+    assert client.waits == []
+
+
+# ── The run's note: printed when it changes, not on every scheduled run ─────
+
+
+def test_a_scheduled_run_names_its_missing_servers_once_until_the_set_changes():
+    """A cron job runs on its own, so the same note led every result it sent."""
+    report = McpSessionReport()
+    provider = MagicMock(mcp_session_report=MagicMock(return_value=report))
+
+    def run(ready: tuple[str, ...], key: str = "cron:job-a") -> str:
+        report.begin_session([])
+        report.record_declared(_SPEC)
+        for name in ready:
+            report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
+        return mcp_problems.declared_mcp_not_ready_change(provider, key)
+
+    first = run(())
+    assert first.endswith("not ready in this run: atlassian, azure-devops")
+    assert run(()) == ""
+    # Another job is its own run: its first note is printed.
+    assert run((), key="cron:job-b") == first
+    assert run(("atlassian",)).endswith("not ready in this run: azure-devops")
+    assert run(("atlassian", "azure-devops")) == ""
+    # The servers fail again after a clean run: that is news, so it is printed.
+    assert run(()) == first

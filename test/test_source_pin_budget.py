@@ -92,7 +92,6 @@ BUDGET: dict[str, int] = {
     "test/test_mcp_session_report.py": 1,
     "test/test_member_turn_context.py": 1,
     "test/test_name_grant_surfaces.py": 1,
-    "test/test_no_config_dir_in_async.py": 1,
     "test/test_post_compaction_continuation.py": 3,
     "test/test_promise_only_autoapprove_parity.py": 1,
     "test/test_prompts.py": 2,

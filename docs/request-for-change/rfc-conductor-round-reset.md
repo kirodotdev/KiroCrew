@@ -3,8 +3,8 @@ title: Conductor round reset -- a conductor drops its chat context at a round cl
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-08
-last-audited: 2026-10-11
-audited-at: a84f616557
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: null
 implementation-prs: [18113]
 tracking-issues: [18093]

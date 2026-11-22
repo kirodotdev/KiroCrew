@@ -226,7 +226,43 @@ def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str
     stat — because every part is a blocking syscall and the gateway runs on one
     event loop (``no-blocking-call-on-event-loop``).
     """
+    # Imported here so the routes facade, which serves this module's names, gains none.
+    from kiro_crew.apps import protected_app_ui
+
     ui_root = apps_dir() / name / "ui"
+    # Resolved inside a guard of its own: a name the OS cannot resolve (an embedded
+    # NUL) or a link loop is answered 400, as main answers it, never a 500.
+    try:
+        # The containment ANCHOR (see below): the app's own install directory.
+        anchor = Path(os.path.realpath(apps_dir())) / name
+        ext = Path(file_path).suffix.lower()
+        live_root = os.path.realpath(ui_root)
+        # The root a live dev-mode script is served from: the one the check below
+        # judged, reused as is, so a `ui` swapped after the check is never followed.
+        pinned_root: Path | None = None
+        script = ext in protected_app_ui.SCRIPT_EXTENSIONS
+        # Off (the default) is main's behaviour: scripts are read from the app's folder.
+        protected = script and protected_app_ui.enabled()
+        if protected and not (
+            # Served live, scripts included, only for a dev-mode root OUTSIDE the
+            # install: the toggle route refuses that case, so only the operator's
+            # host-side confirmation grants it. A root inside the install is the
+            # sandbox-writable tree itself, so its scripts still come from the copy.
+            live_root == dev_mode_granted_root(name)
+            and not Path(live_root).is_relative_to(anchor)
+        ):
+            # A script runs in the dashboard's own origin, with the owner's session, so
+            # it is served from the gateway's copy of what it installed
+            # (``protected_app_ui``), never from the sandbox-writable tree. An app the
+            # gateway never installed has no copy, and its scripts are not found.
+            copy = protected_app_ui.served_root(apps_dir(), name)
+            if copy is None:
+                return "not_found"
+            ui_root = anchor = copy
+        elif protected:
+            pinned_root = ui_root = Path(live_root)
+    except (OSError, RuntimeError, ValueError):
+        return "invalid"
     target = ui_root / file_path
     try:
         # Resolved ONCE, here, because `pin_parent` requires the CALLER to do
@@ -235,7 +271,7 @@ def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str
         # setup links ui/ at the developer's source tree, so the ROOT being a
         # link is legitimate — containment is proven against wherever it really
         # lands, not against the link's own name.
-        resolved_root = Path(os.path.realpath(ui_root))
+        resolved_root = pinned_root or Path(os.path.realpath(ui_root))
         # But a root that lands OUTSIDE the app's own install directory is only
         # legitimate under the OPERATOR's dev-mode grant. Without this check an
         # app could ship `ui` as a symlink to a credential directory
@@ -262,7 +298,7 @@ def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str
         # itself is not app-writable, so this anchor cannot be swapped; an
         # install entry that IS a link makes its resolved ui root land
         # outside this anchor and take the grant path like any other escape.
-        resolved_install = Path(os.path.realpath(apps_dir())) / name
+        resolved_install = anchor
         try:
             resolved_root.relative_to(resolved_install)
         except ValueError:
@@ -385,7 +421,11 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
     """
     name = request.match_info["name"]
     file_path = request.match_info.get("path", "")
-    if ".." in file_path or file_path.startswith("/"):
+    # A UI asset name is a forward-slash relative path. A backslash or a colon is
+    # refused here, before any filesystem call: on Windows ``ui_root / "\\\\host\\s\\x.js"``
+    # drops the root for a UNC path (and ``"C:/x.js"`` for a drive), and resolving that
+    # opens an SMB session to the named host before containment can run.
+    if ".." in file_path or file_path.startswith("/") or "\\" in file_path or ":" in file_path:
         return web.json_response({"error": "invalid path"}, status=400)
     ext = Path(file_path).suffix.lower()
     if ext not in _ALLOWED_EXTENSIONS:

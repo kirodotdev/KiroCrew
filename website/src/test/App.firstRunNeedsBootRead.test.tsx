@@ -14,15 +14,13 @@ const themeState = {
   // A new browser: no flag of its own says first run is done.
   onboarded: false,
   importOnboarded: false,
-  privacyAcked: false,
-  privacyAckVersion: null as number | null,
   themeBootReady: true,
   themeBootRead: false,
   themes: [],
   allThemes: [],
   markOnboarded: vi.fn(),
   markImportOnboarded: vi.fn(),
-  markPrivacyAcked: vi.fn(),
+
   setColorTheme: vi.fn(),
   setMode: vi.fn(),
 }
@@ -48,7 +46,6 @@ beforeEach(() => {
   localStorage.clear()
   themeState.themeBootRead = false
   themeState.importOnboarded = false
-  themeState.privacyAcked = false
   themeState.markOnboarded.mockClear()
   // The owner's tab, so only the boot read decides (`useViewerIsNotOwner`).
   vi.spyOn(api, 'viewerOwnerOk').mockResolvedValue(true)
@@ -64,9 +61,7 @@ describe('first run and the first-run state read', () => {
 
   it('closes the tour seeded from this browser\'s flags when the read failed', async () => {
     localStorage.setItem('mc-import-onboarded', '1')
-    localStorage.setItem('mc-privacy-acked', '1')
     themeState.importOnboarded = true
-    themeState.privacyAcked = true
     renderWithProviders(<App />, { route: '/chat' })
     await screen.findByTestId('chat-page')
     await waitFor(() => expect(screen.queryByText(/choose a mode, a color theme/i)).toBeNull())

@@ -416,12 +416,15 @@ class MemberLog:
         if self._crew_log is None:
             raise LogCorrupt(self.path, 0, "cannot append to a log with no header")
         stored = _stored_type(type)
+        before = self._stat()
         entry = self._append_through_contention(stored, data, max_tail_seq, deadline)
-        # shortcut: a closer still re-reads the whole log, once per ended patrol.
-        # Route it through ``_adopt_own_append`` if closers ever become frequent.
-        self._loaded = False
-        self._ensure_loaded()
-        return None if entry is None else _as_event(entry)
+        event = None if entry is None else _as_event(entry)
+        # A written closer is adopted as :meth:`append` adopts its event; a decline,
+        # or a file that does not prove the adoption, re-reads from disk.
+        if event is None or not self._adopt_own_append(event, before):
+            self._loaded = False
+            self._ensure_loaded()
+        return event
 
     def _append_through_contention(
         self,

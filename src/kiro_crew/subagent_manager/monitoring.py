@@ -837,10 +837,10 @@ class OrphanStallMonitor(ManagerComponent):
 
         if result_is_whole(state):
             # A run that finished before the restart, caught before delivery:
-            # completed (ok, and the ✅ the prose carries is derived from that),
+            # completed (ok, and the word the prose carries is derived from that),
             # as its tombstone and task row record it. The note says why it
             # arrives late.
-            glyph, note, outcome = "✅", "finished before gateway restart", OUTCOME_OK
+            word, note, outcome = "completed", "finished before gateway restart", OUTCOME_OK
             lines = (
                 [f"Result saved at: `{result_path}`", "Use the read tool to retrieve it."]
                 if has_result
@@ -850,14 +850,18 @@ class OrphanStallMonitor(ManagerComponent):
             # Interrupted, and the note has to carry it: the wording is all that
             # stops a parent from acting on an opening sentence as though it
             # were a finding.
-            glyph, note, outcome = "⚠️", "cut off mid-turn by gateway restart", OUTCOME_INTERRUPTED
+            word, note, outcome = (
+                "interrupted",
+                "cut off mid-turn by gateway restart",
+                OUTCOME_INTERRUPTED,
+            )
             lines = [
                 f"Partial output saved at: `{result_path}`",
                 "It stops wherever the restart landed — read it as an unfinished "
                 "fragment, not as the agent's answer.",
             ]
         else:
-            glyph, note, outcome = "❌", "lost to gateway restart", OUTCOME_FAILED
+            word, note, outcome = "failed", "lost to gateway restart", OUTCOME_FAILED
             lines = ["No result was captured before the restart."]
         if not result_is_whole(state):
             # An unfinished run is not no work, whether or not it streamed any
@@ -880,7 +884,7 @@ class OrphanStallMonitor(ManagerComponent):
         msg = "\n".join(
             [
                 SUBAGENT_COMPLETION_PREFIX,
-                f"Agent `{agent_id}` {glyph} {note}",
+                f"Agent `{agent_id}` {word}: {note}",
                 f"Task: {task_preview}",
                 *worktree,
                 *lines,
@@ -1461,24 +1465,31 @@ class OrphanStallMonitor(ManagerComponent):
                 logger.debug("Reaper: tombstone pruning failed", exc_info=True)
 
     def _refusal_tombstone_unsettled(self, agent_id: str, tombstone: dict) -> bool:
-        """True for a refusal or queued-stop tombstone whose task row is not (known to be) terminal.
+        """True for a refusal, queued-stop or parent-end tombstone whose task row is not terminal.
 
         The pruner's ``keep``: any other cause answers False. A store that is
         REQUIRED but not open -- still initializing on this boot, or a failed
         open the reaper will retry -- keeps it, since the reopen's reconcile is
         what reads it; so does a store that raises, since the row may still owe
-        the ending the tombstone stands in for. Only with the task queue
+        the ending the tombstone stands in for. A parent-end tombstone is also
+        what keeps a retained claim from starting once the teardown mark ages
+        out, so it is held for the same reason. Only with the task queue
         deliberately off (no store will ever read it), or with no row behind
         it, does the tombstone decide nothing and go on its window. Runs on the
         maintenance executor; the store's reads take its lock.
         """
         from kiro_crew import taskq as _taskq
         from kiro_crew.subagent_manager.admission.types import (
+            PARENT_END_TOMBSTONE_CAUSE,
             QUEUED_STOP_TOMBSTONE_CAUSE,
             REFUSAL_TOMBSTONE_CAUSE,
         )
 
-        if tombstone.get("cause") not in (REFUSAL_TOMBSTONE_CAUSE, QUEUED_STOP_TOMBSTONE_CAUSE):
+        if tombstone.get("cause") not in (
+            REFUSAL_TOMBSTONE_CAUSE,
+            QUEUED_STOP_TOMBSTONE_CAUSE,
+            PARENT_END_TOMBSTONE_CAUSE,
+        ):
             return False
         admission = self._manager._admission
         store = admission.taskq_store()

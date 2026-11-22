@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -591,6 +592,44 @@ async def test_the_worker_list_is_the_roots_tree_with_status_and_item(_open_gate
 
 
 @pytest.mark.asyncio
+async def test_a_worker_with_running_subagents_stays_working(_open_gate):
+    tree = [
+        _row("root", agent="kirocrew-conductor"),
+        _row("w1", created_by="root", subagents_running=True),
+    ]
+    resp = await _open_gate.api_crew_workers(
+        _req("GET", "/api/chat/slots/root/crew-workers", _state(tree), {"slot": "root"})
+    )
+    worker = json.loads(resp.text)["workers"][0]
+    assert worker["status"] == "working"
+    assert worker["group"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_a_worker_with_a_running_workflow_stays_working(_open_gate):
+    tree = [
+        _row("root", agent="kirocrew-conductor"),
+        _row("w1", created_by="root"),
+    ]
+    live = SimpleNamespace(key="w1", linked_session_key="", running=False)
+    state = _state(tree, {"w1": live})
+    state.subagents = None
+    state.workflow_service = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == "dashboard:w1")
+    )
+    resp = await _open_gate.api_crew_workers(
+        _req("GET", "/api/chat/slots/root/crew-workers", state, {"slot": "root"})
+    )
+    worker = json.loads(resp.text)["workers"][0]
+    assert worker["status"] == "working"
+    assert worker["group"] == "working"
+    # Whether a report still asks the person is the Board's `awaits_person`, so
+    # the list carries neither an activity list nor a turn flag.
+    assert "activity" not in worker
+    assert "turn_running" not in worker
+
+
+@pytest.mark.asyncio
 async def test_each_row_says_where_its_worker_runs(_open_gate, monkeypatch):
     """A local worker carries no ``remote_crew`` (the page says "This machine"); a
     worker remote dispatch placed on a crew is listed, named by the registry,
@@ -624,8 +663,10 @@ async def test_each_row_says_where_its_worker_runs(_open_gate, monkeypatch):
             key("it_x"): remote("it_x", "inst-1", "Cancelled", terminal=True),
         },
     )
+    # "running" counts only from a crew pulled recently, so the working row is one.
+    fresh = {"crew_state": "connected", "ingested_at": datetime.now(timezone.utc).isoformat()}
     stored = {
-        "it_r": work_ledger.RemoteState(running=True),
+        "it_r": work_ledger.RemoteState(running=True, **fresh),
         "it_a": work_ledger.RemoteState(running=True, pending_approval=True),
         "it_x": work_ledger.RemoteState(running=True),
     }
@@ -885,6 +926,7 @@ async def test_a_held_steer_is_reported_queued_persisted_and_shown(_open_gate, m
         running=False,
         _app="",
         _queue=queue,
+        durable_source=lambda: list(queue),
         _acp_client=None,
         queue_append=_append,
     )

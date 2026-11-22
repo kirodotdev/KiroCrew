@@ -121,6 +121,31 @@ async function frame(name, crewsAnswer, { openRefusal = null, before = null } = 
   if (!(await card(page).getByRole('button', { name: /Ask the agent/ }).isVisible())) fail('the row refusal has no Ask the agent')
   await context.close()
 }
+{
+  // Signed out of Kiro, the list read is refused: the refusal carries the way
+  // to Settings > Kiro account.
+  const { page, context } = await frame('05-shared-crews-signed-out-list', { status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'not signed in', code: 'SIGNED_OUT' }) })
+  const link = card(page).getByTestId('shared-crews-kiro-account-link')
+  if (!(await link.isVisible())) fail('the signed-out list refusal has no Go to Kiro account link')
+  if (!/\/settings\/kiro-account/.test((await link.getAttribute('href')) || '')) fail('the link does not lead to the Kiro account tab')
+  await context.close()
+}
+{
+  const { page, context } = await frame(
+    '06-shared-crew-open-signed-out',
+    { status: 200, contentType: 'application/json', body: JSON.stringify({ crews: CREWS }) },
+    {
+      openRefusal: 'SIGNED_OUT',
+      before: async (pg) => {
+        await pg.getByRole('button', { name: 'Open Platform team' }).click()
+        await pg.getByTestId('shared-crew-refusal').waitFor({ timeout: 10000 })
+        await pg.waitForTimeout(300)
+      },
+    },
+  )
+  if (!(await card(page).getByTestId('shared-crews-kiro-account-link').isVisible())) fail('the signed-out row refusal has no Go to Kiro account link')
+  await context.close()
+}
 
 await browser.close()
 srv.close()

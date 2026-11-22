@@ -8,10 +8,11 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``,
-``_compaction_failed_at``, ``_drained_child_events``, ``_input_wait_emitted``, ``_last_stop_reason``,
-``_mcp_sign_in_completed``, ``_oauth_emitted_servers``, ``_prompt_or_tool_seen``,
-``_stale_eligible``, ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
+Instance fields written: ``_awaiting_permission``, ``_cancel_unacked``,
+``_codex_compaction_pending``, ``_compaction_failed_at``, ``_drained_child_events``,
+``_input_wait_emitted``, ``_last_stop_reason``, ``_mcp_sign_in_completed``,
+``_oauth_emitted_servers``, ``_prompt_or_tool_seen``, ``_stale_eligible``, ``_stale_probe``,
+``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``chat_shared``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
@@ -152,19 +153,21 @@ async def _dispatch_events(
     # happens after this point must be subtracted from them.
     parked_at_data = self._parked_total
     # SESSION-ATTRIBUTABLE twin of (last_data_ts, parked_at_data), read by
-    # the post-compaction-failure budget AND the tool-idle watchdog. On a
-    # shared runtime, ownerless global notifications are fanned out to every
-    # co-tenant queue (msg.fanout_no_owner), so another session's steady
-    # traffic would keep resetting last_data_ts and defer both clocks on
-    # work this session never produced — for the budget, out to the
-    # multi-hour outer deadline that is the exact hang it exists to bound.
-    #
-    # The STALE clock deliberately keeps reading last_data_ts: it already
-    # folds in the runtime-wide _last_activity (bumped on every stdout
-    # line), so runtime-global traffic is inside its contract by
-    # construction and narrowing its queue term would change nothing.
+    # the post-compaction-failure budget AND both idle watchdogs (tool and
+    # stale). On a shared runtime, ownerless global notifications are fanned
+    # out to every co-tenant queue (msg.fanout_no_owner), so another
+    # session's steady traffic would keep resetting last_data_ts and defer
+    # these clocks on work this session never produced — for the budget,
+    # out to the multi-hour outer deadline that is the exact hang it exists
+    # to bound.
     last_own_data_ts = last_data_ts
     parked_at_own_data = parked_at_data
+    # Whether this turn has dequeued a frame attributable to this session
+    # (the test that moves last_own_data_ts; a keepalive touch is no frame).
+    # Before one, a model-wait DEAD reading is a prompt nothing has answered
+    # yet, not a finished turn whose frame was lost, so it gets the UNKNOWN
+    # window instead of the immediate probe.
+    own_frame_seen = False
     # When the tool branch last read the in-flight tool's subtree as
     # WORKING. The remote_flat narrowing measures its quiet stretch from the
     # later of this and the last own frame, so a remote call that moves bytes
@@ -270,6 +273,7 @@ async def _dispatch_events(
                         usage=self.last_prompt_stats.to_turn_usage(),
                     )
                     return
+                self._cancel_unacked = True
                 logger.warning(
                     "Cancel unacked after %.1fs on session %s — unblocking caller "
                     "(runtime kept alive for co-tenants)",
@@ -363,56 +367,44 @@ async def _dispatch_events(
             except asyncio.TimeoutError:
                 # ── Verdict-driven watchdogs ──
                 # Wellness (the liveness oracle) is the detector; timeouts
-                # govern only the UNKNOWN class. Idle clocks: the stale clock
-                # folds in the runtime's activity clock (_last_activity —
-                # advanced by stdout lines, outbound requests and
-                # notifications, and the /api/session-keepalive touch, but
-                # NOT by a response or error we send back, and NOT by
-                # stderr: AcpRuntime's stderr drain only rings the
-                # _stderr_lines buffer, so a kiro-cli reasoning burst on
-                # stderr does not move this clock); the tool clock keys off
-                # this session's OWN queue frames and keepalive touches only
-                # (progress frames for the session reset last_own_data_ts,
-                # and note_keepalive() stamps the touch the folding below
-                # reads, so a legitimately-streaming or keepalive-pinging
-                # tool keeps the watchdog satisfied, while a co-tenant's
-                # ownerless fanned-out frame or keepalive does not defer it).
+                # govern only the UNKNOWN class. Both idle clocks, tool and
+                # stale, key off this session's OWN queue frames and
+                # keepalive touches only (progress frames for the session
+                # reset last_own_data_ts, and note_keepalive() stamps the
+                # touch the folding below reads, so a streaming turn or a
+                # keepalive-pinging tool keeps the watchdog satisfied, while
+                # a co-tenant's ownerless fanned-out frame or keepalive does
+                # not defer it). Neither reads the runtime's activity clock
+                # (_last_activity): it is process-wide, so on a shared
+                # runtime a principal's keepalive pings or a sibling's stream
+                # would keep a silent turn's idle near zero for good.
                 if self._cancelled:
                     continue
                 wd = self._watchdog
                 now = time.monotonic()
-                # Consumer time since the last frame. Both clocks below are
-                # meant to measure how long the RUNTIME has been silent, but
-                # the loop is suspended at its yield for the whole of a
+                # A keepalive touch for THIS session counts as an own frame:
+                # a blocking MCP tool (wait, spawn_sub_agents) sends none
+                # while it runs and pings this instead. Its park baseline is
+                # the one taken when the touch landed.
+                if self._keepalive_ts > last_own_data_ts:
+                    last_own_data_ts = self._keepalive_ts
+                    parked_at_own_data = self._keepalive_parked
+                # Consumer time since the last own frame. Both clocks below
+                # are meant to measure how long the RUNTIME has been silent,
+                # but the loop is suspended at its yield for the whole of a
                 # consumer-side await, so without this the wait a consumer
                 # spends on an approval, an IM send, or a hook is charged to
                 # the backend — and a turn can be cancelled moments after a
                 # human approves it. Subtracted rather than clamped forward so
-                # a burst of short parks accumulates correctly.
-                _parked = max(0.0, self._parked_total - parked_at_data)
+                # a burst of short parks accumulates correctly, and taken
+                # from the own baseline: one measured from the newer
+                # last_data_ts would leave a park between the two baselines
+                # unsubtracted, making the watchdog QUICKER to act on a live
+                # turn — the one direction a clock change here must never
+                # take by accident.
+                _own_parked = max(0.0, self._parked_total - parked_at_own_data)
 
                 if self._tool_dispatched:
-                    # Session-attributable clock: an ownerless fanned-out
-                    # frame is at most one co-tenant's traffic and nothing
-                    # says whose, so it must not stand in for progress on
-                    # THIS session's in-flight tool.
-                    #
-                    # Its park correction is taken from the matching
-                    # baseline. Reusing `_parked` (measured from the newer
-                    # last_data_ts) would leave a park between the two
-                    # baselines unsubtracted, inflating idle and making this
-                    # branch QUICKER to cancel a live turn — the one
-                    # direction a clock change here must never take by
-                    # accident.
-                    #
-                    # A keepalive touch for THIS session counts as an own
-                    # frame: a blocking MCP tool (wait, spawn_sub_agents)
-                    # sends none while it runs and pings this instead. Its
-                    # park baseline is the one taken when the touch landed.
-                    if self._keepalive_ts > last_own_data_ts:
-                        last_own_data_ts = self._keepalive_ts
-                        parked_at_own_data = self._keepalive_parked
-                    _own_parked = max(0.0, self._parked_total - parked_at_own_data)
                     _tool_idle = max(0.0, (now - last_own_data_ts) - _own_parked)
                     if _tool_idle <= wd.check_after_secs:
                         continue
@@ -445,11 +437,10 @@ async def _dispatch_events(
                         self._ingress_seq != _ingress_before
                         or self._queue.qsize() > _q_depth_before
                     ):
-                        # The verdict is void for this tick and the stale
-                        # clock advances. The tool clock moves only for a
-                        # frame proven to be this session's: one a concurrent
-                        # _wait_for_response buffered names its owner
-                        # (_own_ingress_seq), and one still queued is
+                        # The verdict is void for this tick. The clock moves
+                        # only for a frame proven to be this session's: one a
+                        # concurrent _wait_for_response buffered names its
+                        # owner (_own_ingress_seq), and one still queued is
                         # dequeued next, where the ownership check below
                         # decides. A co-tenant frame landing inside the
                         # oracle await therefore costs one tick and keeps
@@ -464,7 +455,7 @@ async def _dispatch_events(
                         # A keepalive for THIS session landed during the
                         # await: the same activity-in-flight rule as the
                         # frames above, attributed to this session, so it
-                        # moves only the tool clock, to the touch's stamp.
+                        # moves the clock to the touch's stamp.
                         last_own_data_ts = self._keepalive_ts
                         parked_at_own_data = self._keepalive_parked
                         continue
@@ -616,49 +607,35 @@ async def _dispatch_events(
                     return
 
                 if self._stale_eligible:
-                    # `_parked` is measured from the last QUEUE frame, while
-                    # this clock can key off the newer stderr/keepalive
-                    # activity instead. When it does, some of `_parked`
-                    # predates the reference point and is subtracted twice
-                    # over — which only ever makes this branch MORE patient,
-                    # never quicker to probe, so it errs toward leaving a
-                    # working turn alone.
-                    _stale_idle = max(
-                        0.0,
-                        (now - max(last_data_ts, self._runtime._last_activity)) - _parked,
-                    )
+                    _stale_idle = max(0.0, (now - last_own_data_ts) - _own_parked)
                     if _stale_idle <= wd.check_after_secs:
                         continue
-                    # TOCTOU guard — the tool branch's two frame-path
-                    # signals PLUS the runtime activity clock, because this
-                    # branch's idle measurement (unlike the tool clock)
-                    # folds in _last_activity: snapshot all three before
-                    # the oracle await (up to 10 s, event loop yielded) and
-                    # recheck after. Path A: a frame stays in _queue →
-                    # qsize grows. Path B: _wait_for_response buffers it →
-                    # _ingress_seq advances. Either advance means a live
-                    # activity frame arrived during the oracle; reset the
-                    # stale clock and continue rather than probing a live
-                    # turn on a stale idle measurement.
+                    # TOCTOU guard, the tool branch's: snapshot the two
+                    # frame-path signals and this session's keepalive stamp
+                    # before the oracle await (up to 10 s, event loop
+                    # yielded) and recheck after. A frame landing during the
+                    # await (Path A: qsize grows; Path B: _wait_for_response
+                    # buffers it, _ingress_seq advances) voids this tick's
+                    # verdict, and only one proven to be this session's own
+                    # moves the clock. A keepalive for THIS session landing
+                    # during the await moves it to the touch's stamp.
                     _stale_ingress_before = self._ingress_seq
+                    _stale_own_ingress_before = self._own_ingress_seq
                     _stale_q_before = self._queue.qsize()
-                    _stale_runtime_before = self._runtime._last_activity
+                    _stale_keepalive_before = self._keepalive_ts
                     verdict, evidence = await self._consult_oracle_offloaded(model_wait=True)
                     if (
                         self._ingress_seq != _stale_ingress_before
                         or self._queue.qsize() > _stale_q_before
                     ):
                         last_data_ts = time.monotonic()
+                        if self._own_ingress_seq != _stale_own_ingress_before:
+                            last_own_data_ts = last_data_ts
+                            parked_at_own_data = self._parked_total
                         continue
-                    # Path C: stderr/keepalive/stdin traffic advanced the
-                    # runtime clock without a session frame — activity that
-                    # would have deferred this probe had it landed one tick
-                    # earlier must defer it now too. last_data_ts is NOT
-                    # reset (it means "last session frame" and also feeds
-                    # the frames-only tool clock); the next iteration's
-                    # max(last_data_ts, _last_activity) re-derives the
-                    # stale clock from the newer runtime activity itself.
-                    if self._runtime._last_activity > _stale_runtime_before:
+                    if self._keepalive_ts > _stale_keepalive_before:
+                        last_own_data_ts = self._keepalive_ts
+                        parked_at_own_data = self._keepalive_parked
                         continue
                     if verdict == VERDICT_WORKING:
                         if _stale_idle <= wd.tool_stall_hard_cap_secs:
@@ -674,12 +651,15 @@ async def _dispatch_events(
                     _flat_wait = evidence.startswith(
                         (EVIDENCE_ESTABLISHED_FLAT, EVIDENCE_PLATFORM_LIMITED)
                     )
-                    if verdict != VERDICT_DEAD:
+                    if verdict != VERDICT_DEAD or not own_frame_seen:
                         # UNKNOWN: probe only past the window. An established-
                         # but-flat backend connection is probably a non-streamed
                         # server-side think — probing it cancels + regenerates
                         # the think, so it gets the extended window. The hard
-                        # cap bounds any UNKNOWN deferral absolutely.
+                        # cap bounds any UNKNOWN deferral absolutely. A DEAD
+                        # reading before this turn's first own frame waits the
+                        # same window: the done-but-lost-frame wedge it stands
+                        # for needs a turn that has produced something.
                         window = wd.model_silent_probe_secs if _flat_wait else wd.stale_window_secs
                         if _stale_idle <= min(window, wd.tool_stall_hard_cap_secs):
                             continue
@@ -745,13 +725,14 @@ async def _dispatch_events(
             parked_at_data = self._parked_total
             if not msg.fanout_no_owner:
                 # Only a frame attributable to THIS session defers the
-                # tool-idle watchdog and the post-compaction-failure budget
+                # idle watchdogs and the post-compaction-failure budget
                 # (see the twin's init note). Provenance is the
                 # discriminator, not the frame's method: the same kind can
                 # arrive routed (this session's own progress) or fanned out
                 # (a co-tenant's), and only the runtime knows which.
                 last_own_data_ts = last_data_ts
                 parked_at_own_data = parked_at_data
+                own_frame_seen = True
                 if (
                     req_id == AGENT_STARTED_REQUEST_ID
                     # A native child's frame is its own work: its tool calls
@@ -1045,7 +1026,7 @@ async def _dispatch_events(
                         # and cap the display, consistent with the drain
                         # notice and the [:4096] pre-redaction bounds.
                         text=(
-                            "⛔ permission auto-rejected (missing security "
+                            "Blocked: permission auto-rejected (missing security "
                             "context): "
                             f"{redact_text(str(_perm_event.title or '<unknown tool>')[:4096])[:120]}"
                         ),

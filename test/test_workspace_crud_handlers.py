@@ -922,6 +922,36 @@ class TestDeltaMutatorHardening:
         assert "copied" not in _read_doc(tmp_path)["workspaces"]
 
     @pytest.mark.asyncio
+    async def test_a_staging_copy_that_cannot_be_removed_is_named_in_the_log(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A refused publish drops the staged copy with ``rmtree_force``; when a file
+        another program holds open keeps it, the log names the folder left behind."""
+        (tmp_path / "workspace").mkdir()
+        (tmp_path / "workspace" / "notes.md").write_text("x", encoding="utf-8")
+        cfg = _cfg()
+        _seed_file(tmp_path, cfg)
+        with (
+            patch(_LOAD, return_value=cfg),
+            patch(_CFGDIR, return_value=tmp_path),
+            patch(_DATAHOME, return_value=tmp_path),
+            patch(
+                "kiro_crew.platform_compat.publish_dir_noreplace",
+                side_effect=PermissionError(13, "Access is denied"),
+            ),
+            patch("kiro_crew.platform_compat.rmtree_force", return_value=False),
+            patch(_SEL),
+            caplog.at_level("WARNING", logger="kiro_crew.dashboard.handlers.files"),
+        ):
+            resp = await api_workspaces_create(_req({"name": "copied", "copy_from": "default"}))
+        assert resp.status == 409
+        leftovers = [p for p in tmp_path.iterdir() if ".staging-" in p.name]
+        assert len(leftovers) == 1
+        assert any(
+            str(leftovers[0]) in rec.getMessage() for rec in caplog.records
+        ), "the staging copy left behind was not named in the log"
+
+    @pytest.mark.asyncio
     async def test_cancellation_after_persist_success_does_not_roll_back(
         self, tmp_path: Path, monkeypatch
     ) -> None:

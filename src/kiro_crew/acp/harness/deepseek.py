@@ -206,6 +206,21 @@ _DEEPSEEK_ENV_CREW_OWNED_NAMES = frozenset(
     }
 )
 
+#: The npm package the ``dsh`` binary ships in; its manifest names the release.
+DEEPSEEK_DSH_NPM_PKG = "@deepseek-ai/dsh"
+
+
+def _dsh_installed_version(dsh_bin: str) -> str:
+    """The ``version`` in the package.json of the dsh install *dsh_bin* runs, or ``""``.
+
+    Read off disk, as pi's and claude-agent-acp's are: ``dsh --version`` prints
+    nothing, and dsh-acp's handshake reports ``agentInfo.version`` 0.0.1 on every
+    release. A wrapper script or a ``DSH_BIN`` override naming another file answers
+    ``""``, which the tested-range notice reads as unknown. Blocking (small file
+    reads); callers run it off the loop.
+    """
+    return launch_mod._node_adapter_manifest_version([dsh_bin], DEEPSEEK_DSH_NPM_PKG)
+
 
 def deepseek_gate_extension_path() -> str:
     """The absolute path of the gate plugin Kiro Crew ships for the DeepSeek Harness.
@@ -376,7 +391,10 @@ def _validate_deepseek_env_mapping(mapping: dict[str, str]) -> None:
                 "Name the credential reference in the harness's provider "
                 "configuration with a name in that class, such as DEEPSEEK_API_KEY."
             )
-        if any(key.startswith(prefix) for prefix in scrub_prefixes):
+        # Windows env names are case-insensitive, so the scrub removes this name
+        # there in any spelling (see ``sandbox.scrub_env``): judge it the same way.
+        scrubbed_as = key.upper() if os.name == "nt" else key
+        if any(scrubbed_as.startswith(prefix) for prefix in scrub_prefixes):
             raise ValueError(
                 f"agent.deepseek_env entry {key!r} matches a name prefix Kiro Crew's "
                 "own agent environment scrub removes before the child starts, so the "
@@ -480,6 +498,8 @@ class DeepseekProcessSession(ProcessSession, Protocol):
 
     _deepseek_gate_nonce: str
     _deepseek_read_only_issue: str
+    #: dsh's release as its npm manifest names it, read at spawn; ``""`` when unread.
+    harness_installed_version: str
 
 
 def _record_deepseek_read_only_proof(
@@ -682,8 +702,13 @@ class DeepseekLaunch(ProcessAdapter):
         """Resolve the binary, mask it, compose and seal the gate, and prove it loads."""
         assert ctx.session is not None, "the DeepSeek Harness is launched for one session"
         session = cast(DeepseekProcessSession, ctx.session)
-        _deepseek_bin, argv, spawn_label, stderr_label = (
-            await launch_mod.resolve_self_served_launch(self.backend)
+        deepseek_bin, argv, spawn_label, stderr_label = await launch_mod.resolve_self_served_launch(
+            self.backend
+        )
+        # The release the tested-range notice reads: dsh-acp's handshake reports
+        # 0.0.1 on every release. Off-loop: small file reads.
+        session.harness_installed_version = await asyncio.to_thread(
+            _dsh_installed_version, deepseek_bin
         )
         # Warm this session's array off the loop. The deepseek mirror builds it
         # from the session's spec, and a member session adds its own mounts
@@ -964,6 +989,7 @@ class _RuntimeProbeSession:
         self._agent_env = dict(agent_env)
         self._deepseek_gate_nonce = ""
         self._deepseek_read_only_issue = "the harness composition was not read back"
+        self.harness_installed_version = ""
 
     def _agent_env_for_spawn(self) -> dict[str, str]:
         return dict(self._agent_env)
