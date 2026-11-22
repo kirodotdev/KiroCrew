@@ -333,17 +333,20 @@ def _refusable_deny(raw: object) -> bool:
     and, with an optional ``^`` / ``\\A`` and ``$`` / ``\\z`` anchor taken off, it
     holds no character a command the row judges never holds
     (``allowed_commands.UNGRANTABLE_COMMAND_CHARS``: a redirect, a separator, a
-    substitution). The row judges a plain command and each command of a chain, so
-    an entry naming one of those characters could never match. One reader for the
-    record and the notice, so they cannot disagree."""
-    if not isinstance(raw, str) or allowed_commands.parse_deny(raw) is None:
+    substitution), written as itself or as a ``\\x`` escape (``\\x3b``:
+    ``Pattern.spelled``). The row judges a plain command and each command of a
+    chain, so an entry naming one of those characters could never match. One reader
+    for the record and the notice, so they cannot disagree."""
+    pattern = allowed_commands.parse_deny(raw)
+    if not isinstance(raw, str) or pattern is None:
         return False
     body = raw.removeprefix("\\A") if raw.startswith("\\A") else raw.removeprefix("^")
     if body.endswith("\\z") and not body.endswith("\\\\z"):
         body = body[:-2]
     elif body.endswith("$") and not body.endswith("\\$"):
         body = body[:-1]
-    return not allowed_commands.UNGRANTABLE_COMMAND_CHARS.intersection(body)
+    ungrantable = allowed_commands.UNGRANTABLE_COMMAND_CHARS
+    return ungrantable.isdisjoint(body) and ungrantable.isdisjoint(pattern.spelled)
 
 
 def uncarried_denied_commands(tools_settings: Any, policy: Any) -> list[str]:

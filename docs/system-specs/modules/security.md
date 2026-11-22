@@ -3589,7 +3589,8 @@ a changed list is never answered from another text's reading and a shell call co
 entry; a value that is not a string, is empty or is longer than 1,024 characters is refused before
 the cache on every call; each entry
 read by `platform/allowed_commands.py` in Rust's `regex` syntax, as Rust reads it:
-literal characters, escaped punctuation, the control escapes `\n \t \r \f \v \a`, `.`, bracket classes (ranges, `^`
+literal characters, escaped punctuation, the control escapes `\n \t \r \f \v \a`, `\x` with two
+hex digits that name an ASCII character (`\x20`), `.`, bracket classes (ranges, `^`
 negation, a `-` only first, last or as a range, POSIX classes and `\d \w \s`
 inside), `\d \w \s \D \W \S`, `\b \B`, `^ $ \A \z` anywhere, groups `( )`,
 `(?: )` and named, alternation, the repeats `* + ?`, `{n}`, `{n,}` and `{n,m}`
@@ -3597,7 +3598,7 @@ inside), `\d \w \s \D \W \S`, `\b \B`, `^ $ \A \z` anywhere, groups `( )`,
 `(?i)` by ASCII where Rust reads them by Unicode, so an entry using one
 (`Pattern.ascii_only`) matches only an all-ASCII command: exactly what Rust matches
 there, and nothing else. It refuses a nested class, a class operator
-(`&& -- ~~`), any other alphanumeric escape (`\p`, `\x`), the flags `x u R`, a
+(`&& -- ~~`), any other alphanumeric escape (`\p`, `\x{41}`, `\xff`), the flags `x u R`, a
 look-around, and what Rust itself refuses to compile, since kiro-cli then allows
 nothing by the entry: two groups of one name, a repeat count past 4,294,967,295
 (Rust reads each count as a `u32`, so `(a{4294967296}){0}` is refused too),
@@ -3714,7 +3715,8 @@ character, a merge dropped it: `kas_permissions.shell_denies_carried` is false)
 is refused by the same row with no grant beside it
 (`kas_spec_denies.uncarried_denied_commands`) when the row can judge it
 (`kas_spec_denies._refusable_deny`: `parse_deny` reads it and it holds none of
-`allowed_commands.UNGRANTABLE_COMMAND_CHARS` once an optional `^`/`\A` and
+`allowed_commands.UNGRANTABLE_COMMAND_CHARS`, as itself or as a `\x` escape such as `\x3b`
+(`Pattern.spelled`), once an optional `^`/`\A` and
 `$`/`\z` anchor is taken off, so not a redirect, separator or substitution): the record then holds those entries and no grant, so on KAS an
 auto-approved call (a cron job with `approval_mode: auto`, a workflow, a spawned
 run) cannot run a plain command, or a plain chain, that such an entry names. Any other entry,

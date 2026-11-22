@@ -206,6 +206,11 @@ _RUST = [
     ("a\\tb", "a b", False),
     ("a[\\f]b", "a\x0cb", True),
     ("a\\ab\\vc\\rd", "a\x07b\x0bc\rd", True),
+    ("ls\\x20foo", "ls foo", True),
+    ("ls\\x20foo", "ls\tfoo", False),
+    ("[\\x61-\\x7A]+", "abz", True),
+    ("[\\x61-\\x7A]+", "aBz", False),
+    ("(?i)\\x41", "a", True),
 ]
 
 #: Entries Rust refuses to compile, so kiro-cli allows nothing by them.
@@ -311,6 +316,8 @@ def test_a_deny_that_cannot_judge_never_hides_one_that_matches(unjudged: str) ->
     ("entry", "reason"),
     [
         (r"ls \p{L}", "the escape \\p"),
+        (r"ls \x{41}", "the escape \\x"),
+        (r"ls \x80", "the escape \\x"),
         ("(?x)ls", "the x flag"),
         ("ls (?=a)", "a look-around"),
         ("(?P<a>x)(?P<a>y)", "two groups with one name"),
