@@ -196,6 +196,7 @@ class TestFireToolHooks:
             if r.name == "kiro_crew.hooks" and r.getMessage() == "PreToolUse hook error"
         ]
         assert len(swallowed) == 1
+        assert swallowed[0].levelno == logging.WARNING
         assert str(swallowed[0].exc_info[1]) == "boom"
 
     @pytest.mark.asyncio

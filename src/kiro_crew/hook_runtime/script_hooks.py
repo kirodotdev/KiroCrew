@@ -1183,14 +1183,21 @@ class ScriptHookStore:
                     timing.warn_if_slow(logger)
                     event_timing.add(timing)
                 results.append(result)
-                logger.info(
-                    "Hook %s (%s): %s in %dms (exit=%d)",
-                    hook.name,
-                    event,
-                    hook.last_status,
-                    result.duration_ms,
-                    result.exit_code,
-                )
+                if result.exit_code not in (0, 2):
+                    # The one WARNING for a failed hook, whichever caller fired it, so
+                    # a caller that only reads exit-0 stdout cannot leave it unlogged.
+                    logger.warning(
+                        "Hook %s (%s) failed: %s", hook.name, event, result.failure_detail
+                    )
+                else:
+                    logger.info(
+                        "Hook %s (%s): %s in %dms (exit=%d)",
+                        hook.name,
+                        event,
+                        hook.last_status,
+                        result.duration_ms,
+                        result.exit_code,
+                    )
             # Snapshot inside the worker under the mutex: a snapshot taken on the event
             # loop leaves a window for a concurrent CRUD mutation before the write.
             if touched and self._persists_fire_status:

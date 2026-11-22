@@ -1071,7 +1071,7 @@ async def _fire(
                 # which runs these hooks on its own backend, warns and lets the
                 # tool run; so does Crew, so one broken hook in an agent package
                 # cannot stop every tool call.
-                logger.warning(
+                logger.info(
                     "Spec hook %s failed (%s); tool allowed",
                     r.hook_name,
                     r.failure_detail,
@@ -1164,9 +1164,6 @@ async def _fire(
                             "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
                         },
                     )
-                else:
-                    # Non-zero, non-block on a non-gating event: warn only.
-                    logger.warning("Hook %s (%s) failed: %s", r.hook_name, event, detail)
     except Exception as exc:
         if event == HOOK_EVENT_PRE_TOOL_USE:
             logger.warning("Hook fire error during blocking event %s: %s", event, exc)

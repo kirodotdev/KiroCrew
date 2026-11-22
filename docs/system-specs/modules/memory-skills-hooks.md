@@ -7364,6 +7364,16 @@ a hook is therefore **not portable across platforms**. A Hooks-page tool hook's 
 Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
 env vars and the same hook-event JSON on stdin.
 
+**A failed hook is logged once, by `fire()`.** A hook command whose exit is
+neither 0 nor 2 logs one WARNING, `Hook <name> (<event>) failed: <failure_detail>`;
+exit 0 and exit 2 log the INFO `Hook <name> (<event>): <status> in Nms (exit=N)`.
+The SessionLaneChanged runner (`_run_one_lane_hook`), which calls
+`run_script_hook` without `fire()`, logs the same WARNING. Callers decide what
+the failure blocks, allows or injects and do not log it again: the spec-hook
+PreToolUse "tool allowed" lines are INFO records of the gate's decision, and the
+dashboard turn logs a blocked Hooks-page PreToolUse call's block, at ERROR. Pinned
+by `test/test_script_hook_failure_warning.py`.
+
 **`KIROCREW_SESSION_MODEL`** is the model the firing session runs on, passed to
 `fire()` as `session_model` and set on every hook that fire runs, stored and
 `extra_hooks` alike; a spec hook kiro-cli runs itself is outside that fire and
