@@ -6308,8 +6308,8 @@ a trust root on its own; publication therefore also writes a
   attempt — the `.1` slot blocked by a planted directory, a sharing violation
   that never clears — is logged at WARNING with its sizes, since the primitive
   tells its caller nothing and its own hourly WARNING carries the path, the
-  error class and the cap of a refused rename but no sizes (and there is none at
-  all for a lock file it could not open); the line is throttled to one per
+  error class and the cap, for a refused rename or for a lock file it could
+  not open, but no sizes; the line is throttled to one per
   `shell_audit_log.SHELL_AUDIT_LOG_WARN_INTERVAL_SECS` (an hour) per data home,
   not one per attempt, because the tick retries for the gateway's whole life and
   a blocked slot does not clear itself, and it names the usual causes rather than
