@@ -640,12 +640,25 @@ def _bearer_bare(text: str, at: int, row: HeaderRow, final: bool) -> Hit | None:
     return Hit(k, end, row.id, row.tier, "header", "known_key")
 
 
+_CHALLENGE_PARAMS = frozenset(
+    {"realm", "scope", "error", "error_description", "error_uri", "resource_metadata"}
+)
+
+
 def _auth_param(text: str, end: int, value: str, final: bool) -> bool:
-    """An RFC 9110 auth-param of a ``Bearer`` challenge (``error=invalid_token``,
-    ``realm="x"``), not a token68: only trailing ``=`` padding belongs to a token68."""
-    if "=" in value.rstrip("="):
-        return True
-    if not value.endswith("=") or end >= len(text) or text[end] not in _QUOTES:
+    """A named auth-param of a ``Bearer`` challenge (``error=invalid_token``, ``realm="x"``;
+    RFC 6750 s3, RFC 9728), not a token68: only trailing ``=`` padding belongs to a token68,
+    and any other ``name=`` stays a token."""
+    base = value.rstrip("=")
+    name, eq, _ = base.partition("=")
+    if eq:
+        return name.lower() in _CHALLENGE_PARAMS
+    if (
+        not value.endswith("=")
+        or base.lower() not in _CHALLENGE_PARAMS
+        or end >= len(text)
+        or text[end] not in _QUOTES
+    ):
         return False
     if end + 1 >= len(text):
         if not final:

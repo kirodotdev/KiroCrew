@@ -318,6 +318,30 @@ def test_a_bearer_challenge_auth_param_is_not_masked(text: str) -> None:
     assert redact(text)[0] == text
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        'WWW-Authenticate: Bearer scope="read write"',
+        "WWW-Authenticate: Bearer scope=read",
+        'WWW-Authenticate: Bearer error="invalid_token"',
+        'WWW-Authenticate: Bearer error_uri="https://example.test/err"',
+        "WWW-Authenticate: Bearer error_uri=https://example.test/err",
+        "WWW-Authenticate: Bearer realm=example",
+        "WWW-Authenticate: Bearer error_description=expired",
+        "WWW-Authenticate: Bearer resource_metadata=https://example.test/meta",
+        'WWW-Authenticate: Bearer REALM="example"',
+    ],
+)
+def test_every_named_bearer_challenge_param_is_not_masked(text: str) -> None:
+    assert redact(text)[0] == text
+
+
+@pytest.mark.parametrize("name", ["x", "token", "key"])
+def test_a_bare_bearer_token_shaped_like_an_unnamed_pair_is_masked(name: str) -> None:
+    text = f"sent Bearer {name}={'0' * 40} to host"
+    assert redact(text)[0] == f"sent Bearer {TAG} to host"
+
+
 @pytest.mark.parametrize("padding", ["", "=", "=="])
 def test_a_bare_bearer_token68_with_or_without_padding_is_masked(padding: str) -> None:
     value = "FAKE0000" + "0" * 12 + padding
