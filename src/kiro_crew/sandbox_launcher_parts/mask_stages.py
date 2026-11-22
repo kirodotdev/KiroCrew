@@ -797,6 +797,58 @@ def restore_exposed_files(launch):
             os.chmod(dest, 0o444)
 
 
+def preread_stand_in_files(launch):
+    """Read each stand-in's source file before a mask can hide its parent.
+
+    A source that cannot be read leaves that stand-in EMPTY, the safe direction: the
+    spawn still runs, and the app that was to read a value finds none. The stderr warning
+    says which, so a later auth failure points here.
+    """
+    for _masked, src_path in launch.stand_in_files:
+        if src_path in launch.stand_in_data:
+            continue
+        try:
+            with open(src_path, "rb") as fh:
+                launch.stand_in_data[src_path] = fh.read(4096)
+        except OSError as exc:
+            print(
+                "sandbox: WARNING -- cannot read the stand-in source %s (%s); the masked "
+                "file stays empty." % (src_path, exc),
+                file=sys.stderr,
+            )
+
+
+def restore_stand_in_files(launch):
+    """Write each pre-read source into the stand-in now bound over its masked file.
+
+    Only into a stand-in THIS launcher created: the name is looked at AFTER the file
+    masks, and a name that does not reach one of ``own_stand_ins`` (an absent file that
+    was never masked, or an object that moved) is skipped, never written. Writing through
+    such a name would put the value into the real file.
+    """
+    for masked, src_path in launch.stand_in_files:
+        data = launch.stand_in_data.get(src_path)
+        if data is None:
+            continue
+        try:
+            st = os.lstat(masked)
+        except OSError:
+            continue
+        if (st.st_dev, st.st_ino) not in launch.own_stand_ins or not stat.S_ISREG(st.st_mode):
+            print(
+                "sandbox: WARNING -- %s is not one of this launcher's stand-ins; its "
+                "stand-in value was not written." % masked,
+                file=sys.stderr,
+            )
+            continue
+        fd = os.open(masked, os.O_WRONLY | os.O_NOFOLLOW)
+        try:
+            os.write(fd, data)
+            os.fchmod(fd, 0o400)
+        finally:
+            os.close(fd)
+
+
 def verify_fail_closed_aliases(launch):
     """Refuse unless each discovered credential alias is still the file that was discovered.
 

@@ -35,6 +35,7 @@ from kiro_crew.dashboard.refresh_tokens import (
     refresh_token_owner_minted,
     refresh_token_peer_key,
     refresh_token_requires_peer,
+    refresh_token_via_app,
     validate_refresh_token,
 )
 from kiro_crew.dashboard.tailnet import (
@@ -703,6 +704,17 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     carried_owner_mint = refresh_token_owner_minted(refresh_token)
     if carried_owner_mint:
         _carried_claims["owner_mint"] = "1"
+    # A delegated chain keeps its scope across the rotation, and ends with its grant: the
+    # chain is not rotated once the owner disabled or uninstalled the app it was minted for.
+    carried_via_app = refresh_token_via_app(refresh_token)
+    if carried_via_app:
+        from kiro_crew.apps import dashboard_proxy
+
+        if not await asyncio.to_thread(dashboard_proxy.granted, carried_via_app):
+            return web.json_response(
+                {"error": "session ended", "code": "delegated_grant_ended"}, status=401
+            )
+        _carried_claims["via_app"] = carried_via_app
     # The embedding parent's port, for the CSP frame-ancestors of a framed remote
     # pane. Dropped here, the pane went blank on its first load after a refresh.
     carried_embed_parent_port = refresh_token_embed_parent_port(refresh_token)
@@ -742,6 +754,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         require_peer=require_peer,
         peer_key=bound_peer_key,
         owner_mint=carried_owner_mint,
+        via_app=carried_via_app,
         embed_parent_port=carried_embed_parent_port,
         embed_forward_port=carried_embed_forward_port,
     )

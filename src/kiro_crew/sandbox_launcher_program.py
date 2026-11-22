@@ -196,6 +196,10 @@ class Launch:
         self.published_file_record = plan.get("published_file_record") or {}
         self.crew_home_aliases = plan["crew_home_aliases"]
         self.expose_files = plan["expose_files"]
+        #: ``(masked file, source file)``: a masked file whose stand-in is to hold the
+        #: source's bytes. Absent from a payload that asks for none.
+        self.stand_in_files = plan.get("stand_in_files", ())
+        self.stand_in_data = {}
         self.env_prefixes = plan["env_prefixes"]
         self.ssh_dir = plan["ssh_dir"]
         self.ssh_known_hosts = plan["ssh_known_hosts"]
@@ -540,6 +544,7 @@ def place_masks(launch):
     restore_exposed_files(launch)
     verify_fail_closed_aliases(launch)
     mask_sensitive_files(launch)
+    restore_stand_in_files(launch)
     mask_ssh_keys(launch)
     pin_mask_parents(launch)
 
@@ -553,6 +558,7 @@ def run_child(launch, argv):
     pick_stand_in_root(launch)
     check_crew_home_aliases(launch)
     preread_exposed_files(launch)
+    preread_stand_in_files(launch)
     stage_stand_ins_privately(launch)
     place_masks(launch)
     retire_stand_in_stage(launch)
@@ -660,7 +666,9 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     pin_mask_parents,
     pin_seal_parents,
     preread_exposed_files,
+    preread_stand_in_files,
     restore_exposed_files,
+    restore_stand_in_files,
     seal_operator_readonly,
     seal_readonly,
     stage_private_windows,

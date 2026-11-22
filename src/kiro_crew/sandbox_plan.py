@@ -104,6 +104,12 @@ class SandboxRequest:
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = ()
     extra_writable_dirs: tuple[str, ...] = ()
     extra_expose_files: tuple[str, ...] = ()
+    #: ``(masked file, source file)``: a masked FILE of ``extra_hidden_dirs`` whose stand-in
+    #: holds the source file's bytes instead of none. The namespace launcher reads the
+    #: source before it places any mask and writes it into the stand-in, never into the
+    #: masked file. Seatbelt has no stand-in to fill and ignores it. Empty: every stand-in
+    #: stays empty.
+    extra_stand_ins: tuple[tuple[str, str], ...] = ()
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = ()
     required_mask_targets: tuple[str, ...] = ()
     #: Name -> the identity a pre-spawn pass recorded for it: ``(dev, ino, is_link)``,
@@ -405,6 +411,9 @@ class ConfinementPlan:
     #: :attr:`PlanHost.mask_parent_pins`, which the namespace launcher binds over
     #: themselves after every mask. Always empty on the Seatbelt plan.
     mask_parent_pins: tuple[str, ...] = ()
+    #: :attr:`SandboxRequest.extra_stand_ins`, spelled the way the masks are. Always empty on
+    #: the Seatbelt plan.
+    stand_ins: tuple[tuple[str, str], ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -1282,6 +1291,10 @@ def _namespace_plan(
         operator_readonly=tuple(operator_readonly),
         operator_writable=tuple(operator_writable),
         mask_parent_pins=host.mask_parent_pins,
+        stand_ins=tuple(
+            (fold(absolute(masked, host.cwd)), source)
+            for masked, source in dict.fromkeys(request.extra_stand_ins)
+        ),
     )
 
 
@@ -1554,6 +1567,8 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "hide_ssh": int(plan.hide_ssh),
         "sandbox_level": plan.tier,
         "unreadable_masks": list(plan.unreadable_mask_leaves),
+        # Present only when a spawn asks, so every other spawn's payload is unchanged.
+        **({"stand_in_files": [list(pair) for pair in plan.stand_ins]} if plan.stand_ins else {}),
         "strict_host_key_opt": (
             " -o StrictHostKeyChecking=accept-new" if plan.ssh_accept_new else ""
         ),

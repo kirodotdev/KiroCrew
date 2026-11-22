@@ -71,9 +71,7 @@ def _write_secret_files(app_env) -> None:
         (app_env / name).write_text("x", encoding="utf-8")
 
 
-def test_the_running_backend_spawn_hides_every_gateway_secret_file(
-    app_env, tmp_path, monkeypatch
-):
+def test_the_running_backend_spawn_hides_every_gateway_secret_file(app_env, tmp_path, monkeypatch):
     import kiro_crew.apps.backend as bmod
 
     _write_secret_files(app_env)
@@ -100,18 +98,18 @@ def test_an_app_without_the_grant_gets_the_empty_stand_in(app_env, tmp_path, mon
     assert seen["stand_ins"] == (), "an ungranted app was given stand-in content"
 
 
-def test_a_granted_app_gets_its_derived_value_over_each_masked_path(
-    app_env, tmp_path, monkeypatch
-):
+def test_a_granted_app_gets_its_derived_value_over_each_masked_path(app_env, tmp_path, monkeypatch):
     import kiro_crew.apps.backend as bmod
-    from kiro_crew.dashboard import boot_id
     from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard import boot_id
 
     _write_secret_files(app_env)
     seen = _spy_spawn(monkeypatch)
     _install(tmp_path)
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
     monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _name: True)
+    monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     assert dashboard_proxy.grant(_APP)[0] is True
 
     bmod.start_app_backend(_APP)
@@ -119,7 +117,11 @@ def test_a_granted_app_gets_its_derived_value_over_each_masked_path(
     install_id = dashboard_proxy.install_identity(_APP)
     expected = hmac.new(
         b"gateway-secret-in-words",
-        b"dashboard-proxy\0" + _APP.encode() + b"\0" + install_id.encode() + b"\0"
+        b"dashboard-proxy\0"
+        + _APP.encode()
+        + b"\0"
+        + install_id.encode()
+        + b"\0"
         + boot_id.current_boot_id().encode(),
         hashlib.sha256,
     ).hexdigest()
@@ -138,6 +140,7 @@ def test_a_second_app_does_not_get_the_first_apps_value(app_env, tmp_path, monke
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
     first = dashboard_proxy.stand_in_value(_APP)
     monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _name: True)
+    monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     dashboard_proxy.grant(_APP)
     first = dashboard_proxy.stand_in_value(_APP)
     assert first and dashboard_proxy.stand_in_value("another-app") != first
@@ -151,6 +154,7 @@ def test_the_grant_ends_with_the_app(app_env, tmp_path, monkeypatch, what):
     _install(tmp_path)
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
     monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _name: True)
+    monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     dashboard_proxy.grant(_APP)
     assert dashboard_proxy.granted(_APP)
 

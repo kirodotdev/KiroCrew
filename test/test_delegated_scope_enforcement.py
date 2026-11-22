@@ -70,7 +70,7 @@ def _delegated() -> dict[str, str]:
 @pytest.mark.asyncio
 async def test_a_plain_dashboard_read_is_allowed(state, granted):
     async with _serve(state) as client:
-        resp = await client.get("/api/status", params=_delegated())
+        resp = await client.get("/api/version", params=_delegated())
         assert resp.status == 200
 
 
@@ -118,9 +118,9 @@ async def test_a_route_with_no_tag_is_refused_to_a_delegated_token_only(state, g
 async def test_the_token_ends_the_moment_the_owner_disables_the_app(state, granted):
     async with _serve(state) as client:
         # The first request exchanges the link for the session cookie the client keeps.
-        assert (await client.get("/api/status", params=_delegated())).status == 200
-        assert (await client.get("/api/status")).status == 200
+        assert (await client.get("/api/version", params=_delegated())).status == 200
+        assert (await client.get("/api/version")).status == 200
         granted["on"] = False
-        resp = await client.get("/api/status")
+        resp = await client.get("/api/version")
         assert resp.status == 403
         assert (await resp.json())["code"] == _REFUSED_CODE

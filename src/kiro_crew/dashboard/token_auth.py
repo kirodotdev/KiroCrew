@@ -29,6 +29,7 @@ from kiro_crew.dashboard import tailnet_owner
 from kiro_crew.dashboard.agent_ipc import GRANT_KEY as AGENT_IPC_GRANT_KEY
 from kiro_crew.dashboard.agent_ipc import Binding as AgentIpcBinding
 from kiro_crew.dashboard.agent_ipc import agent_socket_gate, request_on_agent_socket
+from kiro_crew.dashboard.delegated_scope import enforce_delegated
 from kiro_crew.dashboard.kiro_relay.admission import admit_relay_caller
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import (
@@ -105,6 +106,7 @@ from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401  # re-export t
     generate_token,
     required_peer_key_unverified,
     requires_verified_peer_unverified,
+    token_via_app_unverified,
     validate_token_with_app,
     validate_token_with_app_off_loop,
 )
@@ -759,6 +761,9 @@ def token_auth_middleware(
             _scope_deny = _enforce_app_scope(request, _app, path)
             if _scope_deny is not None:
                 return _scope_deny
+            _scope_deny = await enforce_delegated(request, path)
+            if _scope_deny is not None:
+                return _scope_deny
             # A dashboard-user cookie poll on a mixed-internal path is the same
             # request the ``_log_auth`` row below already audits (operation
             # ``dashboard.token_auth``), so emitting an ``internal_auth`` row
@@ -861,6 +866,9 @@ def token_auth_middleware(
                 request["auth_from_query_token"] = _from_query
                 await _prime_app_api_allowlist(_app)
                 _scope_deny = _enforce_app_scope(request, _app, path)
+                if _scope_deny is not None:
+                    return _scope_deny
+                _scope_deny = await enforce_delegated(request, path)
                 if _scope_deny is not None:
                     return _scope_deny
                 # Same dedup as the loopback mixed branch above: the dashboard
@@ -1046,12 +1054,16 @@ def token_auth_middleware(
             _embed_forward_port = ""
             _no_refresh = False
             _owner_minted = False
+            _via_app = ""
             _session_peer_key = ""
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
                 data = json.loads(payload_bytes)
                 session_exp = float(data.get("session_exp", 0.0))
                 _owner_minted = str(data.get(OWNER_MINT_CLAIM, "")) == "1"
+                # A delegated token's scope must survive the exchange and every rotation:
+                # a session that dropped it would be a plain owner session.
+                _via_app = token_via_app_unverified(token)
                 _link_nonce = str(data.get("nonce", ""))
                 # Carry the multi-instance frame-ancestors claim (the embedding
                 # parent dashboard's port) THROUGH the exchange. The framed
@@ -1144,6 +1156,8 @@ def token_auth_middleware(
                 # again (see OWNER_MINT_CLAIM). Relabels a denial only.
                 if _owner_minted:
                     _carried[OWNER_MINT_CLAIM] = "1"
+                if _via_app:
+                    _carried["via_app"] = _via_app
                 if app_name:
                     # An app session keeps the issue time of the app token it was
                     # exchanged from: a request whose token passed the check just
@@ -1278,6 +1292,10 @@ def token_auth_middleware(
         _scope_deny = _enforce_app_scope(request, app_name, path)
         if _scope_deny is not None:
             return _scope_deny
+        # A delegated (``via_app``) owner token: tagged routes only, grant read every request.
+        _scope_deny = await enforce_delegated(request, path)
+        if _scope_deny is not None:
+            return _scope_deny
 
         # Attribution only, after every decision above: publishing never denies.
         await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
@@ -1405,6 +1423,7 @@ def token_auth_middleware(
                         require_peer=_refresh_require_peer,
                         peer_key=_refresh_peer_key,
                         owner_mint=_owner_minted,
+                        via_app=_via_app,
                         embed_parent_port=_embed_parent_port,
                         embed_forward_port=_embed_forward_port,
                     )

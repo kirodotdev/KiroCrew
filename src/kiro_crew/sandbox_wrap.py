@@ -532,6 +532,7 @@ def wrap_argv(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    extra_stand_ins: tuple[tuple[str, str], ...] = (),
     exec_cwd: str = "",
     is_kiro_cli: bool | None = None,
     first_party_fixed_argv: bool = False,
@@ -553,6 +554,10 @@ def wrap_argv(
         extra_private_dirs: The spawn's OWN directories inside a hidden tree
             (its ``agent_scratch`` dir under the masked scratch root). Re-exposed
             read-write as a window; the parent's mask and every sibling stay hidden.
+        extra_stand_ins: ``(masked file, source file)`` pairs. Each masked FILE named in
+            ``extra_hidden_dirs`` gets the source file's bytes as its stand-in instead of an
+            empty one (the namespace launcher fills the stand-in only, never the masked
+            file). Inert on every backend with no stand-in to fill.
         extra_expose_files: Absolute files to keep READABLE inside dirs that
             ``extra_hidden_dirs`` hides. Linux restores a read-only COPY via
             the launcher's ``expose_files`` primitive (cc mode's mechanism
@@ -958,6 +963,7 @@ def wrap_argv(
             or extra_private_dirs
             or extra_writable_dirs
             or extra_expose_files
+            or extra_stand_ins
             or exec_cwd
         ):
             wrapped = namespace_argv(
@@ -974,6 +980,7 @@ def wrap_argv(
                 extra_private_dir_ids=extra_private_dir_ids,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
+                extra_stand_ins=extra_stand_ins,
                 exec_cwd=exec_cwd,
             )
         else:

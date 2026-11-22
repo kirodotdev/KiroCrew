@@ -34,6 +34,7 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.apps import builtin_host_grants as _host_grants
+from kiro_crew.apps import dashboard_proxy
 from kiro_crew.apps import deps_boot as _deps_boot_module
 from kiro_crew.apps import legacy_state_moves as _legacy_state_moves
 from kiro_crew.apps.execution import (
@@ -1266,7 +1267,20 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         _cache_target = str(policy_cache_dir())
         if not carveout_shadowed_by_foreign_mask(_cache_target):
             _visible = _visible + (_cache_target,)
-    sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
+    # The gateway's internal-API secret files are hidden from every app backend: the value
+    # is the only credential of the internal routes, and app code is third-party. An app
+    # the owner granted ``dashboard_proxy`` finds its own derived value in each of them
+    # instead of an empty file (``apps.dashboard_proxy``); every other app finds none.
+    _hidden, _stand_ins = dashboard_proxy.backend_masks(
+        app_name, app_backend_secret_mask_targets()
+    )
+    sandboxed_cmd, cleanup_path = wrap_argv(
+        cmd,
+        mode="standard",
+        extra_visible_dirs=_visible,
+        extra_hidden_dirs=_hidden,
+        extra_stand_ins=_stand_ins,
+    )
     # On Linux a non-null cleanup path is the namespace launcher script this process
     # generated, whose main() forks once: the Popen root waits for the server child.
     # IS_LINUX excludes the macOS seatbelt profile. A no-op wrap returns None, so an

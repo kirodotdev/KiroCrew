@@ -786,6 +786,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_kirocrew_config,
     )
     from kiro_crew.dashboard.handlers.core_local_token import (
+        _DERIVED_SHAPE,
+        _delegated_leg,
         api_token_local,
     )
     from kiro_crew.dashboard.handlers.core_security import (

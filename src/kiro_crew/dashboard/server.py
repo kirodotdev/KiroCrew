@@ -25,6 +25,7 @@ from aiohttp import web
 from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
+from kiro_crew.apps import dashboard_proxy as _dashboard_proxy
 from kiro_crew.apps.backend import (  # noqa: F401
     _RESTART_STEADY_INTERVAL,
     revive_lost_app_backends,
@@ -1039,6 +1040,11 @@ async def start_dashboard(
         _served_port = port or _dashboard_sock.getsockname()[1]
         app["served_port"] = _served_port
 
+        # The local secret exists BEFORE the first backend is spawned: an app granted
+        # ``dashboard_proxy`` is given a value derived from it at spawn (``apps.dashboard_proxy``).
+        # It reaches no file here; ``_write_instance_credentials`` publishes it below.
+        _internal_secret = os.urandom(16).hex()
+        _dashboard_proxy.set_gateway_secret(_internal_secret)
         await _start_app_backends(app, state)
 
         # Edition-contributed dashboard routes + background services (CPP
@@ -1178,7 +1184,6 @@ async def start_dashboard(
         # poisoning the secret file when a second instance fails to start and to
         # keep blocking fs I/O off the event loop.
         _secret_path = data_home() / ".local_secret"
-        _internal_secret = os.urandom(16).hex()
         app["local_secret"] = _internal_secret
 
         host_canonical_redirect = _dashboard_canonical_redirect(local_only, state)

@@ -75,6 +75,11 @@ def revoke_host_exec(name: str) -> None:
         pass
     except OSError:
         logger.warning("could not revoke host-exec grant for %r", name, exc_info=True)
+    # The dashboard_proxy grant stands only while this marker does, so it ends with it, on
+    # every disable and uninstall path that already calls this function.
+    from kiro_crew.apps.dashboard_proxy import revoke as revoke_dashboard_proxy
+
+    revoke_dashboard_proxy(name)
 
 
 def host_exec_granted(name: str) -> bool:

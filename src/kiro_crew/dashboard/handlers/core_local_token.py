@@ -12,6 +12,8 @@ import and patch; this module never imports it."""
 from __future__ import annotations
 
 import asyncio
+import re
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
@@ -26,6 +28,9 @@ from kiro_crew.dashboard.token_auth import (
 from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
 from kiro_crew.executors import local_auth_executor
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
+
+if TYPE_CHECKING:
+    from kiro_crew.member_memory_auth import LocalOwnerProvenance
 
 # ── Local token bootstrap (Electron / local apps) ─────────────────────
 
@@ -90,20 +95,32 @@ async def api_token_local(request: web.Request) -> web.Response:
     if not expected:
         return web.json_response({"error": "not available"}, status=503)
     provided = request.headers.get("X-Local-Secret", "")
+    via_app = ""
+    provenance: LocalOwnerProvenance | None
     if not provided or not _ct_eq(expected, provided):
-        _sel().log_api_access(
-            caller=request.remote or "unknown",
-            operation="token.local",
-            outcome="denied",
-            source="local-bootstrap",
-            resources="invalid-secret",
-        )
-        return web.json_response({"error": "invalid secret", "code": "invalid_secret"}, status=403)
-    from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
+        # Leg 2 is for a value shaped like a derived one (64 hex digits; the local secret
+        # is 32). Anything else is the refusal it has always been.
+        if not _DERIVED_SHAPE.fullmatch(provided):
+            _sel().log_api_access(
+                caller=request.remote or "unknown",
+                operation="token.local",
+                outcome="denied",
+                source="local-bootstrap",
+                resources="invalid-secret",
+            )
+            return web.json_response(
+                {"error": "invalid secret", "code": "invalid_secret"}, status=403
+            )
+        delegated = await _delegated_leg(request, provided)
+        if isinstance(delegated, web.Response):
+            return delegated
+        provenance, via_app = delegated, delegated.app or ""
+    else:
+        from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
 
-    provenance = await asyncio.get_running_loop().run_in_executor(
-        local_auth_executor(), local_owner_bootstrap_provenance, request
-    )
+        provenance = await asyncio.get_running_loop().run_in_executor(
+            local_auth_executor(), local_owner_bootstrap_provenance, request
+        )
     if provenance is None:
         _sel().log_api_access(
             caller="local-process",
@@ -143,6 +160,11 @@ async def api_token_local(request: web.Request) -> web.Response:
         efp = request.query.get("embed_forward_port", "")
         if efp.isdigit() and 1 <= int(efp) <= 65535:
             extra["embed_forward_port"] = str(int(efp))
+    if via_app:
+        # The delegated leg: an owner token scoped by ``dashboard.delegated_scope``. The
+        # app is named in ``via_app``, never in ``app``: an ``app`` claim would put the
+        # token under app scope, which is not what this grant is.
+        extra["via_app"] = via_app
     token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=owner_mint_extra(extra))
     # The provenance gate knows WHICH app's backend owns the calling process, so
     # the audit row names it: a token minted by an app is attributed to that app,
@@ -161,6 +183,44 @@ async def api_token_local(request: web.Request) -> web.Response:
         # The admitting leg, from a fixed vocabulary with no space or ``=`` in it, so
         # a mint no host check verified (``basis=win32-unverified``) is visible.
         resources=(f"token-issued app={app_name}" if app_name else "token-issued")
-        + f" basis={provenance.basis or 'unknown'}",
+        + f" basis={provenance.basis or 'unknown'}"
+        + (" via=delegated" if via_app else ""),
     )
     return web.json_response({"token": token, "expires_in": ttl})
+
+
+#: What a derived value looks like: a hex HMAC-SHA256 digest.
+_DERIVED_SHAPE = re.compile(r"[0-9a-f]{64}")
+
+
+async def _delegated_leg(
+    request: web.Request, provided: str
+) -> LocalOwnerProvenance | web.Response:
+    """Leg 2: the provenance when *provided* is the derived value of the calling app.
+
+    Otherwise the 403 (``invalid_secret``, so the body says no more than the first leg
+    does) with its SEL row, which names the app when the caller is a spawned backend.
+    Neither the value nor a token is ever logged.
+    """
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.member_memory_auth import delegated_app_provenance
+
+    loop = asyncio.get_running_loop()
+    provenance, reason = await loop.run_in_executor(
+        local_auth_executor(), delegated_app_provenance, request
+    )
+    if provenance is not None and provenance.app:
+        reason = await asyncio.to_thread(dashboard_proxy.verify_leg_two, provenance.app, provided)
+        if not reason:
+            return provenance
+    _sel().log_api_access(
+        caller=request.remote or "unknown",
+        operation="token.local",
+        outcome="denied",
+        source="local-bootstrap",
+        resources=(
+            f"denied {reason} app={provenance.app if provenance else 'none'} "
+            f"basis={provenance.basis if provenance else 'none'} via=delegated"
+        ),
+    )
+    return web.json_response({"error": "invalid secret", "code": "invalid_secret"}, status=403)

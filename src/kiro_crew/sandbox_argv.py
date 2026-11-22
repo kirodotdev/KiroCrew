@@ -726,6 +726,7 @@ def _spawn_plan(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    extra_stand_ins: tuple[tuple[str, str], ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
     required_mask_targets: tuple[str, ...] = (),
     mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
@@ -752,6 +753,7 @@ def _spawn_plan(
         extra_private_dir_ids=tuple(extra_private_dir_ids),
         extra_writable_dirs=tuple(extra_writable_dirs),
         extra_expose_files=tuple(extra_expose_files),
+        extra_stand_ins=tuple(extra_stand_ins),
         fail_closed_file_masks=tuple(fail_closed_file_masks),
         required_mask_targets=tuple(required_mask_targets),
         mask_occupants=tuple((mask_occupants or {}).items()),
@@ -778,6 +780,7 @@ def _build_launcher_script(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    extra_stand_ins: tuple[tuple[str, str], ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
     required_mask_targets: tuple[str, ...] = (),
     mask_occupants: "Mapping[str, tuple[int, ...]] | None" = None,
@@ -807,6 +810,7 @@ def _build_launcher_script(
             extra_private_dir_ids=extra_private_dir_ids,
             extra_writable_dirs=extra_writable_dirs,
             extra_expose_files=extra_expose_files,
+            extra_stand_ins=extra_stand_ins,
             fail_closed_file_masks=fail_closed_file_masks,
             required_mask_targets=required_mask_targets,
             mask_occupants=mask_occupants,
@@ -861,6 +865,7 @@ def namespace_argv(
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
+    extra_stand_ins: tuple[tuple[str, str], ...] = (),
     exec_cwd: str = "",
 ) -> list[str]:
     """Wrap *argv* via the Python namespace launcher.
@@ -1027,6 +1032,7 @@ def namespace_argv(
         extra_private_dir_ids=extra_private_dir_ids,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
+        extra_stand_ins=extra_stand_ins,
         required_mask_targets=tuple(_required_targets),
         mask_occupants=_mask_occupants,
         # Decided here, beside the passes that already stat the crew roots, so the

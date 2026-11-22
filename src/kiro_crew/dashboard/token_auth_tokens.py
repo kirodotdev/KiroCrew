@@ -912,6 +912,22 @@ def owner_mint_extra(extra: dict[str, str] | None = None) -> dict[str, str]:
     return {**(extra or {}), OWNER_MINT_CLAIM: "1"}
 
 
+def token_via_app_unverified(token: str) -> str:
+    """The ``via_app`` claim of a delegated token, or ``""`` when it carries none.
+
+    Read only after normal signature validation, and used only to make the request
+    STRICTER (``delegated_scope.enforce_delegated``). A token that validated always
+    decodes; an undecodable one answers ``""`` because it was refused on its own merits
+    before this is asked.
+    """
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    value = data.get("via_app") if isinstance(data, dict) else None
+    return value if isinstance(value, str) else ""
+
+
 def token_owner_minted_unverified(token: str) -> bool:
     """Whether a token carries the owner-mint claim.
 

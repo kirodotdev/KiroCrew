@@ -328,8 +328,13 @@ def _claim_port(app_name: str, port: int) -> None:
         _allocated_ports[app_name] = port
 
 
-def spawned_backend_owner(pid: int) -> str | None:
+def spawned_backend_owner(pid: int, *, verify_start: bool = False) -> str | None:
     """The name of the app whose backend THIS gateway spawned owns *pid*, or None.
+
+    With *verify_start* the record must also still describe the process it was written
+    for: the spawn recorded the root's start time, and a root whose live start time is
+    missing or differs is refused, so a recycled pid never answers for a backend. The
+    delegated owner-token leg asks this; the audit attribution does not need it.
 
     Owning means *pid* is the spawned root or descends from it, because
     ``wrap_argv`` places a sandbox launcher between us and the real server —
@@ -354,11 +359,13 @@ def spawned_backend_owner(pid: int) -> str | None:
     """
     with _lock:
         roots = [
-            (name, ap.pid)
+            (name, ap.pid, ap.pid_start_time)
             for name, ap in _processes.items()
             if ap.proc is not None and ap.pid > 0 and ap.proc.poll() is None
         ]
-    for name, root in roots:
+    for name, root, recorded_start in roots:
+        if verify_start and (not recorded_start or _proc_start_time(root) != recorded_start):
+            continue
         if _pid_is_self_or_descendant_of(pid, root):
             return str(name)
     return None
