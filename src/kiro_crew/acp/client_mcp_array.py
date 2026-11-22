@@ -626,22 +626,16 @@ def _mirrorless_member_mounts(self: AcpClient, stubbed: Collection[str]) -> list
         disabled,
     )
     # A BROKER_ONLY member host (pi) has no mirror to translate the agent spec's
-    # OWN mcpServers, so without this a crewmate DM session carries only Crew's
-    # member mounts above. ``projection.servers`` is that translation, from the
+    # OWN mcpServers. ``projection.servers`` is that translation, from the
     # SAME parse and already filtered by the ``tools`` allowlist, the whole-server
     # ``disabled`` mute and registry mode -- the same list a mirrored harness
     # mounts. The spec servers lead, so the member mounts keep last-wins on a name
-    # clash, as they do over a pooled stub. Scoped to the crewmate DM session the
-    # gap is about -- the same ``is_member_session_key`` gate the member mounts
-    # above ride -- and to a crewmate's worker, whose projection above is its own
-    # per-session spec (``session_mcp._crewmate_worker_spec``), so an ordinary pi
-    # session is unchanged, as it is on every other mirror-less path (the member
-    # mounts are already empty for it).
+    # clash, as they do over a pooled stub.
     # circular import: members' module graph is heavy; resolved at call time.
     from kiro_crew.members import is_member_session_key
 
     out = members
-    if records_zero_tools and (worker or is_member_session_key(self._session_key)):
+    if records_zero_tools:
         out = self._broker_only_spec_mounts(projection) + members
     if records_zero_tools and self.backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
         out = _with_crew_connections(self, projection, out)

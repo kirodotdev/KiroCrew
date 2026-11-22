@@ -152,16 +152,12 @@ def test_the_member_mounts_reach_the_handoff_with_their_identity(agents_dir, tmp
         assert servers[name]["exposure"] == "direct"
 
 
-def test_an_ordinary_pi_session_carries_nothing(agents_dir, tmp_path) -> None:
-    """A non-member pi session carries nothing: spec-server delivery is member-only.
-
-    The spec servers reach pi only for a crewmate DM session (``member_context``) or
-    a crewmate's worker session (``members.is_crewmate_worker_session``);
-    an ordinary pi session composes the empty array it always did, like every other
-    mirror-less backend's ordinary session.
-    """
+def test_an_ordinary_pi_session_carries_spec_servers_without_member_mounts(
+    agents_dir, tmp_path
+) -> None:
+    """An ordinary pi session carries the spec's declared servers but no member mounts."""
     client = _client(tmp_path, "dashboard_abc123", backend=ACP_BACKEND_PI)
-    assert client._resolve_session_mcp_servers() == []
+    assert _names(client._resolve_session_mcp_servers()) == ["kirocrew-core"]
     assert client.member_dispatch_mounted is False
 
 
