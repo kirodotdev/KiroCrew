@@ -108,7 +108,7 @@ describe('TelemetryPanel — conversations by spend', () => {
     // The row is present, and still identified by its slot, through the shared
     // tip rather than a native title the desktop app may not paint…
     await waitFor(() => expect(screen.getByText(/^Untitled/)).toHaveAccessibleDescription('chat-1-1700000000'))
-    expect(screen.getByText(/^Untitled/)).not.toHaveAttribute('title')
+    expect(screen.getByText(/^Untitled/)).toHaveAttribute('title', '')
     // …and carries no anchor: its slot is closed, so a click could only ever
     // land on ChatPage's delayed "Session not found".
     expect(screen.queryByRole('link')).toBeNull()
