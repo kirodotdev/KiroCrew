@@ -320,6 +320,49 @@ describe('useCrewModeSwitch a new chat on a conductor default agent', () => {
   })
 })
 
+describe('useCrewModeSwitch leaving a conductor that is the default agent', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); localStorage.clear(); vi.mocked(dropPanelViews).mockClear() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  // A new chat born on the conductor, which is the default agent too.
+  const born = (hasUserMessage: boolean, slotHasMore = false, running = false, slotCursorKey = 'a') => {
+    const pending: Array<(ok: boolean) => void> = []
+    const switchAgent = vi.fn((_agent: string, _kind?: string) => new Promise<boolean>(resolve => { pending.push(resolve) }))
+    const store = createTestStore({ chat: { ...createTestStore().getState().chat, activeSlot: 'a', slotCursorKey, slotHasMore } })
+    const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
+    const hook = renderHook(() => useCrewModeSwitch({ currentSlot: { ...plain('a', 'kirocrew-conductor'), running }, defaultAgent: 'kirocrew-conductor', hasUserMessage, switchAgent, openView: () => {}, autoOpenBoard: true }), { wrapper })
+    return { hook, pending, switchAgent, store }
+  }
+
+  it('moves a new root onto the picked template, then drops its Crew and Dashboard tabs and the panel its entry opened', async () => {
+    const { hook, pending, switchAgent, store } = born(false)
+    expect(hook.result.current.turnOffCrewMode).toBeUndefined()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    act(() => { void hook.result.current.leaveCrewModeTo?.('other-template') })
+    expect(switchAgent).toHaveBeenCalledWith('other-template', 'template')
+    expect(dropPanelViews).not.toHaveBeenCalled()
+    await act(async () => { pending[0](true) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers', 'command-center'])
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('offers no way off once the chat has a message', () => {
+    expect(born(true).hook.result.current.leaveCrewModeTo).toBeUndefined()
+  })
+
+  it('offers no way off while the chat page has older rows, which the gateway counts as a message', () => {
+    expect(born(false, true).hook.result.current.leaveCrewModeTo).toBeUndefined()
+  })
+
+  it('offers no way off while a turn runs, since the gateway switches no chat mid-turn', () => {
+    expect(born(false, false, true).hook.result.current.leaveCrewModeTo).toBeUndefined()
+  })
+
+  it('offers no way off while the paging cursor still describes another chat', () => {
+    expect(born(false, false, false, 'b').hook.result.current.leaveCrewModeTo).toBeUndefined()
+  })
+})
+
 describe('useCrewModeSwitch turning conductor mode on', () => {
   beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })

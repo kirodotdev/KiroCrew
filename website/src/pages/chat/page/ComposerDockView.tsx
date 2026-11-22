@@ -313,8 +313,13 @@ interface ComposerDockViewProps {
    *  composer is held, its reason as placeholder, like a memory-mode switch. */
   crewModeSwitching?: 'on' | 'off' | null
   /** A conductor session (Crew Mode): the composer offers no agent picker, since
-   *  the conductor is chosen by Crew Mode itself. Workspace and model stay. */
+   *  the conductor is chosen by Crew Mode itself. Workspace and model stay. Not
+   *  set on a chat that keeps its picker while its conductor is also the default
+   *  agent (`conductorDefaultPicker`). */
   agentPickerHidden?: boolean
+  /** A conductor mode chat that keeps its agent picker (ChatPage's
+   *  `leaveCrewModeTo`): the bolt stays, before the picker. */
+  agentPickerKept?: boolean
   /** Conductor mode is on and no message is sent yet: the chip row stays
    *  with the chip pressed (a toggle), the memory chip is held, and the agent
    *  slot shows nothing. */
@@ -353,7 +358,7 @@ export default function ComposerDockView({
   effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
-  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
+  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, agentPickerKept = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
@@ -750,11 +755,11 @@ export default function ComposerDockView({
               // drawn from, so chip, menu and gate cannot disagree.
               modelIsJevRouted={jevRouteOn && isUnpinnedModel(currentSlot?.model)}
               harnessBackend={modelsBackend}
-              // The conductor mode bolt in place of the agent picker. On a crew
-              // member that is not itself a conductor its tip names the role,
-              // Worker, so it does not read as a conductor.
+              // The conductor mode bolt, in place of the agent picker or before a
+              // kept one. On a crew member that is not itself a conductor its tip
+              // names the role, Worker, so it does not read as a conductor.
               agentBadge={crewChipPressed ? undefined
-                : agentPickerHidden ? <CrewModeComposerChip />
+                : agentPickerHidden || agentPickerKept ? <CrewModeComposerChip />
                 : steerWorker !== undefined ? <CrewModeComposerChip worker /> : undefined}
               onAgentClick={provider.capabilities.agentTemplates && !agentPickerHidden && !agentSwitchLocked && steerWorker === undefined ? (rect, trigger) => { anchorAgentBtn(rect, trigger); setAgentDropdown(!agentDropdown) } : undefined}
               onModelClick={(rect, trigger, composerHadFocus) => {

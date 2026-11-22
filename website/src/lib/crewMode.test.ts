@@ -146,8 +146,7 @@ describe('crewMode', () => {
     expect(agentCycleTarget(agents, 'kirocrew', 'template', 1)).toBe('research')
     expect(agentCycleTarget(agents, 'research', 'template', 1)).toBe('kirocrew')
     expect(agentCycleTarget(agents, 'kirocrew', 'template', -1)).toBe('research')
-    // A chat already on a conductor has no picker to mirror (the server refuses
-    // to move a Crew Mode root), so the chord does nothing there.
+    // A chord never takes a chat out of conductor mode, so it does nothing there.
     expect(agentCycleTarget(agents, 'kirocrew-conductor', 'template', 1)).toBeNull()
     expect(agentCycleTarget([], 'kirocrew', 'template', 1)).toBeNull()
   })
