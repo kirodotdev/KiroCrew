@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.browser_harness import live_hub as hub_mod
@@ -745,7 +746,7 @@ async def test_a_closed_popup_that_sent_its_opener_to_a_refused_url_answers_the_
     await _op("chat-a")
     sup.open_popup("P1", "T1")
     await _op("chat-a")
-    monkeypatch.setattr(mod, "committed_url_allowed", lambda url: url != "https://T1")
+    monkeypatch.setattr(mod, "committed_url_allowed", lambda url, _own=(): url != "https://T1")
     sup.close_on_next_op = True
     audits.clear()
     answer = await _op("chat-a", "click", ref="e1")
@@ -1474,3 +1475,44 @@ async def test_follow_current_tab_refuses_private_link_before_streaming(monkeypa
     assert sup.calls[-1] == ("goto", {"url": "about:blank"})
     assert hub.get("k").url == "about:blank"
     assert hub.get("k").title == ""
+
+
+@pytest.mark.asyncio
+async def test_the_dashboard_under_a_name_the_gateway_trusts_is_never_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tunnel, tailnet or ``dashboard.url`` name serves this dashboard, and the agent's
+    tab may be the person's own signed-in Chrome: the gateway refuses it, however
+    spelled, before the browser sends the request, and a tab that lands there is left.
+    Another public site still opens, a loopback origin the operator listed keeps its
+    own rule, and an unparsable entry in the set breaks nothing."""
+    from kiro_crew.browser_harness import url_gate
+
+    sup = _Supervisor()
+    _install(monkeypatch, sup)
+    _no_stream(monkeypatch)
+    app = web.Application()
+    own = {"https://Dash.Example.com/", "http://8.8.8.8:5476", "http://localhost:3000", "http://[x"}
+    app["allowed_origins"] = own
+
+    async def _op(op: str, args: dict[str, Any]) -> dict[str, Any]:
+        req = make_mocked_request("POST", "/api/browser/op", app=app)
+        req["internal_auth"] = True
+        req._read_bytes = json.dumps({"op": op, "session_key": "k", "args": args}).encode()
+        return json.loads((await mod.api_browser_op(req)).body)
+
+    for op, args in [
+        ("navigate", {"url": "HTTPS://Dash.Example.com.:443/settings"}),
+        ("navigate", {"url": "http://134744072:5476/"}),
+        ("tabs", {"action": "new", "url": "https://dash.example.com/settings"}),
+    ]:
+        body = await _op(op, args)
+        assert body["ok"] is False and body["code"] == "url_blocked", (args, body)
+    assert sup.calls == [], "refused before the browser is touched"
+    sup.tab["url"] = "https://dash.example.com/settings"
+    body = await _op("tabs", {"action": "list"})
+    assert body["code"] == "redirect_refused", body
+    assert sup.calls[-1] == ("goto", {"url": "about:blank"})
+    assert mod.committed_url_allowed("https://dash.example.org/settings", own) is True
+    listed = frozenset({"localhost:3000"})
+    assert url_gate.url_allowed("http://localhost:3000/", listed, 5476, own) is True
