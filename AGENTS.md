@@ -187,7 +187,14 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   that are NOT in this repository, or the PR ships a rollback plan that names
   them. A sweep proving every in-tree mint was updated proves nothing about an
   installed app minting through the same endpoint. Reviewers hold the PR to this;
-  #14436 had to revert a tightening whose sweep missed such a client.
+  #14436 had to revert a tightening whose sweep missed such a client, and so did
+  #40360 (#38113, refusing `/api/token/local` to app backends) and the revert of
+  #38182 (masking `.local_secret` and `run/gateway-*.secret` in the running app
+  backend's sandbox): both broke the external Crew Tunnel app, which reads
+  `run/gateway-<port>.secret` and mints an owner token to proxy the dashboard.
+  Do not re-add either until an app-scoped token path exists and Crew Tunnel uses
+  it ([dashboard-token-auth](docs/system-specs/modules/dashboard-token-auth.md),
+  "App backends mint through the local secret").
 - **Computer use is governed by one on/off row only**: the operator opt-in on the
   keystone `computer_use.json`, ANDed with `capabilities.computer_use`
   ([rfc-crew-lts-edition](docs/request-for-change/rfc-crew-lts-edition.md),
