@@ -281,10 +281,14 @@ def test_an_unreadable_uncarried_deny_refuses_nothing_and_is_named() -> None:
     assert "docker" not in notice.split("have no effect")[0]
 
 
-@pytest.mark.parametrize("regex", [r"^.*>.*\.kiro/.*$", ".*>.*", ".*<.*", "cat <.*"])
+@pytest.mark.parametrize(
+    "regex",
+    [r"^.*>.*\.kiro/.*$", ".*>.*", ".*<.*", "cat <.*", r".*\x3e.*", r"curl .*\x7c *sh"],
+)
 def test_a_redirect_deny_refuses_nothing_and_is_named(regex: str) -> None:
     """The row judges a plain command and each command of a chain, never a redirect,
     so a deny aimed at a redirect could never refuse: it is not recorded, and the notice names it as not refused.
+    So is one naming such a character by a ``\\x`` escape (``\\x3e``, ``\\x7c``).
     """
     from kiro_crew.acp.kas_spec_denies import uncarried_denied_commands
     from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
@@ -394,7 +398,15 @@ def test_an_uncarried_deny_refuses_each_command_of_a_chain_not_a_substitution(
     assert (tier == "spec-denies") is refused
 
 
-@pytest.mark.parametrize("entry", [r"^docker\s+push.*$", r"\Adocker\s+push.*\z"])
+@pytest.mark.parametrize(
+    "entry",
+    [
+        r"^docker\s+push.*$",
+        r"\Adocker\s+push.*\z",
+        r"^docker\x20push.*$",
+        r"^docker[ \t\n]+push.*$",
+    ],
+)
 def test_an_anchored_uncarried_deny_is_recorded_and_refuses(entry: str) -> None:
     """kiro-cli anchors every entry itself, so an explicit anchor is no redirect or
     separator: the entry is recorded and refuses what it names."""
