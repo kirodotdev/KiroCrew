@@ -151,8 +151,8 @@ and keeps its own reason. The load's own documents from
 outside the trees (`AGENTS.md`, `~/.claude/CLAUDE.md`), a tree link that
 resolves outside its tree, and every file of a tree whose root is itself a link
 (only the home or project anchor is resolved), and a tree file a Claude Code
-memory file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) links to, read
-`none`, because Claude Code loads `CLAUDE.md`
+memory file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) links to or
+imports with `@path`, read `none`, because Claude Code loads `CLAUDE.md`
 itself and removing Crew's copy would not hold. Folder steering takes no
 switch-off on any harness, because a harness may load a folder file itself (Codex
 and kiro-cli load the project `AGENTS.md`); those rows read `none` too, and a
