@@ -236,6 +236,19 @@ class HeartbeatConfig:
             enum=["slack", "dashboard"],
         ),
     )
+    keep_backoff: bool = field(
+        default=False,
+        metadata=_meta(
+            "Space out a retained task",
+            "A heartbeat task that keeps being retained (it answers HEARTBEAT_KEEP, fails, "
+            "times out or is refused by fair admission) waits 1, 2, 4, 8 and then 15 minutes "
+            "between runs instead of running on every 60-second tick, and stays in "
+            "HEARTBEAT.md meanwhile. Each run starts a new session, so spacing the retries "
+            "saves the context it builds. A new or edited task runs on the next tick; a "
+            "restart starts the ladder again. Off by default: every retained task runs on "
+            "every tick.",
+        ),
+    )
 
 
 @dataclass

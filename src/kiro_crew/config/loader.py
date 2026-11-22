@@ -179,6 +179,7 @@ from kiro_crew.config.section_builders import (  # noqa: F401
     _build_cron_history_config,
     _build_discord_config,
     _build_feishu_config,
+    _build_heartbeat_config,
     _build_imessage_config,
     _build_instances_config,
     _build_knowledge_config,

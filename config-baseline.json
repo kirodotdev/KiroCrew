@@ -6573,7 +6573,8 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "default_deliver": "slack"
+        "default_deliver": "slack",
+        "keep_backoff": false
       }
     },
     {
@@ -6592,6 +6593,20 @@
         "dashboard"
       ],
       "defaultValue": "slack"
+    },
+    {
+      "path": "heartbeat.keep_backoff",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Space out a retained task",
+      "help": "A heartbeat task that keeps being retained (it answers HEARTBEAT_KEEP, fails, times out or is refused by fair admission) waits 1, 2, 4, 8 and then 15 minutes between runs instead of running on every 60-second tick, and stays in HEARTBEAT.md meanwhile. Each run starts a new session, so spacing the retries saves the context it builds. A new or edited task runs on the next tick; a restart starts the ladder again. Off by default: every retained task runs on every tick.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "monitoring",

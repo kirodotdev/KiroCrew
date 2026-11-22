@@ -1124,6 +1124,12 @@ Caps on what each cron run keeps in its history record (`kirocrew cron history`)
 | `cron_history.cron_trace_cap_kb` | Max kilobytes for run trace field. | `50` |
 | `cron_history.cron_max_index_records` | Max records in the global index. | `2000` |
 
+### Heartbeat
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `heartbeat.keep_backoff` | Space out a `HEARTBEAT.md` task that keeps being retained (it answers `HEARTBEAT_KEEP`, fails, times out or is refused by fair admission). Each run starts a new session, so a retained task now waits 1, 2, 4, 8 and then 15 minutes between runs instead of running on every 60-second tick, and stays in the file meanwhile. A new or edited task runs on the next tick, and a restart starts the ladder again. Off keeps every retained task running on every tick. | `false` |
+
 ### Computer Use
 
 Limits for driving native desktop apps; see [Computer Use](computer-use.md).
