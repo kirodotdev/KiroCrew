@@ -1402,6 +1402,7 @@ custom-rules:
       - ".github/sync-io-in-async-fs-baseline.txt"
       - ".github/agent-sdk-boundary-baseline.txt"
       - ".github/docs-lint-baseline.txt"
+      - ".github/route-access-baseline.txt"
       - "website/src/i18n/untranslated-baseline.json"
       - "website/src/i18n/untranslated-strict-baseline.json"
       - "website/src/i18n/render-baseline.json"
@@ -1872,6 +1873,37 @@ custom-rules:
       Allowed (do NOT flag): rows whose text is the model's or a tool's own
       output, rows a dedicated card draws from structured meta, and assistant
       rows carrying the compaction card's own notice markers.
+
+  - id: a-route-declares-its-action-and-tier
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/dashboard/routes/**"
+      - "src/kiro_crew/dashboard/server_runtime/**/*.py"
+      - "src/kiro_crew/dashboard/route_access.py"
+      - "src/kiro_crew/**/routes*.py"
+      - ".github/route-access-baseline.txt"
+    rule: |
+      An HTTP route added to the gateway comes with a `RouteAccess(action,
+      tier)` entry in `ROUTES` in `kiro_crew.dashboard.route_access`
+      (docs/system-specs/modules/route-access.md).
+      `test/test_route_access_labels.py` decides whether an entry exists; this
+      rule judges whether it is right.
+
+      - FLAG a line added to `.github/route-access-baseline.txt`. The baseline
+        lists the routes that had no entry when the table arrived and only
+        shrinks; a new route gets an entry, not a baseline line.
+      - For each route this diff adds or re-paths, read the handler. FLAG an
+        action name that does not say what the handler does, and a `.read`
+        name on a handler that writes a file, starts a job or changes state,
+        whatever its HTTP method.
+      - FLAG a new route labelled `stable` or `preview` with no contract test
+        for its request and response in the diff, and a `/v1` route whose tier
+        disagrees with what docs/request-for-change/rfc-crew-api.md or its
+        OpenAPI file says about that route.
+
+      Allowed (do NOT flag): a route whose entry and handler agree; a baseline
+      line deleted because its route gained an entry or was removed; a diff
+      that touches these files and adds or re-paths no route.
 
   - id: a-wheel-install-job-pins-its-python
     blocking: false

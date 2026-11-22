@@ -43,6 +43,7 @@ agent loads only the one it needs.
 | Spec | Subsystem |
 |---|---|
 | [security.md](security.md) | Sensitive paths, denied commands, credential redaction, the sandbox, and the keystone. |
+| [route-access.md](route-access.md) | The action name and stability tier a gateway route can declare: the route table (empty so far) and the shrink-only baseline of unlabelled routes. |
 | [dashboard-token-auth.md](dashboard-token-auth.md) | Signed, IP-pinned dashboard tokens, session TTLs, and the refresh chain. Owns the mechanism; `security.md` owns the threat model. |
 | [governance.md](governance.md) | The two-level governance model, the scope catalog, and the PreToolUse gate. |
 | [platform-context.md](platform-context.md) | The Composed Platform Providers seam, edition resolution, and signed-plugin admission. |
