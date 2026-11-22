@@ -3314,6 +3314,11 @@ Not ownership-judged yet: `/api/sessions/{id}/agents` and its `/{agent_id}` and
 `/api/sessions/usage` (with `usage/refresh`), `/health` and `/memory`. An app
 that declares `/api/sessions/*` still reaches them as before; narrowing them is
 a follow-up. The `/api/sessions/{id}/crew-log*` reads are owner-only already.
+`POST /api/sessions/restart` runs behind `dashboard_owner_surface_guard`
+(its module's `guard_owner_surface_routes(..., dashboard_owner_only=True)`),
+which judges only a dashboard user: a dashboard session that is not the
+owner's is refused 403 `owner_only`, and an app token or an internal caller
+passes it unjudged.
 
 **Every per-slot route takes one ownership decision.** `permissions.api` is a
 prefix match, so an app granted `/api/chat` reaches every

@@ -512,6 +512,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
 
 async def api_update_cancel(request: web.Request) -> web.Response:
     """POST /api/update/cancel — dismiss a stuck/failed update overlay."""
+    owner_denied = await require_owner_dashboard_request(request, "update.cancel")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     state.clear_update_progress()
     state.push_update_progress("failed", "Update cancelled by user")
@@ -527,6 +530,9 @@ async def api_update_simulate(request: web.Request) -> web.Response:
     For local testing only. Cycles through each progress step with a
     configurable delay (default 2s per step).
     """
+    owner_denied = await require_owner_dashboard_request(request, "update.simulate")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
