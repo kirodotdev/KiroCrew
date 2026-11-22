@@ -1110,7 +1110,7 @@ class AcpClient:
         return False, None
 
     def _note_worker_builtin_tools(self, builtin_tools: tuple[str, ...] | None) -> None:
-        """Keep the built-ins a crewmate worker's projection allows: this backend has
+        """Keep the built-ins a worker's or a named agent's projection allows: this backend has
         no option that carries them."""
 
     def _worker_settings_lag(self, spec: dict[str, Any] | None) -> bool:

@@ -188,7 +188,7 @@ underneath.
 
 | Harness (`acp_backend`) | Mirror | Delivered | Translated | Not delivered, with the class |
 |---|---|---|---|---|
-| `claude` | `claude_code.py` | `mcpServers` [1]; `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2]; `model` over `session/set_config_option` | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`, each name written as Claude Code writes it, any character outside `[A-Za-z0-9_-]` as `_`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
+| `claude` | `claude_code.py` | `mcpServers` [1]; `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2]; `model` over `session/set_config_option` | `tools` → the array's allowlist [3], and the session's `tools` option of built-ins for an agent Crew does not write (below the table); `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`, each name written as Claude Code writes it, any character outside `[A-Za-z0-9_-]` as `_`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
 | `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — withheld, because some of the harness's own tools never ask, so a hook fired from the permission request would miss them; `resources` and `toolsSettings` — withheld |
@@ -221,13 +221,26 @@ entirely, so claude closes the gap before any call exists: a session whose
 built-in is mounted), `strictMcpConfig` (no user, project or plugin server) and
 bypass off, an empty wire array is required, and an adapter below the
 session-options floor is stopped before its first prompt. A NON-empty `tools`
-list (one without `*`, `@builtin` or `@builtin/*`) is not applied to claude's
-built-ins outside a Bot's worker: the session keeps the whole built-in set. A new
-claude chat session of an agent whose spec Crew does not write, and a sub-agent's
-first prompt on a fresh session and the gateway log, get a notice that the
-list is not applied to the built-ins and the full built-in set is in effect, and a
-`model` pin that is not a Claude Code id and so is not applied
-(`agent_sdk/spec_builtin_tools.py`). `codex` is served by
+list (one without `*`, `@builtin`, `@builtin/` or `@builtin/*`) of an agent whose
+spec Crew does not write (a user's agent, an app's `<app>--<agent>`) limits
+claude's built-ins too: the session's `_meta.claudeCode.options.tools` lists only
+the built-ins of the kiro-cli tools it grants, read through the Bot worker's table
+(`agent_sdk/claude_worker_tools.claude_agent_builtin_tools`: `fs_read` → `Read` and
+`Glob`, since kiro-cli's `fs_read` also lists a directory; `grep` → `Grep`; `glob` →
+`Glob`; `fs_write` → `Write`, `Edit`, `MultiEdit`, `NotebookEdit`; `execute_bash` →
+`Bash`, `Monitor`, `PowerShell`, `TaskStop`; `web_fetch`, `web_search`;
+`use_subagent` → `Task`, `Agent`; tags such as `read` and `shell` select their
+tools), plus `ToolSearch`, which loads the MCP tools claude defers. An entry no
+row covers (`@server`, `use_aws`, `code`, `todo_list`) grants no built-in, and
+nothing is refused. Every built-in outside that table (`TodoWrite`,
+`AskUserQuestion`, `Skill`, `ExitPlanMode`, ...) is withheld from such an agent, as
+from a narrowed Bot worker. A list that grants every row limits nothing. Like a
+zero-tool session, such a session is stopped before its first prompt on an
+adapter below the session-options floor. Side Chat keeps its own read-only shape:
+it is the one session shape the list does not narrow. A new claude chat session
+of such an agent, and a sub-agent's first prompt on a fresh session and the
+gateway log, get a notice when its `model` pin is not a Claude Code id and so is
+not applied (`agent_sdk/spec_builtin_tools.py`). `codex` is served by
 `AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`. The runtime copies
 `zero_tools` onto the handle on `session/new` and `session/load`, and
 `AcpSessionHandle._deny_zero_tools` refuses EVERY permission request on such a

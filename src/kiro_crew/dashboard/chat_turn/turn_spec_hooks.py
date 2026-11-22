@@ -221,8 +221,8 @@ async def _prepare_spec_hooks(
     entries, and one where nothing applies the spec's ``toolsSettings``
     (``spec_tools_settings_applied_nowhere``) gets one naming what of it goes
     unapplied, and one that drops a remote MCP server's ``oauth`` block gets one
-    naming those servers, and a claude one that leaves the spec's `tools` or `model`
-    unapplied gets one naming them. None of them runs silently.
+    naming those servers, and a claude one that leaves the spec's `model` pin
+    unapplied gets one naming it. None of them runs silently.
     """
     if is_new and spec_steering_read_nowhere(client):
         await _notice_unread_steering(state, slot, client, agent)
