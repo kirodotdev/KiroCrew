@@ -60,6 +60,15 @@ def test_the_engine_release_is_the_pin_without_its_node_suffix() -> None:
     assert kas_pin.KAS_PIN_VERSION.startswith(kas_pin.KAS_PIN_ENGINE_RELEASE)
 
 
+def test_the_glibc_floor_covers_only_linux_keys_and_never_drops_below_al2() -> None:
+    # 2.26 is the lowest glibc any published build (the AL2 one) is linked for;
+    # arm64 has no AL2 build, so it stays at the nodejs.org floor.
+    floors = kas_pin.KAS_PIN_LINUX_GLIBC_FLOOR
+    assert set(floors) <= {k for k in kas_pin.KAS_PIN_NODE_BUILDS if k.startswith("linux-")}
+    assert all((2, 26) <= f <= (2, 28) for f in floors.values()), floors
+    assert floors["linux-arm64"] == (2, 28)
+
+
 def test_the_public_surface_is_exactly_the_pin_and_the_engine_gate() -> None:
     assert sorted(kas_pin.__all__) == [
         "KAS_PIN_ENGINE_RELEASE",

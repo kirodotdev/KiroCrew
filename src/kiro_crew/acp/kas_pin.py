@@ -67,6 +67,17 @@ KAS_PIN_NODE_BUILDS = frozenset(
     {"linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"}
 )
 
+#: Lowest glibc each Linux Node key of the pinned release runs on, checked before
+#: any download. The nodejs.org builds need 2.28. A release republished for Amazon
+#: Linux 2 (``packaging/kas-al2/``: an AL2-built Node and onnxruntime overlaid by
+#: ``scripts/kas_bundle_publish.py``) runs on 2.26, and lowers its key here in the
+#: SAME commit that moves the version and digest above: the floor describes the
+#: pinned bytes, so it never changes without them.
+KAS_PIN_LINUX_GLIBC_FLOOR: dict[str, tuple[int, int]] = {
+    "linux-x64": (2, 28),
+    "linux-arm64": (2, 28),
+}
+
 #: Operator/developer override of the version the harness resolves.
 KAS_VERSION_OVERRIDE_ENV = "KIROCREW_KAS_VERSION"
 

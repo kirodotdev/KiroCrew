@@ -5584,13 +5584,17 @@ session holds a file inside open, so a held engine stays installed and usable (e
 naming the version) and a delete of the renamed tree that then fails leaves a hidden
 folder, never a half-engine at the version's name. Removing every version still
 deletes in place. On a Linux
-host whose glibc is below the official Node floor (2.28; Amazon Linux 2 ships
-2.26) the install refuses up front, before any download, naming the found glibc,
-the minimum, and that the bundled Node needs glibc 2.28 while Amazon Linux 2-era
-hosts (glibc below 2.27) also lack the glibc 2.27 the engine's native onnxruntime
-library needs (the glibc reader and floor are `constants._host_glibc_version` /
-`_OFFICIAL_NODE_GLIBC_FLOOR`, the same ones doctor's Node remedy uses); nothing is
-published. The gateway's install (`install_pinned`) runs the same local host checks
+host whose glibc is below the release's floor for its architecture the install
+refuses up front, before any download, naming the found glibc, the minimum, the
+Node key and why; nothing is published. The floor (`kas_bundle._glibc_floor`) is
+`kas_pin.KAS_PIN_LINUX_GLIBC_FLOOR[<node key>]` for the pinned version and the
+official nodejs.org floor (`constants._OFFICIAL_NODE_GLIBC_FLOOR`, 2.28, the one
+doctor's Node remedy also uses) for any other version or key. Today both keys pin
+2.28: the nodejs.org Node needs 2.28 and the engine's npm onnxruntime library 2.27,
+so Amazon Linux 2 (2.26) is refused. A release republished from Amazon Linux 2
+builds (`packaging/kas-al2/`) runs on 2.26 and lowers `linux-x64` in the same
+commit that moves the pin to it; `linux-arm64` has no such build and stays at 2.28.
+The glibc reader is `constants._host_glibc_version`. The gateway's install (`install_pinned`) runs the same local host checks
 (the glibc floor and the OS and architecture keys) before it fetches the manifest, so
 the refusal names its cause on an offline host too and a spawn that asks again makes
 no network round trip. Which
@@ -5634,7 +5638,18 @@ the KAS build's `.tar.zst` engine tarballs in, recompressed to `.tar.xz` (same t
 bytes; CPython 3.12 reads xz with the standard library and zstd with nothing, and
 stock macOS and Windows carry no `zstd` executable), official Node builds from
 nodejs.org verified against that release's `SHASUMS256.txt`, manifest out,
-optional `aws s3 cp`. The installer still accepts a `.tar.zst` manifest entry
+`provenance.json` beside it (each engine tarball's upstream sha256, each Node
+build's source, any overlay; the installer never reads it), optional `aws s3 cp`.
+For an Amazon Linux 2 release two inputs, each pinned by a caller-given sha256,
+replace linux-x64 pieces only: `--node-linux-x64` publishes a local Node tarball
+under nodejs.org's name (refused unless its one top directory is
+`node-v<N>-linux-x64/`, it carries `bin/node`, and that binary prints exactly
+`v<N>`, checked on a linux-x64 publishing host), and `--onnx-overlay-linux-x64`
+re-packs the linux-x64 engine tarball after its upstream sha256 check with the
+overlay's files swapped in under `onnxruntime-node/bin/napi-v3/linux/x64/`
+(names, modes, owners and mtimes kept, a file stays a file and a symlink a
+symlink, every overlay name must replace something). That tarball is then no
+longer the same tar bytes as the build's; every other platform still is. The installer still accepts a `.tar.zst` manifest entry
 (stdlib on 3.14+, the `zstandard` package, or a `zstd` executable) for a
 locally built bundle handed to `--from`. The harness reads the flag off the loop and, when
 on (or when the route below is chosen automatically), resolves
