@@ -129,6 +129,11 @@ before installation completes stops any partially enabled gateway and safely
 reruns the idempotent install. Once `signal-complete` exists, later host reboots
 skip bootstrap and only the normal gateway service starts.
 
+The script writes `kcfetch.sh` and the gateway unit through unquoted heredocs, so
+their variables expand at write time. Their bodies therefore carry no backtick:
+bash would run the quoted word as a command while writing the file, comment lines
+included (`test_cloud_ec2_heredoc.py`).
+
 The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry. This installs the existing `voice` extra (`boto3` and
 `amazon-transcribe`) before the gateway first imports its Transcribe provider;
@@ -179,7 +184,9 @@ refusals name the dead route (subnet and target) instead of only asking for a
 route the table already has.
 
 With no default VPC, discovery falls back to the Region's only VPC (none, or two
-or more, is the "no default VPC" error). That pick is the launcher's, not the
+or more, is the "no default VPC" error, which gives the Region and the count of
+other VPCs and names the Subnet ID field beside `--subnet`; the no-egress and
+private-zone refusals name the field the same way). That pick is the launcher's, not the
 user's, so `discover_network(on_fallback=...)` hands one sentence naming the
 region, the VPC, the subnet and its egress (NAT or internet gateway), saying the
 launch goes on and that a subnet ID picks another network next time, to
@@ -792,10 +799,15 @@ all matter more to the operator than a pointer -- and those flags reach the stac
     ones in `cloud/iam.py`; the step adds no permission of its own. Each goes
     through the same `_ensure_boundary` sequence a launch uses, so a re-run is a
     no-op for a boundary whose content matches, and a boundary that has drifted
-    from its document is refused, never re-versioned or overwritten. The three
+    from its document is refused, never re-versioned or overwritten. The refusal
+    says in plain words that a policy of that name exists with other contents and
+    is not used, and that once the operator or their AWS admin deletes it a retry
+    creates it again or names the admin step that does; it never offers this step
+    alone as the fix, because a re-run meets the same refusal. The three
     are attempted independently, so one refusal still reports the other two; the
     step exits non-zero when any is not ready and then tells the operator to keep
-    `iam:CreatePolicy` in the statement, because the one statement covers all
+    `iam:CreatePolicy` in that statement of the applied launcher policy (the one
+    `kirocrew cloud iam-policy` prints), because the one statement covers all
     three names and removing the action while a boundary is missing leaves no
     principal allowed to create it. A launch whose `create-policy` is denied names
     this admin step at the head of its error, ahead of AWS's own text.

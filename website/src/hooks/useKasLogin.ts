@@ -13,6 +13,7 @@ import { clearCachedModels } from '../providers/adapters/acp'
 import { RELAY_VIEWER_CREWS_KEY, closeRelayCrews } from './useRelayViewerCrews'
 import type { KasLoginProvider } from '../components/kasProviderLabel'
 import { i18nT } from '../i18n/t'
+import { sameCompanyPortal } from '../utils/companySignIn'
 
 /**
  * The one cache entry every Kiro sign-in surface reads the stored sign-in
@@ -439,7 +440,9 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
   // machine — the device flow is the right transport there regardless of shape.
   const loopbackOk = status?.transport === 'loopback' && browserOnLoopback()
 
-  const beginBusy = beginDevice.isPending || beginLoopback.isPending
+  // A company sign-in re-reads the status before it begins (see `pick`).
+  const [rereading, setRereading] = useState(false)
+  const beginBusy = beginDevice.isPending || beginLoopback.isPending || rereading
 
   /** Start a sign-in with *provider*, on the transport this page and gateway allow. */
   const pick = (provider: KasLoginProvider, extra?: KasLoginExtra) => {
@@ -453,7 +456,27 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
       beginLoopback.mutate(provider)
       return
     }
-    beginDevice.mutate({ provider, extra })
+    const startUrl = extra?.start_url
+    if (provider !== 'idc' || !startUrl) {
+      beginDevice.mutate({ provider, extra })
+      return
+    }
+    // The portals the form warns for come from the cached status, which can
+    // predate a `crew_client` change. Re-read it first; if the fresh list warns
+    // for this portal and the form did not, stop so the form shows the warning
+    // before any sign-in starts. A failed read begins as before.
+    const warned = (status?.local_agent_off_start_urls ?? []).some(url => sameCompanyPortal(url, startUrl))
+    setRereading(true)
+    void queryClient
+      .fetchQuery({ queryKey: KAS_LOGIN_STATUS_KEY, queryFn: api.kasLoginStatus, staleTime: 0 })
+      .then(
+        fresh => warned || !(fresh.local_agent_off_start_urls ?? []).some(url => sameCompanyPortal(url, startUrl)),
+        () => true,
+      )
+      .then(begin => {
+        setRereading(false)
+        if (begin) beginDevice.mutate({ provider, extra })
+      })
   }
 
   /** Back out of replacing a signed-in identity; the stored one was never touched. */

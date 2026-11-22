@@ -135,6 +135,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_dispatchable_member_name,
         is_person_created_crewmate,
         is_readable_member_name,
+        is_single_path_component,
         is_valid_member_name,
         key_new_crew,
         mark_create_request,

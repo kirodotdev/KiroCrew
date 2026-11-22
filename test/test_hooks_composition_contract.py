@@ -249,7 +249,10 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: upload's read of a cloud-files placeholder on Windows) and a keyword-only
 #: ``refuse=None`` (as ``safe_read_prefix``: the upload's own fence on the opened
 #: descriptor's real path), so its callers fit too.
-_BASE_SHAPE_DIGEST = "793a01abfa9634d8e6b9aac14536d41b4a511b11e878cee3f2effd34d14a3cee"
+#: ``safe_file_identity`` takes a keyword-only ``hold=None`` (an ``ExitStack`` that
+#: keeps the sampled descriptor open, so a replaced inode's number cannot be
+#: reused before the next sample), so its callers fit too.
+_BASE_SHAPE_DIGEST = "2f457c7b64470c2221cb447d314c0bbd7b73e607b9f47352b95409c24ff1678d"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

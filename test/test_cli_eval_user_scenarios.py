@@ -35,6 +35,8 @@ class _Scripted:
         self._replies = replies
 
     cwd = ""
+    #: Declared on ``LLMProvider``: no pin refused at start, so a ``--model`` run goes on.
+    model_pin_refused = ""
 
     async def start(self) -> None:
         pass

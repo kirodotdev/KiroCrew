@@ -89,11 +89,17 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: own ``kiro_crew.member_goals_hours``, which keeps ``member_goals`` under the line cap
 #: and which ``member_goals`` (loaded by the listing's ``validation`` schemas) imports;
 #: the module count rose by that one file and nothing else loads.
+#: Raised by 3 for all four servers by the git/tar self-target floor: ``argv_floor`` imports
+#: every owner when ``kiro_crew.security`` loads so a patch through the facade reaches each
+#: holder of a name, and this PR adds three owner modules -- ``argv_floor_git_tar`` (the
+#: floor), ``argv_floor_tar`` (the line-cap split of its tar grammar) and
+#: ``argv_floor_ssh_operand`` (the line-cap split of the ssh operand reader). The security
+#: package loads before the list, so the owners cannot move behind it; nothing else loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 493,
-    "mcp-cron": 361,
-    "mcp-guide": 355,
-    "mcp-mate": 356,
+    "mcp-core": 496,
+    "mcp-cron": 364,
+    "mcp-guide": 358,
+    "mcp-mate": 359,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

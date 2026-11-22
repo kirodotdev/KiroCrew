@@ -112,28 +112,41 @@ const {
   MAX_INSPECT_PER_RUN,
   MAX_PENDING_ATTEMPTS,
 } = require("./runtime/crash/scan");
+const { NATIVE_LOG_OFF_CAUSES } = require("./native-logging");
 
 /**
  * The renderer-facing view of a scan: the count of new crashes and, as one ISO
  * 8601 UTC string (or `null`), when the newest of them happened, so a weeks-old
- * crash does not read like one that just occurred. A path, file name, module
- * name, exception code or the logs directory never crosses: they describe the
- * machine (down to the account name in a home directory), and a connection
- * window pointed at a remote gateway shares this preload. That detail lives in
- * `crashes.log`, which the user reveals and hands over deliberately; the time
- * shown here is the same `at=` that file already records.
+ * crash does not read like one that just occurred; plus `nativeLogOff` on a
+ * launch whose Chromium file log is off (a cause code from a closed set, read by
+ * the banner). A path, file name, module name, exception code or the logs
+ * directory never crosses: they describe the machine (down to the account name
+ * in a home directory), and a connection window pointed at a remote gateway
+ * shares this preload. That detail lives in `crashes.log`, which the user
+ * reveals and hands over deliberately; the time shown here is the same `at=`
+ * that file already records.
  */
-function crashNoticeSummary(scan) {
+function crashNoticeSummary(scan, nativeLogging = null) {
   const newCrashes = (scan && scan.newCrashes) || [];
   let newest = null;
   for (const crash of newCrashes) {
     const ms = Date.parse(crash.at);
     if (Number.isFinite(ms) && (newest === null || ms > newest)) newest = ms;
   }
-  return {
+  const summary = {
     newCount: newCrashes.length,
     lastCrashAt: newest === null ? null : new Date(newest).toISOString(),
   };
+  // Present only when Chromium's file log is off this launch (see
+  // `initNativeLogging`'s `fileLogOffCause`): then the chromium.log the banner
+  // asks the user to attach is from an earlier session, and the notice says so.
+  // Only a code from the closed set crosses; anything else is dropped, so no
+  // free text can ride this channel.
+  const cause = nativeLogging && nativeLogging.fileLogOffCause;
+  if (typeof cause === "string" && NATIVE_LOG_OFF_CAUSES.includes(cause)) {
+    summary.nativeLogOff = cause;
+  }
+  return summary;
 }
 
 module.exports = {

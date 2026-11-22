@@ -927,6 +927,19 @@ class DashboardContributor(Protocol):
         """
         ...
 
+    def idc_sign_in_profiles(self) -> Dict[str, Dict[str, Any]]:
+        """IAM Identity Center start URLs that sign in with the edition's own form.
+
+        ``{start_url: {"scopes": [...], "grant_types": [...], "issuer_url": str,
+        "profile_arn": str}}``. WIRED: ``auth/login/endpoints.py`` asks it only while
+        the ``crew_client`` feature preview is on. Such a start URL registers its own
+        SSO-OIDC client with that form and takes the pinned profile ARN instead of
+        asking the control plane. While it is the stored sign-in, the usage poll
+        makes no call and no local KAS agent starts. ``{}`` (the Default) changes
+        nothing. v1 method addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
     def mixed_internal_api_paths(self) -> "frozenset[str]":
         """Edition paths an internal loopback caller may reach (Default: empty).
 

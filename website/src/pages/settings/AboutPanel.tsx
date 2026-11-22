@@ -22,6 +22,7 @@ import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQu
 import { fmtSpeed } from '../../api/helpers'
 import { failedWithNoData } from '../../api/queryState'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
 import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 
@@ -298,12 +299,13 @@ export function AboutPanel() {
   // keeps failing means an approval could land unseen; a refused download means
   // the click did nothing. The poll uses the same consecutive-failure threshold
   // InAppUpdateFlow uses for the same reason — one blip is left to the next
-  // interval.
+  // interval. The report reads `error`, which React Query keeps until the next
+  // answer; `failureReason` is cleared when each poll starts.
   const agentRequestPanelError = agentRequestPollFailing
-    ? i18nT('pages.settings.aboutPanel.arm_status_poll_failing')
+    ? { message: i18nT('pages.settings.aboutPanel.arm_status_poll_failing'), report: reportForError(agentRequest.error) }
     : agentDownloadFailed
-      ? i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown) })
-      : ''
+      ? { message: i18nT('pages.settings.aboutPanel.download_failed_reason', { reason: updateState?.state === 'error' ? updateErrorText(updateState) : i18nT(UPDATE_ERROR_KEYS.unknown) }) }
+      : undefined
   // While a request is live, its card owns the one Install control. Rendering
   // the ordinary card's "Download & Install" beneath it shows two buttons for
   // one update and the reader cannot tell whether they differ. The ordinary
@@ -608,7 +610,9 @@ export function AboutPanel() {
           testId="update-install-request-error"
         />
       )}
-      {cardReady && (
+      {/* A request card that owns the install control hides this card's
+          Install when I quit button, so the note that names it is left out. */}
+      {cardReady && (updateArmed || !canArmOnQuit || !ctaOwnedByRequest) && (
         <span className="text-[12px] text-muted" data-testid="update-ready-note">
           {/* Install only arms: nothing goes down or restarts until the user
               quits, so the line says when it installs, not that it is installing. */}

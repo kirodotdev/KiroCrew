@@ -309,7 +309,7 @@ def _replay(path: str, backend: str, tmp_path, args):
 
 
 def _goose_event(args, tmp_path):
-    """goose 1.57.0 in approve mode: identity on ``_meta.goose.toolCall``, and both
+    """goose 1.50.1 in approve mode: identity on ``_meta.goose.toolCall``, and both
     frames' ``rawInput`` is the ``arguments`` its MCP server received."""
     return _replay("goose/crew-oauth-bridge-args-live.jsonl", ACP_BACKEND_GOOSE, tmp_path, args)
 

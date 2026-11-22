@@ -342,6 +342,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _release_stt_engine,
     _reset_browser_host_approvals,
     _reset_browser_media_watches,
+    _reset_builtin_discovery_scan,
     _reset_channel_turn_ceiling,
     _reset_chromium_opt_in_record,
     _reset_cjk_segmenter,

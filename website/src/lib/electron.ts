@@ -211,6 +211,26 @@ export async function pickFolderNatively(): Promise<NativeFolderPick> {
     return { status: 'failed' }
   }
 }
+
+/** How handing Connect with WakaTime to the system browser ended. */
+export type WakaTimeBrowserHandoff = 'opened' | 'unavailable' | 'failed'
+
+/**
+ * Hand Connect with WakaTime to the system browser, opening this dashboard's
+ * WakaTime panel there. Resolves 'opened' when the shell opened it,
+ * 'unavailable' with no bridge (a plain browser, the PWA, a remote-crew
+ * window), and 'failed' when the shell answers false or refuses; never throws.
+ */
+export async function openWakaTimeInBrowser(): Promise<WakaTimeBrowserHandoff> {
+  const api = window.wakatimeConnectAPI
+  if (typeof api?.openInBrowser !== 'function') return 'unavailable'
+  try {
+    return (await api.openInBrowser()) === true ? 'opened' : 'failed'
+  } catch {
+    return 'failed'
+  }
+}
+
 /**
  * Width reserved on the right for the Windows titleBarOverlay caption buttons
  * (minimize/maximize/close). The overlay is 138px wide at default DPI on

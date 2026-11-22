@@ -4119,8 +4119,10 @@ backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
 
 The tool name is cached on `EVENT_TOOL_CALL` by `tool_call_id` and looked up
 when the result arrives. The `Running: ` prefix is stripped so both hooks
-receive identical tool_name strings. Hook errors on the informational fires are
-caught at debug level so a misbehaving hook cannot break the subagent loop.
+receive identical tool_name strings. A raise from either fire is caught so a
+misbehaving hook cannot break the subagent loop: the informational `PreToolUse`
+fire logs it at debug level, the `PostToolUse` fire at WARNING. A `PostToolUse`
+hook that exits other than 0 or 2 logs one WARNING with its `failure_detail`.
 
 ### Hook Payload Metadata
 
@@ -4172,7 +4174,11 @@ gateway judges it on shape only, it outranks the member's and the template's pin
 and it is never routed (`subagent_parts/model_choice.py` skips tier routing for
 any run that names a model). A name or model that sanitizes to empty (only
 whitespace or hidden characters) is refused before any request.
-`kirocrew spawn list` lists current runs. A finished run's icon comes from its
+`kirocrew spawn list` lists the runs the CLI may control. It sends no session
+key, so the gateway returns only runs no session started (`_run_belongs_to_caller`),
+such as the CLI's own and an app's: a run a chat or another session started is
+not listed. An empty list prints `No subagents started from the CLI. ...`,
+which points to the dashboard. A finished run's icon comes from its
 `outcome`, never from whether `error` is empty: `completed` shows ✅, `stopped`
 shows ⏹ with `(stopped)`, and `failed` or any other value shows ❌ with
 `(failed: <error>)`, the error confined to one terminal line. Only a row with
@@ -5089,8 +5095,10 @@ is registered for (`_live_run_ids`). `SubagentManager.queued_run_async(id)` /
   list takes a not-done entry for a run in progress.
 - The `spawn_status` tool prints `[QUEUED · <elapsed>]` with the reason and a
   note not to spawn the run again; `spawn_list` (and `kirocrew spawn list`)
-  prints each with why it waits, says when the list is partial, and says
-  `No subagents running.` only when nothing runs AND nothing is queued.
+  prints each with why it waits and says when the list is partial. `spawn_list`
+  says `No subagents running.`, and `kirocrew spawn list` says
+  `No subagents started from the CLI. ...`, each only when nothing it may list
+  runs AND nothing is queued.
 - A blocking `spawn_sub_agents` that collects a member inline whose announce had
   already queued on the slot (its delivery timed out waiting on the tool's turn)
   has that queued announce removed and its delivery marks settled at the landed

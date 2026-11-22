@@ -52,6 +52,7 @@ from kiro_crew.snapshot_components import (
     _JSON_OBJECT_LISTS,
     _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_JSON_OBJECTS,
@@ -206,6 +207,23 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
                 "saved mutes or priorities."
             ) from e
         _refuse_dropped_entries(label, dropped)
+        return
+    if validator == "config_document":
+        import json
+
+        from kiro_crew.archive_config_vetting import config_document_refusal
+
+        try:
+            parsed = json.loads(src.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
+            return  # the JSON-object check has already refused an unreadable document
+        why = config_document_refusal(parsed)
+        if why:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot is not safe to install: {why}.\n"
+                "   Refusing to restore it: the roster and workspace entries become file "
+                "paths, so one that names a path rather than a file or folder is not applied."
+            )
         return
     raise AssertionError(f"no validator named {validator!r}")
 
@@ -677,6 +695,8 @@ def _refuse_corrupt_source_databases(
         files are installed only where their own destination is missing.
         """
         assert mc_for_merge is not None
+        if rel in _MERGE_NEVER_INSTALLS_FILES:
+            return False  # merge never installs it, so its bundle copy cannot refuse
         if rel == "crons.json":
             return True
         if rel == "memory_index.db":

@@ -583,7 +583,7 @@ Examples:
   kirocrew spawn run --crew ops 'triage alerts' # Run as Bot 'ops'
   kirocrew spawn run --agent reviewer 'review'  # Run under agent 'reviewer'
   kirocrew spawn run --model MODEL_ID 'task'    # Run on model MODEL_ID
-  kirocrew spawn list                           # Show active subagents
+  kirocrew spawn list                           # Show subagents that no session started
 """,
         formatter_class=_fmt,
     )
@@ -614,7 +614,7 @@ Examples:
         metavar="ID",
         help="Run on this model id; it outranks the member's and the template's pin",
     )
-    spawn_sub.add_parser("list", help="List subagents")
+    spawn_sub.add_parser("list", help="List subagents that no session started (CLI and app runs)")
     spawn_parser.add_argument(
         "--port",
         type=int,

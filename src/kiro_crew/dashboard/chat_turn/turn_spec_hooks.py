@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import hashlib
-import json
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
@@ -51,6 +49,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.chat_utils_injected_rows import (
     MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
     SPEC_HOOKS_RUN_NOWHERE_NOTICE,
+    project_hook_files_notice_meta,
 )
 from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
@@ -699,29 +698,27 @@ async def _surface_withheld_project_hook_files(
     except Exception:  # noqa: BLE001 - a notice must never fail a turn
         logger.debug("could not check %s for project hook files", project_dir, exc_info=True)
         return
-    if names and _project_hook_files_notice_is_new(slot, project_dir, names):
+    meta = project_hook_files_notice_meta(project_dir, names) if names else None
+    if meta and _project_hook_files_notice_is_new(slot, meta["project_hook_files_mark"]):
         append_and_surface(
             state,
             slot,
             "notice",
             _redact_display_text(_project_hook_files_notice()),
             "msg msg-info",
-            meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            meta=meta,
         )
 
 
-def _project_hook_files_notice_is_new(
-    slot: "_ChatSlot", project_dir: str, names: list[str]
-) -> bool:
-    """Whether *slot*'s chat has yet to show the hook-files notice for these files.
+def _project_hook_files_notice_is_new(slot: "_ChatSlot", mark: str) -> bool:
+    """Whether *slot*'s chat has yet to show the hook-files notice with this *mark*.
 
     Every new backend session of a chat (a reconnect, a reload, a restart) would
     show it again, and nothing in the chat changes the files, so the chat shows it
     once. It shows again only for another folder or another set of file names. The
     mark is saved on the chat's metadata line, as ``notice_gets_row``'s is.
+    The row carries the same mark, which the dashboard's per-folder Dismiss hides by.
     """
-    key = json.dumps([project_dir, names])
-    mark = hashlib.sha256(key.encode()).hexdigest()[:16]
     if slot._project_hook_files_notice_shown == mark:
         return False
     slot._project_hook_files_notice_shown = mark
@@ -1173,9 +1170,9 @@ async def _fire(
                             "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
                         },
                     )
-                elif r.stderr:
+                else:
                     # Non-zero, non-block on a non-gating event: warn only.
-                    logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[-200:])
+                    logger.warning("Hook %s (%s) failed: %s", r.hook_name, event, detail)
     except Exception as exc:
         if event == HOOK_EVENT_PRE_TOOL_USE:
             logger.warning("Hook fire error during blocking event %s: %s", event, exc)

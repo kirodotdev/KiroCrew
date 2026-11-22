@@ -420,12 +420,20 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
 #: (``--include-config``, the import dialog's checkbox); a missing live file is still filled.
 SETTINGS_PICK_FILES: tuple[str, ...] = ("config.json", "config.local.json", "hooks.json")
 
+#: Files a MERGE deliberately never installs from the bundle, even when this install has
+#: no copy. Kept beside the component tables so the pre-flight validator and the merge
+#: driver cannot disagree about whether one of these files can reach a live consumer.
+_MERGE_NEVER_INSTALLS_FILES: frozenset[str] = frozenset({"config.local.json"})
+
+
 #: Flat component files whose own store reader is stricter than "a JSON object". An
 #: installed `{"prefs": []}` or `{"channel_settings": []}` passes that generic check and
 #: reads back EMPTY, and a prefs document past the store's key or byte limit makes every
 #: later save fail -- so an installed one is held to the same reader the dashboard
 #: import uses. Keyed by file name; the value names the validator.
 _FLAT_DOCUMENT_VALIDATORS: dict[str, str] = {
+    "config.json": "config_document",
+    "config.local.json": "config_document",
     "ui-prefs.json": "ui_prefs",
     "notification_settings.json": "notification_settings",
 }

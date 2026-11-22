@@ -741,7 +741,10 @@ _ALLOWED_TEXT_EXT = {
     ".ts",
     ".tsx",
     ".jsx",
+    # The viewer renders these only inside a fully sandboxed frame: no script
+    # and no same-origin access.
     ".html",
+    ".htm",
     ".css",
     ".sh",
     ".bash",
@@ -753,10 +756,9 @@ _ALLOWED_TEXT_EXT = {
     ".cpp",
     ".h",
     ".hpp",
-    # More source and config text. Stored as uploaded bytes and read back as
-    # text: file-read answers text/plain, file-download is attachment + nosniff,
-    # and none of these is a .html/.htm the viewer would render. A server-side
-    # language extension (.php) is never executed here.
+    # More source and config text, stored as uploaded bytes: file-read answers
+    # text/plain, file-download is attachment + nosniff, the viewer renders none
+    # of these as a page, and a server-side language (.php) never executes here.
     ".php",
     ".sql",
     ".kt",
@@ -783,6 +785,7 @@ _ALLOWED_DOC_EXT = {
     ".zip",
     ".tar",
     ".gz",
+    ".tgz",
 }
 #: Video containers accepted at the upload boundary. Deliberately narrower than
 #: ``FileRenderers``' VIDEO_EXTS: every entry here must be verifiable by
@@ -875,6 +878,7 @@ _RASTER_EXT_MIME: dict[str, str] = {
 _MAGIC_PREFIXES: dict[str, tuple[bytes, ...]] = {
     ".pdf": (b"%PDF-",),
     ".gz": (b"\x1f\x8b",),
+    ".tgz": (b"\x1f\x8b",),
 }
 #: Read-path extras the shared raster table does not cover (served by
 #: ``api_file_raw`` but never accepted at the upload boundary).

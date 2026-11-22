@@ -837,12 +837,15 @@ async def _refresh_from_vault() -> None:
     so it describes the credential the fingerprints bracket. The enterprise
     profile name rides in from the usage API as it does for the kiro-cli path.
     """
-    if _workload_identity.active():
-        # vault_holds_identity says yes here for the workload identity alone, so the
-        # person vault is neither read nor refreshed: no reading, no sign-in prompt.
+    # Deferred: see _vault_owns_usage_sync.
+    from kiro_crew.auth.login.endpoints import stored_sign_in_registered
+
+    # Neither the workload identity (vault_holds_identity says yes for it alone) nor
+    # a sign-in on an edition's own start URL (``crew_client`` preview) has a person
+    # vault reading: no read, no refresh, no sign-in prompt.
+    if _workload_identity.active() or await asyncio.to_thread(stored_sign_in_registered):
         _publish_usage({"available": False})
         return
-    # Deferred: see _vault_owns_usage_sync.
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected

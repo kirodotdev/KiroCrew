@@ -1479,14 +1479,14 @@ async def _send_and_print(
         )
 
 
-def _repl_compact_at(cfg: KiroCrewConfig, agent: str) -> float:
-    """The context percentage the REPL compacts at for a run of *agent*.
+def _repl_compact_at(cfg: KiroCrewConfig, agent: str) -> tuple[float, bool]:
+    """The REPL's compaction point for a run of *agent*, and whether its crew declared it.
 
     The crew the run resolves to (the provider factory's rule) may declare its
     own number; otherwise the global ``session.autocompact_pct`` applies.
     """
     declared = crew_autocompact_pct(cfg, resolve_crew_identity(cfg, agent, None))
-    return cfg.session.autocompact_pct if declared is None else declared
+    return (cfg.session.autocompact_pct, False) if declared is None else (declared, True)
 
 
 async def _interactive(
@@ -1502,7 +1502,7 @@ async def _interactive(
 
     The threshold is the one the run's crew declares (``agents.<name>.autocompact_pct``),
     resolved from *agent* by the same rule the provider factory keys the run on,
-    else the global ``session.autocompact_pct``.
+    else the global ``session.autocompact_pct``, which leaves KAS to compact itself.
 
     *context* builds the first message of each session on a harness other than
     kiro-cli and KAS: the first turn's, the first after a compaction restart or a
@@ -1546,11 +1546,14 @@ async def _interactive(
 
         # Check context usage — compact and restart if needed
         pct = provider.context_usage_pct()
-        compact_at = _repl_compact_at(cfg, agent)
-        needs_compact = pct >= compact_at
+        compact_at, declared = _repl_compact_at(cfg, agent)
+        # The global threshold leaves a self-compacting harness (KAS) alone, like the dashboard.
+        harness = getattr(provider, "harness_managed_compaction_backend", None)
+        left_to_harness = not declared and isinstance(harness, str) and bool(harness)
+        needs_compact = pct >= compact_at and not left_to_harness
         # Warn one margin BELOW the compaction point. An absolute warn level
         # would be dead code here: the compact arm is tested first and claims
-        # the whole range above the configured threshold.
+        # the range above the threshold, except for a harness left to itself.
         warn_at = compact_at - CONTEXT_WARN_MARGIN_PCT
 
         if needs_compact:

@@ -243,6 +243,7 @@ Every process that writes the log can rotate and trim it, each at its own moment
 ```text
 kirocrew security events [-n LIMIT] [--since AGE_OR_TIME] [--until AGE_OR_TIME]
                          [--operation V] [--outcome V] [--source V] [--caller V]
+                         [--format text|jsonl|csv] [--out FILE]
 kirocrew security verify
 ```
 
@@ -256,6 +257,11 @@ filters over at most 50,000 of the newest rows in that window (`sel_filter.CLI_S
 then `-n` cuts the result. A scan that used the whole budget without filling `-n` prints a
 note on stderr: set an earlier `--until` to reach older rows. With no field flag, the
 log's own `recent` answers as before.
+
+`--format jsonl` or `csv` writes every match oldest first (unless `-n` was typed) to
+stdout, or with `--out FILE` to a new owner-only file; an existing `FILE` or
+`FILE.manifest.json` is an error and nothing is written. The manifest holds the filters,
+window, row count, first and last timestamp and `entry_hash`, `scan_capped`, `sha256`. CSV cells that start with `=`, `+`, `-`, `@`, a tab or a CR get a leading `'`.
 
 ## Thread Safety
 

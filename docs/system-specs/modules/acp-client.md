@@ -2245,7 +2245,11 @@ The details below describe the Kiro and Claude paths implemented directly here:
     file's content. Off the event loop a read may pause for a
     retry, so `session_mcp.native_settings_sources` brackets each pass with every
     file's identity and keeps a pass only when no file was replaced or rewritten
-    while it ran; after `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
+    while it ran. On POSIX the descriptor each first identity was read from stays
+    open until the second is taken (`safe_file_identity(hold=...)`), because a
+    filesystem may give a freed inode's number to the next file it creates, and a
+    swap and swap-back in one timestamp tick would otherwise sample equal to the
+    file the pass started on; after `_NATIVE_SOURCES_BRACKETED_PASSES` (4) voided passes the
     set is treated as unreadable, the same as a refused read. When the settings
     are unreadable every identity element is withheld and a WARNING names the
     agent: its unpooled Kiro Crew servers mounted from the spec then refuse calls
@@ -3323,8 +3327,17 @@ spec the same way kiro-cli v2 does where the wire allows it:
   session-start notice (`kas_withheld_notice`), the session agent's and each
   target's alike, so the chat names it instead of leaving its tools to go
   missing unexplained.
-  A `*` pattern is matched against the agents the spawn gate offers, and at most
-  `MAX_SUBAGENT_TARGETS` (8) are registered. One session start reads each file
+  A `*` pattern is matched against the agents the spawn gate offers. Of the
+  entries the spawn gate keeps (`spawn_allowlist`), an agent named by one with
+  no `*` never counts toward `MAX_SUBAGENT_TARGETS` (8), which bounds only the
+  agents found through a pattern alone. When the session's own entry carries
+  the unconditional `subagent` deny (`_SPAWNS_NOTHING`), none is registered:
+  the `availableAgents` translation
+  (`kas_subagent_rules._available_agents_rules`) writes that rule for a list it
+  cannot carry as one rule, and an author may write it in `permissions`.
+  Registration stops once the batch holds `KAS_MAX_CUSTOM_AGENTS` entries, the
+  session's own included, because KAS refuses the whole `_meta.kiro` past it. The
+  notice names the agents either limit leaves out. One session start reads each file
   its targets share once: inside `build_reuse.one_build`, opened around
   `KasHarness.session_extras`'s `_build`, the agent-spec name scan
   (`agent._scanned_name`, which keeps only each file's declared name, keyed on
@@ -3345,8 +3358,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   service agent; a derived one (`kirocrew-worker`, `kirocrew-heartbeat`), even when
   its freshness gate passes, because the post-load check
   (`runtime_mode_activation._activate_mode_bracketed`) re-checks only the
-  session's own snapshot; the overflow past the cap; an agent whose limits Crew
-  applies only at its own gate (`denyByDefault`, `fallbackAction: "deny"`, a
+  session's own snapshot; the pattern matches past the cap; an agent whose limits
+  Crew applies only at its own gate (`denyByDefault`, `fallbackAction: "deny"`, a
   `_crewSpecDenies` record holding a `deniedCommands` or write `deniedPaths` list,
   its own `preToolUse` hooks), because the gate reads those only on the session's
   own agent's requests and a native sub-agent's request carries none of them
@@ -3373,8 +3386,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   deny holds over the `availableAgents` exclude. Each such deny records one
   `kas_subagent_target_denied` security event (source `kas_agent_projection`)
   naming the parent and the denied targets. The session-start notice names
-  the targets past the cap and points to `spawn_run`, which runs an agent with
-  its own limits. A target past the cap is not denied.
+  the targets past either limit and points to `spawn_run`, which runs an agent with
+  its own limits. A target past either limit is not denied.
   Everything that reads the batch for the session's own agent matches it by id.
   A sub-agent's call the session cannot tell from its own is answered with the
   session agent's gate grants (`allowedTools` built-ins, `allowedCommands`, write
@@ -5192,6 +5205,8 @@ stays text: space is legal inside a path, so an unbounded body would re-walk a
 message of spaced fragments from every start before the tail guard refused it.
 
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
+
+**Attached sheets** (`acp/sheet_digest.py`, off by default). With `dashboard.attachment_sheet_digest` on, `build_prompt_blocks` follows the user's text with a short digest of each CSV or TSV it names that sits directly in the data home's `uploads/` folder (a file attached in dashboard chat): column names, an inferred type per column, a row count and the first `SAMPLE_ROWS` (3) rows. Each step is bounded: `MAX_READ_BYTES` (256 KiB) read per file, `MAX_COLUMNS` (20), `MAX_CELL_CHARS` (40), `MAX_FILES` (3) per prompt and `MAX_DIGEST_CHARS` (4000) per digest. The file text passes `redact_exfiltration_urls` and `redact_credentials` before the digest is built, and the digest's typed markers are escaped like the rest of the text. The setting is read per prompt (`digest_enabled`, false on any failure), so a change takes effect on the next message. Off, the agent gets the path alone.
 
 **Text-only turns.** Every prompt entry point (`LLMProvider.stream`, the handle's `prompt`, the direct client's `stream_events`) takes a keyword-only `allow_image` (default `True`) and forwards it down to `build_prompt_blocks`. `False` builds the blocks with `allow_image=False`, whatever the agent advertises: no path in the message is read or inlined, and it stays in the text. `llm_helpers.stream_and_collect` (and `stream_and_collect_json`) forward the same keyword to every attempt. `run_bg_oneliner` sends every background one-liner this way, and the history consolidator every turn it sends, because its prompt is text about a session and any path in it is quoted history (see the history-scrub section of [session](session.md)). The default call shape is unchanged for every other caller.
 

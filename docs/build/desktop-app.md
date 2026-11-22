@@ -76,6 +76,11 @@ The electron-builder configuration lives in
   `rpm.depends` needs no alternatives but uses entirely different names
   (`gtk3`, `nss`, `alsa-lib`). Both lists are verified against a real
   `apt-get install` / `dnf` resolution by `scripts/smoke-linux-packages.sh`.
+  `rpm.fpm` defines `_build_id_links none`, so the rpm ships no
+  `/usr/lib/.build-id` links: Electron's binaries are identical in every app
+  on the same Electron, so any other Electron app's rpm (and the nightly rpm)
+  claims the same link paths and rpm refuses the second install, in-app
+  updates included, as a file conflict.
   Both lists name libgbm (`libgbm1` / `mesa-libgbm`) because the desktop
   binary links `libgbm.so.1` and no other entry requires it: Ubuntu 24.04,
   Debian 12 and Amazon Linux 2023 bring it in only as a recommendation or weak
@@ -984,6 +989,21 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+Settings > WakaTime's **Connect with WakaTime** rides the same gate.
+`window.wakatimeConnectAPI.openInBrowser()` takes no argument and invokes
+`wakatime:open-in-browser`, which runs the three checks above (a refusal rejects
+and opens nothing) and then hands one fixed URL to `shell.openExternal`: the
+window's own dashboard origin plus `/settings/overview?view=wakatime`, built in
+the main process. It answers `true` when the OS took the URL and `false`, with
+one log line, when it did not. The sign-in then finishes in the system browser,
+because the WakaTime callback needs the state cookie of the browser that
+started it ([wakatime-oauth-read-auth](../architecture/design-notes/wakatime-oauth-read-auth.md)).
+The window's navigation guard is unchanged. The Mochi panel's
+`mochi-panel:open-dashboard` is the precedent: a no-argument channel, so page
+content never names the URL the shell opens. With no bridge the panel shows its
+"open this dashboard in a web browser" note; on `false` or a refusal it shows the
+same text as an error notice.
+
 A window whose gateway the shell already knows is not on this machine (a
 configured Remote Crew on its port, as in the client-only launch with the local
 gateway off, or a non-loopback URL) does not ask in the first place. On every
@@ -991,7 +1011,7 @@ load the preload asks the shell `dashboard:is-remote-gateway`, answered by the
 same `isGatewayLocalForWindow` the gate reads, and then withholds every bridge
 whose channels that gate refuses: `remoteCrewSetupAPI`,
 `gatewayRestartAPI`, `crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
-`externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
+`wakatimeConnectAPI`, `externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
 `updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
 a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
 the native folder and terminal controls and first-run's link to a crew on
@@ -1349,9 +1369,10 @@ the terminal route is named instead of the button).
 
 The shell keeps its own crash ledger beside `gateway-launch.log` in the app's
 logs directory (`runtime/crash/`, driven by `crash-collector.js`). The scan runs
-lazily, the first time the dashboard's crash notice asks for it. It reads the
-Crashpad dump directory (`app.getPath("crashDumps")`) and, on macOS, the user's
-`.ips` diagnostic reports:
+lazily, the first time the dashboard's crash notice asks for it. A refused ask
+runs no scan, and the notice asks again after 15 s, 45 s, 2, 5 and 10 minutes,
+then stops. It reads the Crashpad dump directory (`app.getPath("crashDumps")`)
+and, on macOS, the user's `.ips` diagnostic reports:
 
 - `crashes.log` records each new crash of this app, capped at 500 lines.
 - `crashes-seen.json` acknowledges each artifact once, so a crash is reported
@@ -2140,9 +2161,11 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   Then it probes whether a gateway is still running (a gateway that outlived the
   quit): this bundle's gateway, or, when that cannot be identified (Windows, a
   failed process lookup), anything listening on the launch port
-  (`gateway-probe.js`). If one is, nothing is applied, the arm stays,
-  and a notice names the `kirocrew stop --port <port>` command. A probe that
-  cannot answer defers the same way. If
+  (`gateway-probe.js`). If one is, nothing is applied and the arm stays. For
+  this bundle's gateway the notice names the `kirocrew stop --port <port>`
+  command; any other holder is named as unidentified, with no command, because
+  the app cannot tell what it is or whether that command would stop it. A probe
+  that cannot answer defers the same way. If
   that apply fails too, the arm is cleared, the installed version starts and
   the error is shown as an install error. The gateway the app hosts skips its
   own boot-time apply, so exactly one side applies and the app and gateway never

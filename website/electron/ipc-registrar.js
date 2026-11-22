@@ -45,6 +45,8 @@ function createIpcRegistrar({
   port,
   detectWsl = detectWsl2,
   crashScan = null,
+  // This launch's `initNativeLogging` result; only its cause code reaches the renderer.
+  nativeLoggingStatus = null,
   glog,
   // Close/reopen the Crew Companion overlay around an update install so it does
   // not float orphaned over the vanished dashboard during the quit handoff.
@@ -1015,7 +1017,10 @@ function createIpcRegistrar({
       await assertLocalDashboard(event, "crash-reports:get");
       // Absent injection means the shell was assembled without a collector —
       // report "nothing to see" rather than failing the renderer's first call.
-      return crashNoticeSummary(typeof crashScan === "function" ? crashScan() : null);
+      return crashNoticeSummary(
+        typeof crashScan === "function" ? crashScan() : null,
+        typeof nativeLoggingStatus === "function" ? nativeLoggingStatus() : null,
+      );
     });
 
     // Reveal, never read. The renderer names no path and receives no path: this
@@ -1327,6 +1332,21 @@ function createIpcRegistrar({
         await assertLocalDashboard(event, "dashboard:can-pick-folder");
         return true;
       } catch {
+        return false;
+      }
+    });
+
+    // Connect with WakaTime finishes in the system browser: its callback needs
+    // the state cookie of the browser that started the sign-in. The renderer
+    // passes nothing; the only URL opened is this dashboard's WakaTime panel.
+    // Answers whether the OS took the hand-off.
+    ipcMain.handle("wakatime:open-in-browser", async (event) => {
+      await assertLocalDashboard(event, "wakatime:open-in-browser");
+      try {
+        await shell.openExternal(`${backendUrl}/settings/overview?view=wakatime`);
+        return true;
+      } catch (e) {
+        log(`wakatime:open-in-browser failed: ${e && e.message}`);
         return false;
       }
     });

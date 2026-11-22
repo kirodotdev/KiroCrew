@@ -517,6 +517,17 @@ custom-rules:
           stand-in answers only where that check gives no verdict
           (testing-conventions § A host probe that asks a different program
           than the one under test).
+      14. (D1) A scripted event stream (`_set_stream`, `_async_iter`, a list
+          of events a fake client yields) whose events start a TASK in the
+          product, followed by an assertion on what that task did inside the
+          same turn, when the script ends the turn right after the event that
+          starts it. Production's next model step runs for seconds; the
+          script's runs in a few loop steps, so a task that hops a thread
+          loses on a slow runner (a held steer's boundary flush, #38449, red
+          on five macOS PRs). The script must wait on the task's own signal
+          before its next event, the way a real model step outlasts it
+          (testing-conventions § A scripted stream that ends at once races
+          any task its events start).
 
       14. (D13) A test that lets the HOST answer what the code reads: a real tool
           found on the inherited `PATH` or in a fixed install directory (the

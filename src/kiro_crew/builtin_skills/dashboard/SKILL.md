@@ -45,13 +45,20 @@ screens, visual quality and colour contrast still need their own checks.
 
 **Look at the page.** `dashboard_snapshot` draws your applied page in the
 same offline run, over your real data, and returns a PNG file path; open it
-with your file-read tool. It is one 1280x800 view of the top of the page, as
-the person's tab shows it in the default light theme, so judge what it says as
-well as layout, colour, type and fit; their own theme pack or dark mode can
-show other colours. A page you only saved has no picture: apply it first. When the
-run cannot start it answers "no image" with the reason and no file; an
-earlier picture is not the page as it is now. A template page has no picture.
-The file holds real values: leave it where it is.
+with your file-read tool. The picture is one 1280x800 view of the top of the
+page, as the person's tab shows it in the default light theme, so judge what it
+says as well as layout, colour, type and fit; their own theme pack or dark mode
+can show other colours. The answer also prints the rendered text of the WHOLE
+page, below the first screen too, between two fixed lines: check each bound
+value there, and look after a field for `[not current]` (the read had no value
+for it) or `[updated <age> · ...]` / `[may be out of date · ...]` (its value is
+stale), in the Dashboard's language. The
+text leaves out canvas drawings, form-control values and what an unfetched CDN
+library would draw, and is cut at 6000 characters (the answer says so). A page
+you only saved has no picture: apply it first. When the run cannot start it
+answers "no image" with the reason and no file; an earlier picture is not the
+page as it is now. A template page has no picture. The file and the text hold
+real values: leave them where they are.
 
 The gateway's secret filter also processes markup and script. A note reports
 how many places changed and the first line, without revealing the replaced

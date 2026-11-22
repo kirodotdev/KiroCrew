@@ -1580,6 +1580,12 @@ when a manifest source's directory inode or mtime moves, when the sources change
 and after `execution.invalidate_shipped_builtin_apps`, which every app-record write
 and `invalidate_orphan_cache` (uninstall, cleanup, adoption) call.
 
+`discovery.discover_builtin_apps` keeps its scan of the package's own `builtins/`
+per process too, so gateway boot's registration, orphan check and public-id read
+share one scan. It is scanned again when that directory's inode or mtime moves, and
+a scan that skipped a manifest or left a path unchecked is never kept. Each caller
+gets its own copy of the list.
+
 ### 5.1 Resource-path containment is host-independent and flavour-explicit
 
 Every manifest resource path (`agents`/`skills`/`sops`, `ui.entry`,

@@ -12,6 +12,7 @@ on an ephemeral secret that logs every dashboard session out at each restart.
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 from kiro_crew import cli_doctor
@@ -202,6 +203,24 @@ _BLOCKED_COMMANDS_DOC_URL = (
 )
 
 
+def _probe_aws_file(path: Path) -> tuple[bool, OSError | None]:
+    """Whether *path* is a regular file, and the error when the host did not say.
+
+    ``stat`` is called here rather than through ``Path.is_file()``, whose answer to a
+    refused ``stat`` depends on the interpreter: Python 3.12 and 3.13 raise it, which
+    ends the whole doctor run, and 3.14 returns ``False``, which reads as "no AWS
+    setup" on a host that has one. On macOS a sandbox tier that hides ``~/.aws``
+    refuses this ``stat``, and so does any host where this user lacks permission on
+    ``~/.aws``. Only a missing file or a missing directory answers "not there".
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode), None
+    except (FileNotFoundError, NotADirectoryError):
+        return False, None
+    except OSError as exc:
+        return False, exc
+
+
 def _doctor_credentials(issues: list[str]) -> None:
     """Report the AWS / credential posture the agent will actually see.
 
@@ -224,9 +243,21 @@ def _doctor_credentials(issues: list[str]) -> None:
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     print("\nCredentials")
     aws_dir = Path.home() / ".aws"
-    has_config = (aws_dir / "config").is_file()
-    has_creds = (aws_dir / "credentials").is_file()
-    if not has_config and not has_creds:
+    has_config, config_refused = _probe_aws_file(aws_dir / "config")
+    has_creds, creds_refused = _probe_aws_file(aws_dir / "credentials")
+    # A file that answered decides the section; a refusal alone leaves the setup unknown.
+    refused = None if has_config or has_creds else config_refused or creds_refused
+    if refused is not None:
+        print(
+            f"  aws:         ⚠️  could not check ~/.aws "
+            f"({refused.strerror or type(refused).__name__})"
+        )
+        render._print_wrapped(
+            "If this shell runs inside an agent sandbox, the sandbox can hide ~/.aws: run "
+            "`kirocrew doctor` from your own terminal to see the AWS setup. Otherwise check "
+            "the ownership and permissions of ~/.aws."
+        )
+    elif not has_config and not has_creds:
         print("  aws:         ⏹ no ~/.aws config")
         render._print_wrapped(
             "Once you configure one, the SDK resolves credentials itself, so the agent "
@@ -345,7 +376,7 @@ def _doctor_credentials(issues: list[str]) -> None:
         # cannot copy back out intact — a broken link is barely better than the
         # dead pointer this replaced.
         print(f"    {_BLOCKED_COMMANDS_DOC_URL}")
-    else:
+    elif refused is None:
         render._print_wrapped(
             "With nothing configured, an agent reporting no AWS access is reporting "
             "the truth — configure a profile first, then re-run this check."

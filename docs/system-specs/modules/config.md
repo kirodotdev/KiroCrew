@@ -109,7 +109,7 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | Owner | Owns |
 |---|---|
 | `config/loader_credentials.py` | Credential keys (`CRED_*`, `CREDENTIAL_KEYS`, named by [code-style](../common/code-style.md)), the `.env` reader and its decoder, `secret://` env resolution, the `kiro-cli` API-key injection, the dashboard port. |
-| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `materialize_workspace_dir`), `read_local_secret`, and `read_merged_config_files`, the raw read for a reader that stays off the dataclass graph: it merges `config.local.json` over `config.json` as whole documents, as the loader does, before any section is read. |
+| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `usable_workspace_dir_from_entry` (the base workspace folder instead of one that is missing or sensitive, for a cron fire and a Slack channel turn), `materialize_workspace_dir`), `read_local_secret`, and `read_merged_config_files`, the raw read for a reader that stays off the dataclass graph: it merges `config.local.json` over `config.json` as whole documents, as the loader does, before any section is read. |
 | `config/loader_document.py` | Document I/O: `_raw_config`, `read_config_for_update`, the publish floor, `write_config_atomically`, `update_config_locked` and its lock, the meta stamp, the unsandboxed-exec policy and `acp_backend_declared` read from the raw document, and the validated-document cache fingerprint. The config-writer scans exempt it with `loader_config.py` (`save`). |
 | `config/write_provenance.py` | The record of the latest `config.json` / `config.local.json` inode this gateway process published (read from the staged descriptor, held open), vouched for from each file of the bounded run of its own saves that led to it, with its per-process nonce, read by the Linux launcher's pin (security.md). Written by `write_config_atomically`; logs under `kiro_crew.config.loader`. |
 | `config/loader_builders.py` | The load-time field readers, the security clamp and its SEL event, the agent, session, telemetry and dashboard `_build_*` helpers, the harness-choice mapping (`_read_backend_choice`, `_stored_agent_dict`, `_restore_stored_harness_fields`), and the loop-stall and managed-launch readers. |
@@ -3090,7 +3090,13 @@ that hit a one-off transient failure (an `OSError`, e.g. a Windows sharing
 violation mid-rotation) is retried on the very next cycle instead of being
 silently dropped the moment the file's mtime stops moving; a persistently bad
 file just pays a harmless repeated re-read (the undecodable warning still
-fires only once).
+fires only once). Boot's `load_credentials` and the per-key reader
+`read_env_file_credential` (a kiro-cli spawn's `KIRO_API_KEY` lookup among its
+callers) read an undecodable file of either kind the same way: the same
+warning, nothing loaded from it, and a non-definitive answer to a caller that
+asks. So such a file stops neither the gateway at boot, a session start, nor
+`kirocrew doctor`, while the in-place rewriters still refuse it, so they
+never overwrite a file they could not parse.
 
 The apply itself is the other way the cycle can fail, and it is treated the
 same way. `apply_env_credential_changes` is best-effort — a bad apply must not

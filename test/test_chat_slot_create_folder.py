@@ -959,3 +959,46 @@ class TestOwnerFolderCreatePersistsTheFiling:
             "the folder filing never reached the metadata line -- a restart before "
             "the first message rehydrates the tab unfiled"
         )
+
+
+class TestAgentSocketCreateDoesNotClaimTheFolder:
+    """Filing a new chat into a folder claims it for the person, so an agent's
+    ``chat_folder_delete`` refuses it afterwards. The claim was decided by "no
+    secret", which an agent on the agent socket also sends: token auth marks that
+    call ``internal_auth`` instead. Mocked request, no server."""
+
+    @staticmethod
+    def _request(state, *, internal: bool):
+        from unittest.mock import Mock
+
+        from aiohttp import streams
+        from aiohttp.test_utils import make_mocked_request
+
+        payload = streams.StreamReader(
+            Mock(_reading_paused=False), 2**16, loop=asyncio.get_running_loop()
+        )
+        payload.feed_data(json.dumps({"name": "s1", "folder_id": FOLDER_ID}).encode())
+        payload.feed_eof()
+        headers = {"Content-Type": "application/json"}
+        if internal:
+            headers["X-Internal-Caller"] = "kirocrew-dashboard"
+        request = make_mocked_request("POST", "/api/chat/slots", headers=headers, payload=payload)
+        request.app["state"] = state
+        if internal:
+            request["internal_auth"] = True
+        return request
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("internal", "claimed"), [(True, False), (False, True)])
+    async def test_only_the_person_claims_the_folder(self, tmp_path, internal, claimed):
+        from kiro_crew.dashboard.chat import api_chat_slot_create
+        from kiro_crew.dashboard.chat_folders_records import CREATED_BY_SESSION
+
+        state = _make_state(tmp_path)
+        state._folders[0][CREATED_BY_SESSION] = "chat-agent"
+        resp = await api_chat_slot_create(self._request(state, internal=internal))
+        assert resp.status == 200, resp.text
+        folder = await state.read_folders(
+            lambda folders: next(dict(f) for f in folders if f["id"] == FOLDER_ID)
+        )
+        assert (CREATED_BY_SESSION not in folder) is claimed

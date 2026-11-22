@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew import steering_plan as plan
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
 from kiro_crew.dashboard import chat_handlers
@@ -743,6 +744,156 @@ def test_a_relocated_claude_config_dir_memory_link_offers_no_switch(home, tmp_pa
     )
     always = next(r for r in rows if r["name"] == "always.md")
     assert always["switch"] == plan.SWITCH_NONE
+
+
+def _claude_code_switches(project: Path) -> dict[str, str]:
+    """The ``switch`` per listed tree file for a Claude Code chat on *project*."""
+    from kiro_crew.context_assembly.agent_spec import steering_resource_documents
+
+    rows = plan.chat_steering_plan(
+        listed=list_steering_blocking(str(project))["files"],
+        folder_documents=(),
+        loader_documents=[
+            (str(p), r, b is not None) for p, r, b in steering_resource_documents(str(project))
+        ],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=str(project),
+        agent=None,
+        is_member=False,
+    )
+    return {r["name"]: r["switch"] for r in rows if r["source"] != "agent"}
+
+
+def test_a_tree_file_a_claude_memory_file_imports_offers_no_switch(home, tmp_path, monkeypatch):
+    """A project ``CLAUDE.md`` that imports a tree file with ``@path``: Claude Code
+    reads that file by itself, so no switch is offered; other files keep theirs."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    project = tmp_path / "project"
+    _write(project / ".kiro" / "steering" / "style.md", "# Style\n")
+    _write(project / "CLAUDE.md", "# Project\n\n@.kiro/steering/style.md\n")
+    switch = _claude_code_switches(project)
+    assert switch["style.md"] == plan.SWITCH_NONE
+    assert switch["always.md"] == plan.SWITCH_ON
+
+
+@pytest.mark.parametrize(
+    ("memory", "name", "expected"),
+    [
+        pytest.param(
+            {".claude/CLAUDE.md": "@~/.kiro/steering/always.md\n"},
+            "always.md",
+            plan.SWITCH_NONE,
+            id="home-import",
+        ),
+        pytest.param(
+            {
+                "project/CLAUDE.md": "See @notes/team.md\n",
+                "project/notes/team.md": "@../.kiro/steering/style.md\n",
+            },
+            "style.md",
+            plan.SWITCH_NONE,
+            id="two-hops-relative-to-importer",
+        ),
+        pytest.param(
+            {"project/CLAUDE.md": "```\n@.kiro/steering/style.md\n```\n"},
+            "style.md",
+            plan.SWITCH_ON,
+            id="fenced-block",
+        ),
+        pytest.param(
+            {"project/CLAUDE.md": "Write `@.kiro/steering/style.md` to import it.\n"},
+            "style.md",
+            plan.SWITCH_ON,
+            id="backtick-quoted",
+        ),
+        pytest.param(
+            {
+                "project/CLAUDE.md": "@a.md\n",
+                "project/a.md": "@CLAUDE.md\n@b.md\n",
+                "project/b.md": "@a.md\n@.kiro/steering/style.md\n",
+            },
+            "style.md",
+            plan.SWITCH_NONE,
+            id="cycle",
+        ),
+    ],
+)
+def test_claude_memory_imports_follow_claude_codes_rules(
+    home, tmp_path, monkeypatch, memory, name, expected
+):
+    """``~/`` reaches the home, a nested import resolves against its own file, an
+    ``@path`` in a fenced block or quoted in backticks is not an import, and a cycle
+    ends."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    project = tmp_path / "project"
+    _write(project / ".kiro" / "steering" / "style.md", "# Style\n")
+    for rel, body in memory.items():
+        _write((tmp_path if rel.startswith("project/") else home) / rel, body)
+    assert _claude_code_switches(project)[name] == expected
+
+
+def test_a_credential_file_an_import_names_is_never_read(home):
+    """An ``@path`` can name a credential file; the scan reads through the
+    sensitive-path gate, so that file's text is never scanned."""
+    credential = _write(home / ".aws" / "notes.md", "@config\n")
+    assert list(plan._claude_imports([credential])) == []
+
+
+def test_an_import_target_the_path_gate_refuses_is_not_counted(home, tmp_path, monkeypatch):
+    """An import's target is file text, so it passes the path gate before any stat;
+    on Windows that gate keeps a UNC target from an SMB lookup of its host."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    project = tmp_path / "project"
+    credential = _write(home / ".aws" / "config", "[default]\n")
+    notes = _write(home / "notes.md", "# Notes\n")
+    _write(project / "CLAUDE.md", "@~/.aws/config\n@~/notes.md\n")
+    found = plan._claude_memory_targets(str(project))
+    assert notes.resolve() in found
+    assert credential.resolve() not in found
+
+
+def test_the_import_walk_judges_a_bounded_number_of_targets(home, tmp_path, monkeypatch):
+    """A memory file's text sets how many targets the walk would judge, so the walk
+    stops at its cap: later imports are not followed and nothing more is checked."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    # raising=False: without the cap the count below fails, not this patch.
+    monkeypatch.setattr(plan, "_CLAUDE_IMPORT_TARGETS", 3, raising=False)
+    judged: list[str] = []
+    gate = plan.validate_file_path
+
+    def counting(raw: str, **kwargs):
+        judged.append(raw)
+        return gate(raw, **kwargs)
+
+    monkeypatch.setattr(plan, "validate_file_path", counting)
+    project = tmp_path / "project"
+    for name in ("a", "b", "c", "d"):
+        _write(project / f"{name}.md", "# Note\n")
+    _write(project / "CLAUDE.md", "@a.md @b.md @c.md @d.md\n" + "@a.md " * 1000 + "\n")
+    found = plan._claude_memory_targets(str(project))
+    assert len(judged) == 3
+    assert (project / "c.md").resolve() in found
+    assert (project / "d.md").resolve() not in found
+
+
+@pytest.mark.parametrize(
+    "build_pump",
+    # Three backticks a unit: a cubic scan then fails at the 2 000-unit pump instead
+    # of running for minutes at 20 000.
+    [lambda n: "x" + "`" * (3 * n), lambda n: "@" + "\\ " * n + "x"],
+    ids=["backtick-run", "escaped-spaces"],
+)
+def test_a_memory_file_line_is_scanned_in_linear_time(tmp_path, build_pump):
+    """The steering list reads every memory file on each request, so a line built to
+    make a pattern backtrack must cost time in proportion to its length."""
+    holder = tmp_path / "CLAUDE.md"
+
+    def scan(text: str) -> None:
+        holder.write_text(text, encoding="utf-8")
+        assert len(list(plan._claude_imports([holder]))) <= 1
+
+    assert_rejected_without_backtracking(scan, build_pump)
 
 
 def test_a_link_to_a_switched_off_file_reads_switched_off_too(home, tmp_path):

@@ -123,6 +123,11 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // (pages/chat/SpecHooksNotice.tsx). Written only by its Dismiss click,
   // through savePrefExplicitly. It hides a notice and gates nothing.
   'kirocrew:spec-hooks-run-nowhere-notice-dismissed',
+  // The folders whose "hook files in .kiro/hooks do not run" notice was
+  // dismissed, as a JSON array of marks (pages/chat/SpecHooksNotice.tsx).
+  // Written only by its Dismiss click, through savePrefExplicitly. It hides a
+  // notice and gates nothing.
+  'kirocrew:project-hook-files-notice-dismissed',
   // "Don't show this notice again" on the confirm before conductor mode turns on
   // mid-chat (pages/chat/page/crewModeMidChatConfirm.tsx). Written only on that
   // dialog's Confirm, through savePrefExplicitly. Unlike 'mc-yolo-ack' it gates no

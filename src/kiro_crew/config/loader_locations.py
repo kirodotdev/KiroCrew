@@ -763,6 +763,37 @@ def workspace_dir_from_entry(entry: WorkspaceConfig | None) -> Path:
     return config_dir() / dirname
 
 
+def usable_workspace_dir_from_entry(
+    entry: WorkspaceConfig | None, name: str = "", *, must_exist: bool = True
+) -> Path:
+    """:func:`workspace_dir_from_entry`, held to the rule chat applies to a workspace folder.
+
+    A folder on the sensitive-path list, or missing when *must_exist*, is not used as the
+    working directory of a scheduled run or a channel turn: the base workspace folder is
+    returned instead and one line is logged. A scheduled run passes ``must_exist=False``:
+    a folder that is not there yet is created on use, so only the sensitive-path half
+    applies. The base folder itself is returned as it is.
+    """
+    ws = workspace_dir_from_entry(entry)
+    base = workspace_dir_from_entry(None)
+    if ws == base:
+        return ws
+    from kiro_crew.security import is_sensitive_canonical_path  # circular import
+
+    try:
+        real = os.path.realpath(str(ws))
+        if (not must_exist or os.path.isdir(real)) and not is_sensitive_canonical_path(real):
+            return ws
+    except Exception:  # noqa: BLE001 - an unjudgeable folder is not used
+        pass
+    logger.warning(
+        "workspace %r: its folder is not usable (on the sensitive-path list, or missing); "
+        "using the base workspace folder",
+        name,
+    )
+    return base
+
+
 def resolve_agent_config_path() -> Path:
     """Return defaults.json, preferring project-dir override for development.
 

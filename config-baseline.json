@@ -6381,7 +6381,8 @@
         "mint_timeout_secs": null,
         "max_recovery_attempts": 8,
         "recover_backoff_max_secs": 30.0,
-        "probe_failure_threshold": 3
+        "probe_failure_threshold": 3,
+        "managed_env_endpoint": ""
       }
     },
     {
@@ -6541,6 +6542,23 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
+    },
+    {
+      "path": "instances.managed_env_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "remote-crew",
+        "managed-environment"
+      ],
+      "label": "Managed Environment Service Endpoint",
+      "help": "HTTPS base URL of the Kiro web service that lists, creates and connects your managed environments. Empty (the default): every call is refused and names this key.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "heartbeat",
@@ -11052,6 +11070,20 @@
       "tags": [],
       "label": "Feature preview: connected_computers",
       "help": "Turn on the 'connected_computers' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.crew_client",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: crew_client",
+      "help": "Turn on the 'crew_client' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

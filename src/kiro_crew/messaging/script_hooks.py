@@ -173,8 +173,8 @@ def _hook_context(results: list[ScriptHookResult]) -> list[str]:
             injected.append(
                 f"BLOCKED:{r.hook_name}:{r.stderr[:HOOK_DENY_REASON_MAX_CHARS] if r.stderr else 'hook denied'}"
             )
-        elif r.exit_code != 0 and r.stderr:
-            logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[-200:])
+        elif r.exit_code != 0:
+            logger.warning("Hook %s (%s) failed: %s", r.hook_name, r.event, r.failure_detail)
     return injected
 
 

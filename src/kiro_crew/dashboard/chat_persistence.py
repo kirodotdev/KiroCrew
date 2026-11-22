@@ -790,6 +790,7 @@ from kiro_crew.dashboard.chat_persistence_parts.slot_builders import (  # noqa: 
     _apply_recent_session,
     _apply_restored_open_slot,
     _await_takeover_ordering_settled,
+    _commit_tab_id_backfills,
     _load_rehydrated_window,
     _PendingWindow,
     _prefetch_recent_session,

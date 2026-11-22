@@ -224,6 +224,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _page_in_force,
         _shot_root,
         _trim,
+        _with_text,
         spool_png,
     )
 

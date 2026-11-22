@@ -125,6 +125,7 @@ from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
     _JSON_OBJECT_LISTS,
     _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _REPLACE_ONLY_COMPONENTS,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,

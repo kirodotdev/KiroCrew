@@ -40,6 +40,7 @@ class _Provider:
 def _result(exit_code=0, stdout="", stderr="", refused=False, detail=""):
     return SimpleNamespace(
         hook_name="probe",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
         exit_code=exit_code,
         stdout=stdout,
         stderr=stderr,
@@ -359,6 +360,19 @@ def test_a_hook_store_error_does_not_break_the_turn(monkeypatch):
     provider = _Provider()
     assert _run(provider, ScriptHookTurn("k", "hello")) == "All done."
     assert provider.messages == ["[built prompt] hello"]
+
+
+def test_a_failed_hook_with_an_empty_stderr_logs_one_warning(caplog):
+    from kiro_crew.hooks import ScriptHookResult
+
+    failed = ScriptHookResult(
+        hook_id="h1", hook_name="h", event=HOOK_EVENT_USER_PROMPT_SUBMIT, exit_code=3, stderr=""
+    )
+    with caplog.at_level("WARNING", logger=script_hooks.logger.name):
+        assert script_hooks._hook_context([failed]) == []
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
+        "Hook h (UserPromptSubmit) failed: exited with code 3"
+    ]
 
 
 def test_a_replay_of_the_same_message_does_not_rerun_prompt_submit(store):
