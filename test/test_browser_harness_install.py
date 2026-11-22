@@ -422,7 +422,11 @@ def test_a_real_windows_venv_over_a_removed_base_python_is_repaired(
     def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
         if argv[1:4] == ["-I", "-m", "venv"]:
-            return subprocess.run(argv, capture_output=True, timeout=timeout, **UTF8_TEXT)
+            # The production venv deadline equals the suite's pytest-timeout, so the
+            # child gets the shorter test deadline and a stall fails as a normal test.
+            return subprocess.run(
+                argv, capture_output=True, timeout=FALLBACK_TIMEOUT_SECS, **UTF8_TEXT
+            )
         return _ok(argv, timeout)
 
     # Intact base: installed, and Install runs no venv step.
