@@ -181,6 +181,12 @@ gateway picks up a `voice_reply` change in `config.json` without a restart, read
 `config.local.json` merged over it. An edit that touches only `config.local.json` is
 not picked up live; a restart applies it.
 
+In a thread linked to a dashboard session the same rules apply to the session's answer
+to a message sent in the thread. These are answered in text only: a message that waits
+in the session's queue (behind a running turn, or while the session is paused), an
+answer given by a retry or continuation turn, a code channel's messages, and a turn
+typed in the dashboard.
+
 Voice replies are uploaded to the Slack thread alongside the text response.
 File format depends on the provider (MP3 for Polly, WAV for the built-in engine).
 

@@ -36,6 +36,8 @@ if TYPE_CHECKING:
         _RECIPIENT_LOGGED,
         _RECIPIENT_LOGGED_CAP,
         SLACK_NAMESPACE,
+        STOP_REASON_CANCELLED,
+        _reply_by_voice,
         append_and_surface,
         code_channel_post_thread,
         logger,
@@ -1044,6 +1046,35 @@ _MIRROR_ECHO_LIMIT = 500
 #: The dashboard -> Slack mirror's working placeholder, posted under the prompt
 #: echo and deleted once the task stream, the answer or the turn's end takes over.
 _MIRROR_THINKING = "_Thinking…_"
+
+
+async def _speak_linked_reply(turn: Any, spoken: str) -> None:
+    """Speak *spoken*, the answer the linked-Slack mirror just posted, into that thread.
+
+    Only a turn that answers a message routed from the thread carries
+    ``_slack_voice`` (the session key the thread resolved to, the sender, and whether
+    it was a voice memo), and ``_reply_by_voice`` then applies the voice settings an
+    unlinked thread's answer gets. A cancelled turn has no finished answer to speak,
+    and a bound code channel's own session (posted top-level, ``mirror_post_thread``
+    gives None) stays text-only, a button answer as much as a typed message.
+    The clip reaches every member of the thread, so it is made in the CHANNELS seam,
+    as the thread's text is, not in the turn's own CHAT seam.
+    """
+    voice = turn._slack_voice
+    if voice is None or turn._mirror_post_ts is None or turn._stop_reason == STOP_REASON_CANCELLED:
+        return
+    thread_key, user_id, had_voice_input = voice
+    with redaction_seams.output_seam(redaction_seams.CHANNELS):
+        await _reply_by_voice(
+            turn.state.slack_client,
+            turn._mirror_chan,
+            turn._mirror_post_ts,
+            user_id,
+            thread_key,
+            spoken,
+            spoken,
+            had_voice_input,
+        )
 
 
 async def _retire_mirror_thinking(slack_client: Any, channel: str | None, ts: str) -> str:

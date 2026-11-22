@@ -750,6 +750,7 @@ async def route_linked_thread(
     turn_context: str | None = None,
     interpret_commands: bool = True,
     admit: Callable[[], Awaitable[bool]] | None = None,
+    had_voice_input: bool | None = None,
 ) -> LinkedRoute:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -784,6 +785,10 @@ async def route_linked_thread(
     *admit* (the caller's live gate: a code channel's fences) is asked last,
     after every await here and right before the row is appended or the turn
     starts; False holds the message (:attr:`LinkedRoute.HELD`).
+    *had_voice_input* is passed by the Slack message handlers: whether the message
+    was a voice memo. A turn it starts then speaks its answer into the thread under
+    the voice settings an unlinked thread's answer follows; None (a code channel)
+    keeps it text-only.
     """
     # Code channels are the owner's (slack.shared_access): a shared user's message
     # in one never reaches its session, whatever the feature or the slot says.
@@ -916,6 +921,7 @@ async def route_linked_thread(
                 turn_context=turn_context,
                 interpret_commands=interpret_commands,
                 admit=admit,
+                had_voice_input=had_voice_input,
             )
 
     # A channel pinned to an agent is served only by that agent. A slot on any
@@ -1008,6 +1014,7 @@ async def route_linked_thread(
             turn_context=turn_context,
             interpret_commands=interpret_commands,
             admit=admit,
+            had_voice_input=had_voice_input,
         )
     text = _stored
     if admit is not None:
@@ -1109,6 +1116,9 @@ async def route_linked_thread(
                 _directive_source_channels=(channel,),
                 # An OPTIONS answer is the slot's answer, never a ``/`` command.
                 _commands_off=not interpret_commands,
+                _slack_voice=(
+                    None if had_voice_input is None else (session_key, user_id, had_voice_input)
+                ),
             )
         )
         _linked_slot.task = _chat_task
@@ -1177,6 +1187,7 @@ async def maybe_route_linked_thread(
     user_meta: dict[str, Any] | None = None,
     turn_context: str | None = None,
     interpret_commands: bool = True,
+    had_voice_input: bool | None = None,
 ) -> bool:
     """:func:`route_linked_thread` for callers that only need to know whether
     the message was handled: True when routed OR refused (return without
@@ -1194,5 +1205,6 @@ async def maybe_route_linked_thread(
         user_meta=user_meta,
         turn_context=turn_context,
         interpret_commands=interpret_commands,
+        had_voice_input=had_voice_input,
     )
     return outcome is not LinkedRoute.UNROUTED
