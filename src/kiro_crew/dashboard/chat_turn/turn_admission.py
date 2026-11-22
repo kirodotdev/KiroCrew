@@ -9,6 +9,7 @@ import functools
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import turn_timing
+from kiro_crew.agent_sdk.kas_telemetry_notice import deliver as deliver_kas_telemetry_note
 from kiro_crew.config.loader import normalize_agent_model
 from kiro_crew.context import discard_memory_prefetch
 from kiro_crew.dashboard.chat_utils import (
@@ -1414,6 +1415,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     turn._spec_hooks_cwd = _spec_hooks_cwd
     if is_new:
         _notice_steer_upgrade(state, slot, client)
+        await deliver_kas_telemetry_note(state, client)
         await _notice_seed_declined(state, slot, client)
         await _notice_unresolved_control_plane(state, slot, client)
     # A member DM's first turn carries the four-layer member section as
