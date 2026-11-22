@@ -1,6 +1,6 @@
 ---
-title: The dashboard agent may offer a one-click close-session chip when its work is done
-status: draft
+title: The dashboard agent may offer a close-session chip, confirmed by a second click, when its work is done
+status: accepted
 author: rnoack1, with kirocrew
 created: 2026-11-14
 last-audited: 2026-11-14
@@ -12,9 +12,9 @@ supersedes: []
 superseded-by: []
 ---
 
-# RFC: The dashboard agent may offer a one-click close-session chip when its work is done
+# RFC: The dashboard agent may offer a close-session chip, confirmed by a second click, when its work is done
 
-Status: draft. Acceptance is requested from a maintainer. It flips to `accepted` when one records it on this line with the date. Nothing is on main. Code references were read on main at `f9ebf3a1e2`. This document changes no code. [#6823](https://github.com/kirodotdev/KiroCrew/pull/6823) changes what the default dashboard agent says at the end of its work, and the First Principles lane reads that decision from the base branch. A `draft` record there is not yet a decision, so #6823 clears once a maintainer flips this document to `accepted`.
+Status: accepted. Accepted 2026-11-22 by maintainer bolichen97 on [#37053](https://github.com/kirodotdev/KiroCrew/pull/37053). Nothing is on main. Code references were read on main at `f9ebf3a1e2`. This document changes no code. [#6823](https://github.com/kirodotdev/KiroCrew/pull/6823) changes what the default dashboard agent says at the end of its work, and the First Principles lane reads that decision from the base branch.
 
 ## Summary
 
