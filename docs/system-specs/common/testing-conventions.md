@@ -3632,6 +3632,26 @@ while not observed():
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
 
+**A mocked "now" is a calendar date, so anchor it to the real clock.** A test that
+mocks `Date.now` to a fixed literal (`Date.parse('<some day>')`) stamps whatever it
+writes with that day. A store that prunes by age against the real clock, or keeps its
+stamps in module memory across tests, then treats those stamps as that many days old,
+and the test starts failing on the day the literal falls past the TTL, on every branch
+at once. `ChatPageDrafts.test.tsx` mocked its steer take-back clock to a fixed day; the
+chat drafts store stamped `slot-a` under it and kept the stamp in module memory, and a
+later test's `slot-a` draft came back `''` once that day was 30 days old. Fix: mock
+`now` relative to the real clock (`const NOW = Date.now()`, then `NOW + offset`), and
+reset each module-level store between tests (`__resetForTests` in `beforeEach`). A
+fixed literal is right only when the date itself is the input under test, such as
+formatting or a time-zone edge, and then nothing that ages by the real clock may read it.
+
+```ts
+// WRONG: expires on a fixed day once the literal is older than the TTL
+const NOW = Date.parse('2025-01-01T00:00:00Z')
+// RIGHT: the same distance from the real clock on every run
+const NOW = Date.now()
+```
+
 **A request budget the test spends in real seconds measures the runner.** A 3 s recall
 deadline with a 1 s `time.sleep` "burn" left the judge's wait at the mercy of every
 cold step before it (store, pool, embedding): on loaded Windows runners the remaining
