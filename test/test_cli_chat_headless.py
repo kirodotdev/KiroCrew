@@ -16,6 +16,7 @@ import pytest
 
 from kiro_crew import cli_chat_headless as h
 from kiro_crew import crew_mode
+from kiro_crew.cloud import aws as cloud_aws  # loaded so conftest pins its confinement off
 
 
 def _parse(argv):
@@ -111,6 +112,24 @@ def test_headless_flags_need_headless():
 
 def test_main_usage_error_exits_2(capsys):
     assert h.main(_parse(["--headless"])) == h.EXIT_USAGE
+
+
+@pytest.mark.parametrize("marker", ["env", "confinement"])
+def test_main_refuses_inside_an_agent_session(monkeypatch, capsys, marker):
+    def no_sign_in(self):
+        raise AssertionError("an agent-session run must not sign in")
+
+    monkeypatch.setattr(h.GatewayClient, "sign_in", no_sign_in)
+    if marker == "env":
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "agent-slot")
+    else:
+        monkeypatch.setattr(cloud_aws, "_agent_confinement", lambda: True)
+    argv = ["--headless", "--approval-mode", "trust", "-m", "go", "--json"]
+    assert h.main(_parse(argv)) == h.EXIT_USAGE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "refused inside an agent session" in captured.err
+    assert "normal terminal" in captured.err
 
 
 # ---------- conductor agent ----------
