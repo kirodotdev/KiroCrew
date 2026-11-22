@@ -141,6 +141,7 @@ def test_a_second_app_does_not_get_the_first_apps_value(app_env, tmp_path, monke
     first = dashboard_proxy.stand_in_value(_APP)
     monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _name: True)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     dashboard_proxy.grant(_APP)
     first = dashboard_proxy.stand_in_value(_APP)
     assert first and dashboard_proxy.stand_in_value("another-app") != first
@@ -155,6 +156,7 @@ def test_the_grant_ends_with_the_app(app_env, tmp_path, monkeypatch, what):
     dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
     monkeypatch.setattr(dashboard_proxy, "registry_verified", lambda _name: True)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     dashboard_proxy.grant(_APP)
     assert dashboard_proxy.granted(_APP)
 

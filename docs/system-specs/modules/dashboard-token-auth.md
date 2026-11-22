@@ -432,15 +432,19 @@ Request flow:
    recorded, so a reinstall or another package under the same name derives a new
    value; the boot id ends every value at a gateway restart. The Linux namespace
    launcher writes it into the stand-in it binds (`extra_stand_ins`, never the
-   real file). Seatbelt and the no-sandbox path cannot bind content, so a granted
-   app there is not masked (an ungranted app is); Windows has no mask at all
-   (`win32-unverified`), so there the secret files stay readable and the HIGH stays
-   open until the owner accepts the risk in writing. The grant is the owner's:
+   real file). Only that backend can bind content, so the grant is refused
+   (`platform-unsupported`) and never offered on Seatbelt (macOS) or any other
+   backend, every mask stays for every app there, and Crew Tunnel on macOS waits for
+   an API path. On such a backend a spawned app that presents the REAL secret is
+   refused too (`denied real-secret-from-app app=<app> basis=spawned-app`). A host
+   with no sandbox has no boundary, so it stays as it was; Windows has no mask at
+   all (`win32-unverified`), so there the secret files stay readable and the HIGH
+   stays open until the owner accepts the risk in writing. The grant is the owner's:
    `PUT /api/apps/<name>/dashboard-proxy` with `{"confirm": true}`, offered only
    for an app the gateway recorded as installed from a registry, with text naming
    the registry and source and saying the app gets full dashboard control
-   including running agents, minus credential and admin routes, with admin done
-   locally. It is stored in `member-records/app-dashboard-proxy/` (masked in every
+   including running agents, minus credential and admin routes, with terminal and
+   approvals local-only and admin done locally. It is stored in `member-records/app-dashboard-proxy/` (masked in every
    sandbox mode), never pre-granted, counts only while the owner-enable marker
    stands and the owner has not disabled the app, and is removed on a disable and
    an uninstall. It reaches a backend at its next start.

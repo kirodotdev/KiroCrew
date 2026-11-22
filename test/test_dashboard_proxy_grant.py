@@ -43,7 +43,28 @@ def installed(monkeypatch):
     )
     monkeypatch.setattr(dashboard_proxy, "_installed", lambda _name: record)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     return record
+
+
+def test_no_grant_or_offer_on_a_backend_that_cannot_bind_a_stand_in(
+    records, installed, monkeypatch
+):
+    """Seatbelt and every other non-namespace backend: refuse, and keep every mask."""
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: False)
+    assert dashboard_proxy.grant(_APP) == (False, "platform-unsupported")
+    assert dashboard_proxy.prompt_text(_APP) is None
+    assert dashboard_proxy.granted(_APP) is False
+
+
+def test_a_granted_app_stays_masked_when_the_backend_cannot_bind_a_stand_in(
+    records, installed, monkeypatch
+):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    masks = (str(records / ".local_secret"),)
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: False)
+    assert dashboard_proxy.backend_masks(_APP, masks) == (masks, ())
 
 
 def test_an_installed_app_is_never_pre_granted(records, installed):

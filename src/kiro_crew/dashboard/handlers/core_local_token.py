@@ -121,6 +121,26 @@ async def api_token_local(request: web.Request) -> web.Response:
         provenance = await asyncio.get_running_loop().run_in_executor(
             local_auth_executor(), local_owner_bootstrap_provenance, request
         )
+        if provenance is not None and provenance.basis == "spawned-app":
+            # An app backend holds no real secret where a sandbox masks it. One that
+            # presents it anyway got it past the mask, and mints nothing with it; only
+            # a host with no sandbox (no boundary to hold) keeps the earlier behaviour.
+            from kiro_crew.apps import dashboard_proxy
+
+            if await asyncio.to_thread(dashboard_proxy.sandboxed_backend):
+                _sel().log_api_access(
+                    caller=request.remote or "unknown",
+                    operation="token.local",
+                    outcome="denied",
+                    source="local-bootstrap",
+                    resources=(
+                        f"denied real-secret-from-app app={provenance.app or 'none'} "
+                        f"basis={provenance.basis}"
+                    ),
+                )
+                return web.json_response(
+                    {"error": "invalid secret", "code": "invalid_secret"}, status=403
+                )
     if provenance is None:
         _sel().log_api_access(
             caller="local-process",

@@ -72,6 +72,35 @@ _REFUSED = [
     ("POST", "/api/chat/mode"),
     ("POST", "/api/restart"),
     ("POST", "/api/update/approve"),
+    # Terminal and approvals are local-only (consistent with the owner approval routes).
+    ("POST", "/api/terminal/sessions"),
+    ("POST", "/api/terminal/external"),
+    ("POST", "/api/terminal/complete"),
+    ("POST", "/api/approvals/{id}/{action}"),
+    ("POST", "/api/chat/slots/{slot}/approve"),
+    ("POST", "/api/channels/{id}/agents/{aid}/approve"),
+    # Agent, skill and theme code that runs on the host.
+    ("PUT", "/api/agent/config"),
+    ("PUT", "/api/agents/b64/{name_b64}/capabilities"),
+    ("POST", "/api/agents/b64/{name_b64}/capabilities/detach"),
+    ("PUT", "/api/agents/b64/{name_b64}/worker-kit"),
+    ("PUT", "/api/agents/{name}/worker-kit"),
+    ("POST", "/api/skills/-/trust"),
+    ("DELETE", "/api/skills/-/trust"),
+    ("POST", "/api/skills/-/pending/{slug}/approve"),
+    ("POST", "/api/skills/-/discover/install"),
+    ("POST", "/api/themes/install"),
+    ("POST", "/api/themes/install-zip"),
+    ("PUT", "/api/chat/slots/{slot}/environment"),
+    ("PUT", "/api/chat/slots/{slot}/environment/file"),
+    # Linking a chat to an outside account.
+    ("POST", "/api/chat/slots/{name}/slack-link"),
+    ("POST", "/api/chat/slots/{slot}/slack-link"),
+    ("POST", "/api/chat/slots/{name}/mirror-link"),
+    ("POST", "/api/chat/slots/{slot}/mirror-link"),
+    ("PUT", "/api/notifications/channels/settings"),
+    ("POST", "/api/wakatime/oauth/authorize"),
+    ("POST", "/api/wakatime/oauth/disconnect"),
 ]
 
 

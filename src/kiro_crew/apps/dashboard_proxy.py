@@ -143,9 +143,10 @@ def prompt_text(app_name: str) -> dict[str, str] | None:
     """The words the owner sees before granting, or ``None`` when no grant may be offered.
 
     Offered only for an app the gateway recorded as installed from a registry. It names the
-    publisher and package from that record, not from the manifest.
+    publisher and package from that record, not from the manifest. Never offered on a backend
+    that cannot bind a stand-in.
     """
-    if not registry_verified(app_name):
+    if not _namespace_backend() or not registry_verified(app_name):
         return None
     rec = _installed(app_name)
     registry = getattr(rec, "sourceRegistry", "") or "the bundled catalog"
@@ -159,7 +160,8 @@ def prompt_text(app_name: str) -> dict[str, str] | None:
         "text": (
             f"Allow {app_name} {version} (registry {registry}, source {source}) to control "
             "this dashboard? It gets full dashboard control, including running agents, "
-            "except credential and admin routes. Admin is done locally."
+            "except credential and admin routes. Terminal and approvals are local-only, "
+            "and admin is done locally."
         ),
     }
 
@@ -201,8 +203,11 @@ def granted(app_name: str) -> bool:
 def grant(app_name: str) -> tuple[bool, str]:
     """Record the owner's grant. Call only from the owner-authenticated grant route.
 
-    Returns ``(True, "")`` or ``(False, reason)``; never raises for a refusal.
+    Returns ``(True, "")`` or ``(False, reason)``; never raises for a refusal. Refused with
+    ``platform-unsupported`` where the sandbox cannot bind a stand-in.
     """
+    if not _namespace_backend():
+        return False, "platform-unsupported"
     if not registry_verified(app_name):
         return False, "not-registry-verified"
     identity = install_identity(app_name)
@@ -280,19 +285,23 @@ def backend_masks(
     """``(paths to mask, stand-ins)`` for one running backend's spawn.
 
     An app without the grant: every path masked, every stand-in empty. A granted app: the
-    same masks with its derived value over each of them, where the backend can bind one
-    (the Linux namespace sandbox).
+    same masks with its derived value over each of them (the Linux namespace sandbox, the
+    only backend that can bind one). On any other backend a granted app is masked like an
+    ungranted one: the grant is refused there (:func:`grant`), so none stands.
 
-    shortcut: Seatbelt (macOS) and the no-sandbox path cannot bind content over a masked
-    file, so a granted app there is not masked and reads the real file; an ungranted app
-    stays masked. Windows has no mask at all. Upgrade by giving Seatbelt a per-app file.
+    shortcut: Seatbelt (macOS) has no stand-in to fill, so Crew Tunnel waits for an API
+    path there. Windows has no mask at all, and a host with no sandbox has no boundary.
     """
-    pairs = stand_in_pairs(app_name, masked_paths)
-    if not pairs:
+    if not _namespace_backend():
         return masked_paths, ()
-    if _namespace_backend():
-        return masked_paths, pairs
-    return (), ()
+    return masked_paths, stand_in_pairs(app_name, masked_paths)
+
+
+def sandboxed_backend() -> bool:
+    """Whether app backends run inside a sandbox on this host (any backend but none)."""
+    from kiro_crew.sandbox_wrap import detect_backend
+
+    return detect_backend(config_mode="standard") != "none"
 
 
 def verify_leg_two(app_name: str, provided: str) -> str:

@@ -170,3 +170,26 @@ async def test_win32_never_takes_leg_two(world, minted, fake_sel, monkeypatch):
     monkeypatch.setattr(auth, "_host_process_basis", lambda: "win32-unverified")
     resp = await _mint(value)
     assert resp.status == 403
+
+
+@pytest.mark.asyncio
+async def test_the_real_secret_from_a_spawned_app_is_refused_on_a_sandboxed_backend(
+    world, minted, fake_sel, monkeypatch
+):
+    """A backend that somehow holds the real secret never mints with it where a sandbox is."""
+    monkeypatch.setattr(dashboard_proxy, "sandboxed_backend", lambda: True)
+    resp = await _mint(_REAL)
+    assert resp.status == 403
+    assert "owner" not in minted
+    row = fake_sel.log_api_access.call_args.kwargs
+    assert row["operation"] == "token.local"
+    assert row["outcome"] == "denied"
+    assert row["resources"] == f"denied real-secret-from-app app={_APP} basis=spawned-app"
+
+
+@pytest.mark.asyncio
+async def test_the_real_secret_from_a_spawned_app_still_mints_with_no_sandbox(
+    world, minted, fake_sel, monkeypatch
+):
+    monkeypatch.setattr(dashboard_proxy, "sandboxed_backend", lambda: False)
+    assert (await _mint(_REAL)).status == 200

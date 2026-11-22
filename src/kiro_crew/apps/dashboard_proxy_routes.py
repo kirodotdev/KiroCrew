@@ -23,6 +23,9 @@ from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.routes")
 
+#: Refusals that are the install's state, not a fault of the gateway.
+_REFUSED_REASONS = frozenset({"not-registry-verified", "not-enabled", "platform-unsupported"})
+
 
 async def _owner_denial(request: web.Request, operation: str) -> web.Response | None:
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -81,7 +84,7 @@ async def handle_dashboard_proxy(request: web.Request) -> web.Response:
         resources=f"name={name!r}" + ("" if ok else f" reason={reason}"),
     )
     if not ok:
-        status = 409 if reason in ("not-registry-verified", "not-enabled") else 500
+        status = 409 if reason in _REFUSED_REASONS else 500
         return web.json_response(
             {"error": "the grant was not recorded", "code": reason or "not_granted"}, status=status
         )
