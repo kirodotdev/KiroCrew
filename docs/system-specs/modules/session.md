@@ -2672,7 +2672,14 @@ against sweep completeness, and are torn down at `close_all`.
   session gets one `leftover_memory` notice per turn (re-armed when the turn releases the session)
   (`SessionManager.on_leftover_memory`, wired by the dashboard). With
   `session.watchdog_end_leftovers_mid_turn` (default off) they are also ended
-  then. Ending is Linux only, as the pinned terminator is; macOS reports.
+  then. `AcpRuntime.kill` and `AcpClient.shutdown` also read their root's
+  leftovers before they signal and end them the same way once the root is gone
+  (`runtime_tree_kill.kill_ending_session_leftovers`), so a job a closed chat's
+  shell already left does not outlive it, and a recycle through either leaves
+  `end_after_recycle` nothing to end. A job whose shell is still running at that
+  read is in the live tree, so this step does not read or end it. Ending is
+  Linux only, as the pinned terminator is; macOS reports and its teardown leaves
+  them running.
   Resident pages are summed across the
   tree and converted to MiB once at the end. The tree RSS is measured once per
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,

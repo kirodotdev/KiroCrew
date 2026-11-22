@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.acp import runtime_process_tree
@@ -41,12 +41,15 @@ from kiro_crew.session_pid import (
     _untrack_pid_if_dead,
     _untrack_root_by_identity,
     _untrack_session_pid,
+    end_session_leftovers,
+    find_session_leftovers,
     group_vouching_available,
     unregister_protected_pid,
 )
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.session_pid_rss import SessionLeftovers
 
 #: The runtime's logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.runtime")
@@ -70,6 +73,71 @@ def _escapee_is_still_ours(pid: int, record: ChildRecord) -> bool:
     if recorded is None:
         return False
     return platform_compat.get_process_start_id(pid) == recorded
+
+
+async def _read_root_leftovers(pid: int, start_id: str) -> SessionLeftovers | None:
+    """Root *pid*'s session leftovers, or None unless the reading names *start_id*'s process."""
+    try:
+        leftovers = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), find_session_leftovers, pid
+        )
+    except Exception:
+        logger.debug("session leftovers of root PID %d unreadable", pid, exc_info=True)
+        return None
+    if leftovers is None or leftovers.root_start != start_id or not leftovers.items:
+        return None
+    return leftovers
+
+
+async def _end_root_leftovers(pid: int, leftovers: SessionLeftovers) -> None:
+    """End the *leftovers* still in root *pid*'s session, once the root is gone."""
+    try:
+        ended = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            functools.partial(end_session_leftovers, pid, leftovers, only_if_root_gone=True),
+        )
+    except Exception:
+        logger.warning("Could not end the leftover processes of root PID %d", pid, exc_info=True)
+        return
+    if ended:
+        logger.warning(
+            "Runtime teardown: ended %d leftover process(es) of root PID %d's session "
+            "outside its tree: %s",
+            ended,
+            pid,
+            ", ".join(f"pid {item.pid} {item.name}" for item in leftovers.items),
+        )
+
+
+async def kill_ending_session_leftovers(
+    pid: int | None, start_id: str | None, kill: Callable[[], Awaitable[None]]
+) -> None:
+    """Run *kill*, then end what root *pid* left in its session outside its tree.
+
+    A job the agent's shell left running (started under ``set -m``, or by a shell
+    that ran in its own group) is reparented to init when its shell exits. No walk
+    from the root finds it and no signal to the root's group reaches it, but it
+    keeps the root's session id. So the session is read first, while the root is
+    alive and still *start_id*'s process, and what was read is ended through
+    ``end_session_leftovers`` once *kill* has returned or raised, which signals
+    nothing while the root is still that process. A cancel that lands in the read
+    still lets *kill* run, and then propagates unless *kill* raises. Linux only,
+    as the pinned terminator is; a *pid* of None (no live root) reads nothing.
+    """
+    leftovers: SessionLeftovers | None = None
+    cancel: asyncio.CancelledError | None = None
+    if platform_compat.IS_LINUX and pid is not None and start_id is not None:
+        try:
+            leftovers = await _read_root_leftovers(pid, start_id)
+        except asyncio.CancelledError as exc:
+            cancel = exc
+    try:
+        await kill()
+    finally:
+        if pid is not None and leftovers is not None:
+            await _end_root_leftovers(pid, leftovers)
+    if cancel is not None:
+        raise cancel
 
 
 def _release_stdin(process: asyncio.subprocess.Process) -> None:
@@ -605,12 +673,25 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
     *process*, not to this handle: releasing them under a runtime another
     lease is still using would strand a live agent on a deleted workspace,
     which is worse than the leak the kill was meant to prevent.
+
+    An admitted kill also ends what the root left in its session outside its tree
+    (:func:`kill_ending_session_leftovers`): a job the agent's shell left outside
+    the process group would otherwise outlive the chat that started it.
     """
     if not authorize_runtime_kill(self, reason=reason or "runtime kill", caller="AcpRuntime.kill"):
         return
     self._process_tree_confirmed_dead = False
     try:
-        await self._kill_inner(expected=expected, reason=reason)
+        # Marked dead before the leftover read's await, as `_kill_inner` would at
+        # once: a turn that claims this runtime while its session is read is refused
+        # before it sends, not killed mid-turn. `_kill_inner`'s own call then returns.
+        self._mark_dead(f"killed ({reason})" if reason else "killed", expected=expected)
+        process = self._process
+        await kill_ending_session_leftovers(
+            process.pid if process is not None and process.returncode is None else None,
+            getattr(self, "_start_time", None),
+            functools.partial(self._kill_inner, expected=expected, reason=reason),
+        )
         # The skill views the process ran on are its resources too: released
         # once it is gone, like the direct client's, so this home's unused
         # views are pruned now rather than at a next boot that a stopped and
