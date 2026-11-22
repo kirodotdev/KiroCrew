@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         _skip_unreadable_main_spec,
         _spec_hold_open,
         _spec_path_is_safe,
+        _strip_legacy_denied_commands,
         agent_spec_candidates,
         agent_spec_path,
         agent_state,
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
         fork_refresh,
         guide_platform,
         kiro_agents_dir_path,
+        loads_user_json,
         logger,
         managed_mcp,
         mcp_aliases,
@@ -678,11 +680,15 @@ def rebuild_agent_config(
     # auto-approve grant on the name for whatever is bound there next.
     _app_owned_at_start = mcp_sources._app_owned_mcp_keys()
 
+    # The bytes the base copy was parsed from, compared again under the spec lock.
+    base_raw_out: list[bytes | None] = []
     if not clean and path.exists():
         # Existing config — preserve user customizations, only refresh
         # security-critical and dynamic fields.
         try:
-            config, fresh_install = _load_existing_config(path, gated_off=gated_off)
+            config, fresh_install = _load_existing_config(
+                path, gated_off=gated_off, _raw_out=base_raw_out
+            )
         except _AgentSpecUnreadable as exc:
             return _skip_unreadable_main_spec(
                 path, exc, refresh_forks, clean=clean, wrote_out=_wrote_out, held_out=_held_out
@@ -862,6 +868,7 @@ def rebuild_agent_config(
             if _held_out is not None:
                 _held_out.append(False)
             return declined if declined is not None else path
+        _carry_concurrent_spec_edits(path, config, base_raw_out[0] if base_raw_out else None)
         try:
             default_spec_commit.write_default_spec(
                 path,
@@ -920,6 +927,65 @@ def rebuild_agent_config(
         # model applier must not read a held conductor spec as a refused rebuild.
         _held_out.append(conductor_held)
     return path
+
+
+def _carry_concurrent_spec_edits(path: Path, config: dict, base_raw: bytes | None) -> None:
+    """Carry into *config* what another writer committed to *path* since the base read.
+
+    The rebuild reads its base copy long before it takes ``agents_spec_lock``, so
+    a locked read-merge-writer (the agent-detail PATCH, fork/publish, the fork
+    refresh) can commit in between. Called with the lock held, just before the
+    write: when the file still holds *base_raw* byte for byte nothing changes.
+    Otherwise every top-level key this rebuild left as the base had it takes the
+    file's current value (or is dropped when the other writer removed it); a key
+    the rebuild derived itself, or one every rebuild derives afresh, stays as
+    derived. A carried ``allowedTools`` goes through the ceiling pass again and a
+    carried ``toolsSettings`` loses the retired ``deniedCommands`` /
+    ``autoAllowReadonly`` again, so carrying can never widen a grant.
+    """
+    if base_raw is None:
+        return
+    try:
+        fresh_raw = _read_existing_spec(path)
+    except _AgentSpecUnreadable:
+        return
+    if fresh_raw is None or fresh_raw == base_raw:
+        return
+    try:
+        base = loads_user_json(base_raw.decode("utf-8"))
+        fresh = loads_user_json(fresh_raw.decode("utf-8"))
+    except ValueError:
+        return
+    if not isinstance(base, dict) or not isinstance(fresh, dict):
+        return
+    # Every rebuild derives these afresh (the PreToolUse hooks, the prompt URI, the
+    # managed server commands, the mcp.json merge it pins off), so another writer's
+    # value is never carried for them, even when this rebuild derived what the base
+    # already held.
+    rebuild_derived = ("hooks", "prompt", "mcpServers", "includeMcpJson", "useLegacyMcpJson")
+    absent = object()
+    carried: list[str] = []
+    for key in dict.fromkeys([*base, *fresh]):
+        if key in rebuild_derived:
+            continue
+        was = base.get(key, absent)
+        now = fresh.get(key, absent)
+        if now == was or config.get(key, absent) != was:
+            continue
+        if now is absent:
+            config.pop(key, None)
+        else:
+            config[key] = now
+        carried.append(key)
+    if not carried:
+        return
+    if "allowedTools" in carried:
+        auto_approve.final_ceiling_pass(config)
+    if "toolsSettings" in carried:
+        _strip_legacy_denied_commands(config)
+    logger.info(
+        "rebuild of %s kept a concurrent edit to: %s", path.name, ", ".join(map(str, carried))
+    )
 
 
 def _lineage_unreadable_refusal(agent: str, exc: BaseException) -> str:

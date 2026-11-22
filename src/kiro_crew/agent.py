@@ -204,6 +204,7 @@ from kiro_crew.agent_parts.spec_rebuild import (
     _PROFILE_WATCH_RETRY_S,
     _REPROJECT_LOCK,
     _answer_generation_after_profile_poll,
+    _carry_concurrent_spec_edits,
     _conductor_installers_held,
     _conductor_spec_held,
     _held_rebuild_would_repeat,

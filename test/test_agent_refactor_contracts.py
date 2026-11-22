@@ -216,7 +216,7 @@ BASE_SURFACE: dict[str, str] = {
     "_kirocrew_mcp_invocation": "callable _kirocrew_mcp_invocation(subcommand: 'str') -> 'tuple[str, list[str]]'",
     "_launcher_works": "callable _launcher_works(path: 'Path') -> 'bool'",
     "_lineage_unreadable_refusal": "callable _lineage_unreadable_refusal(agent: 'str', exc: 'BaseException') -> 'str'",
-    "_load_existing_config": "callable _load_existing_config(path: 'Path', *, gated_off: \"'frozenset[str] | None'\" = None) -> 'tuple[dict, bool]'",
+    "_load_existing_config": "callable _load_existing_config(path: 'Path', *, gated_off: \"'frozenset[str] | None'\" = None, _raw_out: \"'list[bytes | None] | None'\" = None) -> 'tuple[dict, bool]'",
     "_load_json": "callable _load_json(path: 'Path') -> 'dict[str, Any]'",
     "_managed_mcp_env": "callable _managed_mcp_env() -> 'dict[str, str]'",
     "_managed_opt_in_entry": "callable _managed_opt_in_entry(subcommand: 'str') -> 'dict[str, Any]'",

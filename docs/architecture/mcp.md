@@ -581,6 +581,18 @@ is confirmed no longer enabled; absence from the on-disk map is not by itself
 proof (a clean rebuild starts from an empty map, and dropping on that basis made
 an enabled app's tools vanish).
 
+The writers that share `agents_spec_lock` — the agent-detail PATCH, fork and
+publish, the background fork refresh — are serialized from the other end, because
+the rebuild reads its merge base long before it takes that lock. Under the lock,
+just before the write, it reads the file again: identical bytes change nothing,
+and otherwise every top-level key the rebuild left as its base had it takes the
+file's current value (`_carry_concurrent_spec_edits`), so a save committed mid
+rebuild is kept instead of reverted. A key the rebuild derived itself stays as
+derived, the `includeMcpJson: false` pin included, a carried `allowedTools`
+runs through the final auto-approve pass again, and a carried `toolsSettings`
+loses the retired `deniedCommands`/`autoAllowReadonly` again, so carrying can
+never widen a grant.
+
 ### Servers a connected computer exposes (`connected-computer-<name>`)
 
 A chat bound to a connected computer (feature preview; providers.md § Connected computers
