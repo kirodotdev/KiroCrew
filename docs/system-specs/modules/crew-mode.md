@@ -368,7 +368,25 @@ The view flags every `skills` row the list names `listed`, and lists a name
 with no catalog row as a row of its own, so a capabilities card can name it.
 The card's snapshot keeps the flag, and a removal of a `listed` row has no Undo
 (`listed_skill_entry`), because a `set` writes catalog skills only and would not
-put the list entry back. Approvals are configured in the
+put the list entry back. The Added band's **Tool settings** group lists each
+tool whose `toolsSettings` entry the file adds beyond the worker base
+(`mate_spec_policy.without_held`), one row per tool naming, in words, the tool
+and the keys it sets: the terminal tool (any kiro-cli spelling of `shell`) reads
+**Terminal**, `deniedCommands` reads *blocked commands* and `allowedCommands`
+*allowed commands*; any other tool or key shows as the file names it. Its
+**Remove** confirm names the row in the same words ("Remove “Terminal: blocked
+commands”?"), says that what the settings allowed goes back to the Bot's
+approvals, and that the removal is saved at once.
+Its **Remove** sends a `toolsSettings` `remove` op, which only this in-place
+path accepts: it takes that tool's whole entry out of the file
+(`mate_capabilities._drop_tools_settings`), so the worker's next session carries
+none of it, limits and grants alike: for the terminal tool no `deniedCommands`
+and no `spec-unjudged-denies` hold. An entry the upgrade move or its startup
+repair carried (`mate_restriction_carry.carry_restrictions`) is listed the same
+way; once removed nothing writes it back, since the repair checks a Bot once
+(`policy_checked`). The route is the owner's alone, and a
+capabilities card that names `toolsSettings` is refused at validation, so no
+agent lifts a limit this way. Approvals are configured in the
 **Approvals** section, never here. The Bot's
 **behavior directions** appear with **Remove**, which clears its single directions
 slot. **Add abilities** sits on the same page, under the bands
@@ -5245,7 +5263,11 @@ same spec keeps asking, as before. The preview and the kit view return those
 entries as `unenforced_denies`, and the pane names them as written, in code font,
 under one sentence saying this Bot refuses every command that is not read-only;
 the finished add adds where to see the list again (this section), and the
-section shows it while the file holds one. Owner decision:
+section shows it while the file holds one, naming the control that lifts it in
+the words its row shows: **Remove** on the terminal's blocked commands under
+**Tool settings**, in the Abilities section's Added band, with the config file
+only as a second way. It names no file key, and never says the control is above:
+the same pane shows after an enroll, outside the Abilities section. Owner decision:
 `docs/decisions/2026-11-13-a-bots-worker-carries-the-agents-tool-grants.md`
 (`test/test_mate_worker_carries_tools_settings.py`).
 Every gate-readable deny that KAS does not carry travels in the same worker

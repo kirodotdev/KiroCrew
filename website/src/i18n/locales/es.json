@@ -25046,7 +25046,13 @@
     "section_capabilities": "Habilidades",
     "band_directions": "Directrices de comportamiento",
     "band_resources": "Recursos",
-    "band_remove_stale": "Las habilidades de este Bot cambiaron desde que abriste esta vista. No se quitó nada; revisa la lista y vuelve a pulsar Quitar."
+    "band_remove_stale": "Las habilidades de este Bot cambiaron desde que abriste esta vista. No se quitó nada; revisa la lista y vuelve a pulsar Quitar.",
+    "band_tools_settings": "Ajustes de herramientas",
+    "band_remove_settings_confirm_body": "Este Bot deja de aplicar estos ajustes y todos los límites que vienen de ellos, como los comandos de terminal bloqueados. Lo que permitan vuelve a pasar por las aprobaciones de este Bot. Esto se guarda al momento.",
+    "band_tools_settings_terminal": "Terminal",
+    "band_tools_settings_denied_commands": "comandos bloqueados",
+    "band_tools_settings_allowed_commands": "comandos permitidos",
+    "band_tools_settings_name": "{{tool}}: {{settings}}"
   },
   "crewApprovalsEditor": {
     "loading": "Cargando aprobaciones…",
@@ -25128,7 +25134,7 @@
     "current_directions": "Directrices actuales (se sustituirán): {{directions}}",
     "done_replaced": "Se sustituyeron las directrices de comportamiento.",
     "unenforced_preview": "Este Bot rechazará cualquier comando de terminal que pueda cambiar algo, como uno que escriba, borre o instale. Los comandos de terminal que solo leen siguen funcionando, salvo los comandos de git, que también se rechazan. Sus herramientas de archivos, incluida la de escribir, también funcionan. {{productName}} no puede comprobar algunos comandos bloqueados del agente que vas a añadir.",
-    "unenforced_current": "Este Bot rechaza cualquier comando de terminal que pueda cambiar algo, como uno que escriba, borre o instale. Los comandos de terminal que solo leen siguen funcionando, salvo los comandos de git, que también se rechazan. Sus herramientas de archivos, incluida la de escribir, también funcionan. Esto viene de comandos bloqueados de un agente añadido a este Bot, que {{productName}} no puede comprobar. Para quitar el límite, elimina esos comandos bloqueados del archivo de configuración de este Bot.",
+    "unenforced_current": "Este Bot rechaza cualquier comando de terminal que pueda cambiar algo, como uno que escriba, borre o instale. Los comandos de terminal que solo leen siguen funcionando, salvo los comandos de git, que también se rechazan. Sus herramientas de archivos, incluida la de escribir, también funcionan. Esto viene de comandos bloqueados de un agente añadido a este Bot, que {{productName}} no puede comprobar. Para quitar el límite, pulsa Quitar en los comandos bloqueados de la terminal, en Ajustes de herramientas, dentro de Habilidades de este Bot. También puedes eliminarlos del archivo de configuración de este Bot.",
     "unenforced_label": "Comandos bloqueados que no puede comprobar",
     "unenforced_lead": "Cambios en la terminal bloqueados.",
     "conditional_lead": "Algunos cambios en la terminal bloqueados.",
