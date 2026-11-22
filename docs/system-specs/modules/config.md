@@ -1955,9 +1955,11 @@ is tested to ensure the validator is required without the `dev` extra.
 
 **Hot-path cache.** `load()` is called per message / per request on several hot
 paths. The expensive work — reading `config.json` (+ `config.local.json`),
-`json.loads`, `_deep_merge`, and the full `jsonschema.validate` — is cached as
+`json.loads`, `_deep_merge`, and the full JSON Schema validation — is cached as
 the validated, merged `data` dict, keyed on a fingerprint of both files
-(`st_mtime_ns`, `st_size`, `st_mode`). On a cache hit, `load()` still builds
+(`st_mtime_ns`, `st_size`, `st_mode`). On a cache miss, validation reuses one
+validator per schema object (`validation._schema_validator`), so the fixed
+schema is checked against its meta-schema once, not on every load. On a cache hit, `load()` still builds
 **fresh dataclasses from a deep copy**, so the many callers that mutate the
 returned config in place (settings handlers, the write-back migration) never
 corrupt the shared cache. The cache is mtime-keyed (not a blind TTL), so a
