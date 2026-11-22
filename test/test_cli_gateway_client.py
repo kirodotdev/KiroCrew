@@ -1666,14 +1666,25 @@ class TestArtifactCli:
         assert "gateway on port 5476 is up but did not answer in time (busy)" in err
         assert advice in err
 
-    def test_refused_connection_keeps_its_own_error(
+    @pytest.mark.parametrize("action", ["list", "show", "save", "update", "delete", "versions"])
+    def test_refused_connection_reports_gateway_not_running(
+        self, action: str, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refused connection means no gateway: say so, not urllib's text, and not busy."""
+        refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        err = self._artifact_error(action, refused, capsys, monkeypatch)
+        assert "gateway not running (cannot reach dashboard on port 5476)" in err
+        assert "urlopen" not in err
+        assert "busy" not in err
+
+    def test_other_connection_failure_keeps_its_own_error(
         self, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Only our own deadline reads as busy; a refused connection keeps its text."""
-        refused = urllib.error.URLError(ConnectionRefusedError("refused"))
-        err = self._artifact_error("list", refused, capsys, monkeypatch)
-        assert "refused" in err
-        assert "busy" not in err
+        """Only a refused connection reads as not running; another failure keeps its text."""
+        reset = urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+        err = self._artifact_error("list", reset, capsys, monkeypatch)
+        assert "Connection reset by peer" in err
+        assert "gateway not running" not in err
 
     def _artifact_error(
         self,
