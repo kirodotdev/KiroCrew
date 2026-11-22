@@ -252,3 +252,22 @@ def test_the_overlay_check_reads_config_local(tmp_path, monkeypatch):
     assert loader_document.acp_backend_overlay_owned() is False
     local.write_text(json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8")
     assert loader_document.acp_backend_overlay_owned() is True
+
+
+def test_schedule_logs_and_swallows_a_delivery_failure(monkeypatch, caplog):
+    """A failed delivery must not reach the gateway: schedule() logs it and ends."""
+
+    async def _boom(state, floor):
+        raise RuntimeError("delivery crashed")
+
+    monkeypatch.setattr(notice, "deliver_when_floor_lands", _boom)
+
+    async def _run():
+        task = notice.schedule(MagicMock(), None)
+        await asyncio.wait_for(task, timeout=30)
+        return task
+
+    with caplog.at_level("WARNING", logger=notice.logger.name):
+        task = asyncio.run(_run())
+    assert task.exception() is None
+    assert "Kiro CLI on KAS notice failed" in caplog.text
