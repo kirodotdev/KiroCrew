@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.platform_compat import IS_LINUX, IS_MACOS, IS_WINDOWS, file_lock, open_lock_file
 from kiro_crew.pod import env_overrides, launchd
@@ -176,6 +177,18 @@ class PodOwnershipUnproven(PodError):
 
 def validate_name(name: str) -> str:
     if not name or not _NAME_RE.match(name):
+        raise PodError(f"invalid pod name {name!r}")
+    return name
+
+
+def validate_new_name(name: str) -> str:
+    """:func:`validate_name`, plus a Windows device stem refusal, for a verb creating a pod.
+
+    ``nul`` or ``con.x`` can be no home, env file or ``feat/<name>`` ref on Windows. Verbs
+    on an existing pod keep :func:`validate_name`, so one made before stays stoppable.
+    """
+    validate_name(name)
+    if name.split(".", 1)[0].lower() in WINDOWS_DEVICE_STEMS:
         raise PodError(f"invalid pod name {name!r}")
     return name
 

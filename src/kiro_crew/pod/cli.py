@@ -450,7 +450,7 @@ def _env_overrides(name: str, args: argparse.Namespace) -> dict[str, str]:
 
 
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
-    name = rt.validate_name(args.name)
+    name = rt.validate_new_name(args.name)
     _require_up_user_bus(name)
     limit_updates = _limit_updates(name, args)
     env_overrides = _env_overrides(name, args)
@@ -1726,7 +1726,7 @@ def _install(cfg: PodConfig, args: argparse.Namespace) -> None:
 
 def _provision(cfg: PodConfig, args: argparse.Namespace) -> None:
     """Build a worktree's venv + dist so it can be podded (the full on-ramp)."""
-    name = rt.validate_name(args.name)
+    name = rt.validate_new_name(args.name)
     checkout = _resolve_or_die(cfg, name)
     build = not getattr(args, "venv_only", False)
     if not prov.provision(checkout, build=build):

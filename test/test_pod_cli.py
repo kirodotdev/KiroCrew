@@ -161,6 +161,20 @@ class TestCliVerbs:
             pod_cli.dispatch(argparse.Namespace(pod_action=None))
 
 
+class TestNewPodName:
+    @pytest.mark.parametrize("verb", ["_up", "_provision"])
+    def test_a_creating_verb_refuses_a_windows_device_stem_first(
+        self, verb: str, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _reached(*_a: object, **_k: object) -> None:
+            raise AssertionError("got past the name check")
+
+        monkeypatch.setattr(rt, "require_backend", _reached)
+        monkeypatch.setattr(rt, "resolve_checkout", _reached)
+        with pytest.raises(rt.PodError, match="invalid pod name 'nul'"):
+            getattr(pod_cli, verb)(cfg, argparse.Namespace(name="nul"))
+
+
 @requires_posix_pod_lifecycle
 class TestUpVerb:
     """Drive the big _up body end-to-end with the host boundary mocked."""
