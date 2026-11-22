@@ -63,8 +63,44 @@ async def _serve(state, *extra_routes):
 def _delegated() -> dict[str, str]:
     from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
 
-    token = token_auth.generate_token("local-app", extra=owner_mint_extra({"via_app": _APP}))
+    from kiro_crew.apps import dashboard_proxy
+
+    # What ``/api/token/local`` puts in the token: the app and the grant it was minted under.
+    claim = getattr(dashboard_proxy, "grant_claim", lambda _app: "")(_APP)
+    extra = {"via_app": _APP, **({"via_grant": claim} if claim else {})}
+    token = token_auth.generate_token("local-app", extra=owner_mint_extra(extra))
     return {"token": token}
+
+
+@pytest.fixture
+def real_grant(tmp_path, monkeypatch):
+    """The real grant record for ``tunnel-like``; only the install record and sandbox are faked."""
+    from types import SimpleNamespace
+
+    from kiro_crew.apps import dashboard_proxy
+
+    home = tmp_path / "kirocrew-home"
+    home.mkdir()
+    monkeypatch.setattr(
+        "kiro_crew.member_records.records_dir", lambda kind: home / "member-records" / kind
+    )
+    record = SimpleNamespace(
+        installedAt="2026-11-22T10:00:00Z",
+        version="0.9.4",
+        origin="registry",
+        sourceRegistry="crew-tunnels",
+        sourceUrl="https://example.invalid/tunnel.git",
+        sourceCommit="abc",
+        sourceSigner="",
+    )
+    monkeypatch.setattr(dashboard_proxy, "_installed", lambda _name: record)
+    monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
+    monkeypatch.setattr(dashboard_proxy, "_gateway_secret", "")
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    yield record
+    dashboard_proxy.set_gateway_secret("")
 
 
 @pytest.mark.asyncio
@@ -235,3 +271,72 @@ async def test_enforce_delegated_allows_only_the_tokens_own_app_on_the_app_route
     own = _FakeReq(canonical, _APP)
     assert await enforce_delegated(own, "/x") is None
     assert own["via_app"] == _APP
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_token_cannot_write_a_file(state, granted):
+    """POST /api/file-write was tagged allow; a write is now denied unless listed."""
+    async with _serve(state) as client:
+        resp = await client.post("/api/file-write", params=_delegated(), json={})
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_token_cannot_read_a_custom_mcp_server_definition(state, granted):
+    """GET /api/mcp/custom/{name} returns the server's stored environment and headers."""
+    async with _serve(state) as client:
+        resp = await client.get("/api/mcp/custom/anything", params=_delegated())
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+async def test_a_write_the_day_one_list_names_is_not_refused_by_the_scope(state, granted):
+    async with _serve(state) as client:
+        resp = await client.post("/api/chat/pinned-order", params=_delegated(), json={})
+        assert resp.status != 403 or (await resp.json()).get("code") != _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+async def test_a_cookie_from_install_one_fails_after_uninstall_reinstall_and_a_new_grant(
+    state, real_grant
+):
+    from kiro_crew.apps import dashboard_proxy
+
+    async with _serve(state) as client:
+        old = _delegated()
+        assert (await client.get("/api/version", params=old)).status == 200
+        assert (await client.get("/api/version")).status == 200, "the session cookie"
+        # Uninstall (revoke), reinstall (a new install record), then the owner grants again.
+        dashboard_proxy.revoke(_APP)
+        real_grant.installedAt = "2026-11-22T12:00:00Z"
+        assert dashboard_proxy.grant(_APP) == (True, "")
+        assert dashboard_proxy.granted(_APP) is True
+        resp = await client.get("/api/version")
+        assert resp.status == 403, "the cookie of install 1"
+        assert (await resp.json())["code"] == _REFUSED_CODE
+        assert (await client.get("/api/version", params=old)).status == 403, "the old link"
+
+
+@pytest.mark.asyncio
+async def test_a_cookie_fails_after_revoke_and_a_new_grant_of_the_same_install(state, real_grant):
+    from kiro_crew.apps import dashboard_proxy
+
+    async with _serve(state) as client:
+        old = _delegated()
+        assert (await client.get("/api/version", params=old)).status == 200
+        dashboard_proxy.revoke(_APP)
+        assert dashboard_proxy.grant(_APP) == (True, "")
+        assert (await client.get("/api/version")).status == 403
+
+
+@pytest.mark.asyncio
+async def test_a_cookie_fails_after_the_gateway_secret_rotates(state, real_grant):
+    from kiro_crew.apps import dashboard_proxy
+
+    async with _serve(state) as client:
+        old = _delegated()
+        assert (await client.get("/api/version", params=old)).status == 200
+        dashboard_proxy.set_gateway_secret("another-gateway-secret-in-words")
+        assert (await client.get("/api/version")).status == 403

@@ -9,15 +9,27 @@ refused, whatever else the table says.
 
 from __future__ import annotations
 
+import inspect
+import re
+
 import pytest
 from aiohttp import web
 
 from kiro_crew.dashboard.routes import register_all
 
 
-def _walk() -> list[tuple[str, str]]:
+def _table() -> web.Application:
+    """Every route the gateway mounts: the page table and the MCP tool routes."""
+    from kiro_crew.dashboard.server import _register_mcp_routes
+
     app = web.Application()
+    _register_mcp_routes(app)
     register_all(app)
+    return app
+
+
+def _walk() -> list[tuple[str, str]]:
+    app = _table()
     pairs = []
     for route in app.router.routes():
         resource = route.resource
@@ -135,8 +147,7 @@ def test_the_plain_dashboard_routes_are_allowed(method: str, canonical: str) -> 
 
 
 def test_every_route_sharing_a_handler_and_method_shares_a_tag() -> None:
-    app = web.Application()
-    register_all(app)
+    app = _table()
     groups: dict[tuple[object, str], set[tuple[str, str | None]]] = {}
     for route in app.router.routes():
         resource = route.resource
@@ -182,3 +193,121 @@ def test_a_star_route_is_tagged_for_every_concrete_method() -> None:
         expected = ROUTE_TAGS[canonical]["*"]
         for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"):
             assert _tag(method, canonical) == expected, f"{method} {canonical}"
+
+
+_READS = ("GET", "HEAD")
+
+
+def _write_routes() -> list[tuple[str, str]]:
+    return sorted({(m, p) for m, p in _walk() if m not in _READS})
+
+
+def test_a_delegated_token_may_write_only_where_allow_writes_says() -> None:
+    """Writes are deny by default: a tag alone never allows one."""
+    from kiro_crew.dashboard.delegated_scope import ALLOW_WRITES, write_allowed
+
+    walked = set(_write_routes())
+    open_writes = sorted(f"{m} {p}" for m, p in walked if write_allowed(m, p))
+    listed = sorted(
+        f"{m} {p}"
+        for m, p in walked
+        if (m, p) in ALLOW_WRITES or ("*", p) in ALLOW_WRITES
+    )
+    assert open_writes == listed
+    assert not write_allowed("POST", "/api/file-write")
+    assert not write_allowed("POST", "/api/a-route-nobody-tagged")
+
+
+def test_allow_writes_is_the_day_one_list_with_an_effect_note_each() -> None:
+    from kiro_crew.dashboard.delegated_scope import ALLOW_WRITES
+
+    real = set(_walk())
+    star = {p for m, p in real if m == "*"}
+    for (method, canonical), note in ALLOW_WRITES.items():
+        assert method in ("POST", "PUT", "PATCH", "DELETE", "*"), (method, canonical)
+        assert (method, canonical) in real or (method == "*" and canonical in star), canonical
+        assert _tag("POST" if method == "*" else method, canonical) == "allow", canonical
+        assert len(note) > 20 and "\n" not in note, canonical
+    assert len(ALLOW_WRITES) <= 14
+    forbidden = (
+        "file",
+        "config",
+        "credential",
+        "install",
+        "grant",
+        "approv",
+        "terminal",
+        "consent",
+        "provider",
+        "mcp",
+        "shar",
+        "egress",
+        "secret",
+        "token",
+    )
+    for method, canonical in ALLOW_WRITES:
+        if canonical.startswith(("/apps/", "/app-frame-fetch/")):
+            continue
+        assert not any(word in canonical for word in forbidden), canonical
+
+
+_CREDENTIAL_KEY = re.compile(
+    r"""["']([A-Za-z0-9_]*(secret|token|password|passwd|credential|cookie|authorization"""
+    r"""|api_?key|private_?key|access_?key)[A-Za-z0-9_]*)["']""",
+    re.IGNORECASE,
+)
+
+
+def test_a_get_that_names_a_credential_field_is_denied_or_reviewed() -> None:
+    """A GET whose handler names a secret-like key is denied unless listed with a reason."""
+    from kiro_crew.dashboard.delegated_scope import READ_REVIEWED
+
+    hits: dict[str, list[str]] = {}
+    for route in _table().router.routes():
+        if route.method != "GET":
+            continue
+        canonical = route.resource.canonical  # type: ignore[union-attr]
+        if _tag("GET", canonical) != "allow":
+            continue
+        try:
+            source = inspect.getsource(inspect.unwrap(route.handler))
+        except (OSError, TypeError):
+            continue
+        names = sorted({m.group(1) for m in _CREDENTIAL_KEY.finditer(source)})
+        if names:
+            hits[canonical] = names
+    unreviewed = sorted(set(hits) - set(READ_REVIEWED))
+    assert not unreviewed, "GETs naming a credential field, neither denied nor reviewed:\n" + (
+        "\n".join(f"{p} {hits[p]}" for p in unreviewed)
+    )
+    stale = sorted(set(READ_REVIEWED) - set(hits))
+    assert not stale, "reviewed reads that no longer name a credential field:\n" + "\n".join(stale)
+    assert all(len(reason) > 20 for reason in READ_REVIEWED.values())
+
+
+@pytest.mark.parametrize(
+    "canonical",
+    [
+        "/api/mcp/custom/{name}",
+        "/api/connections/mint",
+        "/api/config/kirocrew",
+        "/api/webhooks",
+        "/api/slack/config",
+        "/api/discord/config",
+        "/api/telegram/config",
+        "/api/webex/config",
+        "/api/wecom/config",
+        "/api/feishu/config",
+        "/api/teams/config",
+    ],
+)
+def test_the_stored_credential_reads_are_denied(canonical: str) -> None:
+    assert ("GET", canonical) in set(_walk()), "the route this test pins does not exist"
+    assert _tag("GET", canonical) == "deny"
+
+
+def test_no_secrets_route_is_allowed_to_a_delegated_token() -> None:
+    open_secrets = [
+        f"{m} {p}" for m, p in _walk() if p.startswith("/api/secrets") and _tag(m, p) == "allow"
+    ]
+    assert not open_secrets

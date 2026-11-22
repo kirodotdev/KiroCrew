@@ -123,6 +123,99 @@ def test_revoke_removes_the_record_and_the_stand_in_source(records, installed):
     assert not list((records / "member-records/app-dashboard-proxy").iterdir())
 
 
+@pytest.fixture
+def forged_apps(records, tmp_path, monkeypatch):
+    """An app tree whose ``installed.json`` claims a registry install the gateway never made."""
+    apps = tmp_path / "apps"
+    (apps / _APP).mkdir(parents=True)
+    forged = {
+        "name": _APP,
+        "version": "9.9.9",
+        "installedAt": "2026-11-22T09:00:00Z",
+        "origin": "registry",
+        "source": f"registry:{_APP}",
+        "sourceUrl": "https://example.invalid/forged.git",
+        "sourceRegistry": "crew-tunnels",
+        "sourceSigner": "someone",
+    }
+    (apps / _APP / "installed.json").write_text(json.dumps(forged), encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.apps.manager_records.apps_dir", lambda: apps)
+    monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
+    monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
+    return apps
+
+
+def test_a_forged_installed_json_does_not_make_an_app_grantable(forged_apps):
+    assert dashboard_proxy.registry_verified(_APP) is False
+    assert dashboard_proxy.prompt_text(_APP) is None
+    assert dashboard_proxy.grant(_APP) == (False, "not-registry-verified")
+    assert dashboard_proxy.granted(_APP) is False
+
+
+def test_the_gateway_install_record_is_what_makes_an_app_grantable(forged_apps):
+    dashboard_proxy.record_install(
+        _APP,
+        version="0.9.4",
+        registry="crew-tunnels",
+        url="https://example.invalid/tunnel.git",
+        commit="abc",
+        signer="",
+    )
+    assert dashboard_proxy.registry_verified(_APP) is True
+    offer = dashboard_proxy.prompt_text(_APP)
+    assert offer is not None and offer["source"] == "https://example.invalid/tunnel.git"
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.granted(_APP) is True
+
+
+def test_a_forged_installed_json_cannot_change_a_recorded_install(forged_apps):
+    dashboard_proxy.record_install(
+        _APP, version="0.9.4", registry="r", url="https://example.invalid/a.git"
+    )
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    (forged_apps / _APP / "installed.json").write_text(
+        json.dumps({"name": _APP, "version": "6.6.6", "origin": "registry"}), encoding="utf-8"
+    )
+    assert dashboard_proxy.granted(_APP) is True
+    assert dashboard_proxy.prompt_text(_APP)["version"] == "0.9.4"  # type: ignore[index]
+
+
+def test_a_new_install_record_ends_the_grant_and_forget_removes_the_record(forged_apps):
+    dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
+    assert dashboard_proxy.granted(_APP) is False, "a reinstall is another install"
+    dashboard_proxy.forget_install(_APP)
+    assert dashboard_proxy.registry_verified(_APP) is False
+
+
+def test_each_grant_gets_its_own_id_and_revoke_ends_it(records, installed):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    first = dashboard_proxy.grant_claim(_APP)
+    assert first and dashboard_proxy.grant_current(_APP, first)
+    dashboard_proxy.revoke(_APP)
+    assert dashboard_proxy.grant_claim(_APP) == ""
+    assert not dashboard_proxy.grant_current(_APP, first)
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.grant_claim(_APP) != first
+    assert not dashboard_proxy.grant_current(_APP, first)
+    assert not dashboard_proxy.grant_current(_APP, "")
+
+
+def test_process_state_leaks_in(monkeypatch):
+    """Sets the module state the next test must not see (pairs with the one below)."""
+    monkeypatch.setattr(dashboard_proxy, "granted", lambda _name: False)
+    dashboard_proxy.set_gateway_secret("a-secret-an-earlier-test-left-behind")
+    dashboard_proxy.note_refused_mint(_APP)
+    assert dashboard_proxy._secret()
+
+
+def test_process_state_is_reset_between_tests():
+    assert dashboard_proxy._secret() == ""
+    assert not dashboard_proxy._refused_mints
+
+
 def _request(method: str, body: dict | None = None):
     async def _json():
         return body
