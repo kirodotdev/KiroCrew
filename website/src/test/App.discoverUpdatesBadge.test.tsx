@@ -144,7 +144,7 @@ function renderApp(seed?: (qc: QueryClient) => void) {
 }
 
 /** The Discover nav row. Regex name: with a badge present, the badge span's
- *  aria-label joins the row's accessible name ("Discover 1 updates"). */
+ *  aria-label joins the row's accessible name ("Discover 1 update"). */
 const discoverRow = () => screen.getByRole('button', { name: /Discover/ })
 
 const secretaryRegistry: RegistryRow = { name: 'secretary', version: '1.1.0', updateAvailable: true }

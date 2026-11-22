@@ -1010,7 +1010,7 @@ describe('App routing', () => {
     await waitFor(() => expect(store.getState().dashboard.slotsLoaded).toBe(true))
     act(() => { store.dispatch(markSlotUnread({ slot: 'background', ts: '2026-01-01T00:00:05Z' })) })
 
-    const badge = await screen.findByLabelText('1 unread conversations')
+    const badge = await screen.findByLabelText('1 unread conversation')
     expect(badge.className).not.toContain('absolute')
     expect(badge.parentElement).toBe(chord.parentElement)
     expect(chord.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -1044,11 +1044,8 @@ describe('App routing', () => {
     // fix above), so a bare "1" pill beside a bare bot glyph and "2" has to be
     // tellable apart without a screen reader. Both carry the label as `title`.
     //
-    // The title is the label ALONE, deliberately: the labels are plural phrases,
-    // so reusing the aria string would render a visible "1 unread conversations"
-    // at count 1. The count is already in the pill, so the title does not repeat
-    // it — asserted below, or the grammar defect returns the moment someone
-    // "helpfully" switches these back to ariaLabel.
+    // The title is the label ALONE, deliberately: the count is already in the
+    // pill, so the title does not repeat it — asserted below.
     localStorage.setItem('mc-nav', '0')
     const store = createTestStore()
 
@@ -1058,7 +1055,7 @@ describe('App routing', () => {
     act(() => { store.dispatch(markSlotUnread({ slot: 'background', ts: '2026-01-01T00:00:05Z' })) })
     act(() => { store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 })) })
 
-    const badge = await screen.findByLabelText('1 unread conversations')
+    const badge = await screen.findByLabelText('1 unread conversation')
     const activity = await screen.findByLabelText('2 subagents in flight')
     expect(badge).toHaveAttribute('title', 'unread conversations')
     expect(activity).toHaveAttribute('title', 'subagents in flight')

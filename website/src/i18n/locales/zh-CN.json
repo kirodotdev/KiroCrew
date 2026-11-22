@@ -301,7 +301,9 @@
     "update_failed_2": "更新失败",
     "update_when_i_restart": "重启时更新",
     "updates": "项更新",
+    "updates_count_other": "{{count}} 项更新",
     "subagents_in_flight_fallback": "子代理运行中",
+    "subagents_in_flight_count_other": "{{count}} 个子代理运行中",
     "updating_kirocrew": "正在更新 {{productName}}…",
     "v": "v",
     "view_full_changelog": "▸ 查看完整更新日志",
@@ -11815,9 +11817,12 @@
     "webhooks": "Webhook",
     "crew_members": "Bot",
     "badge_unread_conversations": "未读对话",
+    "badge_unread_conversations_count_other": "{{count}} 个未读对话",
     "badge_unread_member_threads": "未读成员会话",
+    "badge_unread_member_threads_count_other": "{{count}} 个未读成员会话",
     "badge_notifications": "通知",
     "badge_approvals_needed": "待审批",
+    "badge_approvals_needed_count_other": "{{count}} 项待审批",
     "account_and_settings": "账号与设置"
   },
   "pages": {
