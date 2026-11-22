@@ -382,6 +382,22 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         return
 
     reason = cli_doctor.sandbox.unavailable_reason() or "no probe detail recorded"
+    remedy = cli_doctor.sandbox.unavailable_remedy()
+    if remedy == cli_doctor.sandbox.REMEDY_USERNS_CAP_ZERO:
+        # The cap read as 0, so the cause is certain even on the uncached ENOSPC
+        # verdict: a broken backend with its fix, never the transient row.
+        print(
+            "  backend:     ❌ none — user namespaces are disabled on this host "
+            "(user.max_user_namespaces=0)"
+        )
+        print(f"{render._INDENT}({reason})")
+        guidance = cli_doctor.sandbox.remedy_guidance(remedy)
+        # The odd segments between backticks are the commands; each prints on one
+        # line, so it pastes as it reads.
+        render._print_wrapped(guidance, keep=tuple(guidance.split("`")[1::2]))
+        render._print_wrapped(cli_doctor.sandbox.remedy_recovery(remedy, kind == "transient"))
+        issues.append("sandbox backend")
+        return
     if kind == "transient":
         print("  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes")
         print(f"{render._INDENT}({reason})")
@@ -403,7 +419,6 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         )
         return
 
-    remedy = cli_doctor.sandbox.unavailable_remedy()
     if remedy == cli_doctor.sandbox.REMEDY_APPARMOR_USERNS:
         _doctor_sandbox_apparmor(reason, issues)
         return

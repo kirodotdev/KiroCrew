@@ -359,6 +359,47 @@ class TestSetupSandboxConsentOnlyActsOnNoBackend:
         # this flag, so the remedy must not be named here.
         assert "unsandboxed_exec" not in out
 
+    def test_cap_zero_transient_names_the_disabled_cap_and_offers_no_opt_in(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """The cap read as 0: named as disabled, not as momentary, and still no opt-in."""
+        from kiro_crew import cli_setup
+
+        monkeypatch.setattr(cli_setup, "unavailable_remedy", lambda: "userns_cap_zero")
+        prompts: list[str] = []
+
+        result = _run_consent(tmp_path, monkeypatch, kind="transient", answer="y", prompts=prompts)
+
+        assert result is None
+        assert prompts == []
+        out = capsys.readouterr().out
+        assert "user.max_user_namespaces=0" in out
+        assert "kirocrew doctor" in out
+        assert "TRANSIENT" not in out
+        assert "Retry" not in out
+        assert "unsandboxed_exec" not in out
+
+    def test_cap_zero_without_a_backend_keeps_the_opt_in_prompt(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Only the transient verdict changes: the permanent one keeps today's question."""
+        from kiro_crew import cli_setup
+
+        monkeypatch.setattr(cli_setup, "unavailable_remedy", lambda: "userns_cap_zero")
+        prompts: list[str] = []
+
+        _run_consent(
+            tmp_path,
+            monkeypatch,
+            kind="no_backend",
+            answer="n",
+            platform_allows=False,
+            prompts=prompts,
+        )
+
+        assert len(prompts) == 1
+        assert "Allow unsandboxed execution?" in prompts[0]
+
     def test_foreign_sandbox_offers_no_opt_in(
         self, tmp_path, monkeypatch, capsys
     ) -> None:
