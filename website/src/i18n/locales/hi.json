@@ -12081,6 +12081,10 @@
     "account_and_settings": "खाता और सेटिंग्स"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "यह क्रू कनेक्ट नहीं है। इसे मुख्य विंडो में कनेक्ट करो, फिर दोबारा पॉप आउट करो।",
+      "this_pop_out_cannot_be_opened": "यह पॉप-आउट यहाँ नहीं खुल सकता।"
+    },
     "mcpPage": {
       "bot_workers_note": "यहाँ जोड़ा गया सर्वर Bot के वर्करों तक नहीं पहुँचता। किसी Bot के वर्करों को सर्वर तभी मिलता है जब उसे उस Bot में जोड़ा जाए।",
       "title": "MCP सर्वर",

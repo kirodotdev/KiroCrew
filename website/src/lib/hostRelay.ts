@@ -15,6 +15,29 @@ export function noteHostOrigin(origin: string | null): void {
   hostOrigin = typeof origin === 'string' && isEmbeddableHubOrigin(origin) ? origin : null
 }
 
+// Whether that hub's model advertised its pop-out framing page (`crewPopout`).
+let hostFramesPopout = false
+
+/** Record whether the hub's latest model advertised `crewPopout`. Called by EmbeddedHostBridge. */
+export function noteHostCrewPopout(advertised: boolean): void {
+  hostFramesPopout = advertised
+}
+
+/**
+ * The hub origin `noteHostOrigin` recorded, but only when that hub advertised
+ * its pop-out framing page (`lib/crewPopout.ts`); an older hub has no such page.
+ */
+export function getCrewPopoutHub(): string | null {
+  return hostFramesPopout ? hostOrigin : null
+}
+
+/**
+ * Framed page -> host: close the window you are framing me in. Sent by a crew's
+ * pop-out page that a desktop hub's `/popout/crew` window frames, where the
+ * page's own `window.close()` cannot close the window.
+ */
+export const HOST_CLOSE_POPOUT = 'mc-close-popout'
+
 // Reads the stored host model's `electron` field. This module stays store-free
 // (the chat composer reaches it through the pop-out controller), so
 // EmbeddedHostBridge injects the read instead of this file importing the store.
@@ -35,8 +58,8 @@ export function setHostElectronReader(reader: (() => boolean) | null): void {
  * the `electron` field of the host model EmbeddedHostBridge stores. The pane is
  * served from the crew's tunnel port, so its origin is never the window's own;
  * the desktop window-open handler sends such a `window.open` to the system
- * browser and returns no window. Callers that would open a same-origin window
- * use this to refuse up front with the real reason.
+ * browser and returns no window. The pop-out controller opens the hub's
+ * framing page (`lib/crewPopout.ts`) instead.
  */
 export function isDesktopAppPane(): boolean {
   return readHostElectron() && isEmbeddedPane()

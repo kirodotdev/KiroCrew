@@ -11809,6 +11809,10 @@
     "account_and_settings": "계정 및 설정"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "이 크루는 연결되어 있지 않습니다. 메인 창에서 연결한 다음 다시 팝아웃하세요.",
+      "this_pop_out_cannot_be_opened": "이 팝아웃은 여기서 열 수 없습니다."
+    },
     "mcpPage": {
       "bot_workers_note": "여기서 추가한 서버는 Bot의 워커에 전달되지 않습니다. Bot의 워커는 서버를 해당 Bot에 추가했을 때만 받습니다.",
       "title": "MCP 서버",

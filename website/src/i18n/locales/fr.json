@@ -12353,6 +12353,10 @@
     "account_and_settings": "Compte et paramètres"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "Cette crew n'est pas connectée. Connecte-la dans la fenêtre principale, puis détache-la à nouveau.",
+      "this_pop_out_cannot_be_opened": "Cette fenêtre détachée ne peut pas s'ouvrir ici."
+    },
     "mcpPage": {
       "bot_workers_note": "Un serveur ajouté ici n’atteint pas les workers des Bots. Les workers d’un Bot ne l’obtiennent que s’il est ajouté à ce Bot.",
       "title": "Serveurs MCP",
