@@ -253,6 +253,10 @@ class SessionRegistryState:
     #: their spawn door and started itself: each stands down at that door
     #: (``SpeculativeResumeRefused``). Removed with the announcement.
     superseded_speculative_starts: set[object] = field(default_factory=set)
+    #: Per key, the sid a resume prefetch saw its KAS ``session/load`` refuse
+    #: (``AcpResumeNotRestored``): a later prefetch of that sid is refused before it
+    #: starts a process. In memory only; registering a session for the key drops it.
+    refused_resume_sids: dict[str, str] = field(default_factory=dict)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
