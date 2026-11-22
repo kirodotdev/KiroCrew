@@ -23,8 +23,12 @@ from kiro_crew.config.sections_agent_fields import (
     _YOLO_DURATION_SECS,
     DEFAULT_CWD_ALLOWED_ROOTS,
     JAIL_MODE_AUTO,
+    KAS_AUTH_CALLBACK,
+    KAS_AUTH_MODES,
     KAS_BUNDLE_DEFAULT_URL,
     KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP,
+    KAS_MACHINE_HELP,
+    KAS_MACHINE_TOKEN_PATH_DEFAULT,
     KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP,
     YOLO_UNTIL_SHUTDOWN,
     coerce_model_context_tokens,
@@ -415,6 +419,46 @@ class AgentConfig:
             "The AWS region the Company SSO sign-in form starts filled in with, "
             "such as us-east-1. Used only together with agent.kas_sso_start_url. "
             "Empty leaves the region field empty.",
+        ),
+    )
+    # Machine mode (``agent_sdk/kas_machine.py``), honoured only while the ``crew_client``
+    # feature preview is on. Every key is read at spawn, so a running engine keeps
+    # the mode it started under until it is replaced.
+    kas_auth: str = field(
+        default=KAS_AUTH_CALLBACK,
+        metadata=_meta(
+            "KAS: engine credential",
+            KAS_MACHINE_HELP["kas_auth"],
+            enum=list(KAS_AUTH_MODES),
+            restart=True,
+        ),
+    )
+    kas_token_path: str = field(
+        default=KAS_MACHINE_TOKEN_PATH_DEFAULT,
+        metadata=_meta("KAS: machine token file", KAS_MACHINE_HELP["kas_token_path"], restart=True),
+    )
+    kas_endpoint: str = field(
+        default="",
+        metadata=_meta("KAS: machine endpoint", KAS_MACHINE_HELP["kas_endpoint"], restart=True),
+    )
+    kas_control_plane_endpoint: str = field(
+        default="",
+        metadata=_meta(
+            "KAS: machine control plane endpoint",
+            KAS_MACHINE_HELP["kas_control_plane_endpoint"],
+            restart=True,
+        ),
+    )
+    kas_region: str = field(
+        default="",
+        metadata=_meta("KAS: machine region", KAS_MACHINE_HELP["kas_region"], restart=True),
+    )
+    kas_machine_env_drop: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "KAS: variables kept from the engine",
+            KAS_MACHINE_HELP["kas_machine_env_drop"],
+            restart=True,
         ),
     )
     native_skill_projection: bool = field(
