@@ -18381,7 +18381,6 @@
         "replace_settings_foreign_archive": "Este archivo puede no provenir de esta instalación. Su configuración puede cambiar los ajustes de sandbox, aprobación y canales.",
         "settings_kept_name_hooks": "hooks",
         "import_settings_installed": "Se instalaron desde el archivo: {{files}}. El archivo puede no provenir de esta instalación y su configuración puede cambiar los ajustes de sandbox, aprobación y canales.",
-        "replace_installs_missing_settings": "En un equipo que no tiene archivo de ajustes, se instala el del archivo.",
         "import_reloading_display_settings": "Importación completada: recargando para aplicar tus ajustes de visualización…",
         "import_complete_restart_gateway_one": "Importación completa ({{count}} elemento). Para aplicar todos los cambios, reinicia el gateway: Configuración → Acerca de → Reiniciar la pasarela.",
         "import_complete_restart_gateway_many": "Importación completa ({{count}} elementos). Para aplicar todos los cambios, reinicia el gateway: Configuración → Acerca de → Reiniciar la pasarela.",

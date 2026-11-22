@@ -18381,7 +18381,6 @@
         "replace_settings_foreign_archive": "Cette archive ne provient peut-être pas de cette installation. Sa configuration peut modifier les réglages du bac à sable, des approbations et des canaux.",
         "settings_kept_name_hooks": "hooks",
         "import_settings_installed": "Installé depuis l'archive : {{files}}. L'archive ne provient peut-être pas de cette installation, et sa configuration peut modifier les réglages du bac à sable, des approbations et des canaux.",
-        "replace_installs_missing_settings": "Sur une machine sans fichier de réglages, le fichier de l'archive est installé.",
         "import_reloading_display_settings": "Importation terminée — rechargement pour appliquer tes paramètres d'affichage…",
         "import_complete_restart_gateway_one": "Import terminé ({{count}} élément). Pour appliquer toutes les modifications, redémarre le gateway : Paramètres → À propos → Redémarrer la passerelle.",
         "import_complete_restart_gateway_many": "Import terminé ({{count}} éléments). Pour appliquer toutes les modifications, redémarre le gateway : Paramètres → À propos → Redémarrer la passerelle.",

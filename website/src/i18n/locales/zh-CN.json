@@ -17447,7 +17447,6 @@
         "replace_settings_foreign_archive": "此归档可能并非来自此安装。其配置可能更改沙箱、审批和渠道设置。",
         "settings_kept_name_hooks": "钩子",
         "import_settings_installed": "已安装归档中的{{files}}。此归档可能并非来自此安装，其配置可能更改沙箱、审批和渠道设置。",
-        "replace_installs_missing_settings": "在没有设置文件的机器上，会安装归档中的文件。",
         "import_reloading_display_settings": "导入完成——正在重新加载以应用你的显示设置…",
         "import_complete_restart_gateway_other": "导入完成（{{count}} 项）。要应用全部更改，请重启网关：设置 → 关于 → 重启网关。",
         "settings_kept_name_config": "智能体和网关设置",

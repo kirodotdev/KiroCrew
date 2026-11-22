@@ -440,7 +440,6 @@ export default function PortabilityTab() {
                 ? i18nT('pages.overview.portabilityTab.replace_overwrites_settings')
                 : i18nT('pages.overview.portabilityTab.replace_keeps_settings')}
             </p>
-            <p className="m-0 mt-2" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_installs_missing_settings')}</p>
             {includeSettings && (
               <p className="m-0 mt-2" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.portabilityTab.replace_settings_foreign_archive')}</p>
             )}

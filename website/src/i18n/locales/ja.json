@@ -17447,7 +17447,6 @@
         "replace_settings_foreign_archive": "このアーカイブはこのインストールのものではない可能性があります。その設定は、サンドボックス、承認、チャンネルの設定を変更する可能性があります。",
         "settings_kept_name_hooks": "フック",
         "import_settings_installed": "アーカイブの{{files}}をインストールしました。このアーカイブはこのインストールのものではない可能性があり、その設定はサンドボックス、承認、チャンネルの設定を変更する可能性があります。",
-        "replace_installs_missing_settings": "設定ファイルがないマシンでは、アーカイブのファイルがインストールされます。",
         "import_reloading_display_settings": "インポートが完了しました — 表示設定を適用するために再読み込みしています…",
         "import_complete_restart_gateway_other": "インポートが完了しました（{{count}} 件）。すべての変更を適用するには、ゲートウェイを再起動してください: 設定 → バージョン情報 → ゲートウェイを再起動。",
         "settings_kept_name_config": "エージェントとゲートウェイの設定",

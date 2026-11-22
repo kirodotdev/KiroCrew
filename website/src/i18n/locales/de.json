@@ -17914,7 +17914,6 @@
         "replace_settings_foreign_archive": "Dieses Archiv stammt möglicherweise nicht von dieser Installation. Seine Konfiguration kann Sandbox-, Genehmigungs- und Kanaleinstellungen ändern.",
         "settings_kept_name_hooks": "Hooks",
         "import_settings_installed": "Aus dem Archiv installiert: {{files}}. Das Archiv stammt möglicherweise nicht von dieser Installation, und seine Konfiguration kann Sandbox-, Genehmigungs- und Kanaleinstellungen ändern.",
-        "replace_installs_missing_settings": "Auf einem Rechner ohne Einstellungsdatei wird die Datei aus dem Archiv installiert.",
         "import_reloading_display_settings": "Import abgeschlossen – die Seite wird neu geladen, um deine Anzeigeeinstellungen zu übernehmen…",
         "import_complete_restart_gateway_one": "Import abgeschlossen ({{count}} Element). Um alle Änderungen zu übernehmen, starte das Gateway neu: Einstellungen → Über → Gateway neu starten.",
         "import_complete_restart_gateway_other": "Import abgeschlossen ({{count}} Elemente). Um alle Änderungen zu übernehmen, starte das Gateway neu: Einstellungen → Über → Gateway neu starten.",

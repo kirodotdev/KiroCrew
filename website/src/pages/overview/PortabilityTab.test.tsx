@@ -641,6 +641,8 @@ describe('PortabilityTab replace-import confirmation', () => {
       const { fetchMock, dialog } = await askToReplace()
       expect(within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_keeps_settings'), { selector: 'p' })).toBeTruthy()
       expect(within(dialog).queryByText(i18nT('pages.overview.portabilityTab.replace_settings_foreign_archive'), { selector: 'p' })).toBeNull()
+      // The "kept" line must not be followed by a line saying a settings file is installed.
+      expect(within(dialog).queryByText(/no settings file/)).toBeNull()
       await confirmAction('Import')
       await screen.findByText(/Import complete/)
       expect(importRequest(fetchMock)).toBe('/api/portability/import?mode=replace')
@@ -658,17 +660,6 @@ describe('PortabilityTab replace-import confirmation', () => {
       await confirmAction('Import')
       await screen.findByText(/Import complete/)
       expect(importRequest(fetchMock)).toBe('/api/portability/import?mode=replace&include_settings=1')
-    })
-
-    it('does not repeat the missing-settings-file line in the import area', async () => {
-      await askToReplace()
-      await confirmAction('Cancel')
-      expect(screen.queryByText(i18nT('pages.overview.portabilityTab.replace_installs_missing_settings'), { selector: 'p' })).toBeNull()
-    })
-
-    it('says in the dialog that a missing settings file is installed', async () => {
-      const { dialog } = await askToReplace()
-      expect(within(dialog).getByText(i18nT('pages.overview.portabilityTab.replace_installs_missing_settings'), { selector: 'p' })).toBeTruthy()
     })
 
     it('names the installed documents and warns about a foreign archive in the result', async () => {

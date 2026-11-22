@@ -18381,7 +18381,6 @@
         "replace_settings_foreign_archive": "Questo archivio potrebbe non provenire da questa installazione. La sua configurazione può modificare le impostazioni di sandbox, approvazione e canali.",
         "settings_kept_name_hooks": "hook",
         "import_settings_installed": "Dall'archivio sono stati installati: {{files}}. L'archivio potrebbe non provenire da questa installazione e la sua configurazione può modificare le impostazioni di sandbox, approvazione e canali.",
-        "replace_installs_missing_settings": "Su una macchina senza file di impostazioni, viene installato quello dell'archivio.",
         "import_reloading_display_settings": "Importazione completata: ricarico la pagina per applicare le impostazioni di visualizzazione…",
         "import_complete_restart_gateway_one": "Importazione completata ({{count}} elemento). Per applicare tutte le modifiche, riavvia il gateway: Impostazioni → Informazioni → Riavvia il gateway.",
         "import_complete_restart_gateway_many": "Importazione completata ({{count}} elementi). Per applicare tutte le modifiche, riavvia il gateway: Impostazioni → Informazioni → Riavvia il gateway.",

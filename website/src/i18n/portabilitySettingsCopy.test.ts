@@ -22,7 +22,6 @@ const KEYS = [
   'replace_settings_foreign_archive',
   'settings_kept_name_hooks',
   'import_settings_installed',
-  'replace_installs_missing_settings',
 ]
 
 function lookup(doc: unknown, key: string): unknown {

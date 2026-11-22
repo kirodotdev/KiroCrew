@@ -196,9 +196,7 @@ def test_an_absolute_workspace_folder_does_not_refuse_the_restore(
     )
 
 
-def test_a_default_replace_keeps_the_live_config_and_still_vets_the_archive(
-    home, tmp_path, capsys
-):
+def test_a_default_replace_keeps_the_live_config_and_still_vets_the_archive(home, tmp_path, capsys):
     """Unticked, the archive's config.json is not installed, but an unsafe one still refuses."""
     safe = _bundle(tmp_path, {"agents": {"my.pkg": {}}}, name="safe")
     assert _restore(safe, unpinnable_argv()) == 0, capsys.readouterr().out

@@ -8593,7 +8593,6 @@
         "replace_settings_foreign_archive": "This archive may not come from this install. Its config can change sandbox, approval and channel settings.",
         "settings_kept_name_hooks": "hooks",
         "import_settings_installed": "The archive's {{files}} were installed. The archive may not come from this install, and its config can change sandbox, approval and channel settings.",
-        "replace_installs_missing_settings": "On a machine that has no settings file, the archive's file is installed.",
         "import_reloading_display_settings": "Import complete — reloading to apply your display settings…",
         "import_complete_restart_gateway_one": "Import complete ({{count}} item). To apply every change, restart the gateway: Settings → About → Restart gateway.",
         "import_complete_restart_gateway_other": "Import complete ({{count}} items). To apply every change, restart the gateway: Settings → About → Restart gateway.",
