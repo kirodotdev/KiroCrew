@@ -616,7 +616,7 @@ def test_cli_a_second_start_on_a_served_sign_in_screen_points_at_its_link(
     assert "KIROCREW_HOME" in err
 
 
-@pytest.mark.parametrize("flag", ["--test-mode", "--json-ready"])
+@pytest.mark.parametrize("flag", ["--test-mode", "--json-ready", "--headless"])
 def test_cli_test_and_scripted_starts_still_exit(
     lts: None,
     signed_out: list[bool],
@@ -628,6 +628,7 @@ def test_cli_test_and_scripted_starts_still_exit(
     assert exit_.code == lts_boot.EXIT_CODE
     assert boots == [1]
     gateway.assert_not_called()
+    assert signin.serve_until_signed_in.served == []  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize("port", ["abc", "99999"])

@@ -747,6 +747,7 @@ class GatewayOrchestrator:
     # The constructor's fields (gateway_runtime/orchestrator_init.py):
     _cfg: KiroCrewConfig
     _no_dashboard: bool
+    _headless: bool
     _no_crons: bool
     _no_open: bool
     _port_override: str | None
@@ -898,6 +899,7 @@ class GatewayOrchestrator:
             cfg: KiroCrewConfig,
             *,
             no_dashboard: bool = False,
+            headless: bool = False,
             no_crons: bool = False,
             no_open: bool = False,
             port_override: str | None = None,

@@ -5,7 +5,8 @@ dashboard or API-only server; ``run`` itself, which brings everything up in orde
 and blocks until shutdown; and the post-bind session-start sizing log.
 
 Orchestrator fields read: ``_approval_mode``, ``_background_tasks``, ``_bot_token``,
-``_cfg``, ``_cron_injecting``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
+``_cfg``, ``_cron_injecting``, ``_headless``, ``_json_ready``, ``_no_crons``, ``_no_dashboard``,
+``_no_open``,
 ``_owner_id``, ``_port_override``, ``_runner_admission_adopted``, ``_slack_enabled``,
 ``_test_mode``,
 ``_tracking_channels``, ``autonudge_svc``, ``cron_svc``, ``subagent_mgr``.
@@ -726,7 +727,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         dashboard_port = int(self._port_override)
     self._dashboard_port = dashboard_port
     self._configured_host = configured_host
-    self._local_only = is_local_only(configured_host, self._slack_enabled)
+    self._local_only = self._headless or is_local_only(configured_host, self._slack_enabled)
     self._dashboard_runner, self.dashboard_state = await start_dashboard(
         sessions=self.sessions,
         crons=self.cron_svc,
@@ -748,6 +749,7 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         defer_channel_agent_resume=True,
         schedule_memory_preparation=self._schedule_memory_preparation,
         approval_mode=self._approval_mode,
+        headless=self._headless,
     )
     # When --port auto was requested, read the OS-assigned ephemeral port
     # back from the runner so subsequent URL building and the READY line
@@ -1551,7 +1553,13 @@ async def run(self: GatewayOrchestrator) -> None:
     # ~mcp_probe_timeout_secs+15 of "no URL on screen" from every boot, and
     # all of it from the timed-out path.
     dashboard_url = ""
-    if not self._no_dashboard:
+    if self._headless:
+        # No page to open and no sign-in link to print: the address and how to get
+        # a credential, which is never printed here.
+        from kiro_crew.dashboard.headless import print_client_access
+
+        print_client_access(self._dashboard_port)
+    elif not self._no_dashboard:
         try:
             host = resolve_dashboard_host(self._local_only, self._configured_host)
             _cfg_url = self._cfg.dashboard.url
