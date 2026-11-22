@@ -2455,7 +2455,10 @@ and has no spec file, the refusal names the setting and
 (`side_readonly_spec.missing_default_agent_explanation`, read off the event
 loop). Guard (B) and the KAS route's missing-definition refusal
 (`apps.manager_lookup.missing_agent_reason`, for an agent no app declares) give
-that remedy too. A published `<agent>--readonly` side spec is the exception: its refusal
+that remedy too. A Bot's agent (the mate conductor or worker, or a Bot's own
+file, all in `~/.kiro/mates/agents/`, which kiro-cli does not list and setup does
+not write) gets a refusal that says so and points at the dashboard's Bots page
+(`side_readonly_spec.bot_agent_explanation`). A published `<agent>--readonly` side spec is the exception: its refusal
 explains the derived spec and names the base agent
 (`side_readonly_spec.unavailable_mode_explanation`; see [side.md](side.md)).
 On the Kiro CLI harness (the three raise sites pass `kiro_cli_engine`, true only
