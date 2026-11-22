@@ -832,8 +832,17 @@ class KasHarness(MembershipHarness):
         from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn, kiro_cli_not_found_message
         from kiro_crew.acp.kiro_cli_missing import AcpKiroCliMissing
         from kiro_crew.acp.session_handle import AcpRuntimeError
+        from kiro_crew.auth.login.endpoints import (
+            LOCAL_AGENT_UNAVAILABLE,
+            stored_sign_in_registered,
+        )
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
+        # Before any route is chosen: a sign-in on an edition's own start URL
+        # (``crew_client`` preview) is not one a local agent may run on, on any route.
+        # The turn gate refuses the same sign-in (``kiro_readiness.kas_turn_verdict``).
+        if await asyncio.to_thread(stored_sign_in_registered):
+            raise AcpRuntimeError(LOCAL_AGENT_UNAVAILABLE)
         self.bundle_engine_version = ""
         self.untested_version_notice = ""
         self.engine_fallback_notice = ""

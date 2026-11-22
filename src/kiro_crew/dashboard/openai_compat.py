@@ -29,6 +29,7 @@ from kiro_crew.dashboard.chat_handlers import _retract_failed_newborn, write_sse
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, _sync_dashboard_slots
 from kiro_crew.dashboard.kiro_readiness import (
+    KAS_TURN_REFUSED_CODE,
     reject_if_kiro_unverified,
     rerun_signs_in_via_kiro_cli,
     turn_gate_target,
@@ -666,15 +667,15 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             if freshly_created:
                 # The probe awaited: a slot another request took up stays.
                 _retract_failed_newborn(state, slot)
+            message = "Kiro CLI setup or sign-in is required before starting a session."
+            code = "kiro_prerequisite_required"
+            gate_body = json.loads(blocked.text or "{}")
+            if gate_body.get("code") == KAS_TURN_REFUSED_CODE:
+                # Crew's own sign-in refused this KAS turn: kiro-cli cannot clear it,
+                # so the caller gets the gate's own remedy, not kiro-cli's.
+                message, code = gate_body["error"], KAS_TURN_REFUSED_CODE
             return web.json_response(
-                {
-                    "error": {
-                        "message": "Kiro CLI setup or sign-in is required before starting a "
-                        "session.",
-                        "type": "service_unavailable_error",
-                        "code": "kiro_prerequisite_required",
-                    }
-                },
+                {"error": {"message": message, "type": "service_unavailable_error", "code": code}},
                 status=503,
             )
     # The checks above can yield: the slot may have been closed, replaced, or

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Dict
 
@@ -138,6 +139,30 @@ def feature_previews(previews: Any) -> Any:
     stored value is left alone. On ``oss`` it returns *previews* unchanged.
     """
     return {} if local_enable_locked("feature_previews") else previews
+
+
+def preview_on(name: str, cfg: Any = None) -> bool:
+    """Whether Feature Preview *name* is on: its stored switch is an exact ``True``.
+
+    *cfg* is a loaded configuration; ``None`` reads the live snapshot, else the
+    config file (a CLI process has no watcher). Read through :func:`feature_previews`,
+    so an LTS build reads every preview as off. An unreadable config is off. Never
+    raises.
+    """
+    try:
+        if cfg is None:
+            from kiro_crew.config import live
+
+            cfg = live.snapshot()
+            if cfg is None:
+                from kiro_crew.config.loader import KiroCrewConfig
+
+                cfg = KiroCrewConfig.load()
+        previews = feature_previews(getattr(cfg.dashboard, "feature_previews", None))
+    except Exception:  # noqa: BLE001 -- unread means off
+        logger.debug("feature preview %s: config unreadable; treating as off", name, exc_info=True)
+        return False
+    return isinstance(previews, Mapping) and previews.get(name) is True
 
 
 def reset_logged() -> None:

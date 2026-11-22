@@ -199,3 +199,32 @@ async def test_a_slot_closed_during_the_probe_is_not_run(state) -> None:
 
     assert resp.status == 404
     run_chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_kas_turn_refusal_keeps_its_own_code_and_message(state) -> None:
+    """The gate's ``kas_turn_refused`` (an edition's own company sign-in) is not
+    kiro-cli's to clear, so the endpoint keeps its code and message."""
+    from aiohttp import web
+
+    from kiro_crew.dashboard.kiro_readiness import KAS_TURN_REFUSED_CODE
+
+    _pin_applied(state, ACP_BACKEND_KIRO)
+    refusal = web.json_response(
+        {"error": "Chats on this computer won't start.", "code": KAS_TURN_REFUSED_CODE},
+        status=503,
+    )
+    with (
+        patch(
+            "kiro_crew.dashboard.openai_compat.rerun_signs_in_via_kiro_cli",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "kiro_crew.dashboard.openai_compat.reject_if_kiro_unverified",
+            AsyncMock(return_value=refusal),
+        ),
+    ):
+        got, payload = await _complete(state, {"model": "vanellope", "messages": _MESSAGES})
+    assert got == 503
+    assert payload["error"]["code"] == KAS_TURN_REFUSED_CODE
+    assert payload["error"]["message"] == "Chats on this computer won't start."

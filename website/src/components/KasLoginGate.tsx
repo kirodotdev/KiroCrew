@@ -30,7 +30,7 @@ import {
 } from './OnboardingChapterShell'
 import GithubLogo from './icons/GithubLogo'
 import { Btn, IconButton } from './ui'
-import { initialCompanySignIn, rememberCompanySignIn } from '../utils/companySignIn'
+import { initialCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../utils/companySignIn'
 import ErrorNotice from './ErrorNotice'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeHref } from '../utils/safeHref'
@@ -57,6 +57,7 @@ const FELL_BACK_LINE = {
 // The begin error's DOM id, so the SSO field it names can point at it.
 const SSO_ERROR_ID = 'kas-sso-begin-error'
 const SSO_PREFILLED_ID = 'kas-sso-start-url-prefilled'
+const SSO_LOCAL_AGENT_OFF_ID = 'kas-sso-local-agent-off'
 
 /** The `reason` a begin refusal's JSON body names (the start-URL rule it broke), or ''. */
 function refusalReason(err: unknown): string {
@@ -433,6 +434,7 @@ function Chooser({
   beginError,
   beginErrorCode,
   companyDefault,
+  localAgentOffUrls = [],
   bare = false,
   beginErrorReason,
   beginErrorReport,
@@ -444,6 +446,8 @@ function Chooser({
   beginErrorCode: string
   /** The gateway's default company portal (`KasLoginStatus.company_sign_in`). */
   companyDefault?: KasLoginStatus['company_sign_in']
+  /** Portals whose sign-in turns the local agent off (`KasLoginStatus.local_agent_off_start_urls`). */
+  localAgentOffUrls?: string[]
   bare?: boolean
   /** The begin refusal's `reason`, or '' (see refusalReason). */
   beginErrorReason: string
@@ -465,6 +469,8 @@ function Chooser({
   // enough to press Continue. The note goes once they edit the field.
   const [urlFromDefault, setUrlFromDefault] = useState(initial.fromDefault)
   const startUrlReady = startUrl.trim().length > 0
+  // Said BEFORE sign-in: no local agent runs on an edition's own company sign-in.
+  const localAgentOff = localAgentOffUrls.some(url => sameCompanyPortal(url, startUrl))
   // The 400s the user fixes in this form: the error names the field (both, when
   // AWS's answer names neither) and is tied to it, instead of sending them to
   // check their connection.
@@ -568,7 +574,7 @@ function Chooser({
                 aria-label={i18nT('components.kasLogin.sso_start_url_label')}
                 aria-invalid={startUrlBad || undefined}
                 aria-describedby={
-                  [urlFromDefault && SSO_PREFILLED_ID, startUrlBad && SSO_ERROR_ID]
+                  [urlFromDefault && SSO_PREFILLED_ID, localAgentOff && SSO_LOCAL_AGENT_OFF_ID, startUrlBad && SSO_ERROR_ID]
                     .filter(Boolean)
                     .join(' ') || undefined
                 }
@@ -589,6 +595,16 @@ function Chooser({
                 data-testid="kas-login-sso-prefilled"
               >
                 {i18nT('components.kasLogin.sso_start_url_prefilled')}
+              </p>
+            )}
+            {localAgentOff && (
+              <p
+                id={SSO_LOCAL_AGENT_OFF_ID}
+                role="note"
+                className="mt-2 rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-[12px] leading-relaxed text-text-strong"
+                data-testid="kas-login-sso-local-agent-off"
+              >
+                {i18nT('components.kasLogin.sso_local_agent_off')}
               </p>
             )}
             <p className="mt-1 text-[12px] leading-relaxed text-muted">
@@ -1245,6 +1261,7 @@ function KasLoginFlow({
         beginError={flow.beginError}
         beginErrorCode={flow.beginErrorCode}
         companyDefault={status.company_sign_in}
+        localAgentOffUrls={status.local_agent_off_start_urls}
         bare={bare}
         beginErrorReason={refusalReason(flow.beginDeviceError)}
         beginErrorReport={

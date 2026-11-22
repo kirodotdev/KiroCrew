@@ -479,6 +479,49 @@ describe('KasLoginGate', () => {
     })
   })
 
+  it('warns before sign-in that a company portal with its own sign-in turns the local agent off', async () => {
+    kasLoginStatus.mockResolvedValue({
+      authenticated: false,
+      provider: null,
+      identity: null,
+      transport: 'device',
+      local_agent_off_start_urls: ['https://acme.awsapps.com/start'],
+    })
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    const field = await screen.findByLabelText('Company sign-in URL')
+    fireEvent.change(field, { target: { value: 'https://other.awsapps.com/start' } })
+    expect(screen.queryByTestId('kas-login-sso-local-agent-off')).toBeNull()
+    // A browser-copied portal URL keeps its `#/` fragment, which never leaves the browser.
+    fireEvent.change(field, { target: { value: 'acme.awsapps.com/start/#/' } })
+    expect(screen.getByTestId('kas-login-sso-local-agent-off')).toHaveTextContent(/chat with the agent on this computer/)
+    expect(kasLoginBeginDevice).not.toHaveBeenCalled()
+  })
+
+  it('re-reads the portals before a company sign-in, so a stale status cannot skip the warning', async () => {
+    // The status was read before `crew_client` was turned on: no portal listed.
+    renderWithProviders(<KasLoginGate />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.change(await screen.findByLabelText('Company sign-in URL'), {
+      target: { value: 'https://acme.awsapps.com/start' },
+    })
+    expect(screen.queryByTestId('kas-login-sso-local-agent-off')).toBeNull()
+    kasLoginStatus.mockResolvedValue({
+      authenticated: false,
+      provider: null,
+      identity: null,
+      transport: 'device',
+      local_agent_off_start_urls: ['https://acme.awsapps.com/start'],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    // The fresh list warns for this portal: the form shows it and nothing begins.
+    expect(await screen.findByTestId('kas-login-sso-local-agent-off')).toBeInTheDocument()
+    expect(kasLoginBeginDevice).not.toHaveBeenCalled()
+    // Continuing with the warning in view begins the sign-in.
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByTestId('kas-login-user-code')).toHaveTextContent('ABCD-EFGH')
+  })
+
   it('company SSO sends a start URL pasted without https:// for the gateway to complete', async () => {
     renderWithProviders(<KasLoginGate />)
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))

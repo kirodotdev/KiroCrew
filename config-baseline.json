@@ -11039,6 +11039,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.crew_client",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: crew_client",
+      "help": "Turn on the 'crew_client' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.crew_oauth",
       "kind": "core",
       "type": "boolean",

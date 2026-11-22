@@ -2674,6 +2674,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.use-your-company-s-sign-in",
+    "label": "Use your company's sign-in",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_client",
+    "description": "Uses your company's own sign-in for its portal. Nothing changes until you sign in with that portal.",
+    "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.visual-refresh",
     "label": "Visual refresh",
     "labelKey": "pages.developer.featurePreviewsTab.visual_refresh",
