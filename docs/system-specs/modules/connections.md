@@ -1568,7 +1568,12 @@ own sign-in path. A url that differs only by a trailing slash or letter case
 Connect, which writes the registry url onto the entry before minting.
 Both wordings drop away once a grant is held, but the mint refuses either way, so
 the status row also carries `crewMintRefused` (`"sign_in_off"` or `"not_owned"`)
-whether or not a grant is held. While it is set the card offers no Connect or
+whether or not a grant is held. `"not_owned"` also rides the row of the owner's
+own recorded entry at the registry url exactly, which the card yields to
+(`status._owner_yielded_slugs`, through `crew_oauth._left_to_owner`): Connect
+would leave it the owner's, so the mint refuses it too. That row keeps its
+setup steps, because saving an OAuth app takes the slug back for the card.
+While it is set the card offers no Connect or
 Reconnect, and shows the matching setup line in their place; a held grant keeps
 Connected and Disconnect. The MCP Servers row offers no Sign in for a `slack`
 row that sends headers of its own, because the mint refuses that entry too; it
