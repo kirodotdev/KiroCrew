@@ -466,7 +466,10 @@ Tenants PULL the record rather than being pushed it. A tenant learns of the deat
 the way it already does — its poisoned session queue raises into whatever turn it
 had — and reads the record while handling it. A tenant with no turn in flight has
 nothing to recover and re-acquires on its next turn, which drops a dead runtime on
-the way past. There is deliberately no observer registry: a notification channel
+the way past. A sub-agent run parked on a wait cannot: nothing restarts an `AcpRuntime`
+under it, so the sub-agent reaper asks that run's own handle each sweep and ends the run
+([subagent.md](subagent.md), *Transient Retry (mid-stream 5xx) and dependency waits*).
+There is deliberately no observer registry: a notification channel
 with no subscriber is a mechanism whose first real consumer would have to redesign
 it.
 

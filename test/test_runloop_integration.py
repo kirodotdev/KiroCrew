@@ -39,7 +39,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from overload_fakes import backoff, settle_store_writes
+from test_subagent_turn_resilience_retry import _one_reaper_sweep
 
+from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.acp.transport_errors import AcpAuthRequired, AcpProcessDied
 from kiro_crew.acp.types import (
     STATUS_ORIGIN_LIVENESS_ORACLE,
     STOP_REASON_END_TURN,
@@ -64,9 +67,9 @@ from kiro_crew.taskq import RUNNING, STARTING, WAITING_DEPENDENCY, WAITING_INPUT
 from kiro_crew.taskq import dependency as dep_mod
 from kiro_crew.taskq.dependency import DependencyCoordinator
 from kiro_crew.testing.synthetic_credentials import aws_secret
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 _STALL_EVIDENCE = "verdict=dead; idle_secs=700; processes_terminated=2; tool=execute_bash"
 
@@ -1067,6 +1070,140 @@ async def test_dependency_scope_failure_ends_the_run():
     assert mgr._running_count == 0 and not info._resume_pending
 
 
+def _runtime_handle(*, alive: bool) -> MagicMock:
+    """A run's own ``AcpSessionProvider``; a spec mock's ``is_alive()`` is truthy unset,
+    and a dead one's ``ensure_ready()`` raises as the real provider's does."""
+    handle = MagicMock(spec=AcpSessionProvider)
+    handle.is_alive.return_value = alive
+    if not alive:
+        handle.ensure_ready.side_effect = AcpProcessDied("Runtime is not alive")
+    return handle
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "death",
+    [
+        pytest.param(lambda: AcpProcessDied("Runtime is not alive"), id="process-death"),
+        pytest.param(
+            lambda: AcpAuthRequired("Signed out: sign in again", backend="kiro"), id="signed-out"
+        ),
+    ],
+)
+async def test_a_parked_run_whose_runtime_died_ends_with_its_providers_death(death):
+    """The reaper's dead-runtime step ends a run parked on a wait whose own
+    ``AcpSessionProvider`` reads dead at once, long before its ``retry_at``, with
+    the error that provider's ``ensure_ready()`` raises (a signed-out death keeps
+    its sign-in remedy): ``failed`` naming it, resume withdrawn, coordinator and
+    row let go. A shared run, whose handle is its
+    ``_shared_provider``, is released too. Untouched: a parked run whose handle
+    reads alive, a parked dedicated run with no session left to look up (a stale
+    ``_shared_provider`` is not its handle), and runs whose prompt is still in
+    flight (one holding its slot, one in a typed input wait)."""
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            raise AcpFakeThrottle("ThrottlingException: Rate exceeded")
+            yield  # noqa: unreachable
+
+        return _gen()
+
+    sessions = _mock_sessions(factory)
+    # The dedicated session's live client: an ``AcpRuntime`` session, alive at first.
+    handle = _runtime_handle(alive=True)
+    sessions._provider.client = handle
+    providers: dict[str, Any] = {}
+    sessions.get_provider = MagicMock(side_effect=providers.get)
+    mgr = await _ready_manager(sessions)
+    coordinator = _fast_coordinator(mgr, backoff=backoff(_HELD_PARK_SECS, _HELD_PARK_SECS))
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("parked work")
+        assert info is not None
+        await _await_parked(mgr, coordinator, "provider:acp", info.id)
+        providers[f"subagent:{info.id}"] = sessions._provider
+        mgr._run_events._release_dead_runtime_waits()
+        assert info._runtime_gone is None and not info.done
+        dead = _runtime_handle(alive=False)
+        runs = {
+            name: SubagentInfo(id=name, task="t")
+            for name in ("shared", "alive", "no-session", "prompting", "typed-input")
+        }
+        for name, run in runs.items():
+            run._session_sharing = name != "no-session"
+            run._shared_provider = _runtime_handle(alive=True) if name == "alive" else dead
+            run._slot_released = name != "prompting"
+            run._resume_event = None if name == "typed-input" else asyncio.Event()
+            mgr._agents[run.id] = run
+        raised = death()
+        handle.is_alive.return_value = False
+        handle.ensure_ready.side_effect = raised
+        mgr._run_events._release_dead_runtime_waits()
+        await await_until(mgr._tasks[info.id], what=f"parked run {info.id} ends")
+    await _drain_posted(mgr)
+    assert info.outcome == "failed"
+    assert f"{type(raised).__name__}: {raised}" in info.error
+    handle.ensure_ready.assert_awaited()
+    assert not info._resume_pending and coordinator.waiters("provider:acp") == []
+    assert _row(mgr, info.id).state == "failed"
+    shared = runs.pop("shared")
+    assert shared._runtime_gone == (shared._resume_event, dead)
+    assert shared._resume_event.is_set()
+    assert all(run._runtime_gone is None for run in runs.values())
+    assert not any(run._resume_event.is_set() for run in runs.values() if run._resume_event)
+
+
+@pytest.mark.asyncio
+async def test_a_parked_run_on_the_direct_client_is_left_to_its_wake():
+    """A run on the direct ``AcpClient`` arm, parked on a throttle, is left parked
+    by the reaper's dead-runtime step: its wake respawns that process, so the
+    woken run replays the prompt and completes."""
+    calls: list[str] = []
+
+    def factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                raise AcpFakeThrottle("ThrottlingException: Rate exceeded")
+            yield _text("ok")
+            yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    sessions = _mock_sessions(factory)
+    # Found by the run's own key, and its live client is not an ``AcpSessionProvider``.
+    sessions.get_provider = MagicMock(return_value=sessions._provider)
+    mgr = await _ready_manager(sessions)
+    coordinator = _fast_coordinator(mgr, backoff=backoff(_HELD_PARK_SECS, _HELD_PARK_SECS))
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("work on a direct client")
+        assert info is not None
+        await _await_parked(mgr, coordinator, "provider:acp", info.id)
+        mgr._run_events._release_dead_runtime_waits()
+        sessions.get_provider.assert_called_with(f"subagent:{info.id}")
+        assert info._runtime_gone is None and not info._resume_event.is_set()
+        assert not info.done and _row(mgr, info.id).state == WAITING_DEPENDENCY
+        assert coordinator.recovered("provider:acp")
+        mgr._taskq_pump()
+        await await_until(mgr._tasks[info.id], what=f"woken run {info.id} finishes")
+    assert info.outcome == "completed" and info.result == "ok"
+    assert len(calls) == 2 and calls[0] == calls[1]  # zero activity: the prompt replayed
+
+
+@pytest.mark.asyncio
+async def test_one_reaper_sweep_releases_a_wait_on_a_dead_runtime(monkeypatch):
+    """The dead-runtime step is part of every reaper sweep, not only callable."""
+    mgr = await _ready_manager(_mock_sessions(lambda *a, **k: None))
+    parked = SubagentInfo(id="parked-on-dead", task="t")
+    parked._session_sharing, parked._slot_released = True, True
+    parked._shared_provider = _runtime_handle(alive=False)
+    parked._resume_event = asyncio.Event()
+    mgr._agents[parked.id] = parked
+    assert await _one_reaper_sweep(monkeypatch, mgr) == []
+    assert parked._runtime_gone == (parked._resume_event, parked._shared_provider)
+    assert parked._resume_event.is_set()
+
+
 @pytest.mark.asyncio
 async def test_unclassified_transient_keeps_the_in_turn_ladder():
     """An error no adapter knows is not a dependency wait: the bounded in-turn
@@ -1434,6 +1571,31 @@ async def test_on_fail_releases_a_run_parked_on_its_resume_event():
     assert info._resume_event.is_set() and info._wait_failed == "scope gave up"
     ok = await mgr._await_lane_resume(info, reason="x", timeout=0.05)
     assert ok is False and info._resume_pending is False
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_gone_mark_fails_only_the_wait_it_interrupted():
+    """A mark left by an earlier wait (the run has since moved on, a cancel
+    recovery onto a new runtime included) never raises; one naming the wait in
+    progress raises what its handle's ``ensure_ready()`` raises."""
+    mgr = await _ready_manager(_mock_sessions(lambda *a, **k: None))
+    stale, current = (SubagentInfo(id=f"parked-{m}", task="t") for m in ("stale", "current"))
+    for info in (stale, current):
+        info._slot_released = True
+        info._resume_event = asyncio.Event()
+        info._resume_event.set()
+        mgr._agents[info.id] = info
+    stale._runtime_gone = (asyncio.Event(), _runtime_handle(alive=False))
+    current._runtime_gone = (current._resume_event, _runtime_handle(alive=False))
+    stale_wait = mgr._await_lane_resume(
+        stale, reason="x", timeout=FALLBACK_TIMEOUT_SECS, request=False
+    )
+    assert await stale_wait is False
+    stale._runtime_gone[1].ensure_ready.assert_not_awaited()
+    with pytest.raises(AcpProcessDied, match="Runtime is not alive"):
+        await mgr._await_lane_resume(
+            current, reason="x", timeout=FALLBACK_TIMEOUT_SECS, request=False
+        )
 
 
 def _spy_rearms(monkeypatch, waits_mod) -> list[Any]:

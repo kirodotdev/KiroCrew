@@ -23,7 +23,8 @@ A tenant learns of the death the way it already does -- its poisoned session
 queue raises into whatever turn it had -- and reads this record while handling it.
 No layer is woken on its behalf, because none needs to be: a tenant with no turn
 in flight has nothing to recover and re-acquires on its next turn through the
-ownership registry, which drops a dead runtime on the way past.
+ownership registry, which drops a dead runtime on the way past. A sub-agent run
+parked on a wait cannot, so the sub-agent reaper asks that run's own handle.
 
 So there is no observer registry here; a layer that needs one adds it with its
 first consumer.

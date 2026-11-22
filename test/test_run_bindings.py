@@ -292,6 +292,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
         "run_yields",
     ),
     "_withdraw_resume": ("function", "(self, info: \"'SubagentInfo'\") -> 'None'", "run_yields"),
+    "_release_dead_runtime_waits": ("function", "(self) -> 'None'", "run_yields"),
     "_yield_for_dependency_impl": (
         "coroutine",
         "(self, info: 'SubagentInfo', signal: 'Any') -> 'bool | None'",

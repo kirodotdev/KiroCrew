@@ -269,6 +269,7 @@ class RunEventCoordinator(ManagerComponent):
     _yield_for_stop_recovery_impl = _run_yields._yield_for_stop_recovery_impl
     _await_lane_resume_impl = _run_yields._await_lane_resume_impl
     _withdraw_resume = _run_yields._withdraw_resume
+    _release_dead_runtime_waits = _run_yields._release_dead_runtime_waits
     _yield_for_dependency_impl = _run_yields._yield_for_dependency_impl
     _yield_for_infra_retry_impl = _run_yields._yield_for_infra_retry_impl
     ensure_running_marked = _run_yields.ensure_running_marked

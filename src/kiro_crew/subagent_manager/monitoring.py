@@ -1338,6 +1338,11 @@ class OrphanStallMonitor(ManagerComponent):
                     logger.debug("Reaper: owed tombstone retry failed", exc_info=True)
             # Periodic FIFO trim (also bounds a long-running gateway).
             await compact_cost_log_off_loop()
+            # A run parked on a wait whose own runtime died ends now, not at its wake.
+            try:
+                self._manager._run_events._release_dead_runtime_waits()
+            except Exception:
+                logger.debug("Reaper: dead-runtime wait release failed", exc_info=True)
             for agent_id, info in list(self._manager._agents.items()):
                 if info.done or info._ending_claimed:
                     continue
