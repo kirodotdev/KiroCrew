@@ -24,7 +24,7 @@ The input the key sits in decides how the value is read:
 The value gate then decides: ``aws_secret_40`` takes a run of exactly 40
 AWS-secret-alphabet characters ending the value; ``b64_run`` takes a base64 run of at
 least 100 characters (padding included); ``secret_literal`` takes a written value (the
-text inside its quotes, or an unquoted word) of 8 to 512 characters that is not a
+text inside its quotes, or an unquoted word) of 6 to 512 characters that is not a
 placeholder, does not read as code and does not read as words (:func:`_literal_gate`).
 Only that run is replaced.
 """
@@ -34,7 +34,7 @@ from __future__ import annotations
 from .charsets import ALNUM, B64STD, DIGITS, ascii_lower, cached, run_end, run_start
 from .checks import is_placeholder, reads_as_example_words
 from .model import PLAN_TAGS, TAIL_B64RUN, Hit
-from .table import KnownKeyRow
+from .table import TABLE, KnownKeyRow
 
 KEY_CHARS = ALNUM + "_-."
 KEY_MAX = 64
@@ -45,7 +45,17 @@ SESSION_MIN = 100
 # A session-token run still running after this many characters is decided a Secret
 # (fail closed); the stream then discards the rest of the run.
 SESSION_FAIL_CLOSED = 4096
-LITERAL_MIN = 8
+LITERAL_MIN = 6
+# An elided value (``sk-...``) is documentation only when its head is empty or is a known
+# vendor stub, with at most one trailing separator (``sk-``, ``ghp_``).
+_ELIDED_STUB_SEPARATORS = "-_.:/=~"
+_STUB_SEPARATOR_CHARS = tuple(_ELIDED_STUB_SEPARATORS)
+_ELIDED_VENDOR_PREFIXES = frozenset(
+    (p[:-1] if p.endswith(_STUB_SEPARATOR_CHARS) else p).lower()
+    for row in TABLE.formats
+    for p in row.prefixes
+    if len(p) >= 3  # a one- or two-character prefix (``M``, ``AC``, a digit) names no vendor
+)
 LITERAL_MAX = 512
 # An unquoted literal ends at a blank, a separator another field starts after, or a quote.
 _LITERAL_STOPS = frozenset(" \t\r\n;&,\"'")
@@ -229,6 +239,17 @@ def _literal_gate(
             return None
     if not LITERAL_MIN <= len(value) <= LITERAL_MAX or is_placeholder(value):
         return None
+    # An elided example (``sk-...``) is read as documentation. A token cut by a log's own
+    # ellipsis is still a credential and is masked.
+    # Only an empty head or a known vendor stub is exempt. Any other elided value
+    # (``password=hunter-...``) is a real value with its tail cut off and goes through the
+    # ordinary gate below on the full value, dots included.
+    if value.endswith(("...", "\u2026")):
+        head = value.rstrip(".\u2026")
+        if head.endswith(tuple(_ELIDED_STUB_SEPARATORS)):
+            head = head[:-1]
+        if not head or ascii_lower(head) in _ELIDED_VENDOR_PREFIXES:
+            return None
     if any(text.startswith(tag, vs) for tag in PLAN_TAGS):
         return None  # already replaced, byte for byte: redaction is a fixed point
     if value.startswith(_ARMOUR_HEAD) or reads_as_example_words(value):
