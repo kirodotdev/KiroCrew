@@ -9,7 +9,7 @@ import { reconcileSubagentQueuedFromSlots, refreshSlot, warmSlotCache, wireTurnI
 import type { ChatSlot, ChatFolder } from '../../types'
 import type { FrameData } from './frames'
 import type { StreamBuffers } from './streamBuffers'
-import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
+import { clearIdleRowRefreshes, recordIdleRowRefresh, settleIdleRowRefresh, type WireIdentity } from './idleRowRefresh'
 import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
 import { observedPaneSlots } from '../../api/slotMessagesQuery'
 import { autoBatched } from '../../lib/streamBatch'
@@ -99,10 +99,13 @@ export function useSlotListSync(
   return useMemo<SlotListSync>(() => {
     const sweepSlotStorage = createSlotStorageSweep()
     // Warm an on-screen pane that is not the active slot. A failed warm drops
-    // the idle-row record, so a `_done` that follows warms as before.
-    const warmOtherPane = (slot: string): void => {
+    // the idle-row record, so a `_done` that follows warms as before; when that
+    // `_done` came first and skipped its read for this warm, read again (#39620).
+    const warmOtherPane = (slot: string, identity: WireIdentity | null = null): void => {
       void dispatch(warmSlotCache(slot)).then((result) => {
-        if (warmSlotCache.rejected.match(result)) recordIdleRowRefresh(slot, null)
+        const failed = warmSlotCache.rejected.match(result)
+        if (!identity) { if (failed) recordIdleRowRefresh(slot, null); return }
+        if (settleIdleRowRefresh(slot, identity, failed)) void dispatch(warmSlotCache(slot))
       })
     }
     const resetForConnection = (): void => {
@@ -435,7 +438,7 @@ export function useSlotListSync(
           continue
         }
         recordIdleRowRefresh(slot, identity)
-        warmOtherPane(slot)
+        warmOtherPane(slot, identity)
       }
       if (Array.isArray(data)) listSeenRef.current = true
       // App embeds re-read a watched slot whose row moved (utils/appSlotPush.ts).
