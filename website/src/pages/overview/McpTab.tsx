@@ -781,6 +781,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     mutationFn: () => api.mcpProbe(),
     onSuccess: (data) => {
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], data)
+      // These rows are a fresh check, so a Retry server failure notice that
+      // said "the status shown is from the last check" is no longer true.
+      resetFailures.reset()
     },
     onError: () => {
       refetch()
