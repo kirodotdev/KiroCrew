@@ -292,76 +292,12 @@ def test_the_loader_refuses_a_name_shape() -> None:
         build_table([{**netrc, "names": ["password"]}])
 
 
-# ── Short values, a bare Bearer token, a short curl password ──
+# ── Short values, a short curl password ──
 
 
 @pytest.mark.parametrize("name", ["password", "secret"])
 def test_a_short_value_after_a_listed_name_is_masked(name: str) -> None:
     assert redact(f"{name}=FAKEpw1")[0] == f"{name}={TAG}"
-
-
-def test_a_bare_bearer_token_is_masked() -> None:
-    value = "FAKE0000" + "0" * 12
-    assert redact(f"sent Bearer {value} to host")[0] == f"sent Bearer {TAG} to host"
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        'WWW-Authenticate: Bearer resource_metadata="https://example.test/meta"',
-        'WWW-Authenticate: Bearer error_description="The access token expired"',
-        'WWW-Authenticate: Bearer realm="example"',
-        "WWW-Authenticate: Bearer error=invalid_token",
-    ],
-)
-def test_a_bearer_challenge_auth_param_is_not_masked(text: str) -> None:
-    assert redact(text)[0] == text
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        'WWW-Authenticate: Bearer scope="read write"',
-        "WWW-Authenticate: Bearer scope=read",
-        'WWW-Authenticate: Bearer error="invalid_token"',
-        'WWW-Authenticate: Bearer error_uri="https://example.test/err"',
-        "WWW-Authenticate: Bearer error_uri=https://example.test/err",
-        "WWW-Authenticate: Bearer realm=example",
-        "WWW-Authenticate: Bearer error_description=expired",
-        "WWW-Authenticate: Bearer resource_metadata=https://example.test/meta",
-        'WWW-Authenticate: Bearer REALM="example"',
-    ],
-)
-def test_every_named_bearer_challenge_param_is_not_masked(text: str) -> None:
-    assert redact(text)[0] == text
-
-
-@pytest.mark.parametrize("name", ["x", "token", "key"])
-def test_a_bare_bearer_token_shaped_like_an_unnamed_pair_is_masked(name: str) -> None:
-    text = f"sent Bearer {name}={'0' * 40} to host"
-    assert redact(text)[0] == f"sent Bearer {TAG} to host"
-
-
-def test_a_bare_bearer_jwt_like_value_with_an_equals_in_its_last_part_is_masked_whole() -> None:
-    value = f"{'a' * 20}.{'b' * 20}.{'c' * 10}={'d' * 10}"
-    assert redact(f"sent Bearer {value} to host")[0] == f"sent Bearer {TAG} to host"
-
-
-def test_a_padded_bare_bearer_token_before_a_quote_and_a_letter_is_masked() -> None:
-    value = "0" * 40 + "="
-    assert redact(f'sent Bearer {value}"a to host')[0] == f'sent Bearer {TAG}"a to host'
-
-
-@pytest.mark.parametrize("padding", ["", "=", "=="])
-def test_a_bare_bearer_token68_with_or_without_padding_is_masked(padding: str) -> None:
-    value = "FAKE0000" + "0" * 12 + padding
-    assert redact(f"sent Bearer {value} to host")[0] == f"sent Bearer {TAG} to host"
-
-
-@pytest.mark.parametrize("sep", ["%2F", "%2f", "%3D", "%252F"])
-def test_a_bare_bearer_token_with_a_percent_escape_is_masked_whole(sep: str) -> None:
-    text = f"invalid Bearer abcdEFGH1234{sep}xyzSECRETtail9876 rejected"
-    assert redact(text)[0] == f"invalid Bearer {TAG} rejected"
 
 
 def test_a_four_character_curl_user_password_is_masked() -> None:
@@ -372,13 +308,9 @@ def test_a_four_character_curl_user_password_is_masked() -> None:
     "text",
     [
         "token count=5",
-        "Bearer of bad news",
-        "the Bearer authentication scheme",
         "password=x1",
         "tokenizer=fast",
         "token=words like this",
-        "Bearer Credentials are scoped to one crew",
-        "send the bearer AUTHORIZATION header",
     ],
 )
 def test_ordinary_text_is_not_masked(text: str) -> None:

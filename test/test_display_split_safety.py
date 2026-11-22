@@ -31,8 +31,8 @@ from kiro_crew.telegram.renderer import _strip_hr
 #: than the whole reads as a credential. It has no ``_``, which the canonical form
 #: drops as markup. (A bare 40-character run stays visible by design.)
 _KEY = "AIza" + synth(35, ALNUM, seed=158)
-#: A Basic credential: the plan redacts it only after its ``Authorization: Basic`` label.
-_BASIC = "Basic ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw=="
+#: A bearer value: the plan redacts it only after its ``Authorization: Bearer`` label.
+_BEARER = "Bearer abcdefghijklmnopqrstuvwxyz0123456789"
 #: A synthetic two-segment link token (valid JSON claims, a 43-character signature
 #: with no ``_`` for the canonical form to read as emphasis), and a frame character
 #: that spoils its match on either edge.
@@ -190,11 +190,11 @@ class TestJoinsToACredential:
     def test_a_heading_marker_dropped_after_the_cut_is_reported(self) -> None:
         # Caught ONLY by a further reading, applied per side. Telegram's fallback
         # and its HTML seal both drop a heading marker, so a header name ending one
-        # message and ``#   Basic <value>`` opening the next read as the header on
+        # message and ``#   Bearer <value>`` opening the next read as the header on
         # screen. The literal join keeps the ``#`` between them, and the canonical
         # form keeps it too, so both scan clean while the reader sees the key.
         head = "Rotated the key.\n\nAuthorization:"
-        tail = f"#   {_BASIC}"
+        tail = f"#   {_BEARER}"
         assert _default_redactor(head) == head
         assert _default_redactor(tail) == tail
         assert _default_redactor(head + tail) == head + tail
@@ -304,12 +304,12 @@ class TestSeversACredential:
         [
             [
                 "Rotated the key.\n\nAuthorization:",
-                f"#   {_BASIC}",
+                f"#   {_BEARER}",
             ],
             [
                 "Rotated the key.\n\nAuthori",
                 "zation:",
-                f"#   {_BASIC}",
+                f"#   {_BEARER}",
             ],
         ],
     )

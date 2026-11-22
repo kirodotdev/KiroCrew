@@ -476,12 +476,12 @@ async def test_the_body_cannot_set_who_wrote_it_or_for_whom(bound_cron):
 async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cron):
     """``ScriptContext`` redacts before it posts, but it is one caller and not the gate:
     a script posting through ``ctx._post`` sends whatever it holds. The DOOR scrubs
-    what lands -- a credential on its own, and a Basic credential that only matches beside
+    what lands -- a credential on its own, and a bearer token that only matches beside
     its ``authorization`` key -- and the fold answers the scrubbed form."""
     from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
     secret = SECRET
-    basic = "Basic " + "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw=="
+    bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
     async with _client() as c:
         resp = await _post(
             c,
@@ -489,8 +489,8 @@ async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cro
                 "type": "stock_check",
                 "data": {
                     "note": f"key {secret} seen",
-                    "headers": {"authorization": basic, "accept": "text/plain"},
-                    "rows": [{"authorization": basic}, 7],
+                    "headers": {"authorization": bearer, "accept": "text/plain"},
+                    "rows": [{"authorization": bearer}, 7],
                     "n": 1,
                 },
             },
@@ -498,7 +498,7 @@ async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cro
         assert resp.status == 200, await resp.text()
     row = _custom_fold()["latest"]["stock_check"]
     blob = json.dumps(row["data"])
-    assert secret not in blob and "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw==" not in blob
+    assert secret not in blob and "abcdefghijklmnopqrstuvwxyz0123" not in blob
     assert row["data"]["headers"]["authorization"] == REDACTED_CREDENTIAL_TAG
     assert row["data"]["headers"]["accept"] == "text/plain"
     assert row["data"]["rows"][0]["authorization"] == REDACTED_CREDENTIAL_TAG
@@ -508,19 +508,19 @@ async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cro
 @pytest.mark.asyncio
 async def test_a_value_with_two_tokens_loses_both_at_the_door(bound_cron):
     """The keyed judgement runs on the CLEANED value: a header value carrying a token
-    the bare scrub catches AND a Basic credential only its key reveals keeps neither."""
+    the bare scrub catches AND a bearer only its key reveals keeps neither."""
     from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
     secret = SECRET
-    basic = "Basic " + "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw=="
+    bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
     async with _client() as c:
         resp = await _post(
-            c, {"type": "stock_check", "data": {"authorization": f"{basic} {secret}"}}
+            c, {"type": "stock_check", "data": {"authorization": f"{bearer} {secret}"}}
         )
         assert resp.status == 200, await resp.text()
     row = _custom_fold()["latest"]["stock_check"]
     assert row["data"]["authorization"] == REDACTED_CREDENTIAL_TAG
-    assert "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw==" not in json.dumps(row["data"])
+    assert "abcdefghijklmnopqrstuvwxyz0123" not in json.dumps(row["data"])
 
 
 @pytest.mark.asyncio

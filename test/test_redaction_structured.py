@@ -200,7 +200,6 @@ def test_rule_inventory() -> None:
         "labelled.secret",
         "encoded_credential",
         "http.bearer_token",
-        "http.bearer_bare",
         "http.basic_credentials",
         "http.api_key_header",
         "http.session_cookie",

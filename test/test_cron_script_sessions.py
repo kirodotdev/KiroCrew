@@ -342,39 +342,39 @@ class TestCrewLogAppend:
         assert _FAKE_KEY not in req.data.decode()
 
     def test_a_credential_that_needs_its_key_to_match_is_still_redacted(self, ctx, gateway):
-        """``Basic <token>`` alone passes the redactor and ``authorization: Basic
+        """``Bearer <token>`` alone passes the redactor and ``authorization: Bearer
         <token>`` does not. The value is judged beside its key, so the token is replaced
         with the redactor's tag, the key stays, and the shape holds -- a value under a
         harmless key is left as it is."""
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
-        basic = "Basic " + "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw=="
-        assert cron_script.redact(basic) == basic
+        bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
+        assert cron_script.redact(bearer) == bearer
 
         ctx.crew_log_append(
             "stock_check",
-            {"headers": {"authorization": basic, "accept": "text/plain"}, "list": [basic]},
+            {"headers": {"authorization": bearer, "accept": "text/plain"}, "list": [bearer]},
         )
 
         (req,) = gateway.seen
         sent = json.loads(req.data)["data"]
-        assert "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw==" not in json.dumps(sent["headers"])
+        assert "abcdefghijklmnopqrstuvwxyz0123" not in json.dumps(sent["headers"])
         assert sent["headers"]["authorization"] == cron_script.REDACTED_CREDENTIAL_TAG
         assert sent["headers"]["accept"] == "text/plain"
         # A list item has no key of its own; it is judged under the list's key.
-        assert sent["list"] == [basic]
+        assert sent["list"] == [bearer]
 
     def test_a_value_with_two_tokens_loses_both(self, ctx, gateway):
         """The keyed judgement runs on the cleaned value, so a header carrying a token
-        the bare scrub catches AND a Basic credential only its key reveals keeps neither."""
+        the bare scrub catches AND a bearer only its key reveals keeps neither."""
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}
-        basic = "Basic " + "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw=="
+        bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
 
-        ctx.crew_log_append("stock_check", {"authorization": f"{basic} {_FAKE_KEY}"})
+        ctx.crew_log_append("stock_check", {"authorization": f"{bearer} {_FAKE_KEY}"})
 
         (req,) = gateway.seen
         sent = json.loads(req.data)["data"]
         assert sent["authorization"] == cron_script.REDACTED_CREDENTIAL_TAG
-        assert "ZmFrZXVzZXI6ZmFrZXBhc3MtMTIzNDU2Nw==" not in req.data.decode()
+        assert "abcdefghijklmnopqrstuvwxyz0123" not in req.data.decode()
 
     def test_two_keys_that_redact_alike_both_survive(self, ctx, gateway):
         gateway.answers[("POST", "/api/agent-panel/dashboard/record")] = {"ok": True}

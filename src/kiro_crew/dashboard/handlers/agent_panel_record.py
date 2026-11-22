@@ -291,8 +291,8 @@ def _scrubbed(text: str) -> str:
 def _scrubbed_under(key: str, value: str) -> str:
     """*value* scrubbed as the value UNDER *key*.
 
-    A credential pattern can need its key to match: ``Basic <token>`` alone passes
-    the redactor while ``authorization: Basic <token>`` is caught, and a script that
+    A credential pattern can need its key to match: ``Bearer <token>`` alone passes
+    the redactor while ``authorization: Bearer <token>`` is caught, and a script that
     records an upstream response's headers writes exactly that pair. So the value is
     judged twice -- alone, then the cleaned result spelled beside its key as a header
     line spells it -- and a pair the second judgement catches is answered with the
