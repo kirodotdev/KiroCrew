@@ -19,14 +19,13 @@ import type { ChatSlot } from '../../../types'
 import { dropPanelViews, panelStripOf, type ViewKind } from '../../../hooks/usePanelTabs'
 import { useAppDispatch, useAppSelector } from '../../../store'
 import { closeActivityPanel, hasSavedActivityOpen, openActivityPanel } from '../../../store/chatSlice'
-import { crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, showsAsCrewMode } from '../../../lib/crewMode'
+import { BOARD_VIEWS, conductorDefaultPicker, crewModeAgent, gatewayRunsCrewMode, isDefaultAgentName, memoryModeAllowsCrewMode, runsConductor, showsAsCrewMode } from '../../../lib/crewMode'
 import { isRootSession } from '../command-center/model'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { confirmCrewModeMidChat } from './crewModeMidChatConfirm'
+import { searchScopeIsLimited } from '../pagination'
 
 const EMPTY: ReadonlySet<string> = new Set()
-// The tabs conductor mode puts on a chat's strip: Crew and Dashboard.
-const BOARD_VIEWS: readonly ViewKind[] = ['workers', 'command-center']
 const withKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => (set.has(key) ? set : new Set(set).add(key))
 const withoutKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => {
   if (!set.has(key)) return set
@@ -55,7 +54,8 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   // Incognito and Temporary chats are left out: such a session may not open
   // sessions, so a conductor there could not conduct. With the conductor itself
   // configured as the default agent there is nothing to switch back to, so the
-  // switch is not offered at all. A gateway whose agent catalog carries no Crew
+  // switch is not offered; a new root keeps its agent picker instead
+  // (`leaveCrewModeTo`). A gateway whose agent catalog carries no Crew
   // Mode fields (one that predates it) runs no conductor: nothing is offered
   // there, so a press can never switch a chat onto a template the gateway does
   // not treat as Crew Mode.
@@ -185,22 +185,30 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   // Until the first user message Crew Mode can be turned off again (the server
   // allows it only then): back to the default agent this chat had before, which
   // is the only agent the switch is offered on. After that it is locked.
-  // Never when the default agent is itself a conductor: there is nothing to go back to.
+  // Never when the default agent is itself a conductor: the agent picker,
+  // onto another template, is the way out then (`leaveCrewModeTo`).
   const crewModeCancellable = crewModeEligible && crewModeOn && !crewModeLeaving && !hasUserMessage && !currentSlot?.running
-  const turnOffCrewMode = useCallback(() => {
-    if (!crewModeCancellable || !currentSlot) return
+  // Older rows, or a cursor for another chat, stand in for the gateway's scan for a user message.
+  const olderRows = useAppSelector(s => searchScopeIsLimited({ slotHasMore: s.chat.slotHasMore, cursorIsForActiveSlot: s.chat.slotCursorKey === s.chat.activeSlot }))
+  const crewModeLeavable = conductorDefaultPicker(currentSlot, defaultAgent) && !crewModeLeaving && !hasUserMessage && !olderRows && !currentSlot?.running
+  const leaveCrewMode = useCallback((agentName: string) => {
+    if (!currentSlot) return Promise.resolve(false)
     const key = currentSlot.key
     setTurningOff(set => withKey(set, key))
     // The Crew and Dashboard tabs go only once the switch has landed: a refused
     // switch (shown as its own notice) leaves the chat in conductor mode, and it
     // keeps its tabs. The panel closes only if this chat is still the one on
     // screen, since the panel is shared by every chat.
-    void switchAgent(defaultAgent || 'kirocrew', 'template').then(ok => {
-      if (!ok) return
+    return switchAgent(agentName, 'template').then(ok => {
+      if (!ok) return ok
       if (panelWasClosed.current.delete(key) && shownKey.current === key) dispatch(closeActivityPanel())
       dropPanelViews(key, BOARD_VIEWS)
+      return ok
     }).finally(() => setTurningOff(set => withoutKey(set, key)))
-  }, [crewModeCancellable, currentSlot, switchAgent, defaultAgent, dispatch])
+  }, [currentSlot, switchAgent, dispatch])
+  const turnOffCrewMode = useCallback(() => {
+    if (crewModeCancellable) void leaveCrewMode(defaultAgent || 'kirocrew')
+  }, [crewModeCancellable, leaveCrewMode, defaultAgent])
   // A plain ROOT chat that already has a message can still be turned into a
   // conductor mode chat (one way: the gateway then locks it on the conductor). A
   // crew member's chat is not a root, so it never offers this.
@@ -208,6 +216,9 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   return {
     crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode, crewModeMidChat,
     turnOffCrewMode: crewModeCancellable ? turnOffCrewMode : undefined,
+    /** Set while the chat may move off its conductor onto another agent template
+     *  from the agent picker (`conductorDefaultPicker`). */
+    leaveCrewModeTo: crewModeLeavable ? leaveCrewMode : undefined,
     openTaskBoard: taskBoardOffered ? openTaskBoard : undefined,
   }
 }

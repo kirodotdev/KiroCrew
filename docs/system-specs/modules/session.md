@@ -772,7 +772,8 @@ turn's `[DASHBOARD]` block then names it, so the conductor's task board lives th
 instead of in its replies.
 A person who wants every new chat
 on the conductor sets it as the default agent (`agent.default_agent`); every chat
-then already starts on the conductor.
+then already starts on the conductor, and a new one can still move to another
+agent template from its picker until its first message.
 
 ## Private member session ownership
 

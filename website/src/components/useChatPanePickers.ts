@@ -29,6 +29,8 @@ import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { i18nT } from '../i18n/t'
 import { slotRowByKey } from '../store/slotIndex'
 import { useSlotRunsHere } from './sessionEnvironmentHooks'
+import { BOARD_VIEWS, conductorDefaultPicker } from '../lib/crewMode'
+import { dropPanelViews } from '../hooks/usePanelTabs'
 
 /**
  * `ChatPane`'s agent and model pickers, bound to the pane's own slot through
@@ -81,8 +83,15 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
       .catch((err: unknown) => setDefaultAgentFailed(defaultWriteFailureOf(err, name)))
   }, [dispatch])
   // The pop-up lists the full catalog (a same-name member and template are
-  // two rows); every other reader of the roster keeps the name-folded list.
-  const agentDD = useFilteredDropdown(agentChoices)
+  // two rows); every other reader of the roster keeps the name-folded list. A
+  // conductor mode root that may still leave its conductor lists the templates
+  // only: the gateway refuses a Bot there.
+  const templatesOnly = conductorDefaultPicker(paneSlot, defaultAgent)
+  const pickerChoices = useMemo(
+    () => (templatesOnly ? agentChoices.filter(a => a.selection_kind !== 'member') : agentChoices),
+    [templatesOnly, agentChoices],
+  )
+  const agentDD = useFilteredDropdown(pickerChoices)
   const selectionCapabilitiesQ = useQuery({
     queryKey: ['slot-selection-capabilities', slotKey],
     queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
@@ -208,7 +217,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   )
 
   return {
-    installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
+    installedAgents, displayAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD, templatesOnly,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
     effortSupported, effortLevelsOverride, effortAutoNote, defaultEffort, effectiveEffort, chipDefault, modelMarker, kiroCliSignedOut, paneRunsHere, activeSlotRunsHere,
@@ -217,7 +226,7 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
 
 type PickerModels = ReturnType<typeof useChatPanePickerModels>
 
-export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD }: {
+export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD, templatesOnly }: {
   slotKey: string
   paneSlot: PaneSlot
   dispatch: AppDispatch
@@ -225,23 +234,28 @@ export function useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryCli
   codexPairModels: PickerModels['codexPairModels']
   agentDD: PickerModels['agentDD']
   modelDD: PickerModels['modelDD']
+  /** The pane's chat is a conductor mode root while a conductor is the default agent (`conductorDefaultPicker`); ChatPane gates the opener. */
+  templatesOnly: boolean
 }) {
   // In-pane report of a per-slot setting write (agent / model switch) that did
   // not persist — the shared toast is transient feedback, not the error surface.
   const [switchError, setSwitchError] = useState('')
+  // Leaving a conductor that is the default agent: a template pick (a bare name
+  // could resolve to a Bot), and the chat's Crew and Dashboard tabs go once it lands.
   const switchAgent = useCallback(async (name: string, kind?: 'member' | 'template') => {
     clearSlotWriteFailure(dispatch, setSwitchError)
     try {
       // Same protocol as switchModel below (#4523): the pane must not depend
       // on the coalesced slots rebroadcast to see its own pick.
       // performAgentSlotSwitch mirrors exactly what the response names.
-      await performAgentSlotSwitch(slotKey, name, dispatch, kind)
+      await performAgentSlotSwitch(slotKey, name, dispatch, templatesOnly ? 'template' : kind)
+      if (templatesOnly) dropPanelViews(slotKey, BOARD_VIEWS)
       // The cold effort answer was judged on the previous crew's model.
       void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', slotKey] })
     } catch (e) {
       reportSlotWriteFailure(agentSwitchFailureNotice(e, name), dispatch, setSwitchError)
     }
-  }, [dispatch, queryClient, slotKey])
+  }, [dispatch, queryClient, slotKey, templatesOnly])
   const switchModel = useCallback(async (name: string) => {
     clearSlotWriteFailure(dispatch, setSwitchError)
     try {
