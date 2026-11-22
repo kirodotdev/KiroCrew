@@ -4,9 +4,15 @@ import { Provider } from 'react-redux'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createTestStore } from '../../test/helpers'
 import { updateSlot } from '../../store/dashboardSlice'
+import { setActiveSlot } from '../../store/chatSlice'
 
 const api = vi.hoisted(() => ({ crewWorkers: vi.fn(), crewWorkerApprove: vi.fn() }))
 vi.mock('../../api/client', () => ({ api }))
+const openCrewSession = vi.hoisted(() => vi.fn())
+vi.mock('../../pages/chat/command-center/CrewWorkerList', async importOriginal => ({
+  ...await importOriginal<typeof import('../../pages/chat/command-center/CrewWorkerList')>(),
+  openCrewSession,
+}))
 
 import { ApiError } from '../../api/apiError'
 import CrewApprovalCards, { crewApprovalRequests } from './CrewApprovalCards'
@@ -27,11 +33,11 @@ const waiting = (key: string, extra: Record<string, unknown> = {}) => ({
 
 /** Mount the stack and let its worker-list read settle inside act, so no state
  *  update lands after a test has ended (edge review R2 F8: no act() warnings). */
-async function renderCards(slots: unknown[]) {
+async function renderCards(slots: unknown[], compact = false) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = createTestStore({ dashboard: { slots } } as never)
   await act(async () => {
-    render(<QueryClientProvider client={qc}><Provider store={store}><CrewApprovalCards root="root" /></Provider></QueryClientProvider>)
+    render(<QueryClientProvider client={qc}><Provider store={store}><CrewApprovalCards root="root" compact={compact} /></Provider></QueryClientProvider>)
   })
   return store
 }
@@ -234,6 +240,37 @@ describe('CrewApprovalCards (owner decision B)', () => {
     // The exact tool input and the decisions do not depend on the list.
     expect(screen.getByRole('region', { name: 'The exact tool input' })).toHaveTextContent('ls w1')
     expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled()
+  })
+
+  it.each([false, true])('on a security-rule override card (compact %s) offers Reject and the way to the worker chat, never Approve or Trust', async compact => {
+    // The server refuses every allow from this card (deny_override_card_answer):
+    // only the worker's own chat can allow it.
+    api.crewWorkers.mockResolvedValue({ root: 'root', workers: [] })
+    api.crewWorkerApprove.mockResolvedValue({ ok: true })
+    const row = waiting('w1')
+    await renderCards([{ ...row, pending_approval_info: { ...row.pending_approval_info, deny_override: '1' } }], compact)
+    const card = screen.getByTestId('crew-approval-card')
+    expect(within(card).queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: compact ? 'Trust' : 'Trust this crew member' })).toBeNull()
+    expect(within(card).getByTestId('crew-approval-override-hint')).toHaveTextContent('A security rule blocked this command. To allow it, open the chat for “Worker w1”.')
+    fireEvent.click(within(card).getByRole('button', { name: 'Open chat' }))
+    expect(openCrewSession).toHaveBeenCalledWith(expect.any(Function), 'w1', expect.any(Boolean))
+    expect(api.crewWorkerApprove).not.toHaveBeenCalled()
+    fireEvent.click(within(card).getByRole('button', { name: 'Reject' }))
+    await waitFor(() => expect(api.crewWorkerApprove).toHaveBeenCalledWith('root', 'w1', 'reject', 'rid-w1', 'mid-w1', ''))
+    await settle()
+  })
+
+  it.each([false, true])("on an override card while the worker's own chat is open (compact %s), points to its composer and offers no Open chat", async compact => {
+    api.crewWorkers.mockResolvedValue({ root: 'root', workers: [] })
+    const row = waiting('w1')
+    const store = await renderCards([{ ...row, pending_approval_info: { ...row.pending_approval_info, deny_override: '1' } }], compact)
+    act(() => { store.dispatch(setActiveSlot('w1')) })
+    const card = screen.getByTestId('crew-approval-card')
+    expect(within(card).queryByRole('button', { name: 'Open chat' })).toBeNull()
+    expect(within(card).queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(within(card).getByTestId('crew-approval-override-hint')).toHaveTextContent('A security rule blocked this command. Allow it in this chat, with Choose how to allow.')
+    expect(within(card).getByRole('button', { name: 'Reject' })).toBeEnabled()
   })
 
   it('renders nothing when no worker waits', async () => {

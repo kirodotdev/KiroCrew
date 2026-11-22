@@ -23,6 +23,7 @@ import { featurePreviewLockKnown } from '../utils/editionLocks'
 import { tabStatus } from './sessionTabs'
 import type { ProfileTab } from '../pages/members/CrewProfilePanel'
 import type { ViewKind } from '../hooks/usePanelTabs'
+import type { ChatMessage } from '../types'
 
 /** Whether this build offers conductor mode: every build but LTS, the one that
  *  turns every Feature Preview off. Off until the gateway's lock is known (a cached
@@ -321,12 +322,28 @@ export type CrewApprovalSurface = typeof CREW_APPROVAL_SURFACES[number]
  *  *slot*'s pending tool approval. The one rule, for every surface: a Crew Mode
  *  worker's approval (a row with `crew_root`) is decided ONLY on its conductor's
  *  approval card; every other surface shows it as info with a way to that card.
- *  A session that is no worker keeps its usual controls everywhere. */
+ *  A session that is no worker keeps its usual controls everywhere.
+ *
+ *  The one exception is a security-rule override card: the server takes its
+ *  allow only from the worker's own chat, never from the conductor's card, so
+ *  the worker's own composer draws it and the card offers Reject and a way there
+ *  (`docs/decisions/2026-11-25-a-crew-members-override-card-is-allowed-in-its-own-chat.md`).
+ *  The worker's composer passes the card it shows as *shownCard*, so the
+ *  exception follows that card's own override mark and never another card's. */
 export function crewApprovalDecidableHere(
-  slot: { crew_root?: string | null } | null | undefined, surface: CrewApprovalSurface,
+  slot: { crew_root?: string | null } | null | undefined,
+  surface: CrewApprovalSurface,
+  shownCard?: Pick<ChatMessage, 'meta'> | null,
 ): boolean {
   if (!crewRootOf(slot)) return true
-  return surface === 'conductor_card'
+  if (surface === 'conductor_card') return true
+  return (surface === 'worker_main_pane' || surface === 'worker_split_pane') && isDenyOverrideCard(shownCard)
+}
+
+/** Whether *card*, a pending permission row, is a security-rule override card. */
+export function isDenyOverrideCard(card: Pick<ChatMessage, 'meta'> | null | undefined): boolean {
+  const rule = card?.meta?.deny_override_rule
+  return typeof rule === 'string' && rule !== ''
 }
 
 /** The person's own session list: a Crew Mode root's workers are left out while

@@ -75,8 +75,12 @@ export const selectSlotToolLog = (state: RootState, slot: string | null): ToolAc
  *  so each grid pane's approval bar reflects ITS slot, not the global active one.
  *  A coordinator-registry card counts wherever it sits: it waits on the
  *  registry, not on the chat's turn, so a later send does not end it. */
-export const selectSlotPendingApproval = (state: RootState, slot: string | null): ChatMessage | null => {
-  const msgs = slot ? selectSlotMessages(state, slot) : state.chat.messages
+export const selectSlotPendingApproval = (state: RootState, slot: string | null): ChatMessage | null =>
+  pendingApprovalIn(slot ? selectSlotMessages(state, slot) : state.chat.messages)
+
+/** The pending tool-approval row among *msgs*, one chat's transcript: what
+ *  `selectSlotPendingApproval` reads for a slot. */
+export function pendingApprovalIn(msgs: readonly ChatMessage[]): ChatMessage | null {
   // Find the last NON-steer user message — steered messages don't start a new
   // turn, so they must not hide a pending approval bar (#1667).
   let lastUserIdx = -1

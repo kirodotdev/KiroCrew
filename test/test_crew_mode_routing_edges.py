@@ -388,6 +388,38 @@ def test_F7_the_coordinator_card_carries_its_record_instance():
 
 
 @pytest.mark.asyncio
+async def test_B_the_card_names_a_security_rule_override_it_cannot_approve(state):
+    # The conductor's card must know a request is an override card: the server
+    # refuses Approve and Trust on it from the card, and takes only a rejection.
+    from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_META_KEY
+
+    worker, fut, _mid = _crew(state)
+    assert "deny_override" not in worker.to_dict()["pending_approval_info"]
+    override_id = "rid-2"
+    override_fut = asyncio.get_running_loop().create_future()
+    meta = {"request_id": override_id, DENY_OVERRIDE_META_KEY: "deny:git-push"}
+    row = worker.append("permission", "Shell", json.dumps(meta))
+    worker.register_approval(override_id, override_fut, row)
+    fut.cancel()
+    assert worker.to_dict()["pending_approval_info"]["deny_override"] == "1"
+    override_mid = worker.approval_instance(override_id)
+    async with TestClient(_server(state, _owner)) as client:
+        resp = await client.post(
+            "/api/chat/slots/root/crew-workers/w/approve",
+            json={"action": "approve", "request_id": override_id, "request_mid": override_mid},
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "deny_override_card_answer"
+        assert not override_fut.done()
+        resp = await client.post(
+            "/api/chat/slots/root/crew-workers/w/approve",
+            json={"action": "reject", "request_id": override_id, "request_mid": override_mid},
+        )
+        assert resp.status == 200, await resp.text()
+    assert override_fut.result() == "rejected_once"
+
+
+@pytest.mark.asyncio
 async def test_B_a_stale_card_cannot_pick_a_request_that_replaced_it(state):
     _worker, fut, _mid = _crew(state)
     async with TestClient(_server(state, _owner)) as client:

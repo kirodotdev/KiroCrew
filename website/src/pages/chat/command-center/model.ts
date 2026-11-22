@@ -87,6 +87,9 @@ export interface AttentionItem {
   /** On a Bot thread's own item (All Dashboards): a session of this Bot, which the
    *  page leaves out, waits on the person and is reached from the Bot's chat. */
   mateChat?: boolean
+  /** A security-rule override card: only the session's own chat can allow it,
+   *  so this card draws Reject and no Approve. */
+  denyOverride?: boolean
 }
 /** The command an approval asks about, as the transcript would title it. Empty
  * when the inventory carried no tool input to title. */
@@ -297,6 +300,7 @@ export function buildCommandCenter(source: CommandCenterSources, now = Date.now(
         // absence of a coordinator record, and each origin keeps its own card.
         addAttention({ id: `native-approval:${s.key}:${approval.request_id}:${approval.request_mid}`, slot: s.key, kind: 'approval', native: true,
           approvalMode: effectiveApprovalMode(source.approvalMode || 'normal', s),
+          ...(approval.deny_override === '1' ? { denyOverride: true } : {}),
           approval: { id: approval.request_id, request_mid: approval.request_mid, slot: s.key, tool: approval.tool, tool_input: approval.tool_input, tool_purpose: approval.tool_purpose } })
       } else if (approval.origin !== 'coordinator' || !source.approvals.some(a => a.id === approval.request_id && slotKey(a.slot || '') === s.key)) {
         // Only a proven coordinator mirror is deduplicated by the inventory

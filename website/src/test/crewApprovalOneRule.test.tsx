@@ -43,6 +43,26 @@ describe('the one rule: a worker approval is decided only on the conductor card'
     }
   })
 
+  it("lets the worker's own composer answer a security-rule override card, which the conductor's card cannot allow", () => {
+    const worker = { crew_root: 'root' }
+    const overrideCard = { meta: { approval_id: 'a1', deny_override_rule: 'credential-file-read' } }
+    for (const surface of CREW_APPROVAL_SURFACES) {
+      expect(crewApprovalDecidableHere(worker, surface, overrideCard)).toBe(['conductor_card', 'worker_main_pane', 'worker_split_pane'].includes(surface))
+    }
+  })
+
+  it("keys the worker composer's exception on the card it shows, not on the slot's own pending approval", () => {
+    // The slot row says an override waits, but the card this composer shows is
+    // an ordinary approval: it stays the conductor's to decide.
+    const worker = { crew_root: 'root', pending_approval_info: { deny_override: '1' } }
+    const ordinaryCard = { meta: { approval_id: 'a2' } }
+    for (const surface of ['worker_main_pane', 'worker_split_pane'] as const) {
+      expect(crewApprovalDecidableHere(worker, surface, ordinaryCard)).toBe(false)
+      expect(crewApprovalDecidableHere(worker, surface)).toBe(false)
+      expect(crewApprovalDecidableHere(worker, surface, { meta: { approval_id: 'a3', deny_override_rule: '' } })).toBe(false)
+    }
+  })
+
   it('G4: the conductor side panel shows a worker approval as info that links to the card', () => {
     const model = buildCommandCenter(sources({}))
     const items = model.attention.filter(a => a.kind === 'approval')

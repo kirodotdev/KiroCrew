@@ -10,6 +10,7 @@ from typing import Any
 from kiro_crew.apps.hidden_sessions import listed_surface
 from kiro_crew.clear_command import CLEAR_COMMAND, is_clear_command_row  # noqa: F401 - re-exported
 from kiro_crew.dashboard.agent_welcome import welcome_preview
+from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_META_KEY
 from kiro_crew.dashboard.relay_archive import is_cron_run_read_only
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
@@ -467,6 +468,11 @@ class SlotProjection:
                 # (the Crew Mode conductor's approval card) offers Trust only then.
                 if str(meta.get("trust_grantable") or "") == "1":
                     pending_approval_info["trust_grantable"] = "1"
+                # A security-rule override card takes only its own allow decisions,
+                # and only from the slot's own chat, so a card that relays it (the
+                # conductor's) offers Reject and a pointer there instead of Approve.
+                if meta.get(DENY_OVERRIDE_META_KEY):
+                    pending_approval_info["deny_override"] = "1"
                 break
         if pending_approval_info is None and coordinator_pending:
             # No unresolved permission row supplied the card: the pending

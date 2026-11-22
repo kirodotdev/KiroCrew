@@ -205,6 +205,20 @@ describe('task dashboard input routing', () => {
     expect(decide).not.toHaveBeenCalled()
   })
 
+  it('offers only Reject on a security-rule override card and points to its session to allow it', async () => {
+    // The server takes an override card's allow only in the session's own chat.
+    const decide = vi.spyOn(api, 'decideApproval').mockResolvedValue({ ok: true })
+    const [item] = buildCommandCenter({ root: 'child', slots: [{ key: 'child', messages: 0, running: true, pending_approval: true,
+      pending_approval_info: { origin: 'native', request_id: 'r1', request_mid: 'row-r1', tool: 'shell', tool_input: 'stat ~/.midway/cookie', tool_kind: 'execute', deny_override: '1' } }],
+    subagents: {}, workflows: [], questions: [], approvals: [] }).attention
+    renderWithProviders(<AttentionCard item={item} title="Worker" />)
+    expect(screen.queryByRole('button', { name: 'Approve once' })).toBeNull()
+    expect(screen.getByTestId('attention-override-hint')).toHaveTextContent('A security rule blocked this command. To allow it, use Open session above.')
+    expect(screen.getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=child')
+    fireEvent.click(screen.getByRole('button', { name: 'Reject once' }))
+    await waitFor(() => expect(decide).toHaveBeenCalledWith(NATIVE_R1, 'reject_once'))
+  })
+
   it('keeps the complete approval command verbatim in a focusable scrolling preview', () => {
     const command = JSON.stringify({ command: `git show --format=%H ${'very-long-ref-'.repeat(30)}\\n` })
     const { container } = renderWithProviders(<AttentionCard item={{ ...approval, approval: { ...approval.approval!, tool_input: command } }} title="Worker" />)

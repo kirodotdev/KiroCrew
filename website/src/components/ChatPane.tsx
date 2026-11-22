@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { conductorDefaultPicker, crewApprovalDecidableHere, crewModeRoot, crewRootOf, showsAsCrewMode } from '../lib/crewMode'
+import { conductorDefaultPicker, crewApprovalDecidableHere, crewModeRoot, crewRootOf, isDenyOverrideCard, showsAsCrewMode } from '../lib/crewMode'
 import CrewApprovalCards, { MateApprovalCards } from './crew/CrewApprovalCards'
 import MateWorkerQuestions from './crew/MateWorkerQuestions'
 import { CrewSteerUnrecordedNotice, CrewWorkerComposerGate } from './crew/CrewWorkerComposerGate'
@@ -70,7 +70,7 @@ import { isUnpinnedModel } from '../lib/jevRoute'
 import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { usePinnedScrollOrigin } from '../hooks/usePinnedScrollOrigin'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectSlotToolLog, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectSlotToolLog, selectComposerBusy, pendingApprovalIn, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { useHeldWindowWarm } from './chat/useHeldWindowWarm'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -213,6 +213,9 @@ export default function ChatPane({
   const transcriptRestoreOwned = useCallback(() => listRef.current?.restoreGate ?? false, [])
 
   const allMessages = useAppSelector((s) => selectSlotMessages(s, slotKey))
+  // The approval card this pane's composer shows: a worker's own chat answers it
+  // only when it is a security-rule override card.
+  const shownApproval = useMemo(() => pendingApprovalIn(allMessages), [allMessages])
   // ↑/↓ prompt history for this pane's composer, on the same terms as ChatPage.
   const sentMessages = useSentPromptHistory(allMessages, slotKey)
   const activeSlot = useAppSelector((s) => s.chat.activeSlot)
@@ -1395,13 +1398,13 @@ export default function ChatPane({
             composer or each other's top out of the pane. */}
         {paneSlot?.mode === 'member' && (
           <div className="mx-2 mb-2 max-h-[45vh] overflow-y-auto empty:hidden" data-testid="mate-worker-prompts">
-            <MateApprovalCards root={slotKey} />
+            <MateApprovalCards root={slotKey} onOpenSession={onSessionOpen} />
             <MateWorkerQuestions key={slotKey} root={slotKey} />
           </div>
         )}
         {paneCrewRoot ? (
           <CrewWorkerComposerGate root={paneCrewRoot} worker={slotKey} workerTitle={title}
-            waitingForApproval={!!paneSlot?.pending_approval} />
+            waitingForApproval={!!paneSlot?.pending_approval && !isDenyOverrideCard(shownApproval)} />
         ) : (
           // Without the gate (a build without conductor mode, LTS) a send the server still
           // took as a steer can come back unrecorded: say so here.
@@ -1428,7 +1431,7 @@ export default function ChatPane({
               onDismiss={deliveryStrip.onDismiss}
             />
           ) : undefined}
-          slotApprovalChrome={crewApprovalDecidableHere(paneSlot, 'worker_split_pane')}
+          slotApprovalChrome={crewApprovalDecidableHere(paneSlot, 'worker_split_pane', shownApproval)}
           disabled={paneCrewRootClosed}
           lockedPlaceholder={paneCrewRootClosed ? '' : undefined}
           sentMessages={sentMessages}
