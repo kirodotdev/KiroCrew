@@ -163,22 +163,44 @@ def test_restore_open_slots_skips_already_loaded(tmp_path, monkeypatch):
     assert "chat-1-foo" in state2._slots
 
 
-def test_persist_open_slots_handles_write_failure_gracefully(tmp_path, monkeypatch):
-    """A permission failure while writing the snapshot is logged, not raised.
+def test_persist_open_slots_handles_write_failure_gracefully(tmp_path, monkeypatch, caplog):
+    """A refused snapshot write keeps the old file, is logged, and the next flush lands.
 
-    atomic_write calls os.fchmod on the open descriptor, not os.chmod, so that is the
-    seam patched here.
+    The refusal comes from the coordinator's own writer: ``fchmod_safe`` skips
+    ``os.fchmod`` on Windows and catches its error on POSIX, so a failure injected
+    there never fails the write.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
+    state.open_slots_restored = True  # steady state: the boot restore has run
     state.get_or_create_slot("chat-1-foo")
-    with patch("kiro_crew.atomic_write.os.fchmod", side_effect=OSError("read-only filesystem")):
-        # Should not raise
-        state._persist_open_slots()
-    # fchmod_safe logs a permission failure and the write goes on, so the
-    # snapshot still lands.
-    snapshot = json.loads((tmp_path / "open_slots.json").read_text())
-    assert snapshot["keys"] == ["chat-1-foo"]
+    state._persist_open_slots()
+    snapshot_path = tmp_path / "open_slots.json"
+    previous = snapshot_path.read_bytes()
+
+    coordinator = state._persistence_coordinator
+    real_provider = coordinator._atomic_write_provider
+
+    def _refusing_writer(path, content, **kwargs):
+        raise PermissionError(13, "simulated refusal", str(path))
+
+    state.get_or_create_slot("chat-2-bar")
+    monkeypatch.setattr(coordinator, "_atomic_write_provider", lambda: _refusing_writer)
+    with caplog.at_level("DEBUG", logger="kiro_crew.dashboard.state"):
+        state._persist_open_slots()  # must not raise
+
+    assert snapshot_path.read_bytes() == previous
+    assert any(
+        record.getMessage() == "Failed to persist open_slots.json"
+        and record.exc_info is not None
+        and isinstance(record.exc_info[1], PermissionError)
+        for record in caplog.records
+    )
+
+    monkeypatch.setattr(coordinator, "_atomic_write_provider", real_provider)
+    state._persist_open_slots()
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert set(snapshot["keys"]) == {"chat-1-foo", "chat-2-bar"}
 
 
 def test_restore_open_slots_rejects_path_separator_keys(tmp_path, monkeypatch):
