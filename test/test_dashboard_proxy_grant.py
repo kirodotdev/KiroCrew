@@ -101,10 +101,13 @@ def test_the_offer_names_publisher_and_package_from_the_install_record(records, 
         "tunnel-like",
         "0.9.4",
         "crew-tunnels",
-        "read your dashboard and chats and stop a running chat turn",
-        "cannot send chat messages, change settings, credentials, apps, terminal or approvals",
+        dashboard_proxy.DASHBOARD_ACCESS_SCOPE,
+        "show the dashboard page with your theme, preferences and chat list",
+        "stop a running chat turn",
+        "cannot read chat messages, send them, change settings, credentials, apps",
     ):
         assert words in offer["text"]
+    assert "read your dashboard and chats" not in offer["text"]
     assert "run agents as you" not in offer["text"]
     assert "full dashboard control" not in offer["text"]
 
@@ -147,7 +150,7 @@ def forged_apps(records, tmp_path, monkeypatch):
         "sourceSigner": "someone",
     }
     (apps / _APP / "installed.json").write_text(json.dumps(forged), encoding="utf-8")
-    monkeypatch.setattr("kiro_crew.apps.manager_records.apps_dir", lambda: apps)
+    monkeypatch.setattr("kiro_crew.apps.manager.apps_dir", lambda: apps)
     monkeypatch.setattr(dashboard_proxy, "_marker_state", lambda _name: (True, True))
     monkeypatch.setattr(dashboard_proxy, "_namespace_backend", lambda: True)
     return apps

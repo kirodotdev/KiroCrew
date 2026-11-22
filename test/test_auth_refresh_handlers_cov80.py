@@ -613,6 +613,34 @@ async def test_a_delegated_chain_rotates_only_under_the_grant_it_was_opened_unde
 
 
 @pytest.mark.asyncio
+async def test_a_delegated_refresh_renews_the_same_claims_and_never_drops_via_app(
+    state: RefreshStateManager,
+    audit: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rotated pair says what the presented chain said, on both halves, every time."""
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard.token_auth_tokens import (
+        token_via_app_unverified,
+        token_via_grant_unverified,
+    )
+
+    monkeypatch.setattr(dashboard_proxy, "grant_current", lambda _app, _claim: True)
+    claims = ("tunnel-like", "claim-of-grant-one")
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "owner", via_app=claims[0], via_grant=claims[1]
+    )
+    assert (rt.refresh_token_via_app(token), rt.refresh_token_via_grant(token)) == claims
+    for _rotation in range(2):
+        response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+        assert response.status == 200
+        access = response.cookies[f"mc_token_{PORT}"].value
+        token = response.cookies[refresh_cookie_name(str(PORT))].value
+        assert (token_via_app_unverified(access), token_via_grant_unverified(access)) == claims
+        assert (rt.refresh_token_via_app(token), rt.refresh_token_via_grant(token)) == claims
+
+
+@pytest.mark.asyncio
 async def test_require_peer_rotation_rejects_another_allowed_node_without_consuming(
     state: RefreshStateManager,
     audit: list,

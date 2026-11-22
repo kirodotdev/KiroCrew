@@ -34,6 +34,9 @@ vi.mock('../api/client', () => ({
     enableApp: vi.fn(),
     disableApp: vi.fn(),
     uninstallApp: vi.fn(),
+    // The dashboard-access card renders nothing for an app with no offer and no grant.
+    getAppDashboardAccess: () =>
+      Promise.resolve({ granted: false, offer: null, platform_supported: true, needs_access: false }),
   },
 }))
 

@@ -49,6 +49,9 @@ vi.mock('../api/client', () => ({
     trustApp: (...a: unknown[]) => trustApp(...a),
     untrustApp: (...a: unknown[]) => untrustApp(...a),
     getAppBotGrants: (...a: unknown[]) => getAppBotGrants(...a),
+    // The dashboard-access card renders nothing for an app with no offer and no grant.
+    getAppDashboardAccess: () =>
+      Promise.resolve({ granted: false, offer: null, platform_supported: true, needs_access: false }),
     members: (...a: unknown[]) => members(...a),
   },
 }))

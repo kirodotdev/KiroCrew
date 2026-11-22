@@ -1,15 +1,17 @@
-"""A ``via_app`` token reaches the dashboard, minus credential and control-plane routes.
+"""A ``via_app`` token reaches the dashboard shell and nothing else.
 
 Real ``token_auth_middleware`` and the real route table (``register_all``). The token is
 an owner token carrying ``via_app=<app>`` (never the ``app`` claim). Every request
 re-reads the owner-enable marker and the grant for that app, so a disable ends the token
-at once; a route with no delegated tag is refused.
+at once; a route or method with no ``READ_ALLOW`` row is refused, on every channel.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 
+import aiohttp
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -20,6 +22,8 @@ from kiro_crew.dashboard.routes import register_all
 
 _APP = "tunnel-like"
 _REFUSED_CODE = "delegated_credential_refused"
+#: A plain JSON row of ``READ_ALLOW`` the tests use as "an allowed read".
+_READ = "/api/dashboard/branding"
 
 
 @pytest.fixture
@@ -104,10 +108,31 @@ def real_grant(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_plain_dashboard_read_is_allowed(state, granted):
+async def test_a_listed_read_is_allowed(state, granted):
     async with _serve(state) as client:
-        resp = await client.get("/api/version", params=_delegated())
+        resp = await client.get(_READ, params=_delegated())
         assert resp.status == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    ["/api/version", "/api/status", "/api/sessions", "/api/chat/slots/s", "/api/ui-prefs-x"],
+)
+async def test_a_read_no_row_lists_is_refused(state, granted, path):
+    """GET and HEAD are deny by default too: a plain read is not a row until it is listed."""
+    async with _serve(state) as client:
+        resp = await client.get(path, params=_delegated())
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+async def test_the_other_method_of_a_listed_path_is_refused(state, granted):
+    async with _serve(state) as client:
+        resp = await client.put("/api/ui-prefs", params=_delegated(), json={})
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
 
 
 @pytest.mark.asyncio
@@ -141,23 +166,23 @@ async def test_each_refused_route_answers_delegated_credential_refused(
 
 
 @pytest.mark.asyncio
-async def test_a_route_with_no_tag_is_refused_to_a_delegated_token_only(state, granted):
-    async with _serve(state, ("GET", "/api/zz-untagged")) as client:
-        resp = await client.get("/api/zz-untagged", params=_delegated())
+async def test_a_route_with_no_row_is_refused_to_a_delegated_token_only(state, granted):
+    async with _serve(state, ("GET", "/api/zz-unlisted")) as client:
+        resp = await client.get("/api/zz-unlisted", params=_delegated())
         assert resp.status == 403
         assert (await resp.json())["code"] == _REFUSED_CODE
         plain = {"token": token_auth.generate_token("local-app")}
-        assert (await client.get("/api/zz-untagged", params=plain)).status == 200
+        assert (await client.get("/api/zz-unlisted", params=plain)).status == 200
 
 
 @pytest.mark.asyncio
 async def test_the_token_ends_the_moment_the_owner_disables_the_app(state, granted):
     async with _serve(state) as client:
         # The first request exchanges the link for the session cookie the client keeps.
-        assert (await client.get("/api/version", params=_delegated())).status == 200
-        assert (await client.get("/api/version")).status == 200
+        assert (await client.get(_READ, params=_delegated())).status == 200
+        assert (await client.get(_READ)).status == 200
         granted["on"] = False
-        resp = await client.get("/api/version")
+        resp = await client.get(_READ)
         assert resp.status == 403
         assert (await resp.json())["code"] == _REFUSED_CODE
 
@@ -222,12 +247,13 @@ def test_a_delegated_request_never_carries_the_owner_session_principal():
         source_providers.is_owner_dashboard_request = orig
 
 
-def test_a_write_method_is_refused_on_a_read_route_for_every_concrete_method():
+def test_every_method_but_the_listed_one_is_refused_on_a_listed_route():
     from kiro_crew.dashboard.delegated_scope import allowed
 
     for method in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
-        assert allowed(method, "/api/status") is False, method
-    assert allowed("GET", "/api/status") is True
+        assert allowed(method, "/api/auth/me") is False, method
+    assert allowed("GET", "/api/auth/me") is True
+    assert allowed("GET", "/api/status") is False
 
 
 class _Match(dict):
@@ -237,31 +263,23 @@ class _Match(dict):
 
 
 class _FakeReq(dict):
-    def __init__(self, canonical: str, name: str) -> None:
-        super().__init__(auth_token="t")
-        self.method = "GET" if canonical.startswith("/app-frame/") else "POST"
+    """The parts of a request ``enforce_delegated`` reads, with a real delegated token."""
+
+    def __init__(self, canonical: str, name: str, method: str = "POST") -> None:
+        super().__init__(auth_token=_delegated()["token"])
+        self.method = method
+        self.query: dict[str, str] = {}
+        self.body_exists = False
         self.match_info = _Match(canonical, name)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "canonical",
-    [
-        "/apps/{name}/api/{path}",
-        "/app-frame-fetch/{name}/{path}",
-        "/app-frame/{name}/{point}/{point_id}/{frame_id}/{token}",
-    ],
-)
+@pytest.mark.parametrize("canonical", ["/apps/{name}/api/{path}", "/app-frame-fetch/{name}/{path}"])
 async def test_enforce_delegated_allows_only_the_tokens_own_app_on_the_app_routes(
-    granted, sel_rows, monkeypatch, canonical
+    granted, sel_rows, canonical
 ):
-    # /app-frame/ and /app-frame-fetch/ skip token auth today (the path token or the
-    # capability is the credential), so the scope check is driven directly: it must hold
-    # if either route ever sees a delegated token.
-    from kiro_crew.dashboard import token_auth_tokens
     from kiro_crew.dashboard.delegated_scope import enforce_delegated
 
-    monkeypatch.setattr(token_auth_tokens, "token_via_app_unverified", lambda _t: _APP)
     other = await enforce_delegated(_FakeReq(canonical, "other-app"), "/x")
     assert other is not None and other.status == 403
     assert len(sel_rows) == 1 and "other-app" in sel_rows[0]["resources"]
@@ -271,8 +289,17 @@ async def test_enforce_delegated_allows_only_the_tokens_own_app_on_the_app_route
 
 
 @pytest.mark.asyncio
+async def test_the_frame_page_is_not_open_to_a_delegated_token(granted, sel_rows):
+    """The frame page carries the frame capability in its path: no row, so refused."""
+    from kiro_crew.dashboard.delegated_scope import enforce_delegated
+
+    canonical = "/app-frame/{name}/{point}/{point_id}/{frame_id}/{token}"
+    refused = await enforce_delegated(_FakeReq(canonical, _APP, "GET"), "/x")
+    assert refused is not None and refused.status == 403
+
+
+@pytest.mark.asyncio
 async def test_a_delegated_token_cannot_write_a_file(state, granted):
-    """POST /api/file-write was tagged allow; a write is now denied unless listed."""
     async with _serve(state) as client:
         resp = await client.post("/api/file-write", params=_delegated(), json={})
         assert resp.status == 403, await resp.text()
@@ -289,13 +316,6 @@ async def test_a_delegated_token_cannot_read_a_custom_mcp_server_definition(stat
 
 
 @pytest.mark.asyncio
-async def test_a_write_the_day_one_list_names_is_not_refused_by_the_scope(state, granted):
-    async with _serve(state) as client:
-        resp = await client.post("/api/chat/pinned-order", params=_delegated(), json={})
-        assert resp.status != 403 or (await resp.json()).get("code") != _REFUSED_CODE
-
-
-@pytest.mark.asyncio
 async def test_a_cookie_from_install_one_fails_after_uninstall_reinstall_and_a_new_grant(
     state, real_grant
 ):
@@ -303,17 +323,17 @@ async def test_a_cookie_from_install_one_fails_after_uninstall_reinstall_and_a_n
 
     async with _serve(state) as client:
         old = _delegated()
-        assert (await client.get("/api/version", params=old)).status == 200
-        assert (await client.get("/api/version")).status == 200, "the session cookie"
+        assert (await client.get(_READ, params=old)).status == 200
+        assert (await client.get(_READ)).status == 200, "the session cookie"
         # Uninstall (revoke), reinstall (a new install record), then the owner grants again.
         dashboard_proxy.revoke(_APP)
         real_grant.installedAt = "2026-11-22T12:00:00Z"
         assert dashboard_proxy.grant(_APP) == (True, "")
         assert dashboard_proxy.granted(_APP) is True
-        resp = await client.get("/api/version")
+        resp = await client.get(_READ)
         assert resp.status == 403, "the cookie of install 1"
         assert (await resp.json())["code"] == _REFUSED_CODE
-        assert (await client.get("/api/version", params=old)).status == 403, "the old link"
+        assert (await client.get(_READ, params=old)).status == 403, "the old link"
 
 
 @pytest.mark.asyncio
@@ -322,10 +342,10 @@ async def test_a_cookie_fails_after_revoke_and_a_new_grant_of_the_same_install(s
 
     async with _serve(state) as client:
         old = _delegated()
-        assert (await client.get("/api/version", params=old)).status == 200
+        assert (await client.get(_READ, params=old)).status == 200
         dashboard_proxy.revoke(_APP)
         assert dashboard_proxy.grant(_APP) == (True, "")
-        assert (await client.get("/api/version")).status == 403
+        assert (await client.get(_READ)).status == 403
 
 
 @pytest.mark.asyncio
@@ -334,9 +354,9 @@ async def test_a_cookie_fails_after_the_gateway_secret_rotates(state, real_grant
 
     async with _serve(state) as client:
         old = _delegated()
-        assert (await client.get("/api/version", params=old)).status == 200
+        assert (await client.get(_READ, params=old)).status == 200
         dashboard_proxy.set_gateway_secret("another-gateway-secret-in-words")
-        assert (await client.get("/api/version")).status == 403
+        assert (await client.get(_READ)).status == 403
 
 
 @pytest.mark.asyncio
@@ -406,30 +426,24 @@ def test_a_delegated_request_is_read_by_the_redaction_audience_as_a_non_owner():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tail", ["config", "manifest"])
-async def test_a_delegated_token_cannot_read_another_apps_config_or_manifest(
+async def test_a_delegated_token_cannot_read_any_apps_config_or_manifest(
     state, granted, sel_rows, tail
 ):
     async with _serve(state) as client:
-        resp = await client.get(f"/api/apps/other-app/{tail}", params=_delegated())
-        assert resp.status == 403, await resp.text()
-        assert (await resp.json())["code"] == _REFUSED_CODE
-        own = await client.get(f"/api/apps/{_APP}/{tail}", params=_delegated())
-        assert own.status != 403 or (await own.json()).get("code") != _REFUSED_CODE
-    assert [r["resources"] for r in sel_rows if "other-app" in r["resources"]]
+        for name in ("other-app", _APP):
+            resp = await client.get(f"/api/apps/{name}/{tail}", params=_delegated())
+            assert resp.status == 403, await resp.text()
+            assert (await resp.json())["code"] == _REFUSED_CODE
 
 
 @pytest.mark.asyncio
-async def test_a_refusal_row_names_the_route_template_not_the_raw_path(
-    granted, sel_rows, monkeypatch
-):
+async def test_a_refusal_row_names_the_route_template_not_the_raw_path(granted, sel_rows):
     """The frame token sits in the raw path of /app-frame/...; it must not reach the log."""
-    from kiro_crew.dashboard import token_auth_tokens
     from kiro_crew.dashboard.delegated_scope import enforce_delegated
 
-    monkeypatch.setattr(token_auth_tokens, "token_via_app_unverified", lambda _t: _APP)
     canonical = "/app-frame/{name}/{point}/{point_id}/{frame_id}/{token}"
     raw = "/app-frame/other-app/p/1/f/FRAMETOKEN123"
-    refused = await enforce_delegated(_FakeReq(canonical, "other-app"), raw)
+    refused = await enforce_delegated(_FakeReq(canonical, "other-app", "GET"), raw)
     assert refused is not None and refused.status == 403
     resources = sel_rows[0]["resources"]
     assert "FRAMETOKEN123" not in resources and canonical in resources
@@ -438,8 +452,100 @@ async def test_a_refusal_row_names_the_route_template_not_the_raw_path(
 @pytest.mark.asyncio
 async def test_an_allowed_delegated_write_leaves_a_row_naming_the_app(state, granted, sel_rows):
     async with _serve(state) as client:
-        await client.post("/api/chat/pinned-order", params=_delegated(), json={})
+        await client.post("/api/chat/slots/s/stop", params=_delegated())
     rows = [r for r in sel_rows if r.get("operation") == "delegated_scope"]
     assert len(rows) == 1
     assert rows[0]["caller"] == _APP and rows[0]["outcome"] == "allowed"
-    assert rows[0]["resources"] == "POST /api/chat/pinned-order"
+    assert rows[0]["resources"] == "POST /api/chat/slots/{slot}/stop"
+
+
+# --- Streams, interrupt and the slot stop: deny by default on every channel -------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/ws", "/api/ws/stt"])
+async def test_a_delegated_token_cannot_open_a_websocket(state, granted, path):
+    async with _serve(state) as client:
+        with pytest.raises(aiohttp.WSServerHandshakeError) as err:
+            await client.ws_connect(path, params=_delegated())
+        assert err.value.status == 403
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_token_cannot_open_the_status_stream(state, granted):
+    async with _serve(state) as client:
+        async with client.get("/api/stream", params=_delegated()) as resp:
+            assert resp.status == 403
+            assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+async def test_an_open_stream_ends_when_the_grant_ends(state, granted, monkeypatch):
+    from kiro_crew.dashboard import delegated_scope
+
+    monkeypatch.setattr(delegated_scope, "STREAM_RECHECK_SECS", 0.05, raising=False)
+
+    async def stream(request):
+        out = web.StreamResponse()
+        await out.prepare(request)
+        for _ in range(200):
+            await out.write(b"frame\n")
+            await asyncio.sleep(0.05)
+        return out
+
+    app = web.Application(middlewares=[token_auth.token_auth_middleware()])
+    app["state"] = state
+    app.router.add_get("/apps/{name}/api/{path}", stream)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(f"/apps/{_APP}/api/s", params=_delegated())
+        assert resp.status == 200
+        assert await resp.content.readline() == b"frame\n"
+        granted["on"] = False
+
+        async def drain() -> None:
+            with contextlib.suppress(aiohttp.ClientError):
+                while await resp.content.readline():
+                    pass
+
+        await asyncio.wait_for(drain(), 3)  # the stream lasts 10 s unless the grant ends it
+    assert delegated_scope._STREAMS == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{}, {"queue_id": "q1"}])
+async def test_the_slot_interrupt_is_not_open_to_a_delegated_token(state, granted, body):
+    """Interrupt with a queue id starts the queued turn: it runs as the owner."""
+    async with _serve(state) as client:
+        resp = await client.post("/api/chat/slots/s/interrupt", params=_delegated(), json=body)
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra", [{"json": {}}, {"data": b"x"}, {"params_extra": {"force": "true"}}]
+)
+async def test_the_slot_stop_takes_no_body_and_no_query(state, granted, extra):
+    async with _serve(state) as client:
+        params = {**_delegated(), **extra.pop("params_extra", {})}
+        resp = await client.post("/api/chat/slots/s/stop", params=params, **extra)
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+async def test_the_bare_slot_stop_passes_the_scope(state, granted):
+    async with _serve(state) as client:
+        resp = await client.post("/api/chat/slots/s/stop", params=_delegated())
+        assert resp.status != 403 or (await resp.json()).get("code") != _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+async def test_the_gate_prerequisite_read_takes_no_query(state, granted):
+    """``?refresh=`` makes the gateway probe the host; the latched read needs no query."""
+    async with _serve(state) as client:
+        resp = await client.get(
+            "/api/kiro-prerequisite", params={**_delegated(), "refresh": "explicit"}
+        )
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE

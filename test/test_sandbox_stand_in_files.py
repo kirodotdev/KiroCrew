@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 
+import pytest
+
 from kiro_crew import sandbox_launcher_program as program
 from kiro_crew import sandbox_plan
 
@@ -24,6 +26,10 @@ def _launch(pairs, own=()):
     )
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "O_NOFOLLOW"),
+    reason="the namespace launcher opens the stand-in with O_NOFOLLOW; Windows has none",
+)
 def test_the_source_is_written_into_a_stand_in_the_launcher_made(tmp_path):
     source = tmp_path / "source"
     source.write_text("value-in-words", encoding="utf-8")
