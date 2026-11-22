@@ -971,6 +971,59 @@ async def _validate_existing_grant(
     return verdict["verdict"] in _GRANT_PROVEN_VERDICTS
 
 
+class _MintProcessGone(Exception):
+    """The mint's process exited before its server reported."""
+
+    mint_reason = "mint_process_gone"
+
+
+class _MintServerFailed(Exception):
+    """The mint's server reported a failure, or a sign-in without a usable URL."""
+
+    mint_reason = "mint_server_failed"
+
+
+def _challenge_for(client: Any, slug: str) -> str:
+    """Pop the session's queued sign-in requests and return ``slug``'s URL, or ""."""
+    for req in client.pop_pending_oauth_requests():
+        if req.get("serverName") == slug and req.get("oauthUrl"):
+            return str(req["oauthUrl"])
+    return ""
+
+
+async def _ready_and_challenged(client: Any, slug: str) -> str:
+    """Start the mint session and return ``slug``'s approval URL, or "" for no challenge.
+
+    ``ensure_ready`` drains MCP init frames for about a second, and a remote OAuth
+    server that runs discovery and client registration first (Atlassian) asks for
+    sign-in later than that. Silence is not an open endpoint, so the session is
+    drained until the spec's server reports (ready, failed or a sign-in request)
+    or the readiness deadline passes. Only a server that reports ready is an open
+    endpoint; a failure ends as ``mint_server_failed``, a process that exits first
+    as ``mint_process_gone`` and silence as ``mint_timeouterror``. A server
+    missing from the spec never reports, and keeps the no-challenge answer at once.
+    """
+    deadline = time.monotonic() + _MINT_READY_TIMEOUT_SECONDS
+    await client.ensure_ready()
+    if url := _challenge_for(client, slug):
+        return url
+    if await asyncio.to_thread(_agent_spec_entry_missing, slug):
+        return ""
+    await client.wait_for_declared_mcp(max(0.0, deadline - time.monotonic()))
+    if url := _challenge_for(client, slug):
+        return url
+    alias = mcp_server_alias(slug)
+    report = client.mcp_session_report()
+    if report.unreported((alias,)):
+        if not client.is_process_alive():  # pid-owner-ok: the mint owns this process
+            raise _MintProcessGone()
+        raise TimeoutError
+    if alias in (report.payload() or {}).get("ready", ()):
+        return ""
+    # Failed, or asked for sign-in with no URL Crew could take: no open endpoint.
+    raise _MintServerFailed()
+
+
 async def start_oauth_mint(
     slug: str,
     mcp_url: str,
@@ -1091,8 +1144,9 @@ async def start_oauth_mint(
                 session_key=f"connections-mint-{slug}",
             )
             holdings["client"] = client
-            # session/new with NO prompt: MCP init is eager, so the challenge
-            # buffered during init is available right after ready.
+            # session/new with NO prompt. MCP init is eager, but readiness drains its
+            # frames for about a second only, so the wait runs on until the server
+            # itself reports (see _ready_and_challenged).
             #
             # The PID claim races readiness on purpose. The child is spawned partway
             # THROUGH ensure_ready, and nothing claims it as a session, so the orphan
@@ -1105,18 +1159,13 @@ async def start_oauth_mint(
             try:
                 # Not wait_for: a start this deadline cuts is a startup timeout.
                 async with startup_deadline(_MINT_READY_TIMEOUT_SECONDS):
-                    await client.ensure_ready()
+                    oauth_url = await _ready_and_challenged(client, slug)
             finally:
                 claim.cancel()
                 # Covers the fast path, where readiness beat the poller's first tick,
                 # AND the failure path, so a spawned child is always released.
                 _claim_mint_pid(client, holdings)
 
-            oauth_url = ""
-            for req in client.pop_pending_oauth_requests():
-                if req.get("serverName") == slug and req.get("oauthUrl"):
-                    oauth_url = str(req["oauthUrl"])
-                    break
             if oauth_url:
                 # The same discovery step the chat banner runs: a configured server
                 # whose own authorization server is on neither endpoint list has its
@@ -1261,8 +1310,14 @@ async def start_oauth_mint(
         reason = (
             "mint_kiro_cli_missing"
             if getattr(exc, "kiro_cli_missing", False) is True
-            else "mint_" + type(exc).__name__.lower()[:32]
+            else getattr(exc, "mint_reason", None) or "mint_" + type(exc).__name__.lower()[:32]
         )
+        if validation_failed and isinstance(
+            exc, (_MintServerFailed, _MintProcessGone, TimeoutError)
+        ):
+            # No URL after a check disproved the stored grant: the card's
+            # unproven-grant fence keys on this reason, so it wins over the others.
+            reason = "mint_grant_unproven"
         async with _mints_lock:
             entry = _mints.get(slug)
             if entry is not None and entry.get("token") == my_token:
