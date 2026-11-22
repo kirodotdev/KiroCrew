@@ -2,8 +2,10 @@
 
 The fast layer of ``docs/request-for-change/rfc-host-memory-guard.md`` (§4).
 ``ResourcePressureNotifier`` calls :func:`request` on the loop when its guard trigger
-holds (critical posture, or tight with PSI ``full avg10`` >= 10); :func:`request`
-schedules one single-flight :func:`pressure_reclaim` pass, which:
+holds (critical posture; tight with PSI ``full avg10`` >= 10; or, while the memory
+cgroup is out of view, the visible cgroup stalled 10% of the time since the last
+sample); :func:`request` schedules one single-flight :func:`pressure_reclaim` pass,
+which:
 
 * collects every live session runtime from the session manager's map, with no skip
   of persistent or channel sessions (this pass never recycles a session);
@@ -456,17 +458,32 @@ def _gb(mb: int) -> str:
 
 
 def _state_words(trigger: str) -> str:
-    # The PSI arm fires on a TIGHT reading: memory stalls, it is not below critical.
-    return "under heavy pressure" if trigger == "psi" else "critically low"
+    # The PSI arms fire on a stall: memory stalls, it is not below critical.
+    return "under heavy pressure" if trigger in ("psi", "psi-cgroup") else "critically low"
+
+
+#: What a stop on the visible cgroup's stall measured: that stall, and neither the
+#: cgroup's memory use nor any limit, since the gateway cannot read them there; the free
+#: figure beside it is the host's.
+_OUT_OF_VIEW = "stalled in Crew's cgroup, whose memory use Crew cannot read"
+
+
+def _subject_and_reading(status: Any, trigger: str) -> tuple[str, str]:
+    """What the figure measures and how it reads; the host figure when out of view."""
+    if trigger == "psi-cgroup":
+        return "Memory", f"{_OUT_OF_VIEW}; ~{status.available_gb:.1f} GB free on the host"
+    return status.memory_subject, status.memory_reading()
 
 
 def _was_low(status: Any, trigger: str) -> str:
     """``Host memory was critically low (~1.4 GB free)``, naming the agent ceiling when it binds."""
-    return f"{status.memory_subject} was {_state_words(trigger)} ({status.memory_reading()})"
+    subject, reading = _subject_and_reading(status, trigger)
+    return f"{subject} was {_state_words(trigger)} ({reading})"
 
 
 def _is_low(status: Any, trigger: str) -> str:
-    return f"{status.memory_subject} is {_state_words(trigger)} ({status.memory_reading()})"
+    subject, reading = _subject_and_reading(status, trigger)
+    return f"{subject} is {_state_words(trigger)} ({reading})"
 
 
 def chat_notice(
@@ -522,22 +539,27 @@ def shared_notice(
     )
 
 
-def ledger_summary(candidate: Candidate, status: Any) -> str:
+def ledger_summary(candidate: Candidate, status: Any, trigger: str = "critical") -> str:
     """The ``summary`` of the ``question`` report on the owning worker's item."""
+    if trigger == "psi-cgroup":
+        reading = f"memory {_OUT_OF_VIEW} (~{status.available_gb:.1f} GB free on the host)"
+    else:
+        reading = f"{status.memory_subject.lower()} {status.memory_reading()}"
     return (
         f"memory guard: stopped {candidate.label} ({_gb(candidate.rss_mb)}); "
-        f"{status.memory_subject.lower()} {status.memory_reading()}; the worker keeps running"
+        f"{reading}; the worker keeps running"
     )
 
 
-def request(manager: Any, status: Any, psi: float | None, trigger: str) -> None:
-    """Schedule one guard pass unless one is running. On the loop; returns at once."""
+def request(manager: Any, status: Any, psi: float | None, trigger: str) -> asyncio.Task[Any]:
+    """Schedule one guard pass unless one is running; the pass that runs. On the loop."""
     state: MemoryGuardState = manager._memory_guard
     if state.task is not None and not state.task.done():
-        return
+        return state.task
     state.task = asyncio.get_running_loop().create_task(
         pressure_reclaim(manager, status, psi, trigger)
     )
+    return state.task
 
 
 async def pressure_reclaim(manager: Any, status: Any, psi: float | None, trigger: str) -> None:
@@ -606,7 +628,7 @@ async def _pass(manager: Any, status: Any, psi: float | None, trigger: str) -> N
         state.handled.add(identity)
     logger.warning(
         "Memory guard: %s tier=%s session=%s tenants=%d root_pid=%d start=%s cmd=%s tree_rss_mb=%d "
-        "procs=%d available_gb=%.1f psi_full_avg10=%s trigger=%s signal=%s freed=%s",
+        "procs=%d available_gb=%.1f %s=%s trigger=%s signal=%s freed=%s",
         "stopped" if can_stop else "could not stop (unsupported host)",
         chosen.tier,
         chosen.session_key,
@@ -617,6 +639,8 @@ async def _pass(manager: Any, status: Any, psi: float | None, trigger: str) -> N
         chosen.rss_mb,
         chosen.procs,
         status.available_gb,
+        # ``psi-cgroup`` hands over the visible cgroup's stall share, not an avg10.
+        "psi_full_pct" if trigger == "psi-cgroup" else "psi_full_avg10",
         "-" if psi is None else f"{psi:.2f}",
         trigger,
         signal,
@@ -643,5 +667,5 @@ async def _pass(manager: Any, status: Any, psi: float | None, trigger: str) -> N
             callback(key, text, None)
         return
     notice = chat_notice(chosen, status, stopped=stopped, can_stop=can_stop, trigger=trigger)
-    summary = ledger_summary(chosen, status) if stopped else None
+    summary = ledger_summary(chosen, status, trigger) if stopped else None
     callback(chosen.session_key, notice, summary)
