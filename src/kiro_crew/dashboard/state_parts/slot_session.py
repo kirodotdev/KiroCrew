@@ -26,7 +26,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
 ``_summary_turn_mark``, ``_tab_id``, ``_telemetry_notice_shown``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
-``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_pick_gen``,
+``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_pick_gen``, ``_unconfirmed_creator``,
 ``_welcome_preview``, ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``backend``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``cron_run_read_only``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
@@ -325,6 +325,13 @@ def init_session_fields(self: _ChatSlot) -> None:
     #: save writes it back in place of ``unverified:creator``. It grants nothing:
     #: session-control ownership reads ``_created_by`` alone.
     self._saved_created_by = ""
+    #: The ``created_by`` a restart's restore read and could not confirm yet, while
+    #: ``_created_by`` holds ``unverified:creator``; ``""`` otherwise. In memory only.
+    #: The session tree may learn the creation record after the restore (a seed that
+    #: lands later, a unit admitted later), so each tree change re-checks this claim
+    #: and lifts the fence when the crew log confirms it
+    #: (``session_revive.reconfirm_restored_creators``). Never read as ownership.
+    self._unconfirmed_creator = ""
     #: The creator's ACP session id, FROZEN at mint (see ``session_control``).
     #: Read at the child's first turn to stamp ``parent_sid`` on the immutable
     #: ``session/opened`` crew log entry -- never re-read live, so a creator slot

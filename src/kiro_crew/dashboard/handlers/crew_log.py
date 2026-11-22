@@ -1379,6 +1379,16 @@ class CrewLogPublisher:
                 self.sync_slot_subscriptions()
             except Exception:  # pragma: no cover - a resync must not stop the push
                 logger.debug("slot subscription resync failed", exc_info=True)
+        # A tree change can bring the creation record a restart's restore could not
+        # find yet, so the restore's ownership fences are re-judged before the push.
+        try:
+            from kiro_crew.dashboard.session_control_parts.session_revive import (
+                reconfirm_restored_creators,
+            )
+
+            reconfirm_restored_creators(self._state)
+        except Exception:
+            logger.warning("restored creators could not be re-checked", exc_info=True)
         push = getattr(self._state, "push_lineage_patch", None)
         if push is None:
             return

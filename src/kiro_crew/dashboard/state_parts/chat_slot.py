@@ -153,6 +153,7 @@ class _ChatSlot:
         "_participants_dropped",
         "_created_by_sid",
         "_saved_created_by",
+        "_unconfirmed_creator",
         "_lineage_minted",
         "_reports_to_creator",
         "_work_aggregate",
@@ -499,6 +500,7 @@ class _ChatSlot:
     _participants_dropped: dict[str, Any]
     _created_by_sid: str
     _saved_created_by: str
+    _unconfirmed_creator: str
     _lineage_minted: bool
     _reports_to_creator: bool
     _work_aggregate: dict[str, Any] | None

@@ -604,6 +604,11 @@ def _read_created_by(r: _Read) -> None:
             claimed.startswith(_CRON_CREATOR_PREFIX) or _creation_parent(r.slot.key) == claimed
         )
         r.slot._created_by = claimed if verified else UNVERIFIED_CREATOR
+        # A fence here is a verdict on what the tree held at THIS moment. The tree can
+        # learn the creation record later in the same process, so the claim is kept for
+        # ``session_revive.reconfirm_restored_creators``, which re-checks it on each tree
+        # change and lifts the fence only when the crew log names this creator.
+        r.slot._unconfirmed_creator = "" if verified else claimed
         # A mode a person set on this session lived in memory and did not survive,
         # so the session follows its creator's next mode change again. A raise
         # still needs the crew log's creation record (``approval_inheritance``).

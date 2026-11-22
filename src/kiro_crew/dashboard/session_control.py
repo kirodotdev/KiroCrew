@@ -347,6 +347,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _scan_archived_candidates,
         _scan_revivable_history,
         list_archived_sessions,
+        reconfirm_restored_creators,
         revive_own_archived_worker,
         revive_session,
     )
