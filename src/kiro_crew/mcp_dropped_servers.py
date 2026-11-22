@@ -1,7 +1,8 @@
 """Which MCP servers the latest default-agent rebuild left out, and why.
 
 ``resolve_mcp_servers`` drops a server whose declared command does not resolve on
-the rebuild's PATH, and says so only in a log WARNING. A user with no log open
+the rebuild's PATH, and says so only in a log WARNING. A server the user switched
+off is not counted: nothing would have started it. A user with no log open
 then sees the server listed on the dashboard while the agent has none of its
 tools, with nothing on screen to say why. This store is the durable copy of that
 one fact, written after each rebuild that lands its spec and read by

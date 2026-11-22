@@ -490,7 +490,9 @@ class DashboardConfig:
         default=15,
         metadata=_meta(
             "MCP Probe Timeout",
-            "Seconds to wait for MCP server handshake during probe (5-120).",
+            "Seconds to wait for an MCP server to answer during a probe (5-120). "
+            "A server that runs on this computer gets four times as long, up to "
+            "120 seconds, because the probe has to start it first.",
         ),
     )
     loop_stall_exit_after_secs: int | None = field(

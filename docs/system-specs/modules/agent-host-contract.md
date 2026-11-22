@@ -246,7 +246,10 @@ lists it as unprojected, and a mirror that withholds it gets a `⏹ withholds by
 design` row instead of the `⚠` a dropped ref gets.
 `agent_sdk.drivers.acp.mirror_withheld_crew_refs` names those refs: the
 identity-bound Crew servers the shared translation mounts unnarrowed, which is what
-such a mirror leaves out.
+such a mirror leaves out. No session starts for those rows, so the doctor silences
+WARNING records while it projects (`doctor_checks.mcp._dry_projection`): the
+per-server withhold warning each mirror logs for a real session never reaches the
+doctor's console or `gateway.log`, and the `⏹` row is what says why.
 
 Every ACP session mints a per-session TOKEN (`mcp_gateway/claim.py`) and the gateway
 publishes a MAC-signed `token -> session_key` mapping (`session_token_sig.py`) at

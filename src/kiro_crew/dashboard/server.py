@@ -1513,7 +1513,7 @@ async def start_dashboard(
     await cautious_boot.pause_before("MCP server probe")
     # Held in state._background_tasks: the loop keeps only a weak reference to a
     # task, so a dropped one can be garbage-collected before the probe finishes.
-    probe_task = asyncio.create_task(handlers._bg_mcp_probe(state.sessions))
+    probe_task = asyncio.create_task(handlers._bg_mcp_probe(state))
     state._background_tasks.add(probe_task)
     probe_task.add_done_callback(state._background_tasks.discard)
 

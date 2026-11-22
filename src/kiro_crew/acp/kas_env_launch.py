@@ -460,15 +460,15 @@ def refuses_plain_http_headers() -> bool:
 def bridgeable(entry: Mapping[str, Any]) -> bool:
     """Whether a projected entry is a remote server the launcher can bridge to.
 
-    Streamable HTTP only: an ``sse`` entry speaks the older two-endpoint transport,
-    which the bridge (:mod:`kiro_crew.kas_http_bridge`) does not, so its headers
-    stay withheld. A url KAS itself would accept (:func:`kas_accepts_url`) is
-    bridged. So is plain ``http`` to another host, which KAS refuses but reaches
-    as the bridge's local stdio server, unless :func:`refuses_plain_http_headers`:
-    that bridge sends the headers in cleartext.
+    Its ``type`` does not matter: like KAS, the bridge (:mod:`kiro_crew.kas_http_bridge`)
+    speaks streamable HTTP and falls back to the older ``sse`` transport. A url KAS
+    itself would accept (:func:`kas_accepts_url`) is bridged. So is plain ``http``
+    to another host, which KAS refuses but reaches as the bridge's local stdio
+    server, unless :func:`refuses_plain_http_headers`: that bridge sends the
+    headers in cleartext.
     """
     url = entry.get("url")
-    if not isinstance(url, str) or entry.get("command") or entry.get("type") == "sse":
+    if not isinstance(url, str) or entry.get("command"):
         return False
     url = url.strip()  # as kas_accepts_url and bridge_url read it
     if not url.lower().startswith(("https://", "http://")):

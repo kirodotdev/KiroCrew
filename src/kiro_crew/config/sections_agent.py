@@ -255,9 +255,9 @@ class AgentConfig:
             "Counts only 'error' and 'timeout': a server asking for OAuth sign-in "
             "is working correctly and is never counted, and one success clears the "
             "count. The server stays mounted, but while its streak is at or over "
-            "this threshold MCP discovery stops spawning it for probes; the count "
-            "survives a gateway restart and holds until it is cleared (the "
-            "dashboard offers a one-click reset). 0 turns it off.",
+            "this threshold MCP discovery stops spawning it for probes; the count survives "
+            "a gateway restart and holds until it is cleared (the dashboard offers a "
+            "one-click reset) or the server's command, args, env or url changes. 0 turns it off.",
         ),
     )
     acp_backend: str = field(

@@ -404,7 +404,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Failing-Probe Threshold",
-      "help": "Consecutive failed probes before an MCP server is reported as persistently failing on its dashboard row. A probe verdict is otherwise forgotten between rounds, so a server that failed once on a cold cache looked identical to one that has failed forty times. Counts only 'error' and 'timeout': a server asking for OAuth sign-in is working correctly and is never counted, and one success clears the count. The server stays mounted, but while its streak is at or over this threshold MCP discovery stops spawning it for probes; the count survives a gateway restart and holds until it is cleared (the dashboard offers a one-click reset). 0 turns it off.",
+      "help": "Consecutive failed probes before an MCP server is reported as persistently failing on its dashboard row. A probe verdict is otherwise forgotten between rounds, so a server that failed once on a cold cache looked identical to one that has failed forty times. Counts only 'error' and 'timeout': a server asking for OAuth sign-in is working correctly and is never counted, and one success clears the count. The server stays mounted, but while its streak is at or over this threshold MCP discovery stops spawning it for probes; the count survives a gateway restart and holds until it is cleared (the dashboard offers a one-click reset) or the server's command, args, env or url changes. 0 turns it off.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3
@@ -11612,7 +11612,7 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Probe Timeout",
-      "help": "Seconds to wait for MCP server handshake during probe (5-120).",
+      "help": "Seconds to wait for an MCP server to answer during a probe (5-120). A server that runs on this computer gets four times as long, up to 120 seconds, because the probe has to start it first.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 15

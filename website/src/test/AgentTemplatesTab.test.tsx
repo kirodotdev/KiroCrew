@@ -276,6 +276,18 @@ describe('AgentTemplatesTab roster', () => {
     }
   })
 
+  it('finds an agent by the name of an MCP server its spec lists', async () => {
+    mockApi.agentTemplates.mockResolvedValue({
+      templates: [MINE, row({ name: 'weather-helper', filename: 'weather-helper.json', description: 'helps with forecasts', mcp_servers: ['weather-tools'] })],
+    })
+    renderTab()
+    await screen.findByRole('option', { name: /^weather-helper/ })
+    fireEvent.change(screen.getByPlaceholderText(/filter/i), { target: { value: 'Weather-Tools' } })
+    await waitFor(() => expect(screen.queryByRole('option', { name: /^reviewer/ })).toBeNull())
+    expect(screen.getByRole('option', { name: /^weather-helper/ })).toBeInTheDocument()
+    expect(screen.queryByText(/No custom agents match/)).toBeNull()
+  })
+
   it('says plainly when no mate runs a template', async () => {
     renderTab()
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
