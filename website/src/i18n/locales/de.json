@@ -24453,7 +24453,13 @@
     "section_capabilities": "Fähigkeiten",
     "band_directions": "Verhaltensanweisungen",
     "band_resources": "Ressourcen",
-    "band_remove_stale": "Die Fähigkeiten dieses Bot haben sich geändert, seit du diese Ansicht geöffnet hast. Es wurde nichts entfernt; prüfe die Liste und klicke erneut auf Entfernen."
+    "band_remove_stale": "Die Fähigkeiten dieses Bot haben sich geändert, seit du diese Ansicht geöffnet hast. Es wurde nichts entfernt; prüfe die Liste und klicke erneut auf Entfernen.",
+    "band_tools_settings": "Tool-Einstellungen",
+    "band_remove_settings_confirm_body": "Dieser Bot wendet diese Einstellungen und jede Einschränkung, die von ihnen kommt, nicht mehr an, etwa blockierte Terminalbefehle. Was sie erlauben, läuft wieder über die Freigaben dieses Bots. Das wird sofort gespeichert.",
+    "band_tools_settings_terminal": "Terminal",
+    "band_tools_settings_denied_commands": "blockierte Befehle",
+    "band_tools_settings_allowed_commands": "erlaubte Befehle",
+    "band_tools_settings_name": "{{tool}}: {{settings}}"
   },
   "crewApprovalsEditor": {
     "loading": "Freigaben werden geladen…",
@@ -24535,7 +24541,7 @@
     "current_directions": "Aktuelle Anweisungen (werden ersetzt): {{directions}}",
     "done_replaced": "Verhaltensanweisungen ersetzt.",
     "unenforced_preview": "Dieser Bot lehnt jeden Terminalbefehl ab, der etwas ändern könnte, etwa einen, der schreibt, löscht oder installiert. Terminalbefehle, die nur lesen, laufen weiter, außer git-Befehlen, die ebenfalls abgelehnt werden. Seine Dateiwerkzeuge, auch Schreiben, funktionieren weiter. {{productName}} kann einige blockierte Befehle des Agenten, den du hinzufügst, nicht prüfen.",
-    "unenforced_current": "Dieser Bot lehnt jeden Terminalbefehl ab, der etwas ändern könnte, etwa einen, der schreibt, löscht oder installiert. Terminalbefehle, die nur lesen, laufen weiter, außer git-Befehlen, die ebenfalls abgelehnt werden. Seine Dateiwerkzeuge, auch Schreiben, funktionieren weiter. Das kommt von blockierten Befehlen eines Agenten, der diesem Bot hinzugefügt wurde und die {{productName}} nicht prüfen kann. Um das aufzuheben, entferne diese blockierten Befehle aus der Konfigurationsdatei dieses Bots.",
+    "unenforced_current": "Dieser Bot lehnt jeden Terminalbefehl ab, der etwas ändern könnte, etwa einen, der schreibt, löscht oder installiert. Terminalbefehle, die nur lesen, laufen weiter, außer git-Befehlen, die ebenfalls abgelehnt werden. Seine Dateiwerkzeuge, auch Schreiben, funktionieren weiter. Das kommt von blockierten Befehlen eines Agenten, der diesem Bot hinzugefügt wurde und die {{productName}} nicht prüfen kann. Um das aufzuheben, klicke unter „Fähigkeiten“ dieses Bots in der Gruppe „Tool-Einstellungen“ bei den blockierten Befehlen des Terminals auf „Entfernen“. Du kannst sie auch aus der Konfigurationsdatei dieses Bots entfernen.",
     "unenforced_label": "Blockierte Befehle, die er nicht prüfen kann",
     "unenforced_lead": "Terminaländerungen blockiert.",
     "conditional_lead": "Einige Terminaländerungen blockiert.",

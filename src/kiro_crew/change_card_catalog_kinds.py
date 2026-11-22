@@ -1505,6 +1505,10 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
                 raise _fail("invalid_param", "operation action must be set, remove or inherit")
             if not isinstance(op.get("section"), str) or not isinstance(op.get("id"), str):
                 raise _fail("invalid_param", "operation needs section and id")
+            if op["section"] == "toolsSettings":
+                # A Bot's tool settings (its blocked commands among them) come off
+                # only by a person's own Remove in its Abilities settings.
+                raise _fail("invalid_param", "a Bot's tool settings are not changed by a card")
             if op["action"] == "set" and "value" not in op:
                 raise _fail("invalid_param", "a set operation needs a value")
             clean_ops.append(copy.deepcopy(op))

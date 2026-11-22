@@ -12410,7 +12410,13 @@
     "switch_own_copy_body": "This bot is built from its own customized copy. Switching to a different template discards that copy — it can't be selected again.",
     "band_directions": "Behavior directions",
     "band_resources": "Resources",
-    "band_remove_stale": "This bot's abilities changed since you opened this. Nothing was removed; check the list and press Remove again."
+    "band_remove_stale": "This bot's abilities changed since you opened this. Nothing was removed; check the list and press Remove again.",
+    "band_tools_settings": "Tool settings",
+    "band_remove_settings_confirm_body": "This bot stops applying these settings and every limit that comes from them, such as blocked terminal commands. Anything they allow goes through this bot's approvals again. This is saved right away.",
+    "band_tools_settings_terminal": "Terminal",
+    "band_tools_settings_denied_commands": "blocked commands",
+    "band_tools_settings_allowed_commands": "allowed commands",
+    "band_tools_settings_name": "{{tool}}: {{settings}}"
   },
   "crewApprovalsEditor": {
     "loading": "Loading approvals…",
@@ -12492,7 +12498,7 @@
     "current_directions": "Current directions (will be replaced): {{directions}}",
     "done_replaced": "Behavior directions replaced.",
     "unenforced_preview": "This bot will refuse every terminal command that could change something, such as one that writes, deletes or installs. Terminal commands that only read still run, except git commands, which are refused too. Its file tools, including write, still work. {{productName}} can't check some blocked commands of the agent you're adding.",
-    "unenforced_current": "This bot refuses every terminal command that could change something, such as one that writes, deletes or installs. Terminal commands that only read still run, except git commands, which are refused too. Its file tools, including write, still work. This comes from blocked commands of an agent added to this bot, which {{productName}} can't check. To lift it, remove those blocked commands from this bot's config file.",
+    "unenforced_current": "This bot refuses every terminal command that could change something, such as one that writes, deletes or installs. Terminal commands that only read still run, except git commands, which are refused too. Its file tools, including write, still work. This comes from blocked commands of an agent added to this bot, which {{productName}} can't check. To lift it, press Remove on the terminal's blocked commands under Tool settings in this bot's Abilities. Removing them from this bot's config file also works.",
     "unenforced_label": "Blocked commands it can't check",
     "unenforced_lead": "Terminal changes blocked.",
     "conditional_lead": "Some terminal changes blocked.",

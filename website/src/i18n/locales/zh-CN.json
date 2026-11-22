@@ -23872,7 +23872,13 @@
     "section_capabilities": "能力",
     "band_directions": "行为指引",
     "band_resources": "资源",
-    "band_remove_stale": "打开此界面后，这个 Bot 的能力已发生变化。未移除任何内容；检查列表后，再次点击“移除”。"
+    "band_remove_stale": "打开此界面后，这个 Bot 的能力已发生变化。未移除任何内容；检查列表后，再次点击“移除”。",
+    "band_tools_settings": "工具设置",
+    "band_remove_settings_confirm_body": "此 Bot 将不再应用这些设置及由此产生的所有限制，例如被阻止的终端命令。它们允许的内容将重新按此 Bot 的审批处理。此操作会立即保存。",
+    "band_tools_settings_terminal": "终端",
+    "band_tools_settings_denied_commands": "被阻止命令",
+    "band_tools_settings_allowed_commands": "允许的命令",
+    "band_tools_settings_name": "{{tool}}：{{settings}}"
   },
   "crewApprovalsEditor": {
     "loading": "正在加载审批…",
@@ -23954,7 +23960,7 @@
     "current_directions": "当前行为指引（将被替换）：{{directions}}",
     "done_replaced": "已替换行为指引。",
     "unenforced_preview": "此 Bot 会拒绝所有可能改动内容的终端命令，例如写入、删除或安装。只读取内容的终端命令仍可运行，但 git 命令也会被拒绝。文件工具（包括写入）仍可使用。{{productName}} 无法检查所添加代理中部分被阻止命令。",
-    "unenforced_current": "此 Bot 会拒绝所有可能改动内容的终端命令，例如写入、删除或安装。只读取内容的终端命令仍可运行，但 git 命令也会被拒绝。文件工具（包括写入）仍可使用。这是因为此 Bot 中添加了某个代理，{{productName}} 无法检查其部分被阻止命令。要解除限制，请从此 Bot 配置文件中删除这些被阻止命令。",
+    "unenforced_current": "此 Bot 会拒绝所有可能改动内容的终端命令，例如写入、删除或安装。只读取内容的终端命令仍可运行，但 git 命令也会被拒绝。文件工具（包括写入）仍可使用。这是因为此 Bot 中添加了某个代理，{{productName}} 无法检查其部分被阻止命令。要解除限制，请在此 Bot 的“能力”中，于“工具设置”下对终端的被阻止命令点“移除”。也可以从此 Bot 配置文件中删除它们。",
     "unenforced_label": "无法检查的被阻止命令",
     "unenforced_lead": "终端改动已阻止。",
     "conditional_lead": "部分终端改动已阻止。",
