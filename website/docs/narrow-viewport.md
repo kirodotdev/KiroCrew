@@ -660,7 +660,12 @@ run unstarted. The fingers' moves before the start are kept for the release spee
 flick that just passes 80px still opens the panel. Under reduced motion it is not asked: nothing moves there, and a clear swipe
 already needs the same 80px. The start distance is there for a mouse's thumb wheel, which turns a little
 when the mouse is held or moved and sends runs of 1-2px steps that sum to a few dozen px:
-a run that short never moves a closed panel, and neither does a flick that short. The drag is released only on a real
+a run that short never moves a closed panel, and neither does a flick that short. A waiting reveal is
+also the one run whose owner can change after its first event: once its summed vertical travel
+reaches the furthest it has gone sideways its way (a turn back does not count against it), it is a
+scroll that started with a little sideways drift, not a swipe, and the rest of the run is handed
+back to the browser uncancelled (a new run for the reader, so its hold and quiet timer go), so the
+content under the fingers keeps scrolling and neither the panel nor the Dashboard tab moves. The drag is released only on a real
 lift-off: a 100ms gap (read from the events' own timestamps, so a slow frame is not a
 lift), or the momentum tail's signature, three steps in a row each smaller than the last
 by a near-constant ratio, or a creeping tail: three steps in a row of 4px or less after
