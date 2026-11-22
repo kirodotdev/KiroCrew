@@ -87,8 +87,9 @@ fields.
 
 A candidate qualifies only if **all three** hold:
 
-1. **Independent** — it does not consume another candidate's output. Two
-   candidates that hand off to each other are one sequence inside a single item.
+1. **Independent** — it does not consume another candidate's output in the same
+   round. Steps of one change are one item; an integrator of finished parts runs a
+   later round.
 2. **Assertable** — you can name its completion condition *now*, before
    dispatching, as one of the evaluator's kinds: `pr_checks` (a non-draft
    PR's checks all green), `pr_merged`, `edition_check`, `file` (a path
@@ -125,7 +126,7 @@ Worked example — goal "resolve this repo's open issues":
 |---|---|
 | Triage the open issues | Yours. One API read plus a classification; not worth a session's context. |
 | Queue the actionable ones | Not a task. It is triage's completion condition. |
-| Fix issue #N, label it | **Work item** — one per issue, not one for the batch. |
+| Fix issue #N, label it | **Work item** — one per issue; issues meant for one PR are one item. |
 | Check status and pick the next round | Yours. This is the control loop. |
 | Advise the user on issues nobody can action | Not a task. Run the needs-human checklist (Stop conditions). |
 | Write the summary report | Yours. A fold over the ledger. |
@@ -178,7 +179,8 @@ PRs already have, from one read; "nothing to check" when there is no repo
 state), list the work items with their acceptance conditions, name the
 concurrency, and list your assumptions as **Assumptions** the user can correct
 in the same breath. Then wait for one go-ahead only when a person typed this
-turn (see "Skip the gate" below).
+turn (see "Skip the gate" below). A Bot leaves out the concurrency, as its own
+prompt says.
 
 Record the goal itself with `work_ledger_record` `action=goal` (the goal text and
 the round number) as part of that first turn, so the record exists before any
@@ -227,11 +229,10 @@ dispatched nothing and no patrol is armed yet, arm
 will arm one. The ledger's cap and the server's slot limits are the only
 ceiling: carry no number of your own.
 
-**Split the work so each item stands alone.** Cut along parts that can each be
-accepted on their own, not along steps of one change (Independent, above). Size
-each item to what one worker can finish and prove. Your prompt's rules on one
-owner per shared file, one integrator per output, and merging two lines of work
-apply as written there.
+**Split only as your prompt's split rule says.** Your prompt's rules on one
+owner per shared artifact, one integrator per output, and merging two lines of
+work apply as written there. For code work, read
+`<this skill's dir>/references/code-work.md`.
 
 **Add a tracker when one patrol read no longer fits.** The signals: your
 `compact` ledger read comes back cut, the items span more than one ledger or
@@ -282,15 +283,11 @@ the PR to review-ready. Optional — the worker's own method is fine too.
 
 **A seed relies on the worker's own rules.** `kirocrew-worker` and a Bot's worker already carry the coding rules (smallest complete change, no unasked-for code, one test for new logic where the repo has tests, end the report with what was skipped) and the five-line first report (Ask, State, Items with acceptance, Not doing, Risks, then keep going). A seed for any other agent states both.
 
-**A large item's seed may name `workflow_run`.** You see the item's size
-before the worker does. When it has several dependent phases or many
-independent pieces AND a failed piece should re-run without redoing the rest,
-add one line: run it with `workflow_run` (check `workflow_library_list` for a
-saved one first) and put the run id in `artifacts`. A run's steps do not
-inherit the worker's directory, so for an item in a checkout the line also says
-every step passes that checkout as `ctx.agent(cwd=)`. Leave the line out for a
-single task or a one-shot fan-out; the worker does those itself. This is
-advice to the worker: you still never call `workflow_run` yourself.
+**A large item's seed may name `workflow_run`.** When the item has many phases
+or pieces AND a failed piece should re-run alone, add one line: run it with
+`workflow_run` (check `workflow_library_list` first), pass any checkout to every
+step as `ctx.agent(cwd=)`, and put the run id in `artifacts`. Otherwise the
+worker orders its own steps. You still never call `workflow_run` yourself.
 
 **A seed MUST name the observable outcome or invariant that makes the work
 correct.** A `pr_checks` acceptance verifies only that the delivered PR's checks
@@ -308,7 +305,7 @@ is neither visible nor recoverable (why: `references/manual-dispatch.md`).
 | the item | `agent` |
 |---|---|
 | a leaf — one assertable acceptance condition | `kirocrew-worker` |
-| decomposes into two or more independently acceptable sub-items | `kirocrew-conductor` |
+| a large item that splits into parallel parts (a worker cannot dispatch) | `kirocrew-conductor` |
 | `select_crew` names a specialist crew that fits | that crew |
 
 `depth` is computed when a child first opens its ledger (its first `goal` or
@@ -371,8 +368,8 @@ Done when condition for it, then create its item.
 **Run from the goal: handle routine incidents yourself.** Your prompt's
 routine-incidents rule lists them; handle each and record the decision first as it says (a
 `session_ledger_record` event serves when no item fits). Save a worker's
-unpushed work before you clear its build output, and split a late item across
-more workers rather than letting it slip. Escalate to the person only an ask case (a)-(e); a change
+unpushed work before you clear its build output, and re-plan a late item
+rather than letting it slip. Escalate to the person only an ask case (a)-(e); a change
 to an owner ruling is (e). Send a conflict with another lead to the lead that
 dispatched you as `question`; with none, decide it and record it.
 

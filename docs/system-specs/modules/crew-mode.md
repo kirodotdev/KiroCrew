@@ -4889,9 +4889,9 @@ both, or it lands on the parity allowlist with a reason. The rules both need
 interval band, the final report before the stop, acceptance by `accept_eval.py`, close,
 reading the `goal-conductor` skill before acting on a goal and again after a
 compaction, and the long-task and
-team rules every turn needs: the item budget, one owner per file and one
-integrator per output, merging two lines, reusing a finished worker only for the
-next step of its own line, the plan reviewer, the `pr_merged` bar,
+team rules every turn needs: the item budget, no split by default, one owner per
+artifact and one integrator per output, merging two lines, reusing a finished
+worker only for the next step of its own line, the plan reviewer, the `pr_merged` bar,
 the hourly check on a quiet wake, routine incidents, and reporting before a park) are written once,
 in `agent_parts/spec_prompts.py` `_LEDGER_CONDUCTOR_RULES`: the root charter is
 assembled from them (`_CONDUCTOR_PROMPT_SECTIONS`) and `conductor.patrol` names
