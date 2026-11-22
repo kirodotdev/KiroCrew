@@ -582,6 +582,15 @@ def test_parse_requires_keeps_order_drops_repeats_and_reads_empty_as_nothing():
     assert not placement.parse_requires({})
 
 
+@pytest.mark.parametrize("name", ["-gpu", "_gpu"])
+def test_a_name_starting_with_a_separator_is_refused_naming_the_first_character_rule(name):
+    with pytest.raises(routes.CrewCallError) as exc:
+        placement.parse_requires({"tags": [name]})
+    assert exc.value.status == 400 and exc.value.code == placement.REQUIRES_INVALID
+    assert "starting with a letter or digit" in exc.value.message
+    assert placement.parse_requires({"tags": ["gpu"]}).tags == ("gpu",)
+
+
 def test_a_crew_without_the_login_is_skipped_however_much_room_it_has(recorded, crews):
     crews.add("a", headroom=_room(mem_free_gb=99.0, logins={"gh": "expired"}))
     crews.add("b", headroom=_room(mem_free_gb=8.0, logins={"gh": "valid"}, tags=["gpu"]))

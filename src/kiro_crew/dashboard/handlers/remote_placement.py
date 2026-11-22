@@ -34,7 +34,7 @@ from kiro_crew.dashboard.remote_dispatch_headroom import (
     remote_dispatch_settings,
 )
 from kiro_crew.remote_dispatch import LOGIN_EXPIRED, LOGIN_UNKNOWN, LOGIN_VALID
-from kiro_crew.work_vocab import DISPATCH_TAG_RE, MAX_DISPATCH_TAGS
+from kiro_crew.work_vocab import MAX_DISPATCH_TAGS, is_dispatch_tag
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -128,12 +128,12 @@ def parse_requires(raw: object) -> Requires:
                 f"requires.{key} must be a list of at most {MAX_DISPATCH_TAGS}",
             )
         for name in names:
-            if not isinstance(name, str) or not DISPATCH_TAG_RE.fullmatch(name):
+            if not isinstance(name, str) or not is_dispatch_tag(name):
                 raise routes.CrewCallError(
                     400,
                     REQUIRES_INVALID,
-                    f"requires.{key} names must be 1-32 characters of a-z, 0-9, '_' or '-' "
-                    "with at least one letter",
+                    f"requires.{key} names must be 1-32 characters of a-z, 0-9, '_' or '-', "
+                    "starting with a letter or digit, with at least one letter",
                 )
             if key == "logins" and name not in tools:
                 raise routes.CrewCallError(
