@@ -514,6 +514,45 @@ def test_extra_hooks_fire_but_are_never_persisted(tmp_path, monkeypatch):
     assert not persisted.exists() or "spec:a1:x" not in persisted.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("stored", [False, True], ids=["spec-hook-only", "stored-hook-too"])
+def test_only_a_stored_hook_that_fired_rewrites_hooks_json(tmp_path, monkeypatch, stored):
+    """A fire that matched only agent spec hooks leaves hooks.json alone.
+
+    Spec hooks are never written to the file, so their fire has nothing to
+    record there. A stored hook that fired still writes its status once.
+    """
+    store = ScriptHookStore(tmp_path)
+    if stored:
+        saved = store.create(
+            {"name": "s", "event": HOOK_EVENT_POST_TOOL_USE, "matcher": "*", "command": "c"}
+        )
+    writes: list = []
+    real_write = store._write_hooks_file
+    monkeypatch.setattr(store, "_write_hooks_file", lambda data: writes.append(real_write(data)))
+
+    async def fake_run(hook, context="", hook_event=None):
+        hook.last_status = "ok"
+        hook.run_count += 1
+        return ScriptHookResult(hook_id=hook.id, hook_name=hook.name, event=hook.event)
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
+    extra = [ScriptHook(id="spec:a1:x", event=HOOK_EVENT_POST_TOOL_USE, matcher="*", command="c")]
+    before = (tmp_path / "hooks.json").read_bytes() if stored else None
+    for _ in range(3):
+        asyncio.run(store.fire(HOOK_EVENT_POST_TOOL_USE, tool_name="shell", extra_hooks=extra))
+
+    assert extra[0].run_count == 3
+    if not stored:
+        assert writes == []
+        assert not (tmp_path / "hooks.json").exists()
+        return
+    assert len(writes) == 3
+    after = json.loads((tmp_path / "hooks.json").read_text(encoding="utf-8"))
+    row = next(h for h in after["hooks"] if h["id"] == saved.id)
+    assert (row["run_count"], row["last_status"]) == (3, "ok")
+    assert (tmp_path / "hooks.json").read_bytes() != before
+
+
 def _passthrough_sandbox(monkeypatch):
     monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
