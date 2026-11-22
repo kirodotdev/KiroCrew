@@ -5275,8 +5275,10 @@ outbound proxy belongs in `HTTPS_PROXY`, which the client honours separately. Th
 Discord, Webex and WeCom channel clients' own requests and WebSockets check their
 destination against `NO_PROXY` through `kiro_crew.http_proxy.proxy_for_url`
 (environment only, so it is cheap on the event loop) and go direct to a host listed
-there. WeCom's attachment-ingest session (fed by `WeComClient.proxy`) and the
-dashboard's Discord and Webex credential checks keep the single resolved proxy. The
+there. WeCom's media download (`wecom.media.download_media`, handed
+`WeComClient.proxy` by the attachment ingest) checks the media URL the same way and
+fetches a `NO_PROXY` host on its address-pinned session. The dashboard's Discord and
+Webex credential checks keep the single resolved proxy. The
 same suffix rule is applied to the catalog's own `serviceLinks.wdm` as defence in
 depth. Otherwise:
 the pin is held separately from the host in use and skips discovery entirely,
