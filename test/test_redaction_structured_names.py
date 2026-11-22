@@ -351,6 +351,22 @@ def test_a_short_real_looking_value_cut_by_an_ellipsis_is_masked(
 
 
 @pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize("name", ["password", "secret"])
+@pytest.mark.parametrize("head", ["lemon", "abc12", "a.b.c"])
+def test_a_very_short_value_cut_by_an_ellipsis_is_masked(
+    name: str, head: str, ellipsis: str
+) -> None:
+    assert redact(f"{name}={head}{ellipsis}")[0] == f"{name}={TAG}"
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
+@pytest.mark.parametrize("name", ["password", "secret"])
+def test_an_empty_head_before_an_ellipsis_stays(name: str, ellipsis: str) -> None:
+    text = f"{name}={ellipsis}"
+    assert redact(text)[0] == text
+
+
+@pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
 @pytest.mark.parametrize("stub", ["sk-", "sk-ant-", "ghp_", "AKIA"])
 def test_a_vendor_prefix_stub_stays(stub: str, ellipsis: str) -> None:
     text = f"password={stub}{ellipsis}"

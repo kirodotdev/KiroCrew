@@ -238,14 +238,15 @@ def _literal_gate(
         return None
     # An elided example (``sk-...``) is read as documentation. Only a short head counts: a
     # long token cut by a log's own ellipsis is still a credential and is masked.
-    # A head that is not a clear stub (``password=hunter2...``) is a real value with its tail
-    # cut off: judge the head alone by the ordinary length gate.
+    # Only an empty head or a short clear stub is exempt. Any other elided value
+    # (``password=hunter2...``) is a real value with its tail cut off and goes through the
+    # ordinary gate below on the full value, dots included.
     if value.endswith(("...", "\u2026")):
         head = value.rstrip(".\u2026")
         is_stub = head.endswith(tuple(_ELIDED_STUB_SEPARATORS)) or (
             ascii_lower(head) in _ELIDED_VENDOR_PREFIXES
         )
-        if (is_stub and len(head) < _ELIDED_HEAD_MAX) or len(head) < LITERAL_MIN:
+        if not head or (is_stub and len(head) < _ELIDED_HEAD_MAX):
             return None
     if any(text.startswith(tag, vs) for tag in PLAN_TAGS):
         return None  # already replaced, byte for byte: redaction is a fixed point

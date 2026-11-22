@@ -196,8 +196,9 @@ def redact_mcp_error(error: object, headers: object, extra_values: Iterable[str]
 
     Two layers, so every consumer (``to_dict``, the probe cache, the probe
     endpoints) satisfies one invariant — no credential-shaped text survives to
-    serialized output. They run in this order, so a generic match never masks
-    only part of a configured value before the exact scrubber looks for it:
+    serialized output. Both layers find their spans on the original text;
+    overlapping spans are merged and written once, so a short configured value
+    cannot cut a credential:
 
     1. The configured-value scrubber below catches the exact header values and
        Authorization suffixes, including encoded spellings the generic
