@@ -345,6 +345,7 @@ async def api_cron_tools(request: web.Request) -> web.Response:
     presented_token = request.headers.get("X-Session-Token", "")
     # Read while the verified caller's tab is open; cron_add records the answer.
     caller_is_person_tab = name == "cron_add" and is_person_tab(state, actual)
+    loop = asyncio.get_running_loop()
 
     def dispatch() -> str:
         # A tool that calls back into the gateway (cron_add creating a missing
@@ -358,8 +359,8 @@ async def api_cron_tools(request: web.Request) -> web.Response:
 
             if verify_session_token(presented_token) == actual:
                 token = presented_token
-        # ContextVars are isolated by to_thread. Restore the prior value even
-        # on failure; no caller identity survives into a later request.
+        # ContextVars are isolated by the call's copied context. Restore the prior
+        # value even on failure; no caller identity survives into a later request.
         previous = current_caller()
         set_current_caller(
             CallerContext(
@@ -370,13 +371,19 @@ async def api_cron_tools(request: web.Request) -> web.Response:
                 person_tab=caller_is_person_tab,
             )
         )
+        # The chat folder a cron_add/cron_update names is checked, held and its
+        # tab moved on this route's loop, which this call reaches through here.
+        route_call = mcp_cron.set_route_call(request, loop)
         try:
             return mcp_cron._call_tool_locally(name, arguments)
         finally:
+            mcp_cron.reset_route_call(route_call)
             set_current_caller(previous)
 
+    from kiro_crew.dashboard.cron_tools_pool import run_cron_tool_call
+
     try:
-        result = await asyncio.to_thread(dispatch)
+        result = await run_cron_tool_call(dispatch)
     except Exception:
         logger.exception("Cron tool dispatch failed")
         return web.json_response(
@@ -513,6 +520,9 @@ def _refuse_mate_home_chat_folder(
     memory_store: str,
     operation: str,
     current_chat_folder_id: str = "",
+    *,
+    caller: str = "dashboard",
+    source: str = "dashboard",
 ) -> web.Response | None:
     """A 403 ``mate_home_locked`` when the job's tab could never be filed in *chat_folder_id*.
 
@@ -522,6 +532,7 @@ def _refuse_mate_home_chat_folder(
     is the folder an existing job is filed in: moving its tab out of a mate's
     home its store may not write is refused the same way. Refused here, while a
     person is present to be told, and recorded like the routes' other denials.
+    *source* labels that row, and *caller* does when no app calls (an app is always named).
     """
     if not chat_folder_move_refuses_store(
         state, current_chat_folder_id, chat_folder_id, memory_store
@@ -534,10 +545,10 @@ def _refuse_mate_home_chat_folder(
         resources += f",current_chat_folder_id={current_chat_folder_id}"
     try:
         _sel().log_api_access(
-            caller=f"app:{app}" if app else "dashboard",
+            caller=f"app:{app}" if app else caller,
             operation=operation,
             outcome="denied",
-            source="dashboard",
+            source=source,
             resources=resources,
             error="mate_home_locked",
         )

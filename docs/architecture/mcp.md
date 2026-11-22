@@ -3875,7 +3875,7 @@ a count of package modules each.
 
 `mcp_cron.py` keeps the cron server itself — argument validation, the call path, the
 caller's identity and ownership checks, the tool bodies (`_call_tool_inner`) and the
-stdio entry point — and is a mirror facade over four sibling owners, so every name
+stdio entry point — and is a mirror facade over five sibling owners, so every name
 still reads and patches as `mcp_cron.<name>`. New cron-server code goes to the owner of
 its responsibility:
 
@@ -3885,6 +3885,7 @@ its responsibility:
 | `mcp_cron_vet` | the cron gate: the governance, command and script vets, the fire-time re-vet `vet_job_at_fire_time`, the storage-time denial audit, and the folder `cron_add` names |
 | `mcp_cron_tool_list` | the tool catalogue `tools/list` returns |
 | `mcp_cron_list_render` | `cron_list`'s full, compact and JSON renderings and the run-history fold |
+| `mcp_cron_chat_folder` | the sidebar chat folder `cron_add` / `cron_update` file a job's chat in: the Schedule form's checks, folder-store hold and tab move, run on the `POST /api/crons/tools` route's loop the route marks per call |
 
 The remaining upward dependency is known: the plumbing could move to a module the
 handlers own, which would make `mcp_tools` a leaf. That is a separate change —

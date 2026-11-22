@@ -526,7 +526,7 @@ def apply_job_update(
     # Cross-field: only a persistent job has a job-wide tab to file,
     # so a request that itself names a folder for a job this update
     # leaves stateless is refused. Turning persistence off on a filed
-    # job is NOT refused: MCP/CLI ``cron_update`` exposes
+    # job is NOT refused: CLI ``cron update`` exposes
     # ``persistent_session`` without ``chat_folder_id``, so a refusal
     # there would be a dead end; the assignment below clears the
     # folder instead and reports it through the transition sink.
