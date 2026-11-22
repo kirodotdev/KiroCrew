@@ -1691,6 +1691,7 @@ else
   _data_home_note
   echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
   echo "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service (survives logout, restarts on crash)"
+  echo "  kirocrew stop               # stop it (a service starts again at the next boot or login; kirocrew service uninstall removes it)"
   echo "  kirocrew --help             # everything else"
   echo ""
   echo "Need a non-default port (e.g. 5476 is already taken)?"
