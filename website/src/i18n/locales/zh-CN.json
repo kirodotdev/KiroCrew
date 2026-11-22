@@ -21851,7 +21851,19 @@
         "setting_up_progress": "正在设置 · 第 {{current}}/{{total}} 步",
         "launching_crew": "正在启动 {{name}}",
         "ssm_start_session_denied": "这个 AWS 角色无权在这台实例上启动 SSM 会话。给它 ssm:StartSession 权限，或选一个有这个权限的 AWS 配置文件。",
-        "show_aws_error": "显示 AWS 原始报错"
+        "show_aws_error": "显示 AWS 原始报错",
+        "warm_cap": "保持加载的 Crew",
+        "warm_cap_desc": "同时保持加载的远程 Crew，最近打开的优先。自动模式保留 {{auto}} 个。",
+        "warm_cap_auto": "自动（{{n}}）· 越多切换越快，占用内存也越多",
+        "warm_cap_set": "已设为 {{n}} · 越多切换越快，占用内存也越多",
+        "warm_cap_use_auto": "使用自动",
+        "warm_cap_save_failed": "无法保存保持加载的 Crew 数量。",
+        "usage_label": "远程 Crew 占用",
+        "usage_value": "已加载 {{panes}} · 内存 {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "没有已加载的远程 Crew。",
+        "usage_shared": "与主窗口共用进程：{{n}}。它们的占用未计入。",
+        "warm_cap_load_failed": "无法读取保持加载的 Crew 数量。",
+        "usage_failed": "无法读取远程 Crew 占用。"
       },
       "webhooksPanel": {
         "inbound_webhooks": "入站 webhook",

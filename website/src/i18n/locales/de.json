@@ -22406,7 +22406,19 @@
         "setting_up_progress": "Wird eingerichtet · {{current}} von {{total}}",
         "launching_crew": "{{name}} wird gestartet",
         "ssm_start_session_denied": "Diese AWS-Rolle darf auf dieser Instanz keine SSM-Sitzung starten. Gib ihr ssm:StartSession oder wähle ein AWS-Profil, das es hat.",
-        "show_aws_error": "AWS-Fehler anzeigen"
+        "show_aws_error": "AWS-Fehler anzeigen",
+        "warm_cap": "Geladen gehaltene Crews",
+        "warm_cap_desc": "Gleichzeitig geladen gehaltene Remote-Crews, die zuletzt geöffneten zuerst. Automatisch hält {{auto}}.",
+        "warm_cap_auto": "Automatisch ({{n}}) · mehr macht das Wechseln schneller, braucht mehr Speicher",
+        "warm_cap_set": "Auf {{n}} gesetzt · mehr macht das Wechseln schneller, braucht mehr Speicher",
+        "warm_cap_use_auto": "Automatisch verwenden",
+        "warm_cap_save_failed": "Die Anzahl geladener Crews konnte nicht gespeichert werden.",
+        "usage_label": "Verbrauch der Remote-Crews",
+        "usage_value": "Geladen {{panes}} · Speicher {{mb}} MB · CPU {{cpu}} %",
+        "usage_none": "Keine Remote-Crew ist geladen.",
+        "usage_shared": "Teilen den Prozess des Hauptfensters: {{n}}. Ihr Verbrauch ist nicht mitgezählt.",
+        "warm_cap_load_failed": "Die Anzahl geladener Crews konnte nicht gelesen werden.",
+        "usage_failed": "Der Verbrauch der Remote-Crews konnte nicht gelesen werden."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Eingehende Webhooks",

@@ -274,6 +274,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'RemoteCrewPanelSetupCards.tsx': 'instances',
   'RemoteCrewPanelCustomType.tsx': 'instances',
   'RemoteCrewPanelSections.tsx': 'instances',
+  'RemoteCrewPanelResources.tsx': 'instances',
   'RemoteCrewPanelRestartBanner.tsx': 'instances',
   // Mounted below RemoteCrewPanel (SettingsPage.tsx); its on/off state is the
   // manual instances.remote-control entry.

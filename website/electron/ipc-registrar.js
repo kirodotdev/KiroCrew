@@ -26,7 +26,8 @@ const { safeFilename } = require("./download-handler");
 const { saveThemeSplash } = require("./theme-splash");
 const { createRelayCrewOpener, isEndpointId } = require("./relay-crew-open");
 const { requestRelayCrewToken } = require("./relay-crew-client");
-const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder, partitionCleared } = require("./relay-crew-window");
+const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder, partitionCleared, relayPaneProcessIds } = require("./relay-crew-window");
+const { collectPaneProcesses, summarizeUsage } = require("./remote-crew-usage");
 const { normalizeBounds, deriveScale, scaleRect } = require("./browser-view");
 const { createRelayCrewRenewal } = require("./relay-crew-renewal");
 const { createRelayCrewHandoff } = require("./relay-crew-handoff");
@@ -1078,6 +1079,30 @@ function createIpcRegistrar({
         log(`${PANE_ASSETS_PREFIX} clear-http-cache origin=${target} failed: ${e && e.message}`);
         return false;
       }
+    });
+
+    // What the remote Crews loaded in the asking window cost this machine, for
+    // Settings -> Remote Crew. Read-only, and gated like the purge above: only
+    // the local dashboard shell frames panes. `origins` are the SSH panes'
+    // loopback origins as the renderer knows them; remote-crew-usage.js
+    // filters them and walks the sender's own frames, so a renderer can only
+    // learn about frames it already holds.
+    ipcMain.handle("remote-crew:usage", async (event, origins) => {
+      await assertLocalDashboard(event, "remote-crew:usage");
+      const win = windows.windowForWebContents(event.sender);
+      const collected = collectPaneProcesses({
+        dashboard: event.sender,
+        origins,
+        backendUrl,
+        relayPids: relayPaneProcessIds(win),
+      });
+      let metrics = [];
+      try {
+        metrics = app.getAppMetrics();
+      } catch {
+        metrics = [];
+      }
+      return summarizeUsage(collected, metrics);
     });
 
     // Forward the Remote Crew pane ports a window on the launch port shows.

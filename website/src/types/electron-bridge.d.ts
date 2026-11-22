@@ -25,6 +25,16 @@ declare global {
     externalKB: number | null
   }
 
+  /** What the remote Crews loaded in this window cost (`remote-crew:usage`). */
+  interface RemoteCrewUsage {
+    /** Remote Crews loaded now, SSH and relay. */
+    panes: number
+    /** Of those, panes in the main window's own process: counted, not measured. */
+    sharedPanes: number
+    memoryMb: number
+    cpuPercent: number
+  }
+
   interface ElectronMenuSeparator {
     type: 'separator'
     index: number
@@ -113,6 +123,8 @@ declare global {
     getGlobalHotkey: () => Promise<ElectronGlobalHotkeyInfo>
     /** Evict the HTTP cache of one loopback pane origin; resolves to whether a purge ran. */
     clearPaneHttpCache?: (origin: string) => Promise<boolean>
+    /** Memory and CPU of the remote Crews loaded in this window. Absent on a remote gateway window and an older shell. */
+    remoteCrewUsage?: (origins: string[]) => Promise<RemoteCrewUsage>
     /** Copy the image drawn at a main-frame point (CSS pixels). Optional: absent on an older shell. */
     copyImageAt?: (x: number, y: number) => Promise<boolean>
   }

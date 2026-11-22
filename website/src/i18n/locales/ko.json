@@ -21851,7 +21851,19 @@
         "setting_up_progress": "설정 중 · {{total}}단계 중 {{current}}단계",
         "launching_crew": "{{name}} 시작 중",
         "ssm_start_session_denied": "이 AWS 역할은 이 인스턴스에서 SSM 세션을 시작할 수 없어요. ssm:StartSession 권한을 주거나, 이 권한이 있는 AWS 프로필을 고르세요.",
-        "show_aws_error": "AWS 오류 보기"
+        "show_aws_error": "AWS 오류 보기",
+        "warm_cap": "로드 상태로 둘 크루",
+        "warm_cap_desc": "한 번에 로드 상태로 두는 원격 크루입니다. 최근에 연 것이 먼저입니다. 자동은 {{auto}}개입니다.",
+        "warm_cap_auto": "자동({{n}}) · 많을수록 전환이 빨라지고 메모리를 더 씁니다",
+        "warm_cap_set": "{{n}}(으)로 설정됨 · 많을수록 전환이 빨라지고 메모리를 더 씁니다",
+        "warm_cap_use_auto": "자동 사용",
+        "warm_cap_save_failed": "로드 상태로 둘 크루 수를 저장하지 못했습니다.",
+        "usage_label": "원격 크루 사용량",
+        "usage_value": "로드됨 {{panes}} · 메모리 {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "로드된 원격 크루가 없습니다.",
+        "usage_shared": "기본 창과 프로세스 공유: {{n}}. 이 사용량은 포함되지 않습니다.",
+        "warm_cap_load_failed": "로드 상태로 둘 크루 수를 읽지 못했습니다.",
+        "usage_failed": "원격 크루 사용량을 읽지 못했습니다."
       },
       "webhooksPanel": {
         "inbound_webhooks": "인바운드 webhook",

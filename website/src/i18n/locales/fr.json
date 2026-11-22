@@ -22961,7 +22961,19 @@
         "setting_up_progress": "Configuration · {{current}} sur {{total}}",
         "launching_crew": "Lancement de {{name}}",
         "ssm_start_session_denied": "Ce rôle AWS n'a pas le droit d'ouvrir une session SSM sur cette instance. Donne-lui ssm:StartSession, ou choisis un profil AWS qui l'a.",
-        "show_aws_error": "Afficher l'erreur AWS"
+        "show_aws_error": "Afficher l'erreur AWS",
+        "warm_cap": "Crews gardées chargées",
+        "warm_cap_desc": "Crews distantes gardées chargées en même temps, les plus récemment ouvertes d’abord. Le mode automatique en garde {{auto}}.",
+        "warm_cap_auto": "Automatique ({{n}}) · plus il y en a, plus le changement est rapide et plus la mémoire est utilisée",
+        "warm_cap_set": "Réglé sur {{n}} · plus il y en a, plus le changement est rapide et plus la mémoire est utilisée",
+        "warm_cap_use_auto": "Utiliser le mode automatique",
+        "warm_cap_save_failed": "Impossible d’enregistrer le nombre de crews gardées chargées.",
+        "usage_label": "Consommation des crews distantes",
+        "usage_value": "Chargées {{panes}} · Mémoire {{mb}} Mo · CPU {{cpu}} %",
+        "usage_none": "Aucune crew distante n’est chargée.",
+        "usage_shared": "Partagent le processus de la fenêtre principale : {{n}}. Leur coût n’est pas compté.",
+        "warm_cap_load_failed": "Impossible de lire le nombre de crews gardées chargées.",
+        "usage_failed": "Impossible de lire la consommation des crews distantes."
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrants",

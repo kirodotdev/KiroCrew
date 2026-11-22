@@ -10005,7 +10005,19 @@
         "auto_connect": "Auto-connect crews",
         "auto_connect_desc": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it.",
         "launch_status_unavailable": "Could not refresh the setup progress. The card below shows the last state received.",
-        "copy_policy_failed": "Could not copy the policy JSON to the clipboard. Try again, or allow clipboard access for this site."
+        "copy_policy_failed": "Could not copy the policy JSON to the clipboard. Try again, or allow clipboard access for this site.",
+        "warm_cap": "Crews kept loaded",
+        "warm_cap_desc": "Remote Crews kept loaded at once, the most recently opened first. Automatic keeps {{auto}}.",
+        "warm_cap_auto": "Automatic ({{n}}) · more is faster to switch, uses more memory",
+        "warm_cap_set": "Set to {{n}} · more is faster to switch, uses more memory",
+        "warm_cap_use_auto": "Use automatic",
+        "warm_cap_save_failed": "Couldn't save how many Crews stay loaded.",
+        "usage_label": "Remote Crew usage",
+        "usage_value": "Loaded {{panes}} · Memory {{mb}} MB · CPU {{cpu}}%",
+        "usage_none": "No remote Crew is loaded.",
+        "usage_shared": "Sharing the main window's process: {{n}}. Their cost is not counted.",
+        "warm_cap_load_failed": "Couldn't read how many Crews stay loaded.",
+        "usage_failed": "Couldn't read the remote Crew usage."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Record metrics",

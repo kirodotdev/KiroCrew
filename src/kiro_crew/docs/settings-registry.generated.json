@@ -1908,6 +1908,12 @@
       "hint": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
     },
     {
+      "id": "instances.crews-kept-loaded",
+      "label": "Crews kept loaded",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=instances.crews-kept-loaded"
+    },
+    {
       "id": "instances.enable-remote-crew-management",
       "label": "Enable remote crew management",
       "tab": "instances",

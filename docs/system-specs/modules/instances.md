@@ -549,6 +549,13 @@ kirocrew config set instances.connect_timeout_secs 45
 kirocrew config set instances.mint_timeout_secs 60
 ```
 
+`instances.warm_set_cap` is also set in **Settings → Remote Crew → Settings**
+("Crews kept loaded"): a stepper for 1..20 and **Use automatic** for 0. Below
+it, in the desktop app, a read-only row shows how many remote Crews are loaded
+and their memory and CPU (`remote-crew:usage`, `website/electron/remote-crew-usage.js`).
+A pane Chromium hosts in the main window's own process is counted but not
+measured, and the row says so.
+
 Constants that are **not** user-configurable: the probe interval (10s), the
 end-to-end health-probe timeout (`DEFAULT_PROBE_HEALTH_TIMEOUT_SECS`, 4s), the
 token refresh fraction (0.8), and the stored-token probe timeout (2s).

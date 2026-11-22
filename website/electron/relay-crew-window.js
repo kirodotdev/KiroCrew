@@ -752,6 +752,11 @@ function openRelayCrewPane({ endpointId, crewUrl, relayDomain, getToken, parent,
     onChord: (cb) => { chordListeners.push(cb); },
     onThemeDark: (cb) => { themeListeners.push(cb); },
     onLoaded: (cb) => { loadedListeners.push(cb); },
+    // The page's OS process, for the Settings usage readout; 0 once gone.
+    processId: () => {
+      if (isClosed()) return 0;
+      try { return wc.isDestroyed() ? 0 : wc.getOSProcessId(); } catch { return 0; }
+    },
   };
   openPanes.set(endpointId, handle);
   Promise.resolve(wc.loadURL(`${parts.origin}/`)).catch(() => crew.log("first load failed"));
@@ -768,10 +773,23 @@ function shownRelayPane(win) {
   return null;
 }
 
+// The OS pids of the relay panes open in `win`, for the Settings usage readout.
+function relayPaneProcessIds(win) {
+  const pids = [];
+  if (!win) return pids;
+  for (const pane of openPanes.values()) {
+    if (pane.parent !== win || pane.isClosed()) continue;
+    const pid = pane.processId();
+    if (pid > 0) pids.push(pid);
+  }
+  return pids;
+}
+
 module.exports = {
   isEndpointId,
   partitionCleared,
   shownRelayPane,
+  relayPaneProcessIds,
   createTokenHolder,
   relayPartitionName,
   installRelayHeaderRule,

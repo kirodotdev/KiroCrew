@@ -550,6 +550,7 @@ const SHELL_HANDLES = [
   "relay-crew:pane-overlay",
   "relay-crew:prewarm-pane",
   "remote-crew:forward-pane-ports",
+  "remote-crew:usage",
   "tray-icon:get",
   "tray-icon:set",
   "wakatime:open-in-browser",
