@@ -1173,9 +1173,9 @@ async def _fire(
                             "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
                         },
                     )
-                elif r.stderr:
+                else:
                     # Non-zero, non-block on a non-gating event: warn only.
-                    logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[-200:])
+                    logger.warning("Hook %s (%s) failed: %s", r.hook_name, event, detail)
     except Exception as exc:
         if event == HOOK_EVENT_PRE_TOOL_USE:
             logger.warning("Hook fire error during blocking event %s: %s", event, exc)
