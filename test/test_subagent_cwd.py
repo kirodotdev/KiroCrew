@@ -17,11 +17,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew import platform_compat, sandbox_plan
-from kiro_crew.subagent import SubagentManager, validate_cwd
+from kiro_crew.subagent import SubagentInfo, SubagentManager, validate_cwd
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+# Every manager a test builds opens the task queue, so teardown closes it.
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 # validate_cwd helper
 
@@ -436,3 +437,57 @@ class TestSpawnCwd:
         assert info is not None
         assert info.done is True
         assert "memory_unavailable: config unreadable" == info.error
+
+
+class TestSpawnCwdUnderParentScratch:
+    """A cwd under the PARENT's own ``$KIROCREW_SCRATCH`` is admitted; another tree is not.
+
+    The prompt sends worktrees to ``$KIROCREW_SCRATCH`` and the child runs with
+    that tree mounted, so a reviewer pointed at one must not be refused for
+    sitting outside ``subagent_cwd_allowed_roots``.
+    """
+
+    @staticmethod
+    async def _spawn(tmp_path: Path, cwd: Path, roots: list[str]) -> SubagentInfo | None:
+        parent_tree = tmp_path / "scratch" / "parent-tree"
+        sessions = _mock_sessions()
+        sessions.parent_work_scratch_dir = MagicMock(
+            side_effect=lambda key: parent_tree if key == "dashboard:parent" else None
+        )
+        manager = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder_auto_spawn())
+        await manager.wait_taskq_ready()
+        mock_cfg = MagicMock()
+        mock_cfg.agent.spawn_min_memory_gb = 0
+        mock_cfg.agent.subagent_cwd_allowed_roots = roots
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=mock_cfg),
+        ):
+            return manager.spawn("t", cwd=str(cwd), parent_session_key="dashboard:parent")
+
+    @pytest.mark.asyncio
+    async def test_worktree_in_parent_scratch_is_admitted(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "scratch" / "parent-tree" / "kc"
+        worktree.mkdir(parents=True)
+        info = await self._spawn(tmp_path, worktree, [str(tmp_path / "workplace")])
+        assert info is not None
+        assert info.error == ""
+        assert info.cwd == os.path.realpath(str(worktree))
+
+    @pytest.mark.asyncio
+    async def test_another_sessions_scratch_stays_refused(self, tmp_path: Path) -> None:
+        (tmp_path / "scratch" / "parent-tree").mkdir(parents=True)
+        other = tmp_path / "scratch" / "other-tree" / "kc"
+        other.mkdir(parents=True)
+        info = await self._spawn(tmp_path, other, [str(tmp_path / "workplace")])
+        assert info is not None
+        assert "not under any allowed root" in info.error
+
+    @pytest.mark.asyncio
+    async def test_empty_allowlist_still_disables_cwd(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "scratch" / "parent-tree" / "kc"
+        worktree.mkdir(parents=True)
+        info = await self._spawn(tmp_path, worktree, [])
+        assert info is not None
+        assert "disabled" in info.error
