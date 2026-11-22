@@ -777,9 +777,13 @@ _warned_undecodable_env: set[str] = set()
 class EnvFileWideEncodingError(UnicodeDecodeError):
     """A ``.env`` starts with a UTF-16 or UTF-32 byte-order mark.
 
-    Readers catch exactly this to treat the file as unset. Any other decode
-    error (a BOM-less file invalid in the chosen encoding) propagates as it
-    always has, so the BOM handling cannot hide an unrelated bad file.
+    A caller that treats only a wide file as unset catches exactly this, so
+    any other decode error (a BOM-less file invalid in the chosen encoding)
+    still reaches it and the BOM handling cannot hide an unrelated bad file;
+    the in-place rewriters work this way. The three credential readers
+    (:meth:`KiroCrewConfig.load_credentials`, :func:`read_env_credentials_raw`
+    and :func:`read_env_file_credential`) catch every
+    :class:`UnicodeDecodeError` instead.
 
     ``encoding`` is the codec the mark declares (``"utf-32-le"`` and so on)
     and ``object`` holds only the mark itself, never the credentials after
@@ -938,14 +942,14 @@ def read_env_file_credential(
 
     Same line format :meth:`KiroCrewConfig.load_credentials` parses (one pair
     per line, ``#`` comments, no quotes required, last occurrence wins).
-    Returns ``""`` when the file is absent, unreadable or UTF-16/UTF-32 encoded —
-    callers treat the credential as unset rather than failing.
+    Returns ``""`` when the file is absent, unreadable or undecodable (UTF-16/
+    UTF-32, or a byte invalid in its encoding) — callers treat the credential
+    as unset rather than failing.
 
     ``definitive``, when given, receives ONE bool from this same read: True when
     the file was decoded or does not exist, so an empty answer means the key is
-    not there; False when it could not be read or is UTF-16/UTF-32, so an empty
-    answer proves nothing. Any other decode error propagates, as before, and
-    records nothing.
+    not there; False when it could not be read or decoded, so an empty answer
+    proves nothing.
 
     Blocking file IO: call via ``asyncio.to_thread`` from async paths.
     """
@@ -956,7 +960,7 @@ def read_env_file_credential(
         if definitive is not None:
             definitive.append(True)
         return ""
-    except EnvFileWideEncodingError as exc:
+    except UnicodeDecodeError as exc:
         warn_undecodable_env(ep, exc)
         if definitive is not None:
             definitive.append(False)
