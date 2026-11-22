@@ -102,9 +102,9 @@ def test_the_offer_names_publisher_and_package_from_the_install_record(records, 
         "0.9.4",
         "crew-tunnels",
         dashboard_proxy.DASHBOARD_ACCESS_SCOPE,
-        "show the dashboard page with your theme, preferences and chat list",
+        "show the dashboard page with your theme and a list of your chats",
         "stop a running chat turn",
-        "cannot read chat messages, send them, change settings, credentials, apps",
+        "cannot read chat messages, send them, read your preferences, change settings, credentials, apps",
     ):
         assert words in offer["text"]
     assert "read your dashboard and chats" not in offer["text"]

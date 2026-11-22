@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import typing
 from pathlib import Path
 
 import pytest
@@ -99,7 +100,6 @@ _EXPECTED = {
     ("GET", "/api/kiro-prerequisite"),
     ("GET", "/api/dashboard/branding"),
     ("GET", "/api/theme/boot"),
-    ("GET", "/api/ui-prefs"),
     ("GET", "/api/chat/slots"),
     ("POST", "/api/auth/refresh"),
     ("POST", "/api/auth/logout"),
@@ -139,9 +139,8 @@ def test_an_allowed_get_answers_a_plain_response_never_a_stream_or_a_file() -> N
         if method != "GET" or row.stream:
             continue
         func = inspect.unwrap(handlers[(method, canonical)])  # type: ignore[arg-type]
-        returns = inspect.signature(func).return_annotation
-        if isinstance(returns, str):  # ``from __future__ import annotations``
-            returns = eval(returns, vars(inspect.getmodule(func)), {"web": web})  # noqa: S307
+        # ``from __future__ import annotations`` stores strings; resolve them without eval().
+        returns = typing.get_type_hints(func).get("return")
         assert inspect.isclass(returns) and issubclass(
             returns, web.Response
         ), f"GET {canonical}: the handler is annotated {returns!r}, not web.Response"
@@ -219,6 +218,7 @@ _REFUSED = [
     ("POST", "/api/chat/folders/reorder"),
     ("POST", "/api/chat/manual-order"),
     ("PUT", "/api/ui-prefs"),
+    ("GET", "/api/ui-prefs"),  # names real host paths; the shell boots with defaults
     ("GET", "/api/chat/slots/{slot}"),
     ("GET", "/api/version"),
     ("GET", "/api/status"),
@@ -260,13 +260,27 @@ def test_the_prompt_and_the_card_say_what_the_rows_allow_and_nothing_more() -> N
 
     low = DASHBOARD_ACCESS_SCOPE.lower()
     # One phrase per row family, so a row added without its words fails here.
-    assert "dashboard page" in low and "chat list" in low  # the GET rows
+    assert "dashboard page" in low and "list of your chats" in low  # the GET rows
+    assert "titles" in low and "running" in low and "last changed" in low  # the list projection
     assert "stop a running chat turn" in low  # POST /api/chat/slots/{slot}/stop
     assert "its own backend" in low  # the two app rows
-    for word in ("chat messages", "settings", "credentials", "terminal", "approvals"):
+    for word in (
+        "chat messages",
+        "preferences",
+        "settings",
+        "credentials",
+        "terminal",
+        "approvals",
+    ):
         assert word in low.split("cannot", 1)[1], word
     assert "turning the app off removes this access" in low
-    for promised in ("read your chats", "read your sessions", "running agents", "interrupt"):
+    for promised in (
+        "read your chats",
+        "read your sessions",
+        "running agents",
+        "interrupt",
+        "your preferences and",
+    ):
         assert promised not in low, promised
     card = json.loads(
         (_REPO / "website" / "src" / "i18n" / "locales" / "en.manual.json").read_text("utf-8")

@@ -132,6 +132,13 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     payloads = crew_mode.list_view(
         payloads, request.query.get("crew", ""), agent=request.get("internal_auth") is True
     )
+    if request.get("via_app"):
+        # A delegated (``via_app``) token passes the owner gate but is the app's, not the
+        # owner's: it gets the list's bare shape (key, title, running, last activity) and no
+        # message, path, project, source link or work-item field. An allow-list, so a field
+        # added to the row later stays out of it until someone lists it here.
+        shown = ("key", "title", "running", "last_activity_ts")
+        payloads = [{name: p[name] for name in shown if name in p} for p in payloads]
     if include_check_status:
         # Only the OWNER's GET drives provider work. Both the visibility probe
         # and the status refresh run the operator's `gh`/`glab` credentials, so

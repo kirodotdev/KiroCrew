@@ -55,10 +55,11 @@ _DOMAIN = b"dashboard-proxy"
 #: ``delegated_scope.READ_ALLOW``; a row added there changes this text in the same commit
 #: (``test_delegated_read_allow`` pins the two together).
 DASHBOARD_ACCESS_SCOPE = (
-    "The app can show the dashboard page with your theme, preferences and chat list, and "
-    "stop a running chat turn. It can use its own backend. It cannot read chat messages, "
-    "send them, change settings, credentials, apps, the terminal or approvals. "
-    "Turning the app off removes this access."
+    "The app can show the dashboard page with your theme and a list of your chats (only "
+    "their titles, whether they are running and when they last changed), and stop a "
+    "running chat turn. It can use its own backend. It cannot read chat messages, send "
+    "them, read your preferences, change settings, credentials, apps, the terminal or "
+    "approvals. Turning the app off removes this access."
 )
 
 _RECORD_MAX_BYTES = 4096

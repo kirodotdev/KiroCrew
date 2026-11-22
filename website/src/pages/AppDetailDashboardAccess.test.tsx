@@ -29,9 +29,9 @@ const OFFER = {
   version: '0.9.4',
   text:
     'Allow tunnel 0.9.4 (registry crew-tunnels) to use this dashboard on your behalf? ' +
-    'The app can show the dashboard page with your theme, preferences and chat list, and stop a running chat turn. ' +
+    'The app can show the dashboard page with your theme and a list of your chats (only their titles, whether they are running and when they last changed), and stop a running chat turn. ' +
     'It can use its own backend. ' +
-    'It cannot read chat messages, send them, change settings, credentials, apps, the terminal or approvals.',
+    'It cannot read chat messages, send them, read your preferences, change settings, credentials, apps, the terminal or approvals.',
 }
 const OFFERED = { granted: false, offer: OFFER, platform_supported: true, needs_access: false }
 
@@ -62,7 +62,7 @@ describe('AppDetailDashboardAccess', () => {
     await waitFor(() => expect(api.grantAppDashboardAccess).toHaveBeenCalledWith('tunnel'))
     expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ body: OFFER.text }))
     expect(confirmMock.mock.calls[0][0].body).toContain('stop a running chat turn')
-    expect(confirmMock.mock.calls[0][0].body).toContain('cannot read chat messages, send them, change settings, credentials, apps, the terminal or approvals')
+    expect(confirmMock.mock.calls[0][0].body).toContain('cannot read chat messages, send them, read your preferences, change settings, credentials, apps, the terminal or approvals')
     expect(confirmMock.mock.calls[0][0].body).not.toContain('run agents as you')
     expect(await screen.findByText('Dashboard access is on for this app.')).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Restart app' }))
@@ -73,8 +73,8 @@ describe('AppDetailDashboardAccess', () => {
   it('says on the card what the access can do and that turning the app off removes it', async () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     const scope = await screen.findByTestId('dashboard-access-scope')
-    expect(scope).toHaveTextContent('show the dashboard page with your theme, preferences and chat list, and stop a running chat turn')
-    expect(scope).toHaveTextContent('cannot read chat messages, send them, change settings, credentials, apps, the terminal or approvals')
+    expect(scope).toHaveTextContent('show the dashboard page with your theme and a list of your chats (only their titles, whether they are running and when they last changed), and stop a running chat turn')
+    expect(scope).toHaveTextContent('cannot read chat messages, send them, read your preferences, change settings, credentials, apps, the terminal or approvals')
     expect(scope).not.toHaveTextContent('run agents as you')
     expect(scope).toHaveTextContent('Turning the app off removes this access.')
   })

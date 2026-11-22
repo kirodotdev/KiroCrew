@@ -488,9 +488,8 @@ async def test_an_open_stream_ends_when_the_grant_ends(state, granted, monkeypat
     async def stream(request):
         out = web.StreamResponse()
         await out.prepare(request)
-        for _ in range(200):
-            await out.write(b"frame\n")
-            await asyncio.sleep(0.05)
+        await out.write(b"frame\n")
+        await asyncio.Event().wait()  # open until the sweep cancels this request
         return out
 
     app = web.Application(middlewares=[token_auth.token_auth_middleware()])
@@ -507,7 +506,7 @@ async def test_an_open_stream_ends_when_the_grant_ends(state, granted, monkeypat
                 while await resp.content.readline():
                     pass
 
-        await asyncio.wait_for(drain(), 3)  # the stream lasts 10 s unless the grant ends it
+        await asyncio.wait_for(drain(), 3)  # the stream never ends unless the grant ends it
     assert delegated_scope._STREAMS == {}
 
 

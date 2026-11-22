@@ -443,9 +443,10 @@ Request flow:
    `PUT /api/apps/<name>/dashboard-proxy` with `{"confirm": true}`, offered only
    for an app the gateway recorded as installed from a registry, with text naming
    the registry and source and saying plainly what the access is: the app can show
-   the dashboard page with the owner's theme, preferences and chat list and stop a
-   running chat turn, it can use its own backend, and it cannot read chat messages,
-   send them, change settings, credentials, apps, the terminal or approvals (the same
+   the dashboard page with the owner's theme and a list of the chats (only their
+   titles, whether they run and when they last changed) and stop a running chat
+   turn, it can use its own backend, and it cannot read chat messages, send them,
+   read the preferences, change settings, credentials, apps, the terminal or approvals (the same
    words as the card on the app's page and the confirm,
    `dashboard_proxy.DASHBOARD_ACCESS_SCOPE`). Chat is read-only on
    purpose: a message sent through the tunnel would run an agent as the owner, and
@@ -487,7 +488,9 @@ Request flow:
    nobody listed is refused (`403 delegated_credential_refused`). Each row names its
    handler (`file:line`) and what it does at most. The rows are the page's boot
    reads (`GET /`, `/api/auth/me`, `/api/kiro-prerequisite`, `/api/dashboard/branding`,
-   `/api/theme/boot`, `/api/ui-prefs`, `/api/chat/slots`), the token's own
+   `/api/theme/boot`, and `/api/chat/slots`, which answers this token key, title,
+   running and last activity only; `/api/ui-prefs` is not a row, it names host
+   paths, and the page boots on its defaults when it answers 403), the token's own
    `POST /api/auth/refresh` and `/api/auth/logout`, `POST /api/chat/slots/<slot>/stop`
    (no body, no query), and the token's own app routes (`/apps/<name>/api/*`,
    `/app-frame-fetch/<name>/*`). No WebSocket, no SSE stream, no file read, no

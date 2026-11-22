@@ -69,9 +69,10 @@ class Row(NamedTuple):
 #: it (``test_read_allow_is_exactly_the_reviewed_set`` pins this set).
 #:
 #: The GETs are the calls the dashboard page makes to boot (``website/src``): the shell, the
-#: refresh scheduler, the first-run gate, the branding, the theme and language, the stored
-#: UI preferences and the chat list. No WebSocket and no SSE stream is listed; no chat
-#: message body is read.
+#: refresh scheduler, the first-run gate, the branding, the theme and language and the
+#: chat list (a bare projection for this token). The stored UI preferences are not listed:
+#: they name host paths, and the shell boots on its defaults when that GET answers 403. No
+#: WebSocket and no SSE stream is listed; no chat message body is read.
 READ_ALLOW: dict[tuple[str, str], Row] = {
     ("GET", "/"): Row(
         "src/kiro_crew/dashboard/handlers/core.py:228",
@@ -94,13 +95,9 @@ READ_ALLOW: dict[tuple[str, str], Row] = {
         "src/kiro_crew/dashboard/handlers/core.py:536",
         "The theme and language the page starts with (LanguageProvider.tsx); public at boot.",
     ),
-    ("GET", "/api/ui-prefs"): Row(
-        "src/kiro_crew/dashboard/handlers/ui_prefs.py:47",
-        "The stored UI preferences the page restores (uiPrefs.ts); the PUT of this path is refused.",
-    ),
     ("GET", "/api/chat/slots"): Row(
         "src/kiro_crew/dashboard/chat_api/slot_detail.py:53",
-        "The list of chats (api/client/chat.ts chatSlots); no chat message is read.",
+        "The list of chats as key, title, running and last activity only (api/client/chat.ts chatSlots).",
     ),
     ("POST", "/api/auth/refresh"): Row(
         "src/kiro_crew/dashboard/handlers/auth_refresh.py:460",
