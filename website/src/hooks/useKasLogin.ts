@@ -104,7 +104,10 @@ export function useKasLoginStatus({ enabled = true, poll }: { enabled?: boolean;
  * Every sign-in surface renders from this one hook, so the flow's state
  * machine has exactly one copy.
  */
-export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boolean } = {}) {
+export function useKasLoginFlow({
+  startInReauth = false,
+  enabled = true,
+}: { startInReauth?: boolean; enabled?: boolean } = {}) {
   const queryClient = useQueryClient()
   // The sign-in in flight, tagged by transport. `loopback` means the gateway is
   // listening on a local port for the portal's redirect; `device` means the user
@@ -137,7 +140,7 @@ export function useKasLoginFlow({ startInReauth = false }: { startInReauth?: boo
   // The login a signed-in status dropped whose cancel did not settle: the
   // gateway keeps it open, so the signed-in view says so and offers a retry.
   const [unsettledLoginId, setUnsettledLoginId] = useState<string | null>(null)
-  const statusQuery = useKasLoginStatus({ poll: STATUS_POLL_INTERVAL_MS })
+  const statusQuery = useKasLoginStatus({ enabled, poll: STATUS_POLL_INTERVAL_MS })
   // A flow that goes away (its dialog closed) with a login still pending cancels
   // it, so no unwatched poll is left to land a credential later.
   const pendingLogin = useRef<string | null>(null)

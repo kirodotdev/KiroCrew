@@ -3005,7 +3005,8 @@
       "pending_cancel_unsettled": "You’re signed in, but the sign-in you started here couldn’t be cancelled. It stays open until it times out.",
       "card_intro": "Kiro Agent and other Kiro features run as this Kiro account, whichever agent harness you use. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
       "previous_sign_in_not_removed": "Signed in, but the previous sign-in could not be removed",
-      "previous_sign_in_not_removed_body": "The new account is stored, but the one you were switching away from is still there and takes precedence. Sign out of it, then check the sign-in shown here."
+      "previous_sign_in_not_removed_body": "The new account is stored, but the one you were switching away from is still there and takes precedence. Sign out of it, then check the sign-in shown here.",
+      "skip_for_now": "Skip for now"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Agent specs missing",

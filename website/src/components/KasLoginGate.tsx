@@ -437,6 +437,7 @@ function Chooser({
   beginErrorReason,
   beginErrorReport,
   onPick,
+  onSkip,
 }: {
   busy: boolean
   beginError: string
@@ -450,6 +451,8 @@ function Chooser({
   /** The begin refusal's structured report, so the hand-off keeps it under a translated message. */
   beginErrorReport?: ErrorReport
   onPick: (provider: KasLoginProvider, extra?: KasLoginExtra) => void
+  /** Leave this screen without signing in; set only on an escapable hold. */
+  onSkip?: () => void
 }) {
   // The company-SSO choice expands an inline form (start URL + region) instead of
   // beginning immediately: the portal URL is per-company, so there is nothing to
@@ -672,6 +675,15 @@ function Chooser({
           {i18nT('components.kasLogin.browser_note')}
         </p>
       )}
+      {onSkip ? (
+        <div className="mt-4">
+          {/* Not while a begin is in flight: its answer would start a session nobody
+              watches, and a refusal would lose its notice with this screen. */}
+          <Btn type="button" disabled={busy} onClick={onSkip}>
+            {i18nT('components.kasLogin.skip_for_now')}
+          </Btn>
+        </div>
+      ) : null}
     </ViewShell>
   )
 }
@@ -1048,23 +1060,40 @@ export interface KasLoginFlowSlots {
  * (Google / GitHub / AWS Builder ID / company SSO) starts a browser
  * authorization, and on a remote gateway — where the OAuth callback cannot
  * reach the user's browser — it switches to the device-code flow and shows the
- * code to approve. Not mounted at the app root: the flow's product entry point
- * is the embedded variant on Settings → Agent Harness (`KasLoginEmbedded`,
- * rendered by `KiroSignInCard` under the harness switch); this full-screen form stays
- * available for a future app-root mount as a sibling of KiroPrerequisiteGate.
+ * code to approve. The embedded variant on Settings → Agent Harness
+ * (`KasLoginEmbedded`, rendered by `KiroSignInCard` under the harness switch) is
+ * where an existing user signs in or switches account. This full-screen form is
+ * what KiroPrerequisiteGate holds a first run behind when Kiro Crew's own engine
+ * is switched on (`hold`).
  */
 export default function KasLoginGate({
   children,
   organisationOnly = false,
+  hold = true,
+  escapable = false,
 }: {
   children?: ReactNode
   /** Offer only Company SSO: an enterprise gateway accepts no other sign-in. */
   organisationOnly?: boolean
+  /**
+   * Whether to wait for a sign-in before rendering `children`. Off, the gate
+   * renders them straight through without reading the sign-in status. A caller
+   * that may turn it on later keeps the gate mounted with it off, so the app
+   * below keeps its place in the tree instead of mounting again.
+   */
+  hold?: boolean
+  /**
+   * With the hold on, let the owner out of it without signing in, so Settings
+   * stays reachable to switch the engine off: the chooser offers "Skip for now",
+   * and a sign-in status that cannot be read at all renders `children`. Either
+   * counts as the admission. A sign-in-only gateway leaves it off.
+   */
+  escapable?: boolean
 }) {
   return (
     <ChromeContext.Provider value="gate">
       <OrganisationOnlyContext.Provider value={organisationOnly}>
-        <KasLoginFlow>{children}</KasLoginFlow>
+        <KasLoginFlow hold={hold} escapable={escapable}>{children}</KasLoginFlow>
       </OrganisationOnlyContext.Provider>
     </ChromeContext.Provider>
   )
@@ -1086,19 +1115,39 @@ export function KasLoginEmbedded(props: Required<Pick<KasLoginFlowSlots, 'render
 
 function KasLoginFlow({
   children,
+  hold = true,
+  escapable = false,
   renderPending,
   renderAuthenticated,
   renderReauthCancel,
   bare,
   startInReauth,
-}: { children?: ReactNode } & KasLoginFlowSlots) {
+}: { children?: ReactNode; hold?: boolean; escapable?: boolean } & KasLoginFlowSlots) {
   const chrome = useChrome()
-  const flow = useKasLoginFlow({ startInReauth })
+  const flow = useKasLoginFlow({ startInReauth, enabled: hold })
   const { statusQuery, status, session, pollQuery, settling, settleError } = flow
+  // The full-screen gate holds the app only until it is admitted once. A later
+  // sign-out (another tab, the CLI) must not unmount the app and the unsaved
+  // work in it; the chat's sign-in row and the Settings card carry the way back.
+  // The embedded card renders its own signed-out chooser, so it never latches.
+  const admitted = useRef(false)
+  const [skipped, setSkipped] = useState(false)
+  const gate = hold && !renderAuthenticated
+  if (gate && (statusQuery.data?.authenticated || skipped)) admitted.current = true
+  // A status that cannot be read is unknown, not signed out: the app renders, and
+  // a later read that does answer must not then take it away.
+  if (gate && escapable && statusQuery.isError && !statusQuery.data) admitted.current = true
+
+  // The two empty slots are where the signed-in view puts its notices: keeping
+  // `children` third in every pass-through keeps the app below mounted when the
+  // status resolves or the hold turns on.
+  if (!hold || (admitted.current && !statusQuery.data?.authenticated)) return <>{null}{null}{children}</>
 
   // Mirror KiroPrerequisiteGate: an unresolved check is UNKNOWN, never a locked
   // door — render the app rather than flashing a sign-in screen at every load.
-  if (statusQuery.isPending) return <>{renderPending ? renderPending() : children}</>
+  if (statusQuery.isPending) {
+    return renderPending ? <>{renderPending()}</> : <>{null}{null}{children}</>
+  }
 
   if (!status) {
     return (
@@ -1251,6 +1300,7 @@ function KasLoginFlow({
           flow.beginDeviceError ? reportForError(flow.beginDeviceError) : undefined
         }
         onPick={flow.pick}
+        onSkip={gate && escapable ? () => setSkipped(true) : undefined}
       />
       {/* Replacing a signed-in identity is reversible until a new credential
           lands: the stored one is untouched while the chooser is up. NOT while

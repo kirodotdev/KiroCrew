@@ -7923,7 +7923,8 @@
       "pending_cancel_unsettled": "已登录，但无法取消你在此处发起的登录。该登录会保持开启，直到超时。",
       "card_intro": "Kiro Agent 和其他 Kiro 功能都以这个 Kiro 账号运行，无论你使用哪个代理运行框架。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
       "previous_sign_in_not_removed": "已登录，但无法移除之前的登录",
-      "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。"
+      "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。",
+      "skip_for_now": "暂时跳过"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "复制登录命令",

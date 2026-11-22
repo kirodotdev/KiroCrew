@@ -8133,7 +8133,8 @@
       "pending_cancel_unsettled": "Angemeldet, aber die hier gestartete Anmeldung konnte nicht abgebrochen werden. Sie bleibt offen, bis sie abläuft.",
       "card_intro": "Kiro Agent und andere Kiro-Funktionen laufen mit diesem Kiro-Konto, egal welchen Agent-Harness du nutzt. Kiro CLI behält seine eigene kiro-cli-Anmeldung, daher ändert eine Anmeldung hier sie nicht.",
       "previous_sign_in_not_removed": "Angemeldet, aber die vorherige Anmeldung konnte nicht entfernt werden",
-      "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung."
+      "previous_sign_in_not_removed_body": "Das neue Konto ist gespeichert, aber das Konto, von dem du gewechselt hast, ist noch da und hat Vorrang. Melde dich dort ab und prüfe dann die hier angezeigte Anmeldung.",
+      "skip_for_now": "Vorerst überspringen"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "Anmeldebefehl kopieren",
