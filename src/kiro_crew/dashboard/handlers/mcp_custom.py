@@ -320,8 +320,10 @@ def _load_kirocrew_config_strict() -> dict | None:
 
     Returns ``{}`` when the file doesn't exist (a fresh add is fine), the
     parsed object when it's valid, and ``None`` when the file exists but
-    is malformed or unreadable.  The batch-add path must refuse to write
-    in the None case: the lenient ``_load_json_or_empty`` coerces a broken
+    is malformed.  A file that exists but cannot be read (held by another
+    program, no permission) raises its ``OSError``: it may be valid, so the
+    caller must not call it malformed.  The batch-add path must refuse to
+    write in both cases: the lenient ``_load_json_or_empty`` coerces a broken
     file to ``{}``, and the subsequent atomic write would then silently
     replace EVERY configured server with just the new batch while reporting
     success.
@@ -330,7 +332,7 @@ def _load_kirocrew_config_strict() -> dict | None:
         text = _mcp._kirocrew_mcp_json().read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
-    except (OSError, UnicodeDecodeError):
+    except UnicodeDecodeError:
         return None
     try:
         data = loads_user_json(text)
@@ -488,7 +490,17 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
         # destroy every configured server "successfully").  The read and the
         # collision scan below are blocking file IO, so like the write they
         # run in a worker thread while the lock is held.
-        data = await asyncio.to_thread(_load_kirocrew_config_strict)
+        try:
+            data = await asyncio.to_thread(_load_kirocrew_config_strict)
+        except OSError:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="mcp_custom_add",
+                outcome="error",
+                source="dashboard",
+                resources="mcp.json unreadable — write refused",
+            )
+            return _mcp._mcp_config_unreadable("the Kiro Crew mcp.json")
         if data is None:
             sel().log_api_access(
                 caller="dashboard",
