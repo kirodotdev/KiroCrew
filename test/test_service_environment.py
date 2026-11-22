@@ -21,6 +21,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
 
 from kiro_crew.service import common
 from kiro_crew.service.common import kirocrew_bin, service_environment
+from kiro_crew.testing.links import make_dir_link
 
 
 @pytest.fixture
@@ -254,7 +255,7 @@ class TestServiceEnvironment:
         real = tmp_path / "releases" / "v1"
         real.mkdir(parents=True)
         (tmp_path / "srv").mkdir()
-        (tmp_path / "srv" / "current").symlink_to(real)
+        make_dir_link(tmp_path / "srv" / "current", real)
         raw = str(tmp_path / "srv" / "current" / ".." / "data")
         monkeypatch.delenv("KIROCREW_POD", raising=False)
         monkeypatch.setenv("KIROCREW_HOME", raw)
@@ -291,7 +292,8 @@ class TestServiceEnvironment:
             patch("kiro_crew.service.linux.subprocess.run", return_value=gid),
         ):
             unit = svc_linux.render_unit()
-        assert f'Environment="KIROCREW_HOME={home}"' in unit
+        # systemd_quote doubles a Windows tmp_path's backslashes.
+        assert f"Environment={common.systemd_quote(f'KIROCREW_HOME={home}')}" in unit
 
     def test_propagates_kiro_bin_pin_only_when_set(self, monkeypatch):
         monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
