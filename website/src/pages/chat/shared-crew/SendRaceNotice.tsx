@@ -7,6 +7,7 @@
  *  that queued result, so the sender knows the winner's turn is left alone. */
 import { clearSendRaceNotice, useSendRaceNotice } from '../../../api/sendRace'
 import { principalName } from '../../../api/sharedCrewUi'
+import { Glass } from '../../../components/Glass'
 import { Btn } from '../../../components/ui'
 import { i18nT } from '../../../i18n/t'
 
@@ -14,30 +15,37 @@ export function SendRaceNotice({ sessionKey, onSendNow }: { sessionKey: string |
   const notice = useSendRaceNotice(sessionKey)
   if (!sessionKey || !notice) return null
   const name = principalName(notice.winner.principal) || i18nT('sharedCrew.unattributed')
+  // On the dock's glass at the `thick` step, like the Read aloud bar: a row with
+  // no background lets the transcript scrolling under the dock show through it.
   return (
-    <div
-      role="status"
-      className="w-full px-3 py-1 flex flex-wrap items-center gap-2 min-w-0 text-[12px] leading-5"
-      data-testid="send-race-notice"
-      data-winner-message={notice.winner.message_id}
-    >
-      <span className="text-text min-w-0 flex-1 basis-60 break-words">
-        {i18nT('sharedCrew.send_race_lost', { name })}
-      </span>
-      <Btn
-        className="ml-auto shrink-0 h-6 px-2 text-[12px]"
-        onClick={() => { clearSendRaceNotice(sessionKey); onSendNow(sessionKey) }}
-        data-testid="send-race-send-now"
+    <div className="pt-1.5">
+      <Glass
+        variant="chip"
+        thickness="thick"
+        radius={8}
+        role="status"
+        className="w-full px-3 py-1 flex flex-wrap items-center gap-2 min-w-0 text-[12px] leading-5"
+        data-testid="send-race-notice"
+        data-winner-message={notice.winner.message_id}
       >
-        {i18nT('sharedCrew.send_race_send_now', { name })}
-      </Btn>
-      <Btn
-        className="shrink-0 h-6 px-2 text-[12px]"
-        onClick={() => clearSendRaceNotice(sessionKey)}
-        data-testid="send-race-dismiss"
-      >
-        {i18nT('sharedCrew.send_race_dismiss')}
-      </Btn>
+        <span className="text-text min-w-0 flex-1 basis-60 break-words">
+          {i18nT('sharedCrew.send_race_lost', { name })}
+        </span>
+        <Btn
+          className="ml-auto shrink-0 h-6 px-2 text-[12px]"
+          onClick={() => { clearSendRaceNotice(sessionKey); onSendNow(sessionKey) }}
+          data-testid="send-race-send-now"
+        >
+          {i18nT('sharedCrew.send_race_send_now', { name })}
+        </Btn>
+        <Btn
+          className="shrink-0 h-6 px-2 text-[12px]"
+          onClick={() => clearSendRaceNotice(sessionKey)}
+          data-testid="send-race-dismiss"
+        >
+          {i18nT('sharedCrew.send_race_dismiss')}
+        </Btn>
+      </Glass>
     </div>
   )
 }

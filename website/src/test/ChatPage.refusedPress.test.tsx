@@ -17,7 +17,7 @@
  * did nothing", and the next move was pressing it again.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, act, waitFor, fireEvent, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
@@ -162,11 +162,24 @@ describe('refused presses render the notice above the composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate response' }))
 
-    const notice = await screen.findByTestId('refused-press-error', NOTICE_READY)
+    const notice = await screen.findByTestId('refused-press-error', {}, NOTICE_READY)
     expect(notice.textContent).toContain("Couldn't regenerate")
     expect(notice.textContent).toContain('A turn is already running')
     // Theme overlays and the guide panel keep clear of it, as of the composer.
     expect(notice).toHaveAttribute('data-guide-keep-clear')
+  })
+
+  it('draws the notice on the dock glass, with no box of its own', async () => {
+    regenerateSlot.mockRejectedValue(new Error('A turn is already running'))
+    await renderWith(plainTurn)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate response' }))
+
+    // The dock floats over the transcript, and a translucent tint lets the
+    // text scrolled under it show through the notice.
+    const alert = within(await screen.findByTestId('refused-press-error', {}, NOTICE_READY)).getByRole('alert')
+    expect(alert.parentElement).toHaveClass('liquid-glass', 'glass-thick', 'glass-danger')
+    expect(alert.className).not.toMatch(/\bbg-danger-subtle\b/)
   })
 
   it('a refused switch-variant shows the server reason, and dismiss clears it', async () => {
@@ -175,7 +188,7 @@ describe('refused presses render the notice above the composer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Previous version' }))
 
-    const notice = await screen.findByTestId('refused-press-error', NOTICE_READY)
+    const notice = await screen.findByTestId('refused-press-error', {}, NOTICE_READY)
     expect(notice.textContent).toContain("Couldn't switch version")
     expect(notice.textContent).toContain('stop in progress')
     expect(switchVariant).toHaveBeenCalledWith('slot-a', 0)
@@ -196,7 +209,7 @@ describe('refused presses render the notice above the composer', () => {
 
     fireEvent.click(screen.getByTestId('composer-continue'))
 
-    const notice = await screen.findByTestId('refused-press-error', NOTICE_READY)
+    const notice = await screen.findByTestId('refused-press-error', {}, NOTICE_READY)
     expect(notice.textContent).toContain("Couldn't continue")
     expect(notice.textContent).toContain('sub-agents are running')
   })
@@ -206,7 +219,7 @@ describe('refused presses render the notice above the composer', () => {
     const store = await renderWith(plainTurn)
 
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate response' }))
-    await screen.findByTestId('refused-press-error', NOTICE_READY)
+    await screen.findByTestId('refused-press-error', {}, NOTICE_READY)
 
     // The turn starting is the success signal for whatever the slot was busy
     // with — the old reason would now describe a state that passed.

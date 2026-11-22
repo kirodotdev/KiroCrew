@@ -1017,11 +1017,21 @@ function ChatInput({
         onConfirm={terminal.confirm}
         onCancel={terminal.cancelConfirmation}
       />
-      {/* No hand-off: the command draft must survive a failed terminal startup. */}
-      <ErrorNotice message={terminal.failure === 'limit' ? i18nT('components.chatInput.terminal_limit')
-        : terminal.failure === 'failed' ? i18nT('components.chatInput.terminal_failed') : undefined}
-        variant={terminal.failure === 'failed' ? 'inline' : 'block'}
-        onDismiss={terminal.dismissFailure} />
+      {/* No hand-off: the command draft must survive a failed terminal startup.
+          On the dock's glass at the `thick` step, as the Read aloud bar is: the
+          notice alone lets the transcript under the dock show through it. The
+          block one is `nested` on a danger pane; the inline one keeps a plain
+          pane, where its red text holds AA contrast. */}
+      {terminal.failure === 'limit' && (
+        <Glass variant="chip" thickness="thick" radius={8} className="glass-danger mb-1.5 px-3 pb-2.5">
+          <ErrorNotice nested message={i18nT('components.chatInput.terminal_limit')} onDismiss={terminal.dismissFailure} />
+        </Glass>
+      )}
+      {terminal.failure === 'failed' && (
+        <Glass variant="chip" thickness="thick" radius={8} className="mb-1.5 flex px-3 py-1.5">
+          <ErrorNotice message={i18nT('components.chatInput.terminal_failed')} variant="inline" onDismiss={terminal.dismissFailure} />
+        </Glass>
+      )}
       {terminal.active && (
         <div className="flex flex-col gap-1.5" role="group" aria-label={i18nT('components.chatInput.terminal_review')}>
           <div className="text-sm text-muted flex items-center gap-1.5" role="status">

@@ -59,6 +59,7 @@ import { useStableCallbackProps } from '../useStableCallbackProps'
 import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { Glass } from '../../../components/Glass'
 import { GUIDE_KEEP_CLEAR } from '../../../guide/trustRoot'
 import KiroSignInPrompt from '../../../components/KiroSignInPrompt'
 import { pinIsWithheld } from '../../../lib/model'
@@ -491,7 +492,13 @@ export default function ComposerDockView({
                   The title names the refused action. Without it the notice
                   reads as a generic error rather than "this is the answer to
                   the button you just pressed" — a first-time reader then
-                  concludes the click did nothing and presses again. */}
+                  concludes the click did nothing and presses again.
+
+                  On the dock's glass at the `thick` step, like the Read aloud
+                  bar: the notice's own translucent tint lets the transcript
+                  scrolling under the dock show through it. `nested`: the glass
+                  frames it, so it draws no box of its own; its top rule and
+                  padding are the pane's top edge. */}
               {refusedPress && (
                 <div
                   className="px-4 mb-1.5 mx-auto w-full"
@@ -499,16 +506,19 @@ export default function ComposerDockView({
                   data-testid="refused-press-error"
                   {...GUIDE_KEEP_CLEAR}
                 >
-                  <ErrorNotice
-                    title={i18nT(REFUSED_PRESS_TITLE_KEYS[refusedPress.action])}
-                    message={refusedPress.message}
-                    onDismiss={() => setRefusedPress(null)}
-                    // Hand-off on. The composer beneath holds a live draft, but it
-                    // is persisted per slot on every keystroke and on slot switch
-                    // (the setDraft effects above), and an in-chat hand-off opens
-                    // a FRESH slot without navigating away — so the draft survives.
-                    askAgent
-                  />
+                  <Glass variant="chip" thickness="thick" radius={8} className="glass-danger px-3 pb-2.5">
+                    <ErrorNotice
+                      nested
+                      title={i18nT(REFUSED_PRESS_TITLE_KEYS[refusedPress.action])}
+                      message={refusedPress.message}
+                      onDismiss={() => setRefusedPress(null)}
+                      // Hand-off on. The composer beneath holds a live draft, but it
+                      // is persisted per slot on every keystroke and on slot switch
+                      // (the setDraft effects above), and an in-chat hand-off opens
+                      // a FRESH slot without navigating away — so the draft survives.
+                      askAgent
+                    />
+                  </Glass>
                 </div>
               )}
               {showHistorySuggestions && (

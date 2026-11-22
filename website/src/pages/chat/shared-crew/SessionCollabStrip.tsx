@@ -6,6 +6,7 @@ import { useEffect } from 'react'
 import { capabilityUsable, sharedCrewPreviewOn } from '../../../api/sharedCrewUi'
 import { isPermissionRefusal } from '../../../api/apiError'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { Glass } from '../../../components/Glass'
 import {
   useSessionDecisions,
   useSessionPresence,
@@ -59,5 +60,14 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   const failed = [caps, viewer, mode, people, presence, decisions, sendState, typingLease]
     .find(query => query.isError && !isPermissionRefusal(query.error))
   if (!sessionKey || !failed) return null
-  return <ErrorNotice message={failed.error instanceof Error ? failed.error.message : i18nT('sharedCrew.session_state_failed')} variant="inline" askAgent testId="session-collab-error" />
+  // On the dock's glass at the `thick` step, like the Read aloud bar: bare text
+  // lets the transcript scrolling under the dock show through it. No hue: red
+  // text on a red-mixed pane falls below AA in some dark palettes.
+  return (
+    <div className="pt-1.5">
+      <Glass variant="chip" thickness="thick" radius={8} className="flex px-3 py-1.5">
+        <ErrorNotice message={failed.error instanceof Error ? failed.error.message : i18nT('sharedCrew.session_state_failed')} variant="inline" askAgent testId="session-collab-error" />
+      </Glass>
+    </div>
+  )
 }
