@@ -1479,10 +1479,12 @@ answer (a `dict`, or a `list` of dicts) unless the row says otherwise. No
 TypeScript client ships, so `GatewayStatus`, `CronJob` and their siblings are
 response-shape names rather than importable types.
 
-When `app_name` is set and no explicit auth is provided, the Python client uses
-the app secret the Gateway gave its backend at spawn (`KIROCREW_PROXY_SECRET`, when
-`KIROCREW_APP_NAME` names the same app). Only with a Gateway older than that does it
-fall back to `~/.kiro/crew/apps/{name}/.app_secret`. Code that runs in the Gateway
+When `app_name` is set and no explicit auth or `app_secret` is provided, the Python
+client uses the app secret the Gateway gave its backend at spawn
+(`KIROCREW_PROXY_SECRET`, when `KIROCREW_APP_NAME` names the same app). Only with a
+Gateway older than that does it fall back to `~/.kiro/crew/apps/{name}/.app_secret`.
+A self-managed app passes the secret its registration returned as `app_secret=`.
+Code that runs in the Gateway
 process, an app's `backend.hooks`, has no secret: pass `base_url=ctx.gateway_origin()`,
 `token=await ctx.app_token()` and `on_auth_expired=ctx.app_token`, and build no client
 when `ctx.gateway_origin()` returns `""` (see
@@ -2848,6 +2850,7 @@ KiroCrewClient(
     base_url="",              # default: http://localhost:{KIROCREW_PORT or 5476}
     token="",                 # optional for localhost
     app_name="",              # app-scoped storage and secret lookup
+    app_secret="",            # the app's secret, used with app_name
     timeout=30,               # request timeout seconds
     max_retries=3,            # retry count
     retry_base_delay=1.0,     # base delay for backoff
@@ -2857,8 +2860,8 @@ KiroCrewClient(
 )
 ```
 
-With `app_name` set and no `token` or `on_auth_expired`, the client takes the
-app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` is that app (a
+With `app_name` set and no `app_secret`, `token` or `on_auth_expired`, the client
+takes the app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` is that app (a
 backend the Gateway started). An older Gateway kept it at
 `$KIROCREW_HOME/apps/{name}/.app_secret`, which the client reads only as a fallback.
 In an app's hooks, which run in the Gateway process, pass `base_url=ctx.gateway_origin()`,
@@ -2867,12 +2870,18 @@ last one after a 401 or 403,
 which is how an expired token is renewed. When `ctx.gateway_origin()` returns `""`,
 build no client, because an empty `base_url` falls back to `KIROCREW_PORT` or 5476.
 
+A self-managed app passes the secret its registration returned as `app_secret=`,
+together with the Gateway's `base_url`: the default dials `KIROCREW_PORT` or 5476,
+which can be another Gateway. The client exchanges that secret for its token and
+again after a 401 or 403. `app_secret` is ignored without `app_name`. An explicit
+`on_auth_expired` still renews the token instead.
+
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
-`app_name` alone only locates the app secret; it does not authenticate during
-`__aenter__`. The client sends `token` as the session cookie, so it must be an
-app token or a session the Gateway issued: a sign-in link (`kirocrew token`) is
-refused there until it is traded for a session with one
+`app_name`, with or without `app_secret`, does not authenticate during
+`__aenter__`. The client sends `token` as the session cookie, so
+it must be an app token or a session the Gateway issued: a sign-in link
+(`kirocrew token`) is refused there until it is traded for a session with one
 `GET /api/status?token=<link>` (redirects off; keep the `mc_token_<port>`
 `Set-Cookie` value).
 
@@ -3378,7 +3387,8 @@ Security and lifecycle:
   app's folder. An app installed before this keeps working once its secret is handed over
   again: the old `.app_secret` file is never accepted, the next backend start stores a NEW
   secret and passes it here, and a self-managed app gets one in the response of its next
-  registration. A backend left running across the upgrade has no secret until it restarts.
+  registration (pass it to the Python client as `app_secret=`). A backend left running
+  across the upgrade has no secret until it restarts.
 - A backend that runs in the gateway process (`backend.hooks`, no `entryPoint`) gets no
   secret and needs none: [`ctx.app_token()`](#app-token-ctxapp_token) returns its app
   token and `ctx.gateway_origin()` the origin to call. The first load of its hooks after the upgrade stores a new secret and removes
