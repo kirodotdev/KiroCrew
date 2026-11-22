@@ -208,8 +208,6 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
         _refuse_dropped_entries(label, dropped)
         return
     if validator == "config_document":
-        import json
-
         from kiro_crew.archive_config_vetting import config_document_refusal
 
         try:
