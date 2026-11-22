@@ -3980,6 +3980,21 @@ For state published on the way to a broadcast, the frame arriving on the owner's
 the barrier — the demux snapshots before it broadcasts, so the frame proves the snapshot
 ran.
 
+**A scripted stream that ends at once races any task its events start.** The stream
+loop schedules a held peer steer's boundary flush as a TASK on a tool result
+(`deferred_steer.schedule_flush`), and that task hops to threads to warm the gate
+(`prewarm_enabled_check`) before it steers. A real model step after a tool result runs
+for seconds, so production always injects first. A script of
+`[tool_call, tool_result, complete]` ends the turn in the same few loop steps: on a
+loaded macOS runner the turn's hand-off queued the steer before the flush reached the
+client, and `test_a_tool_result_in_a_running_stream_injects_a_held_steer` failed with
+"Expected steer to have been awaited once. Awaited 0 times." on five pull requests in
+twelve hours, never on Linux or Windows. When an event starts a task and the assertion
+is about what that task does INSIDE the turn, the script's next event waits on that
+task's own signal (`await await_until(steered)` in an async generator, set by the
+mock's `side_effect`), the way a real model step outlasts it. A barrier after `_drive`
+cannot help: by then the turn is over.
+
 **A negative assertion is only as strong as the barrier in front of it.**
 `assert qa.empty() and qb.empty()` after a turn budget passes for the trivial reason if
 the demux has not read the line yet. The same pin behind the buffer-drain signal reds on
