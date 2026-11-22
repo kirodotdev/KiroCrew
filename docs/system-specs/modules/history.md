@@ -2962,7 +2962,11 @@ conversation on the same running process (`new_conversation()`). The old
 session's teardown deletes its backend record (KAS `_kiro/session/delete`;
 kiro-cli terminate plus the guarded `sessions/cli/<sid>` unlink). When the
 provider has no `new_conversation` or it raises, the key is `reset` instead,
-so the next job starts on a new process with no history. INFO names the path
+so the next job starts on a new process with no history, and once the reset
+has retired the process the ended conversation's backend record is deleted
+through the provider's `cleanup_session` (on Codex, whose live process cannot
+swap conversations, that thread's rollout, so consolidation jobs do not pile up
+in Codex chat history). A reset that raised keeps the record. INFO names the path
 taken, once per job, and the context-driven recycle does not run for this key.
 A failed turn's warning names the served model and the prompt size. A reply
 with no usable JSON object logs those two facts and the reason its attempt is
@@ -2972,7 +2976,8 @@ is free only on a backend in `ACP_BACKENDS_REPORT_USAGE` whose turn billed
 nothing; an empty reply that billed, or any empty reply from a backend outside
 that set, is charged as `empty reply`.
 Private V2 extraction retains its per-store `memory-consolidation:` session and
-cleanup path. Acquisition timing includes startup and semaphore acquisition;
+cleanup path; that cleanup deletes the session's backend record the same way
+once `remove` has retired it. Acquisition timing includes startup and semaphore acquisition;
 it is not a measurement of queue wait alone.
 
 **Row counts off the loop.** `maybe_consolidate(key)` runs on the event loop
