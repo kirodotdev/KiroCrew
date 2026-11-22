@@ -9,7 +9,7 @@ documents for the same reason.
 from __future__ import annotations
 
 import os
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from kiro_crew.members import is_single_path_component
@@ -63,7 +63,7 @@ def _dir_outside_roots(raw: str, roots: list[str]) -> bool:
             p not in (".", "..") and not p.strip(" .") for p in parts
         ):
             return True
-        if ".." not in parts and ".." not in path.split("/"):
+        if ".." not in parts and ".." not in PurePosixPath(path).parts:
             return False  # "\\/../.." is one UNC root to Windows but two climbs to POSIX
         # A backslash is a name character on POSIX and a separator on Windows, and an archive
         # can be restored on either, so each reading that is relative must stay inside a root.
