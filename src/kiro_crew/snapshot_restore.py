@@ -52,6 +52,7 @@ from kiro_crew.snapshot_components import (
     _JSON_OBJECT_LISTS,
     _LINKABLE_TREE_ROOTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_JSON_OBJECTS,
@@ -632,6 +633,8 @@ def _refuse_corrupt_source_databases(
         files are installed only where their own destination is missing.
         """
         assert mc_for_merge is not None
+        if rel in _MERGE_NEVER_INSTALLS_FILES:
+            return False  # merge never installs it, so its bundle copy cannot refuse
         if rel == "crons.json":
             return True
         if rel == "memory_index.db":

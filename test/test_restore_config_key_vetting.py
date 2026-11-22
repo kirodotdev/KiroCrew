@@ -32,10 +32,10 @@ def home(tmp_path, monkeypatch):
     return h
 
 
-def _bundle(tmp_path: Path, config: dict, name: str = "b") -> Path:
+def _bundle(tmp_path: Path, config: dict, name: str = "b", file_name: str = "config.json") -> Path:
     payload = tmp_path / "kirocrew-snapshot-20260101T000000Z"
     payload.mkdir(parents=True, exist_ok=True)
-    (payload / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (payload / file_name).write_text(json.dumps(config), encoding="utf-8")
     (payload / "MANIFEST.json").write_text(
         '{"version": 3, "components": {"config": "unresolved"}}', encoding="utf-8"
     )
@@ -45,9 +45,9 @@ def _bundle(tmp_path: Path, config: dict, name: str = "b") -> Path:
     return bundle
 
 
-def _restore(bundle: Path, extra=()):
+def _restore(bundle: Path, extra=(), *, mode: str = "replace"):
     return snap.restore_main(
-        [str(bundle), "--mode", "replace", "--force", "--components", "config", *extra]
+        [str(bundle), "--mode", mode, "--force", "--components", "config", *extra]
     )
 
 
@@ -132,6 +132,51 @@ def test_an_absolute_workspace_folder_does_not_refuse_the_restore(
     assert json.loads((home / "config.json").read_text())["workspaces"]["proj"]["dir"] == (
         workspace_dir
     )
+
+
+def test_merge_does_not_vet_or_install_an_unsafe_overlay_when_live_overlay_is_absent(
+    home, tmp_path, capsys
+):
+    bundle = _bundle(
+        tmp_path,
+        {"agents": {"../x": {}}},
+        name="unsafe-overlay-merge",
+        file_name="config.local.json",
+    )
+
+    rc = _restore(bundle, unpinnable_argv(), mode="merge")
+    out = capsys.readouterr().out
+
+    assert rc == 0, out
+    assert not (home / "config.local.json").exists()
+
+
+def test_replace_still_refuses_an_unsafe_overlay(home, tmp_path, capsys):
+    bundle = _bundle(
+        tmp_path,
+        {"agents": {"../x": {}}},
+        name="unsafe-overlay-replace",
+        file_name="config.local.json",
+    )
+
+    rc = _restore(bundle)
+    out = capsys.readouterr().out
+
+    assert rc == 1, out
+    assert "agent name" in out, out
+    assert not (home / "config.local.json").exists()
+
+
+def test_merge_still_refuses_an_unsafe_config_when_live_config_is_absent(home, tmp_path, capsys):
+    (home / "config.json").unlink()
+    bundle = _bundle(tmp_path, {"agents": {"../x": {}}}, name="unsafe-config-merge")
+
+    rc = _restore(bundle, mode="merge")
+    out = capsys.readouterr().out
+
+    assert rc == 1, out
+    assert "agent name" in out, out
+    assert not (home / "config.json").exists()
 
 
 def test_the_overlay_config_local_json_is_held_to_the_same_workspace_rule(home, tmp_path, capsys):

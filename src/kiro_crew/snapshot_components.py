@@ -415,6 +415,12 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
     }
 )
 
+#: Files a MERGE deliberately never installs from the bundle, even when this install has
+#: no copy. Kept beside the component tables so the pre-flight validator and the merge
+#: driver cannot disagree about whether one of these files can reach a live consumer.
+_MERGE_NEVER_INSTALLS_FILES: frozenset[str] = frozenset({"config.local.json"})
+
+
 #: Flat component files whose own store reader is stricter than "a JSON object". An
 #: installed `{"prefs": []}` or `{"channel_settings": []}` passes that generic check and
 #: reads back EMPTY, and a prefs document past the store's key or byte limit makes every
