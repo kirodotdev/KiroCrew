@@ -601,6 +601,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     cron_slot_creator,
     message_required_error,
     read_bounded_json,
+    require_owner_for_dashboard_caller,
     string_field_error,
 )
 from kiro_crew.dashboard.handlers.agents_harness_effort import (  # noqa: F401

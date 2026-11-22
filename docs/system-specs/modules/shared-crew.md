@@ -675,8 +675,9 @@ app's own credential mints and the relay viewer; shutdown; and a path not in
 canonical form. Each is a credential that would outlive the teammate's access, or the
 gateway process, so one table holds a teammate on any path to the boundary the relay
 holds every remote caller to. Plus a channel connection's writes
-(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, creating, changing or removing a
-connection, linking WhatsApp or Weixin), which hold the channel's token, and a cron
+(`CHANNEL_CONNECTION_WRITES`: a channel's `/config`, which creates, changes or removes
+the connection, and linking WhatsApp or Weixin), which hold the channel's token; the
+multi-agent channels under `/api/channels` hold none and stay open to a teammate; and a cron
 job's secret grants (`CRON_SECRET_GRANTS`), which hand a vault value to a job; reading
 a channel and sending through it stay open. And managing who may reach the
 Crew: `routes_invites._owner_refusal` admits only the local operator or this

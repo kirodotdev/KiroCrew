@@ -824,6 +824,8 @@ workspace is never removed.
 
 ## API Endpoints
 
+The `/api/projects` alias (list, get, rename, delete) answers only the owner and an admitted Shared Crew teammate; any other dashboard session gets 403 `owner_only`.
+
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/taskrunner` | Status with all runs, each with its `task_details` |

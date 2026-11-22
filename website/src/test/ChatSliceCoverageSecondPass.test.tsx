@@ -1898,6 +1898,30 @@ describe('chatSlice thunks', () => {
     expect(chat(store).activeSlot).toBe('fresh')
   })
 
+  it('keeps the new session uncoloured when the caller may not set a colour', async () => {
+    const refusal = Object.assign(new Error('owner authorization required'), {
+      status: 403,
+      body: JSON.stringify({ error: 'owner authorization required', code: 'owner_only' }),
+    })
+    apiMock.createChatSlot.mockResolvedValue({ key: 'fresh' })
+    apiMock.setSlotColor.mockRejectedValueOnce(refusal)
+    const store = makeStore()
+    const result = await store.dispatch(createSlot({ color_index: 4 }))
+    expect(result.meta.requestStatus).toBe('fulfilled')
+    expect(apiMock.deleteChatSlot).not.toHaveBeenCalled()
+    const created = store.getState().dashboard.slots.find(sl => sl.key === 'fresh')
+    expect(created?.color_index).toBeNull()
+  })
+
+  it('still removes the new session when the carried colour fails for another reason', async () => {
+    apiMock.createChatSlot.mockResolvedValue({ key: 'fresh' })
+    apiMock.setSlotColor.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500, body: '{}' }))
+    const store = makeStore()
+    const result = await store.dispatch(createSlot({ color_index: 4 }))
+    expect(result.meta.requestStatus).toBe('rejected')
+    expect(apiMock.deleteChatSlot).toHaveBeenCalledWith('fresh', undefined)
+  })
+
   it('clears the active view when a delete resolves for the slot still on screen', () => {
     let s = chatReducer(initial, setActiveSlot('doomed'))
     s = chatReducer(s, replaceMessages([msg({ role: 'user', content: 'stale' })]))

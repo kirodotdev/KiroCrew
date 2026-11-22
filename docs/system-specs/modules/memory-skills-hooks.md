@@ -3790,9 +3790,10 @@ record as member/store identity. Temporary skips database opening and lesson rea
 Incognito permits reads but refuses durable learned changes. A continuation retains
 its recorded mode and member; it never infers them from a provider template.
 
-The matching GET on each markdown route is a **read** path and is deliberately
-ungated — gating it would blank the Memory tab for every session the probe cannot
-recognise.
+The matching GET on each markdown route is a **read** path and deliberately skips
+the session-mode gate, since gating it would blank the Memory tab for every session the
+probe cannot recognise. It still takes the store resolver's owner-or-teammate check
+for a dashboard session.
 
 All three document GETs redact credential and unsafe-URL shapes before returning
 `content`, with `content_redacted` identifying any transformation. A transformed
@@ -3844,13 +3845,15 @@ Embedding configuration and `settings` remain installation-wide controls.
 
 | Caller sends | Store read | Gate |
 |---|---|---|
-| no `?store=` | the global store, preserving the existing dashboard default | private internal callers cannot borrow Global authority |
+| no `?store=` | the global store, preserving the existing dashboard default | owner or admitted teammate for a dashboard session; private internal callers cannot borrow Global authority |
 | `?store=default` | the global store | owner |
 | `?store=<declared silo>` | that silo | owner |
 | `?store=<undeclared or malformed>` | nothing — 404 `unknown_memory_store` | owner |
 
 Parameter presence requires the owner gate. An absent parameter selects the
-global store and still verifies private internal caller authority; an unverified `X-Session-Key`
+global store, refuses a dashboard session that is neither the owner nor an admitted
+teammate (`require_owner_for_dashboard_caller`; an App Kit token keeps its own controls),
+and still verifies private internal caller authority; an unverified `X-Session-Key`
 cannot select a named store through another session's binding. Agent context injection
 and consolidation resolve their own trusted session metadata separately from this HTTP
 contract. A present parameter explicitly selects a store and takes
@@ -3884,12 +3887,11 @@ decides whether this caller may write durable memory at all, the owner gate deci
 whether it may aim that write at a store it is not bound to. On a PUT the store is
 resolved FIRST, and that precedence is deliberate: naming another store is the
 operator's question, so a caller that may not ask it should not have its body read
-either. With no `?store=` the resolver cannot refuse at all, so such a PUT still meets
-the write gate first, unchanged. Because a refusal is audited under the route's own
+either. With no `?store=` the resolver refuses only a dashboard session that is neither
+the owner nor a teammate, so for everyone else such a PUT still meets the write gate first. Because a refusal is audited under the route's own
 operation, the READ paths carry names too (`preferences.read`, `projects.read`,
 `history.read`, `semantic.read`, `episodic.read`, `events.read`, `stats.read`,
-`carve.read`) — the GET itself stays ungated, and the name exists for the denial the
-owner gate can emit on it.
+`carve.read`), the names an owner-gate denial on a GET is audited under.
 
 The dashboard document editors enable editing and Save only after their own store-scoped
 read succeeds. A pending or failed read is not an empty document and must never become
