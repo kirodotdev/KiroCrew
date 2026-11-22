@@ -1,0 +1,2 @@
++17
+_load_operator_oauth_endpoints reads oauth_endpoints.json through user_json (one leading UTF-8 BOM dropped, a UTF-16/UTF-32 save named and skipped) and logs a bad file at WARNING once per file version, memoizing the empty result. Every failure still yields the empty set.
