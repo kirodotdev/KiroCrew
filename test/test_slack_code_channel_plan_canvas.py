@@ -106,6 +106,28 @@ async def test_plan_title_and_comments_are_redacted(env: Any) -> None:
     assert out.ok and _FAKE_KEY not in out.text and "<!channel>" not in out.text
 
 
+def _straddling(limit: int) -> str:
+    """Text whose cut at *limit* keeps only the first ~20 characters of the token."""
+    return "x " * ((limit - 1 - 20) // 2) + _FAKE_KEY + " tail"
+
+
+def test_a_secret_the_cut_falls_inside_is_redacted_not_shown_in_part() -> None:
+    quoted = _straddling(comments.MAX_QUOTE_CHARS)
+    text = _straddling(comments.MAX_COMMENT_CHARS)
+    comment = comments.Comment(token="A1", user=OWNER, text=text, quoted=quoted)
+    delivered = comments.feedback_text(OWNER, [comment])
+    read = comments.plan_canvas_text(
+        {
+            "title": _straddling(200),
+            "content": "# Plan",
+            "comments": [{"id": "A1", "user_id": OWNER, "text": text, "quoted_text": quoted}],
+        }
+    )
+    assert "Comment by" in read  # the comment is listed, so its fields are checked
+    for out in (delivered, read):
+        assert _FAKE_KEY[:8] not in out
+
+
 async def test_a_full_listing_with_older_items_dropped_carries_a_note(env: Any) -> None:
     _bind(env)
     _plan(env)
