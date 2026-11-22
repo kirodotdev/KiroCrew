@@ -11039,6 +11039,8 @@
       "kind_crewmate_dashboard_page": "仪表板页面",
       "primary_crewmate_dashboard_page": "好，帮我做页面",
       "primary_crewmate_check_ins": "开启这些定期检查",
+      "primary_crewmate_check_ins_off": "关闭这些定期检查",
+      "primary_crewmate_check_ins_save": "保存这些定期检查",
       "field_key_results": "里程碑",
       "decline_crewmate_import": "不导入",
       "note_crewmate_import": "导入时不会运行任何东西：查找信息会自己来，其他任何事之前都会先问你，定时任务以关闭状态到达，技能要等你信任这个 Bot 的工作区文件夹后才会加载。确认后，可用这张卡片上的撤销删除它。",
