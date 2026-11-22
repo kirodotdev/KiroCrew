@@ -19,7 +19,7 @@ import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
 from kiro_crew import agent_state
 from kiro_crew.acp import default_crew_servers as defaults
-from kiro_crew.acp.harness.kas import KasHarness
+from kiro_crew.acp.harness.kas import KasHarness, resolve_projected_spec
 from kiro_crew.dashboard.side_readonly_spec import OWNER_MARKER
 
 # The skill view suites' shared fixtures, bound here by name so pytest registers them.
@@ -232,6 +232,111 @@ class TestHelper:
         assert defaults.with_default_crew_servers("mine", spec) is spec
 
 
+_APP_KEY = "pinger:ping"
+_APP_ENTRY = {"command": "python3", "args": ["server.py"]}
+
+
+def _install_app(monkeypatch, *, enabled=True):
+    """``kirocrew.json`` mounting one installed app's server, as its registration writes it."""
+    installed = {"mcpServers": {_APP_KEY: {**_APP_ENTRY, "autoApprove": ["*"]}}}
+    monkeypatch.setattr(
+        "kiro_crew.agent_materialization.worker_agent._installed_default_spec", lambda: installed
+    )
+    monkeypatch.setattr(
+        "kiro_crew.agent_materialization.mcp_sources._app_owned_mcp_keys",
+        lambda: {_APP_KEY: enabled},
+    )
+
+
+def test_a_tool_search_agent_gets_the_enabled_app_s_servers(managed, monkeypatch):
+    _install_app(monkeypatch)
+    out = defaults.with_default_crew_servers("mine", {"tools": ["fs_read", "tool_search"]})
+    assert out["mcpServers"] == {
+        "kirocrew-core": _CORE,
+        "kirocrew-cron": _CRON,
+        _APP_KEY: _APP_ENTRY,
+    }
+    assert out["tools"] == [
+        "fs_read",
+        "tool_search",
+        "@kirocrew-core",
+        "@kirocrew-cron",
+        f"@{_APP_KEY}",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("spec", "enabled"),
+    [
+        ({"tools": ["fs_read"]}, True),
+        ({"tools": ["fs_read", "tool_search"], "excludedTools": [f"@{_APP_KEY}"]}, True),
+        ({"tools": ["fs_read", "tool_search"]}, False),
+        ({"tools": ["fs_read", "tool_search"], "allowedTools": ["*"]}, True),
+        ({"tools": ["fs_read", "tool_search"], "allowedTools": ["@pinger:*"]}, True),
+        ({"tools": ["fs_read", "tool_search"], "allowedTools": ["*", f"@{_APP_KEY}"]}, True),
+    ],
+    ids=[
+        "no-tool-search",
+        "excluded",
+        "app-disabled",
+        "wildcard-approval",
+        "app-glob-approval",
+        "wildcard-beside-name",
+    ],
+)
+def test_the_app_s_servers_are_not_added(managed, monkeypatch, spec, enabled):
+    _install_app(monkeypatch, enabled=enabled)
+    out = defaults.with_default_crew_servers("mine", spec)
+    assert set(out["mcpServers"]) == {"kirocrew-core", "kirocrew-cron"}
+    assert f"@{_APP_KEY}" not in out["tools"]
+
+
+def test_an_app_server_the_agent_approves_by_name_is_added(managed, monkeypatch):
+    _install_app(monkeypatch)
+    spec = {"tools": ["fs_read", "tool_search"], "allowedTools": [f"@{_APP_KEY}"]}
+    out = defaults.with_default_crew_servers("mine", spec)
+    assert out["mcpServers"][_APP_KEY] == _APP_ENTRY
+
+
+def test_the_read_only_copy_keeps_the_wildcard_rule(managed, monkeypatch):
+    """Doctor's copy judges ``allowedTools`` as a spawn does: no server a wildcard keeps out."""
+    from kiro_crew.agent_sdk import spec_with_default_crew_servers
+
+    _install_app(monkeypatch)
+    spec = {"tools": ["fs_read", "tool_search"], "allowedTools": ["*"]}
+    out = spec_with_default_crew_servers("mine", spec)
+    assert _APP_KEY not in out["mcpServers"]
+
+
+def test_an_aliased_key_is_not_copied_as_the_app_s(managed, monkeypatch):
+    """A slashed server name reaches ``kirocrew.json`` as an alias another server can hold."""
+    installed = {"mcpServers": {"playwright-mcp": _APP_ENTRY, "kirocrew-core": _APP_ENTRY}}
+    monkeypatch.setattr(
+        "kiro_crew.agent_materialization.worker_agent._installed_default_spec", lambda: installed
+    )
+    monkeypatch.setattr(
+        "kiro_crew.agent_materialization.mcp_sources._app_owned_mcp_keys",
+        lambda: {"playwright-mcp": True, "kirocrew-core": True},
+    )
+    out = defaults.with_default_crew_servers("mine", {"tools": ["fs_read", "tool_search"]})
+    assert out["mcpServers"] == {"kirocrew-core": _CORE, "kirocrew-cron": _CRON}
+    assert "@playwright-mcp" not in out["tools"]
+
+
+def test_a_crew_mode_conductor_gets_no_app_server(managed, monkeypatch):
+    """A custom agent ``agent.crew_mode_agent`` names is a conductor: Crew's own servers only."""
+    from types import SimpleNamespace
+
+    from kiro_crew import crew_mode
+
+    _install_app(monkeypatch)
+    cfg = SimpleNamespace(agent=SimpleNamespace(crew_mode_agent="mine"))
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: cfg)
+    out = defaults.with_default_crew_servers("mine", {"tools": ["fs_read", "tool_search"]})
+    assert set(out["mcpServers"]) == {"kirocrew-core", "kirocrew-cron"}
+    assert f"@{_APP_KEY}" not in out["tools"]
+
+
 # --- KAS: the projected custom agent --------------------------------------------
 
 
@@ -304,6 +409,22 @@ async def test_kas_leaves_a_project_only_agent_alone(kas_layout):
 
     assert "@kirocrew-core" not in entry["tools"]
     assert "kirocrew-core" not in (entry.get("mcpServers") or {})
+
+
+def test_kas_layers_the_checkout_s_switch_offs_on_an_added_app_server(kas_layout, monkeypatch):
+    user, checkout = kas_layout
+    _install_app(monkeypatch)
+    _write(user, "mine", {"name": "mine", "prompt": "p", "tools": ["fs_read", "tool_search"]})
+    switch_off = {"disabled": True, "disabledTools": ["x"]}
+    _write(
+        checkout / ".kiro" / "agents",
+        "mine",
+        {"name": "mine", "mcpServers": {_APP_KEY: switch_off}},
+    )
+
+    spec, _anchor = resolve_projected_spec(user, "mine", checkout)
+
+    assert spec["mcpServers"][_APP_KEY] == {**_APP_ENTRY, **switch_off}
 
 
 # --- kiro-cli: the skill view and its per-session control plane --------------------
