@@ -46,13 +46,15 @@ SESSION_MIN = 100
 # (fail closed); the stream then discards the rest of the run.
 SESSION_FAIL_CLOSED = 4096
 LITERAL_MIN = 6
-# An elided value (``sk-...``) is documentation only when its head is shorter than this
-# AND is a clear stub: it ends in a separator (``sk-``, ``ghp_``) or is a vendor prefix.
-_ELIDED_HEAD_MAX = 8
+# An elided value (``sk-...``) is documentation only when its head is empty or is a known
+# vendor stub, with at most one trailing separator (``sk-``, ``ghp_``).
 _ELIDED_STUB_SEPARATORS = "-_.:/=~"
 _ELIDED_VENDOR_PREFIXES = frozenset(
-    {"akia", "asia", "aiza", "ghp", "gho", "ghs", "ghu", "ghr", "xoxb", "xoxp", "xoxa", "glpat"}
-)
+    {
+        "akia", "asia", "aiza", "aroa", "aida", "ghp", "gho", "ghs", "ghu", "ghr",
+        "xoxb", "xoxp", "xoxa", "glpat", "github_pat", "sk", "sk-ant",
+    }
+)  # fmt: skip
 LITERAL_MAX = 512
 # An unquoted literal ends at a blank, a separator another field starts after, or a quote.
 _LITERAL_STOPS = frozenset(" \t\r\n;&,\"'")
@@ -236,17 +238,16 @@ def _literal_gate(
             return None
     if not LITERAL_MIN <= len(value) <= LITERAL_MAX or is_placeholder(value):
         return None
-    # An elided example (``sk-...``) is read as documentation. Only a short head counts: a
-    # long token cut by a log's own ellipsis is still a credential and is masked.
-    # Only an empty head or a short clear stub is exempt. Any other elided value
-    # (``password=hunter2...``) is a real value with its tail cut off and goes through the
+    # An elided example (``sk-...``) is read as documentation. A token cut by a log's own
+    # ellipsis is still a credential and is masked.
+    # Only an empty head or a known vendor stub is exempt. Any other elided value
+    # (``password=hunter-...``) is a real value with its tail cut off and goes through the
     # ordinary gate below on the full value, dots included.
     if value.endswith(("...", "\u2026")):
         head = value.rstrip(".\u2026")
-        is_stub = head.endswith(tuple(_ELIDED_STUB_SEPARATORS)) or (
-            ascii_lower(head) in _ELIDED_VENDOR_PREFIXES
-        )
-        if not head or (is_stub and len(head) < _ELIDED_HEAD_MAX):
+        if head.endswith(tuple(_ELIDED_STUB_SEPARATORS)):
+            head = head[:-1]
+        if not head or ascii_lower(head) in _ELIDED_VENDOR_PREFIXES:
             return None
     if any(text.startswith(tag, vs) for tag in PLAN_TAGS):
         return None  # already replaced, byte for byte: redaction is a fixed point
