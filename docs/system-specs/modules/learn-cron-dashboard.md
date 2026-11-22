@@ -5686,6 +5686,12 @@ still refresh while the dashboard body is blocked. On a new gateway it:
    is unwritten, the gate fires one automatic recheck POST per (backend, flip); a
    503 from it shows a non-blocking notice over the running app with a Retry, and
    only that button retries.
+6. holds a first run whose next KAS chat would fail for lack of a Kiro sign-in
+   (`chat_needs_sign_in` on `GET /api/kas-bundle`) behind the full-screen Kiro
+   sign-in, with a Skip; a returning data home is never held. While the field is
+   true the tour's last card names the Settings sign-in instead of "your agent is
+   ready". Rules: [kas-auth](kas-auth.md) → "First run offers the full-screen
+   sign-in, with a Skip".
 
 **Kiro Crew performs neither setup step, and there is no code path that could.**
 Both belong to Kiro CLI. Deleted for install: the installer download

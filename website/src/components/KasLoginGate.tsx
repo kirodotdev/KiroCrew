@@ -112,6 +112,8 @@ const ChromeContext = createContext<Chrome>('gate')
 // True when only an organisation sign-in can work (an LTS gateway with
 // nobody signed in): the chooser offers Company SSO alone, already open.
 const OrganisationOnlyContext = createContext(false)
+/** The full-screen chooser's way out without signing in, when its caller offers one. */
+const SkipContext = createContext<(() => void) | undefined>(undefined)
 
 /** Per-chrome class choices for the recurring text roles. Gate values are the
  *  strings the full-screen views always rendered; card values scale them down
@@ -455,6 +457,7 @@ function Chooser({
   // beginning immediately: the portal URL is per-company, so there is nothing to
   // start until the user supplies it.
   const organisationOnly = useContext(OrganisationOnlyContext)
+  const onSkip = useContext(SkipContext)
   const [ssoOpen, setSsoOpen] = useState(organisationOnly)
   // Seeded from the last company sign-in submitted on this browser, else the
   // gateway's default portal, so a person need not look the URL up.
@@ -672,6 +675,13 @@ function Chooser({
           {i18nT('components.kasLogin.browser_note')}
         </p>
       )}
+      {onSkip && !chrome.card ? (
+        <div className="mt-5">
+          <Btn type="button" disabled={busy} onClick={onSkip} data-testid="kas-login-skip">
+            {i18nT('components.kasLogin.skip_for_now')}
+          </Btn>
+        </div>
+      ) : null}
     </ViewShell>
   )
 }
@@ -1048,23 +1058,28 @@ export interface KasLoginFlowSlots {
  * (Google / GitHub / AWS Builder ID / company SSO) starts a browser
  * authorization, and on a remote gateway — where the OAuth callback cannot
  * reach the user's browser — it switches to the device-code flow and shows the
- * code to approve. Not mounted at the app root: the flow's product entry point
- * is the embedded variant on Settings → Agent Harness (`KasLoginEmbedded`,
- * rendered by `KiroSignInCard` under the harness switch); this full-screen form stays
- * available for a future app-root mount as a sibling of KiroPrerequisiteGate.
+ * code to approve. An existing user signs in from the embedded variant on
+ * Settings → Kiro account (`KasLoginEmbedded`, rendered by `KiroSignInCard`).
+ * This full-screen form is the LTS sign-in-only gateway's screen, and the
+ * first-run hold's (`FirstRunSignInHold`), which passes `onSkip`.
  */
 export default function KasLoginGate({
   children,
   organisationOnly = false,
+  onSkip,
 }: {
   children?: ReactNode
   /** Offer only Company SSO: an enterprise gateway accepts no other sign-in. */
   organisationOnly?: boolean
+  /** Offer a Skip under the chooser, which calls this instead of signing in. */
+  onSkip?: () => void
 }) {
   return (
     <ChromeContext.Provider value="gate">
       <OrganisationOnlyContext.Provider value={organisationOnly}>
-        <KasLoginFlow>{children}</KasLoginFlow>
+        <SkipContext.Provider value={onSkip}>
+          <KasLoginFlow>{children}</KasLoginFlow>
+        </SkipContext.Provider>
       </OrganisationOnlyContext.Provider>
     </ChromeContext.Provider>
   )
