@@ -13,7 +13,7 @@ import userEvent from '@testing-library/user-event'
 import { useRef, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-const term = vi.hoisted(() => ({ unsub: vi.fn() }))
+const term = vi.hoisted(() => ({ unsub: vi.fn(), atLimit: false }))
 const cfg = vi.hoisted(() => ({ fail: false }))
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
@@ -24,7 +24,12 @@ vi.mock('../api/client', async (importOriginal) => {
 })
 vi.mock('../utils/terminalRegistry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/terminalRegistry')>()),
-  onTerminalReady: () => term.unsub,
+  // `atLimit` stands in for the gateway refusing the shell at its ceiling.
+  onTerminalReady: (_id: string, _ready: () => void, failed?: () => void) => {
+    if (term.atLimit) failed?.()
+    return term.unsub
+  },
+  isTerminalAtLimit: () => term.atLimit,
 }))
 
 import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from '../shell/runInTerminalShellBridge'
@@ -34,7 +39,7 @@ function RunInTerminalShellBridge({ cwd, hasDock = true }: { cwd: string | undef
   return <RunInTerminalShellNotice error={error} onDismiss={dismiss} />
 }
 import { useRunInTerminalBridge, useRunInTerminalRefs } from '../hooks/useRunInTerminalBridge'
-import { __resetBottomTerminal, addTab, MAX_TERMINALS, useBottomTerminal } from '../hooks/useBottomTerminal'
+import { __resetBottomTerminal, useBottomTerminal } from '../hooks/useBottomTerminal'
 
 function client() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -65,6 +70,7 @@ describe('RunInTerminalShellBridge', () => {
     qc = client()
     results = []
     cfg.fail = false
+    term.atLimit = false
     window.addEventListener('mc:run-in-terminal-result', onResult)
   })
   afterEach(() => {
@@ -118,9 +124,9 @@ describe('RunInTerminalShellBridge', () => {
     expect(dock.result.current.tabs[1].cwd).toBe('/proj')
   })
 
-  it('answers ok:false and shows a dismiss-only notice when the terminal cap is full', async () => {
+  it('answers ok:false and shows a dismiss-only notice when the gateway is at its terminal limit', async () => {
     const user = userEvent.setup()
-    act(() => { for (let i = 0; i < MAX_TERMINALS; i++) addTab() })
+    term.atLimit = true
     render(wrap(<RunInTerminalShellBridge cwd="/proj" />))
     expect(screen.queryByTestId('run-in-terminal-error')).not.toBeInTheDocument()
     run({ code: 'ls', reqId: 'r1' })
@@ -133,7 +139,7 @@ describe('RunInTerminalShellBridge', () => {
   })
 
   it('clears the failure notice once a later run succeeds, and keeps it on another failure', () => {
-    act(() => { for (let i = 0; i < MAX_TERMINALS; i++) addTab() })
+    term.atLimit = true
     render(wrap(<RunInTerminalShellBridge cwd="/proj" />))
     run({ code: 'ls', reqId: 'r1' })
     expect(screen.getByTestId('run-in-terminal-error')).toBeInTheDocument()

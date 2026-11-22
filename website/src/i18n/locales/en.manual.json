@@ -2256,7 +2256,6 @@
       "close_tab": "Close",
       "close_tabs_to_right": "Close tabs to the right",
       "closing_terminal": "Closing terminal…",
-      "maximum_terminals": "Maximum {{n}} terminals",
       "terminal": "Terminal"
     },
     "runInTerminalConfirm": {
@@ -2450,6 +2449,7 @@
       "displaced_message": "Another window took over this terminal",
       "failed_retry": "Failed — retry",
       "invalid_cwd_message": "The terminal working directory “{{cwd}}” is unavailable. Restore it and reconnect, or use the terminal’s starting directory.",
+      "at_limit_message": "This terminal wasn't opened: the server is at its terminal limit. Close another terminal, then reconnect.",
       "wrong_machine_message": "This terminal wasn't opened: its chat runs in a remote workspace, not on this machine. Close this tab and open a new terminal.",
       "reconnect": "Reconnect",
       "reconnecting": "Reconnecting…",
@@ -12129,7 +12129,6 @@
     "placementError": "Couldn't read where this chat runs. Retry to load its files.",
     "gatewayTabWithheld": "Open this chat's files from the Files tab. This tab shows the copy on this machine, and this chat runs on {{name}}.",
     "gatewayTerminalWithheld": "This chat runs on {{name}}, but this terminal runs on this machine. Close it and open a new terminal from the Files tab.",
-    "workspaceTerminalCapped": "No workspace terminal opened: this chat already has {{max}} terminal tabs, the most it can hold. Close one, then open Terminal again.",
     "loadError": "Could not load environment settings.",
     "unavailable": "This version of {{productName}} does not support Session Environments settings. Update {{productName}} and restart it.",
     "saveError": "Could not save the settings: {{detail}}",
