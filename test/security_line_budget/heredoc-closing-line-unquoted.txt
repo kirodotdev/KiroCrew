@@ -1,4 +1,4 @@
-+452
++448
 The shared shell quote walk (_iter_shell_chars) reads here-documents as bash
 does: a << outside quotes opens a body on the next line, and the walk starts
 unquoted where the body's closing line ends, so every reader built on the walk
@@ -19,3 +19,5 @@ cased_view gives no case when the submitted command holds the text in two cases,
 a folded text's bodies are read lazily with offsets moved by bisect, and every
 importer loads shell_heredoc_lines at its first << so the MCP listing's import
 graph does not grow.
+When a tag cannot be read as bash reads it (a $( ${ $[ $$ or backtick in the
+word, or an unknown case with two lines that could close it), no body opens.

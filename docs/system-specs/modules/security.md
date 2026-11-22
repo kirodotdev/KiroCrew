@@ -1130,10 +1130,14 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   compares a body's lines with its tag case-sensitively, and the floors read a
   lower-cased copy, so `is_denied` keeps the command as submitted for its call
   (`keep_submitted_case`, in the call memo) and the reader reads the tag and the
-  closing lines on that text at the same offsets (`cased_view`). For a text whose
-  submitted case it cannot find, such as a payload with its escapes removed, or that
-  the command holds in two cases (a lower-case copy before the real one), a `<<`
-  whose tag the command spells in two cases opens no body (`case_varies`). It reads
+  closing lines on that text at the same offsets (`cased_view`; a character such as
+  `İ` that lower-cases to two is kept in its lower-cased form). When the case is
+  unknown, as for a payload with its escapes removed or a text the command holds in
+  two cases (a lower-case copy before the real one), a tag with letters opens a body
+  only when one line alone can close it: bash then either closes it there or nowhere.
+  With a second candidate line, and for a tag word that holds `$(`, `${`, `$[`, `$$`
+  or a backtick (bash keeps those in the word as written), no body opens, and the
+  quote walk reads the text as it did before heredocs were read. It reads
   raw lines only and never looks for the close of a `$(…)` or a backtick, so the quote walk
   (`shell_normalizer_walk._iter_shell_chars`) calls it, and `shell_commands.read_commands`
   takes each body's start and end from it and keeps no opener logic of its own. A `$'…'` tag is decoded with

@@ -431,6 +431,38 @@ def test_closing_line_matches_tag_case(cmd, rule):
 
 
 @pytest.mark.parametrize(
+    ("cmd", "rule"),
+    [
+        # Lower-casing ``İ`` changes the length, so the submitted case is unknown.
+        (f"echo \u0130 ; cat <<EOF\n'\neof\n'\nEOF\n{command}\n# '", rule)
+        for command, rule in (
+            (_RESTART, "self-protection-restart"),
+            (_SSH, "sandbox-escape-ssh-self"),
+        )
+    ]
+    + [
+        # A payload with its escapes decoded is not text the command was submitted in.
+        (f"bash -c \"cat <<EOF\n'\n\\x65of\n'\nEOF\n{_RESTART}\n# '\"", "self-protection-restart"),
+    ]
+    + [
+        # bash keeps ``$(x)`` and ``$$`` in the tag word as written.
+        (f"cat <<{tag}\n'\n{decoy}\n'\n{close}\n{command}\n# '", rule)
+        for tag, decoy, close in (("$(x)", "$", "$(x)"), ("$$'\\x41'", "$A", "$$\\x41"))
+        for command, rule in (
+            (_RESTART, "self-protection-restart"),
+            (_SSH, "sandbox-escape-ssh-self"),
+        )
+    ],
+)
+def test_a_tag_read_unlike_bash_opens_no_body(cmd, rule):
+    # When the reader cannot read a tag, or its case, exactly as bash does, it opens no
+    # body, and the quotes pair as they did before heredocs were read.
+    head = _floor(cmd)
+    by_pattern = {r.pattern: r.id for r in security.BUILTIN_DENIED_RULES}
+    assert by_pattern.get(head, head) == rule
+
+
+@pytest.mark.parametrize(
     "cmd",
     [
         "echo a # a comment with << in it\ncat <<'EOF'\nit's\nEOF\nls -la",

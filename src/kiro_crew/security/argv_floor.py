@@ -331,7 +331,6 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         heredoc_text_spans,
         read_commands,
     )
-    from kiro_crew.security.shell_heredoc_lines import heredoc_body_spans  # noqa: F401
     from kiro_crew.security.shell_normalizer import (  # noqa: F401
         _AMBIGUOUS_EXPANSION_RE,
         _PROCESS_SUBSTITUTION_OPENERS,

@@ -36,6 +36,8 @@ def keep_submitted_case(text: str) -> None:
 
     forms = memo.setdefault(_SUBMITTED, [])
     for form in dict.fromkeys((text, _fold_line_continuations(text))):
+        if len(form.lower()) != len(form):  # ``İ`` lower-cases to two characters
+            form = "".join(ch if len(ch.lower()) == 1 else ch.lower() for ch in form)
         if len(form.lower()) == len(form):
             forms.append((form, form.lower()))
 
@@ -45,20 +47,19 @@ def cased_view(text: str) -> "str | None":
 
     bash compares a body's lines with its tag case-sensitively, and the floors read a
     lower-cased copy of the command, so the tag and the closing lines are read on the
-    submitted text at the same offsets. Outside a gate call, and when the command had
-    no upper case, *text* is its own case. When the submitted command holds *text* in
-    two cases (a lower-case decoy before the real text), which one this is is unknown,
-    so the answer is None.
+    submitted text at the same offsets. Outside a gate call *text* is its own case.
+    Inside one the case is known only when *text* is found in the command as submitted
+    in one spelling: not when nothing was kept (lower-casing changed the length), when
+    *text* was derived (escapes decoded), or when a lower-case decoy holds it too.
     """
     memo = _CALL_VIEWS.get()
-    forms = memo.get(_SUBMITTED) if memo is not None else None
-    if memo is None or not forms or all(form == low for form, low in forms):
+    if memo is None:
         return text
     key = ("heredoc_cased_view", text)
     if key not in memo:
         seen: "set[str | None]" = set()
         word, found = text.lower(), 0
-        for form, low in forms:
+        for form, low in memo.get(_SUBMITTED, ()):
             at = low.find(word)
             while at >= 0 and len(seen) < 2 and found < 64:  # bounded: unknown past it
                 seen.add(form[at : at + len(text)])
@@ -66,29 +67,7 @@ def cased_view(text: str) -> "str | None":
             if at >= 0:
                 seen.add(None)  # stopped early: more spellings may follow
         memo[key] = seen.pop() if len(seen) == 1 else None
-    return memo[key]
-
-
-def case_varies(tag: str) -> bool:
-    """True if the command this gate call submitted spells *tag* in more than one case.
-
-    A text whose submitted case is unknown (:func:`cased_view`) is compared with its
-    tag as it stands, which is exact unless the command holds the tag in two cases.
-    """
-    memo = _CALL_VIEWS.get()
-    word = tag.lower()
-    if memo is None or not word:
-        return False
-    key = ("heredoc_case_varies", word)
-    if key not in memo:
-        spellings = set()
-        for form, low in memo.get(_SUBMITTED, ()):
-            at = low.find(word)
-            while at >= 0:
-                spellings.add(form[at : at + len(word)])
-                at = low.find(word, at + 1)
-        memo[key] = len(spellings) > 1
-    return bool(memo[key])
+    return memo[key]  # type: ignore[no-any-return]
 
 
 class HereDocSpan(NamedTuple):
@@ -269,7 +248,7 @@ def _doc_steps(
                 if view == "":
                     view = cased_view(text)
                 tag = heredoc_opener(view or text, at)
-                if tag is not None and (view is not None or not case_varies(tag[0])):
+                if tag is not None:
                     tags.append([at, *tag])
                     if frames and frames[-1][0] == "((":
                         frames[-1][2].append(tags[-1])  # a shift if the span closes first
@@ -290,7 +269,7 @@ def _doc_steps(
                         tags = [tag for tag in tags if id(tag) not in held]
                     frame[2] = []
                 if tags:
-                    resume = _line_bodies(view or text, at, tags, docs)
+                    resume = _line_bodies(view or text, at, tags, docs, view is None)
                     tags, state, ansi = [], 0, False
                     break
         else:
@@ -321,14 +300,28 @@ def _closes_as_arithmetic(text: str, at: int, frames: "list[list]") -> bool:
     return False
 
 
-def _line_bodies(text: str, line: int, tags: "list[list]", docs: "list[HereDocSpan]") -> int:
+def _line_bodies(
+    text: str, line: int, tags: "list[list]", docs: "list[HereDocSpan]", uncased: bool
+) -> int:
     """Read the bodies of *tags*, one after another from the line after *line*, into
     *docs*, and return the offset past the last closing line. A body that never
-    closes runs to the end of *text*, as in bash."""
+    closes runs to the end of *text*, as in bash.
+
+    *uncased* means *text* is lower-cased and its submitted case is unknown, so a line
+    that matches the tag may not match it in bash. A body then opens only when one line
+    alone can close it: if bash does not close it there, bash closes it nowhere and
+    runs nothing after it. With a second candidate line it opens no body, and the rest
+    is read as commands, as before heredocs were read.
+    """
     at = line + 1
     for opener, tag, strip, quoted in tags:
         start = min(at, len(text))
         found = heredoc_closing_line(text, start, tag, strip, quoted)
+        cased = tag.lower() == tag.upper()
+        if found is not None and uncased and not cased:
+            # shortcut: a second scan per body; linear unless many tags stay unique
+            if heredoc_closing_line(text, found[1] + 1, tag, strip, quoted) is not None:
+                break
         end, tail = found if found is not None else (len(text), len(text))
         docs.append(HereDocSpan(opener, line, start, end, tail, quoted))
         at = tail + 1
@@ -337,15 +330,17 @@ def _line_bodies(text: str, line: int, tags: "list[list]", docs: "list[HereDocSp
 
 def heredoc_opener(text: str, at: int) -> "tuple[str, bool, bool] | None":
     """``(tag, strip tabs, quoted)`` of the heredoc whose ``<<`` starts at *at*, else
-    None for a ``<<<`` here-string."""
+    None for a ``<<<`` here-string or a tag :func:`heredoc_tag` cannot read as bash does."""
     if not text.startswith("<<", at) or text.startswith("<<<", at) or text[at - 1 : at] == "<":
         return None
     return heredoc_tag(text, at + 2)
 
 
-def heredoc_tag(text: str, i: int) -> "tuple[str, bool, bool]":
+def heredoc_tag(text: str, i: int) -> "tuple[str, bool, bool] | None":
     """``(tag, strip tabs, quoted)`` of the heredoc whose ``<<`` ends at *i*, with its
-    quotes removed as bash removes them."""
+    quotes removed as bash removes them, else None when the tag word holds a ``$(``,
+    ``${``, ``$[``, ``$$`` or a backtick, which bash keeps in the word as written and
+    this reader does not model: such a ``<<`` opens no body."""
     strip = text.startswith("-", i)
     i += strip
     while text[i : i + 1] in (" ", "\t"):
@@ -363,6 +358,8 @@ def heredoc_tag(text: str, i: int) -> "tuple[str, bool, bool]":
                 tag.append(text[i])
             else:
                 tag.append(ch)
+        elif ch == "`" or ch == "$" and text[i + 1 : i + 2] in ("(", "{", "[", "$"):
+            return None
         elif ch in ("'", '"'):
             quote, quoted = ch, True
         elif ch == "$" and text[i + 1 : i + 2] == "'":
