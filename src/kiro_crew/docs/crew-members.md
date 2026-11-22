@@ -283,6 +283,9 @@ A Bot's **Goals** tab (Profile card) holds what it works toward:
   now. When it has nothing to move, it ends the wake without a word. Anything
   it does write during a wake shows in the chat. A wake is skipped while the chat is busy or a monitor loop is running in it. Each run uses credits. The
   Bot can suggest turning it on with a card; only you can press it.
+  A wake cannot reset the bot's conversation, because no person sent it; to keep
+  a long chat small, set **Summarize old messages at** under **Settings** on the
+  bot's **Profile** tab.
 - **Reports.** The newest weekly reports and monthly reviews, each linking its
   artifact.
   When the monthly review finds the goal or its key results no longer fit the
