@@ -90,3 +90,20 @@ def test_the_note_reaches_the_caller_before_the_stack_is_created(monkeypatch):
         on_network_fallback=events.append,
     )
     assert events == ["note", "deploy"]
+
+
+def test_no_default_vpc_and_several_others_names_the_subnet_id_field(monkeypatch):
+    # The dashboard shows this text verbatim, and it has a Subnet ID field, not a flag.
+    def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+        if "describe-vpcs" in args:
+            if "Name=isDefault,Values=true" in args:
+                return {"Vpcs": []}
+            return {"Vpcs": [{"VpcId": "vpc-a"}, {"VpcId": "vpc-b"}]}
+        return {}
+
+    monkeypatch.setattr(aws, "checked_json", fake_json)
+    with pytest.raises(aws.AWSError) as ei:
+        ec2.discover_network("dev", "us-east-1")
+    msg = str(ei.value)
+    assert "no default VPC in us-east-1, and 2 other VPCs" in msg
+    assert "the Subnet ID field, or `--subnet`" in msg
