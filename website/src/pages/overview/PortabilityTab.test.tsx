@@ -375,7 +375,7 @@ describe('PortabilityTab restoring browser settings', () => {
       .toContain('Some items could not be imported and were left unchanged: ui-prefs.')
     expect(keptLine.textContent).toBe(
       "This install kept its own agent and gateway settings, local settings overrides, and notification settings. "
-      + "To use the archive's instead, set the mode to Replace, tick the box that also replaces config.json and hooks.json, then import again. "
+      + "To use the archive's instead, set the mode to Replace, tick \"Also restore settings and hooks from the archive\", then import again. "
       + "Replace backs up this install first, then overwrites its settings with the archive's.",
     )
     // The refused item is not counted as imported.
@@ -660,10 +660,10 @@ describe('PortabilityTab replace-import confirmation', () => {
       expect(importRequest(fetchMock)).toBe('/api/portability/import?mode=replace&include_settings=1')
     })
 
-    it('states in the help line that a missing settings file is installed from the archive', async () => {
+    it('does not repeat the missing-settings-file line in the import area', async () => {
       await askToReplace()
       await confirmAction('Cancel')
-      expect(screen.getByText(i18nT('pages.overview.portabilityTab.replace_installs_missing_settings'), { selector: 'p' })).toBeTruthy()
+      expect(screen.queryByText(i18nT('pages.overview.portabilityTab.replace_installs_missing_settings'), { selector: 'p' })).toBeNull()
     })
 
     it('says in the dialog that a missing settings file is installed', async () => {
