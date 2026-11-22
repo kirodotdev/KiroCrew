@@ -22195,6 +22195,7 @@
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB Festplatte",
         "tier_price": "~{{hourly}}/Std. · ~{{monthly}}/Monat bei Dauerbetrieb (ca.)",
         "price_region_note": "Die Preise sind On-Demand-Tarife für {{priceRegion}}; in anderen Regionen können sie abweichen.",
+        "stopped_billing_note": "Eine gestoppte Crew verursacht weiter Kosten für ihre Festplatte und für jede in S3 gespeicherte Einrichtungsdatei, bis du die Crew löschst.",
         "transport_hint_fargate": "Erreicht einen AWS Fargate-Task über Session Manager. Er stellt eine Chat-API bereit, kein Dashboard.",
         "transport_hint_ssh": "Verbindet sich über SSH.",
         "transport_hint_ssm": "Verbindet sich über AWS Systems Manager Session Manager.",

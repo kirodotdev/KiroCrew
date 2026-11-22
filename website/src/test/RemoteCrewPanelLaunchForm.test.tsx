@@ -84,6 +84,7 @@ const DONE_JOB = { ...RUNNING_JOB, status: 'done' as const, instance_id: 'i-0abc
 const REGION_REQUIRED = 'Enter an AWS Region, for example us-east-1.'
 const STALE = 'The profile or Region changed since this check. Re-check to update.'
 const PRICE_NOTE = 'Prices are us-east-1 on-demand rates; other Regions may differ.'
+const STOPPED_BILLING_NOTE = 'A stopped crew still bills for its disk, and for any setup file kept in S3, until you delete the crew.'
 const RETRY = 'Fix the problem shown below, or change the Subnet ID above, then choose Launch to try again.'
 const CHECK_CREWS = 'The launch did not finish. Check My Crews before launching again.'
 const CREW_LISTED = 'The launch did not finish. Its crew is listed in My Crews, where you can fix or delete it.'
@@ -313,6 +314,13 @@ describe('RemoteCrewPanel launch form', () => {
     await u.clear(region)
     await u.type(region, 'sa-east-1')
     expect(screen.getByText(PRICE_NOTE)).toBeInTheDocument()
+  })
+
+  it('says beside the size cards what a stopped crew still bills for', async () => {
+    const u = userEvent.setup()
+    await openSetup(u)
+    const card = await screen.findByRole('button', { name: 'Development · arm64' })
+    expect(screen.getByText(STOPPED_BILLING_NOTE).parentElement).toContainElement(card)
   })
 
   it('shows a refused subnet under the Subnet ID field until the field is edited', async () => {

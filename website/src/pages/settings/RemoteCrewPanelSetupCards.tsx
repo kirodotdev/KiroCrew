@@ -304,6 +304,7 @@ export function LaunchFormCard({
 
       <div>
         <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.size')}</div>
+        <p className="text-[12px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.stopped_billing_note')}</p>
         {region.trim() !== PRICE_REGION && (
           <p className="text-[12px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.price_region_note', { priceRegion: PRICE_REGION })}</p>
         )}
