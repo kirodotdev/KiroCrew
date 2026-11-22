@@ -327,6 +327,7 @@ async def approve_tool(
         await asyncio.to_thread(
             permission_floor.audit_refusal, gate_event, reason, request_id=request_id
         )
+        await permission_floor.steer_refusal(self, gate_event, reason)
         await self.reject_tool(request_id)
         return False
     if withdraw_if is not None and withdraw_if():
