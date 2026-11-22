@@ -92,7 +92,9 @@ def test_a_key_with_dots_spaces_or_cjk_still_restores(home, tmp_path, capsys):
     assert set(json.loads((home / "config.json").read_text())["agents"]) == set(cfg["agents"])
 
 
-@pytest.mark.parametrize("workspace_dir", ["../../outside", "..\\outside"])
+@pytest.mark.parametrize(
+    "workspace_dir", ["../../outside", "..\\outside", "../a\x00b", "~\x00/../x"]
+)
 def test_a_workspace_folder_outside_the_roots_refuses_the_whole_restore(
     home, tmp_path, capsys, workspace_dir
 ):

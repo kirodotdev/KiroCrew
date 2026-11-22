@@ -62,7 +62,9 @@ def test_a_key_with_dots_spaces_or_cjk_is_kept(tmp_path):
     assert not summary.get("refused_merges")
 
 
-@pytest.mark.parametrize("workspace_dir", ["../../outside", "..\\outside"])
+@pytest.mark.parametrize(
+    "workspace_dir", ["../../outside", "..\\outside", "../a\x00b", "~\x00/../x"]
+)
 def test_a_workspace_folder_outside_the_roots_skips_the_config(tmp_path, workspace_dir):
     snap = _stage(tmp_path, {"workspaces": {"evil": {"dir": workspace_dir}}})
     vetted, summary = _vet(snap)

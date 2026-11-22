@@ -44,17 +44,23 @@ def _dir_outside_roots(raw: str, roots: list[str]) -> bool:
     """
     from kiro_crew.sandbox_plan import path_within
 
-    path = os.path.expanduser(raw)
-    windows_path = PureWindowsPath(path)  # splits on / and \
-    # A path with a root but no drive ("/x", "\x") is absolute here, whatever this OS says:
-    # joined under the data home it would still discard the data home.
-    if os.path.isabs(path) or windows_path.root or ".." not in windows_path.parts:
-        return False
-    # A backslash is a separator in an archive written on Windows, so a ``..\\x``
-    # must also climb here before symlinks are resolved for the containment check.
-    joined = os.path.join(roots[1], path).replace("\\", "/")
-    normal = os.path.normcase(os.path.realpath(joined))
-    return not any(path_within(normal, os.path.normcase(os.path.realpath(root))) for root in roots)
+    try:
+        path = os.path.expanduser(raw)
+        windows_path = PureWindowsPath(path)  # splits on / and \
+        # A path with a root but no drive ("/x", "\x") is absolute here, whatever this OS says:
+        # joined under the data home it would still discard the data home.
+        if os.path.isabs(path) or windows_path.root or ".." not in windows_path.parts:
+            return False
+        # A backslash is a separator in an archive written on Windows, so a ``..\\x``
+        # must also climb here before symlinks are resolved for the containment check.
+        joined = os.path.join(roots[1], path).replace("\\", "/")
+        normal = os.path.normcase(os.path.realpath(joined))
+        return not any(
+            path_within(normal, os.path.normcase(os.path.realpath(root))) for root in roots
+        )
+    except (ValueError, OSError):
+        # An unresolvable path cannot be shown to be inside, so refuse it.
+        return True
 
 
 def config_document_refusal(data: Any) -> str | None:
