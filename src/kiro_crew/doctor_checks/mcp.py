@@ -179,12 +179,16 @@ def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
     install. Agent names and refs come off hand-editable files, so both are
     printed through ``_safe_display``.
     """
+    from kiro_crew import crew_mode
     from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, backend_delivers_spec_servers
 
     try:
         backend = cfg.agent.acp_backend
         if not backend_delivers_spec_servers(backend):
             return
+        # A spawn gives a Crew Mode conductor no app server; this process knows a
+        # custom ``agent.crew_mode_agent`` only from the config it loaded.
+        crew_mode.remember(cfg)
         names = _authored_agent_names()
     except Exception:
         # Triage must survive an unreadable agents directory; the rows are advisory.

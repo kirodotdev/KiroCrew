@@ -811,7 +811,7 @@ same commit.
 | MCP tools the spec grants are directly callable, not deferred behind a search tool the session lacks. Unknowns: #29275 item 9. Pinned by `test/test_acp_tool_search_wire.py` | unknown | ok: kept direct | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
 | A shipped agent's declared job tools (`JOB_TOOLS`, `agent_sdk/tool_search.py`) are callable on its first turn with no load round trip, while a spec that grants the loader keeps everything else deferred. Pinned by `test/test_job_tools.py`, `test/test_acp_tool_search_wire.py` | gap: the engine exempts whole servers only (`ASBX_KIRO_MANDATORY_MCPS`), so the declaration reaches no channel | ok: on `toolSearch.neverDefer` | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
 | A builtin app MCP server that runs Crew's own code accepts calls (it carries the session identity). Unknowns: #29275 item 5. Pinned by `test/test_app_mcp_session_identity.py`, `test/test_kas_app_mcp_session_identity.py` | ok: per-session element (`acp/session_mcp.py`, `builtin_app_identity_launches`) | ok: tokened in the hoist (`acp/kas_app_identity.py`) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
-| A custom agent (one Crew did not write) still gets Crew's `kirocrew-core` and `kirocrew-cron`. Pinned by `test/test_default_crew_servers.py` | ok: applied to the skill view (`acp/default_crew_servers.py`) | ok: applied to the projected spec | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied |
+| A custom agent (one Crew did not write) still gets Crew's `kirocrew-core` and `kirocrew-cron`, and, when it grants `tool_search`, each enabled app's `<app>:<server>` servers. Pinned by `test/test_default_crew_servers.py` | ok: applied to the skill view (`acp/default_crew_servers.py`) | ok: applied to the projected spec | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied | gap: not applied |
 | A remote MCP server with a pre-registered OAuth client signs in. Pinned by `test/test_connections_backend_oauth.py` | ok: reads the `oauth` block (`ACP_BACKENDS_REMOTE_MCP_OAUTH`) | gap: no `oauth` slot on the wire; the Connections page says so | gap: the Connections page says kiro-cli only | gap: same | gap: same | gap: same | gap: same | gap: same | gap: same | gap: same | gap: same | gap: same |
 | A remote MCP server that asks for a sign-in is named in the chat, not left silent. Pinned by `test/test_opencode_mcp_sign_in_probe.py` | unknown | unknown | unknown | unknown | unknown | partial: opencode sends no sign-in frame and is not on the bridge, so after the session opens Crew sends each remote element that has no headers of its own one credential-free `initialize`; a `401` with a `Bearer` challenge notes it in the report's advisory `sign_in_suspected`, never in `awaiting_auth` or `not_ready()`, so nothing tells the turn it is unusable and the chat gets one notice that it may need a sign-in. The server stays loaded and no sign-in is offered (`acp/mcp_sign_in_probe.py`) | unknown | unknown | unknown | unknown | unknown | unknown |
 | A remote MCP sign-in is offered only for the server the user names, and stays signed in across sessions. Unknowns: #29275 item 9. Pinned by `test/test_kas_mcp_sign_in.py`, `test/test_kas_mcp_secret_storage.py`, `test/test_chat_runner_mcp_sign_in_ask.py` | unknown | ok: host-auth callback (`ACP_BACKENDS_HOST_AUTH_CALLBACK`) and a stored-grant vault | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
@@ -862,7 +862,12 @@ edit.
   [harness-parity.md](harness-parity.md).
 - A user-level custom agent (a spec Crew did not write) gets `kirocrew-core` and
   `kirocrew-cron` added to the spec `resolve_projected_spec` hands the projection,
-  by `acp/default_crew_servers.with_default_crew_servers`. kiro-cli's skill view
+  by `acp/default_crew_servers.with_default_crew_servers`, plus, when the spec grants
+  `tool_search`, each enabled installed app's `<app>:<server>` entry in `kirocrew.json`
+  without its `autoApprove` (a server whose name has a `/` is keyed by an alias another
+  server can hold, and is left out; so is one a wildcard in the spec's own
+  `allowedTools` would approve unasked; a Crew Mode conductor, `crew_mode.conductor_agents`,
+  gets no app server). kiro-cli's skill view
   preparation calls the same helper, so the two backends add the same servers
   under the same opt-outs; the rules are in
   [agent-spec-fields](../../../src/kiro_crew/docs/agent-spec-fields.md). On KAS the
@@ -872,6 +877,9 @@ edit.
   of an added server, and the custom-agent job tools (`CUSTOM_AGENT_JOB_TOOLS`:
   `spawn_run`, `spawn_sub_agents`, `spawn_status`, `mcp_server_wait`) stay direct,
   the job tools also on a spec that grants the loader (`job_tool_ids(..., custom=True)`).
+  Crew never puts an app server's tools on `neverDefer`: app servers are added only
+  to a spec that grants the loader, where Crew sends only the job tools (all
+  `kirocrew-core`'s), and nothing when the operator set a never-defer list.
 
 Switching backends is a config write plus a restart, and affects only new
 sessions; `restart` reaps the prior runtime process, and `kirocrew doctor` reports
