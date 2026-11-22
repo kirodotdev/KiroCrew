@@ -759,7 +759,7 @@ export function MembersPageProfileCard({
       schedulesError={schedulesCountQuery.isError}
       nowTs={nowTs}
       onOpenSchedule={() => { const destination = '/schedule'; leave(() => navigate(destination), destination) }}
-      onOpenScheduleJob={(id) => { const destination = `/schedule?job=${encodeURIComponent(id)}`; leave(() => navigate(destination), destination) }}
+      onOpenScheduleJob={(id, tab) => { const destination = `/schedule?job=${encodeURIComponent(id)}${tab ? `&tab=${tab}` : ''}`; leave(() => navigate(destination), destination) }}
       newScheduleBody={schedulesBody}
       heartbeatBody={activeSlug && activeMemberName ? <CrewHeartbeatRow slug={activeSlug} member={activeMemberName} onBusyChange={onHeartbeatBusyChange} /> : null}
       heartbeatOn={heartbeatOn}
