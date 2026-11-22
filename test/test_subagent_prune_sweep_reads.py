@@ -18,7 +18,7 @@ import kiro_crew.subagent_persistence_layout as layout
 
 _AGENTS = 3
 # A provider the sweep has no cleanup route for, so its "cannot reclaim yet" is remembered.
-_NO_ROUTE = "kas"
+_NO_ROUTE = "opencode"
 
 
 def _seed_prunable(agent_id: str, *, died: float = 1, provider: str = "acp") -> None:
