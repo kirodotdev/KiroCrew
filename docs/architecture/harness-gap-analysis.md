@@ -33,7 +33,7 @@ Rank weighs harnesses fixed and user impact against size; ties go to the fix tha
 | 11 | R-MCP-8 | claude, codex, opencode, goose, copilot, deepseek | S | reuse the notice at `dashboard/chat_turn/turn_spec_hooks.py` for every harness outside `REMOTE_MCP_OAUTH` | no | no open PR | low value: a dropped `oauth` block is silent |
 | 12 | R-MCP-2 | copilot | M | member dispatch mount | yes | no open PR | copilot cannot host member chats |
 | 13 | R-STR-1 | copilot, deepseek | M | new captures | yes | no open PR | no mid-turn steer |
-| 14 | R-LAU-5 | goose, deepseek | S | add `PINNED_FIXTURE_ADAPTERS` rows | lane pin | no open PR | indirect: fixture drift goes unseen |
+| 14 | R-LAU-5 | deepseek | M | name the dsh release in the capture header, re-capture, then add a `PINNED_FIXTURE_ADAPTERS` row | lane pin | no open PR | indirect: fixture drift goes unseen |
 | 15 | R-LIFE-5 | claude, codex, opencode, goose, pi, copilot, deepseek | M each | new reader per session store | yes | no open PR | low value; Send session carries the transcript only, by design today |
 
 The largest ❓ clusters, where one install per harness clears many cells at once: R-LAU-8 (9 harnesses, #34147 open), R-MCP-10 (8), R-MCP-14 (8), R-ERR-5 (8), R-LAU-11 (7), R-SPEC-13 (7), R-ROW-1 (7), R-MCP-5 (7), R-MCP-7 (7).
@@ -47,11 +47,11 @@ The largest ❓ clusters, where one install per harness clears many cells at onc
 | claude | 45 | 7 | 13 | 8 | 45/65 (69%) |
 | codex | 44 | 8 | 12 | 9 | 44/64 (69%) |
 | opencode | 32 | 9 | 21 | 11 | 32/62 (52%) |
-| goose | 36 | 8 | 18 | 11 | 36/62 (58%) |
+| goose | 37 | 7 | 18 | 11 | 37/62 (60%) |
 | pi | 31 | 8 | 21 | 13 | 31/60 (52%) |
 | copilot | 28 | 13 | 18 | 14 | 28/59 (47%) |
 | deepseek | 30 | 9 | 19 | 15 | 30/58 (52%) |
-| all 9 | 377 | 62 | 130 | 88 | 73 rows × 9 = 657 cells |
+| all 9 | 378 | 61 | 130 | 88 | 73 rows × 9 = 657 cells |
 
 Counts cover the 73 rows shown in the matrix. The 10 rows marked 🔒 are left out of the counts.
 
@@ -65,7 +65,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-LAU-2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `test_acp_launch_goldens.py` |
 | R-LAU-3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | range table `acp/client_turn_control.py` (goose 1.50.x, codex-acp 2.x, claude-agent-acp 0.94.x, pi-acp 0.0.34, dsh 0.2.x read from its npm manifest because dsh-acp reports 0.0.1, kiro-cli 2.27.0 to 3.x, held to the kiro and KAS captures by `test_real_adapter_fixture_pins.py`; a KAS relay is read by the kiro-cli it runs under, the bundle is pinned); opencode major `acp/harness/opencode.py`; copilot exact pin `acp/client_copilot.py`, `agent_sdk/backends_launch.py` |
 | R-LAU-4 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `agent_sdk/backend_install.py` probe per harness |
-| R-LAU-5 | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | `test/test_real_adapter_fixture_pins.py` pins codex, opencode, claude, pi, copilot; kiro/KAS floor tests in the same file |
+| R-LAU-5 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | `test/test_real_adapter_fixture_pins.py` pins codex, opencode, claude, pi, copilot, goose; kiro/KAS floor tests in the same file |
 | R-LAU-6 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | direct client `acp/client_start.py` (initialize OSError/AcpError with stderr); runtime `acp/runtime_liveness.py` (#30533); doctor (#27562) |
 | R-LAU-7 | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | codex probe `acp/harness/codex.py` (`kill_popen_tree`); deepseek `acp/harness/deepseek.py` (`start_new_session`); session process group `acp/launch.py` |
 | R-LAU-8 | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | ❓ | no refusal path on main |
@@ -212,11 +212,10 @@ Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-AUTH-2, R-AUTH-3, R-SPEC-6, R-
 
 ### goose
 
-✅ 36, ❌ 8, ❓ 18, ➖ 11.
+✅ 37, ❌ 7, ❓ 18, ➖ 11.
 
 | Req | Size | Where | Reuse or new design | Install to verify | User impact | Owner |
 |---|---|---|---|---|---|---|
-| R-LAU-5 | S | absent from `PINNED_FIXTURE_ADAPTERS` (`test_real_adapter_fixture_pins.py`) | reuse: add a row | yes (lane pin) | indirect: fixture drift unseen | no open PR |
 | R-LAU-9 | S | `acp/launch.py` runs `retrying_spawn_factory` only when set; `acp/client_spawn_env.py` builds `LaunchTools` without it, so `is_windows_spawn_blocked` (`acp/runtime_spawn_launch.py`) never runs on the direct client | reuse KAS fix: pass `retrying_spawn_factory` or classify in `launch.py` | no (Windows host to confirm) | Windows AppLocker/EDR block shown as a transport error | no open PR |
 | R-LAU-12 | S | `dashboard/openai_compat.py` calls `reject_if_kiro_unverified` for every `/v1/chat/completions`, whatever harness the slot runs | reuse `rerun_signs_in_via_kiro_cli` (`kiro_readiness.py`) | no | OpenAI-compatible endpoint refused when kiro-cli is signed out on a host whose default harness is not kiro | no open PR |
 | R-SPEC-7 | S | shared `_load_agent_prompt` `context_assembly/agent_spec.py`: `data.get('prompt')` only, `expanduser()` only, returns `''` on a bad file | reuse KAS reader `acp/kas_prompt.py` | no | a kiro-cli agent with `systemPrompt` or `$HOME` in `file://` runs with no persona | no open PR |
@@ -272,7 +271,7 @@ Unknown (❓, not measured): R-LAU-8, R-LAU-11, R-SPEC-6, R-SPEC-13, R-MCP-5, R-
 
 | Req | Size | Where | Reuse or new design | Install to verify | User impact | Owner |
 |---|---|---|---|---|---|---|
-| R-LAU-5 | S | absent from `PINNED_FIXTURE_ADAPTERS` | reuse: add a row | yes (lane pin) | indirect | no open PR |
+| R-LAU-5 | M | absent from `PINNED_FIXTURE_ADAPTERS`: dsh-acp answers `initialize` as 0.0.1 on every release, so a capture names no dsh release to hold to the pin | new: the dsh release in the capture header, then re-capture | yes (lane pin) | indirect | no open PR |
 | R-LAU-9 | S | `acp/launch.py` runs `retrying_spawn_factory` only when set; `acp/client_spawn_env.py` builds `LaunchTools` without it, so `is_windows_spawn_blocked` (`acp/runtime_spawn_launch.py`) never runs on the direct client | reuse KAS fix: pass `retrying_spawn_factory` or classify in `launch.py` | no (Windows host to confirm) | Windows AppLocker/EDR block shown as a transport error | no open PR |
 | R-LAU-12 | S | `dashboard/openai_compat.py` calls `reject_if_kiro_unverified` for every `/v1/chat/completions`, whatever harness the slot runs | reuse `rerun_signs_in_via_kiro_cli` (`kiro_readiness.py`) | no | OpenAI-compatible endpoint refused when kiro-cli is signed out on a host whose default harness is not kiro | no open PR |
 | R-SPEC-7 | S | shared `_load_agent_prompt` `context_assembly/agent_spec.py`: `data.get('prompt')` only, `expanduser()` only, returns `''` on a bad file | reuse KAS reader `acp/kas_prompt.py` | no | a kiro-cli agent with `systemPrompt` or `$HOME` in `file://` runs with no persona | no open PR |
