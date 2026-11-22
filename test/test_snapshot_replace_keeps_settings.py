@@ -72,9 +72,10 @@ def test_replace_without_the_pick_leaves_the_live_documents_byte_for_byte(home, 
     for name in SETTINGS:
         assert (home / name).read_bytes() == before[name], name
     assert (home / "notifications.jsonl").is_file(), "the rest of Replace still restores"
-    assert "Kept your live" in out, out
+    assert "keeps this install's live" in out, "the notice before the restore stays"
+    assert "Kept your live" not in out, "no second notice after the restore"
     for name in SETTINGS:
-        assert name in out, out
+        assert out.count(name) == 1, (name, out)
     assert SECOND_LINE not in out, "the archive warning belongs to the pick"
 
 

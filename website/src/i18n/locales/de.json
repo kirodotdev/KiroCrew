@@ -17899,7 +17899,7 @@
         "import_templates_missing": "Einige Crews nutzen eine Agent-Vorlage, die es auf diesem Rechner nicht gibt (Crew → Vorlage): {{crews}}. Kopiere die fehlenden Vorlagen nach ~/.kiro/agents, bevor du diese Crews nutzt.",
         "import_items_refused": "Einige Elemente konnten nicht importiert werden und blieben unverändert: {{names}}.",
         "import_settings_kept": "Diese Installation hat ihre eigenen {{files}} behalten. Um stattdessen die aus dem Archiv zu verwenden, stelle den Modus auf „Ersetzen“, setze das Häkchen, das auch config.json und hooks.json ersetzt, und importiere erneut. „Ersetzen“ sichert diese Installation zuerst und überschreibt dann ihre Einstellungen mit denen aus dem Archiv.",
-        "import_include_settings": "Auch config.json und hooks.json ersetzen",
+        "import_include_settings": "Auch config.json, config.local.json und hooks.json ersetzen",
         "replace_keeps_settings": "„Ersetzen“ behält die config.json, config.local.json und hooks.json dieser Installation. Um sie mit denen aus dem Archiv zu überschreiben, setze das Häkchen im Importbereich.",
         "replace_overwrites_settings": "„Ersetzen“ überschreibt config.json, config.local.json und hooks.json mit denen aus dem Archiv. Sie gelten innerhalb von Sekunden für das laufende Gateway; nur agent.approval_mode, agent.jail und agent.dangerously_skip_permissions brauchen einen Neustart. Wiederhergestellte Hooks und Cron-Befehle kommen deaktiviert oder pausiert zurück.",
         "replace_settings_foreign_archive": "Dieses Archiv stammt möglicherweise nicht von dieser Installation. Seine Konfiguration kann Sandbox-, Genehmigungs- und Kanaleinstellungen ändern.",

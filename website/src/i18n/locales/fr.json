@@ -18366,7 +18366,7 @@
         "import_templates_missing": "Certaines équipes utilisent un modèle d'agent absent de cette machine (équipe → modèle) : {{crews}}. Copie les modèles manquants dans ~/.kiro/agents avant d'utiliser ces équipes.",
         "import_items_refused": "Certains éléments n'ont pas pu être importés et sont restés inchangés : {{names}}.",
         "import_settings_kept": "Cette installation a conservé ses propres réglages : {{files}}. Pour utiliser ceux de l'archive, passe Fusionner à Remplacer, coche la case qui remplace aussi config.json et hooks.json, puis importe à nouveau. Remplacer sauvegarde d'abord cette installation, puis écrase ses réglages avec ceux de l'archive.",
-        "import_include_settings": "Remplacer aussi config.json et hooks.json",
+        "import_include_settings": "Remplacer aussi config.json, config.local.json et hooks.json",
         "replace_keeps_settings": "Remplacer conserve les config.json, config.local.json et hooks.json de cette installation. Pour les écraser avec ceux de l'archive, coche la case de la zone d'import.",
         "replace_overwrites_settings": "Remplacer écrasera config.json, config.local.json et hooks.json avec ceux de l'archive. Ils s'appliquent à la gateway en cours d'exécution en quelques secondes, sauf agent.approval_mode, agent.jail et agent.dangerously_skip_permissions, qui demandent un redémarrage. Les hooks et les commandes cron restaurés reviennent désactivés ou en pause.",
         "replace_settings_foreign_archive": "Cette archive ne provient peut-être pas de cette installation. Sa configuration peut modifier les réglages du bac à sable, des approbations et des canaux.",

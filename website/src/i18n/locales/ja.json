@@ -17432,7 +17432,7 @@
         "import_templates_missing": "このマシンにないエージェントテンプレートを使うクルーがあります (クルー → テンプレート): {{crews}}。これらのクルーを使う前に、足りないテンプレートを ~/.kiro/agents にコピーしてください。",
         "import_items_refused": "一部の項目はインポートできず、変更されていません: {{names}}。",
         "import_settings_kept": "このインストールは自身の{{files}}を保持しました。代わりにアーカイブのものを使うには、モードを「置換」にして、config.json と hooks.json も置換するチェックボックスをオンにし、もう一度インポートしてください。「置換」はまずこのインストールをバックアップしてから、その設定をアーカイブの設定で上書きします。",
-        "import_include_settings": "config.json と hooks.json も置換する",
+        "import_include_settings": "config.json と config.local.json と hooks.json も置換する",
         "replace_keeps_settings": "「置換」はこのインストールの config.json、config.local.json、hooks.json を保持します。アーカイブのもので上書きするには、インポート欄のチェックボックスをオンにしてください。",
         "replace_overwrites_settings": "「置換」は config.json、config.local.json、hooks.json をアーカイブのもので上書きします。実行中のゲートウェイには数秒以内に反映されますが、agent.approval_mode、agent.jail、agent.dangerously_skip_permissions は再起動が必要です。復元されたフックと cron コマンドは無効または一時停止の状態で戻ります。",
         "replace_settings_foreign_archive": "このアーカイブはこのインストールのものではない可能性があります。その設定は、サンドボックス、承認、チャンネルの設定を変更する可能性があります。",

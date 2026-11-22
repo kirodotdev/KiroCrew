@@ -1641,8 +1641,6 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         # bury the one sentence saying what to do about it.
         try:
             if mode == "replace":
-                # Taken before the replace: afterwards every name exists and none looks kept.
-                kept_settings = _settings_kept_by_replace(snap, mc, components, include_config)
                 _do_replace(
                     snap,
                     mc,
@@ -1650,11 +1648,6 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                     allow_unpinned=allow_unpinned,
                     include_settings=include_config,
                 )
-                if kept_settings:
-                    print(
-                        f"Note: Kept your live {', '.join(kept_settings)}; the archive's copies "
-                        "were not installed. Add --include-config to overwrite them."
-                    )
             else:
                 _do_merge(snap, mc, components, allow_unpinned=allow_unpinned)
         except pinned_fs.PinnedPathRefusal as exc:

@@ -18366,7 +18366,7 @@
         "import_templates_missing": "Alcune crew usano un modello di agente che su questa macchina non c'è (crew → modello): {{crews}}. Copia i modelli mancanti in ~/.kiro/agents prima di usare queste crew.",
         "import_items_refused": "Alcuni elementi non sono stati importati e sono rimasti invariati: {{names}}.",
         "import_settings_kept": "Questa installazione ha mantenuto le proprie impostazioni: {{files}}. Per usare quelle dell'archivio, cambia Unisci in Sostituisci, seleziona la casella che sostituisce anche config.json e hooks.json e importa di nuovo. Sostituisci prima fa un backup di questa installazione, poi ne sovrascrive le impostazioni con quelle dell'archivio.",
-        "import_include_settings": "Sostituisci anche config.json e hooks.json",
+        "import_include_settings": "Sostituisci anche config.json, config.local.json e hooks.json",
         "replace_keeps_settings": "Sostituisci mantiene i file config.json, config.local.json e hooks.json di questa installazione. Per sovrascriverli con quelli dell'archivio, seleziona la casella nell'area di importazione.",
         "replace_overwrites_settings": "Sostituisci sovrascriverà config.json, config.local.json e hooks.json con quelli dell'archivio. Hanno effetto sul gateway in esecuzione in pochi secondi, tranne agent.approval_mode, agent.jail e agent.dangerously_skip_permissions, che richiedono un riavvio. Gli hook e i comandi cron ripristinati tornano disattivati o in pausa.",
         "replace_settings_foreign_archive": "Questo archivio potrebbe non provenire da questa installazione. La sua configurazione può modificare le impostazioni di sandbox, approvazione e canali.",
