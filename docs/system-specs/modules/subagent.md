@@ -4485,8 +4485,8 @@ when the parent's own call already returned every member it carries:
   parked completion of the run to the bell. What is told apart is a session
   that is gone or new, not whose it is: a live session on the key is continued,
   so a later run of a persistent job (same `cron:<job>` key) takes an earlier
-  run's completion, and so does the session a hard Stop's eager respawn
-  (`_eager_respawn`) started.
+  run's completion, and so does the session a hard Stop's respawn
+  (`_respawn_as`) started.
 - **The cron route's cleanup never resets under a live turn.** The route's "last
   subagent done" cleanup (`_reset_cron_parent_when_idle`) runs
   `reset(parent_key, skip_if_busy=True, skip_if_injecting=True)`, which declines

@@ -3066,7 +3066,7 @@ idle sweep expires it. `test_sandbox_tier_recycle.py` pins each case.
      that ended on the session handle's own synthesized unacked-cancel terminal
      (`STOP_REASON_CANCEL_UNACKED`, `cancel_went_unacked`) is a `"timeout"`, not
      an ack: the agent never answered the cancel and may still be running it.
-5. Hard kill: `reset(key, stop_shared_children=True)` (stops the sub-agent runs that share the parent's process first) → fire-and-forget `_eager_respawn(key)` task → call `on_hard` callback → return `"hard"`.
+5. Hard kill: `reset(key, stop_shared_children=True)` (stops the sub-agent runs that share the parent's process first) → fire-and-forget `_respawn_as(key, allocation_identity(...))` task, the stopped session's own identity → call `on_hard` callback → return `"hard"`.
 
 ### Session-scoped Stop record
 
@@ -3550,7 +3550,7 @@ each one `rewind` does not carry, so nobody reads it as already shared:
 
 ### Eager Respawn
 
-After a hard kill, `_eager_respawn(key)` calls `get_or_create(key)` in a background task so the next user message finds a warm session. On failure, logs at debug and does nothing — the next message triggers `get_or_create` again via the normal path.
+After a hard kill, `stop_turn` starts the successor in a background task so the next user message finds a warm session: `_respawn_as(key, allocation_identity(owner, key, session))`, the same call the reset successor makes, so the successor keeps the stopped session's agent, crew member, approval policy, cwd, channel, model and harness, and the chat runs on the agent it is set to. Like the reset successor, it re-arms its first-turn observation from the flags the start returned (FRESH or RESUMED), so a failed native resume after a hard Stop replays the history as after a reset. On failure, logs at debug and does nothing — the next message triggers `get_or_create` again via the normal path. `_eager_respawn(key)` (an agentless `get_or_create(key)` and its release) is no longer on the Stop path.
 
 ## Session Resume (SessionMap)
 
