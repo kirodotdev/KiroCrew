@@ -1568,5 +1568,6 @@ rules so they cannot be opted out of at all.
 | `~/.kiro/crew/memory_stores/<store>/` | A managed store (`<store>` is its name, also its `store_id`): one member’s SQLite learning database and manual context files |
 | `~/.kiro/crew/session_map.json` | Session resume mapping |
 | `~/.kiro/crew/snapshots/` | Default output of `kirocrew snapshot` |
+| `~/.kiro/crew/mcp.json` | The dashboard's own MCP server list; add or change servers under MCP Servers, not by hand |
 | `~/.kiro/agents/kirocrew.json` | Installed agent config, rebuilt on every gateway start; add MCP servers under MCP Servers, not here |
 | `~/.kiro/settings/mcp.json` | Global MCP server config |
