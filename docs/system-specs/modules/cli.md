@@ -1620,7 +1620,7 @@ provider.
 ### Context Tracking
 
 After each message, checks `provider.context_usage_pct()`:
-- `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter. The compact step is skipped when `messaging.commands.compact_unsupported_backend(provider)` names the backend (it cannot serve `/compact`); the shutdown and restart still run. The next message opens the new session, so it carries the [session context](#session-context) again
+- `>= autocompact_pct` (default 70%): compact → shutdown → restart provider, reset counter. The compact step is skipped when `messaging.commands.compact_unsupported_backend(provider)` names the backend (it cannot serve `/compact`); the shutdown and restart still run. The next message opens the new session, so it carries the [session context](#session-context) again. A provider that names a `harness_managed_compaction_backend` (KAS) is left to summarize on its own at the global `session.autocompact_pct`, as the dashboard's turn-end gate leaves it, and gets only the warning below; a threshold the run's crew declares (`agents.<name>.autocompact_pct`) still compacts and restarts it
 - `>= autocompact_pct - CONTEXT_WARN_MARGIN_PCT`: warning printed to stderr. Relative, not absolute: the compact arm is tested first, so an absolute warn level at or above the threshold would be unreachable
 
 CLI compaction is blocking (single-user, acceptable).
