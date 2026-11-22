@@ -316,6 +316,15 @@ do to a protected name while an agent is running. It is not derivable from the l
 list invented there would either break ordinary hosts or quietly reopen the hole. This table is
 the list, and the code admits only the row marked PROCEEDS.
 
+Because the "any other atomic rewrite" row refuses, a writer that rewrites a sealed leaf on a
+schedule must not rewrite it when nothing changed. Every agent-config rebuild writes
+`agent_model_state.json`, so `agent_state._write` skips a document whose bytes, mode and single
+link already match (`unchanged_file.already_holds`, POSIX only), and the agent-spec writer
+(`agent_parts/spec_files._atomic_json_write_unguarded`) does the same for `kirocrew.json`, whose
+inode the worker records in that sidecar. A rebuild that changes nothing therefore keeps every
+sealed file leaf's identity (`test/test_rebuild_keeps_pinned_files.py`); one that changes the
+sidecar still refuses a spawn whose pass and pin straddle the write, as the table says.
+
 **The gateway's own config save, admitted on its publication record.** The two runtime-config
 files are sealed as files (they sit at the data-home root and cannot move into a directory),
 and the gateway itself saves them through `write_config_atomically` -- on boot, on a load-time

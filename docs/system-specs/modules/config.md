@@ -2952,7 +2952,12 @@ name:
 ```
 
 - Read/written via `kiro_crew/agent_state.py` (atomic, lock-guarded near-leaf
-  module: stdlib + `config.paths` + `atomic_write` only).
+  module: stdlib + `config.paths` + `atomic_write` + `unchanged_file` only). A write whose bytes
+  already sit in the file (owner-only, one link) is skipped, and
+  `begin_managed_write` records no pending digest for bytes that reproduce the
+  finalized one, so a rebuild that changes nothing keeps the file's inode. The
+  sandbox pins this file for every spawn and refuses one whose pinned file was
+  replaced (security.md, the recreation table).
 - `build_agent_config()` is pure (writes no spec key); `rebuild_agent_config()`
   seeds managed-state on a fresh/clean install (never clobbering a frozen pick).
 - `_refresh_dynamic_fields()` sources managed-state from the sidecar and strips
