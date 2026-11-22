@@ -79,6 +79,12 @@ export interface BrowserViewProps {
 
 const LIVE = new Set(['live', 'in_control', 'waiting_allow', 'login_needed'])
 
+/** CSS applied to every BrowserView root so it does not expand in a CSS grid cell.
+ *  contain:inline-size stops the canvas's intrinsic min-width from propagating out.
+ *  Removing any class here turns the layout regression test red. */
+const ROOT_CSS = 'flex flex-col min-h-0 min-w-0 overflow-hidden'
+const ROOT_STYLE = { contain: 'inline-size' } as const
+
 /** Actions the view lists; the toggle counts them all. */
 const BROWSER_VIEW_ACTIONS_SHOWN = 5
 
@@ -128,7 +134,8 @@ function BrowserViewActions({ steps }: { steps: readonly BrowserLiveStep[] }) {
 function Placeholder({ state, text, className, testId = 'app-browser-view' }: { state: string; text: string; className?: string; testId?: string | false }) {
   return (
     <div
-      className={`grid place-items-center rounded-md border border-border bg-card p-6 text-center text-[13px] text-muted ${className ?? ''}`}
+      className={`${ROOT_CSS} grid place-items-center rounded-md border border-border bg-card p-6 text-center text-[13px] text-muted ${className ?? ''}`}
+      style={ROOT_STYLE}
       {...(testId ? { 'data-testid': testId } : {})}
       data-state={state}
       role="status"
@@ -164,12 +171,17 @@ export default function BrowserView({
   const [rootEl, setRootEl] = useState<HTMLDivElement | null>(null)
   const [onScreen, setOnScreen] = useState(true)
   useEffect(() => {
-    if (!rootEl) { setOnScreen(false); return }
+    // For the primary slot view (no tabId), falling back to true when there is no
+    // ref preserves the pre-PR behaviour: a face with no ref (Placeholder, error)
+    // should not set onScreen=false and cause a false->true visibility race on the
+    // next live mount.  For the tabId second view the wrapper always mounts its ref,
+    // so null only happens transiently; false is correct there.
+    if (!rootEl) { setOnScreen(!tabId); return }
     if (typeof IntersectionObserver !== 'function') { setOnScreen(true); return }
     const io = new IntersectionObserver((entries) => setOnScreen(entries.some(e => e.isIntersecting)), { threshold: 0.05 })
     io.observe(rootEl)
     return () => io.disconnect()
-  }, [rootEl])
+  }, [rootEl, tabId])
   const shown = hostActive && onScreen
   // A new turn moves this view's report to it in ONE write. Reporting "off" for the
   // old turn and then "on" for the new one would send two writes the gateway may
@@ -414,7 +426,8 @@ export default function BrowserView({
     return (
       <div
         ref={setRootEl}
-        className={`flex flex-col min-h-0 min-w-0 rounded-md border border-border bg-card ${className ?? ''}`}
+        className={`${ROOT_CSS} rounded-md border border-border bg-card ${className ?? ''}`}
+        style={ROOT_STYLE}
         data-testid="app-browser-view"
         data-state={state}
       >
@@ -433,7 +446,7 @@ export default function BrowserView({
     // also clears the record's own error (`tab_gone`).
     if (turn && reopenError?.turnId === turn.turnId) {
       return (
-        <div className={`rounded-md border border-border bg-card p-4 ${className ?? ''}`} data-testid="app-browser-view" data-state="reopen_failed">
+        <div className={`${ROOT_CSS} rounded-md border border-border bg-card p-4 ${className ?? ''}`} style={ROOT_STYLE} data-testid="app-browser-view" data-state="reopen_failed">
           <ErrorNotice variant="inline" message={reopenError.message} askAgent testId="app-browser-view-reopen-error" />
         </div>
       )
@@ -442,7 +455,7 @@ export default function BrowserView({
     // gateway's own words when it sent some. Nothing on this surface is unsaved.
     if (turn && turn.state === 'error') {
       return (
-        <div className={`rounded-md border border-border bg-card p-4 ${className ?? ''}`} data-testid="app-browser-view" data-state="error">
+        <div className={`${ROOT_CSS} rounded-md border border-border bg-card p-4 ${className ?? ''}`} style={ROOT_STYLE} data-testid="app-browser-view" data-state="error">
           <ErrorNotice variant="inline" message={turn.detail || i18nT('appSdk.browserView.browser_error')} askAgent testId="app-browser-view-error" />
           {controlNotice}
         </div>
@@ -452,7 +465,7 @@ export default function BrowserView({
     // (the chat card's "Open live", the same owner route).
     if (turn && !tabId && turn.tab === 'open' && browserLiveStore.isCurrentTurn(slot, turn.turnId)) {
       return (
-        <div ref={setRootEl} className={`grid place-items-center gap-3 rounded-md border border-border bg-card p-6 text-center text-[13px] text-muted ${className ?? ''}`} data-testid="app-browser-view" data-state="done">
+        <div ref={setRootEl} className={`${ROOT_CSS} grid place-items-center gap-3 rounded-md border border-border bg-card p-6 text-center text-[13px] text-muted ${className ?? ''}`} style={ROOT_STYLE} data-testid="app-browser-view" data-state="done">
           {controlNotice}
           <span>{i18nT('appSdk.browserView.turn_over')}</span>
           <Btn primary onClick={() => { void reopen(turn.turnId) }} data-testid="app-browser-view-show-live">
@@ -465,7 +478,7 @@ export default function BrowserView({
       // A failed write after the tab closed (a hand-back note that did not go out)
       // still says so, whatever the tab and the browser now show.
       return (
-        <div className={`grid gap-3 rounded-md border border-border bg-card p-4 text-[13px] text-muted ${className ?? ''}`} data-testid="app-browser-view" data-state={turn?.state ?? 'idle'}>
+        <div className={`${ROOT_CSS} grid gap-3 rounded-md border border-border bg-card p-4 text-[13px] text-muted ${className ?? ''}`} style={ROOT_STYLE} data-testid="app-browser-view" data-state={turn?.state ?? 'idle'}>
           {controlNotice}
         </div>
       )
@@ -479,8 +492,8 @@ export default function BrowserView({
 
   return (
     <div
-      className={`flex flex-col min-h-0 min-w-0 overflow-hidden ${className ?? ''}`}
-      style={{ contain: 'inline-size' } as React.CSSProperties}
+      className={`${ROOT_CSS} ${className ?? ''}`}
+      style={ROOT_STYLE}
       ref={setRootEl}
       data-testid="app-browser-view"
       data-state={turn.state}

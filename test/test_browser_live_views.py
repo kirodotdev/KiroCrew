@@ -441,7 +441,11 @@ async def test_two_opens_at_once_get_two_keys(grant, monkeypatch: pytest.MonkeyP
             started += 1
             if started == 2:
                 attaching.set()
-            await gate.wait()
+            try:
+                await asyncio.wait_for(gate.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                gate.set()  # release any waiters on timeout so tasks can drain
+                raise
 
     monkeypatch.setattr(lh, "LiveStream", HeldStream)
     async with TestClient(TestServer(_app())) as client:

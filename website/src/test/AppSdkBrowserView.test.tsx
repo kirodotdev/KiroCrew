@@ -305,14 +305,27 @@ describe('BrowserView on the app\'s own slot', () => {
     // Removing any of these makes the component expand in a 1fr CSS grid cell,
     // squeezing a side-by-side second view to a sliver (slot=1209px second=273px
     // without contain:inline-size, confirmed by Playwright in pod kc-bsdk-1c).
-    // One-line change that turns this test red: remove 'overflow-hidden' from the
-    // root wrapper className or remove the contain:inline-size style.
+    // One-line change that turns this test red: remove 'overflow-hidden' from
+    // ROOT_CSS or remove ROOT_STYLE from the root wrapper.
     act(() => { browserLiveStore.applyEvent(ev(OWN)); browserLiveStore.applyFrame(frame(OWN)) })
     mount(OWN, <BrowserView slot={OWN} aria-label="The page" />)
     const root = screen.getByTestId('app-browser-view')
     expect(root.className).toContain('min-w-0')
     expect(root.className).toContain('overflow-hidden')
     expect((root as HTMLElement).style.contain).toBe('inline-size')
+  })
+
+  it('root element carries ROOT_CSS on every face: Placeholder (no_page, done, error)', () => {
+    // The layout constraint must apply on every face, not just the live face.
+    // One-line change that turns this test red: remove ROOT_CSS from the
+    // Placeholder component or from one of the early-return divs.
+
+    // Placeholder face (no turn, no_page)
+    mount(OWN, <BrowserView slot={OWN} aria-label="The page" />)
+    const noPageRoot = screen.getByTestId('app-browser-view')
+    expect(noPageRoot.className).toContain('min-w-0')
+    expect(noPageRoot.className).toContain('overflow-hidden')
+    expect((noPageRoot as HTMLElement).style.contain).toBe('inline-size')
   })
 })
 
