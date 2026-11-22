@@ -2035,9 +2035,11 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    install, which step 3 lays down for the new release's pin, and the
    gateway's boot-time "kiro-cli is outdated" warning (`_warn_if_kiro_cli_outdated`) is skipped on
    that route for the same reason. The step is also skipped, the printed line
-   saying so, when neither `agent.acp_backend` nor `agent.member_acp_backend`
-   runs kiro-cli (`cli_doctor._selected_roles_run_kiro_cli`, the test `kirocrew
-   doctor` makes), so a Claude or Codex install does not wait up to 120 s on a
+   saying so, when no configured harness choice runs kiro-cli
+   (`crewmate_harness.kiro_cli_runs_anywhere`: `agent.acp_backend`,
+   `agent.member_acp_backend`, a Bot's `agents.<name>.acp_backend` pin and the
+   members of an enabled `agent.acp_failover` chain; each is Kiro CLI, or KAS
+   on the relay), so a Claude or Codex install does not wait up to 120 s on a
    self-update with the gateway down; an unreadable config keeps the
    step. The relay route and a selection that runs kiro-cli keep the step as it
    was.

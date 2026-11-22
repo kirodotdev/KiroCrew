@@ -160,3 +160,34 @@ def test_the_config_read_survives_a_failing_answer(_floor_monkeypatch, monkeypat
     _floor_monkeypatch.setattr(crewmate_harness, "kas_runs_here", boom)
     body = _get_config(monkeypatch, KiroCrewConfig())
     assert "kas_in_use" not in body and body["agent"]
+
+
+_CLAUDE = {"acp_backend": "claude", "member_acp_backend": "claude"}
+
+
+@pytest.mark.parametrize(
+    ("agent", "pins", "expected"),
+    [
+        # Neither global role, no Bot pin, no failover chain: kiro-cli never spawns.
+        (_CLAUDE, None, False),
+        ({"acp_backend": "claude", "member_acp_backend": "codex"}, None, False),
+        # Either global role on Kiro CLI, or on KAS through kiro-cli's relay.
+        ({**_CLAUDE, "member_acp_backend": "kiro"}, None, True),
+        ({**_CLAUDE, "acp_backend": "kiro"}, None, True),
+        ({**_CLAUDE, "acp_backend": "kas"}, None, True),
+        # KAS on the bundle route spawns Crew's own engine, not kiro-cli.
+        ({**_CLAUDE, "acp_backend": "kas", "kas_bundle": True}, None, False),
+        # A Bot pinned to Kiro CLI, or to KAS through the relay.
+        (_CLAUDE, {"nova": "kiro"}, True),
+        (_CLAUDE, {"nova": "kas"}, True),
+        (_CLAUDE, {"nova": "codex"}, False),
+        # A failover chain counts only while it is enabled.
+        ({**_CLAUDE, "acp_failover": {"enabled": True, "chain": ["codex", "kiro"]}}, None, True),
+        ({**_CLAUDE, "acp_failover": {"enabled": False, "chain": ["kiro"]}}, None, False),
+        ({**_CLAUDE, "acp_failover": {"enabled": True, "chain": ["codex"]}}, None, False),
+    ],
+)
+def test_kiro_cli_runs_anywhere(agent, pins, expected):
+    from kiro_crew.crewmate_harness import kiro_cli_runs_anywhere
+
+    assert kiro_cli_runs_anywhere(_cfg(agent, pins)) is expected
