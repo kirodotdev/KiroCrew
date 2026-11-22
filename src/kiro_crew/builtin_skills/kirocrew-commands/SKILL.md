@@ -208,7 +208,7 @@ leftover prefix without touching it.
 | `kirocrew spawn run --crew NAME "task"` | Run as a Bot (its memory and template); an unknown name is refused |
 | `kirocrew spawn run --agent NAME "task"` | Run under a named agent template; an unknown name is refused |
 | `kirocrew spawn run --model ID "task"` | Run on a model id; it outranks the member's and the template's pin |
-| `kirocrew spawn list` | List active subagents |
+| `kirocrew spawn list` | List subagents that no session started (CLI and app runs) |
 
 ## Cron Jobs
 
