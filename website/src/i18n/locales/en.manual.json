@@ -3844,11 +3844,11 @@
       "back_to_dashboard": "Back to dashboard",
       "restarting": "Restarting...",
       "install_on_quit": "Install when I quit",
-      "install_on_quit_timing": "The update installs the next time you quit the app. Nothing restarts until you do.",
+      "install_on_quit_timing": "Choose Install when I quit and the update installs the next time you quit the app. Nothing restarts until you do.",
       "armed_installs_on_quit": "{{productName}} {{version}} installs when you quit the app.",
       "restart_now": "Restart and install now",
       "restart_now_failed": "Could not restart the app. The update still installs when you quit.",
-      "armed_app_too_old": "This version of the desktop app cannot schedule the update from here. Download the latest version of the app to update."
+      "armed_app_too_old": "This version of the desktop app has no Install when I quit option. To update, install the latest version of the desktop app."
     },
     "voiceStatusBar": {
       "default_microphone": "Default microphone",
@@ -9271,7 +9271,7 @@
         "gateway_lane_label": "Gateway",
         "gateway_lane_title": "The background service that runs your agents and serves this dashboard. The branch and commit chips are its build.",
         "app_updates_heading": "App updates",
-        "downloaded_and_verified_installs_on_quit": "Downloaded and verified. It installs when you quit the app; nothing restarts until you do.",
+        "downloaded_and_verified_installs_on_quit": "Downloaded and verified. Choose Install when I quit and it installs the next time you quit the app; nothing restarts until you do.",
         "what_you_d_get_one": "What you'd get ({{count}} change since your build)",
         "what_you_d_get_other": "What you'd get ({{count}} changes since your build)",
         "what_you_d_get_read_all": "Read the full notes",

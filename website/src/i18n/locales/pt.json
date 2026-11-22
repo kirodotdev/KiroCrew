@@ -10219,11 +10219,11 @@
       "restarting": "Reiniciando...",
       "update_ready": "Atualização pronta",
       "install_on_quit": "Instalar ao sair",
-      "install_on_quit_timing": "A atualização é instalada na próxima vez que você sair do app. Nada é reiniciado até lá.",
+      "install_on_quit_timing": "Escolha “Instalar ao sair” e a atualização será instalada na próxima vez que você sair do app. Nada é reiniciado até lá.",
       "armed_installs_on_quit": "{{productName}} {{version}} é instalado quando você sai do app.",
       "restart_now": "Reiniciar e instalar agora",
       "restart_now_failed": "Não foi possível reiniciar o app. A atualização ainda será instalada ao sair.",
-      "armed_app_too_old": "Esta versão do app para desktop não consegue agendar a atualização daqui. Baixe a versão mais recente do app para atualizar."
+      "armed_app_too_old": "Esta versão do app para desktop não tem a opção “Instalar ao sair”. Para atualizar, instale a versão mais recente do app para desktop."
     },
     "updatePill": {
       "downloading": "Baixando…",
@@ -20058,7 +20058,7 @@
         "gateway_lane_title": "O serviço em segundo plano que executa seus agentes e serve este painel. Os chips de branch e commit são o build dele.",
         "update_refused_dirty_worktree": "A atualização foi interrompida para proteger suas edições locais: sua pasta do {{productName}} tem alterações não confirmadas ({{changed}}). Faça commit ou stash delas e pressione Atualizar agora de novo. Para guardar tudo com stash, execute o comando abaixo em um terminal na sua pasta do {{productName}}.",
         "app_updates_heading": "Atualizações do app",
-        "downloaded_and_verified_installs_on_quit": "Baixada e verificada. Ela é instalada quando você sai do app; nada é reiniciado até lá.",
+        "downloaded_and_verified_installs_on_quit": "Baixada e verificada. Escolha “Instalar ao sair” e ela será instalada na próxima vez que você sair do app; nada é reiniciado até lá.",
         "what_you_d_get_one": "O que você ganha ({{count}} mudança desde a sua compilação)",
         "what_you_d_get_many": "O que você ganha ({{count}} mudanças desde a sua compilação)",
         "what_you_d_get_other": "O que você ganha ({{count}} mudanças desde a sua compilação)",

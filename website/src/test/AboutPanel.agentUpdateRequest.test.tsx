@@ -531,6 +531,14 @@ describe('AboutPanel with a pending agent request', () => {
     expect(screen.getByTestId('agent-update-request-install').textContent).toContain('0.7.0')
   })
 
+  it('with a stage present, the ordinary card does not name the Install control it yields', async () => {
+    setup(REQUEST, { state: 'downloaded', version: '0.6.0' })
+    await screen.findByTestId('agent-update-request')
+    expect(screen.getByTestId('update-card').querySelector('button')).toBeNull()
+    // Its pre-arm note tells the reader to choose Install when I quit, a button not on screen here.
+    expect(screen.queryByTestId('update-ready-note')).toBeNull()
+  })
+
   it('a download the card started finishes with install, once', async () => {
     vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
     const { bridge, client } = setup(REQUEST)

@@ -610,7 +610,9 @@ export function AboutPanel() {
           testId="update-install-request-error"
         />
       )}
-      {cardReady && (
+      {/* A request card that owns the install control hides this card's
+          Install when I quit button, so the note that names it is left out. */}
+      {cardReady && (updateArmed || !canArmOnQuit || !ctaOwnedByRequest) && (
         <span className="text-[12px] text-muted" data-testid="update-ready-note">
           {/* Install only arms: nothing goes down or restarts until the user
               quits, so the line says when it installs, not that it is installing. */}

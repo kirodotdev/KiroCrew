@@ -2140,9 +2140,11 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   Then it probes whether a gateway is still running (a gateway that outlived the
   quit): this bundle's gateway, or, when that cannot be identified (Windows, a
   failed process lookup), anything listening on the launch port
-  (`gateway-probe.js`). If one is, nothing is applied, the arm stays,
-  and a notice names the `kirocrew stop --port <port>` command. A probe that
-  cannot answer defers the same way. If
+  (`gateway-probe.js`). If one is, nothing is applied and the arm stays. For
+  this bundle's gateway the notice names the `kirocrew stop --port <port>`
+  command; any other holder is named as unidentified, with no command, because
+  the app cannot tell what it is or whether that command would stop it. A probe
+  that cannot answer defers the same way. If
   that apply fails too, the arm is cleared, the installed version starts and
   the error is shown as an install error. The gateway the app hosts skips its
   own boot-time apply, so exactly one side applies and the app and gateway never
