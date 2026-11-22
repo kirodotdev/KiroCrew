@@ -134,7 +134,7 @@ const messageInput = () => screen.getByLabelText('Message input') as HTMLTextAre
 // Anchored to the real clock: the drafts store prunes by a real-clock TTL, so a
 // fixed calendar date here expires every draft it stamps once that date is
 // older than the TTL.
-const TAKE_BACK_NOW = Date.now()
+const TAKE_BACK_NOW = Date.now() // flake-ok: read once, then pinned with vi.spyOn(Date, 'now') in primeEditedSteerTakeBack
 const SLOT_A_FILE = '/tmp/a.txt'
 const SLOT_B_FILE = '/tmp/b.txt'
 const RESTORED_FILE = '/tmp/steer.txt'

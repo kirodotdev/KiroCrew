@@ -3649,8 +3649,12 @@ formatting or a time-zone edge, and then nothing that ages by the real clock may
 // WRONG: expires on a fixed day once the literal is older than the TTL
 const NOW = Date.parse('2025-01-01T00:00:00Z')
 // RIGHT: the same distance from the real clock on every run
-const NOW = Date.now()
+const NOW = Date.now() // flake-ok: read once, then pinned with vi.spyOn(Date, 'now')
 ```
+
+The flake-pattern ratchet counts a bare `Date.now()` in a test file as
+`J3-unpinned-date`, so the line that reads the real clock once carries a
+`flake-ok:` reason naming where the value is pinned.
 
 **A request budget the test spends in real seconds measures the runner.** A 3 s recall
 deadline with a 1 s `time.sleep` "burn" left the judge's wait at the mercy of every
