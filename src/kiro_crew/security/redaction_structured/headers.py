@@ -635,7 +635,23 @@ def _bearer_bare(text: str, at: int, row: HeaderRow, final: bool) -> Hit | None:
         return None
     if row.allow_values and value.rsplit(".", 1)[0] in row.allow_values:
         return None
+    if _auth_param(text, end, value, final):
+        return None
     return Hit(k, end, row.id, row.tier, "header", "known_key")
+
+
+def _auth_param(text: str, end: int, value: str, final: bool) -> bool:
+    """An RFC 9110 auth-param of a ``Bearer`` challenge (``error=invalid_token``,
+    ``realm="x"``), not a token68: only trailing ``=`` padding belongs to a token68."""
+    if "=" in value.rstrip("="):
+        return True
+    if not value.endswith("=") or end >= len(text) or text[end] not in _QUOTES:
+        return False
+    if end + 1 >= len(text):
+        if not final:
+            raise _Open
+        return False
+    return text[end + 1].isalnum()  # an opening quote; a closing one ends the text or a field
 
 
 def _capitalised_word(value: str) -> bool:

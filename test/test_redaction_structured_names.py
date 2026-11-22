@@ -305,6 +305,25 @@ def test_a_bare_bearer_token_is_masked() -> None:
     assert redact(f"sent Bearer {value} to host")[0] == f"sent Bearer {TAG} to host"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        'WWW-Authenticate: Bearer resource_metadata="https://example.test/meta"',
+        'WWW-Authenticate: Bearer error_description="The access token expired"',
+        'WWW-Authenticate: Bearer realm="example"',
+        "WWW-Authenticate: Bearer error=invalid_token",
+    ],
+)
+def test_a_bearer_challenge_auth_param_is_not_masked(text: str) -> None:
+    assert redact(text)[0] == text
+
+
+@pytest.mark.parametrize("padding", ["", "=", "=="])
+def test_a_bare_bearer_token68_with_or_without_padding_is_masked(padding: str) -> None:
+    value = "FAKE0000" + "0" * 12 + padding
+    assert redact(f"sent Bearer {value} to host")[0] == f"sent Bearer {TAG} to host"
+
+
 @pytest.mark.parametrize("sep", ["%2F", "%2f", "%3D", "%252F"])
 def test_a_bare_bearer_token_with_a_percent_escape_is_masked_whole(sep: str) -> None:
     text = f"invalid Bearer abcdEFGH1234{sep}xyzSECRETtail9876 rejected"
@@ -361,7 +380,18 @@ def test_a_very_short_value_cut_by_an_ellipsis_is_masked(
 
 @pytest.mark.parametrize("ellipsis", ["...", "\u2026"])
 @pytest.mark.parametrize("name", ["password", "secret"])
-@pytest.mark.parametrize("head", ["lemon-", "lemon_", "lemon=", "Ab3xY9-"])
+@pytest.mark.parametrize(
+    "head",
+    [
+        "lemon-",
+        "lemon_",
+        "lemon=",
+        "Ab3xY9-",
+        "sk-ant-lemon",  # a vendor stub, then a word
+        "sk-proj-lemon",
+        "sk--lemon",  # a doubled separator after the stub
+    ],
+)
 def test_a_short_word_and_separator_cut_by_an_ellipsis_is_masked(
     name: str, head: str, ellipsis: str
 ) -> None:

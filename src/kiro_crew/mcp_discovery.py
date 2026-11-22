@@ -943,6 +943,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         MCP_REDACTED_HEADER_VALUE,
         SCOPE_CC_GLOBAL,
         SCOPE_KIRO_GLOBAL,
+        _configured_value_spans,
         _extra_scope_sources,
         _extra_scopes,
         _mcp_credential_token_pattern,

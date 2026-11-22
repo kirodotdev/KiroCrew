@@ -196,9 +196,11 @@ def redact_mcp_error(error: object, headers: object, extra_values: Iterable[str]
 
     Two layers, so every consumer (``to_dict``, the probe cache, the probe
     endpoints) satisfies one invariant — no credential-shaped text survives to
-    serialized output. Both layers find their spans on the original text;
-    overlapping spans are merged and written once, so a short configured value
-    cannot cut a credential:
+    serialized output. Only the configured-value spans and the
+    ``redact_credentials`` plan are found on the original text and merged in
+    one write, so a short configured value cannot cut a credential;
+    ``redact_exfiltration_urls`` and the second ``redact_credentials`` pass
+    then run on that output:
 
     1. The configured-value scrubber below catches the exact header values and
        Authorization suffixes, including encoded spellings the generic
