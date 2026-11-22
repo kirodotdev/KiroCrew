@@ -1247,8 +1247,12 @@ def text_names_mcp_server(text: str, name: str) -> bool:
     """Whether *text* names server *name* as a whole word, case-insensitive.
 
     Each alias from :func:`mcp_server_aliases` matches with any run of
-    separators between its words, and only between word boundaries, so
-    ``notion`` matches "sign in to Notion" and not "notional". A registry
+    separators between its words, or none, and only between word boundaries, so
+    ``notion`` matches "sign in to Notion" and not "notional", and ``acme-docs``
+    matches "AcmeDocs". A configured name that splits a compound word
+    (``work-flow``) is therefore also named by the glued word, which is accepted
+    because only a server already waiting for a sign-in and named in the
+    person's own message is offered. A registry
     provider whose slug is *name* adds its ``sign_in_words`` (``atlassian``:
     "jira", "confluence"), matched the same way. Pure.
     """
@@ -1257,7 +1261,7 @@ def text_names_mcp_server(text: str, name: str) -> bool:
     if not text or not name:
         return False
     for alias in (*mcp_server_aliases(name), *sign_in_words(name)):
-        pattern = r"[\s_.:/@-]+".join(re.escape(word) for word in alias.split(" "))
+        pattern = r"[\s_.:/@-]*".join(re.escape(word) for word in alias.split(" "))
         if re.search(rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])", text, re.IGNORECASE):
             return True
     return False
@@ -1277,8 +1281,9 @@ def want_mcp_sign_in_named(self: AcpSessionHandle, text: str) -> None:
     not asked for again, so a message naming it while its card is live
     starts no second one. Once that attempt ends (signed in, timed out, or
     left by the user), only a later message naming it offers it again.
-    The offer is made at the next offer point (turn start), where a turn
-    reads the link. At most ``BUCKET_CAP`` names are held.
+    The offer is made at the next offer point (turn start); its link reaches
+    the chat through the turn, or through the provider's consent hook when it
+    lands after the turn ended. At most ``BUCKET_CAP`` names are held.
 
     Called from ``_run_turn`` after the pre-turn drain with that turn's ask.
     The text is held for that turn (``_mcp_sign_in_ask``) and matched again
@@ -1337,8 +1342,10 @@ def _offer_mcp_sign_in(self: AcpSessionHandle) -> None:
     busy) leaves the server wanted, and the next offer point tries again.
 
     Called at turn start after the pre-turn drain, and from the dispatch
-    loop on a status snapshot: both have a reader for the link the engine
-    sends back. Never called during a session-start drain.
+    loop on a status snapshot: a turn reads the link the engine sends back
+    while it runs, and a dashboard chat's consent hook
+    (``AcpRuntime.set_mcp_consent_hook``) draws one that lands after it ended.
+    Never called during a session-start drain.
 
     The server's banner dedupe is cleared first: its earlier link is dead
     once a new sign-in starts, and the new link must not be dropped as a
