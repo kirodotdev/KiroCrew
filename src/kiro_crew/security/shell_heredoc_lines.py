@@ -15,7 +15,6 @@ import bisect
 from typing import TYPE_CHECKING, NamedTuple
 
 from .call_views import _CALL_VIEWS
-from .shell_normalizer_escapes import _decode_ansi_c_body
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -81,7 +80,7 @@ class HereDocSpan(NamedTuple):
 
 
 def heredoc_docs(
-    text: str, start: int = 0, state: int = 0, ansi: bool = False
+    text: str, start: int = 0, state: int = 0, ansi: bool = False, track: bool = True
 ) -> "tuple[HereDocSpan, ...]":
     """The bodies a read of *text* from *start*, in quote *state*, opens, in order.
 
@@ -97,7 +96,7 @@ def heredoc_docs(
     body text is skipped, and the read goes on unquoted after the closing line.
     """
     docs: "list[HereDocSpan]" = []
-    for _at in heredoc_stream(text, start, state, ansi, docs) or ():
+    for _at in heredoc_stream(text, start, state, ansi, docs, track) or ():
         pass
     return tuple(docs)
 
@@ -142,22 +141,24 @@ def _unfolded_offset(at: int, gone: "list[int]", moved: "list[int]") -> int:
 
 
 def heredoc_stream(
-    text: str, start: int, state: int, ansi: bool, docs: "list[HereDocSpan]"
+    text: str, start: int, state: int, ansi: bool, docs: "list[HereDocSpan]", track: bool = True
 ) -> "Iterator[int] | None":
     """:func:`heredoc_docs` read lazily, for a walk: each step's offset is yielded
     before it is read, and *docs* grows with each body whose ``<<`` line ends before
     it. A walk that stops early reads no further, so a line cut into many walks
     (each substitution resumes one) stays linear. None when nothing is left to read.
+    *track* off follows no ``${…}`` / arithmetic span (a ``<<`` in one opens a body),
+    for a caller reading a text both ways; the walk reads bash-faithfully (track on).
     """
     if text.find("<<", start) < 0:
         return None
     memo = _CALL_VIEWS.get()
     carried = memo.get((_UNFOLDED, text)) if memo is not None else None
     if carried is None:
-        return _doc_steps(text, start, state, ansi, docs)
+        return _doc_steps(text, start, state, ansi, docs, track)
     source, cuts, gone, moved = carried
     return _folded_steps(
-        source, cuts, gone, _unfolded_offset(start, gone, moved), state, ansi, docs
+        source, cuts, gone, _unfolded_offset(start, gone, moved), state, ansi, docs, track
     )
 
 
@@ -169,6 +170,7 @@ def _folded_steps(
     state: int,
     ansi: bool,
     docs: "list[HereDocSpan]",
+    track: bool = True,
 ) -> "Iterator[int]":
     """:func:`_doc_steps` on the unfolded *source*, with each offset moved onto the
     folded text, read as lazily."""
@@ -188,20 +190,20 @@ def _folded_steps(
             carried[0] += 1
 
     carried = [0]
-    for at in _doc_steps(source, pos, state, ansi, read):
+    for at in _doc_steps(source, pos, state, ansi, read, track):
         carry()
         yield move(at)
     carry()
 
 
 def _doc_steps(
-    text: str, pos: int, state: int, ansi: bool, docs: "list[HereDocSpan]"
+    text: str, pos: int, state: int, ansi: bool, docs: "list[HereDocSpan]", track: bool = True
 ) -> "Iterator[int]":
     from .shell_normalizer_walk import _iter_shell_chars, _opens_comment  # circular
 
     n = len(text)
     view: "str | None" = ""  # read at the first ``<<``
-    expansion: "list[str]" = []  # closers of open ``${…}`` / ``$[…]``
+    expansion: "list[str]" = []  # closers of open ``${…}`` / ``$[…]`` when *track*
     frames: "list[list]" = []  # [kind, depth, held openers, arithmetic?] per paren/backtick
     fresh: "list | None" = None  # the frame the step before opened
     closing = odd_dollar = False
@@ -212,7 +214,7 @@ def _doc_steps(
             at = step.offset
             yield at
             dollars = dollars + 1 if step.active and step.char == "$" else 0
-            if not expansion and step.text != "\\\n":  # bash drops a continuation
+            if track and not expansion and step.text != "\\\n":  # bash drops a continuation
                 char, opened, fresh = (step.char if step.active else ""), fresh, None
                 if closing:  # the ``)`` before closed the arithmetic's own depth
                     closing = False
@@ -249,7 +251,7 @@ def _doc_steps(
                 newline = text.find("\n", at)  # a comment's quotes and ``<<`` open nothing
                 resume, state, ansi = (n if newline < 0 else newline), 0, False
                 break
-            if dollars % 2 and text.startswith(("${", "$["), at):
+            if track and dollars % 2 and text.startswith(("${", "$["), at):
                 expansion.append("}" if text[at + 1] == "{" else "]")
             elif step.active and expansion and step.char == expansion[-1]:
                 expansion.pop()
@@ -330,53 +332,50 @@ def heredoc_opener(text: str, at: int) -> "tuple[str, bool, bool] | None":
 
 
 def heredoc_tag(text: str, i: int) -> "tuple[str, bool, bool] | None":
-    """``(tag, strip tabs, quoted)`` of the heredoc whose ``<<`` ends at *i*, with its
-    quotes removed as bash removes them, else None when the tag word holds a ``$(``,
-    ``${``, ``$[``, ``$$`` or a backtick, which bash keeps in the word as written and
-    this reader does not model: such a ``<<`` opens no body."""
+    """``(tag, strip tabs, quoted)`` of the heredoc whose ``<<`` ends at *i*, else None
+    for a tag the reader and bash could read differently.
+
+    NARROWED (fail closed): a body opens only for a plain word tag (``<<EOF``) or a
+    single-/double-quoted plain word (``<<'EOF'``, ``<<"EOF"``) with no ``$``, backtick
+    or backslash. Any other tag -- a quote-character tag (``<<"'"``, ``<<\\'``), an
+    ANSI-C tag (``<<$'e\\x6ff'``), or a mixed-quote one -- returns None, so this ``<<``
+    opens no body and the walk does not reset its quote state after it: bash and this
+    reader could resolve it to different closing lines, so the construct reads as
+    conservatively as origin/main reads it (the floor's own reader applies the same
+    criterion in :func:`argv_floor_self._any_decorated_heredoc_tag`)."""
     strip = text.startswith("-", i)
     i += strip
     while text[i : i + 1] in (" ", "\t"):
         i += 1
-    tag: "list[str]" = []
-    quoted = False
+    start = i
     quote = ""
     while i < len(text):
         ch = text[i]
         if quote:
             if ch == quote:
                 quote = ""
-            elif quote == '"' and ch == "\\" and text[i + 1 : i + 2] in ('"', "\\", "$", "`"):
-                i += 1
-                tag.append(text[i])
-            else:
-                tag.append(ch)
-        elif ch == "`" or ch == "$" and text[i + 1 : i + 2] in ("(", "{", "[", "$"):
-            return None
         elif ch in ("'", '"'):
-            quote, quoted = ch, True
-        elif ch == "$" and text[i + 1 : i + 2] == "'":
-            # bash decodes an ANSI-C tag before it compares lines with it:
-            # ``$'e\x6ff'`` closes on ``eof``
-            end = i + 2
-            while end < len(text) and text[end] != "'":
-                end += 2 if text[end] == "\\" else 1
-            tag.append(_decode_ansi_c_body(text[i + 2 : min(end, len(text))]))
-            quoted, i = True, end
-        elif ch == "$" and text[i + 1 : i + 2] == '"':
-            pass  # ``$"EOF"`` names the tag ``EOF``
+            quote = ch
         elif text.startswith("\\\n", i):
-            i += 1  # bash drops a continuation before it reads the tag word
+            i += 1  # a line continuation never ends the tag word
         elif ch == "\\":
-            quoted = True
-            i += 1
-            tag.append(text[i : i + 1])
+            return None  # an escaped tag char is decoration bash resolves; fail closed
         elif ch in _TAG_ENDS:
             break
-        else:
-            tag.append(ch)
         i += 1
-    return "".join(tag), strip, quoted
+    raw = text[start:i]
+    if not raw or "$" in raw or "`" in raw:  # ``$'…'`` / ``$(`` / backtick: not modelled
+        return None
+    has_sq, has_dq = "'" in raw, '"' in raw
+    if has_sq and has_dq:
+        return None  # mixed quote types: the reader and bash can pair them differently
+    if not (has_sq or has_dq):
+        return raw, strip, False
+    q = "'" if has_sq else '"'
+    if not (raw[0] == q and raw[-1] == q and len(raw) >= 2 and raw.count(q) == 2):
+        return None  # a quote-character tag (``<<"'"``) or quotes not one clean pair
+    inner = raw[1:-1]
+    return (inner, strip, True) if inner else None
 
 
 def heredoc_closing_line(

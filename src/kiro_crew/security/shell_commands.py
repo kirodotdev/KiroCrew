@@ -201,7 +201,9 @@ def read_commands(
     if heredocs and "<<" in command:
         from .shell_heredoc_lines import heredoc_docs  # lazy: off the MCP listing
 
-        docs = heredoc_docs(command)
+        # *track* off follows no ``${…}`` / arithmetic span, so a ``<<`` held inside one
+        # opens a body: a floor's untracked reading still sees it, as on origin/main.
+        docs = heredoc_docs(command, track=track)
     owners: "dict[int, int | None]" = {}  # offset of each live ``<<`` -> its command
 
     def cut(separator: str) -> None:

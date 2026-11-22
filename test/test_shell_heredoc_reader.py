@@ -39,7 +39,10 @@ class TestReader:
         ]
 
     def test_quoted_tags_strip_tabs_and_two_bodies_on_one_line(self):
-        assert _docs("cat <<A <<\\B\n1\nA\n2\nB\nz")[0] == ("cat", [("1\n", False), ("2\n", True)])
+        # ``<<\B`` is a tag spelled with a backslash: the reader resolves it unlike
+        # bash, so it opens no body (narrowed: a decorated tag fails closed to the
+        # conservative reading). Only ``<<A`` opens; the rest reads as commands.
+        assert _docs("cat <<A <<\\B\n1\nA\n2\nB\nz")[0] == ("cat", [("1\n", False)])
         assert _docs("bash <<-EOF\n\tA\n\tEOF\ndone") == [
             ("bash", [("\tA\n", False)]),
             ("done", []),
@@ -48,6 +51,23 @@ class TestReader:
             ("cat", [("$(x)\n", True)]),
             ("next", []),
         ]
+
+    def test_a_decorated_tag_opens_no_body(self):
+        # NARROWED: a body opens only for a plain word tag or a quoted plain word with
+        # no ``$`` / backslash machinery. A tag whose resolved form holds a quote
+        # character (``<<"'"``), a backslash (``<<\\'``) or ``$`` (``<<$'e\\x6ff'``) is
+        # one the reader and bash can read differently, so it opens no body and the
+        # read goes on as origin/main reads it (fail closed).
+        from kiro_crew.security.shell_heredoc_lines import heredoc_opener, heredoc_tag
+
+        for decorated in ('<<"\'"', "<<\\'", "<<$'e\\x6ff'", '<<\\"', "<<-'\"'", '<<\'a"\''):
+            assert heredoc_opener(decorated, 0) is None, decorated
+        assert heredoc_tag("<<EOF", 2) == ("EOF", False, False)
+        assert heredoc_tag("<<'EOF'", 2) == ("EOF", False, True)
+        assert heredoc_tag('<<-"END"', 2) == ("END", True, True)
+        # a tag that spells a command still opens no body, so the closing line reads
+        # as a command (a conservative over-read, never an under-read).
+        assert _docs(f'cat <<\'bash -c "{ROOT}"\'\nhello\nbash -c "{ROOT}"')[0][1] == []
 
     def test_offsets_index_the_raw_text(self):
         text = "x; cat <<EOF\nhello\nEOF\n"
@@ -198,9 +218,6 @@ def test_the_floor_refuses(cmd):
         pytest.param(f"cat <<'EOF'\nEO\\\nF\n{ROOT}\nEOF", id="quoted-body-keeps-continuation"),
         pytest.param(f"printf 'true\\n' <<'EOF' | bash\n{ROOT}\nEOF", id="producer-ignores-stdin"),
         pytest.param(f"bash --help <<'EOF'\n{ROOT}\nEOF", id="shell-help-runs-nothing"),
-        pytest.param(
-            f'cat <<\'bash -c "{ROOT}"\'\nhello\nbash -c "{ROOT}"', id="tag-spells-a-wipe"
-        ),
         pytest.param("echo '$(x=$((1<<2))\nrm -r -f ~\n)'", id="shift-single-quoted-data"),
         pytest.param("cat <<'EOF'\n$(x=$((1<<2))\nrm -r -f ~\n)\nEOF", id="shift-quoted-body-data"),
         pytest.param("echo '`x=$((1<<2))\nrm -r -f ~\n`'", id="shift-single-quoted-backtick-data"),

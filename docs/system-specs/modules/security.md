@@ -1122,7 +1122,20 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   (`heredoc_closing_line`). `heredoc_docs` decides, once for every reader, which `<<`
   opens a body: a live one that is not a `<<<` here-string, not in a `#` comment, not
   inside a `${…}` or `$[…]` expansion, and not a shift inside `$((…))` or `((…))`,
-  whose nesting it carries across lines. The quote walk reads the same decision
+  whose nesting it carries across lines. This shared reader exists for ONE job: the
+  quote walk's quote STATE. bash reads the text after a body's closing line unquoted,
+  whatever quote characters the body held, so the walk needs to know where each body
+  ends to reset there. The body's CONTENT is not read more freely than origin/main:
+  the reader opens a body only for a tag it can resolve exactly as bash does, and the
+  floors keep their own per-floor body reading.
+  `heredoc_tag` opens a body only for a plain word tag (`<<EOF`) or a single-/double-
+  quoted plain word (`<<'EOF'`, `<<"EOF"`) that holds no `$`, backtick or backslash.
+  Any other tag — a quote-character tag (`<<"'"`, `<<\'`), a `$'…'` ANSI-C or `$`/
+  backtick tag, or a mixed-quote one — the reader and bash could resolve to different
+  closing lines, so it opens NO body: the walk does not reset there and reads the text
+  as it did before heredocs were read (fail closed, the conservative reading).
+  `argv_floor_self._any_decorated_heredoc_tag` applies the same criterion in the self
+  floor's own reader. The quote walk reads the decision
   lazily (`heredoc_stream`), a step ahead of itself, so a line that many walks
   resume over stays linear. Bodies of a text that `_fold_line_continuations` or
   `_shell_join_continuations` folded are found on the text before folding
@@ -1136,17 +1149,16 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   slice or a payload with its quotes or escapes removed (which could match a
   lower-case copy elsewhere in the command), the case is unknown, and a tag with letters opens a body
   only when one line alone can close it: bash then either closes it there or nowhere.
-  With a second candidate line, and for a tag word that holds `$(`, `${`, `$[`, `$$`
-  or a backtick (bash keeps those in the word as written), no body opens, and the
-  quote walk reads the text as it did before heredocs were read. It reads
+  `heredoc_docs(text, track=…)` takes a `track` flag: with it off the reader follows
+  no `${…}` or arithmetic span, so a `<<` held inside one opens a body. That is for
+  `shell_commands.read_commands`, which reads a text both ways for a floor's untracked
+  fallback (`rm_floor`), exactly as origin/main's own reader did; the quote walk
+  always reads with tracking on. It reads
   raw lines only and never looks for the close of a `$(…)` or a backtick, so the quote walk
   (`shell_normalizer_walk._iter_shell_chars`) calls it, and `shell_commands.read_commands`
-  takes each body's start and end from it and keeps no opener logic of its own. A `$'…'` tag is decoded with
-  `shell_normalizer_escapes._decode_ansi_c_body` before lines are compared with it, as
-  bash decodes it (`$'e\x6ff'` closes on `eof`). `heredoc_body_spans(text)` lists the
-  bodies a walk of the text meets. At import time it reads only
-  `shell_normalizer_escapes.py` and `call_views.py`, both leaves; the functions that
-  need the walk's helpers import them when they run.
+  takes each body's start and end from it. `heredoc_body_spans(text)` lists the
+  bodies a walk of the text meets. At import time it reads only `call_views.py`, a
+  leaf; the functions that need the walk's helpers import them when they run.
 - `shell_commands.py` — the shared quote-aware command reader. `read_commands(text, track)`
   walks the text once with `shell_normalizer._iter_shell_chars` and returns one `ShellCommand`
   per command: its steps (raw text, raw offsets, quote state), its words (split at live
@@ -2811,10 +2823,16 @@ kill program targeting a later command's `$KIROCREW_SCRATCH` path. Quoted
 newlines remain inside their operand, and escaped continuations still join the
 command. Local assignments remain available across the preserved separators.
 Text after a heredoc's closing line is read as bash reads it: unquoted, whatever
-quote characters the body held. The quote walk itself does this
+quote characters the body held. This quote-state reset is the shared reader's one
+job. The quote walk does it
 (`_iter_shell_chars`): a `<<` it meets outside quotes opens a body on the next
 line, found line by line up to its closing line (`shell_heredoc_lines`), and the
-walk starts unquoted where that line ends. The body's steps are still yielded, so a
+walk starts unquoted where that line ends. A body opens only for a tag the reader
+can resolve exactly as bash does (a plain word, or a single-/double-quoted plain
+word); a decorated tag — a quote-character tag (`<<"'"`), an ANSI-C or `$`/backtick
+tag, or a mixed-quote one — opens none, so the walk does not reset there and reads on
+as it did before heredocs were read (fail closed, the conservative reading bash's own
+ambiguity leaves us). The body's steps are still yielded, so a
 shell fed the body is judged as before. Every reader built on the walk inherits
 this, the `$(…)` close (`_matching_close_paren`) and backtick close
 (`_matching_close_backtick`) included: a walk that starts inside a substitution
