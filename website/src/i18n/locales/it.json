@@ -17376,6 +17376,7 @@
         "files_and_folders": "File e cartelle",
         "folder_drop_needs_path": "Inserisci qui sopra il percorso completo di questa cartella. Qui non si può leggere dal trascinamento.",
         "folder_picker_failed": "Impossibile aprire il selettore di cartelle. Digita invece il percorso della cartella.",
+        "folder_already_a_source": "Questa cartella è già tra le tue origini come «{{name}}».",
         "failed_to_add_source": "Impossibile aggiungere l’origine",
         "files_failed_count_many": "{{count}} non riusciti",
         "files_failed_count_one": "{{count}} non riuscito",

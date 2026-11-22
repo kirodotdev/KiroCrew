@@ -17376,6 +17376,7 @@
         "files_and_folders": "Archivos y carpetas",
         "folder_drop_needs_path": "Escribe arriba la ruta completa de esta carpeta. Aquí no se puede leer al soltarla.",
         "folder_picker_failed": "No se pudo abrir el selector de carpetas. Escribe la ruta de la carpeta.",
+        "folder_already_a_source": "Esta carpeta ya está en tus fuentes como “{{name}}”.",
         "failed_to_add_source": "No se pudo añadir la fuente",
         "files_failed_count_many": "{{count}} con errores",
         "files_failed_count_one": "{{count}} con error",

@@ -16945,6 +16945,7 @@
         "files_and_folders": "ফাইল ও ফোল্ডার",
         "folder_drop_needs_path": "উপরে এই ফোল্ডারের পুরো পাথ লেখো। এখানে ছেড়ে দেওয়া ফোল্ডার থেকে এটি পড়া যায় না।",
         "folder_picker_failed": "ফোল্ডার বাছাইয়ের উইন্ডো খোলা গেল না। এর বদলে ফোল্ডারের পাথ লেখো।",
+        "folder_already_a_source": "এই ফোল্ডারটি আগে থেকেই তোমার সোর্সে “{{name}}” নামে আছে।",
         "failed_to_add_source": "সোর্স যোগ করা যায়নি",
         "files_failed_count_one": "{{count}}টি ব্যর্থ",
         "files_failed_count_other": "{{count}}টি ব্যর্থ",

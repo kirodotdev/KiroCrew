@@ -17376,6 +17376,7 @@
         "files_and_folders": "Fichiers et dossiers",
         "folder_drop_needs_path": "Saisis ci-dessus le chemin complet de ce dossier. Il ne peut pas être lu depuis un dépôt ici.",
         "folder_picker_failed": "Impossible d’ouvrir le sélecteur de dossiers. Saisis plutôt le chemin du dossier.",
+        "folder_already_a_source": "Ce dossier fait déjà partie de tes sources sous le nom « {{name}} ».",
         "failed_to_add_source": "Échec de l’ajout de la source",
         "files_failed_count_many": "{{count}} en échec",
         "files_failed_count_one": "{{count}} en échec",

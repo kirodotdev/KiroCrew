@@ -868,9 +868,8 @@ async def add_source(request: web.Request) -> web.Response:
                 )
                 # The row's id under "id" too, the key every caller reads: the
                 # md-notebook app confirms the id it gets back, as it does for a
-                # 409, and the Knowledge tab's follow-up sync is a no-op for a
-                # folder (its connector never reports changes; the watcher
-                # scans it).
+                # 409, and the Knowledge tab's add form names the row it holds
+                # under that id.
                 return web.json_response(
                     {
                         "id": same["id"],

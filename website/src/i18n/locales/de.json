@@ -16945,6 +16945,7 @@
         "files_and_folders": "Dateien und Ordner",
         "folder_drop_needs_path": "Gib oben den vollständigen Pfad dieses Ordners ein. Er lässt sich hier beim Ablegen nicht lesen.",
         "folder_picker_failed": "Die Ordnerauswahl ließ sich nicht öffnen. Gib stattdessen den Pfad des Ordners ein.",
+        "folder_already_a_source": "Dieser Ordner ist bereits als „{{name}}“ in deinen Quellen.",
         "failed_to_add_source": "Quelle konnte nicht hinzugefügt werden",
         "files_failed_count_one": "{{count}} fehlgeschlagen",
         "files_failed_count_other": "{{count}} fehlgeschlagen",

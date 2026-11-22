@@ -9163,6 +9163,7 @@
         "folder_path": "Folder path",
         "folder_path_e_g_home_user_notes": "Folder path (e.g., /home/user/notes)",
         "folder_picker_failed": "Couldn't open the folder picker. Type the folder's path instead.",
+        "folder_already_a_source": "This folder is already in your sources as “{{name}}”.",
         "ignore_patterns": "Ignore patterns",
         "ignore_patterns_help": "One pattern per line, matched against each file's path inside this folder. * matches any characters, including /. Matching is case-sensitive.",
         "ignore_patterns_keep_indexed_files": "Files already indexed that match a new pattern are kept and no longer updated.",

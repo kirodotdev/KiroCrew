@@ -16514,6 +16514,7 @@
         "files_and_folders": "文件和文件夹",
         "folder_drop_needs_path": "请在上方输入此文件夹的完整路径。这里无法从拖放中读取它。",
         "folder_picker_failed": "无法打开文件夹选择器。请改为输入文件夹路径。",
+        "folder_already_a_source": "此文件夹已在你的来源中，名称为“{{name}}”。",
         "failed_to_add_source": "添加来源失败",
         "files_failed_count_other": "{{count}} 个失败",
         "files_indexed": "已索引 {{done}}/{{total}} 个文件",

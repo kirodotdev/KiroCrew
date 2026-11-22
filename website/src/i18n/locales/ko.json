@@ -16514,6 +16514,7 @@
         "files_and_folders": "파일 및 폴더",
         "folder_drop_needs_path": "위에 이 폴더의 전체 경로를 입력하세요. 여기서는 놓은 폴더에서 경로를 읽을 수 없습니다.",
         "folder_picker_failed": "폴더 선택기를 열 수 없습니다. 대신 폴더 경로를 입력하세요.",
+        "folder_already_a_source": "이 폴더는 이미 ‘{{name}}’(이)라는 이름으로 소스에 있습니다.",
         "failed_to_add_source": "소스를 추가하지 못했습니다",
         "files_failed_count_other": "{{count}}개 실패",
         "files_indexed": "파일 {{done}}/{{total}}개 인덱싱됨",

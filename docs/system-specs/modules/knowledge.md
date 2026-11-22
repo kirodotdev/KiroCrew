@@ -583,7 +583,9 @@ the same folder again. It is a 200, not the exact re-add's 409, because the
 Knowledge tab's add form shows a 409 as a failed add, and these spellings
 were added successfully before. `id` is the key every caller reads: the
 md-notebook app confirms it, as it does a 409's id, and the Knowledge tab's
-follow-up sync is a no-op for a folder source. A new row keeps the spelling
+add form stays open and names the row with that `id` from its sources list
+(`pages.knowledge.sourcesList.folder_already_a_source`), with no follow-up
+sync. It is a `StatusNotice`, not an error: nothing failed. A new row keeps the spelling
 it was given, and `..` is never collapsed, since that can change which
 directory a symlinked path names.
 
