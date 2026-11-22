@@ -1329,8 +1329,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         audit_bash_exfiltration,
     )
     from kiro_crew.security.exfil_git_object import (  # noqa: F401
+        _HEX_PAIR_RE,
         _QUERY_WORD_RE,
         _is_plus_joined_words,
+        _word_list_run,
     )
     from kiro_crew.security.exfil_oauth import (  # noqa: F401
         _ENDPOINT_EXTENSION_CAP,

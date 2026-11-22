@@ -50,6 +50,22 @@ def _is_plus_joined_words(run: str) -> bool:
     )
 
 
+_HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
+
+
+def _word_list_run(value: str, match: re.Match[str]) -> str:
+    """The run less the two hex digits of a ``%XX`` octet it starts on.
+
+    ``urlencode`` writes ``(T1 OR T2)`` as ``%28T1+OR+T2%29``, so the run starts on
+    ``28`` and its first piece reads ``28T1``. Only the word-list test drops them,
+    and only as a second try beside the whole run (``%29+AND+...`` is words whole).
+    """
+    run, start = match.group(0), match.start()
+    if start and value[start - 1] == "%" and _HEX_PAIR_RE.match(run):
+        return run[2:]
+    return run
+
+
 def _exfil_blob_hit(value: str) -> bool:
     """True when ``_EXFIL_PATTERNS`` matches ``value`` on anything but a bare git
     object name or a ``+``-joined list of plain words. Every other alternative (AWS
@@ -57,7 +73,11 @@ def _exfil_blob_hit(value: str) -> bool:
     unchanged."""
     for match in _EXFIL_PATTERNS.finditer(value):
         run = match.group(0)
-        if _GIT_OBJECT_NAME_RE.fullmatch(run) or _is_plus_joined_words(run):
+        if (
+            _GIT_OBJECT_NAME_RE.fullmatch(run)
+            or _is_plus_joined_words(run)
+            or _is_plus_joined_words(_word_list_run(value, match))
+        ):
             continue
         return True
     return False
