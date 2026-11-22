@@ -50,6 +50,7 @@ from kiro_crew.dashboard.handlers import agent_panel as routes
 from kiro_crew.dashboard.handlers import agent_panel_snapshot, member_dashboard_fields
 from kiro_crew.dashboard_page_image import PageImage
 from kiro_crew.testing.synthetic_credentials import github_classic
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 LINUX_ONLY = pytest.mark.skipif(
     not platform_compat.IS_LINUX, reason="the page check runs on Linux only"
@@ -224,56 +225,69 @@ def test_a_page_text_reply_that_is_not_the_expressions_answer_is_no_text(reply):
     assert dashboard_page_image.read_text(call) is None
 
 
-def _run_text_expression(body_js: str, marks_js: str = "[]") -> dict[str, Any]:
-    """TEXT_EXPRESSION's answer in node over a fake document whose innerText is *body_js*."""
-    import shutil
-    import subprocess
-
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is not installed")
-    script = (
-        f"const marks = {marks_js};"
-        "globalThis.document = {querySelectorAll: () => marks,"
-        " createTextNode: (s) => ({textContent: s}),"
-        " body: {get innerText() {"
-        f"return {body_js} + marks.map((m) => m.added).join('');"
-        "}}};"
-        f"process.stdout.write(JSON.stringify({dashboard_page_image.TEXT_EXPRESSION}));"
-    )
-    out = subprocess.run(
-        [node, "-e", script],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-        check=True,
-    )
-    return json.loads(out.stdout)
-
-
 _MARK_JS = (
     "[{added: '', getAttribute(n) { return {'data-dashboard-missing': 'true',"
     " 'data-dashboard-missing-label': 'not current'}[n] ?? null; },"
     " appendChild(t) { this.added += t.textContent; }}]"
 )
 
+#: Each case: the fake page's innerText (a JS expression) and its frame marks.
+_EXPRESSION_CASES: dict[str, tuple[str, str]] = {
+    "long": (f"'x'.repeat({dashboard_page_image.MAX_TEXT_CHARS + 50})", "[]"),
+    "short": ("'Open PRs\\n7 \U0001f600'", "[]"),
+    "marked": ("'Fleet 42'", _MARK_JS),
+    "over": (f"'x'.repeat({dashboard_page_image.MAX_READ_CHARS + 1})", "[]"),
+}
 
-def test_the_expression_hands_back_the_whole_text_so_it_is_redacted_before_any_cut():
-    """#40937: a cut in the page can keep part of a secret; the page no longer cuts."""
-    long = _run_text_expression(f"'x'.repeat({dashboard_page_image.MAX_TEXT_CHARS + 50})")
+
+@pytest.fixture(scope="module")
+def expression_answers() -> dict[str, Any]:
+    """TEXT_EXPRESSION's answer for each case, from ONE node child over fake documents."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    cases = ",".join(
+        f"{json.dumps(name)}: () => {{ const marks = {marks};"
+        "globalThis.document = {querySelectorAll: () => marks,"
+        " createTextNode: (s) => ({textContent: s}),"
+        f" body: {{get innerText() {{ return {body} + marks.map((m) => m.added).join(''); }}}}}};"
+        f"return {dashboard_page_image.TEXT_EXPRESSION}; }}"
+        for name, (body, marks) in _EXPRESSION_CASES.items()
+    )
+    script = (
+        f"const cases = {{{cases}}};"
+        "const out = {}; for (const [k, run] of Object.entries(cases)) out[k] = run();"
+        "process.stdout.write(JSON.stringify(out));"
+    )
+    out = subprocess.run(
+        [node, "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+@pytest.mark.xdist_group("dashboard_page_text_expression")
+def test_the_expression_hands_back_the_whole_text_so_it_is_redacted_before_any_cut(
+    expression_answers,
+):
+    """A cut in the page can keep part of a secret, so the page hands back all of it."""
+    long = expression_answers["long"]
     assert long == {"text": "x" * (dashboard_page_image.MAX_TEXT_CHARS + 50), "length": 6050}
     # Normal cases as before: a short page, an emoji counted once, a frame mark as text.
-    assert _run_text_expression("'Open PRs\\n7 \U0001f600'") == {
-        "text": "Open PRs\n7 \U0001f600",
-        "length": 12,
-    }
-    marked = _run_text_expression("'Fleet 42'", marks_js=_MARK_JS)
-    assert marked == {"text": "Fleet 42 [not current]", "length": 22}
+    assert expression_answers["short"] == {"text": "Open PRs\n7 \U0001f600", "length": 12}
+    assert expression_answers["marked"] == {"text": "Fleet 42 [not current]", "length": 22}
 
 
-def test_the_expression_gives_no_text_over_the_read_cap():
-    over = _run_text_expression(f"'x'.repeat({dashboard_page_image.MAX_READ_CHARS + 1})")
+@pytest.mark.xdist_group("dashboard_page_text_expression")
+def test_the_expression_gives_no_text_over_the_read_cap(expression_answers):
+    over = expression_answers["over"]
     assert over == {"text": None, "length": dashboard_page_image.MAX_READ_CHARS + 1}
     assert dashboard_page_image.read_text(lambda _p: _text_reply(over)) is None
 
@@ -706,7 +720,7 @@ def test_the_snapshot_text_crosses_the_tabs_redaction_and_the_save_check_has_non
 
 
 def test_a_secret_the_cut_falls_inside_is_redacted_not_shown_in_part(glue):
-    """#40937: the whole text is redacted, then cut, so no start of the key is kept."""
+    """The whole text is redacted, then cut, so no start of the key is kept."""
     secret = github_classic()
     cap = dashboard_page_image.MAX_TEXT_CHARS
     page = "x " * ((cap - 20) // 2) + secret + " tail"  # a cut first keeps ~20 of it

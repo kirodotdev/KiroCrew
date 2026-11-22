@@ -1686,7 +1686,7 @@ run's throwaway copy and the picture is already taken, so the write changes neit
 picture nor a person's tab. It returns the whole of `document.body.innerText` and its
 length, both counted in code points (`Array.from`), as Python counts them; over
 `MAX_READ_CHARS` (200000, so the reply fits the run's 4 MiB message cap) it returns no
-text. The text is never cut before it is redacted (#40937): `_run_package_page` redacts the
+text. The text is never cut before it is redacted, since a cut first can keep part of a secret: `_run_package_page` redacts the
 whole text, then cuts it to `MAX_TEXT_CHARS` (6000).
 `dashboard_page_image.read_text` trusts nothing the page returns: it reads a text over
 `MAX_READ_CHARS` as no text, keeps a

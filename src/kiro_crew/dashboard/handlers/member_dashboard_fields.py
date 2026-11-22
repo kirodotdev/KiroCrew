@@ -809,7 +809,7 @@ def _run_package_page(
         # joined at run time), so what goes back to the agent crosses the same recursive pass,
         # the page's rendered text included.
         # Redacted whole, THEN cut: a cut first can keep the start of a secret too short
-        # for the redactor to know (#40937).
+        # for the redactor to know.
         text = verdict.text
         if text is not None:
             safe = member_dashboard._page_safe(text.text)[: dashboard_page_image.MAX_TEXT_CHARS]

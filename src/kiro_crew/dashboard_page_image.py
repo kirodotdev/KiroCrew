@@ -76,7 +76,7 @@ MAX_TEXT_CHARS: Final[int] = 6000
 
 #: The most characters of the page's text read back before it is redacted. The text is
 #: redacted whole and only then cut to :data:`MAX_TEXT_CHARS`, because a cut first can
-#: keep the start of a secret too short for the redactor to know (#40937). Bounded so
+#: keep the start of a secret too short for the redactor to know. Bounded so
 #: the reply fits the run's DevTools message cap (4 MiB): a code point is at most twelve
 #: bytes of JSON (an escaped surrogate pair), so this is at most 2.4 MB. A page over it
 #: gives no text.
