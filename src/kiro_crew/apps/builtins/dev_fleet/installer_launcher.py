@@ -92,8 +92,8 @@ def record_first_cutover(live_program: Path, current: str | None) -> bool:
     another installation is what Restore writes back; a cutover's own launcher is not
     the installer's and never replaces it. An already-pinned pointer does not block
     recording, since a foreground or staged-only cutover pins without rewriting the
-    launcher. Raises ``OSError`` when the write or its link check fails, so the
-    caller refuses the cutover before staging.
+    launcher. Raises ``OSError`` when the write or its link check fails; the caller
+    logs it and cuts over anyway.
     """
     if current is None or not is_installers(current):
         return False

@@ -69,7 +69,14 @@ async def _unavailable_fleet(body: dict) -> web.Response:
     leaves the field out (unknown, not false).
     """
     try:
-        body = {**body, "live_target_pinned": (await live.pointer_state()).pinned}
+        state = await live.pointer_state()
+        body = {
+            **body,
+            "live_target_pinned": state.pinned,
+            "restore_restart_pending": state.restore_restart_pending,
+            # The pending notice names the command; the page has no fallback of its own.
+            "manual_restart": live._manual_restart_command(),
+        }
     except live.PointerUnavailable:
         pass
     return web.json_response(body)

@@ -226,6 +226,7 @@ async def handle_live_target(request: web.Request) -> web.Response:
             "previous": state.previous,
             "live_verified": state.live_verified,
             "pinned": state.pinned,
+            "restore_restart_pending": state.restore_restart_pending,
         }
     )
 

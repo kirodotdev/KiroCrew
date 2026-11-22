@@ -572,6 +572,7 @@ class TestTheReadBroker:
                 "previous": "/wt/previous",
                 "live_verified": True,
                 "pinned": False,
+                "restore_restart_pending": False,
             }
             assert recorded["state_fresh"] is True
         finally:
@@ -723,6 +724,14 @@ class TestTheBackendClient:
             pointer_broker._parse_state({"pinned": "yes"})
 
     @pytest.mark.asyncio
+    async def test_restore_restart_pending_crosses_the_broker_and_defaults_false(self) -> None:
+        state = pointer_broker._parse_state({"restore_restart_pending": True})
+        assert state.restore_restart_pending is True
+        assert pointer_broker._parse_state({}).restore_restart_pending is False
+        with pytest.raises(live.PointerUnavailable, match="restore_restart_pending"):
+            pointer_broker._parse_state({"restore_restart_pending": 1})
+
+    @pytest.mark.asyncio
     async def test_a_non_bool_live_verified_is_an_outage(self) -> None:
         with pytest.raises(live.PointerUnavailable, match="live_verified"):
             pointer_broker._parse_state({"live": "/wt/live", "live_verified": "no"})
@@ -783,6 +792,7 @@ def test_pointer_state_payload_is_json_shaped() -> None:
         "previous": None,
         "live_verified": True,
         "pinned": False,
+        "restore_restart_pending": False,
     }
 
 

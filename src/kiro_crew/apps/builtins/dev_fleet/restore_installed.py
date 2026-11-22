@@ -41,6 +41,9 @@ _REMOVAL_BUSY = {
 
 Snapshot = tuple["str | None", "str | None", bool]
 
+#: launchd statuses whose plist runs ``live_program()`` (see ``LaunchdBackend.status``).
+_AGENT_EXECS_LAUNCHER = frozenset({"ok", "live_program_missing", "agent_restart_contract_outdated"})
+
 
 def _restart_notice(*, desktop_app: bool) -> str:
     """What the owner finishes by hand when nothing managed can bounce the gateway."""
@@ -161,10 +164,10 @@ async def _restore_installed(dry_run: bool = False) -> dict:
         if launchd is None:
             return None
         if definition is None:
-            # No launcher at all: with no launchd agent to run it (a foreground host)
-            # there is nothing to write back; with an agent, clearing the pointer alone
-            # would leave launchd with nothing to execute.
-            if live._foreground_eligible(unit_status):
+            # No launcher at all. Only an agent whose plist execs the launcher needs
+            # one written back, or launchd has nothing to execute; with no agent, or
+            # an older agent that runs the binary directly, the pointer is all there is.
+            if unit_status not in _AGENT_EXECS_LAUNCHER:
                 return None
         elif installer_launcher.is_installers(definition):
             return None
@@ -318,6 +321,7 @@ async def _restore_installed(dry_run: bool = False) -> dict:
         # the next start of the gateway, however it happens, boots the installed
         # build. Rolling back would turn "finish with one command" into "start over".
         await _forget_record()
+        live._RESTORE_RESTART_PENDING = True
         return {
             "ok": True,
             "restored": True,

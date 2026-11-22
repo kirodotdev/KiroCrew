@@ -113,6 +113,9 @@ class PointerState:
     #: The pointer names a checkout (usable or not): the gateway's next start is
     #: decided by Dev Fleet, not the installer. Gates "Restore installed build".
     pinned: bool = False
+    #: A staged-only Restore cleared the pointer in this gateway process, which still
+    #: runs the worktree until it restarts. Keeps the restart command on the page.
+    restore_restart_pending: bool = False
 
 
 class PointerUnavailable(RuntimeError):
@@ -189,6 +192,8 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
         previous=previous,
         live_verified=live_verified,
         pinned=pinned,
+        # A later Make Live pins again, and its own controls take over.
+        restore_restart_pending=_RESTORE_RESTART_PENDING and not pinned,
     )
 
 
@@ -554,6 +559,8 @@ _MAKE_LIVE_LOCK = LoopBoundLock()
 # restart spawns starts with it clear. Failure paths BEFORE successful
 # scheduling never set it, and ``dry_run`` never sets it.
 _MAKE_LIVE_COMMITTED = False
+#: Set by a staged-only Restore; process-local, so the restart it waits for clears it.
+_RESTORE_RESTART_PENDING = False
 
 
 async def _gateway_service_reason() -> str | None:
@@ -1323,6 +1330,8 @@ async def _make_live_inner(
         if can_restart and isinstance(svc, gateway_service.LaunchdBackend):
             # The launcher about to be rewritten may be the installer's; keep it for
             # "Restore installed build", which cannot re-derive it from a worktree.
+            # A failed record never blocks the cutover: Restore then answers
+            # restore_no_installer_record and the owner reinstalls by hand.
             try:
                 await _off(
                     subprocess_executor(),
@@ -1331,15 +1340,12 @@ async def _make_live_inner(
                     prior_definition,
                 )
             except OSError as exc:
-                return {
-                    "ok": False,
-                    "code": "write_failed",
-                    "error": (
-                        "refusing make-live: the installed build's launchd launcher "
-                        "could not be recorded, so Restore installed build could not "
-                        f"put it back: {runtime._redact(str(exc))}"
-                    ),
-                }
+                runtime.logger.warning(
+                    "make-live: the installed build's launchd launcher could not be "
+                    "recorded, so Restore installed build will not be able to put it "
+                    "back: %s",
+                    runtime._redact(str(exc)),
+                )
 
         def _unwind_sync() -> bool:
             """Restore both staged surfaces. False when either did not land."""

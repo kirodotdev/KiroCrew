@@ -74,19 +74,72 @@ describe('DevFleetPage Restore installed build', () => {
     fireEvent.click(within(note).getByRole('button', { name: 'Restore installed build' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/open a terminal \(not one inside a worktree folder\)/)).toBeInTheDocument()
+    // Without a managed restart the confirm only releases the worktree, and says so.
+    expect(within(dialog).queryByRole('button', { name: 'Restore installed build' })).toBeNull()
     await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore installed build' }))
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Stop using worktree' }))
     })
 
     await waitFor(() => expect(posts).toHaveLength(1))
     expect(posts[0].url).toBe('/api/apps/dev-fleet/restore-installed')
     expect(JSON.parse(posts[0].body)).toEqual({})
     expect(screen.queryByText('Restarting — reconnecting…')).toBeNull()
-    // The instruction outlives the toast until dismissed.
     const pending = await screen.findByTestId('restore-installed-pending')
-    expect(pending).toHaveTextContent('The live target is cleared.')
+    expect(pending).toHaveTextContent('Worktree released — run kirocrew restart to finish')
+    expect(within(pending).getByText('kirocrew restart').tagName).toBe('CODE')
+    // Dismissing the banner keeps the command reachable until the restart happens.
     fireEvent.click(within(pending).getByLabelText('Dismiss'))
     expect(screen.queryByTestId('restore-installed-pending')).toBeNull()
+    const row = screen.getByTestId('restore-installed-restart-pending')
+    expect(within(row).getByText('kirocrew restart').tagName).toBe('CODE')
+    expect(within(row).queryByLabelText('Dismiss')).toBeNull()
+  })
+
+  it('drops the restore instruction once a later Make Live pins the pointer again', async () => {
+    let fleet: object = fleetWith({ live_target_pinned: true, gateway_service_active: false })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url, opts) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/restore-installed') && opts?.method === 'POST') {
+        if (String(opts.body).includes('dry_run')) {
+          return Promise.resolve(new Response(JSON.stringify({ ok: true, dry_run: true, plan: { restart: 'manual' } }), { status: 200 }))
+        }
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, restored: true, staged_only: true }), { status: 200 }))
+      }
+      if (u.includes('/make-live') && opts?.method === 'POST') {
+        fleet = fleetWith({ live_target_pinned: true, restore_restart_pending: false })
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, staged_only: true }), { status: 200 }))
+      }
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(fleet), { status: 200 }))
+      return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    const note = await screen.findByTestId('restore-installed-build')
+    fireEvent.click(within(note).getByRole('button', { name: 'Restore installed build' }))
+    let dialog = await screen.findByRole('dialog')
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Stop using worktree' })) })
+    await screen.findByTestId('restore-installed-pending')
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Make live/ })[0])
+    dialog = await screen.findByRole('dialog')
+    await act(async () => { fireEvent.click(within(dialog).getAllByRole('button', { name: /Make live/ }).at(-1)!) })
+    await waitFor(() => expect(screen.queryByTestId('restore-installed-pending')).toBeNull())
+    expect(await screen.findByTestId('restore-installed-build')).toBeInTheDocument()
+  })
+
+  it('keeps the restart command from server state across a reload until the restart', async () => {
+    serve(fleetWith({ live_target_pinned: false, restore_restart_pending: true }))
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    const pending = await screen.findByTestId('restore-installed-pending')
+    expect(pending).toHaveTextContent('kirocrew restart')
+    expect(screen.queryByTestId('restore-installed-build')).toBeNull()
+  })
+
+  it('shows no restart command once the restarted gateway reports nothing pending', async () => {
+    serve(fleetWith({ live_target_pinned: false, restore_restart_pending: false }))
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => screen.getByText('feature-x'))
+    expect(screen.queryByTestId('restore-installed-pending')).toBeNull()
+    expect(screen.queryByTestId('restore-installed-restart-pending')).toBeNull()
   })
 
   it('picks the confirm text from the server plan, not from the service flag', async () => {
@@ -122,6 +175,8 @@ describe('DevFleetPage Restore installed build', () => {
     fireEvent.click(within(note).getByRole('button', { name: 'Restore installed build' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/restarts the dashboard on the build installed/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/change the Update channel again in Settings → About/)).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Restore installed build' })).toBeInTheDocument()
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
     expect(posts).toHaveLength(0)
   })

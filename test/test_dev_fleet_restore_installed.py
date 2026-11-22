@@ -242,6 +242,13 @@ async def test_undrivable_host_clears_the_pointer_and_names_the_command(monkeypa
     assert (ptr_dir / "live_target.json").read_text() == live_target.NO_TARGET_DOCUMENT
     assert not [c for c in calls if c[:1] == ["systemd-run"]]
     assert live_mod._MAKE_LIVE_COMMITTED is False
+    # This process still runs the worktree, so the page keeps the command on screen
+    # until a restart (a fresh process) clears the latch.
+    state = await live_mod.pointer_state(fresh=True)
+    assert state.pinned is False and state.restore_restart_pending is True
+    # A later Make Live pins the pointer again, and its own controls take over.
+    live_target.write_target(wt)
+    assert (await live_mod.pointer_state(fresh=True)).restore_restart_pending is False
 
 
 @_POSIX_ONLY

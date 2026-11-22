@@ -698,7 +698,13 @@ async def test_fleet_handler_reports_needs_setup_without_an_error():
             resp = await client.get("/api/fleet")
             assert resp.status == 200
             body = await resp.json()
-            assert body == {"worktrees": [], "needs_setup": True, "live_target_pinned": False}
+            assert body == {
+                "worktrees": [],
+                "needs_setup": True,
+                "live_target_pinned": False,
+                "restore_restart_pending": False,
+                "manual_restart": live_mod._manual_restart_command(),
+            }
 
 
 @pytest.mark.asyncio

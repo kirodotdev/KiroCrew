@@ -19,7 +19,7 @@ import { iconLabel } from './DevFleetPageRow'
 /** The notices between the page header and the worktree table. */
 export function DevFleetPageNotices({
   fleet, diskFailed, diskError, actionError, actionErrorRef, dismissActionError, gatewayError,
-  setGatewayError, setDismissedUndoKey, gatewayMutating, makeLive, restoreInstalled, restoreNotice, setRestoreNotice, wts, running, needsProv, undoTarget,
+  setGatewayError, setDismissedUndoKey, gatewayMutating, makeLive, restoreInstalled, restorePending, restoreBannerDismissed, setRestoreBannerDismissed, restoreRestartCmd, wts, running, needsProv, undoTarget,
   undoCurrent, undoKey, showUndoBanner, podsAvailable, podsReason, gatewayReason, servingReason, noFleet,
   diskGb,
 }: {
@@ -35,8 +35,10 @@ export function DevFleetPageNotices({
   gatewayMutating: boolean
   makeLive: (w: Worktree | UndoTarget, opts?: { undo?: boolean }) => Promise<void>
   restoreInstalled: () => Promise<void>
-  restoreNotice: string | null
-  setRestoreNotice: Dispatch<SetStateAction<string | null>>
+  restorePending: boolean
+  restoreBannerDismissed: boolean
+  setRestoreBannerDismissed: Dispatch<SetStateAction<boolean>>
+  restoreRestartCmd: string | null
   wts: Worktree[]
   running: number
   needsProv: number
@@ -51,6 +53,11 @@ export function DevFleetPageNotices({
   noFleet: boolean
   diskGb: string
 }) {
+  // The backend names the command on every fleet payload, the unavailable ones too.
+  const restartCmd = fleet?.manual_restart ?? restoreRestartCmd
+  const restartCode = (
+    <code className="break-all rounded bg-bg px-1.5 py-0.5 text-text-strong select-text">{restartCmd}</code>
+  )
   return (
     <>
       {/* The how-to describes row actions; with no readable fleet there are
@@ -111,7 +118,7 @@ export function DevFleetPageNotices({
       {/* Persistent, unlike the Switch back banner below: while the pointer names
           a checkout this is the only way back to the build the installer put on
           the host, so it cannot be dismissible. */}
-      {fleet?.live_target_pinned && (
+      {fleet?.live_target_pinned && !restorePending && (
         <div
           role="note"
           data-testid="restore-installed-build"
@@ -130,8 +137,21 @@ export function DevFleetPageNotices({
       )}
       {/* After a staged-only restore the pointer is already clear, so the row above is
           gone while this dashboard still runs the worktree until the owner restarts.
-          Keep the server's instruction on screen (a toast fades) until dismissed. */}
-      {restoreNotice && (
+          The banner can be dismissed; the command then stays in the row's place until
+          the restart happens (restore_restart_pending is server state). */}
+      {restorePending && restoreBannerDismissed && (
+        <div
+          role="note"
+          data-testid="restore-installed-restart-pending"
+          className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed text-text-strong"
+        >
+          <Info className="lucide-inline h-4 w-4 shrink-0 text-muted" aria-hidden />
+          <span className="min-w-0 break-words">
+            <Trans i18nKey="pages.devFleetPage.restore_installed_restart_pending" components={{ cmd: restartCode }} />
+          </span>
+        </div>
+      )}
+      {restorePending && !restoreBannerDismissed && (
         <div
           role="status"
           aria-live="polite"
@@ -139,10 +159,12 @@ export function DevFleetPageNotices({
           className="flex items-center gap-2 sm:gap-3 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed text-text-strong"
         >
           <Info className="lucide-inline h-4 w-4 shrink-0 text-muted" aria-hidden />
-          <span className="min-w-0 flex-1 break-words">{restoreNotice}</span>
+          <span className="min-w-0 flex-1 break-words">
+            <Trans i18nKey="pages.devFleetPage.restore_installed_pending_notice" components={{ cmd: restartCode }} />
+          </span>
           <Clickable
             aria-label={i18nT('pages.devFleetPage.dismiss')}
-            onClick={() => setRestoreNotice(null)}
+            onClick={() => setRestoreBannerDismissed(true)}
             className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-bg-hover hover:text-text"
           >
             <X className="lucide-inline h-4 w-4" aria-hidden />

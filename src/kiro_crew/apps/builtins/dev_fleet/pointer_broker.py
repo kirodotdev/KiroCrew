@@ -224,6 +224,11 @@ def _parse_state(payload: dict[str, Any]) -> live.PointerState:
     pinned = payload.get("pinned", False)
     if not isinstance(pinned, bool):
         raise live.PointerUnavailable("gateway live-target route: 'pinned' is not a bool")
+    pending = payload.get("restore_restart_pending", False)
+    if not isinstance(pending, bool):
+        raise live.PointerUnavailable(
+            "gateway live-target route: 'restore_restart_pending' is not a bool"
+        )
     if not isinstance(verified, bool):
         raise live.PointerUnavailable("gateway live-target route: 'live_verified' is not a bool")
     if live_path is not None and not isinstance(live_path, str):
@@ -239,6 +244,7 @@ def _parse_state(payload: dict[str, Any]) -> live.PointerState:
         previous=previous or None,
         live_verified=verified,
         pinned=pinned,
+        restore_restart_pending=pending,
     )
 
 
