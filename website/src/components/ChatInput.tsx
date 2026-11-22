@@ -257,6 +257,7 @@ function ChatInput({
   sessionOnPeer = false,
   projectBranch,
   projectDetached,
+  projectBranchCopyable = true,
   memoryMode,
   sentMessages: sentMessagesProp,
   onEditLastRequest,
@@ -1913,11 +1914,15 @@ function ChatInput({
                   switching project, reading the branch name is harmless. A git
                   ref IS code, so it sets `font-mono` itself (the pill container
                   does not supply it). */}
-              <CopyBranchButton
-                branch={projectBranch}
-                label={projectDetached ? 'commit' : 'branch name'}
-                className="max-w-[220px] font-mono opacity-70 hover:opacity-100 hover:text-text"
-              />
+              {projectBranchCopyable ? (
+                <CopyBranchButton
+                  branch={projectBranch}
+                  label={projectDetached ? 'commit' : 'branch name'}
+                  className="max-w-[220px] font-mono opacity-70 hover:opacity-100 hover:text-text"
+                />
+              ) : (
+                <span className="truncate max-w-[220px] font-mono opacity-70" title={projectBranch} data-testid="composer-project-branch">{projectBranch}</span>
+              )}
             </>
           )}
           {!!project && <ProjectAwsProfileStatus project={project} shelfCompact={shelfCompact} />}

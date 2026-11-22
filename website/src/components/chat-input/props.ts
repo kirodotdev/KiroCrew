@@ -453,6 +453,9 @@ export interface ChatInputProps {
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */
   projectDetached?: boolean
+  /** False draws the branch as a plain label with no copy button, for a host
+   *  whose chip group would otherwise pass `max-two-buttons-per-row`. */
+  projectBranchCopyable?: boolean
   memoryMode?: string
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
   sentMessages?: PromptHistoryItem[]

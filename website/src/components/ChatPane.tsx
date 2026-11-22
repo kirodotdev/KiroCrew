@@ -91,6 +91,8 @@ import { useSentPromptHistory } from './useSentPromptHistory'
 import { useChatPaneUploads } from './useChatPaneUploads'
 import { useChatPanePickerModels, useChatPanePickerActions } from './useChatPanePickers'
 import { ChatPaneAgentMenu, ChatPaneModelMenu } from './ChatPanePickerMenus'
+import { ChatPaneProjectPicker, useChatPaneProject } from './ChatPaneProject'
+import { CrewModeComposerChip } from './crew/CrewModeMarks'
 import { useChatPaneSend } from './useChatPaneSend'
 import { useChatPaneStop, useChatPaneRunSync } from './useChatPaneTurnControl'
 import { useChatPaneContinue } from './useChatPaneContinue'
@@ -681,6 +683,7 @@ export default function ChatPane({
 
   const pickerActions = useChatPanePickerActions({ slotKey, paneSlot, dispatch, queryClient, codexPairModels, agentDD, modelDD })
   const { switchError, setSwitchError } = pickerActions
+  const paneProject = useChatPaneProject({ slotKey, project: paneSlot?.project ?? '', dispatch, setSwitchError })
 
   const {
     uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadCount, uploadMutation,
@@ -1212,6 +1215,14 @@ export default function ChatPane({
           message={provider.capabilities.reasoningEffort && selectionCapabilitiesFailed(selectionCapabilitiesQ)
             ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
         />
+        {/* No hand-off: this pane holds an unsent draft; the branch read retries in place. */}
+        <ErrorNotice
+          variant="inline"
+          impact="minor"
+          className="mx-4 mt-2"
+          testId="chat-pane-project-git-error"
+          message={paneProject.projectGitFailureMessage}
+        />
         {/* No hand-off: this pane holds an unsent draft; the reads retry in place. */}
         <ErrorNotice
           variant="inline"
@@ -1387,6 +1398,8 @@ export default function ChatPane({
           derivePctFromUsed={contextTokens?.used != null && contextTokens.window == null}
           // A Crew Mode root with a message offers no switch, preview on or off: the raw
           // `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`).
+          // A Conductor Mode chat shows the bolt in place of the agent picker.
+          agentBadge={showsAsCrewMode(paneSlot) ? <CrewModeComposerChip /> : undefined}
           onAgentClick={!agentLocked && !showsAsCrewMode(paneSlot)
             && !(paneHasUserMessage && !!paneSlot?.crew_mode_root) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
@@ -1435,9 +1448,16 @@ export default function ChatPane({
             }
           }}
           onFollowUpSend={(text?: string) => { if (!paneCrewRootClosed) doSend(text) }}
-          project={paneSlot?.project ?? ''}
+          project={paneProject.project}
           turnProject={paneSlot?.turn_project}
           turnProjectFallback={paneSlot?.turn_project_fallback}
+          projectBranch={paneProject.projectBranch}
+          projectDetached={paneProject.projectDetached}
+          // The agent and project chips already fill this group's two actions.
+          projectBranchCopyable={false}
+          projectLocked={paneProject.projectLocked}
+          projectSwitching={paneProject.projectSwitching}
+          onProjectClick={paneProject.onProjectClick}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…")
           // and carries no sigil hint: next to a person's name the shortcut list
@@ -1470,6 +1490,8 @@ export default function ChatPane({
         <ChatPaneAgentMenu paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} />
 
         <ChatPaneModelMenu slotKey={slotKey} paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} />
+
+        <ChatPaneProjectPicker project={paneProject} />
 
       </div>
     </SlotProvider>

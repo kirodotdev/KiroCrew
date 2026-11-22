@@ -40,18 +40,11 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe('ChatPane module boundary', () => {
-  it('names its owners', () => {
-    expect(OWNERS).toEqual([
-      'ChatPanePickerMenus.tsx',
-      'ChatPaneProps.ts',
-      'ChatPaneTranscript.tsx',
-      'useChatPaneContinue.ts',
-      'useChatPaneDraft.ts',
-      'useChatPanePickers.ts',
-      'useChatPaneSend.ts',
-      'useChatPaneTurnControl.ts',
-      'useChatPaneUploads.ts',
-    ])
+  it('the facade imports every owner', () => {
+    expect(OWNERS.length).toBeGreaterThan(0)
+    const imported = new Set(importSpecifiers(readFileSync(join(COMPONENTS, FACADE), 'utf8'))
+      .map(s => componentOf(s, COMPONENTS)))
+    expect(OWNERS.filter(f => !imported.has(f.replace(/\.tsx?$/, '')))).toEqual([])
   })
 
   it('no owner imports the facade', () => {
