@@ -5,20 +5,24 @@ state (``_REGISTRY``, ``_NONCES``, ``_DETACHED``) and the per-prompt nonce that 
 stale button from resolving a later request; it denies by default when
 ``_APPROVAL_TIMEOUT_S`` elapses. The prompt itself is posted by
 :meth:`~kiro_crew.discord.renderer.DiscordRenderer.on_prompt_choice`, which stays with
-the renderer's other sends. New approval-wait work goes here.
-:mod:`kiro_crew.discord.renderer` imports these and stays their import path and patch
-surface.
+the renderer's other sends; :func:`approval_prompt_text` writes its words. New
+approval-wait work goes here. :mod:`kiro_crew.discord.renderer` imports these and
+stays their import path and patch surface.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from collections.abc import Callable
 from typing import Any
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, DENY_CAUSE_APPROVAL_UNDELIVERABLE
+from kiro_crew.discord.client import DISCORD_MAX_TEXT
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S, adoptable_reservation
 from kiro_crew.messaging.renderer import new_approval_nonce, nonce_eq
+from kiro_crew.preview_text import drop_format_chars
 
 logger = logging.getLogger("kiro_crew.discord.renderer")
 
@@ -26,6 +30,197 @@ logger = logging.getLogger("kiro_crew.discord.renderer")
 # Interactive approval wait; deny-by-default when it elapses with no press.
 # Owned by messaging.approval so every channel's window is the same one.
 _APPROVAL_TIMEOUT_S = APPROVAL_TIMEOUT_S
+
+#: A redaction pass the renderer hands in: its display-form or its source-form scan.
+_Scan = Callable[[str], str]
+
+#: A backtick followed by another. Each gets a zero-width space after it, so no two
+#: backticks stay adjacent and none can close a fence or a double-backtick span.
+#: The space is invisible, so the approver reads the text as it was sent.
+_BACKTICK_PAIR_RE = re.compile(r"`(?=`)")
+
+#: How much of one model-authored string the display scan reads. The prompt shows
+#: at most ``DISCORD_MAX_TEXT`` characters, so a 500 KB write costs the scan what a
+#: 16 KB one does.
+_SCAN_CHARS = 16 * 1024
+
+#: Length caps on the one-line fields, checked on the whole original: a longer
+#: field is hidden, never clipped, so the input always keeps most of the message.
+_LINE_MAX = 200
+_NAME_MAX = 100
+
+#: Ends an input cut to fit the message, inside the fence so the fence still closes.
+_CUT_MARKER = "\n… [truncated]"
+
+#: Shown in place of a field that cannot be shown exactly as the tool gets it.
+_HIDDEN = "hidden: it cannot be shown exactly as the tool gets it"
+
+#: Printable ASCII. A field holding any other character is hidden whole rather than
+#: shown altered: an accent, a non-Latin script or an invisible character cannot
+#: then split a key from the scan, look like a different character, or go missing.
+_ASCII = frozenset(map(chr, range(0x20, 0x7F)))
+#: A one-line field (title, MCP names, purpose) is a plain single-backtick span,
+#: so it may hold no backtick, which would end the span.
+_LINE_CHARS = _ASCII - {"`"}
+#: The input may also hold tabs, newlines and backticks; it is shown in a fence.
+_INPUT_CHARS = _ASCII | {"\t", "\n"}
+
+
+def bounded_scan(text: str, scan: Callable[[str], str]) -> str:
+    """*scan* (the renderer's display-form redaction) of the part of *text* shown.
+
+    A longer *text* is scanned as its first :data:`_SCAN_CHARS` characters, and the
+    prompt shows only the start of those. The cut can split a key at the head's end,
+    leaving its first part unredacted there; that end stays off the prompt while the
+    scanned head is over half the bound. A head the scan shrank further (stripped
+    escapes, a long secret's short tag) is answered by a scan of the whole text.
+    Slack's approval card bounds its scan the same way.
+    """
+    return _bounded_scan(text, scan)[1]
+
+
+def _bounded_scan(text: str, scan: Callable[[str], str]) -> tuple[str, str]:
+    """``(source, scanned)``: the part of *text* :func:`bounded_scan` read, and its scan."""
+    if len(text) <= _SCAN_CHARS:
+        return text, scan(text)
+    head = scan(text[:_SCAN_CHARS])
+    if len(head) > _SCAN_CHARS // 2:
+        return text[:_SCAN_CHARS], head
+    return text, scan(text)
+
+
+def _shown(text: str, allowed: frozenset[str], scan: _Scan, plain: _Scan) -> str | None:
+    """*text* redacted for display, or ``None`` when the field must be hidden.
+
+    The whole original is checked against *allowed* and then redacted
+    (:func:`_literal_scan`), before anything cuts it.
+    """
+    if not set(text) <= allowed:
+        return None
+    return _literal_scan(text, scan, plain)
+
+
+def _tag_spans(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of every ``[REDACTED…]`` tag in *text*."""
+    spans: list[tuple[int, int]] = []
+    start = text.find("[REDACTED")
+    while start != -1:
+        end = text.find("]", start)
+        if end == -1:
+            break
+        spans.append((start, end + 1))
+        start = text.find("[REDACTED", end)
+    return spans
+
+
+def _cut(text: str, limit: int) -> str | None:
+    """*text* cut to *limit* characters ending in :data:`_CUT_MARKER`.
+
+    The cut lands outside every tag of the whole text, or at a tag's start, never
+    inside one. ``None`` when nothing visible would be left.
+    """
+    if len(text) <= limit:
+        return text
+    at = limit - len(_CUT_MARKER)
+    for start, end in _tag_spans(text):
+        if start < at < end:
+            at = start
+    head = text[:at]
+    return head + _CUT_MARKER if head.strip() else None
+
+
+def _inline(text: str, scan: _Scan, plain: _Scan, limit: int) -> str:
+    """A one-line field as a single-backtick span, or the notice.
+
+    Never clipped: shown only when the whole original is non-empty, has no edge
+    space (a code span would not show it), fits *limit* and passes the allowlist.
+    """
+    if not text or text != text.strip(" ") or len(text) > limit:
+        return f"({_HIDDEN})"
+    shown = _shown(text, _LINE_CHARS, scan, plain)
+    return f"({_HIDDEN})" if not shown else f"`{shown}`"
+
+
+def _literal_scan(text: str, scan: _Scan, plain: _Scan) -> str | None:
+    """*text* scanned for a LITERAL display (code), or ``None`` when it cannot be shown.
+
+    Discord shows code as written, but *scan* reads text as rendered markdown. When
+    markup hides a credential, the scan emits the rendered form, which drops a
+    link's url and every emphasis marker: shown in a fence, ``[ok](https://evil)``
+    would read ``ok`` while the tool gets the evil url. So the scanned text is kept
+    only when it is exactly *plain* (the renderer's source-form redaction, the
+    scan's own first pass) of the same text, format characters aside. Then every
+    character shown outside a tag is the tool's own, in place. Otherwise ``None``:
+    the caller says the text is hidden rather than show either the credential or a
+    text the tool will not receive.
+
+    Callers check the character allowlist first (:func:`_shown`). The check here is
+    still needed: the allowlist admits ``*``, ``_``, ``[`` and ``(``, so markup can
+    still hide a key from the plain scan.
+    """
+    source, shown = _bounded_scan(text, scan)
+    literal = plain(source)
+    return literal if drop_format_chars(shown) == literal else None
+
+
+def _break_backtick_pairs(text: str) -> str:
+    return _BACKTICK_PAIR_RE.sub("`\u200b", text)
+
+
+def approval_prompt_text(
+    title: str,
+    purpose: str,
+    tool_input: str,
+    scan: _Scan,
+    plain: _Scan,
+    mcp_identity: tuple[str, str] = ("", ""),
+) -> str:
+    """The approval prompt's message: the tool, its MCP identity, purpose and input.
+
+    Every string is display-scanned with *scan* (the renderer's
+    ``_redact_transformed``) before it is bounded, so a redaction tag that lengthens
+    the text cannot push the closing fence past Discord's cap. *plain* is the
+    renderer's source-form redaction (``_redact_all``), which code is checked
+    against. Both are the renderer's, passed in because an owner never imports its
+    facade. Blocking work: call it off the event loop.
+
+    Every field is shown as code, so no Discord markup in it renders: the title,
+    the MCP names and the purpose as single-backtick spans, the input in a fence.
+    Each is shown only when the whole original passes the character allowlist
+    (:data:`_LINE_CHARS`, :data:`_INPUT_CHARS`) and its display redaction matches
+    its plain one (:func:`_literal_scan`); otherwise it reads as the hidden notice.
+    A one-line field is never clipped (:func:`_inline`). The input alone is cut,
+    after redaction and only outside a tag (:func:`_cut`). No empty span or fence
+    is drawn.
+
+    * *mcp_identity* is the trusted ``(server, tool)`` pair; its line is drawn only
+      when it names a server, so a model-authored title cannot pose as another
+      server's tool. The ``Purpose:`` label keeps the purpose from posing as it.
+    * An empty *tool_input* draws no block: ``""`` means the provider sent no
+      detail, not that the tool takes no arguments.
+    """
+    heading = title if title.strip(" ") else "this tool"
+    lines = [f"🔐 Approve {_inline(heading, scan, plain, _LINE_MAX)}?"]
+    server, tool = mcp_identity
+    if server.strip(" "):
+        tool = tool if tool.strip(" ") else "unnamed tool"
+        names = (_inline(name, scan, plain, _NAME_MAX) for name in (server, tool))
+        lines.append("MCP tool: {} / {}".format(*names))
+    if purpose.strip(" "):
+        lines.append(f"Purpose: {_inline(purpose, scan, plain, _LINE_MAX)}")
+    head = "\n".join(lines)
+    if not tool_input.strip(" \t\n"):
+        return head
+    shown = _shown(tool_input, _INPUT_CHARS, scan, plain)
+    if shown is None:
+        return f"{head}\nInput {_HIDDEN}."
+    # Cut after the backtick break, which lengthens the text, so the cap holds.
+    open_fence, close_fence = "\n```\n", "\n```"
+    room = DISCORD_MAX_TEXT - len(head) - len(open_fence) - len(close_fence)
+    detail = _cut(_break_backtick_pairs(shown), room)
+    if detail is None:
+        return f"{head}\nInput {_HIDDEN}."
+    return f"{head}{open_fence}{detail}{close_fence}"
 
 
 class DiscordApprovalDecider:

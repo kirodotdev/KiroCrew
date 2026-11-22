@@ -156,7 +156,9 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   types. Accidentally entering a normal channel ID does not enable it.
 - **Global intent scope.** Enabling any server thread or allowed parent channel turns on Discord's global Message Content intent. Discord then delivers content from every server channel the bot can see; Kiro Crew immediately discards traffic outside approved threads and parent channels and does not audit routine background chatter.
 - **Shared output warning.** Every member who can view an approved thread can
-  read agent replies, tool output, and interactive approvals. Approve only
+  read agent replies, tool output, and interactive approvals, including each
+  approval's tool input. Credentials are redacted from that input, but other
+  contents such as file paths and command text are shown. Approve only
   threads whose membership and history are appropriate for that disclosure. An
   allowed *channel* is wider still: anyone who can see the channel can open the
   public thread a turn runs in, so only add a channel whose whole membership may
@@ -308,7 +310,17 @@ running turn or `!queue` to answer it afterward. The reply being written carries
 goes away when the reply finishes, and a press on an old one stops nothing. The button
 arrives with the reply's first text or tool line, so while the agent is still thinking
 before either, send `!stop`. `[OPTIONS:]` choices render as
-buttons, and interactive tool approvals render as Approve/Deny buttons. A
+buttons, and interactive tool approvals render as Approve/Deny buttons under
+the tool's name, its MCP server when it has one, its stated purpose, and its
+input, each shown as code so Discord formatting in them never renders.
+Credentials are redacted from what the prompt shows. A field is shown only if
+it is plain printable ASCII (the input may also hold tabs and line breaks):
+any other character, such as an accent, a non-Latin script, an emoji or an
+invisible character, replaces that field with a "hidden" notice, as does
+formatting that disguises a credential. The tool name, MCP names and purpose
+are never shortened: one that holds a backtick, starts or ends with a space,
+or is longer than 200 characters (100 for an MCP name) is hidden instead. A
+long input is cut to fit one Discord message and marked `… [truncated]`. A
 sub-agent spawn started from Discord asks for approval the same way, with
 Approve/Deny buttons in the DM or thread it came from; there is no Trust button,
 because standing trust is granted only on the dashboard. With `messaging.dm_scope` set to `unified`, a DM session cannot be traced back to
