@@ -125,6 +125,85 @@ make its children the Bot's own workers.
   rules, and with children that escape the Bot's worker template and worker cap
   (#37538). The capability exists by accident in a half-finished shape.
 
+### What the person gets
+
+Nothing is built, so the times below are estimates from the shape of the work,
+each with its assumptions stated, not measurements.
+
+- **A split task finishes sooner.** A task of k independent pieces, each about
+  t of work for one worker, takes about k × t in one worker today. With the
+  switch on the pieces run at once, as far as `Workers at once` leaves seats:
+  about t, plus the time the conducting worker spends splitting, seeding and
+  checking. Estimate, assuming four independent pieces of about 20 minutes each,
+  the default limit of 4 (the conducting worker takes one piece and three
+  children take the others) and 5 to 10 minutes of coordination: roughly 25 to
+  30 minutes instead of about 80. A request-rate limit on the account slows
+  every parallel session, so the gain shrinks when the account is throttled.
+- **One ask instead of a hand-split.** For the same parallelism today the person
+  splits the task in the Bot's chat: k asks, then k reports to read and combine.
+  With the switch on it is one ask and one report. The split is made by the
+  worker that owns the item, with its files and context in front of it, and the
+  Bot's thread stays a front desk.
+- **A context window per piece.** A long task no longer fills one worker's
+  context and compacts mid-task: each piece runs in its own session, and the
+  conducting worker keeps only the plan and the results.
+- **Results checked before they count.** Each piece's `done` is checked against
+  its own acceptance (`accept_eval`) before the item is reported done; today a
+  worker reports its own result.
+- **Nothing else to set up.** Every session is still the Bot: identity, memory,
+  permissions, limits and folder.
+
+### Use cases
+
+1. **Compare three libraries (read-only), end to end.** The person asks the Bot:
+   "Which of these three YAML parsers should our CLI use? Compare license,
+   release activity, parse time on our 2 MB fixture, and fit with
+   `config/load.py`." The Bot's thread opens one worker for it, as it does
+   today. With the switch on, that worker:
+   1. records three sub-items in its own ledger, one per parser, each with the
+      same acceptance: one filled row (license, last release, median parse time
+      of the fixture, API notes) with a source for every cell;
+   2. opens three workers of the same Bot (the three seats the default limit
+      leaves beside itself), seeds each with its parser and that acceptance, and
+      arms its work-ledger patrol;
+   3. each child reads its parser's repository and documentation, times the
+      fixture in a scratch directory, and reports `done` with its row;
+   4. the conducting worker checks each row against the acceptance
+      (`accept_eval`); one row lacks a source, so it sends that child back
+      (`session_send`), and the child adds it;
+   5. with all three rows accepted, it writes the comparison and a
+      recommendation, closes the three children (`session_close`) and reports
+      `done` to the Bot's thread, which answers the person.
+
+   The person sent one message and read one answer, and the three reads ran at
+   once.
+2. **Fix the same defect in four services, one repository each.** "Our four
+   services treat a 429 from the billing API as fatal; retry it with backoff,
+   add a test, one pull request per service." The conducting worker records one
+   sub-item per service, opens three children and takes the fourth service
+   itself. Each child works in the Bot's worktree of its own repository
+   (`crewmate_worktree.ensure` keeps one per Bot per repository), so no two of
+   them share a working tree. Each reports `done` with its pull request, which
+   the conducting worker checks before it reports the four to the thread.
+3. **Release notes from a month of merged pull requests (read-only).** Three
+   children summarize one area each (API, UI, docs); the conducting worker
+   merges the three summaries into one set of notes and checks that every pull
+   request appears once.
+
+Leave the switch off for:
+
+- tasks one worker finishes in a few minutes: the split, seeds and checks cost
+  more than they save (§11);
+- steps of one change that each need the previous one's output: nothing can run
+  at once;
+- several code changes in one repository at once: a Bot has one worktree per
+  repository, and all its workers run in it (§11);
+- work that needs the person's approval at many steps while they are away: each
+  child waits on its own prompt (§11);
+- a Bot pinned to the claude backend, where the own-child exemption does not
+  apply and every seed and close prompts (§10);
+- a Bot whose spend matters more than its elapsed time (§11).
+
 ## 3. Goals
 
 1. One owner-set switch per Bot, off by default, that makes the Bot's direct
@@ -206,15 +285,20 @@ process knows (`members.is_crewmate_worker_session`, filled from the attested
 execution record), it is thread-born, and its Bot's record has `worker_conducts`
 **now** (a cached `KiroCrewConfig.load()`, failing closed on an unreadable or
 degraded config, the way `caller_access.member_dispatch_enabled` does). Reading
-the switch again at every session start means turning it off takes effect at
-each worker's next start, including a resume; a worker already running keeps
-the tools it was started with until then — the same live read `max_workers` and
-`session.max_per_creator` already have ("Read at each session create",
-`session.max_per_creator`'s description). So a conducting worker that is running
-when the owner turns the switch off keeps its kit until its session next starts
-(a resume, or its first turn after a gateway restart restores it) and is a plain
-worker from then on; the switch closes nothing, so the children it already
-opened keep running.
+the switch again at every session start means a change to it takes effect at
+each worker's next start, including a resume; nothing about a running worker
+changes mid-turn.
+
+Turning the switch off reloads the Bot's workers so that start comes soon, the
+way a change to the Bot's policy reloads them
+(`crewmate_worker_reload.schedule_reload_workers`): an idle worker restarts at
+once and a busy one at the end of its current turn, each keeping its
+conversation, and from then on it is a plain worker. Until then a running
+conducting worker keeps all of it, the kit and the parts read per call alike:
+its children are still the Bot's workers with the Profile seed, its own-child
+sends and closes are still exempt, and the bound of 4 (§5.5) still holds for
+its creates. Turning the switch off closes nothing. Turning it on reloads the
+workers the same way, so each becomes a conducting worker at its next start.
 
 Why thread-born and not "every session of the Bot": it is what makes "one level
 deep" a property of lineage rather than of a cap someone can raise. A conducting
@@ -228,7 +312,7 @@ whatever `work_ledger.max_depth` says (§5.5).
 | session control | the two composers that mount it for the thread, through the one branch each already has: `runtime_session_create.create_session` (and the load path, so a `session/load` keeps it), which the provider keys for both populations as `acp_runtime_start._member_session_key` keys the thread (`members.mounts_session_control(key)`: a member DM key, or `members.conducting_worker_session(key)`); and the client array composer in `acp/client_mcp_array.py`, which reads the same predicate. A session that is neither a thread nor a conducting worker is keyed on neither path and enters the branch on neither (harness parity H13). | `members.member_dispatch_session_server(session_key, token)`: the same entry, identity env (`KIROCREW_SESSION_KEY`, the signed session token, `KIROCREW_BOUND_PORT`) and withholds (`ACP_BACKENDS_MEMBER_DISPATCH`, the server's `disabled` switch-off) as the thread. The crew **panel** (`runtime_session_setup._mount_member_panel`, and the client composer's `_append_member_panel_server`) keeps its own thread-only test (`members.is_member_session_key`) and is never mounted for a worker. |
 | KAS grants for it | `runtime_session_create.create_session` hands `kas_agents.to_client_custom_agent` the same `member_dispatch` flag it hands for the thread (it already follows the mount and its withhold), and the projection picks the grant set by the session's population: `members.conducting_worker_session(session_key)` takes the conductor-mode set below, every other mounted session the thread's `agent._MEMBER_DASHBOARD_GRANTS` | `@kirocrew-dashboard` joins `tools`; `agent._CONDUCTOR_DASHBOARD_GRANTS` (`session_create`, `session_read_message`, `session_status`) join the ceiling-filtered `allowedTools` — the verbs conductor mode already grants its conductors, and no more. The seed and the close of a child go through `session_send` / `session_close`, which stay gated and are approved without a prompt only for a session the caller itself created: the own-child exemption (`tool_approval._conductor_own_child_call`, switched by `agent.conductor_own_child_verbs`, vouched lineage through `tool_approval._vouched_creator_of`) today admits a caller by `slot.agent` (`kirocrew-conductor`, `kirocrew-team-lead`), so it admits a conducting worker too, by the same predicate and never by the worker template's name; every other target and verb (`session_stop`, `session_retry`, `session_broadcast`, `work_dispatch`) prompts, exactly as for a conductor-mode conductor. The protocol needs no verb beyond these: restarting a stalled child (`session_stop`) is a gated step in conductor mode too. |
 | ledger grants | the per-session worker projection every reader uses, `mate_worker.worker_session_spec` (the seam that resolves the session's Bot and calls `resolve_worker_spec`), when `members.conducting_worker_session(key)` holds (marked, known as the Bot's worker, switch on) | `allowedTools` += `agent._LEDGER_CONDUCTOR_WORK_GRANTS` (`work_ledger_read`, `work_ledger_record`, `work_ask_record`, `work_ledger_rebuild`, `accept_eval`; `work_brief` and `work_report` are already granted), through `sanitize_agent_config_governance` as every other grant, so a withheld verb stays mounted and prompts. `agent._WORKER_EXCLUDED_GRANTS` (cron authoring) stay withheld. `kirocrew-work` is already a base server. |
-| prompt | the same projection; a new piece `worker.conducts` in `crewmate_prompts.json`, rendered from `agent._LEDGER_CONDUCTOR_RULES` placeholders exactly as `conductor.patrol` is (`context_assembly.member.ledger_rules_block`) | You may split your item into independently acceptable sub-items. Read the `goal-conductor` skill first ("When a conductor dispatched you"); the dispatch order is `work_ledger_record action=create`, `session_create` (pass no `agent`: every child is your Bot's own worker; the goal-conductor skill's "never leave `agent` unset" rule is for `kirocrew-conductor`, whose inherited agent cannot write files, while your create is forced onto your Bot's worker whatever `agent` says), `bind`, then the seed. A child's turn end does not wake you: patrol with `monitor_start` and `work_ledger_read`; verify with `accept_eval`. A `depth_exceeded` on your first `goal` or `create` means you are at the last conducting level: do the item yourself and say so in a `progress` report. Your `work_report` to your Bot is unchanged (`done` only when every sub-item is accepted). If `session_create` is not in your tool list, this Bot's harness could not carry it: work the item yourself and say so. A patrol wake with no news ends with `nothing_to_do` and no text. |
+| prompt | the same projection; a new piece `worker.conducts` in `crewmate_prompts.json`, rendered from `agent._LEDGER_CONDUCTOR_RULES` placeholders exactly as `conductor.patrol` is (`context_assembly.member.ledger_rules_block`) | You may split your item into independently acceptable sub-items. Read the `goal-conductor` skill first ("When a conductor dispatched you"); the dispatch order is `work_ledger_record action=create`, `session_create` (pass no `agent`: every child is your Bot's own worker; the goal-conductor skill's "never leave `agent` unset" rule is for `kirocrew-conductor`, whose inherited agent cannot write files, while your create is forced onto your Bot's worker whatever `agent` says), `bind`, then the seed. Your Bot has one worktree per repository and every worker of it runs there: give changes in one repository to one child at a time; children that only read may share it. A child's turn end does not wake you: patrol with `monitor_start` and `work_ledger_read`; verify with `accept_eval`. A `depth_exceeded` on your first `goal` or `create` means you are at the last conducting level: do the item yourself and say so in a `progress` report. Your `work_report` to your Bot is unchanged (`done` only when every sub-item is accepted). If `session_create` is not in your tool list, this Bot's harness could not carry it: work the item yourself and say so. A patrol wake with no news ends with `nothing_to_do` and no text. |
 | skills | the same projection | `kirocrew-mate-worker` is a whole-catalog template: a spec with no `skill://` entry inherits every skill (`agent_discovery.agent_skill_globs` with `inherit_defaults`; [memory-skills-hooks.md](../system-specs/modules/memory-skills-hooks.md), "KAS skill scope"), so `goal-conductor` is already reachable and a mapping would narrow the worker to that one skill. The `skill://` URI for `goal-conductor` is added only when the merged spec already carries a mapping (a Bot whose file maps skills), the case where the pointer would otherwise be false. |
 
 Everything else is untouched: the Bot's file additions and restrictions
@@ -298,15 +382,20 @@ share one Bot-wide budget; a create past it is refused `bot_worker_cap_reached`.
 thread and each conducting worker.
 
 With the switch on, that budget fails closed rather than resting on the owner
-reading a hint (settled in review, §12): when `max_workers` is 0, the Bot's
-effective `Workers at once` is 4, a named constant added in Phase 1; a
+reading a hint (settled in review, §13): when `max_workers` is 0, the Bot's
+effective `Workers at once` is 4, a named constant added in Phase 1
+(`sections_session.BOT_MAX_WORKERS_CONDUCTING`, beside `BOT_MAX_WORKERS_MAX`); a
 limit the owner set is used as is, and with the switch off nothing changes. The
 setting is not refused; the switch's hint says which limit applies (§5.1). The
 three verbs that ask the Bot's limit today, `session_create`, `session_revive`
 and `session_fork`, each through `bot_worker_cap.worker_cap_refusal`, ask a
-Phase 1 helper instead that computes the effective limit and calls the existing
-`bot_worker_cap.bot_worker_cap_refusal(state, member_id, cap)`, so nothing in
-`bot_worker_cap.py` changes (§4).
+Phase 1 helper instead, `mate_worker_conducts.effective_worker_cap_refusal`:
+for a Bot with the switch on and no limit set (and, until it restarts, for a
+conducting worker that started while it was on, §5.2) it calls the existing
+`bot_worker_cap.bot_worker_cap_refusal(state, member_id, cap)` with that
+constant, and in every other case it is `bot_worker_cap.worker_cap_refusal`
+itself, so nothing in `bot_worker_cap.py` changes (§4) and a Bot with the
+switch off, once its workers have restarted, runs exactly today's check.
 
 **Memory.** Every level runs on the Bot's one V2 store, as the thread and its
 workers already do: no new store, no new writer kind, only more concurrent
@@ -382,7 +471,7 @@ projection's grants and prompt piece, the `_dispatching_crewmate` extension,
 the own-child exemption's second identity (`tool_approval._conductor_own_child_call`
 admits a conducting worker beside the two conductor agents), the effective
 `Workers at once` limit and the `max_workers` description that names it
-(§5.5), and the docs:
+(§5.5), the workers' reload when the switch changes (§5.2), and the docs:
 [crew-mode.md](../system-specs/modules/crew-mode.md) ("Conductor and worker",
 "The two workers stay in step"),
 [session-control.md](../system-specs/modules/session-control.md) ("What a
@@ -391,7 +480,7 @@ created child inherits", the nested-conductor design),
 [agent-mcp-and-skill-reach.md](../architecture/agent-mcp-and-skill-reach.md)
 ("Mate worker"), [rfc-conductor-own-child-verbs.md](rfc-conductor-own-child-verbs.md)
 §5.2 (the admitted callers), and this document's status. Phase 1 implements the
-answers settled in review (§12); a different ruling at sign-off may change exit
+answers settled in review (§13); a different ruling at sign-off may change exit
 criteria 1, 5 and 8 before Phase 1 opens. Exit criteria, each a test that fails
 on main:
 
@@ -420,7 +509,13 @@ on main:
 8. With the switch on and `max_workers` 0, a `session_create` (from the thread
    or a conducting worker), `session_revive` or `session_fork` that would open
    the Bot's fifth worker is refused `bot_worker_cap_reached`; with the switch
-   off it is not, and a limit the owner set applies as is.
+   off it is not (a conducting worker still running from before keeps the bound
+   until it restarts, §5.2), and a limit the owner set applies as is.
+9. Turning the switch off or on schedules the Bot's workers' reload
+   (`crewmate_worker_reload.schedule_reload_workers`): an idle worker restarts
+   at once and a busy one at its turn end, each on its conversation; until then
+   a running worker keeps everything it started with, the parts read per call
+   included.
 
 **Phase 2 — the switch on the Profile tab (one PR, `Closes #N`).** The row in
 `website/src/pages/members/CrewProfileSettings.tsx` on the `dynamic_capabilities`
@@ -508,7 +603,10 @@ is an RFC and not a fix.
   `max_workers`).** Independent; this RFC edits nothing in `bot_worker_cap.py`.
   For a conducting worker the gap does not arise (§5.4); for every other worker
   #37538's fix applies as before. The effective limit (§5.5) calls that module's
-  public `bot_worker_cap_refusal`, so it composes with whatever #37538 changes.
+  public `worker_cap_refusal` for every create but the bounded ones, and
+  `bot_worker_cap_refusal` for those, so a Bot with the switch off keeps
+  whatever #37538 changes, and for a conducting worker the gap #37538 closes
+  does not arise (§5.4).
 - **#33996 (a chat running a bot outside its thread hands work to its worker).**
   Independent population (§8.1); a later design there could reuse the mark and
   predicate this RFC adds, but nothing here presumes it.
@@ -555,7 +653,71 @@ is an RFC and not a fix.
 - No credential enters any file, log or PR: the mount's identity is the signed
   per-session token and the session key, as for the thread.
 
-## 11. Alternatives considered
+## 11. Costs and downsides
+
+What a person pays for the switch, beyond the security bounds in §10. With the
+switch on, the Bot's `Workers at once` limit always applies (the owner's N, or 4
+when none is set, §5.5), and most of these costs scale with it.
+
+- **More spend per task.** Each child is a full worker session: its own startup
+  envelope (up to 65,000 characters,
+  `member_essential_context.ESSENTIAL_MAX_CHARS`), its own reads of the material
+  it needs and its own turns, on top of the conducting worker's split, seed,
+  patrol and check turns. Worst case with the default limit: four worker
+  sessions running for the task's length instead of one, about four times the
+  token rate while they run, and a total above the serial cost by three more
+  startups and the coordination. *Bound:* the limit caps how many run at once;
+  the Profile's worker model (`worker_model`) can run the Bot's workers on a
+  cheaper model; a quiet cycle of the work-ledger patrol costs no turn
+  (`agent._LEDGER_CONDUCTOR_RULES`, §5.7); the switch is per Bot and off by
+  default.
+- **More sessions to follow.** One ask can open up to four worker sessions at
+  once instead of one. *Bound:* they are filed in the Bot's home folder
+  (`mate_folders.mate_home_filing`) and listed on the Bot's Sessions tab and
+  Crew panel, which list a child of a child too (`crew_mode.stamp_rows` stamps
+  every session the thread dispatched, directly or through another); the thread
+  hears one report per item, not one per child; closing the Bot's thread closes
+  the sessions it manages, down the line (`chat_api/conductor_close.py`).
+- **Harder debugging when a child fails.** A failure is one hop further from
+  the thread: the child reports to the conducting worker, which relays it.
+  *Bound:* there is only one conducting level (§5.2), so a failure is never more
+  than two hops from the thread; the child's `blocked` or `question` report is a
+  ledger record the conducting worker relays through its own `work_report` and
+  escalates with `work_ask_record` (§5.6); the child is its own row on the Bot's
+  Crew panel, with its transcript; and the conducting worker's ledger keeps each
+  item's status, acceptance and verdict (`work_ledger_read`).
+- **Slower answers when a split is not worth it.** Splitting, seeding and
+  checking take the conducting worker several turns, and each child's startup
+  adds more, before any piece is done. *Bound:* splitting is optional in the
+  prompt piece ("You may split", §5.3); the goal-conductor procedure keeps a
+  small piece with the conductor ("not worth a session's context"); and an
+  owner whose Bot runs short tasks leaves the switch off.
+- **Memory-store write contention.** Every session of the tree writes to the
+  Bot's one V2 store, which serializes its writes on one connection and lock
+  (`VectorMemoryStore`,
+  [memory-skills-hooks.md](../system-specs/modules/memory-skills-hooks.md)), so
+  more sessions at once means more writes waiting and more episodes to
+  consolidate. *Bound:* the writers at once are the same limit a Bot's thread
+  can already fill today with its own workers; no new store, writer kind or
+  consolidation path (§5.5).
+- **Several approvals at once.** Each session of the tree prompts in its own
+  session, so up to four approvals can wait at once. *Bound:* they collect on
+  the Bot's Crew panel, whose approve route answers them as it answers a
+  worker's today, and on its Sessions tab (§5.6); the Profile's posture decides
+  how many prompts occur at all; and a child stuck on one reports
+  `blocked reason=approval`, which reaches the thread through the conducting
+  worker.
+- **One worktree per repository.** A Bot has one git worktree per repository
+  and every one of its workers runs in it (`crewmate_worktree.ensure`;
+  [crew-mode.md](../system-specs/modules/crew-mode.md), "Each Bot works in a
+  git worktree of its own"), so two children changing one repository at once
+  would share a working tree and a checked-out branch. *Bound:* the prompt
+  piece tells a conducting worker to give changes in one repository to one
+  child at a time (children that only read may share it), beside the shared
+  "one owner per shared file" rule it already renders (§5.3); and §2's use cases
+  keep the switch off for parallel edits in one repository.
+
+## 12. Alternatives considered
 
 - **Grant a conducting worker the Bot thread's own dashboard set**
   (`agent._MEMBER_DASHBOARD_GRANTS`: create, read, status, send, broadcast,
@@ -586,7 +748,7 @@ is an RFC and not a fix.
   by accident (§2) and puts a control-plane server in a user-edited file; the
   grants, the rules and the forcing would still be missing. Rejected.
 
-## 12. Open questions
+## 13. Open questions
 
 None open. The two questions this RFC put to a maintainer were settled in review
 on its pull request; the design as a whole still waits for a maintainer's
