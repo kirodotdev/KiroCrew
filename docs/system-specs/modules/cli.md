@@ -1447,7 +1447,8 @@ represent. This is an authorization surface: OSC 52 writes the clipboard, and
 CSI can move the cursor and erase what is drawn, so a model-authored title could
 otherwise repaint the question a human is answering and hide what is being approved.
 Scope is the permission prompt only — ordinary streamed model output is printed
-raw by `_send_and_print` and is unchanged, which is a surface-wide rendering
+raw by `_send_and_print` (it drops only a line that quotes a session-directive
+marker, `QuotedDirectiveFilter`) and is unchanged, which is a surface-wide rendering
 question rather than part of answering a permission request.
 
 **An authorization-boundary failure is itself a refusal.** If the shared gate

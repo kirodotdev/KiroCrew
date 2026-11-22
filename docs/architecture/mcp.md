@@ -6267,7 +6267,9 @@ no walk to get wrong. The model still reads the marker, so a reply that repeats 
 result carries the marker line too; the dashboard's segment flush drops each line
 that is only such a marker from the saved reply
 (`session_directive.strip_quoted_markers`) and keeps the reply's other lines, and
-the channel `TurnDriver` drops the same lines from the streamed reply.
+the channel `TurnDriver` drops the same lines from the streamed reply, as do the native
+Slack thread turn, the plain monitor-loop wake, a team-channel agent's post and
+`kirocrew chat`.
 
 A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and
