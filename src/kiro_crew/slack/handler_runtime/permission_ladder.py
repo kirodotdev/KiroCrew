@@ -162,6 +162,7 @@ async def _screen_tool_call(turn: _SlackTurn, event: LLMEvent) -> None:
                 tool_kind=event.tool_kind,
                 outcome="flagged_unenforceable",
                 error="hook_deny",
+                metadata={"rule_id": tool_result.tier} if tool_result.tier else None,
             )
             return
 
@@ -220,8 +221,10 @@ async def _answer_permission_request(
         )
     _deny_reason: str | None = None
     _deny_error = "hook_deny"
+    _deny_meta: dict[str, str] | None = None
     if tool_result is not None and tool_result.action == TOOL_DENY:
         _deny_reason = tool_result.reason
+        _deny_meta = {"rule_id": tool_result.tier} if tool_result.tier else None
     elif capabilities_of(client).crew_fires_spec_hooks:
         _spec = await spec_turn(client, turn.spec_agent or "")
         _deny_reason = await spec_pre_tool_refusal(_spec, client, event, session_key)
@@ -240,6 +243,7 @@ async def _answer_permission_request(
             outcome="denied",
             request_id=event.request_id,
             error=_deny_error,
+            metadata=_deny_meta,
         )
         # A hook deny is a HOST verdict on the call, not the
         # person's: tell the model so in-band before the reject
