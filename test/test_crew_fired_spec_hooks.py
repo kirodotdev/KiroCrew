@@ -259,6 +259,29 @@ def test_the_dashboard_matches_the_run_nowhere_tag_byte_for_byte():
     assert "meta?.spec_hooks_notice === RUN_NOWHERE" in source
 
 
+def test_the_dashboard_matches_the_project_hook_files_tag_byte_for_byte():
+    from kiro_crew.dashboard.chat_utils_injected_rows import (
+        SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
+        project_hook_files_notice_meta,
+    )
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "website"
+        / "src"
+        / "pages"
+        / "chat"
+        / "SpecHooksNotice.tsx"
+    ).read_text(encoding="utf-8")
+    assert f"const PROJECT_HOOK_FILES = '{SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE}'" in source
+    assert "meta?.spec_hooks_notice === PROJECT_HOOK_FILES" in source
+    (mark_field,) = set(project_hook_files_notice_meta("/p", ["a.json"])) - {
+        "kind",
+        "spec_hooks_notice",
+    }
+    assert f"meta?.{mark_field}" in source
+
+
 def test_pi_spec_hooks_count_as_run_nowhere_until_crew_fires_them(monkeypatch):
     """pi is handed no spec and Crew does not fire its hooks, so they run nowhere."""
     assert spec_hooks.spec_hooks_run_nowhere(_client(ACP_BACKEND_PI)) is True
