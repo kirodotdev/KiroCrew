@@ -23,7 +23,7 @@ from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 # Bound on draining the held usage-row task; it ends on its own once its
 # worker-thread append returns.
@@ -468,6 +468,75 @@ class TestSubagentUsageRow:
         assert accounting.total.cache_read_tokens == 3
         assert accounting.total.cache_creation_tokens == 4
         assert accounting.total.cost_usd == pytest.approx(0.03)
+
+    def test_a_dollar_billed_settle_puts_the_cost_on_the_record(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent import SubagentInfo, _RunCreditAccounting
+
+        info = SubagentInfo(id="usage-dollars", task="bill in dollars")
+        accounting = _RunCreditAccounting(info)
+        accounting.begin(MagicMock())
+        accounting.settle(
+            AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=0.0, cost_usd=0.0123))
+        )
+
+        assert info.credits == 0.0
+        assert getattr(info, "cost_usd", None) == pytest.approx(0.0123)
+
+    def test_a_continued_run_starts_from_its_recorded_cost(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent import SubagentInfo, _RunCreditAccounting
+
+        info = SubagentInfo(id="usage-continued", task="continue")
+        info.cost_usd = 0.5
+        accounting = _RunCreditAccounting(info)
+        assert accounting.total.cost_usd == pytest.approx(0.5)
+
+        accounting.begin(MagicMock())
+        accounting.settle(AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(cost_usd=0.25)))
+
+        assert info.cost_usd == pytest.approx(0.75)
+
+    @pytest.mark.asyncio
+    async def test_the_done_frame_carries_a_dollar_billed_runs_cost(self) -> None:
+        from kiro_crew.acp.types import AcpEvent, TurnUsage
+        from kiro_crew.providers.base import EVENT_COMPLETE
+
+        async def _complete_stream(*_a: object, **_k: object):  # type: ignore[no-untyped-def]
+            yield AcpEvent(kind=EVENT_COMPLETE, usage=TurnUsage(credits=0.0, cost_usd=0.0123))
+
+        sessions = _mock_sessions()
+        provider = AsyncMock()
+        provider.context_usage_pct = lambda: 0.0
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _complete_stream())
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        done_payloads: list[dict[str, object]] = []
+
+        async def track_event(etype: str, _info: object, extra: dict) -> None:
+            if etype == "subagent_done":
+                done_payloads.append(extra)
+
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto_spawn(),
+            on_event=track_event,
+            on_done=AsyncMock(),
+            is_yolo=lambda: True,
+        )
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.dashboard.handlers.usage.persist_token_record_async", AsyncMock()),
+        ):
+            info = manager.spawn("bill in dollars")
+            assert info is not None
+            await manager._tasks[info.id]
+
+        assert len(done_payloads) == 1
+        assert done_payloads[0]["credits"] == 0.0
+        assert done_payloads[0].get("cost_usd") == pytest.approx(0.0123)
 
     @pytest.mark.parametrize("credits", [True, -1.0, float("nan"), float("inf")])
     def test_credit_accounting_rejects_invalid_provider_credits(self, credits: object) -> None:

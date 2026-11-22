@@ -461,6 +461,7 @@ class TerminalCoordinator(ManagerComponent):
             {
                 "elapsed": info.elapsed,
                 "credits": info.credits,
+                "cost_usd": info.cost_usd,
                 "error": _redact(info.error) if info.error else None,
                 "stopped": info.user_stopped,
                 "outcome": info.outcome,

@@ -2784,13 +2784,18 @@ Providers that do not bill in credits report `0`; display surfaces omit the cred
 label for that value rather than claiming the run was free. The cumulative credit total is
 included in live and reconnect `subagent_done` frames, shown in the expanded
 terminal card body as the localized “Used … credits” summary, and included in
-completion, delivery-failure, and wave-digest messages. Restart-orphan notices
+completion, delivery-failure, and wave-digest messages. The same accounting sums the
+run's dollar cost, and `SubagentInfo.cost_usd` keeps that sum when it is finite and
+non-negative (else `0`); the live and reconnect `subagent_done` frames carry it as
+`cost_usd`, and `subagent_snapshot` does not. Restart-orphan notices
 omit usage because a run the restart caught has no settled terminal billing record.
 Card headers retain elapsed time only so billing text does not crowd the status
 and model chips in a narrow rail. A managed terminal card without positive reported
-credits identifies the usage as unreported in the expanded card body. Backend
-and dashboard duration formatting both round to
-whole seconds before applying the one-minute display boundary. Native harness
+credits shows the run's dollar cost, formatted as the chat's turn line formats it,
+when that cost is positive, and identifies the usage as unreported only when neither
+is reported. A card rebuilt from the crew log after a restart shows credits only,
+since the crew log records no dollar cost. Backend and dashboard duration formatting
+both round to whole seconds before applying the one-minute display boundary. Native harness
 subagents omit the usage summary because they share the parent billed turn and
 have no independent run record.
 

@@ -703,6 +703,8 @@ export interface SubagentActivity {
   status: 'pending' | 'running' | 'tool' | 'done' | 'error' | 'stopped'
   streaming: string; lastTool: string
   startedAt: number; elapsed: number; credits?: number; error?: string
+  /** The finished run's dollar cost, from a harness that bills in dollars. */
+  costUsd?: number
   /** True when `startedAt` was ASSUMED rather than observed, which is the case
    *  for an entry minted by `upsertSlotSub` from an incremental frame: that frame
    *  carries no start time, so the entry records its arrival instant. The agent

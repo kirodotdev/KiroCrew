@@ -61,6 +61,7 @@ vi.mock('../components/MarkdownPanel', async () => {
 import ActivityViewer from '../pages/chat/ActivityViewer'
 import { api } from '../api/client'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
+import { formatCost } from '../utils/formatCost'
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -775,6 +776,42 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(usage).toEqual(credits === 0.25
       ? expect.arrayContaining(['Used 0.25 credits', 'Used 12.5 credits'])
       : expect.arrayContaining(['Credit usage not reported', 'Used 12.5 credits']))
+  })
+
+  it.each([
+    { credits: 0, costUsd: 0.12, shown: `Used ${formatCost(0.12)}` },
+    { credits: 0, costUsd: 0.004, shown: `Used ${formatCost(0.004)}` },
+    { credits: 12.5, costUsd: 0.12, shown: 'Used 12.5 credits' },
+    { credits: 0, costUsd: 0, shown: 'Credit usage not reported' },
+    { credits: 0, costUsd: undefined, shown: 'Credit usage not reported' },
+  ])('a finished managed card with credits $credits and cost $costUsd reads "$shown"', ({ credits, costUsd, shown }) => {
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    store.dispatch(openActivityToTab('subagents'))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ActivityViewer
+            toolLog={[]}
+            open
+            onToggle={vi.fn()}
+            slot="test-slot"
+            subagents={{
+              billed: {
+                id: 'billed', task: 'billed task', agent: 'kirocrew', status: 'done',
+                streaming: '', lastTool: '', startedAt: 1_700_000_000_000,
+                elapsed: 12, credits, costUsd,
+              },
+            }}
+          />
+        </QueryClientProvider>
+      </Provider>,
+    )
+
+    fireEvent.click(screen.getByTestId('subagent-run-stats').closest('[aria-expanded]')!)
+    expect(screen.getByTestId('subagent-credit-usage').textContent).toBe(shown)
   })
 })
 

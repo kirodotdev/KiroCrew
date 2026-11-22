@@ -13037,6 +13037,7 @@
         "changes": "Änderungen",
         "clear": "Leeren",
         "complete": "Abgeschlossen",
+        "cost_used": "{{cost}} verbraucht",
         "credits_not_reported": "Credit-Nutzung nicht gemeldet",
         "credits_used": "{{credits}} Credits verwendet",
         "dismiss_done_count": "Abgeschlossene schließen ({{count}})",

@@ -13037,6 +13037,7 @@
         "changes": "পরিবর্তন",
         "clear": "সাফ করুন",
         "complete": "সম্পূর্ণ",
+        "cost_used": "{{cost}} ব্যবহার হয়েছে",
         "credits_not_reported": "ক্রেডিট ব্যবহারের তথ্য পাওয়া যায়নি",
         "credits_used": "{{credits}} ক্রেডিট ব্যবহার হয়েছে",
         "dismiss_done_count": "সম্পন্নগুলো বাদ দিন ({{count}})",

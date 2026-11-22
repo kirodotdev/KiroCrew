@@ -13325,6 +13325,7 @@
         "changes": "Alterações",
         "clear": "Limpar",
         "complete": "Concluído",
+        "cost_used": "Gastou {{cost}}",
         "credits_not_reported": "Uso de créditos não informado",
         "credits_used": "Usou {{credits}} créditos",
         "dismiss_done_count": "Descartar concluídos ({{count}})",
