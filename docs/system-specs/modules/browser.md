@@ -1096,7 +1096,13 @@ the person's: a later turn that never browses ends without folding it
 live, and **Close live view** in its menu (`POST /api/browser/live/close`,
 `LiveHub.close_view`) folds it back to the done line. A turn that browses after a
 reopen opens a NEW turn (`_open_turn` checks `turn_over`), the running stream
-carries over to it, and that turn's end folds it as usual; an agent op while the
+carries over to it, and that turn's end folds it as usual. The card opens that
+turn with no picture and Chrome sends no frame of a still page, so `turn_started`
+publishes the new turn and then restarts the cast (`LiveStream.restart`), which
+Chrome answers with the current picture at once; a view no card sees is left
+stopped. Chrome draws no frame at all of a tab it hides (a background tab, a
+covered or minimised window) and says so with `Page.screencastVisibilityChanged`,
+which the stream logs at info; an agent op while the
 person holds the reopened tab is held for the hand-back like any other. The done
 line keeps two actions: Open live and Replay when the tab is open (Open in Chrome
 moves into the live view's menu), else Replay and Open in Chrome.
@@ -1110,7 +1116,12 @@ turn that folds gets its own reopen. While that reopen is due or unanswered the
 view keeps its live face on the last frame, with no Take over, instead of the
 done face; a refusal or a closed tab ends the hold. The `turn_id` is the one the
 view already holds for its Show the live page button; the route and its checks
-are unchanged.
+are unchanged. A view reports on screen for each new turn in one write, never
+off and on again: the gateway may take two such writes in either order, and an
+off taken last stops the cast under a view that is on screen. Below the picture
+the view lists the turn's `steps` (the chat card's step strip), the latest five,
+newest last, behind a toggle that counts them all; nothing is listed while the
+person is in control.
 
 **Sign-in from the Secrets vault** (`browser_harness/vault_fill.py`). The agent's
 side does not change:

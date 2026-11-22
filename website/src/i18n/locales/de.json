@@ -455,7 +455,8 @@
       "not_granted": "Diese App darf den Browser noch nicht zeigen. Genehmige ihren Browserzugriff auf der Seite der App unter Apps.",
       "note_not_sent_not_saved": "Deine Notiz wurde nicht an den Bot gesendet, und dieser Browser konnte keine Kopie speichern. Kopiere sie jetzt: {{note}}",
       "tab_gone": "Der Tab vom Bot ist geschlossen, daher gibt es keine Live-Seite zum Anzeigen.",
-      "app_off": "Diese App ist ausgeschaltet und kann den Browser nicht zeigen. Schalte sie unter Apps ein, um die Seite wieder zu sehen."
+      "app_off": "Diese App ist ausgeschaltet und kann den Browser nicht zeigen. Schalte sie unter Apps ein, um die Seite wieder zu sehen.",
+      "actions": "Was der Bot getan hat"
     }
   },
   "apps": {

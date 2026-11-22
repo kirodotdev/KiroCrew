@@ -473,7 +473,8 @@
       "not_granted": "Esta app aún no puede mostrar el navegador. Aprueba su acceso al navegador en la página de la app en Apps.",
       "note_not_sent_not_saved": "Tu nota no se envió al Bot, y este navegador no pudo guardar una copia. Cópiala ahora: {{note}}",
       "tab_gone": "La pestaña del Bot está cerrada, así que no hay una página en vivo que mostrar.",
-      "app_off": "Esta app está desactivada, así que no puede mostrar el navegador. Actívala en Apps para volver a ver la página."
+      "app_off": "Esta app está desactivada, así que no puede mostrar el navegador. Actívala en Apps para volver a ver la página.",
+      "actions": "Lo que hizo el Bot"
     }
   },
   "apps": {

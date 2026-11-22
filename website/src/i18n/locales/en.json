@@ -151,7 +151,8 @@
       "not_granted": "This app may not show the browser yet. Approve its browser access on the app's page in Apps.",
       "note_not_sent_not_saved": "Your note was not sent to the Bot, and this browser could not keep a copy. Copy it now: {{note}}",
       "tab_gone": "The Bot's tab is closed, so there is no live page to show.",
-      "app_off": "This app is turned off, so it can't show the browser. Turn it on in Apps to see the page again."
+      "app_off": "This app is turned off, so it can't show the browser. Turn it on in Apps to see the page again.",
+      "actions": "What the Bot did"
     }
   },
   "apps": {
