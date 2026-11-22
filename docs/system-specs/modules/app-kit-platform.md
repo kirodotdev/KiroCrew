@@ -1230,6 +1230,7 @@ declared name with no proven owner is deleted by the general rule anyway.
 | host-managed server whose `spec_gate` is CLOSED (`kirocrew-computer` off or unsupported), absent | **deleted** — both spec writers `pop` it, so the rebuild would not re-add it and preserving it resurrects the backend the gate withholds |
 | `installed.json` present but corrupt | **refused** (500, `app_ownership_unreadable`) |
 | `installed.json` present but non-regular (broken symlink, directory, unstattable) | **refused** (500, `app_ownership_unreadable`) |
+| `installed.json` a link into a protected location | **refused** (500, `app_ownership_unreadable`) |
 | apps root present but not a directory | **refused** (500, `app_ownership_unreadable`) |
 | apps-root child listable but unstattable (e.g. a symlink loop) | **refused** (500, `app_ownership_unreadable`) |
 | app manifest unreadable | **refused** (500, `app_ownership_unreadable`) |
@@ -3193,7 +3194,9 @@ the one-time import first, so the import's lock is the only lock needed.
   compare against. While it exists every reader of
   `installed.json` (`_read_installed`, so `is_app_enabled`, `get_app` and the
   permission checks, and `app_enabled_state`) reports the app disabled whatever
-  the file says, so the app's own code cannot turn itself back on. Only the
+  the file says (`app_enabled_state` answers unknown instead when the record cannot
+  be read or, when it is a link, the sensitive-path screen refuses it), so the
+  app's own code cannot turn itself back on. Only the
   owner-authenticated `enable_app` removes it, after it has run the one-time
   import itself so no importer re-records it; uninstall removes the approved set
   first and the disable only once the tree is gone, and a failed update, re-registration or uninstall puts it back as
