@@ -707,6 +707,33 @@ def test_the_chat_turn_hands_the_spec_hooks_its_session_id(sid, expected):
     assert seen["acp_session_id"] == expected
 
 
+@pytest.mark.parametrize(("exit_code", "warned"), [(3, True), (0, False)])
+def test_a_failed_post_tool_use_hook_warns_even_with_an_empty_stderr(caplog, exit_code, warned):
+    from kiro_crew.dashboard.chat_turn import turn_spec_hooks
+
+    result = ScriptHookResult(
+        hook_id="h1", hook_name="h", event=HOOK_EVENT_POST_TOOL_USE, exit_code=exit_code, stderr=""
+    )
+
+    class _Store:
+        async def fire(self, *a, **kw):
+            return [result]
+
+    turn = SimpleNamespace(
+        session_key="dashboard:1",
+        slot=SimpleNamespace(key="1"),
+        state=SimpleNamespace(_hook_store=_Store()),
+        client=SimpleNamespace(session_id=""),
+        _spec_hooks=[],
+        _spec_hooks_unreadable=False,
+        _spec_hooks_cwd=None,
+    )
+    with caplog.at_level("WARNING", logger=chat_runner.logger.name):
+        asyncio.run(turn_spec_hooks._fire(turn, HOOK_EVENT_POST_TOOL_USE, tool_name="t"))
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == (["Hook h (PostToolUse) failed: exited with code 3"] if warned else [])
+
+
 @pytest.mark.parametrize(
     ("served", "expected"), [("model-x", "model-x"), ("", None), ("auto", None)]
 )
