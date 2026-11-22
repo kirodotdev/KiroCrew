@@ -4,7 +4,7 @@ A stub backend runs under the real namespace sandbox with the mask list and stan
 ``apps/backend.py`` passes. The test process plays the gateway on a real loopback listener:
 the real ``/api/token/local`` handler and the real token middleware. The stub reads
 ``run/gateway-<port>.secret``, presents what it read as ``X-Local-Secret``, and (when the
-mint succeeds) fetches ``/api/status`` with the token it got.
+mint succeeds) fetches ``/api/version`` with the token it got.
 
 Linux needs unprivileged user and mount namespaces, which the namespace-sandbox CI job
 provides and the shard runners do not, so there these tests skip with that reason.
@@ -52,7 +52,7 @@ out = {"file_empty": value == "", "mint": resp.status}
 if resp.status == 200:
     token = json.loads(body)["token"]
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
-    conn.request("GET", "/api/status?token=" + token)
+    conn.request("GET", "/api/version?token=" + token)
     out["status"] = conn.getresponse().status
 print(json.dumps(out), flush=True)
 """

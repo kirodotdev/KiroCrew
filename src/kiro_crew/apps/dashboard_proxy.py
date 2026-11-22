@@ -99,7 +99,7 @@ def install_identity(app_name: str) -> str | None:
     The install record id (``installedAt``) with the package it came from: the version and
     the registry provenance the gateway recorded at install. A reinstall writes a new
     ``installedAt``, and another package under the same name carries other provenance, so
-    each gets another identity and the old grant no longer matches.
+    each gets another identity, which the old grant does not match.
     """
     try:
         rec = _installed(app_name)
