@@ -342,6 +342,16 @@ def test_a_bare_bearer_token_shaped_like_an_unnamed_pair_is_masked(name: str) ->
     assert redact(text)[0] == f"sent Bearer {TAG} to host"
 
 
+def test_a_bare_bearer_jwt_like_value_with_an_equals_in_its_last_part_is_masked_whole() -> None:
+    value = f"{'a' * 20}.{'b' * 20}.{'c' * 10}={'d' * 10}"
+    assert redact(f"sent Bearer {value} to host")[0] == f"sent Bearer {TAG} to host"
+
+
+def test_a_padded_bare_bearer_token_before_a_quote_and_a_letter_is_masked() -> None:
+    value = "0" * 40 + "="
+    assert redact(f'sent Bearer {value}"a to host')[0] == f'sent Bearer {TAG}"a to host'
+
+
 @pytest.mark.parametrize("padding", ["", "=", "=="])
 def test_a_bare_bearer_token68_with_or_without_padding_is_masked(padding: str) -> None:
     value = "FAKE0000" + "0" * 12 + padding
