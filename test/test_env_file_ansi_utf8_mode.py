@@ -8,6 +8,7 @@ and UTF-8 mode are patched through the loader facade, so these run on any host.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,6 +51,28 @@ def test_an_ansi_env_file_loads_under_utf8_mode(
 
     assert _boot_read(monkeypatch, ep)["OWNER_NAME"] == "café"
     assert loader_credentials.read_env_text(ep) == "OWNER_NAME=café\r\n"
+
+
+def test_a_file_the_code_page_cannot_decode_either_is_empty_at_boot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 0x81 is invalid UTF-8 and undefined in cp1252, so both decodes fail.
+    monkeypatch.setattr(loader, "_locale", _locale("utf-8", "cp1252"))
+    _utf8_mode(monkeypatch, True)
+    monkeypatch.setattr(loader, "_warned_undecodable_env", set())
+    ep = tmp_path / ".env"
+    ep.write_bytes(b"OWNER_NAME=a\x81b\n")
+
+    with caplog.at_level(logging.WARNING, logger=loader.logger.name):
+        try:
+            creds = _boot_read(monkeypatch, ep)
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"the boot read raised {exc!r}")
+
+    assert "OWNER_NAME" not in creds
+    warnings = [r.getMessage() for r in caplog.records if "Cannot decode" in r.getMessage()]
+    assert len(warnings) == 1
+    assert str(ep) in warnings[0] and "Save it as UTF-8." in warnings[0]
 
 
 def test_a_utf8_file_still_reads_as_utf8_under_utf8_mode() -> None:

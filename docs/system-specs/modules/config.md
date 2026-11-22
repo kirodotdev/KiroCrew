@@ -3077,7 +3077,13 @@ that hit a one-off transient failure (an `OSError`, e.g. a Windows sharing
 violation mid-rotation) is retried on the very next cycle instead of being
 silently dropped the moment the file's mtime stops moving; a persistently bad
 file just pays a harmless repeated re-read (the undecodable warning still
-fires only once).
+fires only once). Boot's `load_credentials` and the per-key reader
+`read_env_file_credential` (a kiro-cli spawn's `KIRO_API_KEY` lookup among its
+callers) read an undecodable file of either kind the same way: the same
+warning, nothing loaded from it, and a non-definitive answer to a caller that
+asks. So such a file stops neither the gateway at boot, a session start, nor
+`kirocrew doctor`, while the in-place rewriters still refuse it, so they
+never overwrite a file they could not parse.
 
 The apply itself is the other way the cycle can fail, and it is treated the
 same way. `apply_env_credential_changes` is best-effort — a bad apply must not
