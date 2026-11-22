@@ -36,6 +36,7 @@ import { useSecondClock } from '../../hooks/useSecondClock'
 import {
   isTerminal, isRemoving, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, signinSkipped, type SizeTier,
   tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice, HOURS_PER_MONTH, SIZE_FLAG,
+  launchCardDismissable,
 } from './remoteCrewPanelModel'
 
 /** One selectable size card. Shared by the arm64 ladder and the x86 lane so the
@@ -782,9 +783,11 @@ export function PrereqRow({
 /** The launch-in-progress card (setup tab): 4 steps + device-code sign-in. */
 export function LaunchProgressCard({
   job, onCancel, onRestartSignin, restartingSignin, onFetchSignin, fetchingSignin, signinNotice, cancelling,
-  onSkipSignin, skippingSignin,
+  onSkipSignin, skippingSignin, onDismiss,
 }: {
   job: LaunchJob
+  /** Close the card of a launch that needs nothing more; absent, no close button. */
+  onDismiss?: (id: string) => void
   onCancel: (id: string) => void
   onRestartSignin: (id: string) => void
   restartingSignin: boolean
@@ -858,6 +861,17 @@ export function LaunchProgressCard({
             card uses. */}
         {!terminal && (
           <CancelLaunchBtn className="ml-auto" job={job} onCancel={onCancel} cancelling={cancelling} />
+        )}
+        {onDismiss && launchCardDismissable(job) && (
+          <Btn
+            className="ml-auto"
+            onClick={() => onDismiss(job.id)}
+            data-testid="launch-card-dismiss"
+          >
+            {/* Visible words, not a bare X: on a card about a paid machine an X
+                reads as "delete the crew". The card's done line says it stays. */}
+            <X size={14} aria-hidden="true" /> {i18nT('pages.settings.remoteCrewPanel.hide_launch_card')}
+          </Btn>
         )}
       </div>
       <ol className="m-0 p-0 list-none space-y-2">

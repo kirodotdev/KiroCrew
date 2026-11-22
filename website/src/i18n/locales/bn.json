@@ -22145,6 +22145,7 @@
         "checking_against_default_no_region": "তোমার ডিফল্ট AWS ক্রেডেনশিয়াল দিয়ে যাচাই করা হয়েছে, কোনো রিজিয়ন সেট নেই।",
         "checking_against_no_region": "প্রোফাইল {{profile}} দিয়ে যাচাই করা হয়েছে, কোনো রিজিয়ন সেট নেই।",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "কার্ড লুকাও",
         "code_ready": "তোমার সাইন-ইন কোড তৈরি",
         "code_ready_for": "{{name}}-এর সাইন-ইন কোড তৈরি",
         "confirm_cancel_remove": "হ্যাঁ, “{{tag}}” সরিয়ে দাও",

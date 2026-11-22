@@ -11874,6 +11874,7 @@
         "checking_against_default_no_region": "Checked with your default AWS credentials, with no region set.",
         "checking_against_no_region": "Checked against profile {{profile}}, with no region set.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "Hide card",
         "code_ready": "Your sign-in code is ready",
         "code_ready_for": "The sign-in code for {{name}} is ready",
         "confirm_cancel_remove": "Yes, remove “{{tag}}”",

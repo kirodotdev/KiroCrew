@@ -22695,6 +22695,7 @@
         "checking_against_default_no_region": "Vérifié avec tes identifiants AWS par défaut, sans région définie.",
         "checking_against_no_region": "Vérifié avec le profil {{profile}}, sans région définie.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "Masquer la carte",
         "code_ready": "Votre code de connexion est prêt",
         "code_ready_for": "Le code de connexion de {{name}} est prêt",
         "confirm_cancel_remove": "Oui, supprimer « {{tag}} »",

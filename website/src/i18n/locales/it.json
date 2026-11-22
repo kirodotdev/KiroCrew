@@ -22695,6 +22695,7 @@
         "checking_against_default_no_region": "Verificato con le tue credenziali AWS predefinite, senza regione impostata.",
         "checking_against_no_region": "Verificato con il profilo {{profile}}, senza regione impostata.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "Nascondi scheda",
         "code_ready": "Il tuo codice di accesso è pronto",
         "code_ready_for": "Il codice di accesso di {{name}} è pronto",
         "confirm_cancel_remove": "Sì, rimuovi «{{tag}}»",

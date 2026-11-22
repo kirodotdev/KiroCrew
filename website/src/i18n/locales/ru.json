@@ -23245,6 +23245,7 @@
         "checking_against_default_no_region": "Проверено с твоими учётными данными AWS по умолчанию, регион не задан.",
         "checking_against_no_region": "Проверено с профилем {{profile}}, регион не задан.",
         "cloud_crew_name": "{{productName}} Cloud ({{tag}})",
+        "hide_launch_card": "Скрыть карточку",
         "code_ready": "Ваш код для входа готов",
         "code_ready_for": "Код для входа для {{name}} готов",
         "confirm_cancel_remove": "Да, удалить «{{tag}}»",
