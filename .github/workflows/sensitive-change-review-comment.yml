@@ -104,11 +104,16 @@ jobs:
             runs="$(jq -cs --arg path ".github/workflows/sensitive-change-review.yml" \
               '{workflow_runs: [.[] | select(.path == $path)]}' <<<"$found")"
           fi
-          read -r run_id status < <(jq -r --argjson pr "$PR" --arg head "$head" '
+          # GitHub leaves `pull_requests` empty on these runs, so an empty array
+          # falls back to the PR's own head branch (same repo, checked above).
+          head_ref="$(jq -r '.head.ref' <<<"$pr_json")"
+          read -r run_id status < <(jq -r --argjson pr "$PR" --arg head "$head" --arg ref "$head_ref" '
             [.workflow_runs[]
              | select(.head_sha == $head
                       and .event == "pull_request_target"
-                      and (.pull_requests | any(.number == $pr)))]
+                      and ((.pull_requests | any(.number == $pr))
+                           or ((.pull_requests | length) == 0
+                               and .head_branch == $ref)))]
             | max_by(.id) // empty
             | "\(.id) \(.status)"' <<<"$runs") || true
           if [[ ! "${run_id:-}" =~ ^[0-9]+$ ]]; then
