@@ -67,6 +67,40 @@ def test_environment_bypass(monkeypatch, no_proxy, expected):
     assert http_proxy.resolve_proxy("https://updates.example/feed") == expected
 
 
+def _env_proxy(monkeypatch, no_proxy):
+    for name in ("http_proxy", "https_proxy", "no_proxy", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.upper(), raising=False)
+    monkeypatch.setenv("NO_PROXY", no_proxy)
+
+
+@pytest.mark.parametrize(
+    ("no_proxy", "url", "expected"),
+    [
+        ("discord.com", "https://discord.com/api/v10/x", None),
+        (".discord.gg", "wss://gateway.discord.gg/?v=10", None),
+        ("*", "https://webexapis.com/v1/people/me", None),
+        ("webexapis.com:443", "https://webexapis.com/v1/x", None),
+        ("webexapis.com:8443", "https://webexapis.com/v1/x", _HTTPS_PROXY),
+        ("example.org:80", "ws://example.org/ws", None),
+        ("other.example", "https://discord.com/api", _HTTPS_PROXY),
+        ("discord.com", "not a url", _HTTPS_PROXY),
+        ("discord.com", "https://discord.com:bad/", _HTTPS_PROXY),
+    ],
+)
+def test_proxy_for_url_honours_no_proxy(monkeypatch, no_proxy, url, expected):
+    _env_proxy(monkeypatch, no_proxy)
+
+    assert http_proxy.proxy_for_url(_HTTPS_PROXY, url) == expected
+
+
+def test_proxy_for_url_without_proxy_is_direct(monkeypatch):
+    _env_proxy(monkeypatch, "")
+
+    assert http_proxy.proxy_for_url(None, "https://discord.com/api") is None
+    assert http_proxy.proxy_for_url(_HTTPS_PROXY, "https://discord.com/api") == _HTTPS_PROXY
+
+
 def test_proxy_settings_are_read_per_call(monkeypatch):
     proxies = MagicMock(side_effect=[{"https": _HTTPS_PROXY}, {"http": _HTTP_PROXY}])
     bypass = MagicMock(side_effect=[False, False, True])
