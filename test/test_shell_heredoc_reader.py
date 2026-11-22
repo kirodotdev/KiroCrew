@@ -297,6 +297,39 @@ def test_the_arithmetic_line_reading_stays_linear(monkeypatch, cmd):
     assert sum(chars) <= 12 * len(cmd)  # each line is read a fixed number of times
 
 
+@pytest.mark.parametrize("head", ["echo a \\\nb ", "echo a b "], ids=["folded", "unfolded"])
+def test_a_resumed_walk_reads_heredocs_only_as_far_as_it_walks(monkeypatch, head):
+    # A substitution's close walk resumes the quote walk at its opener and stops at its
+    # ``)``. The heredoc reader must stop with it, on a folded text too, or a line of
+    # many substitutions before a heredoc is read once per substitution. Counted.
+    from kiro_crew.security import shell_heredoc_lines
+    from kiro_crew.security import shell_normalizer_walk as walk
+    from kiro_crew.security.call_views import sharing_views
+
+    real = shell_heredoc_lines._doc_steps
+    steps: list[int] = []
+
+    def counted(*args, **kwargs):  # type: ignore[no-untyped-def]
+        for at in real(*args, **kwargs):
+            steps.append(at)
+            yield at
+
+    monkeypatch.setattr(shell_heredoc_lines, "_doc_steps", counted)
+    text = head + "x=$(date) " * 400 + "\ncat <<'EOF'\nhi\nEOF\nls"
+
+    @sharing_views
+    def read() -> str:
+        folded = walk._fold_line_continuations(text)
+        for at in range(0, len(folded), 10):
+            for _count, _step in zip(range(3), walk._iter_shell_chars(folded, 0, False, at)):
+                pass
+        return folded
+
+    assert "\\\n" not in read()
+    assert steps
+    assert len(steps) <= 8 * len(text)
+
+
 def test_releasing_arithmetic_shifts_does_linear_identity_work(monkeypatch):
     from kiro_crew.security import shell_heredoc_lines as shell_commands
 

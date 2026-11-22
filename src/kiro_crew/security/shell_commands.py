@@ -17,7 +17,7 @@ that command keeps one :data:`SUBST` step in its place.
 from __future__ import annotations
 
 import re
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from . import shell_normalizer as _shell
 from . import shell_normalizer_walk as _walk
@@ -25,7 +25,9 @@ from . import shell_normalizer_walk as _walk
 # One gate call's payloads per frame text are kept in ``_CALL_VIEWS`` under the plain
 # text; ``shell_normalizer._shell_payload_walk`` keeps its frames there under tuple keys.
 from .call_views import _CALL_VIEWS, sharing_views  # noqa: F401  (also served to importers)
-from .shell_heredoc_lines import HereDocSpan, heredoc_docs
+
+if TYPE_CHECKING:
+    from .shell_heredoc_lines import HereDocSpan
 
 #: The step standing for a substitution read on its own: it may expand to nothing.
 SUBST = "\1"
@@ -195,7 +197,11 @@ def read_commands(
     in_redirect = False
     expansion: list[str] = []  # closers of open ``${…}`` / ``$[…]``
     pos, state = 0, 0
-    docs = heredoc_docs(command) if heredocs else ()
+    docs: "tuple[HereDocSpan, ...]" = ()
+    if heredocs and "<<" in command:
+        from .shell_heredoc_lines import heredoc_docs  # lazy: off the MCP listing
+
+        docs = heredoc_docs(command)
     owners: "dict[int, int | None]" = {}  # offset of each live ``<<`` -> its command
 
     def cut(separator: str) -> None:

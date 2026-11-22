@@ -36,7 +36,6 @@ from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
 from .redaction_switch import always_scan
 from .shell_commands import sharing_views
-from .shell_heredoc_lines import keep_submitted_case
 from .text_redaction import redact_and_truncate
 
 if TYPE_CHECKING:
@@ -739,7 +738,10 @@ def is_denied(
     _diag = _submodule("diagnostics")
 
     lower = tool_name.lower()
-    keep_submitted_case(tool_name)  # heredoc tags match their closing lines by case
+    if "<<" in tool_name:
+        from .shell_heredoc_lines import keep_submitted_case  # lazy: off the MCP listing
+
+        keep_submitted_case(tool_name)  # heredoc tags match their closing lines by case
     waive = _DenyWaiver(tool_name, frozenset(waived))
 
     def _reason(

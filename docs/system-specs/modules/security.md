@@ -1131,7 +1131,8 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   lower-cased copy, so `is_denied` keeps the command as submitted for its call
   (`keep_submitted_case`, in the call memo) and the reader reads the tag and the
   closing lines on that text at the same offsets (`cased_view`). For a text whose
-  submitted case it cannot find, such as a payload with its escapes removed, a `<<`
+  submitted case it cannot find, such as a payload with its escapes removed, or that
+  the command holds in two cases (a lower-case copy before the real one), a `<<`
   whose tag the command spells in two cases opens no body (`case_varies`). It reads
   raw lines only and never looks for the close of a `$(…)` or a backtick, so the quote walk
   (`shell_normalizer_walk._iter_shell_chars`) calls it, and `shell_commands.read_commands`

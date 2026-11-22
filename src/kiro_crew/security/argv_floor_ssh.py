@@ -48,7 +48,6 @@ from .shell_commands import (
     _proven_body_spans,
     heredoc_text_spans,
 )
-from .shell_heredoc_lines import heredoc_body_spans
 from .shell_normalizer import (
     _argv_programs,
     _cut_at_operator,
@@ -257,7 +256,11 @@ def _mask_quoted_separators(text: str, *, blank_bodies: bool = False) -> str:
     # A heredoc body that starts unquoted keeps its line breaks, and the text after its
     # closing line starts unquoted, as bash reads it: a quote character in the body
     # does not carry over to the next command line.
-    closes = dict(heredoc_body_spans(text))
+    closes: "dict[int, int]" = {}
+    if "<<" in text:
+        from .shell_heredoc_lines import heredoc_body_spans  # lazy: off the MCP listing
+
+        closes = dict(heredoc_body_spans(text))
     body_tail = -1
     i = 0
     n = len(text)

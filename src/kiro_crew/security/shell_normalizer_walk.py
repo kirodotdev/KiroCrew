@@ -21,7 +21,6 @@ import re
 from typing import TYPE_CHECKING, NamedTuple
 
 from .call_views import once_per_call
-from .shell_heredoc_lines import carry_docs, heredoc_stream
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -367,6 +366,8 @@ def _shell_join_continuations(text: str) -> str:
     """
     joined = _SHELL_LINE_CONTINUATION_RE.sub("", text)
     if "<<" in text and joined != text:
+        from .shell_heredoc_lines import carry_docs  # lazy: off the MCP listing
+
         cuts = [m.span() for m in _SHELL_LINE_CONTINUATION_RE.finditer(text)]
         carry_docs(text, joined, cuts)
     return joined
@@ -487,6 +488,8 @@ def _fold_line_continuations(text: str) -> str:
         i += 1
     folded_text = "".join(out)
     if cuts and "<<" in text:
+        from .shell_heredoc_lines import carry_docs  # lazy: off the MCP listing
+
         carry_docs(text, folded_text, cuts)
     return folded_text
 
@@ -613,7 +616,11 @@ def _iter_shell_chars(
     n = len(text)
     dollar_run = 0  # consecutive LITERAL ``$`` immediately before this char
     docs: "list[HereDocSpan]" = []
-    reader = None if plain else heredoc_stream(text, start, state, ansi, docs)
+    reader = None
+    if not plain and text.find("<<", start) >= 0:
+        from .shell_heredoc_lines import heredoc_stream  # lazy: off the MCP listing
+
+        reader = heredoc_stream(text, start, state, ansi, docs)
     reach, end, told = start - 1, 0, len(docs)
     if bodies is not None:
         bodies += [(doc.start, doc.tail) for doc in docs if doc.tail < n]

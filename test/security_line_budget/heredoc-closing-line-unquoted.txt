@@ -1,4 +1,4 @@
-+400
++452
 The shared shell quote walk (_iter_shell_chars) reads here-documents as bash
 does: a << outside quotes opens a body on the next line, and the walk starts
 unquoted where the body's closing line ends, so every reader built on the walk
@@ -15,3 +15,7 @@ text before folding (carry_docs), so a fold inside a quoted-tag body cannot make
 a closing line. _self_tokens tokenizes in pieces cut around each body
 (_heredoc_line_pieces), and the ssh floor's separator mask starts fresh after a
 body's closing line (heredoc_body_spans).
+cased_view gives no case when the submitted command holds the text in two cases,
+a folded text's bodies are read lazily with offsets moved by bisect, and every
+importer loads shell_heredoc_lines at its first << so the MCP listing's import
+graph does not grow.

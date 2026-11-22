@@ -413,6 +413,13 @@ def test_shift_or_comment_opens_no_body(cmd, rule):
             "self-protection-restart",
         ),
         (f"cat <<EOF\n'\neof\n'\nEOF\necho a \\\nb\n{_RESTART}\n# '", "self-protection-restart"),
+        # A lower-case copy of the payload earlier in the command must not lend the
+        # payload its case: the real tag is ``EOF``, so ``eof`` closes nothing.
+        (
+            f'echo \'cat <<eof\n"\neof\n"\neof\n{_RESTART}\n# "\' ; '
+            f'bash -c \'cat <<EOF\n"\neof\n"\nEOF\n{_RESTART}\n# "\'',
+            "self-protection-restart",
+        ),
     ],
 )
 def test_closing_line_matches_tag_case(cmd, rule):

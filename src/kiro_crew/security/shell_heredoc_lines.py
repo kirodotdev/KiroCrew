@@ -11,6 +11,7 @@ lines only, and never looks for the close of a ``$(...)`` or a backtick.
 
 from __future__ import annotations
 
+import bisect
 from typing import TYPE_CHECKING, NamedTuple
 
 from .call_views import _CALL_VIEWS
@@ -45,7 +46,9 @@ def cased_view(text: str) -> "str | None":
     bash compares a body's lines with its tag case-sensitively, and the floors read a
     lower-cased copy of the command, so the tag and the closing lines are read on the
     submitted text at the same offsets. Outside a gate call, and when the command had
-    no upper case, *text* is its own case.
+    no upper case, *text* is its own case. When the submitted command holds *text* in
+    two cases (a lower-case decoy before the real text), which one this is is unknown,
+    so the answer is None.
     """
     memo = _CALL_VIEWS.get()
     forms = memo.get(_SUBMITTED) if memo is not None else None
@@ -53,12 +56,16 @@ def cased_view(text: str) -> "str | None":
         return text
     key = ("heredoc_cased_view", text)
     if key not in memo:
-        memo[key] = None
+        seen: "set[str | None]" = set()
+        word, found = text.lower(), 0
         for form, low in forms:
-            at = low.find(text.lower())
+            at = low.find(word)
+            while at >= 0 and len(seen) < 2 and found < 64:  # bounded: unknown past it
+                seen.add(form[at : at + len(text)])
+                at, found = low.find(word, at + 1), found + 1
             if at >= 0:
-                memo[key] = form[at : at + len(text)]
-                break
+                seen.add(None)  # stopped early: more spellings may follow
+        memo[key] = seen.pop() if len(seen) == 1 else None
     return memo[key]
 
 
@@ -117,24 +124,10 @@ def heredoc_docs(
     unknown, a ``<<`` whose tag the command spells in two cases opens no body. The
     body text is skipped, and the read goes on unquoted after the closing line.
     """
-    memo = _CALL_VIEWS.get()
-    source, cuts = (memo or {}).get((_UNFOLDED, text), (text, []))
     docs: "list[HereDocSpan]" = []
-    if source.find("<<", start) >= 0:
-        for _at in _doc_steps(source, _unfolded_offset(start, cuts), state, ansi, docs):
-            pass
-    if not cuts:
-        return tuple(docs)
-
-    def moved(at: int) -> int:
-        return _folded_offset(at, cuts)
-
-    return tuple(
-        HereDocSpan(
-            moved(d.opener), moved(d.line), moved(d.start), moved(d.end), moved(d.tail), d.quoted
-        )
-        for d in docs
-    )
+    for _at in heredoc_stream(text, start, state, ansi, docs) or ():
+        pass
+    return tuple(docs)
 
 
 #: The memo key under which a gate call keeps the text a folded text was folded from.
@@ -154,21 +147,26 @@ def carry_docs(text: str, folded: str, cuts: "list[tuple[int, int]]") -> None:
     # shortcut: a text folded twice is read as it stands; carry the first text's
     # cuts too if a second fold ever finds a continuation the first one kept.
     if memo is not None and folded != text and (_UNFOLDED, text) not in memo:
-        memo.setdefault((_UNFOLDED, folded), (text, cuts))
+        gone = [0]  # characters removed before each cut
+        for start, end in cuts:
+            gone.append(gone[-1] + end - start)
+        moved = [start - before for (start, _end), before in zip(cuts, gone)]
+        memo.setdefault((_UNFOLDED, folded), (text, cuts, gone, moved))
 
 
-def _folded_offset(at: int, cuts: "list[tuple[int, int]]") -> int:
+def _folded_offset(at: int, cuts: "list[tuple[int, int]]", gone: "list[int]") -> int:
     """Where offset *at* of the unfolded text lands once *cuts* are removed."""
-    return at - sum(min(end, at) - start for start, end in cuts if start < at)
+    k = bisect.bisect_left(cuts, (at,))  # the cuts that start before *at*
+    if not k:
+        return at
+    start, end = cuts[k - 1]
+    return at - gone[k - 1] - (min(end, at) - start)
 
 
-def _unfolded_offset(at: int, cuts: "list[tuple[int, int]]") -> int:
-    """The offset of the unfolded text that lands on *at* once *cuts* are removed."""
-    for start, end in cuts:
-        if start > at:
-            break
-        at += end - start
-    return at
+def _unfolded_offset(at: int, gone: "list[int]", moved: "list[int]") -> int:
+    """The offset of the unfolded text that lands on *at* once the cuts are removed;
+    *moved* holds where each cut starts on the folded text."""
+    return at + gone[bisect.bisect_right(moved, at)]
 
 
 def heredoc_stream(
@@ -182,10 +180,46 @@ def heredoc_stream(
     if text.find("<<", start) < 0:
         return None
     memo = _CALL_VIEWS.get()
-    if memo is not None and (_UNFOLDED, text) in memo:
-        docs += heredoc_docs(text, start, state, ansi)  # offsets moved from the unfolded text
-        return None
-    return _doc_steps(text, start, state, ansi, docs)
+    carried = memo.get((_UNFOLDED, text)) if memo is not None else None
+    if carried is None:
+        return _doc_steps(text, start, state, ansi, docs)
+    source, cuts, gone, moved = carried
+    return _folded_steps(
+        source, cuts, gone, _unfolded_offset(start, gone, moved), state, ansi, docs
+    )
+
+
+def _folded_steps(
+    source: str,
+    cuts: "list[tuple[int, int]]",
+    gone: "list[int]",
+    pos: int,
+    state: int,
+    ansi: bool,
+    docs: "list[HereDocSpan]",
+) -> "Iterator[int]":
+    """:func:`_doc_steps` on the unfolded *source*, with each offset moved onto the
+    folded text, read as lazily."""
+    read: "list[HereDocSpan]" = []
+
+    def move(at: int) -> int:
+        return _folded_offset(at, cuts, gone)
+
+    def carry() -> None:
+        while len(read) > carried[0]:
+            d = read[carried[0]]
+            docs.append(
+                HereDocSpan(
+                    move(d.opener), move(d.line), move(d.start), move(d.end), move(d.tail), d.quoted
+                )
+            )
+            carried[0] += 1
+
+    carried = [0]
+    for at in _doc_steps(source, pos, state, ansi, read):
+        carry()
+        yield move(at)
+    carry()
 
 
 def _doc_steps(
