@@ -28,6 +28,10 @@ records operator-approved fingerprints for stubbed MCP launches. A fingerprint
 covers the declared environment text, so a changed `${VAR}` value keeps an
 approved launch approved only when the environment sidecar publishes; a failed
 sidecar pass persists no rebind. A changed declared text does not keep approval.
+On Windows, a command that `env.saved_command_casing` rewrote from an approved
+spelling (only the extension's case moves, read from the directory entry) keeps
+the approval when its args and env pair are approved with a stored display; any
+other case change is still refused.
 A command, argument or declared-env path segment that is byte-identical to one
 of three spellings the gateway computes from itself -- `sys.executable`, the
 `deps_boot` shim path, the `kiro_crew` package's parent directory -- is hashed by

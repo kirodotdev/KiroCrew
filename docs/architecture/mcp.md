@@ -1448,7 +1448,12 @@ the new pair and drops the older expansion of the same launch: the values come
 from the gateway environment (the operator's shell and the crew `.env`), which
 no agent can write. A sidecar publication failure drops every rebind from that
 pass, so gatewayd refuses the changed expansion and the next boot retries. A
-changed command, argument or declared env text is still refused.
+changed command, argument or declared env text is still refused, with one
+exception: a command that `env.saved_command_casing` produced from an approved
+spelling (the PATHEXT extension case, read from the directory entry) keeps the
+approval when the same args and env pair are approved with a stored display. It
+is recorded beside the old spelling and audited as
+`approved launch, Windows command casing repaired`.
 Both halves of the fingerprint fold exactly three gateway-computed spellings
 (`hashing.install_aliases`), each in the ONE slot the gateway's own writer
 (`apps/bridges_mcp.py`) emits it in: `sys.executable` (what the rewriter substitutes
