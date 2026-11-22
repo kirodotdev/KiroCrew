@@ -15545,6 +15545,7 @@
       "search_older_sessions": "Cerca tra le sessioni più vecchie…",
       "search_sessions": "Cerca tra le sessioni…",
       "session_dropped_into_itself": "Non puoi rilasciare una sessione su se stessa… su se stessa… su se stessa…",
+      "session_already_in_another_pane": "Già aperta in un altro riquadro",
       "session_failed_to_archive_many": "Impossibile archiviare {{count}} sessioni",
       "session_failed_to_archive_one": "Impossibile archiviare {{count}} sessione",
       "session_failed_to_archive_other": "Impossibile archiviare {{count}} sessioni",

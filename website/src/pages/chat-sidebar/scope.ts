@@ -130,13 +130,17 @@ export interface ChatSidebarProps {
    *  incognito/temporary sessions or for the already-active session. */
   onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
   /** Whether staging a session reference has a composer to land in right now —
-   *  the same predicate `chatDropTarget` is gated on, passed through on its own
+   *  `chatDropTarget`'s gate outside Split View, passed through on its own
    *  because the row menu's "Reference in chat" item needs the boolean (the drop
    *  zone needs the element). False/omitted hides the menu item: an embed
    *  sessions list, split view, or no active slot has no composer, so the row
    *  would stage a reference nothing renders. The per-row incognito/temporary/
    *  self refusals are decided in the row from `sessionRefBlockReason`. */
   canStageSessionRef?: boolean
+  /** Split View only: show a session dropped on a pane (`leafId`) in that pane.
+   *  Set, the drag's targets in `chatDropTarget` are the panes, not the
+   *  composer; unset, Split View panes take no drop. */
+  onShowSessionInPane?: (leafId: string, key: string) => void
   /** Where a crew row's window opens, for a host with no chat pane of its
    *  own (embed/sessions). Omit to open it over this page's pane. */
   onOpenPeerSession?: (instanceId: string, key: string) => void
@@ -168,6 +172,7 @@ export interface SidebarScope {
   chatDropTarget: ChatSidebarProps['chatDropTarget']
   onDropSessionRef: ChatSidebarProps['onDropSessionRef']
   canStageSessionRef: ChatSidebarProps['canStageSessionRef']
+  onShowSessionInPane: ChatSidebarProps['onShowSessionInPane']
   staticRows: ChatSidebarProps['staticRows']
 
   // Its own state and what it derives

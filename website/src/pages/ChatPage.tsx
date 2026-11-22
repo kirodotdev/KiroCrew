@@ -1171,6 +1171,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </>
   ), [composerAbove, deliveryStrip.show, deliveryStrip.onDismiss])
 
+  // Split View's "show this session in that pane", for the sidebar's drop on a pane.
+  const paneDropRef = useRef<((leafId: string, slot: string) => void) | null>(null)
+  const showSessionInPane = useCallback((leafId: string, slot: string) => paneDropRef.current?.(leafId, slot), [])
   return (
     <ChatPageFrame
       embedded={embedded} activeSlot={activeSlot} chatConfig={chatConfig} jiraSourceHosts={jiraSourceHosts} runInTerminalScope={runInTerminalScope} activitySlot={activitySlot}
@@ -1191,6 +1194,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         openSidebar={openSidebar} revealSourceLink={revealSourceLink} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen} flyoutSwitch={flyoutSwitch} flyoutNew={flyoutNew}
         mobileNewSessionItem={mobileNewSessionItem} topbarSessionsToggle={topbarSessionsToggle}
         onPromote={promote} promoting={promoting}
+        // A crew window covers the panes, so they take no drop under it.
+        showSessionInPane={splitMode && splitFeatureEnabled && !crewWindow && !isMobile ? showSessionInPane : undefined}
       />
       {promoteConfirmDialog}
       <ComposerDraftSync store={composerDraft} inputRef={inputRef} onCommit={onComposerDraftCommit} />
@@ -1210,6 +1215,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         />
         {splitMode && splitFeatureEnabled ? (
           <SessionGridView
+            paneDropRef={paneDropRef}
             seedSlot={splitAnchor ?? activeSlot}
             seedDir={splitSeedDir}
             openSideChat={connected ? openSideChatForPane : undefined}
