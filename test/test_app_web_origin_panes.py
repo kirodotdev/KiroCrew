@@ -125,6 +125,28 @@ async def test_a_pane_token_records_its_port() -> None:
 
 
 @pytest.mark.parametrize(
+    ("peer", "recorded"),
+    [("169.254.255.193", [_HUB]), ("10.0.0.5", [])],
+    ids=["host-forward", "routable-peer"],
+)
+@pytest.mark.asyncio
+async def test_a_pane_forwarded_by_the_container_host_records_its_port(
+    peer: str, recorded: list[int]
+) -> None:
+    # The container's SSH server runs on its host, so the pane's forward reaches
+    # this loopback socket from the host's link-local address.
+    app = _app()
+    info = {"peername": (peer, 50000), "sockname": ("127.0.0.1", 5476)}
+    transport = mock.Mock()
+    transport.get_extra_info.side_effect = lambda name, default=None: info.get(name, default)
+    req = make_mocked_request(
+        "GET", "/", headers={"Host": f"localhost:{_PANE}"}, app=app, transport=transport
+    )
+    await pp.note_pane_request(req, _claims())
+    assert pp.pane_ports(app).parents(_PANE, time.time()) == recorded
+
+
+@pytest.mark.parametrize(
     ("host", "headers", "token_extra", "why"),
     [
         (f"crew.example.com:{_PANE}", {}, {}, "not a dashboard loopback name"),
