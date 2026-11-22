@@ -1374,15 +1374,18 @@ runs no scan, and the notice asks again after 15 s, 45 s, 2, 5 and 10 minutes,
 then stops. It reads the Crashpad dump directory (`app.getPath("crashDumps")`)
 and, on macOS, the user's `.ips` diagnostic reports:
 
-- `crashes.log` records each new crash of this app, capped at 500 lines.
+- `crashes.log` records each new crash of this app, capped at 500 lines. A
+  snapshot Crashpad took of this app while it kept running (exception code `0`,
+  or `0x517a7ed` on Windows) is not a crash: it gets no line and no notice, and
+  is deleted.
 - `crashes-seen.json` acknowledges each artifact once, so a crash is reported
   once rather than on every launch, capped at 2000 keys.
 - At most 25 unseen artifacts are inspected per app session, and a dump that
   reads short or unreadable on three consecutive scans is aged out.
 - A minidump proven to belong to another process (a child that inherited the
   Crashpad handler) is acknowledged and deleted, since nothing else prunes it.
-  Unreadable dumps, Electron-shaped strangers and this app's own dumps are
-  never deleted.
+  Unreadable dumps, Electron-shaped strangers and this app's own crash dumps
+  are never deleted.
 - Minidumps that reached `crashes-seen.json` without that check (every scan
   writes off unread a dump older than the launch that first armed the
   collector) are swept: each is opened once more,

@@ -36,7 +36,8 @@
 //
 //   * The dump's FIRST module must be ours (Crashpad writes the crashing
 //     executable first). This rejects the inherited-handler children.
-//   * The exception code must be non-zero. This rejects `DumpWithoutCrashing`
+//   * The exception code must not be a snapshot's: 0, or `0x517a7ed` on Windows
+//     (Crashpad's `kSimulatedExceptionCode`). This rejects `DumpWithoutCrashing`
 //     snapshots, including our own.
 //
 // Reading the module list means parsing the minidump, which is why there is a
