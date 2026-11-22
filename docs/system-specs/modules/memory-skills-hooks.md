@@ -6718,7 +6718,20 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     removes it (see [learn-cron-dashboard.md](learn-cron-dashboard.md)).
 - `delete_skill(name)` — removes entire skill directory; a directory with no
   `SKILL.md` entry of its own (a folder of nested skills such as `auto`) is not a skill
-  and is refused (`False`, so the DELETE route answers 404 as GET does)
+  and is refused (`False`, so the DELETE route answers 404 as GET does). The removal is
+  `platform_compat.rmtree_force`, so a read-only entry inside the skill (a Windows
+  read-only file, a POSIX `0555` directory) does not keep it, and a folder that still
+  stays raises `OSError` naming what is left: a delete never returns `True` over a
+  folder still on disk. `rmtree_force` goes on past an entry that stays. On the by-name
+  floor (Windows) that is a file another process holds open, which a retry gets past
+  once the holder lets go, so the other entries (subfolders, then top-level files) go
+  before `SKILL.md`: such a delete fails with `SKILL.md` in place, the skill stays
+  listed and a retry reaches it. A top-level link that stays, or the folder's own
+  removal refused, can still leave the folder without its `SKILL.md`. POSIX unlinks an
+  open or read-only file, so the pinned branch keeps the single removal, rooted at the
+  skill folder as before; an entry that stays there (a folder this user may not list,
+  one another user owns, a file held open on a network filesystem) can leave the folder
+  without its `SKILL.md`.
 - All three address the leaf relative to a descriptor pinning the parent chain
   (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an
   ancestor swapped for a link after resolution cannot redirect the write. Windows
@@ -6726,9 +6739,11 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
   descriptor-relative calls these branches issue — `os.mkdir` (create, under the
   parent descriptor `create_skill` already walked), `os.unlink` (update, via
   `atomic_write`'s staging cleanup) and `os.stat` (delete, via `stat_at`) — on top of
-  `pinned_fs.supports_pinned_walk()`. `os.rmdir` is NOT probed: delete's removal is
-  a by-name `shutil.rmtree`, the residual noted below. `update_skill` additionally
-  requires `atomic_write.pinned_parent_replace_supported()` (the descriptor-relative
+  `pinned_fs.supports_pinned_walk()`. `os.rename` and `os.rmdir` are probed for create's
+  rollback, not for delete: delete's removal is a by-name `rmtree_force`, so a
+  directory renamed onto the skill's name after the pinned checks is removed in its
+  place. `update_skill` additionally requires
+  `atomic_write.pinned_parent_replace_supported()` (the descriptor-relative
   rename) and takes the by-name floor without it, because `atomic_write` refuses a
   `parent_dir_fd` it cannot publish through rather than quietly writing by name.
 - Once the skill directory is pinned, `SKILL.md` is never addressed by name again —
