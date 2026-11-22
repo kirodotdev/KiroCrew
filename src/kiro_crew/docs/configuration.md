@@ -1513,7 +1513,10 @@ Save `.env` as UTF-8. A UTF-8 byte-order mark is fine and is kept when Kiro
 Crew rewrites the file. A file saved as UTF-16 or UTF-32 (PowerShell's default
 `>` / `Out-File`) is not read: every credential in it reads as unset, the log
 warns once, and a dashboard channel save answers 409 until the file is re-saved
-as UTF-8.
+as UTF-8. A file holding bytes that neither UTF-8 nor the system code page can
+decode is read as empty too: every credential in it reads as unset and the log
+warns once, naming the file. The gateway, a session start and `kirocrew doctor`
+still run, and Kiro Crew never rewrites a file it could not decode.
 
 To add directories to the `PATH` the agent's shell starts with, put a `PATH` line
 in the same file. List only the directories to add, as absolute paths separated the
