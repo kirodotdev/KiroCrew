@@ -13334,7 +13334,9 @@
         "host_sandbox_teammate_unnamed": "इस Crew का कंप्यूटर अभी चैट शुरू नहीं कर सकता। Crew के मालिक से इसे जाँचने को कहो।",
         "copy_details": "विवरण कॉपी करो",
         "copy_details_hint": "सिर्फ़ एरर कोड और समय कॉपी करता है",
-        "host_sandbox_teammate_named": "इस Crew का कंप्यूटर अभी चैट शुरू नहीं कर सकता। {{owner}} (Crew के मालिक) से इसे जाँचने को कहो।"
+        "host_sandbox_teammate_named": "इस Crew का कंप्यूटर अभी चैट शुरू नहीं कर सकता। {{owner}} (Crew के मालिक) से इसे जाँचने को कहो।",
+        "repeated_in_a_row_one": "लगातार {{count}} बार हुआ, सबसे हाल में {{time}} को",
+        "repeated_in_a_row_other": "लगातार {{count}} बार हुआ, सबसे हाल में {{time}} को"
       },
       "folderPanel": {
         "back": "पीछे",

@@ -13334,7 +13334,9 @@
         "host_sandbox_teammate_unnamed": "Der Computer dieser Crew kann gerade keine Chats starten. Bitte den Besitzer der Crew, das zu prüfen.",
         "copy_details": "Details kopieren",
         "copy_details_hint": "Kopiert nur den Fehlercode und die Uhrzeit",
-        "host_sandbox_teammate_named": "Der Computer dieser Crew kann gerade keine Chats starten. Bitte {{owner}} (Besitzer der Crew), das zu prüfen."
+        "host_sandbox_teammate_named": "Der Computer dieser Crew kann gerade keine Chats starten. Bitte {{owner}} (Besitzer der Crew), das zu prüfen.",
+        "repeated_in_a_row_one": "{{count}} Mal hintereinander aufgetreten, zuletzt am {{time}}",
+        "repeated_in_a_row_other": "{{count}} Mal hintereinander aufgetreten, zuletzt am {{time}}"
       },
       "folderPanel": {
         "back": "Zurück",

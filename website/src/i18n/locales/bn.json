@@ -13334,7 +13334,9 @@
         "host_sandbox_teammate_unnamed": "এই Crew-এর কম্পিউটার এখন চ্যাট শুরু করতে পারছে না। Crew-এর মালিককে এটা দেখতে বলো।",
         "copy_details": "বিস্তারিত কপি করো",
         "copy_details_hint": "শুধু এরর কোড আর সময় কপি করে",
-        "host_sandbox_teammate_named": "এই Crew-এর কম্পিউটার এখন চ্যাট শুরু করতে পারছে না। Crew-এর মালিক {{owner}}-কে এটা দেখতে বলো।"
+        "host_sandbox_teammate_named": "এই Crew-এর কম্পিউটার এখন চ্যাট শুরু করতে পারছে না। Crew-এর মালিক {{owner}}-কে এটা দেখতে বলো।",
+        "repeated_in_a_row_one": "পরপর {{count}} বার ঘটেছে, সবশেষে {{time}}-এ",
+        "repeated_in_a_row_other": "পরপর {{count}} বার ঘটেছে, সবশেষে {{time}}-এ"
       },
       "folderPanel": {
         "back": "পেছনে",

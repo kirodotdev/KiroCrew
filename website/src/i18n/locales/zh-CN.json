@@ -13040,7 +13040,8 @@
         "host_sandbox_teammate_unnamed": "这个 Crew 的电脑现在无法开始聊天。请让 Crew 所有者检查一下。",
         "copy_details": "复制详情",
         "copy_details_hint": "只复制错误代码和时间",
-        "host_sandbox_teammate_named": "这个 Crew 的电脑现在无法开始聊天。请让 {{owner}}（Crew 所有者）检查一下。"
+        "host_sandbox_teammate_named": "这个 Crew 的电脑现在无法开始聊天。请让 {{owner}}（Crew 所有者）检查一下。",
+        "repeated_in_a_row_other": "连续发生 {{count}} 次，最近一次在 {{time}}"
       },
       "folderPanel": {
         "back": "后退",
