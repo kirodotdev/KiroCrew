@@ -431,15 +431,18 @@ class TestGitPushEnforcement:
             lambda n: "git " + ("\t-! " * n) + "x", (100, 200, 300), denied=False
         )
         # Instructions cannot see a regex the engine runs in C, so the same pump also
-        # goes through the shared ramped thread-CPU check (one pump unit per four
-        # characters keeps the 20 000 pump at the 5 000 flags this test always used).
+        # goes through the shared ramped thread-CPU check. The gate's own Python walk
+        # dominates that CPU and coverage multiplies it, so the long pumps carry a
+        # twentieth of the flags (1 000 at the top); the one-unit ramp keeps every
+        # flag, and the 10x step between long pumps that the growth check reads is
+        # unchanged.
         from conftest import assert_rejected_without_backtracking
 
         def _allowed(command: str) -> None:
             assert not is_denied(command)
 
         assert_rejected_without_backtracking(
-            _allowed, lambda n: "git " + ("\t-! " * max(1, n // 4)) + "x"
+            _allowed, lambda n: "git " + ("\t-! " * (n if n < 200 else n // 20)) + "x"
         )
 
 
