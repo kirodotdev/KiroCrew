@@ -1180,6 +1180,14 @@ Headers sent with each trace export to `telemetry.traces_otlp_endpoint`.
 | `tunnel.name_override` | Explicit tunnel name (overrides name_mode). Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo'). | `""` |
 | `tunnel.relay_handle_email_domains` | Email domains, for example example.com, whose addresses label a relayed person by the part before the @ when the relay sent no name. The whole domain must match, ignoring case, so a subdomain or a longer domain keeps the full address. Empty (the default) labels everyone by their full address. Display only: it never changes who a person is or what they may do. | `[]` |
 
+### Remote Crew managed environments
+
+Settings for Kiro managed environments (persistent cloud machines) in Remote Crew. Remote Crew does not offer managed environments yet, so setting them changes nothing today. They are read only while the `crew_client` feature preview is on (Settings > Developer > Feature previews), and never on an LTS build. Every key is empty by default and nothing is guessed: a call with the key missing is refused, and the refusal names it.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `instances.managed_env_endpoint` | HTTPS base URL of the Kiro web service that lists, creates and connects your managed environments. Empty: every call is refused and names this key. | `""` |
+
 ### Messaging channels
 
 Each channel is set up from its Settings page; its own doc covers credentials and setup. The keys below are the ones not covered elsewhere on this page.
