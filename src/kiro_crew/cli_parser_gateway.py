@@ -210,8 +210,9 @@ def register_stop_parser(sub: _Commands) -> None:
 
 def register_restart_parser(sub: _Commands) -> None:
     # restart — service-aware: restarts the systemd/launchd service if active,
-    # otherwise SIGTERMs the foreground gateway and respawns it detached so the
-    # shell returns immediately. Mirrors `stop`.
+    # otherwise asks the foreground gateway to restart itself in place (POSIX),
+    # falling back to a stop and a detached spawn, so the shell returns
+    # immediately. Mirrors `stop`.
     restart_parser = cli_help.add_command(sub, "restart")
     restart_parser.add_argument(
         "--port",

@@ -1,9 +1,10 @@
 """Whether a pid is alive, and which process group it is in.
 
 The three-way liveness probe, thread-group leaders, zombies, process-group
-membership and the thread count, answered without sending a signal that could act
-on the target. Whether a whole process group is alive (``pgroup_exists``) is
-answered by ``platform_compat_kill``, which holds every ``os.killpg`` call.
+membership, whether this process has a supervisor's child's shape, and the thread
+count, answered without sending a signal that could act on the target. Whether a
+whole process group is alive (``pgroup_exists``) is answered by
+``platform_compat_kill``, which holds every ``os.killpg`` call.
 
 One of the owners ``kiro_crew.platform_compat`` is split into: every name here stays
 readable and patchable as ``kiro_crew.platform_compat.<name>``.
@@ -159,6 +160,55 @@ def pgroup_of(pid: int) -> int | None:
         return os.getpgid(pid)
     except OSError:
         return None
+
+
+#: Why :func:`supervision_shape_failure` finds no supervisor: stdin is this
+#: process's controlling terminal.
+SUPERVISION_TERMINAL = "terminal"
+#: ... this process leads its own group, or its parent is outside that group.
+SUPERVISION_OWN_GROUP = "own_group"
+#: ... the platform has no process groups to read.
+SUPERVISION_NOT_POSIX = "not_posix"
+
+
+def supervision_shape_failure() -> str | None:
+    """Why this process does not look like a supervisor's child, or ``None`` when it does.
+
+    A supervisor that relaunches its child (a shell-script loop, a runit or
+    daemontools service) runs it inside the supervisor's own process group, with
+    no terminal on stdin. The two readings that tell that shape apart:
+
+    * stdin is not this process's controlling terminal: ``os.tcgetpgrp(0)``
+      raises (``ENOTTY`` for a non-tty or a tty that belongs to another session,
+      ``EBADF`` for a closed fd 0). A process run in a terminal answers, so it
+      fails with :data:`SUPERVISION_TERMINAL`.
+    * this process does not lead its group, and its parent is in that group. A
+      detached child (a new session), a job-control job, a service manager's main
+      process and an orphan whose reaper sits outside the group fail with
+      :data:`SUPERVISION_OWN_GROUP`; so does a parent whose group cannot be read,
+      and one outside this pid namespace, which ``getppid`` names as 0.
+
+    It is a shape, not a proof: a parent that never relaunches its child passes
+    when it has that shape, and a supervisor that gives its child a terminal or a
+    group of its own fails. Off POSIX it never claims supervision
+    (:data:`SUPERVISION_NOT_POSIX`). Reads only this process and its parent, and
+    signals nothing.
+    """
+    if not IS_POSIX:
+        return SUPERVISION_NOT_POSIX
+    try:
+        os.tcgetpgrp(0)
+    except OSError:
+        pass
+    else:
+        return SUPERVISION_TERMINAL
+    group = os.getpgrp()
+    parent = os.getppid()
+    # ``getpgid(0)`` answers for the caller itself, so a parent the kernel names
+    # as 0 must not be read.
+    if group == os.getpid() or parent <= 0 or pgroup_of(parent) != group:
+        return SUPERVISION_OWN_GROUP
+    return None
 
 
 def pgroup_of_leader(pid: int) -> int | None:
