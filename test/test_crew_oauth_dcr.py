@@ -529,13 +529,15 @@ def test_a_dcr_sign_in_runs_end_to_end_on_the_shared_port(vendor, monkeypatch, i
         url = await sign_in.start()
         state = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["state"][0]
         query = {"state": state, "code": "c", **({"iss": iss} if iss else {})}
-        async with aiohttp.ClientSession() as s:
-            target = f"http://127.0.0.1:{sign_in.bound_port}/callback"
-            async with s.get(target, params=query) as r:
-                assert r.status == (400 if iss else 200)
+        finish = asyncio.ensure_future(sign_in.finish())
         try:
-            await sign_in.finish()
+            async with aiohttp.ClientSession() as s:
+                target = f"http://127.0.0.1:{sign_in.bound_port}/callback"
+                async with s.get(target, params=query) as r:
+                    assert r.status == (400 if iss else 200)
+            await asyncio.wait_for(finish, 30)
         finally:
+            finish.cancel()
             await sign_in.shutdown()
         assert "runner" not in crew_oauth_dcr._listener
 
@@ -879,15 +881,17 @@ def test_a_dcr_sign_in_on_a_pod_completes_through_the_gateway_route(vendor, monk
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
         assert query["redirect_uri"] == [POD_REDIRECT] and sign_in.bound_port == 0
         assert "runner" not in crew_oauth_dcr._listener
-        async with TestClient(TestServer(_gateway_app())) as client:
-            status, _, _ = await _get(client, state=query["state"][0], code="c")
-            assert status == 200
-            # Replay: the sign-in answers once.
-            status, _, _ = await _get(client, state=query["state"][0], code="c")
-            assert status == 400
+        finish = asyncio.ensure_future(sign_in.finish())
         try:
-            await sign_in.finish()
+            async with TestClient(TestServer(_gateway_app())) as client:
+                status, text, _ = await _get(client, state=query["state"][0], code="c")
+                assert status == 200 and "Signed in." in text
+                # Replay: the sign-in answers once.
+                status, _, _ = await _get(client, state=query["state"][0], code="c")
+                assert status == 400
+            await asyncio.wait_for(finish, 30)
         finally:
+            finish.cancel()
             await sign_in.shutdown()
         assert crew_oauth_dcr._pending == {}
 
