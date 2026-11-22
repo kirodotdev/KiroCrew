@@ -969,8 +969,16 @@ reset and compaction successors keep it through `allocation_identity`, and each
 reader that works out a session's harness before it exists (selection
 capabilities, the model checks, slash commands, the app-agent host check, the
 autocompact hint, the warm brief wake, request_server, session transfer) passes
-the same pick. A live session found on another harness at turn start (a hard
-Stop's respawn starts with no identity) is reset onto the pick. The precedence is
+the same pick. A live session found on another harness at turn start
+(`_live_session_off_slot_backend`) is reset onto the pick, and one that runs
+another agent than the turn resolved (its agent twin,
+`_live_session_off_slot_agent`, both in `chat_turn/model_fallback.py`) is reset
+onto that agent: both arm `arm_model_switch_reset`, so an idle live session is
+replaced before the claim and the conversation resumes, while a busy one, or one
+with attached sub-agent runs, serves this turn and the armed retry replaces it
+at the next idle point. The agent twin leaves alone a turn that resolved no agent, a
+live session whose provider names no agent, and a crew member's session, whose
+provider names the template `prepare_runtime` picked. The precedence is
 the gate's: `spawn_run(backend=...)` > this pick > the Bot's own harness pin
 (`agents.<crew>.acp_backend`) > the member-DM route > `agent.acp_backend`. A
 `spawn_run` from such a session with no `backend` of its own, and not selecting
