@@ -316,8 +316,12 @@ class TestCrewSigninReady:
         current.assert_not_called()
 
 
-def _live_sessions(acp_backend: str, *, engine_bundle: bool) -> SimpleNamespace:
-    runtime = SimpleNamespace(acp_backend=acp_backend, _kas_engine_bundle=engine_bundle)
+def _live_sessions(
+    acp_backend: str, *, engine_bundle: bool, host_auth: bool = False
+) -> SimpleNamespace:
+    runtime = SimpleNamespace(
+        acp_backend=acp_backend, _kas_engine_bundle=engine_bundle, _kas_host_auth=host_auth
+    )
     provider = SimpleNamespace(_runtime=runtime)
     return SimpleNamespace(get_provider=lambda key: provider if key == _MEMBER_KEY else None)
 
@@ -681,3 +685,191 @@ async def test_api_models_off_the_bundle_route_never_consults_the_crew_signin():
     assert json.loads(resp.body)["code"] == "kiro_prerequisite_required"
     ready.assert_not_called()
     resolve.assert_not_called()
+
+
+# ── the default relay route, entered through kiro-cli-chat on Crew's vault ─────
+
+
+def _relay(*, crew_auth: bool):
+    from kiro_crew.acp.kas_route import KasRoute
+
+    return KasRoute(bundle=False, crew_auth=crew_auth)
+
+
+class TestCrewOwnedRelayTurn:
+    """``_kas_bundle_turn_sync`` passes a cold relay only when ``kas_route`` marks it ``crew_auth``."""
+
+    @pytest.mark.parametrize("crew_auth", [True, False])
+    def test_a_cold_relay_follows_crew_auth(self, crew_auth):
+        with (
+            patch(_LOAD, return_value=_config(bundle=False)),
+            patch(_KAS_ROUTE, return_value=_relay(crew_auth=crew_auth)),
+            patch(_INSTALLED) as inst,
+        ):
+            assert kiro_readiness._kas_bundle_turn_sync(None) is crew_auth
+        # The relay installs nothing, so the engine record is not read.
+        inst.assert_not_called()
+
+    def test_a_crew_owned_relay_off_kas_is_not_read(self):
+        with (
+            patch(_LOAD, return_value=_config("claude", default="claude", bundle=False)),
+            patch(_KAS_ROUTE, return_value=_relay(crew_auth=True)) as route,
+        ):
+            assert kiro_readiness._kas_bundle_turn_sync(None) is False
+        route.assert_not_called()
+
+
+class TestRelayRouteFollowsTheSpawnRule:
+    """The gate reads the real ``resolve_kas_route`` on a signed-out kiro-cli host.
+
+    A rerun cuts history only when the turn after it is served by Crew's own
+    credential; any spawn that goes through kiro-cli's launcher or needs an
+    engine install is refused first.
+    """
+
+    @pytest.fixture
+    def host(self, monkeypatch):
+        from kiro_crew.acp import kas_route
+
+        state = {"bin": "/opt/kiro/kiro-cli", "vault": True, "sibling": True, "version": (2, 35, 2)}
+        monkeypatch.delenv("KIROCREW_KIRO_BIN", raising=False)
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr("kiro_crew.acp.client._resolve_kiro_bin", lambda **k: state["bin"])
+        monkeypatch.setattr(
+            "kiro_crew.auth.bridge.vault_holds_identity", lambda *a, **k: state["vault"]
+        )
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.chat_sibling",
+            lambda *a, **k: "/opt/kiro/kiro-cli-chat" if state["sibling"] else None,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.resolved_kiro_cli_version", lambda b: state["version"]
+        )
+        # kiro-cli's own store is proven empty, as in the reported repro.
+        monkeypatch.setattr(kas_route, "kiro_cli_signed_out", lambda **k: True)
+        monkeypatch.setattr(kas_route, "sharing_preview_selects_bundle", lambda **k: False)
+        monkeypatch.setattr(
+            kas_route,
+            "automatic_switch_allowed",
+            lambda pin="": pin != kas_route.STORED_BACKEND_KIRO,
+        )
+        return state
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("change", "env_override", "pin", "expected"),
+        [
+            ({}, False, "", True),
+            ({"sibling": False}, False, "", False),
+            ({"sibling": False, "version": None}, False, "", False),
+            ({"bin": None}, False, "", False),
+            ({}, True, "", False),
+            ({}, False, "kiro", False),
+            ({"vault": False}, False, "", False),
+        ],
+        ids=[
+            "kiro-cli-chat-on-the-vault",
+            "launcher-below-3.0",
+            "launcher-version-unreadable",
+            "no-kiro-cli-no-engine",
+            "operator-kiro-bin",
+            "pinned-to-kiro-cli",
+            "no-vault-identity",
+        ],
+    )
+    async def test_only_the_crew_owned_relay_passes(
+        self, host, monkeypatch, change, env_override, pin, expected
+    ):
+        host.update(change)
+        if env_override:
+            monkeypatch.setenv("KIROCREW_KIRO_BIN", "/opt/kiro/kiro-cli")
+        current = AsyncMock(return_value=object())
+        with (
+            patch(_LOAD, return_value=_config(bundle=False)),
+            patch("kiro_crew.crewmate_harness.route_pin", return_value=pin),
+            # No engine is installed: a bundle route here would install at spawn.
+            patch(_INSTALLED, return_value=None),
+            patch(_STORE),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            assert await kiro_readiness.kas_crew_signin_ready(None) is expected
+        assert current.await_count == (1 if expected else 0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "exc",
+        [NotAuthenticated("none"), RefreshRejected("refused"), RefreshBlocked("blocked")],
+    )
+    async def test_a_vault_identity_with_no_usable_credential_is_refused(self, host, exc):
+        """``vault_holds_identity`` is True for a lapsed vault; ``current()`` decides."""
+        with (
+            patch(_LOAD, return_value=_config(bundle=False)),
+            patch("kiro_crew.crewmate_harness.route_pin", return_value=""),
+            patch(_INSTALLED, return_value=None),
+            patch(_STORE),
+            patch(_PROVIDER, _provider(AsyncMock(side_effect=exc))),
+        ):
+            assert await kiro_readiness.kas_crew_signin_ready(None) is False
+
+
+class TestLiveCrewOwnedRelay:
+    """A live KAS relay spawned with ``host_auth`` asks Crew for its credential."""
+
+    @pytest.mark.parametrize("host_auth", [True, False])
+    def test_a_live_relay_follows_its_spawn_plan(self, host_auth):
+        state = SimpleNamespace(
+            sessions=_live_sessions("kas", engine_bundle=False, host_auth=host_auth)
+        )
+        assert kiro_readiness.live_turn_route(state, _MEMBER_KEY) is host_auth
+
+    def test_host_auth_off_kas_keeps_the_gate(self):
+        state = SimpleNamespace(sessions=_live_sessions("", engine_bundle=False, host_auth=True))
+        assert kiro_readiness.live_turn_route(state, _MEMBER_KEY) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("host_auth", [True, False])
+    async def test_a_turn_on_the_live_relay_passes_only_when_crew_owned(self, host_auth):
+        """Regenerate and ``/v1/chat/completions`` run on the live process."""
+        request = _request(_signed_out_service())
+        request.app["state"].sessions = _live_sessions(
+            "kas", engine_bundle=False, host_auth=host_auth
+        )
+        current = AsyncMock(return_value=object())
+        with (
+            patch.object(kiro_readiness, "_kas_bundle_turn_sync", return_value=False) as cfg,
+            patch(_STORE),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            resp = await kiro_readiness.reject_if_kiro_unverified(
+                request, harness_turn=True, session_key=_MEMBER_KEY
+            )
+        cfg.assert_not_called()
+        if host_auth:
+            assert resp is None
+            current.assert_awaited_once()
+        else:
+            assert resp is not None and resp.status == 503
+            current.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("cold", "expected"), [(True, None), (False, 503)])
+    async def test_a_rewind_on_a_live_crew_owned_relay_still_judges_the_cold_route(
+        self, cold, expected
+    ):
+        """The discard path cold-starts, so the configured route must be Crew-owned too."""
+        request = _request(_signed_out_service())
+        request.app["state"].sessions = _live_sessions("kas", engine_bundle=False, host_auth=True)
+        current = AsyncMock(return_value=object())
+        with (
+            patch.object(kiro_readiness, "_kas_bundle_turn_sync", return_value=cold),
+            patch(_STORE),
+            patch(_PROVIDER, _provider(current)),
+        ):
+            resp = await kiro_readiness.reject_if_kiro_unverified(
+                request,
+                harness_turn=True,
+                session_key=_MEMBER_KEY,
+                turn_reuses_session=False,
+                may_keep_live_process=True,
+            )
+        assert (resp.status if resp is not None else None) == expected

@@ -15,7 +15,12 @@ import pytest
 from chat_regenerate_cov80_helpers import state_fixture  # noqa: F401
 from chat_test_helpers import pin_harness_choice
 
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+)
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.openai_compat import api_completions
@@ -199,3 +204,68 @@ async def test_a_slot_closed_during_the_probe_is_not_run(state) -> None:
 
     assert resp.status == 404
     run_chat.assert_not_called()
+
+
+def _relay_route(crew_auth: bool):
+    from kiro_crew.acp.kas_route import KasRoute
+
+    return KasRoute(bundle=False, crew_auth=crew_auth)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named_slot", [False, True])
+@pytest.mark.parametrize(
+    ("crew_auth", "status"), [(True, 200), (False, 503)], ids=["crew-owned", "cli-owned"]
+)
+async def test_a_signed_out_kiro_cli_refuses_a_completion_only_on_a_cli_owned_kas_relay(
+    state, named_slot, crew_auth, status
+) -> None:
+    _pin_applied(state, ACP_BACKEND_KAS)
+    body = {"model": "vanellope", "messages": _MESSAGES}
+    if named_slot:
+        body["id"] = "s1"
+
+    with (
+        patch("kiro_crew.agent_sdk.kas_bundle.kas_route", return_value=_relay_route(crew_auth)),
+        patch("kiro_crew.auth.bridge.default_token_store"),
+        patch("kiro_crew.auth.provider.KasAuthProvider") as provider,
+    ):
+        provider.return_value.current = AsyncMock(return_value=object())
+        got, payload = await _complete(state, body)
+
+    assert got == status, payload
+    if status == 503:
+        assert payload["error"]["code"] == "kiro_prerequisite_required"
+        assert not [k for k in state._slots if k == "s1" or k.startswith("oai-")]
+    else:
+        assert payload["choices"][0]["message"]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("host_auth", "status"), [(True, 200), (False, 503)], ids=["crew-owned", "cli-owned"]
+)
+async def test_a_completion_on_a_live_kas_relay_follows_its_spawn_plan(
+    state, host_auth, status
+) -> None:
+    _pin_applied(state, ACP_BACKEND_KAS)
+    state.get_or_create_slot("s1")
+    provider = MagicMock()
+    provider.capabilities = capabilities_for(ACP_BACKEND_KAS)
+    provider._runtime = MagicMock(
+        acp_backend=ACP_BACKEND_KAS, _kas_engine_bundle=False, _kas_host_auth=host_auth
+    )
+    state.sessions.get_provider = MagicMock(return_value=provider)
+    state.sessions.is_provider_alive = AsyncMock(return_value=True)
+
+    with (
+        patch("kiro_crew.agent_sdk.kas_bundle.kas_route", return_value=_relay_route(False)),
+        patch("kiro_crew.auth.bridge.default_token_store"),
+        patch("kiro_crew.auth.provider.KasAuthProvider") as auth,
+    ):
+        auth.return_value.current = AsyncMock(return_value=object())
+        got, payload = await _complete(
+            state, {"model": "vanellope", "messages": _MESSAGES, "id": "s1"}
+        )
+
+    assert got == status, payload
