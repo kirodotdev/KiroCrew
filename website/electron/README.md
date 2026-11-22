@@ -15,7 +15,7 @@ The app will:
 
 1. Reuse an existing gateway if one is already reachable and actually serving
    (`/api/ready` 200) — a gateway draining after `/api/shutdown` still answers
-   `/api/status`, so it is never adopted; the app waits for the port to clear
+   `/api/live`, so it is never adopted; the app waits for the port to clear
    and spawns fresh instead. Before reusing a same-family gateway on a fixed-path
    POSIX install, the app detects whether its sole listener is an older gateway
    from the current bundled backend path. If so, it warns that updated features
