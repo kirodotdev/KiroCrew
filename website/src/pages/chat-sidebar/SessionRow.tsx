@@ -37,6 +37,7 @@ import { isMemoryWait, queuedWaitText } from '../chat/subagentQueuedReason'
 import { focusSiblingSessionRow } from '../chat/sessionRowNav'
 import { fmtRelativeTime, slotActivityTs } from '../chat/sessionOrder'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { useKeyboardLayout } from '../../hooks/useNavShortcutHint'
 import { deriveAutomationStatus, MONITOR_STATUS_KEYS } from '../../monitoring/automation'
 import MonitorRadar from '../../components/MonitorRadar'
 import { i18nT } from '../../i18n/t'
@@ -416,10 +417,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // peer row never reads slot-scoped LOCAL state under its raw key (the gateways do
   // not share a key namespace, and deterministic keys can be byte-identical).
   const localSlotKey = view.localKey
-  // memo() bails out of the provider-level repaint, so the row subscribes to
-  // catalog loads directly (same contract as the ChatSidebar shell) — its
-  // i18nT strings must re-translate even when no prop moves.
+  // memo() skips the provider repaint, so the row follows catalog loads and the keyboard layout itself.
   const langGen = useLanguageGeneration()
+  useKeyboardLayout()
   const dispatch = useAppDispatch()
   const ime = useImeGuard()
   const simplifiedToolNames = useSimplifiedToolNames()

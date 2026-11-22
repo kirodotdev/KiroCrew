@@ -16,6 +16,7 @@ import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { clearSwitchSlotGone, toggleActivity } from '../store/chatSlice'
 import { RECLICK_PANEL_DELAY_MS, cancelReclickPanelToggle } from '../lib/reclickPanelToggle'
+import { loadKeyboardLayout } from '../lib/shortcutRegistry'
 
 const { switchSlotMock } = vi.hoisted(() => ({
   switchSlotMock: vi.fn(() => ({ type: 'chat/switchSlot/pending', meta: {} })),
@@ -280,5 +281,23 @@ describe('ChatSidebar – re-clicking the open chat toggles the side panel', () 
     renderSidebar()
     expect(row('Session 1').title).toBe('Click again to show or hide the side panel (Ctrl+\\)')
     expect(row('Session 2').title).toBe('')
+  })
+
+  it('names the side-panel key the keyboard layout prints once the layout arrives', async () => {
+    renderSidebar()
+    expect(row('Session 1').title).toBe('Click again to show or hide the side panel (Ctrl+\\)')
+    // German QWERTZ prints `#` on Backslash. Digits keep their US glyphs, so no
+    // jump badge moves and nothing but the row's own subscription repaints it.
+    Object.defineProperty(navigator, 'keyboard', {
+      configurable: true,
+      value: { getLayoutMap: () => Promise.resolve(new Map([['Backslash', '#']])) },
+    })
+    try {
+      await act(() => loadKeyboardLayout())
+      expect(row('Session 1').title).toBe('Click again to show or hide the side panel (Ctrl+#)')
+    } finally {
+      delete (navigator as { keyboard?: unknown }).keyboard
+      await act(() => loadKeyboardLayout())
+    }
   })
 })
