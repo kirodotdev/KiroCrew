@@ -299,6 +299,41 @@ async def test_disconnect_revokes_the_access_token(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_disconnect_renews_an_expired_access_token_before_revoking_it(tmp_path, monkeypatch):
+    seen: list = []
+    answer = {"ok": True, "access_token": "a2", "refresh_token": "r2", "expires_in": 43200}
+    server = await _serve(monkeypatch, seen, answer)
+    monkeypatch.setattr(crew_oauth, "_client", lambda s: _client())
+    store = TokenStore(SecretVault(tmp_path))
+    store.replace(SLUG, Tokens("a1", "r1", time.time() - 10, "", None, "123.456"))
+    try:
+        result = await crew_oauth.disconnect(SLUG, store=store)
+    finally:
+        await server.close()
+    assert result == {"removed": True, "revoked": True}
+    assert [kind for kind, _ in seen] == ["token", "revoke"]
+    assert seen[1] == ("revoke", {"token": "a2"})
+    assert not store.present(SLUG)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_still_revokes_and_deletes_when_the_renewal_fails(tmp_path, monkeypatch):
+    seen: list = []
+    server = await _serve(monkeypatch, seen, {"ok": False, "error": "invalid_refresh_token"})
+    monkeypatch.setattr(crew_oauth, "_client", lambda s: _client())
+    store = TokenStore(SecretVault(tmp_path))
+    store.replace(SLUG, Tokens("a1", "r1", time.time() - 10, "", None, "123.456"))
+    try:
+        result = await crew_oauth.disconnect(SLUG, store=store)
+    finally:
+        await server.close()
+    assert [kind for kind, _ in seen] == ["token", "revoke"]
+    assert seen[1] == ("revoke", {"token": "a1"})
+    assert result["removed"] is True
+    assert not store.present(SLUG)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "answer",
     [{"ok": False, "error": "token_expired"}, {"ok": True, "revoked": False}, "not json"],
