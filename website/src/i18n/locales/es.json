@@ -18361,6 +18361,7 @@
         "skills": "Habilidades:",
         "upload_a_kirocrew_export_zip_to_restore_settings": "Sube un zip de exportación de {{productName}} para restaurar los ajustes en esta instancia. Los chats del archivo se añaden; los chats existentes nunca se reemplazan.\n          Los datos existentes se combinarán de forma predeterminada (se omiten los duplicados).",
         "workspace_files": "Archivos del espacio de trabajo:",
+        "export_apps_not_included": "Esta exportación no incluye estas apps ni sus datos: {{names}}. En la otra máquina, vuelve a instalarlas o enciéndelas de nuevo; sus datos se quedan en esta.",
         "export_templates_not_included": "Esta exportación no incluye las plantillas de agente que usan tus equipos: {{names}}. Cópialas de ~/.kiro/agents a la misma carpeta en la otra máquina.",
         "import_templates_missing": "Algunos equipos usan una plantilla de agente que no está en esta máquina (equipo → plantilla): {{crews}}. Copia las plantillas que faltan en ~/.kiro/agents antes de usar estos equipos.",
         "import_items_refused": "Algunos elementos no se pudieron importar y se dejaron sin cambios: {{names}}.",

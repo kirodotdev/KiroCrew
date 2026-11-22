@@ -375,8 +375,14 @@ and prompt). Its tags, steering folders, and any app, crew member or channel
 it belonged to stay behind. A folder is not added where its parent already
 holds one of the same name, and one that would land inside a crew member's
 home goes to the top level. At most 500 folders are kept, and the import warns
-with how many folders it did not add. Installed apps and their data are not
-carried yet.
+with how many folders it did not add.
+
+Installed apps and their data are not carried. Once the download starts, the
+dashboard export names every app that is on and every app you installed
+yourself, so you can install it again or turn it back on on the other machine;
+an app's data stays on this one. A built-in app that is off is not named,
+because every install starts with it switched off, and its data, if it has
+any, is not carried either. A memory-only export names none.
 
 The dashboard export leaves out folders that tools rebuild inside your
 workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as

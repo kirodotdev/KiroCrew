@@ -18361,6 +18361,7 @@
         "skills": "Skill:",
         "upload_a_kirocrew_export_zip_to_restore_settings": "Carica uno zip di esportazione di {{productName}} per ripristinare le impostazioni su questa istanza. Le chat dell’archivio vengono aggiunte; le chat esistenti non vengono mai sostituite.\n          I dati esistenti vengono uniti per impostazione predefinita (i duplicati vengono saltati).",
         "workspace_files": "File del workspace:",
+        "export_apps_not_included": "Questa esportazione non include queste app né i loro dati: {{names}}. Sull'altra macchina, installale di nuovo o riaccendile; i loro dati restano su questa.",
         "export_templates_not_included": "Questa esportazione non include i modelli di agente usati dalle tue crew: {{names}}. Copiali da ~/.kiro/agents nella stessa cartella sull'altra macchina.",
         "import_templates_missing": "Alcune crew usano un modello di agente che su questa macchina non c'è (crew → modello): {{crews}}. Copia i modelli mancanti in ~/.kiro/agents prima di usare queste crew.",
         "import_items_refused": "Alcuni elementi non sono stati importati e sono rimasti invariati: {{names}}.",
