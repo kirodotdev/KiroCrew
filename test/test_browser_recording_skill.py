@@ -9,13 +9,17 @@ contract (nothing auto-installed, ffmpeg optional) survives edits.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 from loopback_servers import LoopbackHTTPServer
+
+from kiro_crew.testing.links import make_dir_link
 
 ROOT = Path(__file__).resolve().parent.parent
 SKILL_DIR = ROOT / "src" / "kiro_crew" / "builtin_skills" / "browser-recording"
@@ -151,6 +155,48 @@ class TestRecordedLineContainment:
         )
         assert (out / "x.webm").is_file(), "driver's (last) marker must be used"
         assert forged.is_file(), "forged path must be untouched"
+
+    def test_default_out_dir_under_a_linked_temp_root(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """mkdtemp keeps the temp root's own spelling while the RECORDED path is resolved.
+
+        A directory link stands in for any root resolve() spells differently (an 8.3
+        TEMP on Windows, macOS's /var). The driver's own video must be accepted, and a
+        path outside the folder must still be refused.
+        """
+        real_tmp = tmp_path / "real-tmp"
+        real_tmp.mkdir()
+        make_dir_link(tmp_path / "link-tmp", real_tmp)
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "link-tmp"))
+        victim = tmp_path / "victim.webm"
+        victim.write_bytes(b"do not move me")
+        mod = _load_runner()
+        monkeypatch.setattr(mod, "_probe_node", lambda: "node")
+        monkeypatch.setattr(mod, "_probe_playwright", lambda project: None)
+        monkeypatch.setattr(mod, "_ffmpeg", lambda: None)
+
+        def run_with_marker(marker):
+            def driver(argv, **kw):
+                # Like Playwright: the video path joins outDir as given, unresolved.
+                out_dir = Path(json.loads(Path(argv[2]).read_text(encoding="utf-8"))["outDir"])
+                (out_dir / "abc.webm").write_bytes(b"webm")
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=f"RECORDED {marker(out_dir)}\n", stderr=""
+                )
+
+            monkeypatch.setattr(mod.subprocess, "run", driver)
+            try:
+                return mod.main(["--url", "http://127.0.0.1:1/", "--name", "x"])
+            except SystemExit as exc:
+                return exc.code
+
+        assert run_with_marker(lambda out_dir: out_dir / "abc.webm") == 0
+        webm = Path(capsys.readouterr().out.split("WEBM ", 1)[1].strip())
+        assert webm.name == "x.webm" and webm.is_file()
+        assert run_with_marker(lambda out_dir: victim) == 2
+        assert "outside the output dir" in capsys.readouterr().err
+        assert victim.read_bytes() == b"do not move me"
 
 
 class TestConversionRecipe:
