@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         read_context_tokens,
         read_effective_agent,
         rearm_reinjection,
+        record_interaction_event,
         redact_and_truncate,
         redact_credentials,
         redact_exfiltration_urls,
@@ -242,6 +243,8 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
             _turn_landed = stop_reason_landed(_turn_stop["reason"])
             if _turn_landed:
                 note_turn_landed(self.sessions, session_key)
+                # Per-interaction telemetry, as every landed-turn engine reports it.
+                record_interaction_event(client, session_key, "heartbeat")
 
             if not result_text:
                 result_text = "_No response._"
