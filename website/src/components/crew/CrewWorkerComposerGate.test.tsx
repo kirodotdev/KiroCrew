@@ -43,6 +43,7 @@ describe('CrewWorkerComposerGate (edge review R2)', () => {
     expect(screen.queryByTestId('crew-steer-not-recorded')).toBeNull()
     act(() => { noteCrewSteerReceipt('w1', { ok: true, ledger_event: null, ledger_error: 'crew_log_off' }) })
     expect(screen.getByTestId('crew-steer-not-recorded')).toHaveTextContent('Delivered to Worker B, but not recorded on the ledger: the crew log is off.')
+    expect(screen.getByTestId('crew-steer-not-recorded').className).toMatch(/\bglass-thick\b/)
     // A later recorded steer clears it; a plain send (no ledger fields) leaves it alone.
     act(() => { noteCrewSteerReceipt('w1', { ok: true }) })
     expect(screen.getByTestId('crew-steer-not-recorded')).toBeInTheDocument()
@@ -75,6 +76,8 @@ describe('CrewWorkerComposerGate (edge review R2)', () => {
     api.crewWorkers.mockResolvedValue({ root: 'root', workers: [] })
     const store = await renderGate(live, true)
     expect(screen.getByTestId('crew-worker-approval-waiting')).toHaveTextContent('Waiting for approval in Sample goal')
+    // On a thick glass pane, so the transcript under the dock does not show through.
+    expect(screen.getByTestId('crew-worker-approval-waiting').className).toMatch(/\bliquid-glass\b.*\bglass-thick\b/)
     fireEvent.click(screen.getByTestId('crew-worker-open-root'))
     expect(store.getState().chat.activeSlot).toBe('root')
   })
@@ -129,6 +132,7 @@ describe('CrewWorkerComposerGate (edge review R2)', () => {
     act(() => { noteCrewSteerReceipt('w1', { ok: true, ledger_event: null, ledger_error: 'item_closed' }) })
     const line = screen.getByTestId('crew-steer-not-recorded')
     expect(line.tagName).toBe('P')
+    expect(line.parentElement!.className).toMatch(/\bglass-thick\b/)
     expect(line).toHaveTextContent('Delivered. The task is already closed, so nothing was recorded.')
     expect(screen.queryByRole('alert')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))

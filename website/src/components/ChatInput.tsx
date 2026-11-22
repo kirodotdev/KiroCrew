@@ -67,6 +67,7 @@ import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-inp
 import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { useSpawnApprovals, useToolApproval } from './chat-input/approval'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
+import { DockPane } from './chat-input/DockPane'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
 import { usePickerSource } from './dashboardPickerSource'
@@ -1023,7 +1024,7 @@ function ChatInput({
         variant={terminal.failure === 'failed' ? 'inline' : 'block'}
         onDismiss={terminal.dismissFailure} />
       {terminal.active && (
-        <div className="flex flex-col gap-1.5" role="group" aria-label={i18nT('components.chatInput.terminal_review')}>
+        <DockPane className="mb-1 flex flex-col gap-1.5 px-3 py-2" role="group" aria-label={i18nT('components.chatInput.terminal_review')}>
           <div className="text-sm text-muted flex items-center gap-1.5" role="status">
             <Terminal className="lucide-inline shrink-0" />
             {/* The folder name, as on the project chip; the review dialog shows the full path. */}
@@ -1047,7 +1048,7 @@ function ChatInput({
               <span className="min-w-0 whitespace-normal text-left [overflow-wrap:anywhere]">{i18nT('components.chatInput.terminal_run_review')}</span>
             </Btn>
           )}
-        </div>
+        </DockPane>
       )}
 
       {/* Ghost follow-up bubbles floating above input */}
@@ -1222,8 +1223,10 @@ function ChatInput({
         )}
       </AnimatePresence>
 
+      {/* Each notice row sits on a DockPane: the dock's own pane is the thin
+          step, so a bare or tinted row let the transcript show through. */}
       {optimizeError && (
-        <div className="px-4 mb-1">
+        <DockPane className="mb-1 px-4 py-2">
           {/* No hand-off: the composer draft below (the prompt that was restored) is unsaved. */}
           <ErrorNotice
             variant="inline"
@@ -1231,55 +1234,58 @@ function ChatInput({
             message={optimizeError}
             onDismiss={() => setOptimizeError('')}
           />
-        </div>
+        </DockPane>
       )}
       {optimizeBusy && (
-        <div role="status" data-testid="optimize-busy" className="px-4 mb-1 text-muted text-[13px]">{optimizeBusy}</div>
+        <DockPane role="status" data-testid="optimize-busy" className="mb-1 px-4 py-2 text-muted text-[13px]">{optimizeBusy}</DockPane>
       )}
       {typeof approvalNotice === 'string' && approvalNotice && approvalNoticeKind === 'error' && (
-        <div className="px-4 mb-1">
+        <DockPane tone="danger" className="mb-1 px-3 py-2.5">
           {/* No hand-off: the composer draft below is unsaved. */}
           <ErrorNotice
+            nested
             testId="approval-decision-error"
             message={approvalNotice}
             onDismiss={() => setApprovalNotice(null)}
           />
-        </div>
+        </DockPane>
       )}
       {approvalNotice && (approvalNoticeKind === 'status' || approvalNoticeKind === 'settled') && (
-        <div
+        <DockPane
           role="status"
-          className="flex items-center gap-2 px-4 py-2 mb-1 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] rounded-lg"
+          tone="warn"
+          className="flex items-center gap-2 px-4 py-2 mb-1"
         >
           {approvalNoticeKind === 'settled' ? <CheckCircle size={12} className="text-ok shrink-0" /> : <Lock size={12} className="text-warn shrink-0" />}
           <span className="text-muted text-[13px]">{approvalNotice}</span>
-        </div>
+        </DockPane>
       )}
       {spawnApprovals.spawnLivenessError && (
-        <div className="px-4 mb-1">
+        <DockPane tone="danger" className="mb-1 px-3 py-2.5">
           {/* No hand-off: the composer draft below is unsaved. Under the
               refusal, never over it: a failed liveness read after a gone
               verdict is a second fact, not a replacement for the first. */}
           <ErrorNotice
+            nested
             testId="spawn-liveness-error"
             message={spawnApprovals.spawnLivenessError}
             onDismiss={spawnApprovals.dismissSpawnLivenessError}
           />
-        </div>
+        </DockPane>
       )}
       {approvalNotice && approvalNoticeKind === 'granted' && (
-        // A grant that landed, not a block: its own clock icon and ok tint,
-        // so the confirmation never wears the warning lock above.
-        <div role="status" className="flex items-center gap-2 px-4 py-2 mb-1 bg-ok-subtle rounded-lg">
+        // A grant that landed, not a block: its own clock icon, so the
+        // confirmation never wears the warning lock or tint above.
+        <DockPane role="status" className="flex items-center gap-2 px-4 py-2 mb-1">
           <Clock size={12} className="text-ok shrink-0" />
           <span className="text-muted text-[13px]">{approvalNotice}</span>
-        </div>
+        </DockPane>
       )}
 
       {!showGhost && prefillHint && (
-        <div className="flex items-center gap-2 px-4 py-2 mb-1 bg-accent/10 rounded-lg">
+        <DockPane tone="accent" className="flex items-center gap-2 px-4 py-2 mb-1">
           <span className="text-accent text-[13px]"><ClipboardList className="lucide-inline" /> {i18nT('components.chatInput.plan_pre_filled_add_context_then_send')}</span>
-        </div>
+        </DockPane>
       )}
 
       <ComposerAttach id={fileInputId} ref={fileInputRef} aria-label={i18nT('components.chatInput.attach_files')} multiple accept={FILE_ACCEPT} className="sr-only" onFiles={onUploadFiles} />

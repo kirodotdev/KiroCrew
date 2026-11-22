@@ -158,6 +158,8 @@ describe('ChatInput: Optimize Before Sending', () => {
     const busy = await screen.findByTestId('optimize-busy')
     expect(busy).toHaveTextContent('Optimizing another chat — please wait')
     expect(busy).toHaveAttribute('role', 'status')
+    // Drawn on a thick glass pane: the transcript under the dock stays behind it.
+    expect(busy.className).toMatch(/\bliquid-glass\b.*\bglass-thick\b/)
     expect(screen.queryByTestId('optimize-error')).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
     expect(onSend).not.toHaveBeenCalled()
