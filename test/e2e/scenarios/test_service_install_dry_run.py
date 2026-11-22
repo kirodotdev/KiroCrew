@@ -5,9 +5,10 @@ that a pod has been driving. ``service install`` bakes an environment into a
 systemd unit or a launchd plist, because a service starts with a minimal,
 non-login environment. Two halves of that capture must behave differently, and
 this pins both. ``KIROCREW_PORT`` is captured on purpose, since it is the only
-input the dashboard port reads. The data home is not: it comes from the account
-the service runs as, so a pod's throwaway home must never reach it, because
-``pod down`` deletes that directory.
+input the dashboard port reads. Inside a pod the data home is not: the installer
+skips ``KIROCREW_HOME`` there, so the home comes from the account the service
+runs as and a pod's throwaway home never reaches it, because ``pod down``
+deletes that directory.
 
 Print-only. ``service install`` has no ``--dry-run`` on POSIX, so this drives
 its pure renderer. Windows has no host-service backend; there the fixture renders
@@ -69,10 +70,11 @@ def test_host_service_render_captures_the_port_but_not_the_pod_home(
             f"port.\nrendered:\n{text}"
         )
 
-    # The HOME is the opposite case and the sharp one: it is resolved from the
-    # ACCOUNT the service runs as, never from KIROCREW_HOME, so a pod's throwaway
-    # home must not reach it. `pod down` deletes that directory, and a service
-    # installed with it baked in would start against a path that is not there.
+    # The HOME is the opposite case and the sharp one: inside a pod the installer
+    # does not bake KIROCREW_HOME, so the home is resolved from the ACCOUNT the
+    # service runs as and a pod's throwaway home must not reach it. `pod down`
+    # deletes that directory, and a service installed with it baked in would
+    # start against a path that is not there.
     assert str(pod.home) not in text, (
         f"the pod's throwaway home {pod.home} leaked into the host service "
         f"definition.\nrendered:\n{text}"

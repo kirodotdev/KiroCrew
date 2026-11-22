@@ -261,7 +261,10 @@ class TestServiceEnvironment:
         monkeypatch.setenv("KIROCREW_HOME", raw)
         baked = service_environment("/home/tester")["KIROCREW_HOME"]
         assert baked == raw
-        assert Path(baked).resolve() == (tmp_path / "releases" / "data").resolve()
+        # Windows' Path.resolve() collapses ".." before following the junction,
+        # so only POSIX can show where the raw path really lands.
+        if not sys.platform.startswith("win"):
+            assert Path(baked).resolve() == (tmp_path / "releases" / "data").resolve()
 
     def test_pod_home_is_never_baked(self, monkeypatch):
         # `pod down` deletes a pod's home, so a host service must not start there.
