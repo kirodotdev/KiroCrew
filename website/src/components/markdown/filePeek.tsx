@@ -151,9 +151,9 @@ function useFilePeekHover(enabled: boolean) {
 
 /**
  * The hover peek `MdAnchor` gives a link to a confirmed local file with a line
- * reference: a dozen lines around that line as plain text, the referenced
- * line tinted, the file's full path and "Click to open" as the footer. The
- * click itself is untouched.
+ * reference: the file's name and the reference as header, a dozen lines around
+ * that line as plain text with the referenced line tinted, the file's full
+ * path and "Click to open" as the footer. The click itself is untouched.
  *
  * Off unless the owner turned on `dashboard.feature_previews.link_peeks`, and
  * off while the message is still streaming (`LinkUnfurlCtx.live`): a link
@@ -184,7 +184,7 @@ export function useFilePeek(file: PeekFile | null, panelId: string): {
   // outside a `QueryClientProvider` (file previews, artifact pages, specs).
   const read = useQuery({
     queryKey: filePeekQueryKey(file?.path ?? '', range),
-    queryFn: ({ signal }) => fetchFilePeek(file?.path ?? '', range, signal),
+    queryFn: ({ signal }) => fetchFilePeek(file?.path ?? '', range, file?.line ?? 1, signal),
     enabled: active && hover.shown,
     staleTime: FILE_PEEK_STALE_MS,
     retry: false,
@@ -238,6 +238,9 @@ function FilePeekPanel({ id, file, lines, start, place, panelRef, handlers }: {
   }, [place, panelRef, width])
   const last = file.endLine ?? file.line
   const gutter = String(start + lines.length - 1).length
+  // The header names the file and the reference the link carries, as the
+  // link's own `:line` does; the footer keeps the full path.
+  const title = `${pathBasename(file.path)}:${file.line}${last !== file.line ? `-${last}` : ''}`
   return (
     <OverlayPortal>
       <div
@@ -256,7 +259,7 @@ function FilePeekPanel({ id, file, lines, start, place, panelRef, handlers }: {
       >
         <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-1.5 font-medium text-text-strong">
           <FileCode size={12} className="shrink-0" aria-hidden="true" />
-          <span className="min-w-0 truncate" data-testid="file-peek-title">{pathBasename(file.path)}</span>
+          <span className="min-w-0 truncate" data-testid="file-peek-title">{title}</span>
         </div>
         <pre
           data-testid="file-peek-lines"

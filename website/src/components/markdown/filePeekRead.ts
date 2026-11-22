@@ -71,9 +71,13 @@ export class FilePeekBusy extends Error {
  * window from that body and names what came back in `X-Line-Start` /
  * `X-Line-End`. Any answer other than a 2xx text body with those headers is
  * `ok: false`: the link keeps its ordinary hover, and a hover never raises a
- * prompt or shows a file the click could not open.
+ * prompt or shows a file the click could not open. So is a window the
+ * gateway's own cap cut short (`X-Window-Truncated`, or a body that stops
+ * before `line`): the card either holds the referenced line or is not shown.
+ * The read is not aborted when the pointer leaves mid-read; its answer lands
+ * in the cache, so the next hover of the link costs nothing either way.
  */
-export async function fetchFilePeek(path: string, range: FilePeekWindow, signal?: AbortSignal): Promise<FilePeekRead> {
+export async function fetchFilePeek(path: string, range: FilePeekWindow, line: number, signal?: AbortSignal): Promise<FilePeekRead> {
   if (inFlight >= FILE_PEEK_MAX_IN_FLIGHT) throw new FilePeekBusy()
   inFlight += 1
   try {
@@ -85,9 +89,14 @@ export async function fetchFilePeek(path: string, range: FilePeekWindow, signal?
     // file after all, so it shows nothing.
     const start = Number(res.headers.get('X-Line-Start'))
     if (!Number.isInteger(start) || start < 1) return NO_PEEK
+    // The window cap (40 lines / 4 KB) can stop the body before the referenced
+    // line, or cut a single long line; a card without the line it was opened
+    // for would mislead, so it shows nothing instead.
+    if (res.headers.get('X-Window-Truncated') === 'true') return NO_PEEK
     const text = await res.text()
     const lines = text.split('\n')
     if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+    if (line < start || line > start + lines.length - 1) return NO_PEEK
     return { ok: true, lines, start }
   } finally {
     inFlight -= 1

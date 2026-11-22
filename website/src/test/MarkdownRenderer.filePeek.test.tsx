@@ -29,20 +29,30 @@ const realFetch = globalThis.fetch
 
 /** The gateway as the peek sees it: the probe confirms FILE, and file-read
  *  answers the window it was asked for (status and headers per `answer`). */
-function stubGateway({ status = 200, headers = true, binary = false }: { status?: number; headers?: boolean; binary?: boolean } = {}) {
+function stubGateway({ status = 200, headers = true, binary = false, cutAfter }: {
+  status?: number
+  headers?: boolean
+  binary?: boolean
+  /** The gateway's window cap stops the body after this many lines (`X-Window-Truncated`). */
+  cutAfter?: number
+} = {}) {
   const reads: URL[] = []
   globalThis.fetch = vi.fn((url: unknown, init?: RequestInit) => {
     if (isKindsRequest(url, init)) return Promise.resolve(kindsResponse(kindsRequestPaths(init), p => (p === FILE ? 'file' : null)))
     const u = new URL(String(url), 'http://dashboard.test')
     if (u.pathname !== '/api/file-read') return Promise.resolve(new Response('', { status: 404 }))
     reads.push(u)
-    if (status !== 200) return Promise.resolve(new Response(JSON.stringify({ error: 'owner_only' }), { status }))
     if (binary) return Promise.resolve(new Response('', { status: 200, headers: { 'X-File-Binary': 'true' } }))
     const start = Number(u.searchParams.get('start') ?? 1)
-    const end = Math.min(TOTAL, Number(u.searchParams.get('end') ?? TOTAL))
+    const wanted = Math.min(TOTAL, Number(u.searchParams.get('end') ?? TOTAL))
+    const end = cutAfter != null ? Math.min(wanted, start + cutAfter - 1) : wanted
     const body = Array.from({ length: end - start + 1 }, (_, i) => lineText(start + i)).join('\n') + '\n'
-    const h = headers ? { 'X-Line-Start': String(start), 'X-Line-End': String(end), 'X-Line-Total': String(TOTAL) } : {}
-    return Promise.resolve(new Response(body, { status: 200, headers: h }))
+    const h: Record<string, string> = headers ? { 'X-Line-Start': String(start), 'X-Line-End': String(end), 'X-Line-Total': String(TOTAL) } : {}
+    if (end < wanted) h['X-Window-Truncated'] = 'true'
+    // A refusal carries no body or window headers on the real gateway; the
+    // status test sends a whole valid window with them, so the status alone
+    // is what refuses the card.
+    return Promise.resolve(new Response(body, { status, headers: h }))
   }) as unknown as typeof fetch
   return reads
 }
@@ -97,9 +107,9 @@ describe('the read', () => {
     const fetchMock = vi.fn(() => new Promise<Response>(resolve => { pending.push(resolve) }))
     globalThis.fetch = fetchMock as unknown as typeof fetch
     const range = filePeekWindow(20)
-    const first = Array.from({ length: FILE_PEEK_MAX_IN_FLIGHT }, (_, i) => fetchFilePeek(`${FILE}${i}`, range))
+    const first = Array.from({ length: FILE_PEEK_MAX_IN_FLIGHT }, (_, i) => fetchFilePeek(`${FILE}${i}`, range, 20))
     expect(__filePeekInFlight()).toBe(FILE_PEEK_MAX_IN_FLIGHT)
-    await expect(fetchFilePeek(`${FILE}-one-more`, range)).rejects.toBeInstanceOf(FilePeekBusy)
+    await expect(fetchFilePeek(`${FILE}-one-more`, range, 20)).rejects.toBeInstanceOf(FilePeekBusy)
     expect(fetchMock).toHaveBeenCalledTimes(FILE_PEEK_MAX_IN_FLIGHT)
     for (const resolve of pending) resolve(new Response('a\nb\n', { status: 200, headers: { 'X-Line-Start': '16' } }))
     await Promise.all(first)
@@ -108,7 +118,29 @@ describe('the read', () => {
 
   it('shows nothing for a gateway that answers the whole file without the window headers', async () => {
     globalThis.fetch = vi.fn(() => Promise.resolve(new Response('whole file\n', { status: 200 }))) as unknown as typeof fetch
-    expect(await fetchFilePeek(FILE, filePeekWindow(20))).toEqual({ ok: false, lines: [], start: 0 })
+    expect(await fetchFilePeek(FILE, filePeekWindow(20), 20)).toEqual({ ok: false, lines: [], start: 0 })
+  })
+
+  it('shows nothing for a non-2xx answer even when it carries the window headers', async () => {
+    // Everything but the status would make a card: the full window, headers and all.
+    const body = Array.from({ length: 12 }, (_, i) => `line ${16 + i}`).join('\n') + '\n'
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response(body, { status: 403, headers: { 'X-Line-Start': '16', 'X-Line-End': '27' } }))) as unknown as typeof fetch
+    expect(await fetchFilePeek(FILE, filePeekWindow(20), 20)).toEqual({ ok: false, lines: [], start: 0 })
+  })
+
+  it('shows nothing when the window cap cut the body, and when the body stops before the referenced line', async () => {
+    // The cap stopped the body short and the gateway said so.
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response('line 16\nline 17\n', {
+      status: 200, headers: { 'X-Line-Start': '16', 'X-Line-End': '17', 'X-Window-Truncated': 'true' },
+    }))) as unknown as typeof fetch
+    expect(await fetchFilePeek(FILE, filePeekWindow(20), 20)).toEqual({ ok: false, lines: [], start: 0 })
+    // A short file: the body ends at line 18, the link named line 20.
+    globalThis.fetch = vi.fn(() => Promise.resolve(new Response('line 16\nline 17\nline 18\n', {
+      status: 200, headers: { 'X-Line-Start': '16', 'X-Line-End': '18' },
+    }))) as unknown as typeof fetch
+    expect(await fetchFilePeek(FILE, filePeekWindow(20), 20)).toEqual({ ok: false, lines: [], start: 0 })
+    // The referenced line is the last one the body holds: that is a card.
+    expect(await fetchFilePeek(FILE, filePeekWindow(18), 18)).toMatchObject({ ok: true, start: 16, lines: ['line 16', 'line 17', 'line 18'] })
   })
 })
 
@@ -135,7 +167,7 @@ describe('file peek in a message', () => {
     expect(reads[0].searchParams.get('end')).toBe('27')
 
     const panel = screen.getByTestId('file-peek-panel')
-    expect(screen.getByTestId('file-peek-title')).toHaveTextContent('app.ts')
+    expect(screen.getByTestId('file-peek-title')).toHaveTextContent('app.ts:20')
     const pre = screen.getByTestId('file-peek-lines')
     expect(pre.tagName).toBe('PRE')
     expect(pre).toHaveTextContent('line 16')
@@ -162,6 +194,17 @@ describe('file peek in a message', () => {
     await flush()
     const marked = screen.getByTestId('file-peek-panel').querySelectorAll('[data-peek-line="ref"]')
     expect(Array.from(marked, el => el.textContent)).toEqual([20, 21, 22].map(n => `${n} ${lineText(n)}`))
+    expect(screen.getByTestId('file-peek-title')).toHaveTextContent('app.ts:20-22')
+  })
+
+  it('shows nothing when the window cap stopped the body before the referenced line', async () => {
+    const reads = stubGateway({ cutAfter: 3 })
+    renderLink()
+    await flush()
+    rest(screen.getByRole('link', { name: 'app.ts' }))
+    await flush()
+    expect(reads).toHaveLength(1)
+    expect(screen.queryByTestId('file-peek-panel')).toBeNull()
   })
 
   it('costs one read for two hovers of the same link, and leaves the click as it was', async () => {
