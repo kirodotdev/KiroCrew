@@ -67,6 +67,14 @@ class TestRotateAtCap:
         assert not live.exists()
 
 
+def _rotation_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "kiro_crew.jsonl_util"
+    ]
+
+
 class TestBestEffort:
     """NEVER raises: any failure degrades to not rotating, so the caller's
     append still lands the record. Failures are induced with REAL ``OSError``s
@@ -97,11 +105,7 @@ class TestBestEffort:
         (tmp_path / "log.jsonl.1").mkdir()
 
         def warnings() -> list[str]:
-            return [
-                r.getMessage()
-                for r in caplog.records
-                if r.levelno == logging.WARNING and r.name == "kiro_crew.jsonl_util"
-            ]
+            return _rotation_warnings(caplog)
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.jsonl_util"):
             rotate_jsonl_at(live, CAP)
@@ -129,6 +133,42 @@ class TestBestEffort:
         rotate_jsonl_at(live, CAP)  # must not raise
         assert not (tmp_path / "log.jsonl.1").exists()
         assert live.exists()
+
+    def test_unopenable_lock_file_warns_once_per_interval_while_over_cap(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        """A lock file that cannot be opened stops the rotation before the rename,
+        so an over-cap log needs the same rate-limited record a refused rename
+        leaves; a log that needs no rotation (under the cap, or missing) leaves none."""
+        clock = [1_000.0]
+        monkeypatch.setattr(
+            jsonl_util, "time", SimpleNamespace(monotonic=lambda: clock[0]), raising=False
+        )
+        live = tmp_path / "log.jsonl"
+        live.write_bytes(b"x" * (CAP - 1))
+        (tmp_path / "log.jsonl.lock").mkdir()
+        absent = tmp_path / "absent.jsonl"
+        (tmp_path / "absent.jsonl.lock").mkdir()
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.jsonl_util"):
+            rotate_jsonl_at(live, CAP)
+            rotate_jsonl_at(absent, CAP)
+            assert _rotation_warnings(caplog) == [], "nothing needed rotating"
+
+            live.write_bytes(b"x" * (CAP + 10))
+            rotate_jsonl_at(live, CAP)
+            warned = _rotation_warnings(caplog)
+            assert len(warned) == 1, "an over-cap log that cannot rotate must leave a record"
+            assert str(live) in warned[0]
+            assert "IsADirectoryError" in warned[0] or "PermissionError" in warned[0]
+
+            clock[0] += 300.0  # the next append, well inside the interval
+            rotate_jsonl_at(live, CAP)
+            assert len(_rotation_warnings(caplog)) == 1, "a retry inside the interval is silent"
+
+            clock[0] += jsonl_util.ROTATE_REFUSED_WARN_INTERVAL_SECS
+            rotate_jsonl_at(live, CAP)
+            assert len(_rotation_warnings(caplog)) == 2, "the interval elapsed: reported again"
 
     def test_unusable_path_value_does_not_raise(self, tmp_path):
         """The contract covers ``ValueError`` too (e.g. an embedded NUL, which
