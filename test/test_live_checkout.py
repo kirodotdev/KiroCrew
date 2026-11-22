@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -121,3 +122,26 @@ class TestSkillGuard:
     def test_no_run_directory_is_safe(self, guard, tmp_path):
         code, _ = guard.check(_clone(tmp_path), tmp_path / "missing")
         assert code == guard.EXIT_SAFE
+
+    @pytest.mark.skipif(os.name == "nt", reason="asserts POSIX shell quoting")
+    @pytest.mark.parametrize("folder", ["First Last", "it's here"])
+    def test_the_suggested_commands_paste_a_root_with_a_space_or_quote_as_one_argument(
+        self, guard, tmp_path, monkeypatch, folder
+    ):
+        base = tmp_path / folder
+        base.mkdir()
+        monkeypatch.chdir(base)
+        clone = _clone(base)
+        run = _run_dir(base, os.getpid(), str(clone / ".venv/bin/kirocrew"))
+        code, message = guard.check(clone / "src", run)
+        assert code == guard.EXIT_REFUSED
+        commands = [shlex.split(line) for line in message.splitlines() if line.startswith("  git ")]
+        assert commands == [
+            ["git", "-C", str(clone), "fetch", "origin", "main"],
+            ["git", "-C", str(clone), *"worktree add ../<name> -b <branch> origin/main".split()],
+        ]
+
+    def test_a_windows_shell_gets_the_root_in_double_quotes(self, guard, monkeypatch):
+        monkeypatch.setattr(guard, "_WINDOWS", True)
+        assert guard._shell_quoted(Path("First Last")) == '"First Last"'
+        assert guard._shell_quoted(Path("plain")) == "plain"
