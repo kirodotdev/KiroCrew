@@ -71,6 +71,7 @@ from kiro_crew.autonudge_service import judge_tick as _judge_tick
 from kiro_crew.autonudge_service import maintenance as _maintenance
 from kiro_crew.autonudge_service import monitor_records as _monitor_records
 from kiro_crew.autonudge_service import mutations as _mutations
+from kiro_crew.autonudge_service import person_wait as _person_wait
 from kiro_crew.autonudge_service import store_loader as _store_loader
 from kiro_crew.autonudge_service import timers as _timers
 from kiro_crew.autonudge_service.gate import (  # noqa: F401 -- re-exported
@@ -109,6 +110,7 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     MODEL_REFUSED_REASON,
     MONITOR_TERMINAL_REASON,
     NUDGE_RENEW_DUE_SHARE,
+    PERSON_WAIT_RELEASES,
     RUNTIME_BUDGET_REASON,
     SENTINEL_DROPPED_REASON,
     SERVICE_SHUTTING_DOWN_MESSAGE,
@@ -129,6 +131,8 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     is_structured_monitor_loop,
     new_goal_token,
     nudge_cycle_header,
+    person_wait_ends_on_budget,
+    person_wait_expires_at,
     reason_in,
     runtime_budget_exceeded,
     stored_bound,
@@ -428,7 +432,9 @@ def get_instance() -> "AutoNudgeService | None":
     return _INSTANCE
 
 
-def release_approval_hold_for(slot_key: str | None, *, why: str, arm: bool = True) -> None:
+def release_approval_hold_for(
+    slot_key: str | None, *, why: str, arm: bool = True, person: bool = True
+) -> None:
     """End *slot_key*'s approval hold, if its loop has one. Best-effort.
 
     The one call the approval paths make once a person answers a prompt. It
@@ -436,12 +442,14 @@ def release_approval_hold_for(slot_key: str | None, *, why: str, arm: bool = Tru
     durable write) and returns at once. A monitoring convenience must never change
     how that answer is applied, so a missing service, an empty key or a fault here
     is swallowed. A caller about to run a turn passes ``arm=False``: that turn's end
-    re-arms the loop.
+    re-arms the loop. A caller that does not prove a person is back (a turn opening
+    for any sender) passes ``person=False``: it ends an approval hold only, and a
+    declared person-wait stays held.
     """
     try:
         svc = _INSTANCE
         if svc is not None and slot_key:
-            _timers._schedule_release(svc, slot_key, why=why, arm=arm)
+            _timers._schedule_release(svc, slot_key, why=why, arm=arm, person=person)
     except Exception:
         logger.debug("autonudge.release_approval_hold failed", exc_info=True)
 
@@ -1446,6 +1454,7 @@ class AutoNudgeService:
     _settle_fire_cycle = _firing._settle_fire_cycle
     _finish_fire_cycle = _firing._finish_fire_cycle
     fire_now = _firing.fire_now
+    declare_person_wait = _person_wait.declare_person_wait  # autonudge_service.person_wait
     # autonudge_service.mutations
     add = _mutations.add
     _mint_loop_id = _mutations._mint_loop_id
