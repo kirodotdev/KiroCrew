@@ -20,7 +20,7 @@ from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.source_providers import chip_refresh
 
 SECRET_MESSAGE = "the last words of a private chat"
-SECRET_PATH = "/home/owner/private-project"
+SECRET_PATH = "/srv/example/private-project"
 ROW = {
     "key": "chat-1-1",
     "title": "Plan the launch",

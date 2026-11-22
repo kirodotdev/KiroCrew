@@ -812,7 +812,9 @@ def set_app_provenance(
     # the ``dashboard_proxy`` offer and grant read provenance from it, never from the file.
     from kiro_crew.apps import dashboard_proxy
 
-    dashboard_proxy.record_install(
+    if not dashboard_proxy.record_install(
         name, version=meta.version, registry=registry, url=url, commit=commit, signer=signer
-    )
+    ):
+        # Not ignored: the gateway ended any grant on the old record, and the caller hears why.
+        raise RuntimeError(f"could not seal the install record for {name!r}")
     return True

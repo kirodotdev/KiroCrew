@@ -65,13 +65,22 @@ async def handle_dashboard_proxy(request: web.Request) -> web.Response:
     caller = str(request.get("user", "") or "dashboard")
     async with app_lifecycle_lock(name):
         if method == "DELETE":
-            await asyncio.to_thread(dashboard_proxy.revoke, name)
+            removed = await asyncio.to_thread(dashboard_proxy.revoke, name)
             sel().log_api_access(
                 caller=caller,
                 operation="apps.dashboard_proxy.revoke",
-                outcome="success",
+                outcome="success" if removed else "failed",
                 resources=f"name={name!r}",
             )
+            if not removed:
+                # Access is over (the gateway ended the grant in memory), but a record stays.
+                return web.json_response(
+                    {
+                        "error": "access ended, but a stored record could not be removed",
+                        "code": "revoke_incomplete",
+                    },
+                    status=500,
+                )
             return web.json_response(await asyncio.to_thread(_view, name))
         try:
             body = await request.json()

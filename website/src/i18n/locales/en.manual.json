@@ -5523,6 +5523,8 @@
       "dashboard_access_restart_failed": "The app did not start again. Check its status above.",
       "dashboard_access_scope": "The app can show the dashboard page with your theme and a list of your chats (only their titles, whether they are running and when they last changed), and stop a running chat turn. It can use its own backend. It cannot read chat messages, send them, read your preferences, change settings, credentials, apps, the terminal or approvals. Turning the app off removes this access.",
       "dashboard_access_load_failed": "Could not load the dashboard access for this app.",
+      "dashboard_access_confirm_body": "Allow “{{app}}” {{version}} (registry “{{registry}}”, source “{{source}}”) to use this dashboard on your behalf?",
+      "dashboard_access_registry_bundled": "the bundled catalog",
       "grants_reconsent_link_hosts": "Link hosts: lets the app's hover cards see links to these sites in chat messages.",
       "grants_reconsent_link_patterns": "Text patterns: lets the app's hover cards see chat text these patterns match.",
       "grants_reconsent_link_full_url": "Whole link addresses: the app's hover cards also see the part of a link after ? or #, which can hold a sign-in code.",

@@ -157,6 +157,18 @@ def _track_stream(via_app: str, claim: str) -> None:
         _sweeper = asyncio.get_running_loop().create_task(_sweep())
 
 
+def reset() -> None:
+    """Cancel the sweeper and forget every tracked stream (the test guard calls this)."""
+    global _sweeper
+    sweeper, _sweeper = _sweeper, None
+    _STREAMS.clear()
+    if sweeper is not None and not sweeper.done():
+        try:
+            sweeper.cancel()
+        except RuntimeError:  # its loop is already closed: nothing is left to cancel
+            pass
+
+
 async def end_stale_streams() -> None:
     """Cancel every tracked open request whose grant is not the one the app holds now."""
     from kiro_crew.apps import dashboard_proxy

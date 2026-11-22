@@ -43,6 +43,11 @@ def _reset_dashboard_proxy_state(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(dashboard_proxy, "_gateway_secret", "")
     _floor_monkeypatch.setattr(dashboard_proxy, "_refused_mints", set())
+    dashboard_proxy.reset_marks()
+
+    from kiro_crew.dashboard import delegated_scope
+
+    delegated_scope.reset()
 
 
 @per_test_guard

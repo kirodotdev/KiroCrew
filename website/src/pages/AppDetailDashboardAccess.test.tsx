@@ -27,11 +27,8 @@ const OFFER = {
   registry: 'crew-tunnels',
   source: 'https://example.invalid/tunnel.git',
   version: '0.9.4',
-  text:
-    'Allow tunnel 0.9.4 (registry crew-tunnels) to use this dashboard on your behalf? ' +
-    'The app can show the dashboard page with your theme and a list of your chats (only their titles, whether they are running and when they last changed), and stop a running chat turn. ' +
-    'It can use its own backend. ' +
-    'It cannot read chat messages, send them, read your preferences, change settings, credentials, apps, the terminal or approvals.',
+  // The server's English sentence is for the API; the dialog words come from the locale catalog.
+  text: 'SERVER-ENGLISH-SENTENCE',
 }
 const OFFERED = { granted: false, offer: OFFER, platform_supported: true, needs_access: false }
 
@@ -60,7 +57,10 @@ describe('AppDetailDashboardAccess', () => {
     render(wrap(<AppDetailDashboardAccess appName="tunnel" />))
     fireEvent.click(await screen.findByRole('button', { name: 'Allow dashboard access' }))
     await waitFor(() => expect(api.grantAppDashboardAccess).toHaveBeenCalledWith('tunnel'))
-    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ body: OFFER.text }))
+    expect(confirmMock.mock.calls[0][0].body).not.toContain('SERVER-ENGLISH-SENTENCE')
+    expect(confirmMock.mock.calls[0][0].body).toContain(
+      'Allow “tunnel” 0.9.4 (registry “crew-tunnels”, source “https://example.invalid/tunnel.git”) to use this dashboard on your behalf?',
+    )
     expect(confirmMock.mock.calls[0][0].body).toContain('stop a running chat turn')
     expect(confirmMock.mock.calls[0][0].body).toContain('cannot read chat messages, send them, read your preferences, change settings, credentials, apps, the terminal or approvals')
     expect(confirmMock.mock.calls[0][0].body).not.toContain('run agents as you')

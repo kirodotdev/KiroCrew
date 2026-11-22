@@ -348,6 +348,92 @@ async def test_a_cookie_fails_after_revoke_and_a_new_grant_of_the_same_install(s
         assert (await client.get(_READ)).status == 403
 
 
+def _unlink_refused(monkeypatch) -> None:
+    from pathlib import Path
+
+    def _boom(self, *args, **kwargs):
+        raise PermissionError("unlink refused")
+
+    monkeypatch.setattr(Path, "unlink", _boom)
+
+
+@pytest.mark.asyncio
+async def test_access_ends_at_once_when_the_revoke_cannot_remove_the_record(
+    state, real_grant, monkeypatch
+):
+    from kiro_crew.apps import dashboard_proxy
+
+    async with _serve(state) as client:
+        old = _delegated()
+        assert (await client.get(_READ, params=old)).status == 200
+        _unlink_refused(monkeypatch)
+        assert dashboard_proxy.revoke(_APP) is False
+        resp = await client.get(_READ, params=old)
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == _REFUSED_CODE
+        assert (await client.get(_READ)).status == 403, "the session cookie"
+    assert dashboard_proxy.verify_leg_two(_APP, "any-value") == "not-granted"
+
+
+@pytest.mark.asyncio
+async def test_an_open_stream_ends_when_the_revoke_cannot_remove_the_record(
+    state, real_grant, monkeypatch
+):
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard import delegated_scope
+
+    async def stream(request):
+        out = web.StreamResponse()
+        await out.prepare(request)
+        await out.write(b"frame\n")
+        await asyncio.Event().wait()
+        return out
+
+    app = web.Application(middlewares=[token_auth.token_auth_middleware()])
+    app["state"] = state
+    app.router.add_get("/apps/{name}/api/{path}", stream)
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(f"/apps/{_APP}/api/s", params=_delegated())
+            assert resp.status == 200
+            assert await resp.content.readline() == b"frame\n"
+            _unlink_refused(monkeypatch)
+            assert dashboard_proxy.revoke(_APP) is False
+            await delegated_scope.end_stale_streams()
+
+            async def drain() -> None:
+                with contextlib.suppress(aiohttp.ClientError):
+                    while await resp.content.readline():
+                        pass
+
+            await asyncio.wait_for(drain(), 30)
+    finally:
+        delegated_scope.reset()
+    assert delegated_scope._STREAMS == {}
+
+
+@pytest.mark.asyncio
+async def test_reset_stops_the_stream_sweeper_and_forgets_open_streams():
+    from kiro_crew.dashboard import delegated_scope
+
+    async def hold() -> None:
+        delegated_scope._track_stream("some-app", "claim")
+        await asyncio.Event().wait()
+
+    task = asyncio.get_running_loop().create_task(hold())
+    await asyncio.sleep(0)
+    sweeper = delegated_scope._sweeper
+    assert sweeper is not None and not sweeper.done()
+    delegated_scope.reset()
+    await asyncio.sleep(0)
+    assert sweeper.cancelled() or sweeper.done()
+    assert delegated_scope._sweeper is None
+    assert delegated_scope._STREAMS == {}
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
 @pytest.mark.asyncio
 async def test_a_cookie_fails_after_the_gateway_secret_rotates(state, real_grant):
     from kiro_crew.apps import dashboard_proxy
@@ -493,21 +579,25 @@ async def test_an_open_stream_ends_when_the_grant_ends(state, granted):
     app = web.Application(middlewares=[token_auth.token_auth_middleware()])
     app["state"] = state
     app.router.add_get("/apps/{name}/api/{path}", stream)
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.get(f"/apps/{_APP}/api/s", params=_delegated())
-        assert resp.status == 200
-        assert await resp.content.readline() == b"frame\n"
-        granted["on"] = False
-        # The sweep itself is the periodic loop around this call; the test drives one pass.
-        await delegated_scope.end_stale_streams()
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(f"/apps/{_APP}/api/s", params=_delegated())
+            assert resp.status == 200
+            assert await resp.content.readline() == b"frame\n"
+            granted["on"] = False
+            # The sweep itself is the periodic loop around this call; the test drives one pass.
+            await delegated_scope.end_stale_streams()
 
-        async def drain() -> None:
-            with contextlib.suppress(aiohttp.ClientError):
-                while await resp.content.readline():
-                    pass
+            async def drain() -> None:
+                with contextlib.suppress(aiohttp.ClientError):
+                    while await resp.content.readline():
+                        pass
 
-        await asyncio.wait_for(drain(), 30)  # hang guard: the stream ends only with the grant
+            await asyncio.wait_for(drain(), 30)  # hang guard: the stream ends only with the grant
+    finally:
+        delegated_scope.reset()  # the sweeper it started must not outlive this test's loop
     assert delegated_scope._STREAMS == {}
+    assert delegated_scope._sweeper is None
 
 
 @pytest.mark.asyncio

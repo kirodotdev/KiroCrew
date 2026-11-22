@@ -76,6 +76,34 @@ _refused_mints: set[str] = set()
 _refused_lock = threading.Lock()
 
 
+#: Fail-closed marks, checked before any sealed record is read. A record that cannot be
+#: removed or replaced (read-only or locked records directory) still ends the access it backs:
+#: ``_ended_grants`` ends the grant, ``_unsealed_installs`` makes the install record untrusted,
+#: so no offer and no grant stands until a new grant or a new sealed record clears the mark.
+#: shortcut: in memory, so a gateway restart forgets them; the new gateway secret ends every
+#: derived value and token then, and the owner sees the grant state again.
+_ended_grants: set[str] = set()
+_unsealed_installs: set[str] = set()
+_marks_lock = threading.Lock()
+
+
+def reset_marks() -> None:
+    """Forget the fail-closed marks (the test guard calls this between tests)."""
+    with _marks_lock:
+        _ended_grants.clear()
+        _unsealed_installs.clear()
+
+
+def _mark(marks: set[str], app_name: str, on: bool) -> None:
+    with _marks_lock:
+        (marks.add if on else marks.discard)(app_name)
+
+
+def _marked(marks: set[str], app_name: str) -> bool:
+    with _marks_lock:
+        return app_name in marks
+
+
 def note_refused_mint(app_name: str) -> None:
     """Remember that *app_name* asked for a dashboard token and holds no grant."""
     if not APP_NAME_RE.fullmatch(app_name) or granted(app_name):
@@ -166,23 +194,33 @@ def record_install(
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(path, json.dumps(body) + "\n", fsync=True)
     except (OSError, ValueError):
+        # The record on disk (if any) is the OLD install's: it must not keep backing a
+        # grant or an offer for the new one.
+        _mark(_unsealed_installs, app_name, True)
         logger.warning("could not seal the install record for %r", app_name)
         return False
+    _mark(_unsealed_installs, app_name, False)
     return True
 
 
 def forget_install(app_name: str) -> None:
-    """Remove the sealed install record (uninstall). A no-op when none exists."""
+    """Remove the sealed install record (uninstall). A no-op when none exists.
+
+    When the record cannot be removed it is treated as gone anyway (fail closed).
+    """
     try:
         _path(app_name, _INSTALL_SUFFIX).unlink()
     except FileNotFoundError:
         pass
     except (OSError, ValueError):
+        _mark(_unsealed_installs, app_name, True)
         logger.warning("could not remove the install record for %r", app_name)
 
 
 def _installed(app_name: str) -> Any:
     """The sealed install record as an object with the install fields, or ``None``."""
+    if _marked(_unsealed_installs, app_name):
+        return None
     try:
         raw = read_bytes_with_retry(_path(app_name, _INSTALL_SUFFIX), max_bytes=_RECORD_MAX_BYTES)
         data = json.loads(raw.decode("utf-8"))
@@ -319,6 +357,8 @@ def granted(app_name: str) -> bool:
     The stored grant names this install, the owner-enable marker stands and the owner has
     not disabled the app. Read on every use, so a disable or an uninstall ends it at once.
     """
+    if _marked(_ended_grants, app_name):
+        return False
     stored = _stored_identity(app_name)
     current = install_identity(app_name)
     if not stored or not current or not hmac.compare_digest(stored, current):
@@ -351,18 +391,27 @@ def grant(app_name: str) -> tuple[bool, str]:
     except (OSError, ValueError):
         logger.warning("could not record the dashboard_proxy grant for %r", app_name)
         return False, "write-failed"
+    _mark(_ended_grants, app_name, False)  # a new grant id: no earlier token matches it
     return True, ""
 
 
-def revoke(app_name: str) -> None:
-    """Remove the grant and its stand-in source. A no-op when none exists."""
+def revoke(app_name: str) -> bool:
+    """End the grant and remove its records. ``False`` when a record could not be removed.
+
+    The grant is ended first, in memory, so it is over even when a record stays on disk
+    (fail closed); the owner route answers an error then. A no-op when none exists.
+    """
+    _mark(_ended_grants, app_name, True)
+    removed = True
     for suffix in (".json", _STAND_IN_SUFFIX):
         try:
             _path(app_name, suffix).unlink()
         except FileNotFoundError:
             pass
         except (OSError, ValueError):
+            removed = False
             logger.warning("could not remove the dashboard_proxy record for %r", app_name)
+    return removed
 
 
 def stand_in_value(app_name: str) -> str | None:

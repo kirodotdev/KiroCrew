@@ -12055,6 +12055,8 @@
       "dashboard_access_restart_failed": "应用没有重新启动。请查看上方的状态。",
       "dashboard_access_scope": "应用可以显示仪表板页面，包括主题和聊天列表（仅标题、是否正在运行以及上次更改时间），并停止正在运行的聊天轮次。它可以使用自己的后端。它不能读取或发送聊天消息，不能读取你的偏好设置，也不能更改设置、凭据、应用、终端或审批。关闭该应用会移除此访问权限。",
       "dashboard_access_load_failed": "无法加载此应用的仪表板访问权限。",
+      "dashboard_access_confirm_body": "是否允许“{{app}}”{{version}}（注册表“{{registry}}”，来源“{{source}}”）代表你使用此仪表板？",
+      "dashboard_access_registry_bundled": "内置目录",
       "grants_reconsent_link_hosts": "链接主机：允许应用的悬停卡片看到聊天消息中指向这些站点的链接。",
       "grants_reconsent_link_patterns": "文本模式：允许应用的悬停卡片看到聊天中与这些模式匹配的文本。",
       "grants_reconsent_link_full_url": "完整链接地址：应用的悬停卡片还会看到链接中 ? 或 # 之后的部分，其中可能包含登录代码。",

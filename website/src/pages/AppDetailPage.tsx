@@ -1844,13 +1844,7 @@ export default function AppDetailPage() {
           )}
 
           {app.installed && <AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} />}
-          {app.installed && (
-            <AppDetailDashboardAccess
-              appName={app.name}
-              displayName={appDisplayName(app)}
-              onUpdate={isRegistrySourced(app) ? () => handleAction('update') : undefined}
-            />
-          )}
+          {app.installed && <AppDetailDashboardAccess appName={app.name} displayName={appDisplayName(app)} onUpdate={isRegistrySourced(app) ? () => handleAction('update') : undefined} />}
 
           <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 

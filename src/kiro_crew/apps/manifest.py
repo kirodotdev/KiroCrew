@@ -290,6 +290,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "_sel",
         "bot-grants",
         "config",
+        "dashboard-proxy",
         "dev",
         "disable",
         "enable",

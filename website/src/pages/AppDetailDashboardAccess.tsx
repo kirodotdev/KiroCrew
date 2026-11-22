@@ -62,7 +62,13 @@ export default function AppDetailDashboardAccess({ appName, displayName, onUpdat
     if (!data.offer) return
     const ok = await confirm({
       title: i18nT('pages.appDetailPage.dashboard_access_confirm_title'),
-      body: data.offer.text,
+      // Worded from the locale catalog; the server's English `offer.text` is for the API only.
+      body: `${i18nT('pages.appDetailPage.dashboard_access_confirm_body', {
+        app: data.offer.app,
+        version: data.offer.version,
+        registry: data.offer.registry || i18nT('pages.appDetailPage.dashboard_access_registry_bundled'),
+        source: data.offer.source,
+      })} ${scope}`,
       confirmLabel: i18nT('pages.appDetailPage.dashboard_access_allow'),
       danger: false,
       primary: true,

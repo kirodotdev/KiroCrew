@@ -12328,6 +12328,8 @@
       "dashboard_access_restart_failed": "Die App wurde nicht wieder gestartet. Prüfe ihren Status oben.",
       "dashboard_access_scope": "Die App kann die Dashboard-Seite mit deinem Design und einer Liste deiner Chats (nur Titel, ob sie laufen und wann sie sich zuletzt geändert haben) anzeigen und einen laufenden Chat-Durchlauf stoppen. Sie kann ihr eigenes Backend nutzen. Sie kann keine Chat-Nachrichten lesen oder senden, deine Voreinstellungen nicht lesen und keine Einstellungen, Zugangsdaten, Apps, das Terminal oder Genehmigungen ändern. Wenn du die App ausschaltest, entfällt dieser Zugriff.",
       "dashboard_access_load_failed": "Der Dashboard-Zugriff dieser App konnte nicht geladen werden.",
+      "dashboard_access_confirm_body": "Darf „{{app}}“ {{version}} (Registry „{{registry}}“, Quelle „{{source}}“) dieses Dashboard in deinem Namen nutzen?",
+      "dashboard_access_registry_bundled": "der mitgelieferte Katalog",
       "grants_reconsent_link_hosts": "Link-Hosts: erlaubt den Hover-Karten der App, Links zu diesen Seiten in Chat-Nachrichten zu sehen.",
       "grants_reconsent_link_patterns": "Textmuster: erlaubt den Hover-Karten der App, Chat-Text zu sehen, auf den diese Muster passen.",
       "grants_reconsent_link_full_url": "Vollständige Linkadressen: Die Hover-Karten der App sehen auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",

@@ -12601,6 +12601,8 @@
       "dashboard_access_restart_failed": "La app no volvió a arrancar. Revisa su estado más arriba.",
       "dashboard_access_scope": "La app puede mostrar la página del panel con tu tema y una lista de tus chats (solo sus títulos, si están en curso y cuándo cambiaron por última vez), y detener un turno de chat en curso. Puede usar su propio backend. No puede leer ni enviar mensajes de chat, ni leer tus preferencias, ni cambiar ajustes, credenciales, apps, el terminal ni las aprobaciones. Al desactivar la app se quita este acceso.",
       "dashboard_access_load_failed": "No se pudo cargar el acceso al panel de esta app.",
+      "dashboard_access_confirm_body": "¿Permitir que “{{app}}” {{version}} (registro “{{registry}}”, origen “{{source}}”) use este panel en tu nombre?",
+      "dashboard_access_registry_bundled": "el catálogo incluido",
       "grants_reconsent_link_hosts": "Hosts de enlaces: permite que las tarjetas de la app vean enlaces a estos sitios en los mensajes del chat.",
       "grants_reconsent_link_patterns": "Patrones de texto: permite que las tarjetas de la app vean el texto del chat que coincide con estos patrones.",
       "grants_reconsent_link_full_url": "Direcciones de enlace completas: las tarjetas de la app también ven la parte de un enlace tras ? o #, que puede contener un código de inicio de sesión.",

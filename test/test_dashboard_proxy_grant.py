@@ -9,6 +9,7 @@ marker stands. Secret-shaped values here are described in words.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -212,6 +213,130 @@ def test_each_grant_gets_its_own_id_and_revoke_ends_it(records, installed):
     assert dashboard_proxy.grant_claim(_APP) != first
     assert not dashboard_proxy.grant_current(_APP, first)
     assert not dashboard_proxy.grant_current(_APP, "")
+
+
+def _unlink_refused(monkeypatch, error: type[OSError] = PermissionError) -> None:
+    """Every ``Path.unlink`` fails, as on a read-only or locked records directory."""
+
+    def _boom(self, *args, **kwargs):
+        raise error("unlink refused")
+
+    monkeypatch.setattr(Path, "unlink", _boom)
+
+
+def _write_refused(monkeypatch) -> None:
+    def _boom(*args, **kwargs):
+        raise OSError("write refused")
+
+    monkeypatch.setattr(dashboard_proxy, "atomic_write", _boom)
+
+
+@pytest.mark.parametrize("error", [PermissionError, OSError])
+def test_a_revoke_that_cannot_remove_the_record_still_ends_the_grant(
+    records, installed, monkeypatch, error
+):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    claim = dashboard_proxy.grant_claim(_APP)
+    assert claim and dashboard_proxy.stand_in_value(_APP)
+    _unlink_refused(monkeypatch, error)
+    assert dashboard_proxy.revoke(_APP) is False, "the caller must hear the record stayed"
+    assert dashboard_proxy.granted(_APP) is False
+    assert dashboard_proxy.grant_claim(_APP) == ""
+    assert not dashboard_proxy.grant_current(_APP, claim)
+    assert dashboard_proxy.stand_in_value(_APP) is None
+    assert dashboard_proxy.verify_leg_two(_APP, "any-value") == "not-granted"
+    assert dashboard_proxy.backend_masks(_APP, ("/m",)) == (("/m",), ())
+
+
+def test_a_new_grant_follows_a_revoke_that_could_not_remove_the_record(
+    records, installed, monkeypatch
+):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    first = dashboard_proxy.grant_claim(_APP)
+    with monkeypatch.context() as refused:
+        _unlink_refused(refused)
+        assert dashboard_proxy.revoke(_APP) is False
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    assert dashboard_proxy.granted(_APP) is True
+    assert dashboard_proxy.grant_claim(_APP) not in ("", first)
+    assert not dashboard_proxy.grant_current(_APP, first)
+
+
+@pytest.mark.asyncio
+async def test_the_revoke_route_answers_an_error_when_the_record_stays(
+    records, installed, monkeypatch
+):
+    async def _owner(_request, _operation):
+        return None
+
+    monkeypatch.setattr(routes, "_owner_denial", _owner)
+    monkeypatch.setattr("kiro_crew.apps.manager.get_app", lambda _name: object())
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    _unlink_refused(monkeypatch)
+    resp = await routes.handle_dashboard_proxy(_request("DELETE"))
+    assert resp.status == 500
+    assert json.loads(resp.text or "{}")["code"] == "revoke_incomplete"
+    assert dashboard_proxy.granted(_APP) is False, "access ended although the record stayed"
+
+
+def test_an_uninstall_that_cannot_remove_the_install_record_leaves_no_grant_or_offer(
+    forged_apps, monkeypatch
+):
+    dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    _unlink_refused(monkeypatch)
+    dashboard_proxy.forget_install(_APP)
+    assert dashboard_proxy.granted(_APP) is False
+    assert dashboard_proxy.registry_verified(_APP) is False
+    assert dashboard_proxy.prompt_text(_APP) is None
+
+
+def test_an_update_whose_install_seal_fails_leaves_no_grant_and_no_offer(forged_apps, monkeypatch):
+    dashboard_proxy.record_install(_APP, version="1", registry="r", url="https://x.invalid/a.git")
+    assert dashboard_proxy.grant(_APP) == (True, "")
+    _write_refused(monkeypatch)
+    sealed = dashboard_proxy.record_install(
+        _APP, version="2", registry="r", url="https://x.invalid/a.git"
+    )
+    assert sealed is False
+    assert dashboard_proxy.granted(_APP) is False, "the old install's grant must not stand"
+    assert dashboard_proxy.registry_verified(_APP) is False
+    assert dashboard_proxy.prompt_text(_APP) is None, "no offer without a sealed record"
+
+
+def test_the_next_sealed_install_record_clears_the_failure(forged_apps, monkeypatch):
+    with monkeypatch.context() as refused:
+        _write_refused(refused)
+        assert dashboard_proxy.record_install(_APP, version="2", registry="r", url="u") is False
+    assert dashboard_proxy.record_install(_APP, version="2", registry="r", url="https://x/a.git")
+    assert dashboard_proxy.registry_verified(_APP) is True
+    assert dashboard_proxy.prompt_text(_APP) is not None
+
+
+def test_set_app_provenance_reports_a_failed_install_seal(forged_apps, monkeypatch):
+    """The App Store update path hears the failure; it is not logged and dropped."""
+    from dataclasses import dataclass
+
+    from kiro_crew.apps import manager_lookup
+
+    @dataclass
+    class _Meta:
+        version: str = "2"
+        source: str = ""
+        sourceUrl: str = ""
+        sourceRegistry: str = ""
+        sourceCommit: str = ""
+        sourceSigner: str = ""
+
+    monkeypatch.setattr(manager_lookup, "hold_app_record_lock", lambda _name: None)
+    monkeypatch.setattr(manager_lookup, "_read_installed", lambda _name: _Meta())
+    monkeypatch.setattr(manager_lookup, "_write_installed", lambda _name, _meta: None)
+    _write_refused(monkeypatch)
+    with pytest.raises(RuntimeError, match="install record"):
+        manager_lookup.set_app_provenance(_APP, source="registry:x", url="u", registry="r")
 
 
 def test_process_state_leaks_in(monkeypatch):

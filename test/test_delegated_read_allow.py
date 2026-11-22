@@ -120,7 +120,7 @@ def test_every_row_carries_its_handlers_file_and_line_and_an_effect_note() -> No
             h for (m, p), h in handlers.items() if p == canonical
         )
         func = inspect.unwrap(handler)  # type: ignore[arg-type]
-        where = f"{Path(inspect.getsourcefile(func) or '').relative_to(_REPO)}:"
+        where = f"{Path(inspect.getsourcefile(func) or '').relative_to(_REPO).as_posix()}:"
         where += str(inspect.getsourcelines(func)[1])
         assert row.handler == where, f"{method} {canonical}: the handler is now at {where}"
         assert len(row.effect) > 30 and "\n" not in row.effect, canonical
