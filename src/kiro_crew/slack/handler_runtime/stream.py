@@ -41,8 +41,11 @@ if TYPE_CHECKING:
         StreamRedactor,
         _convert_tables,
         _SteeringMarkerFilter,
+        could_be_echo,
+        echo_prefix_len,
         ends_plain_sentence,
         is_control_tag_tail,
+        is_echo,
         is_wait_identity,
         line_start,
         logger,
@@ -396,6 +399,11 @@ class _AnswerStream:
         # dropped when the final copy replaces the message.
         self.redactor = StreamRedactor()
         self.accumulated = ""
+        # The turn's first text, held while it could still be the backend's
+        # alternation placeholder (``messaging.alternation_echo``): the model repeats
+        # it at the start of a turn after one that ended on a tool result. ``None``
+        # once the answer's text has started.
+        self.echo_held: str | None = ""
         self.carried = ""  # the held run carried across a ``wait`` (see ``take_carried``)
         # The message a run held at a ``wait`` ended, and that run. The first text
         # sent after the wait puts the run back on that message (see ``_give_back``).
@@ -833,14 +841,38 @@ class _AnswerStream:
                 payload for kind, payload in self.steer_filter.feed(event.text) if kind == "text"
             )
         )
-        await self._project_text(text)
+        await self._hold_opening(text)
 
     async def release_quoted_hold(self) -> None:
-        """Project the line the quoted-marker filter holds, before a tool call, an
-        approval prompt or the turn's end breaks the text off, so it is never lost."""
+        """Project what the text holds back, before a tool call, an approval prompt or
+        the turn's end breaks it off, so it is never lost: the line the quoted-marker
+        filter holds, then the turn's held opening unless it is the whole alternation
+        placeholder, which is dropped."""
         held = self.quoted_filter.flush()
         if held:
-            await self._project_text(held)
+            await self._hold_opening(held)
+        opening = self.echo_held
+        if not opening:
+            return
+        if is_echo(opening):
+            self.echo_held = ""
+            return
+        self.echo_held = None
+        await self._project_text(opening)
+
+    async def _hold_opening(self, text: str) -> None:
+        """Hold the turn's first text while it could still be the alternation placeholder;
+        project the rest."""
+        if self.echo_held is not None:
+            held = self.echo_held + text
+            if could_be_echo(held):
+                self.echo_held = held
+                return
+            self.echo_held = None
+            # The placeholder, then the model's own words after it.
+            cut = echo_prefix_len(held)
+            text = held[cut:].lstrip() if cut else held
+        await self._project_text(text)
 
     async def _project_text(self, text: str) -> None:
         self.take_carried()

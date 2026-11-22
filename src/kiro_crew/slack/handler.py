@@ -143,6 +143,11 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
+from kiro_crew.messaging.alternation_echo import (  # noqa: F401 - read by the owners
+    could_be_echo,
+    echo_prefix_len,
+    is_echo,
+)
 from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
     COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,

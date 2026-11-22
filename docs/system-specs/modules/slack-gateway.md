@@ -1302,7 +1302,10 @@ and `message_deleted` cannot disagree.
 11. Progressive message edits (~1/sec) with cursor indicator (▍)
 12. On `text_chunk` event: drop the steering ack and each line that only quotes a
     session-directive marker (`QuotedDirectiveFilter`, its held line handed on before a
-    tool call, an approval prompt and the turn's end), then accumulate response text
+    tool call, an approval prompt and the turn's end), then accumulate response text;
+    the turn's first text is held while it could still be the backend's alternation
+    placeholder and dropped when it is ([messaging](messaging.md), "Redaction and
+    protocol framing")
 13. On `thinking_chunk` event: accumulate thinking separately
 14. On `tool_call` event: show its task card and set the thread status to "is using <tool>"
 15. On `permission_request` event: auto-approve or post Block Kit buttons
