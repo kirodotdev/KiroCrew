@@ -24,6 +24,36 @@ export const LOCATIONS = {
     },
     placements: [{ surface: 'capabilities', parent: 'tab.capabilities.mcp-servers', entry: 'tab' }],
   },
+  // The Sharing view (the old MCP Management page): which servers run once,
+  // through the gateway, for every chat. The page opens on Servers; this tab is the click.
+  'mcp.sharing-view': {
+    kind: 'tab',
+    terms: {
+      en: [
+        'mcp management', 'share mcp servers', 'share an mcp server across chats', 'route an mcp server through the gateway',
+        'mcp gateway', 'turn on a custom mcp server for Kiro Crew', 'approve an mcp server launch', 'mcp launch approval',
+      ],
+      'zh-CN': ['MCP 管理', '共享 MCP 服务器', 'MCP 网关', '批准 MCP 启动', '批准 MCP 服务器'],
+    },
+    placements: [{ surface: 'capabilities', parent: 'tab.capabilities.mcp-servers', entry: 'tab' }],
+  },
+  // The approval card's one button: it opens the review of every server whose
+  // launch waits for approval (listed in a config file by hand, or a command
+  // that changed). Each server is approved there with Share across chats.
+  'mcp.review-approve': {
+    kind: 'button',
+    terms: {
+      en: [
+        'approve an mcp server launch', 'approve a custom mcp server', 'mcp launch approval', 'approve mcp command',
+        'mcp server not approved', 'mcp server paused', 'approve mcp update',
+      ],
+      'zh-CN': ['批准 MCP 启动', '批准 MCP 服务器', 'MCP 服务器未批准', '批准 MCP 更新'],
+    },
+    placements: [{
+      surface: 'capabilities', parent: 'tab.capabilities.mcp-servers', entry: 'content',
+      requires: [{ kind: 'condition', id: 'mcp_launch_awaiting_approval' }],
+    }],
+  },
   // Paste or write a server's own config (opens McpCustomServerModal). The
   // guide action `mcp.open_add` already points at this element.
   'mcp.add-custom': {
