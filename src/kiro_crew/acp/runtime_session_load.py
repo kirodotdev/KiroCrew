@@ -68,6 +68,7 @@ from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.transport_errors import AcpAuthRequired
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
@@ -803,7 +804,11 @@ async def load_session(
         # different (broader) default agent than the one requested.
         _ids, _current, _adv = parse_session_modes(resp)
         await self.terminate_session(resume_sid)
-        cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, mode_agent)
+        cause, remedy = await asyncio.to_thread(
+            unavailable_mode_explanation,
+            mode_agent,
+            kiro_cli_engine=self._harness.backend == ACP_BACKEND_KIRO,
+        )
         raise AcpRuntimeError(
             f"Agent mode {mode_agent!r} is not available for resumed session "
             f"{resume_sid} (advertised modes: {_ids or 'none'}); {cause} Refusing "

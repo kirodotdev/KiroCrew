@@ -1168,7 +1168,10 @@ async def _initialize_session(self: AcpClient) -> None:
             )
             logger.info("ACP agent activated: %s", self._agent)
         else:
-            cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, self._agent)
+            # Inside ``self._is_kiro``: this client drives kiro-cli's v2 engine.
+            cause, remedy = await asyncio.to_thread(
+                unavailable_mode_explanation, self._agent, kiro_cli_engine=True
+            )
             raise AcpError(
                 f"Agent mode {self._agent!r} is not available on this session "
                 f"(advertised modes: {self._available_mode_ids or 'none'}); {cause} "

@@ -67,6 +67,7 @@ from kiro_crew.acp.types import (
     overlay_project_scope,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.agent_discovery import spec_is_toolless as spec_is_toolless
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_CREW_OAUTH_BRIDGE,
@@ -88,43 +89,6 @@ logger = logging.getLogger("kiro_crew.acp.client")
 #: The allowlist of a member spec that was not read: it references nothing, so a
 #: pooled stub is never mounted on the strength of a spec nobody read.
 _GRANTS_NOTHING = ToolsAllowlist(applies=True, grant_all=False, refs=frozenset())
-
-
-def spec_is_toolless(spec: object) -> bool:
-    """True when *spec* mounts nothing: no tool, no grant, no MCP server, no hook.
-
-    All must hold: ``tools`` is an empty list; ``allowedTools`` is absent or an
-    empty list; ``mcpServers`` is absent or an empty object; ``hooks``,
-    ``permissions`` and ``toolsSettings`` are absent or empty; ``includePowers``
-    is absent or ``False`` (KAS reads an absent one as False); and
-    ``includeMcpJson`` is exactly ``False`` (kiro-cli defaults it to True and would
-    then start every server in the user-level ``mcp.json``). An empty ``tools``
-    alone is not enough: a server listed under ``mcpServers`` is still started, a
-    hook still runs a command, and either include flag widens what the turn can
-    reach (``acp.kas_agents`` forwards ``includePowers``, and the ``includeMcpJson``
-    opt-in decides which ``mcp.json`` servers KAS starts), in a turn that must run none.
-
-    Fails closed: a non-dict and any key of the wrong type answer False.
-    """
-    if not isinstance(spec, dict):
-        return False
-    tools = spec.get("tools")
-    if not (isinstance(tools, list) and not tools):
-        return False
-    if "allowedTools" in spec and not (
-        isinstance(spec["allowedTools"], list) and not spec["allowedTools"]
-    ):
-        return False
-    if "mcpServers" in spec and not (
-        isinstance(spec["mcpServers"], dict) and not spec["mcpServers"]
-    ):
-        return False
-    for key in ("hooks", "permissions", "toolsSettings"):
-        if key in spec and not (isinstance(spec[key], (dict, list)) and not spec[key]):
-            return False
-    if "includePowers" in spec and spec["includePowers"] is not False:
-        return False
-    return spec.get("includeMcpJson") is False
 
 
 def authored_agent_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:

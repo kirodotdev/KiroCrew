@@ -1395,6 +1395,14 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
+        "src/kiro_crew/acp/runtime_session_create.py",
+        "_finish_create_session",
+    ): "wording only: the Kiro CLI harness is the one launch that runs kiro-cli's v2 "
+    "engine, which leaves out of its modes a file kiro-cli lists as the v3 agent "
+    "format, so only its mode refusal may name that format "
+    "(``side_readonly_spec.unavailable_mode_explanation``); the refusal itself is "
+    "raised for every harness alike, and no capability table holds an engine version",
+    (
         "src/kiro_crew/acp/runtime_spawn_entry.py",
         "spawn",
     ): "moving kiro-cli's broken KAS extract aside and retrying is a repair for the "
@@ -1494,7 +1502,9 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
-    "kiro path an awaited step it does not need (H13).",
+    "kiro path an awaited step it does not need (H13). Its mode refusal also asks "
+    "whether the harness is Kiro CLI's, as ``_finish_create_session`` does, for the "
+    "wording alone.",
     (
         "src/kiro_crew/acp/session_handle_turn.py",
         "command_is_native",

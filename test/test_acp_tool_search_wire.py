@@ -42,6 +42,14 @@ from kiro_crew.agent_sdk.tool_search import (
 )
 from kiro_crew.providers.acp import AcpProvider
 
+#: A custom agent's job tools as the wire lists them, sorted.
+_CUSTOM_JOB_IDS = [
+    "kirocrew-core::mcp_server_wait",
+    "kirocrew-core::spawn_run",
+    "kirocrew-core::spawn_status",
+    "kirocrew-core::spawn_sub_agents",
+]
+
 # ── the grant predicate ──
 
 
@@ -212,13 +220,13 @@ class TestKasNeverDefer:
             "kirocrew-core::skill_fetch",
         ]
 
-    def test_a_custom_agent_keeps_the_server_wait_direct(self):
+    def test_a_custom_agent_keeps_its_job_tools_direct(self):
         from kiro_crew.agent_sdk.tool_search import custom_agent_never_defer_ids
 
         tools = {"kirocrew-core": ["mcp_server_wait", "memory_recall"], "srv": ["one", "two"]}
         spec = {"tools": ["fs_read", "@srv", "@kirocrew-core"]}
         assert custom_agent_never_defer_ids(spec, tools.get, ("kirocrew-core",)) == [
-            "kirocrew-core::mcp_server_wait",
+            *_CUSTOM_JOB_IDS,
             "srv::one",
             "srv::two",
         ]
@@ -307,7 +315,82 @@ class TestHandshakeNeverDefer:
         wire = self._caps(monkeypatch, {"tools": ["@kirocrew-core", "@srv/one"]}, agent="mine")
         assert seen == ["mine"]
         assert wire["enabled"] is False
-        assert wire["neverDefer"] == ["kirocrew-core::mcp_server_wait", "srv::one"]
+        assert wire["neverDefer"] == [*_CUSTOM_JOB_IDS, "srv::one"]
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            pytest.param({"tools": ["*"], "mcpServers": {"kirocrew-core": {}}}, id="star"),
+            pytest.param({"tools": "*", "mcpServers": {"kirocrew-core": {}}}, id="bare-star"),
+            pytest.param({"tools": ["@builtin", "@kirocrew-core"]}, id="builtin"),
+            pytest.param({"tools": ["tool_search", "@kirocrew-core"]}, id="named-loader"),
+        ],
+    )
+    @pytest.mark.parametrize("enabled", [True, False], ids=["tool-search-on", "tool-search-off"])
+    def test_a_custom_agent_that_grants_the_loader_keeps_the_spawn_tools_direct(
+        self, monkeypatch, spec, enabled
+    ):
+        """The common hand-written agent, ``"tools": ["*"]``, grants the loader, so it
+        never reached the loaderless branch: on that path a custom agent has no
+        ``JOB_TOOLS`` row and every Crew tool, ``spawn_run`` included, sat behind
+        the loader. Its spawn tools are now its job tools, whatever the toggle says."""
+        from kiro_crew.acp import runtime_spawn_launch
+
+        monkeypatch.setattr(
+            runtime_spawn_launch, "crew_added_servers", lambda agent, spec: ("kirocrew-core",)
+        )
+        wire = self._caps(monkeypatch, spec, agent="mine", enabled=enabled)
+        assert wire["enabled"] is enabled
+        assert wire["neverDefer"] == _CUSTOM_JOB_IDS
+
+    def test_a_custom_agent_that_lists_only_built_ins_gains_the_spawn_tools(self, monkeypatch):
+        """``"tools": ["fs_read", "fs_write", "execute_bash"]`` names no Crew tool, so
+        Crew adds ``@kirocrew-core`` whole (``with_default_crew_servers``): the spec
+        mounts the spawn tools, and the custom row lists them up front. Its own
+        built-ins are not MCP tools and stay off the list."""
+        from kiro_crew.acp import runtime_spawn_launch
+
+        monkeypatch.setattr(
+            runtime_spawn_launch, "crew_added_servers", lambda agent, spec: ("kirocrew-core",)
+        )
+        spec = {
+            "tools": ["fs_read", "fs_write", "execute_bash", "@kirocrew-core"],
+            "mcpServers": {"kirocrew-core": {}},
+        }
+        wire = self._caps(monkeypatch, spec, agent="mine")
+        assert wire["enabled"] is False
+        assert wire["neverDefer"] == _CUSTOM_JOB_IDS
+
+    def test_a_custom_agent_that_names_one_crew_tool_does_not_gain_the_spawn_tools(
+        self, monkeypatch
+    ):
+        """A per-tool grant keeps its narrowing: only what the author named is direct."""
+        from kiro_crew.acp import runtime_spawn_launch
+
+        monkeypatch.setattr(
+            runtime_spawn_launch, "crew_added_servers", lambda agent, spec: ("kirocrew-core",)
+        )
+        for tools in (["@kirocrew-core/memory_recall"], ["*", "@kirocrew-core/memory_recall"]):
+            spec = {"tools": tools}
+            wire = self._caps(monkeypatch, spec, agent="mine")
+            if "*" in tools:
+                # ``"*"`` covers only the servers in ``mcpServers``, and this spec declares none.
+                assert "neverDefer" not in wire
+            else:
+                assert wire["neverDefer"] == ["kirocrew-core::memory_recall"]
+
+    def test_a_custom_agent_without_crew_s_server_gains_nothing(self, monkeypatch):
+        """``excludedTools: ["@kirocrew-core"]`` is an opt-out: Crew adds no server, so
+        ``crew_added_servers`` answers nothing and the wire is the one main sent."""
+        spec = {"tools": ["*"], "excludedTools": ["@kirocrew-core"]}
+        wire = self._caps(monkeypatch, spec, agent="mine")
+        assert wire == {"enabled": True, "minPct": 5, "minTokens": 50_000}
+
+    def test_a_shipped_agent_with_no_row_still_defers(self, monkeypatch):
+        """Not a custom agent, so ``crew_added_servers`` answers nothing for it."""
+        spec = {"tools": ["*"], "mcpServers": {"kirocrew-core": {}}}
+        wire = self._caps(monkeypatch, spec, agent="kirocrew-research")
+        assert wire == {"enabled": True, "minPct": 5, "minTokens": 50_000}
 
     def test_a_host_that_does_not_read_the_channel_is_not_asked(self, monkeypatch):
         from kiro_crew.acp import runtime_spawn_launch

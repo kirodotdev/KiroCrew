@@ -2396,7 +2396,18 @@ loop). Guard (B) and the KAS route's missing-definition refusal
 (`apps.manager_lookup.missing_agent_reason`, for an agent no app declares) give
 that remedy too. A published `<agent>--readonly` side spec is the exception: its refusal
 explains the derived spec and names the base agent
-(`side_readonly_spec.unavailable_mode_explanation`; see [side.md](side.md)). Guard (C): the shared runtime asks its harness
+(`side_readonly_spec.unavailable_mode_explanation`; see [side.md](side.md)).
+On the Kiro CLI harness (the three raise sites pass `kiro_cli_engine`, true only
+there: `runtime_session_create`, `runtime_session_load` with
+`self._harness.backend == ACP_BACKEND_KIRO`, and `client_start`'s Kiro arm), a
+present file that sets `permissions`, `excludedTools` or `includePowers` and
+neither `allowedTools` nor `toolsSettings` gets a different answer: if
+`kiro-cli agent list` marks it `(v3 format)`, it is an agent for kiro-cli's v3
+engine, and the remedy is to spawn it with backend `kas` when a spawn naming
+`kas` would be admitted here (`kiro_on_kas_notice.kas_backend_offered`), else
+the remedy says that no backend offered on this host runs kiro-cli's v3 engine.
+`kiro-cli agent validate` passes such a file, so it is not offered there. The fields only decide
+when that sentence shows; the cause it names is what kiro-cli itself reports. Guard (C): the shared runtime asks its harness
 `activation_refusal(agent, resp)` (harness-parity H13: a seam, not a backend
 test); the spawn-time hosts answer `None`, and the KAS harness reads the
 advertised entry's `_meta.kiro.resource.source.origin`

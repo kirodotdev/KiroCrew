@@ -63,6 +63,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     METHOD_SESSION_NEW,
@@ -1228,7 +1229,11 @@ async def _finish_create_session(
     elif mode_agent:
         _ids, _current, _adv = parse_session_modes(resp)
         await self.terminate_session(session_id)
-        cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, mode_agent)
+        cause, remedy = await asyncio.to_thread(
+            unavailable_mode_explanation,
+            mode_agent,
+            kiro_cli_engine=self._harness.backend == ACP_BACKEND_KIRO,
+        )
         raise AcpRuntimeError(
             f"Agent mode {mode_agent!r} is not available on this session "
             f"(advertised modes: {_ids or 'none'}); {cause} Refusing to run "
