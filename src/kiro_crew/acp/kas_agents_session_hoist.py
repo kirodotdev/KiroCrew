@@ -20,6 +20,7 @@ from kiro_crew.acp.kas_agents_mcp_servers import MANAGED_MCP_SERVER_NAMES
 from kiro_crew.acp.kas_app_identity import TOKENED_ENV_KEYS_KEPT as _TOKENED_ENV_KEYS_KEPT
 from kiro_crew.acp.kas_app_identity import tokened_app_element, without_noop_restrictions
 from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation
+from kiro_crew.acp.kas_settings_mcp import CREW_SETTINGS_MCP_KEY, KIRO_CLI_MCP_TIMEOUT_MS
 
 logger = logging.getLogger("kiro_crew.acp.kas_agents")
 
@@ -78,7 +79,8 @@ def hoist_servers_for_session(
     Only managed declarations move; user-declared ones stay in the block on
     ``session/new`` and ``session/load`` alike, where KAS launches them and reads
     their ``timeout`` (a session-level element gets KAS's 60 s unless its
-    ``_meta.kiro`` names one the engine reads; only Crew's own elements carry one).
+    ``_meta.kiro`` names one the engine reads; only Crew's own elements and the
+    pooled broker stubs carry one).
 
     Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
     entry over a same-named global or workspace ``mcp.json`` server on
@@ -168,7 +170,10 @@ def hoist_servers_for_session(
     pinned to legacy version negotiation and kiro-cli's 120 s connect timeout
     (:func:`_pin_legacy_negotiation`) and placed ahead of every other entry
     (:func:`_managed_first`), because KAS starts servers in array order and
-    session start waits for Crew's own.
+    session start waits for Crew's own. Every pooled broker stub in it gets its
+    server's own connect timeout there, else the active agent's block default
+    (``_crewSettingsMcp``, :func:`kas_settings_mcp.stamp_settings_mcp`), else
+    kiro-cli's 120 s for an agent that carries no stamp.
     """
     if not custom_agents:
         # The kiro path (no wire payload) returns here without importing the
@@ -177,6 +182,10 @@ def hoist_servers_for_session(
     from kiro_crew.acp.session_mcp import acp_server_element
     from kiro_crew.agent import with_managed_launch
 
+    stamp = next(
+        (a.get(CREW_SETTINGS_MCP_KEY) for a in custom_agents if a.get("id") == agent_id), None
+    )
+    stub_ms = stamp["timeout"] if isinstance(stamp, dict) else KIRO_CLI_MCP_TIMEOUT_MS
     apps = app_launches or {}
     taken = {
         str(entry.get("name"))
@@ -258,7 +267,7 @@ def hoist_servers_for_session(
         out_agents.append(copied)
     if not hoisted:
         agents = out_agents if relaunched_in_block else custom_agents
-        return agents, _pin_legacy_negotiation(_managed_first(session_servers))
+        return agents, _pin_legacy_negotiation(_managed_first(session_servers), stub_ms)
     hoisted.sort(key=lambda element: element["name"])
     if session_token:
         # Deferred like session_mcp above: the kiro path returns before this, and
@@ -279,7 +288,9 @@ def hoist_servers_for_session(
                 )
             tokened.append(element)
         hoisted = tokened
-    return out_agents, _pin_legacy_negotiation(_managed_first([*session_servers, *hoisted]))
+    return out_agents, _pin_legacy_negotiation(
+        _managed_first([*session_servers, *hoisted]), stub_ms
+    )
 
 
 def _is_managed_local_launch(name: str, entry: Mapping[str, Any]) -> bool:
