@@ -1369,7 +1369,8 @@ describe('retryFailureCode', () => {
 describe('registry install trust gate — permanent desktop refusal', () => {
   const REFUSAL =
     'Python apps that require a build step are not supported in Kiro Crew\'s desktop ' +
-    'build: its bundled interpreter is inside the signed application bundle and cannot install packages'
+    'build: the build step installs packages into Kiro Crew\'s own interpreter, which is ' +
+    'inside the signed application bundle and cannot be installed into.'
 
   beforeEach(() => {
     listRegistry.mockResolvedValue({

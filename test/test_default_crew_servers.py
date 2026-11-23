@@ -181,6 +181,8 @@ class TestHelper:
             # Every MCP server, and every tool.
             {"excludedTools": ["@*"]},
             {"excludedTools": ["*"]},
+            # KAS's own name for every MCP tool, which a v3 agent file may use.
+            {"excludedTools": ["@mcp"]},
             # A permissions deny of every MCP tool, or of each server whole.
             {"permissions": {"rules": [{"capability": "mcp", "effect": "deny"}]}},
             {"permissions": {"rules": [{"capability": "all", "effect": "deny", "match": []}]}},

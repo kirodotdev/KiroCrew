@@ -106,10 +106,11 @@ class TestSharedHelper:
             listed.append(parent)
             return nullcontext(iter(SimpleNamespace(name=name) for name in entries))
 
-        # Scoped to the one call: ``os.scandir`` is process-wide, and fixture
-        # teardown (``tmp_path`` cleanup) must still list real directories.
+        # On env's own ``os`` binding, scoped to the one call: ``env.os`` is the
+        # worker's stdlib ``os``, which other modules, threads and fixture
+        # teardown (``tmp_path`` cleanup) must still see unpatched.
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(env.os, "scandir", _scandir)
+            mp.setattr(env, "os", SimpleNamespace(**{**vars(os), "scandir": _scandir}))
             repaired = _windows_casing(raw)
         assert repaired == str(tmp_path / "bin" / expected_name)
         assert listed == [str(tmp_path / "bin")], "the helper did not read the faked listing"

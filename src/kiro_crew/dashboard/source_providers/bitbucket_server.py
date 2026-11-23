@@ -366,7 +366,33 @@ def _file_rows(changes: Any, diff: Any, partial: list[str]) -> list[dict[str, An
     return rows
 
 
-def _comment_rows(client: _Client, activities: Any, partial: list[str]) -> list[dict[str, Any]]:
+def _cleared_accounts(pr: dict[str, Any]) -> set[str]:
+    """Accounts the pull request itself reads as having no verdict (``UNAPPROVED``).
+
+    Clearing "needs work" writes no activity, so only ``reviewers[].status`` and
+    ``participants[].status`` on the pull request show it. An account any list
+    shows with another status keeps its verdict.
+    """
+    cleared: set[str] = set()
+    standing: set[str] = set()
+    for entry in (
+        *projection._as_list(pr.get("reviewers")),
+        *projection._as_list(pr.get("participants")),
+    ):
+        member = projection._as_dict(entry)
+        account = _account(member.get("user"))
+        if not account:
+            continue
+        if str(member.get("status") or "").upper() == "UNAPPROVED":
+            cleared.add(account)
+        else:
+            standing.add(account)
+    return cleared - standing
+
+
+def _comment_rows(
+    client: _Client, activities: Any, partial: list[str], pr: dict[str, Any]
+) -> list[dict[str, Any]]:
     """Flatten the activity stream into comment, inline and review rows, oldest first."""
     page = projection._as_dict(activities)
     if page.get("isLastPage", True) is False:
@@ -442,6 +468,14 @@ def _comment_rows(client: _Client, activities: Any, partial: list[str]) -> list[
                 }
             )
             verdicts.setdefault(_account(activity.get("user")), []).append(rows[-1])
+    # A reviewer the pull request reads as UNAPPROVED has no verdict, even when
+    # the stream still holds their REVIEWED entry (a cleared "needs work").
+    # shortcut: the pull request and the stream are read separately, so a review
+    # submitted between the two reads is dropped until the next fetch; compare
+    # activity dates with the pull request's if that window ever matters.
+    for account in _cleared_accounts(pr):
+        for row in verdicts.pop(account, []):
+            rows.remove(row)
     return rows
 
 
@@ -535,7 +569,7 @@ async def _fetch_pull_request(ref: SourceRef) -> dict[str, Any]:
             "changedFiles": len(files),
             "commits": _commit_rows(client, commit_page),
             "checks": checks,
-            "comments": _comment_rows(client, projection._or_empty(activities), partial),
+            "comments": _comment_rows(client, projection._or_empty(activities), partial, pr),
             "files": files,
             "partialSections": partial,
             "failedSections": failed,

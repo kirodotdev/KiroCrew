@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.dashboard import slot_window_release
 from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis
 
 AtomicWriter = Callable[..., None]
@@ -99,6 +101,7 @@ class DashboardPersistenceCoordinator:
     async def _flush_loop(self, owner: Any) -> None:
         """Periodically save dirty slots so a crash loses at most one interval."""
         shutdown_event = self._shutdown_event_provider()
+        last_release = time.monotonic()
         while not shutdown_event.is_set():
             try:
                 await asyncio.wait_for(shutdown_event.wait(), timeout=owner._FLUSH_INTERVAL)
@@ -114,6 +117,15 @@ class DashboardPersistenceCoordinator:
 
             for slot in list(owner._slots.values()):
                 apply_pending_slot_memory_mode(owner, slot)
+            # After the flush, so a window it just saved can be released now.
+            if time.monotonic() - last_release >= slot_window_release.RELEASE_INTERVAL_SECS:
+                last_release = time.monotonic()
+                try:
+                    slot_window_release.release_idle_windows(owner, now=time.time())
+                except Exception:
+                    self._logger_provider().warning(
+                        "Releasing idle chat windows failed", exc_info=True
+                    )
 
     def flush_slot_now(
         self, owner: Any, slot: Any, takeover_basis: TakeoverBasis | None = None

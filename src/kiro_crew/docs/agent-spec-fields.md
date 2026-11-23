@@ -1125,7 +1125,8 @@ memory tools use the store that session is bound to. It is skipped for a server
 when:
 
 - `managedToolPolicy.excludeServers` names it, or `excludedTools` names
-  `@<server>`, `@<server>/*`, `@*` (every MCP server) or `*` (the opt-out), or a
+  `@<server>`, `@<server>/*`, `@*` or `@mcp` (every MCP server; `@mcp` is KAS's
+  own name for it) or `*` (the opt-out), or a
   `permissions` rule denies the `mcp` or `all` capability with no `exclude`, for
   every resource or for `<server>/*` (read as written, even when the KAS
   projection refuses the block); a per-tool exclusion or deny such as

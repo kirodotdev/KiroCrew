@@ -16,6 +16,7 @@ from dashboard_handlers_core_coverage_helpers import _req
 from token_auth_helpers import clear_nonces  # noqa: F401 -- autouse, registers by import
 
 from kiro_crew import member_memory_auth as auth
+from kiro_crew.dashboard.crew_api_errors import CREDENTIAL_HINT
 from kiro_crew.dashboard.handlers import core as core_mod
 from kiro_crew.dashboard.token_auth import validate_token
 from kiro_crew.dashboard.token_auth_tokens import LINK_NOT_A_SESSION, validate_token_with_app
@@ -101,7 +102,7 @@ async def test_local_session_bearer_first_use_keeps_its_peer_and_expiry(
     assert ta.check_token_peer(token, "ip:127.0.0.1") == (True, "")
     replay = await middleware(_make_request(remote="127.0.0.2", **fields), _ok_handler)
     assert replay.status == 401
-    assert json.loads(replay.body)["error"]["message"] == "IP mismatch"
+    assert json.loads(replay.body)["error"]["message"] == f"IP mismatch {CREDENTIAL_HINT}"
     again = await middleware(_make_request(**fields), _ok_handler)
     assert again.status == 200
     assert len(bound) == 1

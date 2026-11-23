@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 import weakref
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -628,6 +629,13 @@ class DashboardState:
         # Web Push subscription store (browser push endpoints). State-owned like
         # the bus/limiter/settings so its lifecycle matches the gateway.
         self.push_subscription_store = PushSubscriptionStore()
+        # Notes waiting for Web Push, the one drain sending them, and how many a
+        # burst dropped since the drain last reported (dashboard_services).
+        self._web_push_queue: deque[dict[str, Any]] = deque(
+            maxlen=_dashboard_services._WEB_PUSH_QUEUE_MAX
+        )
+        self._web_push_drain: asyncio.Task[None] | None = None
+        self._web_push_dropped = 0
         # Notification bus (schema v2) — notify() adapts legacy calls onto it;
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         # The bridge runs after it, so a chat transport never delays the

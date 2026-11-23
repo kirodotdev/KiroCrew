@@ -60,8 +60,12 @@ const REPO = 'https://git.example.test/apps/agent-dashboard.git'
  *  its plain-language copy. */
 const REFUSAL =
   'Python apps that require a build step are not supported in Kiro Crew\'s desktop ' +
-  'build: its bundled interpreter is inside the signed application bundle and cannot ' +
-  'install packages'
+  'build: the build step installs packages into Kiro Crew\'s own interpreter, which is ' +
+  'inside the signed application bundle and cannot be installed into. A requirements.txt ' +
+  'needs that step too, except in the cases described in the backend.hooks section of ' +
+  'docs/app-kit/manifest-reference.md. A requirements.txt in an app that declares ' +
+  'backend.hooks always needs it, because hook code runs inside Kiro Crew and imports ' +
+  'from that interpreter.'
 /** The code the gate returns beside it: a permanent condition for this gateway. */
 const REFUSAL_CODE = 'desktop_build_step_unsupported'
 /** A reason the gateway does NOT mark permanent: a build that may well pass next time. */
@@ -306,10 +310,10 @@ async function capturePermanent(context, base) {
   // `reportInstallFailure` journals and shows it there. The MODAL is the surface
   // the user is looking at and the one whose footer decides the next action, so
   // the assertions are scoped to the modal and the banner is reported as a fact.
-  const pageHasReason = (await page.locator('body').innerText()).includes('bundled interpreter')
+  const pageHasReason = (await page.locator('body').innerText()).includes('signed application bundle')
   if (PREFIX === 'before') {
     if (!text.includes(GENERIC_BEFORE)) fail('the generic copy must be the whole message', text)
-    if (text.includes('bundled interpreter')) {
+    if (text.includes('signed application bundle')) {
       fail('the modal already shows the server reason, so this is not the BEFORE state', text)
     }
   } else {
