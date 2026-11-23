@@ -64,8 +64,10 @@ name: CodeQL
 # The action's source calls the variable "intended for internal use". A
 # version that stops reading it brings the two requests back and changes
 # nothing else, so test_ci_codeql_workflow_lint.py holds the variable to the
-# action commit it was read at, and runs the lint's four checks on this file
-# itself.
+# action commit it was read at. Nothing in this repository stands in for the
+# lint. It warned of four things: `github/codeql-action` steps on more than one
+# version, `pull_request` with no `push` trigger, a `git checkout HEAD^2` step,
+# and one language under two entries of the `language` matrix.
 on:
   pull_request:
     branches: [main]
