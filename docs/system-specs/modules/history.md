@@ -814,6 +814,7 @@ order, and pins that no owner imports the facade:
 | `chrome.tsx` | the sidebar's shared drawing atoms, used by the row and the render owners: the open-in-tab click predicate, the open chat row's side-panel re-click (`reclickTogglesPanel` and `reclickDoubleClick`, re-exported from `lib/reclickPanelToggle.ts`) and its tooltip (`reclickPanelTitle`, naming the live side-panel shortcut), `DisclosureChevron` (the sidebar's one disclosure grammar), the folder and divider chrome (the pinned-section divider, the folder body geometry and the text-control classes), and `dateSegment`, the date-segment label the flat lane and the Older Sessions pane head their groups with |
 | `CrewGroups.tsx` | the per-machine group chrome: the `Local` header, each crew group's header, badge, offline note and tunnel-error notice, and the collapsed-crew set |
 | `rows.ts` | the row model: the one declaration of every filter dimension and what each consumer derives from it (`filteredSlots`, `listNarrowed`, the reveal registry), the status-chip predicates and badge counts, the one lane order, the drag freeze, the split of the filtered rows between the `Local` lanes and the crew groups (each crew group's rows, the folder hide applied), the flat lane, the tree's ungrouped rows and per-folder rows, the board's pool (local rows the folder filter does not conceal), the dormant split's gates, and each rendered row's `SessionRowView` and window |
+| `rowStatus.ts` | the row-status store: the open session, the crew window, the crew-parent mark, Split View, a failed open and the unread keys, which each row selects its own answers from (`useRowStatus`: active, reclick, crew parent, unread, and whether the row below is active, for its divider), and the narrow reads the body takes of it (`useRowStatusSelect`, `useActiveRowAmong`) |
 | `search.ts` | the debounced backend session search, and the folder-name matches the search box adds |
 | `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer test on local folder state for the owners that hold their own lists |
 | `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, collapsed crews, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`, and two keys declared beside their own logic (`mc-pinned-session-order` in `utils/pinnedSessionOrder.ts`, `kc-board-folder-collapsed:*` in `utils/boardFolderCollapse.ts`); the session sort is not among them, being gateway config (`dashboard.session_sort`, see `sessionSort.ts`); and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips, the folders-shelved flag, the folders-unread-first flag (`mc-sidebar-folders-unread-first`) and the group-by-kind flag (`filters.tsx`); and the model filter's one key (`mc-session-model-filter`, its selection and direction) |
@@ -895,6 +896,22 @@ row and UI-location pins join the facade with the owner files; the switchSlot
 call-site table, the hover-state rows and the restyle ratchet name each owner file;
 `useInteractiveModels.test.ts` reads `bulkModelSwitch.tsx`; and
 `hoverVariantPolicy.test.ts` reads the row shell's touch flag here.
+
+**A chat switch.** The default export is a thin outer layer over the body
+(`ChatSidebarBody`, memoized). The outer layer takes `activeSlot`, `unreadSlots`,
+`canStageSessionRef` and `chatDropTarget`, the props a chat switch or the first open
+changes, and keeps them out of the body's props: the first two in the row-status
+store (the unread set keeps its identity while its members hold, because the chat
+page hands a new array on every switch), the other two in contexts. A switch
+therefore re-renders the rows whose highlight or divider changes and the window
+wrapper that keeps the open row mounted, not the body. The body reads the open
+session only where it changes the list's structure, each through a selector that
+answers null for every other session: a row the Slack setting hides
+(`crewModeView`), an aged unpinned row the dormant collapse would fold (and the
+just-left entry it records), a code-channel worker that must not fold, the cleanup
+panel while it is open, and a session drag (the drop zone's refusal; the drop
+re-reads the store). An unread change still re-renders the body, since the Unread
+chip, its count and the unread-first folder order depend on it.
 
 New sidebar code goes to the owner whose row above names its responsibility, not
 to `ChatSidebar.tsx`: a new filter dimension is one entry in `rows.ts`, and a new

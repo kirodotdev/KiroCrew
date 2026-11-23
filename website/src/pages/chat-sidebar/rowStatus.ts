@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useState, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { isPeerRow } from './rowIdentity'
 import type { Slot } from './types'
 
@@ -65,12 +65,16 @@ export interface RowStatusView {
   /** This row is the Crew Mode root whose worker the chat pane shows. */
   isCrewParent: boolean
   isUnread: boolean
+  /** The row drawn below this one is the active row. The divider under a row
+   *  hides when either side of it is the active row. */
+  nextIsActive: boolean
 }
 
-export function rowStatusOf(status: RowStatus, slot: Slot): RowStatusView {
+export function rowStatusOf(status: RowStatus, slot: Slot, next: Slot | null = null): RowStatusView {
   const local = localKey(slot)
   const isActive = isActiveIn(status, slot)
   return {
+    nextIsActive: next !== null && isActiveIn(status, next),
     isActive,
     isSidebarActiveSlot: local !== null && status.activeSlot === local,
     reclickPanel: local !== null && !status.splitMode && !status.openFailed && isActive,
@@ -125,18 +129,57 @@ export function useRowStatusStore(status: RowStatus): RowStatusStore {
   return store
 }
 
-/** This row's answers from the nearest store. */
-export function useRowStatus(slot: Slot): RowStatusView {
+/** One value derived from the nearest store. `select` must return a primitive (or
+ *  the same object while its answer holds), because the caller re-renders whenever
+ *  the selection changes by `Object.is`. The structure above the rows uses this to
+ *  hear only of the changes that move it (see ChatSidebar). */
+export function useRowStatusSelect<T>(select: (status: RowStatus) => T): T {
   const store = useContext(RowStatusContext)
-  const getSnapshot = useCallback(() => packView(rowStatusOf(store.get(), slot)), [store, slot])
+  const getSnapshot = useCallback(() => select(store.get()), [store, select])
+  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot)
+}
+
+/** Selectors for `useRowStatusSelect`, at module level so their identity is stable. */
+export const selectUnread = (st: RowStatus): ReadonlySet<string> => st.unread
+export const selectActiveSlot = (st: RowStatus): string | null => st.activeSlot
+export const selectNoSlot = (): string | null => null
+
+/** The active row among `rows`, or null when it is none of them. The list's
+ *  structure reads the active row only where it changes the structure (a row
+ *  that would otherwise be hidden, folded or collapsed), so it passes just those
+ *  rows and re-renders only when the open session enters or leaves them. Pass a
+ *  memoized array: a new one re-runs the selection. */
+export function useActiveRowAmong(rows: readonly Slot[]): Slot | null {
+  const select = useCallback((st: RowStatus) => {
+    for (const r of rows) if (isActiveIn(st, r)) return r
+    return null
+  }, [rows])
+  return useRowStatusSelect(select)
+}
+
+/** `keys` as a set that keeps its identity while its members do not change, so a
+ *  new array with the same keys (the caller recomputes it on every chat switch)
+ *  does not reach the rows as a change. */
+export function useStableKeySet(keys: readonly string[]): ReadonlySet<string> {
+  const ref = useRef<ReadonlySet<string>>(NO_UNREAD)
+  const prev = ref.current
+  if (keys.some(k => !prev.has(k)) || new Set(keys).size !== prev.size) ref.current = new Set(keys)
+  return ref.current
+}
+
+/** This row's answers from the nearest store. `next` is the row drawn below it
+ *  when a divider may separate the two, else null. */
+export function useRowStatus(slot: Slot, next: Slot | null = null): RowStatusView {
+  const store = useContext(RowStatusContext)
+  const getSnapshot = useCallback(() => packView(rowStatusOf(store.get(), slot, next)), [store, slot, next])
   return unpackView(useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot))
 }
 
 // One number per row, so the snapshot compares by value: bit 0 active, 1 sidebar
-// active, 2 reclick, 3 crew parent, 4 unread.
+// active, 2 reclick, 3 crew parent, 4 unread, 5 next row active.
 function packView(v: RowStatusView): number {
-  return (v.isActive ? 1 : 0) | (v.isSidebarActiveSlot ? 2 : 0) | (v.reclickPanel ? 4 : 0) | (v.isCrewParent ? 8 : 0) | (v.isUnread ? 16 : 0)
+  return (v.isActive ? 1 : 0) | (v.isSidebarActiveSlot ? 2 : 0) | (v.reclickPanel ? 4 : 0) | (v.isCrewParent ? 8 : 0) | (v.isUnread ? 16 : 0) | (v.nextIsActive ? 32 : 0)
 }
 function unpackView(n: number): RowStatusView {
-  return { isActive: !!(n & 1), isSidebarActiveSlot: !!(n & 2), reclickPanel: !!(n & 4), isCrewParent: !!(n & 8), isUnread: !!(n & 16) }
+  return { isActive: !!(n & 1), isSidebarActiveSlot: !!(n & 2), reclickPanel: !!(n & 4), isCrewParent: !!(n & 8), isUnread: !!(n & 16), nextIsActive: !!(n & 32) }
 }
