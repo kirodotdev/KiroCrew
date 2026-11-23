@@ -19,7 +19,8 @@ Instance fields read: ``_config_options``, ``_runtime``,
 ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
 ``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
 ``_tool_call_tool_name``, ``kas_crew_answered``, ``kas_crew_answered_commands``,
-``kas_hook_held``, ``kas_spec_denies``, ``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``,
+``kas_hook_held``, ``kas_parent_limits``, ``kas_spec_denies``, ``kas_spec_shell_allowlist``,
+``kas_spec_write_allowlist``,
 ``kas_spec_shell_readonly``, ``kas_spec_unjudged_denies``, ``kas_crew_answered_paths``,
 ``kas_crew_answered_read_paths``, ``_bound_cwd``, ``mirror_used``, ``spec_denied_tools``, ``spec_zero_tools``.
 """
@@ -854,6 +855,42 @@ def _denies_only(value: Any) -> SpecDeniedGrant | None:
     return dataclasses.replace(record, builtins=frozenset(), commands=(), web_fetch_trusted=())
 
 
+def _stamp_parent_grants(handle: AcpSessionHandle, event: AcpEvent) -> None:
+    """Stamp the session agent's GRANTS on the shipped helper's request.
+
+    The fields the session's own request carries beside its limits
+    (``_build_permission_event``), read from the same handle, so the gate judges
+    the helper's call by the rule text it judges its parent's by. Called after the
+    KAS branch of ``_build_permission_event`` stamped the limits and the deny
+    record's denies (:func:`_denies_only`), whose record this replaces with the whole one.
+    """
+    event.spec_granted_builtins = frozenset(getattr(handle, "kas_crew_answered", ()))
+    event.spec_hook_held = frozenset(getattr(handle, "kas_hook_held", ()))
+    event.spec_granted_commands = tuple(getattr(handle, "kas_crew_answered_commands", ()))
+    event.spec_denied_grant = getattr(handle, "kas_spec_denies", None)
+    event.spec_granted_paths = tuple(getattr(handle, "kas_crew_answered_paths", ()))
+    event.spec_granted_read_paths = tuple(getattr(handle, "kas_crew_answered_read_paths", ()))
+
+
+def _child_is_the_shipped_helper(handle: AcpSessionHandle) -> bool:
+    """Whether a native child of this session can only be Kiro Crew's own helper.
+
+    Requires the host memory that the registration mounted the shipped helper for
+    the agent the session runs now (``kas_shipped_helper_parent``, written with the
+    batch by ``KasHarness.record_session_projection``); a name, a batch id or a rule
+    value alone is not proof. Then read from the batch the session registered
+    (``kas_engine_subagent_target.helper_is_the_only_child``). The helper's entry
+    is built from its parent's, so its call is judged as its parent's is. Any
+    other native child runs another agent's spec and gets the limits alone.
+    """
+    agent = str(getattr(handle, "kas_projected_agent", "") or "")
+    if not agent or getattr(handle, "kas_shipped_helper_parent", "") != agent:
+        return False
+    from kiro_crew.acp.kas_engine_subagent_target import helper_is_the_only_child
+
+    return helper_is_the_only_child(getattr(handle, "kas_registered_agents", None), agent)
+
+
 def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpEvent | None:
     """Build an AcpEvent for a permission request via the shared parser.
 
@@ -935,6 +972,9 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         event.spec_write_allowlist = getattr(self, "kas_spec_write_allowlist", None)
         event.spec_write_cwd = str(getattr(self, "_bound_cwd", "") or "")
         event.spec_unjudged_denies = tuple(getattr(self, "kas_spec_unjudged_denies", ()))
+        # The denies of every session above a held sub-agent run bind its own
+        # requests and its native sub-agents' alike.
+        event.spec_parent_limits = tuple(getattr(self, "kas_parent_limits", ()))
         denies = getattr(self, "kas_spec_denies", None)
         if _is_native_child_call(self, event):
             # A native KAS sub-agent's call carries this session's id, so mark it:
@@ -943,6 +983,12 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
             # none of this agent's grants.
             event.native_child_call = True
             event.spec_denied_grant = _denies_only(denies)
+            # Kiro Crew's own helper, whose entry is built from its parent's, is
+            # given this agent's grants too, and its deny record whole. A request
+            # naming no tool call counts as a child's for want of proof and keeps
+            # no grant.
+            if event.tool_call_id and _child_is_the_shipped_helper(self):
+                _stamp_parent_grants(self, event)
         else:
             # What this session's own agent granted and the KAS policy kept at
             # ask, so the gate can answer the request itself after its checks.

@@ -574,15 +574,15 @@ def test_the_projection_drops_the_record_when_allowed_tools_names_the_shell() ->
 @pytest.mark.parametrize(
     "denied",
     [
-        [r"^git (commit|push).*$"],
-        ["rm .*", r"^git (commit|push).*$"],
+        [r"^git commit.*|git push.*$"],
+        ["rm .*", r"^git commit.*|git push.*$"],
         ["cat .* > .*"],
         "rm .*",
         [7],
     ],
 )
 def test_a_denied_command_that_does_not_travel_keeps_the_allowlist(denied: Any) -> None:
-    """A ``deniedCommands`` entry with no KAS deny rule (grouped regex, a redirect,
+    """A ``deniedCommands`` entry with no KAS deny rule (top-level alternation, a redirect,
     a malformed value) lives only in the spec. Lifting ``denyByDefault`` would let
     the command it names run, so the allowlist stays even though ``allowedTools``
     names the shell."""
@@ -629,3 +629,56 @@ def test_a_deny_with_an_exclude_does_not_count_as_carried() -> None:
     assert shell_denies_carried(settings, {"rules": [narrowed]}) is False
     whole = {"capability": "shell", "match": ["git *"], "effect": "deny"}
     assert shell_denies_carried(settings, {"rules": [narrowed, whole]}) is True
+
+
+# ── a deny KAS receives split into branches ───────────────────────────────────
+
+#: kiro-cli's upgrade of this file writes ``allow shell ["git status*"]``, the split
+#: deny, ``deny shell ["*"] exclude ["git status*"]`` and ``allow shell``: every
+#: command but ``git status`` is refused by the engine without a prompt.
+_SPLIT_SETTINGS: dict[str, Any] = {
+    "execute_bash": {
+        "denyByDefault": True,
+        "allowedCommands": ["git status.*"],
+        "deniedCommands": ["(touch|mkdir) .*"],
+    }
+}
+
+
+@pytest.mark.parametrize("denied", ["(touch|mkdir) .*", "touch .*|mkdir .*"])
+def test_a_split_deny_keeps_the_allowlist_when_allowed_tools_names_the_shell(denied: str) -> None:
+    settings = {"execute_bash": {**_SPLIT_SETTINGS["execute_bash"], "deniedCommands": [denied]}}
+    out = kas_agents.to_client_custom_agent(
+        "probe", _spec(toolsSettings=settings, allowedTools=["execute_bash"]), "p"
+    )
+    assert out[CREW_SHELL_ALLOWLIST_KEY] == ["git status.*"]
+    # The deny still travels to the engine as one glob per branch.
+    assert {"capability": "shell", "match": ["touch *", "mkdir *"], "effect": "deny"} in out[
+        "permissions"
+    ]["rules"]
+    event = _own_request("cp seed copy", settings, allowedTools=["execute_bash"])
+    verdict = _judge(event)
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-shell-allowlist")
+    reason = permission_floor.refusal_for(event, session_key="cron:probe", security_only=False)
+    assert reason is not None and "denyByDefault" in reason
+    listed = _own_request("git status --short", settings, allowedTools=["execute_bash"])
+    assert _judge(listed).tier != "spec-shell-allowlist"
+
+
+def test_a_split_deny_records_no_read_only_pass() -> None:
+    """``autoAllowReadonly`` beside a split deny stays as with an uncarried one: the
+    read-only pass is not recorded, so the allowlist alone decides."""
+    from kiro_crew.acp.kas_permissions import CREW_SHELL_READONLY_KEY
+
+    settings = {"execute_bash": {**_SPLIT_SETTINGS["execute_bash"], "autoAllowReadonly": True}}
+    out = kas_agents.to_client_custom_agent("probe", _spec(toolsSettings=settings), "p")
+    assert out[CREW_SHELL_ALLOWLIST_KEY] == ["git status.*"]
+    assert CREW_SHELL_READONLY_KEY not in out
+
+
+def test_an_empty_allowlist_beside_a_split_deny_refuses_every_command() -> None:
+    settings = {"execute_bash": {"denyByDefault": True, "deniedCommands": ["(rm|shred) .*"]}}
+    event = _own_request("ls", settings, allowedTools=["execute_bash"])
+    assert event.spec_shell_allowlist == ()
+    verdict = _judge(event)
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-shell-allowlist")

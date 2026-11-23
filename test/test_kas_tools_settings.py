@@ -103,9 +103,9 @@ class TestTranslation:
         } in rules
 
     def test_denied_commands_become_shell_denies(self):
-        rules = _rules({"execute_bash": {"deniedCommands": ["git push .*", "(a|b)"]}})
+        rules = _rules({"execute_bash": {"deniedCommands": ["git push .*", "(a|b)+"]}})
         assert rules == [{"capability": "shell", "match": ["git push *"], "effect": "deny"}]
-        assert _lost({"execute_bash": {"deniedCommands": ["(a|b)"]}}) == [
+        assert _lost({"execute_bash": {"deniedCommands": ["(a|b)+"]}}) == [
             "execute_bash.deniedCommands"
         ]
 
@@ -505,3 +505,32 @@ def test_fail_closed_reads_the_gateways_last_applied_config(tmp_path, _floor_mon
     path.write_text(_FLAG_ON[:30], encoding="utf-8")
     _floor_monkeypatch.setattr(live, "snapshot", lambda: applied)
     assert fails_closed_on_uncarried_blocked() is False
+
+
+class TestTranslationModuleSplit:
+    """The translation lives in ``kas_permissions_tools_settings``; ``kas_permissions``
+    stays the path every caller and patch uses."""
+
+    _MOVED = (
+        "_REDIRECT_CHARACTERS",
+        "_REGEX_METACHARACTERS",
+        "_chunked_rules",
+        "_patterns",
+        "_regex_to_glob",
+        "_url_glob",
+        "tools_settings_to_permissions",
+    )
+
+    @pytest.mark.parametrize("name", _MOVED)
+    def test_kas_permissions_re_exports_the_same_object(self, name):
+        from kiro_crew.acp import kas_permissions, kas_permissions_tools_settings
+
+        assert getattr(kas_permissions, name) is getattr(kas_permissions_tools_settings, name)
+
+    def test_a_patch_through_kas_permissions_reaches_the_moved_translation(self, monkeypatch):
+        """Only the ``kas_permissions`` binding is patched, as callers patch it."""
+        from kiro_crew.acp import kas_permissions
+
+        monkeypatch.setattr(kas_permissions, "fails_closed_on_uncarried_blocked", lambda: True)
+        settings = {"web_fetch": {"blocked": [r"https://evil\.com/.*"]}}
+        assert _rules(settings) == [{"capability": "web_fetch", "match": ["*"], "effect": "deny"}]

@@ -24,7 +24,10 @@ if TYPE_CHECKING:
         sel,
         session_directive,
     )
-    from kiro_crew.dashboard.chat_turn.deny_chokepoints import _steer_repeat_loop_notice
+    from kiro_crew.dashboard.chat_turn.deny_chokepoints import (
+        _redact_display_text,
+        _steer_repeat_loop_notice,
+    )
     from kiro_crew.dashboard.chat_turn.directives import (
         unverified_directive_notice,
         unverified_directive_outcome,
@@ -974,3 +977,61 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             state, slot, client, session_key
         )
         turn._compact_after_turn_noticed = _compact_after_turn_noticed
+
+
+async def _on_child_tool_finished(turn: _ChatTurn, event) -> None:
+    """Audit a native sub-agent's FINISHED call and fire PostToolUse for it, as for the turn's own.
+
+    Only an activity event the session marked finished (``acp.kas_child_finished``)
+    carries the call's outcome, once per call. The same redaction, output cut and
+    names as :func:`_on_tool_result`'s fire; the hooks' output is dropped in both,
+    so it never reaches the model.
+
+    The audit row is the one a call of the turn's own gets at its ``tool_call``
+    frame (``tool_rows``): a child's frames reach the turn as activity only, so a
+    call the engine ran without a permission request would otherwise leave none.
+    It holds the redacted title and the kind, as that row does, and no argument.
+    """
+    from kiro_crew.agent_sdk.kas_child_finished import is_finished_child_call
+    from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
+    from kiro_crew.hook_output import bounded_hook_output
+    from kiro_crew.platform.context import redact_log_via_context
+
+    if not is_finished_child_call(event, turn.client):
+        return
+    _raw = getattr(event, "hook_subject", "") or ""
+    if _raw.startswith("Running: "):
+        _raw = _raw[9:]
+    try:
+        sel().log_tool_invocation(
+            session_key=getattr(turn, "session_key", "") or "",
+            agent=getattr(getattr(turn, "slot", None), "agent", "") or "kirocrew",
+            source="dashboard",
+            # Scanned in full, then cut to the row's bound: the handle keeps the title
+            # past it, and a cut before a scan could split a credential.
+            tool_name=redact_log_via_context(_redact_display_text(event.title or ""))[:512],
+            tool_kind=getattr(event, "tool_kind", "") or "",
+            outcome="invoked",
+            metadata={"sub_agent": True, "status": str(event.tool_status or "")},
+        )
+    except Exception:
+        logger.debug("SEL audit failed for a sub-agent call", exc_info=True)
+    # The id the call's permission request named it by, when it raised one.
+    _named = post_tool_identity(
+        turn.client,
+        event,
+        is_shell=bool(event.is_shell),
+        earlier=turn._pending_tool_ids.pop(event.tool_call_id, None),
+    )
+    try:
+        await _fire(
+            turn,
+            HOOK_EVENT_POST_TOOL_USE,
+            tool_name=_raw,
+            tool_response=bounded_hook_output(_redact_tool_field(event.tool_output)),
+            tool_id=(_named.tool_id or None) if _named else None,
+            tool_identity=_named.tool_identity if _named else "",
+            mcp_server=_named.mcp_server if _named else "",
+        )
+    except Exception:
+        logger.debug("PostToolUse hook error on a sub-agent call", exc_info=True)

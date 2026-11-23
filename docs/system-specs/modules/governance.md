@@ -1505,7 +1505,15 @@ because no written grant consulted it. A profile is saved by editing a file, whi
 distribution poll observes, and a host without central distribution has no poll at all, so
 the gateway runs its own **profile watch**: every `_PROFILE_PROJECTION_POLL_S` (15 s), off
 the event loop, `agent.reproject_for_profile_change` re-stats the directory and calls the
-hook when the answer differs from the one the memo records. A projection that does not land
+hook when the answer differs from the one the memo records. A re-stat that reloads the store to
+the snapshot it already holds is not a difference: the profile generation moves only when the
+published snapshot differs from the one it replaces (`governance_profiles._publish_snapshot`).
+On a fresh data home the directory does not exist at boot and the first sandboxed spawn
+creates it empty, so its read-only seal has a target; that reload, a `chmod`, or a rewrite with
+the same bytes leaves the answer, and so the watch, alone. Counting that reload as a move would
+have the first tick after a fresh start rebuild the agent config for no governance change and
+replace the files the sandbox pins under any hook starting in that second
+(`test/test_rebuild_keeps_pinned_files.py`). A projection that does not land
 (a declined rebuild or a held spec, each of which logs a refusal and an audit event per
 attempt) is retried by the watch every `agent._PROFILE_WATCH_RETRY_S` (an hour) rather than
 every tick, and one whose rebuild raised after `agent._PROFILE_WATCH_RAISE_RETRY_S` (five
@@ -4018,7 +4026,8 @@ status tick rather than waiting out the cache's stale window.
 **And follows a profile-layer edit.** The value in that frame is
 `governance_profiles.governance_answer_generation()`, which is
 `context.governance_generation()` plus a module-private `_profile_generation()`
-bumped whenever `ProfileStore._ensure_fresh` publishes a new snapshot. The field's
+bumped whenever `ProfileStore._ensure_fresh` publishes a snapshot that differs from the one it
+replaces (a reload to an equal snapshot decides nothing and moves nothing). The field's
 contract is unchanged — it stays an opaque, comparison-only integer, so combining two
 monotonic counters is not a change of meaning and no consumer needs to know. This
 exists because the ceiling counter alone missed Level-2 edits: a profile file

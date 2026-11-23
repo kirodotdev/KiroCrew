@@ -1397,6 +1397,29 @@ def _reset_persisted_truncation_reports():
 
 
 @per_test_guard
+def _reset_kas_parent_notes():
+    """Start each test with no noted sub-agent run parents.
+
+    Every manager run notes the session that started it, keyed by run key. Tests
+    reuse run keys, so a parent one test noted would join the next test's run and
+    hold it to an unrelated agent's denies. The directory noted for a parent goes
+    with it: it would anchor the next test's limits in a folder of this one.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.acp.kas_parent_limits")
+        if module is not None:
+            module._NOTED.clear()
+            module._NOTED_DIRS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_chromium_opt_in_record():
     """Start each test with no browser pid already opted in to page content.
 

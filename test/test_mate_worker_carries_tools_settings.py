@@ -530,9 +530,9 @@ def test_the_gate_has_no_result_a_trusted_session_must_hand_to_a_person() -> Non
 @pytest.mark.parametrize(
     "pattern",
     [
-        "(touch|mkdir).*" + GATE_JUDGED_MARK,
-        GATE_JUDGED_MARK + "(touch|mkdir).*",
-        "(touch|mkdir).* (past the first 64)",
+        "touch.*|mkdir.*" + GATE_JUDGED_MARK,
+        GATE_JUDGED_MARK + "touch.*|mkdir.*",
+        "touch.*|mkdir.* (past the first 64)",
     ],
 )
 def test_authored_notice_text_never_classifies_a_deny(bot, work, tmp_path, alias, pattern):
@@ -551,7 +551,7 @@ def test_authored_notice_text_never_classifies_a_deny(bot, work, tmp_path, alias
 def test_notice_renders_structured_denies_without_reclassifying_authored_text():
     from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
 
-    raw = "(touch|mkdir).*" + GATE_JUDGED_MARK
+    raw = "(touch.*|mkdir.*)+" + GATE_JUDGED_MARK
     lost = kas_agents.spec_keys_without_carrier(
         {"toolsSettings": {"shell": {"deniedCommands": [raw]}}},
         translates_tools_settings=True,
@@ -597,7 +597,7 @@ async def test_session_extras_attaches_unjudged_denies_only_to_the_worker(
     from kiro_crew import agent as agent_mod
     from kiro_crew.agent_sdk import kas_model_catalog
 
-    settings = {"shell": {"deniedCommands": ["(touch|mkdir).*"]}}
+    settings = {"shell": {"deniedCommands": ["touch.*|mkdir.*"]}}
     bot(settings)
     spec = {**WORKER_BASE, "name": agent}
     if agent != WORKER:
@@ -611,7 +611,7 @@ async def test_session_extras_attaches_unjudged_denies_only_to_the_worker(
     own = next(entry for entry in extras.custom_agents if entry["id"] == agent)
     if agent == WORKER:
         record = own[CREW_UNJUDGED_DENIES_KEY]
-        assert [item["entry"] for item in record] == ["(touch|mkdir).*"]
+        assert [item["entry"] for item in record] == ["touch.*|mkdir.*"]
         assert record[0]["conditional"] is False
     else:
         assert CREW_UNJUDGED_DENIES_KEY not in own

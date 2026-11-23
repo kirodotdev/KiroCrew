@@ -138,6 +138,11 @@ Four cases, and the difference between them is the whole answer:
   workspace, an agent whose own shell or file rules the workspace cannot enforce
   (`acp/kas_subagent_targets.py`). A Kiro Crew server both agents load, and a
   pooled server both set up alike, reach the sub-agent as the chat's own copy.
+  Kiro Crew's own agents (the ones it writes a file for, such as `kirocrew-worker`)
+  can never be run as a KAS sub-agent, listed or not. A sub-agent is held to the
+  chat's own agent's shell and write allowlists and `deniedCommands`, and gets none
+  of its grants. The chat's own agent's `postToolUse` hooks run on a sub-agent's
+  finished calls too.
   A server the sub-agent's own agent file turns off (`"disabled": true`) stays
   off for the sub-agent, even when the chat's own agent loads it.
   A sub-agent runs inside the chat's turn, so the chat's own agent's
@@ -518,6 +523,17 @@ is the part worth knowing before you switch:
   gets one notice naming it,
   so the loss is told rather than silent, but off `claude` and `opencode` nothing
   refuses what the allowlist would have refused.
+- **A sub-agent started on another agent keeps its parent's denies, on KAS.** A
+  `spawn_run` / `spawn_sub_agents` child that names another agent runs that
+  agent's spec. On KAS it is also refused what the spec of the agent that started
+  it denies (`toolsSettings` denies and allowlists, `permissions` denies), and
+  nothing that spec allows reaches it. A child on its parent's own agent that
+  runs in another folder is held the same way: a write allowlist counts from the
+  folder its session runs in, so that child may write only what both allow. A
+  sub-agent started with no `cwd` runs in a folder of its own, and its allowlist
+  counts from there for the sub-agents it starts too: they may write what it
+  may write, in its folder, and not in theirs. On
+  every other backend the child is held to its own spec only.
 
 So a spec written for kiro-cli degrades predictably rather than silently, as long
 as you read `per_tool_deny`, the `hooks` ruling, the `resources` note and the

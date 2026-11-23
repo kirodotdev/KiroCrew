@@ -274,6 +274,9 @@ _FACADE_DEFS = (
     # The ``app-own-tools`` gate row, kept here for the same two reasons: its body is
     # imported at call time from ``apps.own_agent_tools``.
     "_tier_app_own_tools",
+    # The ``spec-parent-limits`` gate row, kept here for the same two reasons: its body
+    # is imported at call time from ``platform.spec_parent_gate``.
+    "_tier_spec_parent_limits",
 )
 
 #: Collaborators the facade re-offers that belong to another module. Their identity is

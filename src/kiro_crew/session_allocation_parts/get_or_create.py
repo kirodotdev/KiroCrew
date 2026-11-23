@@ -1077,6 +1077,12 @@ async def _get_or_create_impl(
         # Crew-owned Connection on it kept the vendor's own element instead of
         # the gateway bridge. Cold-starting projects the bridge for this key.
         pool_decision = "bypass_crew_oauth_bridge"
+    elif key.startswith("subagent:") and await asyncio.to_thread(
+        _held_to_parent_denies, owner, key, agent
+    ):
+        # A pooled child's batch was built with no session key, so it holds none of
+        # the denies of the agents above this run. Cold-starting projects them.
+        pool_decision = "bypass_parent_denies"
     else:
         pool_decision = ""
 
@@ -1920,6 +1926,15 @@ def _crew_oauth_bridges_chat() -> bool:
     from kiro_crew.connections import crew_oauth
 
     return crew_oauth.bridges_chat_sessions()
+
+
+def _held_to_parent_denies(owner: Any, key: str, agent: str | None) -> bool:
+    """Whether a KAS sub-agent run on *key* carries a parent agent's denies. Blocking."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.kas_subagent_runs import run_is_held
+
+    on_kas = owner._cfg.agent.acp_backend == ACP_BACKEND_KAS
+    return on_kas and run_is_held(key, agent or owner._pool_agent or "", owner._pool_cwd or "")
 
 
 def _is_crewmate_worker_key(key: str) -> bool:

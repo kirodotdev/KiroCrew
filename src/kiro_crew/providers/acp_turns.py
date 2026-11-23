@@ -50,6 +50,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         tool_call_id=e.tool_call_id,
         title=e.title,
         wire_title=e.wire_title,
+        # A native KAS child's finished call: the string its PostToolUse hooks match.
+        hook_subject=e.hook_subject,
         tool_kind=e.tool_kind,
         tool_purpose=e.tool_purpose,
         context_usage_pct=e.context_usage_pct,
@@ -128,6 +130,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # gate's spec-builtin-grant row reads it.
         spec_granted_paths=e.spec_granted_paths,
         spec_granted_read_paths=e.spec_granted_read_paths,
+        # Dropping this would let a sub-agent run what the agent that started it
+        # may not: the gate's spec-parent-limits row reads it.
+        spec_parent_limits=e.spec_parent_limits,
         # Dropping this would let a native KAS sub-agent's call inherit the
         # parent's in-session deny overrides on this surface.
         native_child_call=e.native_child_call,

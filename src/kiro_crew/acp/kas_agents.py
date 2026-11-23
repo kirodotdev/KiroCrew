@@ -1047,9 +1047,12 @@ def to_client_custom_agent(
     )
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
-        # `autoAllowReadonly`: a read-only command passes, unless a deny cannot travel.
+        # `autoAllowReadonly`: a read-only command passes, unless a deny cannot travel
+        # or travels only split into branches. shortcut: read-only commands then stay
+        # refused, stricter than kiro-cli; lift it once a real run shows the engine
+        # holds every split branch here.
         if shell_auto_allows_readonly(tools_settings) and shell_denies_carried(
-            tools_settings, authored_policy
+            tools_settings, authored_policy, splits=False
         ):
             out[CREW_SHELL_READONLY_KEY] = True
     answered_paths = crew_answered_paths(tools_settings)

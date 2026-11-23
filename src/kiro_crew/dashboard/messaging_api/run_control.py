@@ -1281,7 +1281,46 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
-    running, queued = await state.subagents.cancel_for_parent(effective_session_key(slot))
-    return web.json_response(
-        {"ok": True, "stopped": running + queued, "running": running, "queued": queued}
+    # Counted before the first await: the manager's stop below answers only once the
+    # runs it stopped have reported to the parent, which a running turn holds back,
+    # and by then the engine's sub-agents may have ended and their cards closed.
+    engine = _open_engine_subagents(slot)
+    # Both stops start together, the manager's first, so its queue is emptied
+    # before anything else runs and the turn's stop does not wait on its reports.
+    stops: list[Any] = [state.subagents.cancel_for_parent(effective_session_key(slot))]
+    if engine:
+        # The KAS engine has no request that stops its sub-agents while the turn
+        # goes on, so the turn's own stop is the one that reaches them; it ends
+        # the parent's answer too. A second press never escalates to a kill.
+        # circular import: chat_handlers loads most of the dashboard.
+        from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+        stops.append(stop_slot_turn(state, slot, escalate=False))
+    running, queued = (await asyncio.gather(*stops))[0]
+    answer: dict[str, Any] = {
+        "ok": True,
+        "stopped": running + queued,
+        "running": running,
+        "queued": queued,
+    }
+    if engine:
+        answer["engine"] = engine
+    return web.json_response(answer)
+
+
+def _open_engine_subagents(slot: Any) -> int:
+    """How many engine-run sub-agents the slot's running KAS turn holds open.
+
+    They are the turn's open ``native:`` cards (``chat_turn/native_cards``) on a
+    KAS client; a background card carried from an earlier turn is not this turn's.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+
+    client = getattr(slot, "_acp_client", None)
+    on_kas = getattr(client, "backend", "") == ACP_BACKEND_KAS
+    tracker = getattr(slot, "_native_subagent_tracker", None) or {}
+    return sum(
+        1
+        for record in (tracker.values() if on_kas and getattr(slot, "running", False) else ())
+        if isinstance(record, dict) and not record.get("done") and not record.get("background")
     )

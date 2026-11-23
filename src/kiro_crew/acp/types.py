@@ -1013,6 +1013,10 @@ class AcpEvent:
     #: title the out-of-band directive claim (``directive_tool_from_call``) reads.
     #: Empty when the frame carried none.
     wire_title: str = ""
+    #: A native KAS child's finished call only (``acp.kas_child_finished``): the
+    #: string its PostToolUse hooks match, uncut -- the parser's redacted title of
+    #: the call, as the parent's own call is matched by. ``title`` stays display text.
+    hook_subject: str = ""
     tool_kind: str = ""
     tool_purpose: str = ""
     context_usage_pct: float = 0.0
@@ -1273,6 +1277,9 @@ class AcpEvent:
     #: (``AcpSessionHandle.kas_crew_answered_read_paths``), against the one target
     #: of a ``read_file``. Empty grants nothing.
     spec_granted_read_paths: tuple[str, ...] = ()
+    #: spec_parent_limits: on a KAS sub-agent run's requests, the gate-only limits of
+    #: each agent above it (``AcpSessionHandle.kas_parent_limits``). Only refuses.
+    spec_parent_limits: tuple[Any, ...] = ()
     #: native_child_call: a permission request a native KAS sub-agent made under
     #: this session's own id, told apart by the tool-call id its
     #: ``agentSubtaskId`` frame recorded (``_is_native_child_call``), or one

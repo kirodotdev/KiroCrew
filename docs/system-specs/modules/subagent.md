@@ -1809,6 +1809,41 @@ spawnable by name, and the gate is unchanged. Both rosters list the user-level f
 row of another scope (an edition's catalog row) is left unmarked, because the
 resolver judges only specs in that folder.
 
+
+### Parent agent spec denies (KAS runs)
+
+A run that names another agent than its parent's is held, on KAS, to what its
+parents' specs deny as well as to its own agent's: the command the parent's
+`denyByDefault` allowlist, `deniedCommands`, write allowlist or `deniedPaths`
+refuses, the URL its `web_fetch.blocked` names and every `permissions` deny are
+refused in the run too, whatever the run's own agent grants. Nothing a parent
+ALLOWS reaches the run. This manager's part is one call: `_run_inner` notes the
+run's parent session as execution starts
+(`acp.kas_parent_limits.note_parent(session_key, info.parent_session_key, <dir>)`), the
+point every start passes (a first start, a queue drain, a retry, a continuation on
+an older run's key, a recovery). `<dir>` is the directory the parent's session is
+bound to when the parent is itself a run this manager holds (`_run_on`, its
+`_session_cwd`), else empty: a run started with no `cwd` has no other directory
+the walk could anchor its path limits at. The KAS harness reads that note and the run
+record's `parent_session` when it builds the run's session; the rules, the
+fail-closed cases and what is not covered are in
+[security](security.md) (*A `spawn_run` child on another agent*). A run whose
+parents deny nothing and every run on another harness are unchanged. So is a run
+on its parent's own agent in its parent's directory; in another directory that
+parent's limits hold it too, anchored where the parent runs.
+
+A continuation never runs on the session an earlier run of its conversation is
+ending, so it is held to the session that continues it. A run ends its session by
+releasing the lease and resetting it with no await between the two
+(`_teardown_run_session_impl`); the reset pops the session in its first hold of
+the registry lock, and a `get_or_create` that waited on the lease validates under
+that lock after the pop, finds the key unregistered and starts a session of its
+own. `test_subagent_continuation_teardown_window.py` drives that order on the
+real session manager, with the registry lock free and held, and pins that the
+teardown keeps the two steps adjacent. The one case outside it: a reset that never
+reaches its pop (it waits out its timeout on the registry lock, or raises first)
+leaves the session registered while the teardown's fallback kill runs, and a
+waiting claim can hold it until that kill lands.
 ### Kiro Crew's own generated specs are not sub-agents
 
 Two kinds of spec Kiro Crew writes into the user-level agents directory — the

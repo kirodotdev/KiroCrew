@@ -126,7 +126,12 @@ The other spawn tools:
 ## How It Works
 
 1. Kiro Crew spawns one or more subagent processes
-2. Each subagent gets its own agent session with full tool access
+2. Each subagent gets its own agent session with its own agent's tools. On the
+   default backend it is also refused what the agent that started it is refused
+   (a denied command, path or URL in that agent's file), so a restricted agent
+   cannot hand a restricted action to a helper. Where that agent's own call
+   would ask you (a chained or redirected command its denied list cannot be
+   checked against), the helper's asks too
 3. Results are automatically injected back as `[Subagent completion event]`
 4. Kiro Crew synthesizes the results into a final response
 
