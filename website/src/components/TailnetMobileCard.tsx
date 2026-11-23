@@ -9,6 +9,7 @@ import {
   Download,
   ExternalLink,
   Globe,
+  Hourglass,
   LockKeyhole,
   LogIn,
   Play,
@@ -78,6 +79,7 @@ const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
   install: Download,
   start_daemon: Play,
   sign_in: LogIn,
+  approve_device: Hourglass,
   enable_magicdns: Globe,
   enable_https: LockKeyhole,
   trust_off: ShieldCheck,
@@ -97,6 +99,7 @@ const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
   install: 'components.tailnetMobile.install_title',
   start_daemon: 'components.tailnetMobile.start_daemon_title',
   sign_in: 'components.tailnetMobile.sign_in_title',
+  approve_device: 'components.tailnetMobile.approve_device_title',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_title',
   enable_https: 'components.tailnetMobile.enable_https_title',
   trust_off: 'components.tailnetMobile.trust_off_title',
@@ -113,6 +116,7 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
   install: 'components.tailnetMobile.install_body',
   start_daemon: 'components.tailnetMobile.start_daemon_body',
   sign_in: 'components.tailnetMobile.sign_in_body',
+  approve_device: 'components.tailnetMobile.approve_device_body',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_body',
   enable_https: 'components.tailnetMobile.enable_https_body',
   trust_off: 'components.tailnetMobile.trust_off_body',
@@ -716,6 +720,18 @@ export function TailnetMobileCard() {
                 </Btn>
               </div>
             </div>
+          ) : null}
+
+          {step === 'approve_device' ? (
+            <a
+              className="mt-2 inline-flex items-center gap-1 text-accent"
+              href="https://login.tailscale.com/admin/machines"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="lucide-inline" />
+              {i18nT('components.tailnetMobile.open_machines_admin')}
+            </a>
           ) : null}
 
           {step === 'enable_magicdns' || step === 'enable_https' ? (

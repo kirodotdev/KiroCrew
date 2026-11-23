@@ -106,6 +106,7 @@ Step = Literal[
     "install",
     "start_daemon",
     "sign_in",
+    "approve_device",
     "enable_magicdns",
     "enable_https",
     "trust_off",
@@ -144,7 +145,9 @@ def _derive_step(
        ``untrusted_cli`` is the one of these where Tailscale IS installed, at a
        path the planted-binary check refuses (a user-owned Homebrew prefix):
        downloading it again changes nothing, and ``dashboard.url`` is the
-       remedy that works.
+       remedy that works. ``approve_device`` is signed in but waiting for an
+       admin's device approval (``BackendState "NeedsMachineAuth"``): another
+       sign-in cannot help, the approval in the admin console does.
     3. ``enable_https`` — the name exists but the tailnet has not granted
        certificate provisioning for it. This is a tailnet-wide administrator
        consent and cannot safely be performed by a gateway process.
@@ -184,6 +187,8 @@ def _derive_step(
     # always returns ``name=""`` for the Stopped state.
     if probe.stopped:
         return "start_daemon"
+    if probe.needs_approval:
+        return "approve_device"
     if not probe.logged_in:
         return "sign_in"
     if not probe.name:
@@ -488,6 +493,7 @@ _QR_REFUSALS.update(
         "untrusted_cli": _QR_REFUSALS["install"],
         "start_daemon": _QR_REFUSALS["install"],
         "sign_in": _QR_REFUSALS["install"],
+        "approve_device": _QR_REFUSALS["install"],
         "enable_magicdns": _QR_REFUSALS["install"],
         "enable_https": (
             "https_not_enabled",
