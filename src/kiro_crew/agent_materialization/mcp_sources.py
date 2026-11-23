@@ -91,7 +91,7 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
     try:
         # Imported lazily: kiro_crew.apps imports back into agent/security, so a
         # module-level import here would close a cycle.
-        from kiro_crew.apps.bridges import registered_app_mcp_servers
+        from kiro_crew.apps.bridges import is_app_backend_mcp_url, registered_app_mcp_servers
         from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, list_apps
     except Exception:  # noqa: BLE001 — apps subsystem unavailable
         return servers
@@ -127,12 +127,13 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
                     chosen = dict(live)  # resolved live-port URL / pinned command
                 elif spec.get("url"):
                     # With backend.entryPoint set the gateway launches the backend
-                    # and the manifest port is illustrative, so with no live entry
+                    # and a loopback url's port is illustrative, so with no live entry
                     # the server is skipped rather than written with a dead port
                     # (as _register_mcp_servers does). A SELF-MANAGED HTTP server
                     # (no entryPoint, fixed port) never gets a live registration,
-                    # so its manifest URL is authoritative and kept.
-                    if manifest.backend.entryPoint:
+                    # so its manifest URL is authoritative and kept. So is a url on
+                    # a remote host, which does not name the backend at all.
+                    if manifest.backend.entryPoint and is_app_backend_mcp_url(spec["url"]):
                         continue
                     chosen = dict(spec)
                 else:

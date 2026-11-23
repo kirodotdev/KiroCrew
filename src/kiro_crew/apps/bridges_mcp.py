@@ -44,6 +44,7 @@ from kiro_crew.apps.interpreter import (
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.apps.manifest import AppManifest, has_stdio_mcp_server, is_module_style_entry_point
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.platform.governance import strip_ungoverned_auto_approve
@@ -118,6 +119,26 @@ def kiro_crew_file() -> str:
 _LEGACY_SHARED_MCP_PATH = Path.home() / ".kiro" / "settings" / "mcp.json"
 
 
+def is_app_backend_mcp_url(url: object) -> bool:
+    """Whether an app's HTTP MCP ``url`` points at this machine, where its backend runs.
+
+    The gateway binds an app backend on loopback (``backend_runtime/ports.py``), so only
+    a loopback host can name it (:func:`kiro_crew.dashboard.urls.is_loopback`). Any
+    other host is a remote endpoint the app declared
+    (a hosted MCP gateway, say): its port is real, and it does not depend on the
+    backend being up.
+    """
+    if not isinstance(url, str) or not url.startswith("http"):
+        return False
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    return is_loopback(host)
+
+
 def _resolve_live_mcp_url(app_name: str, url: str, live_port: int | None = None) -> str:
     """Rewrite a manifest HTTP MCP url's port to the backend's ACTUALLY-allocated port.
 
@@ -128,7 +149,8 @@ def _resolve_live_mcp_url(app_name: str, url: str, live_port: int | None = None)
     the backend lands on a different port, the registered MCP server points at the wrong
     one and every agent tool call to the app silently fails. Here we substitute the live
     port (preserving scheme/host/path) so the registration always matches the running
-    backend. Non-HTTP transports and apps with no resolvable port are passed through
+    backend. Non-HTTP transports, a url on a remote host (see
+    :func:`is_app_backend_mcp_url`) and apps with no resolvable port are passed through
     unchanged.
 
     ``live_port`` may be passed explicitly by a caller that knows the just-allocated
@@ -136,7 +158,7 @@ def _resolve_live_mcp_url(app_name: str, url: str, live_port: int | None = None)
     tracked-port lookup would still return None). When omitted we fall back to the
     health-gated ``get_app_backend_port``.
     """
-    if not url or not url.startswith("http"):
+    if not is_app_backend_mcp_url(url):
         return url
     try:
         if live_port is None:
@@ -152,6 +174,8 @@ def _resolve_live_mcp_url(app_name: str, url: str, live_port: int | None = None)
         if p.port == live_port:
             return url  # already correct
         host = p.hostname or "127.0.0.1"
+        if ":" in host:
+            host = f"[{host}]"  # an IPv6 literal keeps its brackets
         netloc = f"{host}:{live_port}"
         return urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
     except Exception:  # noqa: BLE001 — registration must never crash on URL rewrite
@@ -1006,6 +1030,10 @@ def _register_mcp_servers(
     (``agent_materialization/mcp_sources.py``), the other writer of this config. The two
     writers must agree, or one scrubs an entry the other immediately writes back.
 
+    A url on a REMOTE host (not loopback, see :func:`is_app_backend_mcp_url`) is the
+    same kind of authoritative endpoint for either kind of app: it is written as declared
+    and never waits for the backend.
+
     stdio/command servers (no ``url``) are always registered — they have no port to be dead.
     """
     if not manifest.mcpServers:
@@ -1025,7 +1053,9 @@ def _register_mcp_servers(
             if isinstance(cfg, dict):
                 cfg = _pin_host_cli_command(app_name, cfg)
             is_http = isinstance(cfg, dict) and bool(cfg.get("url"))
-            if is_http and not resolved_port and manifest.backend.entryPoint:
+            # Only a url on this machine names the backend; a remote one stands alone.
+            on_backend = is_http and is_app_backend_mcp_url(cfg["url"])
+            if on_backend and not resolved_port and manifest.backend.entryPoint:
                 # GATEWAY-MANAGED backend (backend.entryPoint set) with no live port: the
                 # manifest's url carries only an ILLUSTRATIVE fixed port, so writing it
                 # verbatim is a dead default-port URL that breaks every kiro session. Skip
@@ -1048,7 +1078,7 @@ def _register_mcp_servers(
                 # _resolve_live_mcp_url is a no-op without a live port, so a self-managed
                 # app's authoritative url is written through unchanged here.
                 cfg["url"] = _resolve_live_mcp_url(app_name, cfg["url"], live_port=resolved_port)
-                if resolved_port:
+                if on_backend and resolved_port:
                     cfg.pop("disabled", None)  # backend is live — ensure enabled
             else:
                 # A stdio entry: resolve a bare interpreter to an absolute one — the
