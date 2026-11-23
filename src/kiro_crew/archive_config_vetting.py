@@ -92,19 +92,17 @@ def _dir_outside_roots(raw: str, roots: list[str]) -> bool:
 
 
 def _is_data_home(raw: str) -> bool:
-    """Whether workspace folder *raw* is an absolute path that is exactly the data home.
+    """Whether workspace folder *raw* resolves to exactly the data home.
 
-    A relative folder is kept, as ``"workspace/.."`` is: it anchors under the data home, and
-    the runtime refuses the data home itself when a run or a channel turn would use it.
+    A relative folder is anchored at the data home first (the runtime's placement rule), so
+    ``"."`` and ``"workspace/.."`` are the data home and ``"workspace/proj"`` is not.
     """
     from kiro_crew.config.paths import config_dir
 
     home = os.path.realpath(config_dir())
     try:
-        expanded = os.path.expanduser(raw)
-        if not os.path.isabs(expanded):
-            return False
-        folder = os.path.realpath(expanded)
+        # An absolute folder wins the join, so this is also the absolute case.
+        folder = os.path.realpath(os.path.join(home, os.path.expanduser(raw)))
     except ValueError:  # an embedded NUL: not resolvable, so not the data home
         return False
     return os.path.normcase(folder) == os.path.normcase(home)

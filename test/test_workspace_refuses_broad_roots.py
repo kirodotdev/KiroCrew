@@ -107,3 +107,19 @@ def test_an_archive_config_with_a_folder_below_the_data_home_is_kept(crews):
     from kiro_crew.archive_config_vetting import config_document_refusal
 
     assert config_document_refusal({"workspaces": {"ok": {"dir": "workspace"}}}) is None
+
+
+@pytest.mark.parametrize("folder", [".", "./", "workspace/..", "workspace/../", "a/../b/.."])
+def test_an_archive_config_with_a_relative_data_home_folder_is_refused(crews, folder):
+    from kiro_crew.archive_config_vetting import config_document_refusal
+
+    # A relative folder is anchored at the data home, so these name the data home itself.
+    refusal = config_document_refusal({"workspaces": {"rel": {"dir": folder}}})
+    assert refusal is not None and "rel" in refusal and "data home" in refusal
+
+
+@pytest.mark.parametrize("folder", ["proj", "workspace/proj", "./proj", "workspace/a/../b"])
+def test_an_archive_config_with_a_relative_sub_folder_is_kept(crews, folder):
+    from kiro_crew.archive_config_vetting import config_document_refusal
+
+    assert config_document_refusal({"workspaces": {"ok": {"dir": folder}}}) is None
