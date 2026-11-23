@@ -718,8 +718,11 @@ def app_token_cutoff(name: str) -> float | None:
 
 def _write_installed(
     name: str, meta: InstalledApp, *, session_approval_consent: bool = False
-) -> None:
+) -> bool:
     """Write credential-free installed.json metadata for an app.
+
+    ``False`` only when the write left the app disabled and its grant revoke is not
+    durable (:func:`revoke_host_exec`); a disable reports that instead of success.
 
     ``session_approval_consent`` is True only on the write that records the
     owner's consent (``enable_app``). Without it, a record that has no consent
@@ -802,8 +805,9 @@ def _write_installed(
         # ``enabled`` here would let a forged record plus a restart produce a real
         # grant. The grant is written only from the owner-authenticated ``enable_app``.
         # No-op when no grant exists. See ``apps.host_exec_grants``.
+        revoked = True
         if not credential_free_meta.enabled:
-            revoke_host_exec(name)
+            revoked = revoke_host_exec(name)
             # Same revoke-only rule for the app's worker auto-approve grants: one
             # minted while a disable was in flight ends once the record says so.
             revoke_worker_auto_approve(name)
@@ -812,6 +816,7 @@ def _write_installed(
         from kiro_crew.apps.hidden_sessions import request_hiding_refresh
 
         request_hiding_refresh()
+        return revoked
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag

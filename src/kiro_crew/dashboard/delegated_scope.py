@@ -110,7 +110,7 @@ READ_ALLOW: dict[tuple[str, str], Row] = {
         "Ends this delegated session only.",
     ),
     ("POST", "/api/chat/slots/{slot}/stop"): Row(
-        "src/kiro_crew/dashboard/chat_api/turn_stop.py:1020",
+        "src/kiro_crew/dashboard/chat_api/turn_stop.py:1024",
         "No data reach; worst case stops the owner's own running turn of one chat; no body, no query.",
         no_query=True,
         no_body=True,

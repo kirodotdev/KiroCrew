@@ -116,3 +116,39 @@ async def test_the_owner_second_stop_still_escalates(tmp_path, monkeypatch) -> N
         await client.post(f"/api/chat/slots/{SLOT}/stop")
     assert _stop_lines(lines)[-1]["metadata"]["escalated"] is True
     assert {line["metadata"]["via"] for line in _stop_lines(lines)} == {"dashboard"}
+
+
+async def _cron_cancel_allowed(monkeypatch, *, via_app: str) -> bool:
+    """Whether a Stop on a ``cron:`` tab may run the cron service's cancel.
+
+    The owner gate and the foreign-job check both pass, as they do for the owner and for
+    a delegated token on the owner's machine, so only the ``via_app`` claim decides.
+    """
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.dashboard.chat_api import turn_stop
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers._shared.require_owner_dashboard_request",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.cron_shared._refuse_foreign_app_job",
+        AsyncMock(return_value=None),
+    )
+    request = make_mocked_request("POST", "/api/chat/slots/cron:job1/stop")
+    request["app"] = ""
+    if via_app:
+        request["via_app"] = via_app
+    return await turn_stop._may_cancel_cron_run(request, MagicMock(), "cron:job1")
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_stop_on_a_cron_tab_never_cancels_the_job(monkeypatch) -> None:
+    """The cron cancel pauses a one-shot job: a control-plane write no stop row allows."""
+    assert await _cron_cancel_allowed(monkeypatch, via_app="tunnel") is False
+
+
+@pytest.mark.asyncio
+async def test_the_owner_stop_on_a_cron_tab_still_cancels_the_job(monkeypatch) -> None:
+    assert await _cron_cancel_allowed(monkeypatch, via_app="") is True

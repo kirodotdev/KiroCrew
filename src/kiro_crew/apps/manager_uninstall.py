@@ -61,6 +61,10 @@ from kiro_crew.sel import sel
 logger = logging.getLogger("kiro_crew.apps.manager")
 
 
+class _RevokeIncomplete(OSError):
+    """A grant revoke on uninstall ended in memory only; a restart could bring it back."""
+
+
 def _rmtree_app_dir(dest: Path) -> None:
     """Remove the app tree, waiting out a Windows file held open in it.
 
@@ -183,8 +187,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         _drop_trust_grant(name)
         # Drop any host-exec grant too, for the same name-reuse reason: a grant left
         # behind would authorize a pod for a different app later installed under this
-        # name. Best-effort and no-op unless this app runs code outside the sandbox.
-        revoke_host_exec(name)
+        # name. A no-op unless the app holds one; a revoke that is not durable refuses
+        # the uninstall like any other step here.
+        if not revoke_host_exec(name):
+            raise _RevokeIncomplete("the revoke could not be saved")
         # And its worker auto-approve grants, so none outlives the app.
         revoke_worker_auto_approve(name)
         # And the sealed install record, so a later app of this name starts with none.
@@ -212,7 +218,11 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 f"the app while it stands would let any future app installed under "
                 f"this name run code without asking. Clear the cause and retry."
             ),
-            error_code="trust_grant_not_removed",
+            error_code=(
+                "revoke_incomplete"
+                if isinstance(exc, _RevokeIncomplete)
+                else "trust_grant_not_removed"
+            ),
         )
 
     from kiro_crew.apps.backend import _pinned_ancestors  # deferred: see below

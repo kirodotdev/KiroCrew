@@ -407,6 +407,20 @@ def mark_session_approval_consent_pending(name: str) -> bool:
     return True
 
 
+def _revoke_incomplete(name: str) -> AppResult:
+    """The disable's answer when the app is off but a grant it held may come back."""
+    return AppResult(
+        ok=False,
+        name=name,
+        error=(
+            f"{name} is disabled and its access is ended now, but the revoke could not be "
+            "saved: after a gateway restart the access may come back. Fix the disk error, "
+            "then disable again."
+        ),
+        error_code="revoke_incomplete",
+    )
+
+
 @holds_app_record_locks
 def disable_app(name: str) -> AppResult:
     """Disable an installed app without removing it."""
@@ -448,13 +462,17 @@ def disable_app(name: str) -> AppResult:
                 ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"
             )
         meta.updatedAt = _now_iso()
-        _write_installed(name, meta)
+        # The write revokes again (enabled is False); its answer is the durable state.
+        revoked = _write_installed(name, meta)
         refresh_frame_sources()
+        if not revoked:
+            return _revoke_incomplete(name)
         return AppResult(ok=True, name=name, message=f"{name} is already disabled")
 
     meta.enabled = False
     meta.updatedAt = _now_iso()
-    _write_installed(name, meta)  # revokes the host-exec grant (enabled is False)
+    # Revokes the host-exec grant (enabled is False); False when that is not durable.
+    revoked = _write_installed(name, meta)
     refresh_frame_sources()
 
     # Fail closed: a disable that reports success must not leave a live grant that
@@ -463,6 +481,8 @@ def disable_app(name: str) -> AppResult:
         return AppResult(
             ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"
         )
+    if not revoked:
+        return _revoke_incomplete(name)
 
     logger.info("Disabled app %s", name)
     return AppResult(ok=True, name=name, message=f"disabled {name}")

@@ -446,6 +446,10 @@ async def _may_cancel_cron_run(
     job_id = cancel_key.removeprefix("cron:")
     if job_id == cancel_key or not job_id or ":" in job_id:
         return False
+    # A delegated (``via_app``) token passes the owner gate, but its stop row ends the
+    # running turn only: the cron service's cancel pauses the job, a control-plane write.
+    if request.get("via_app"):
+        return False
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
     from kiro_crew.dashboard.handlers.cron_shared import _refuse_foreign_app_job
 
