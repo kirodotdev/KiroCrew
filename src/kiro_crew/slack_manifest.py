@@ -149,6 +149,11 @@ SLACK_MCP = "slack_mcp"
 MANIFEST_ONLY_FEATURES: tuple[str, ...] = (SLACK_MCP,)
 #: Every registered switch, in a fixed (display) order.
 FEATURES: tuple[str, ...] = (*FEATURE_SCOPES, *MANIFEST_ONLY_FEATURES)
+#: Bot scopes the manifest asks for that neither the gateway nor any switch needs to
+#: run: an install without one is not out of date (the drift check skips it). Without
+#: ``users:read.email`` only Share Slack access's add-by-email is refused, and its
+#: refusal names the scope.
+OPTIONAL_BOT_SCOPES: frozenset[str] = frozenset({"users:read.email"})
 
 #: A gated template line: ``<content>  #@flag`` or ``#@flag1|flag2`` at line end;
 #: ``#@!flag`` gates on the switch being OFF (a line the switch replaces).

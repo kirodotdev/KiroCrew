@@ -43,6 +43,20 @@ REASON_BOT = "bot_user"
 REASON_DEACTIVATED = "deactivated"
 REASON_OTHER_TEAM = "other_workspace"
 REASON_UNVERIFIABLE = "unverifiable"
+#: No owner id is saved: nothing can tell the owner's own id apart from anyone else's.
+REASON_OWNER_UNSET = "owner_unset"
+#: An add by email: Slack has nobody with that email in the bot's workspace.
+REASON_EMAIL_NOT_FOUND = "email_not_found"
+#: An add by email: the install lacks ``users:read.email``.
+REASON_EMAIL_UNAVAILABLE = "email_lookup_unavailable"
+
+#: An email address as the add route takes it: one ``@``, no spaces, a dotted domain.
+_EMAIL = re.compile(r"[^@\s]{1,64}@[^@\s.]+(\.[^@\s.]+)+")
+
+
+def is_email(value: str) -> bool:
+    """Whether *value* has an email address's shape (what ``users.lookupByEmail`` takes)."""
+    return len(value) <= 254 and _EMAIL.fullmatch(value) is not None
 
 
 @dataclass(frozen=True)
@@ -138,6 +152,48 @@ def _stale(verdict: Verdict | None) -> bool:
     return clock() - verdict.checked_at >= ttl
 
 
+def is_owner_id(user_id: str, owner_id: str) -> bool:
+    """Whether *user_id* is the owner's, also under the other prefix (W/U, as ``is_owner``)."""
+    return bool(owner_id) and owner_id in (
+        user_id,
+        user_id.replace("W", "U", 1),
+        user_id.replace("U", "W", 1),
+    )
+
+
+async def find_by_email(client: Any, email: str) -> tuple[str, str]:
+    """``(member id, "")`` for the Slack user with *email*, or ``("", reason)``. Never raises.
+
+    ``users.lookupByEmail`` needs ``users:read.email``; an install without it answers
+    ``missing_scope``, which is :data:`REASON_EMAIL_UNAVAILABLE`. The email is never logged.
+    """
+    if not is_email(email):
+        return "", REASON_MALFORMED
+    if client is None:
+        return "", REASON_UNVERIFIABLE
+    try:
+        found = await client.users_lookupByEmail(email=email)
+    except Exception as exc:
+        error = ""
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                error = str(response.get("error", "") or "")
+            except Exception:
+                error = ""
+        if error == "users_not_found":
+            return "", REASON_EMAIL_NOT_FOUND
+        if error == "missing_scope":
+            return "", REASON_EMAIL_UNAVAILABLE
+        logger.warning("shared access: could not look up a Slack email (%s)", type(exc).__name__)
+        return "", REASON_UNVERIFIABLE
+    user = found.get("user") if hasattr(found, "get") else None
+    user_id = str(user.get("id") or "") if isinstance(user, dict) else ""
+    if not is_slack_user_id(user_id):
+        return "", REASON_EMAIL_NOT_FOUND
+    return user_id, ""
+
+
 async def check(client: Any, user_id: str, *, owner_id: str) -> Verdict:
     """Ask Slack whether *user_id* may be a shared user. Never raises.
 
@@ -151,12 +207,7 @@ async def check(client: Any, user_id: str, *, owner_id: str) -> Verdict:
 
     if not is_slack_user_id(user_id):
         return _no(REASON_MALFORMED)
-    # The owner, also under the other prefix (W/U, as ``is_owner`` matches it).
-    if owner_id and owner_id in (
-        user_id,
-        user_id.replace("W", "U", 1),
-        user_id.replace("U", "W", 1),
-    ):
+    if is_owner_id(user_id, owner_id):
         return _no(REASON_OWNER)
     if client is None:
         return _no(REASON_UNVERIFIABLE)
@@ -288,6 +339,10 @@ async def lookup(client: Any, user_id: str, *, owner_id: str, refresh: bool = Fa
     ``refresh=True`` so the id is checked now. The answer is kept for the gate too.
     """
     cached = _verdicts.get(user_id)
+    # The owner test runs before the cache: an id confirmed while no owner was saved
+    # (or another one was) is the owner's now, and never counts as someone shared with.
+    if is_owner_id(user_id, owner_id):
+        return Verdict(user_id, False, REASON_OWNER, cached.name if cached else "", clock())
     if not refresh and not _stale(cached) and cached is not None:
         return cached
     generation = _generation
