@@ -3124,7 +3124,8 @@ gone approval found on reconnect was never pressed, so no surface reports an err
 it. The activity card of an unresolved gone approval reads "Checking whether it
 started…"; a retired card reads "No record". An absent inventory row proves only that
 the gateway holds no record of the id: the run never launched, or it is no longer
-retained (`evict_completed_agents` past `MAX_RETAINED_AGENTS` finished runs, a panel
+retained (`evict_completed_agents` past `MAX_RETAINED_AGENTS` finished runs, or past
+`MAX_RETAINED_FAILED` for failed runs no retry or continuation took, a panel
 dismissal, a gateway restart). A retired card is not tallied as stopped, shows no run
 usage, and "Dismiss done" clears it locally without a DELETE.
 

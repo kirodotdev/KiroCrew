@@ -32,9 +32,9 @@ already-running app record -- restart it.
 | `kirocrew secrets import --apply` | Store the secrets and rewrite `.env` to `secret://` refs |
 | `kirocrew secrets authorize NAME https://api.example.com` | Authorize a Custom secret for one exact https origin, so agent write requests may carry it (`--header` sets the header, default `Authorization: Bearer`) |
 | `kirocrew secrets authorize NAME --remove` | Remove that authorization. `--reset` discards a policy that does not parse or verify; without it, `authorize` refuses rather than erase entries |
-| `kirocrew telemetry status` | Show exactly what the anonymous beacon sends, and whether it will |
-| `kirocrew telemetry disable` | Turn the anonymous beacon off permanently |
-| `kirocrew telemetry enable` | Turn the anonymous beacon back on |
+| `kirocrew telemetry status` | Show whether local metric recording is on, and exactly what the anonymous beacon sends and whether it will |
+| `kirocrew telemetry disable` | Turn local metric recording and the anonymous beacon off permanently |
+| `kirocrew telemetry enable` | Turn local metric recording and the anonymous beacon back on |
 | `kirocrew security audit` | Scan conversation history for suspicious tool usage |
 | `kirocrew security deny-list` | Show active deny patterns |
 | `kirocrew security events` | Show recent security event log entries (last 20) |

@@ -1031,7 +1031,7 @@ that each is a whole port in 1..65535 other than the launch port, takes at most
 32 per window, and forwards each from this machine's `127.0.0.1` to the same
 port on the crew host's loopback, the forward the pane's own `ssh -L` hint asks
 the user to run by hand.
-The Windows titlebar menu rides the same ownership boundary, per action rather
+The in-app titlebar menu (Windows, and frameless Linux) rides the same ownership boundary, per action rather
 than per channel. `app-menu:items` and `app-menu:execute` in
 [`ipc-registrar.js`](../../website/electron/ipc-registrar.js) resolve whether the
 sender is the local dashboard through the three checks above — the fixed primary
@@ -1428,7 +1428,11 @@ search affordance — and the palette remains reachable through its keyboard
 shortcut even while hidden.
 The command-palette trigger is positioned from the window midpoint rather than
 the remaining flex space, so asymmetric menu and status controls do not shift it.
-Linux retains the window manager's native frame and menu bar.
+A framed Linux window retains the window manager's native frame and menu bar. A
+frameless Linux window (a Wayland compositor that prefers client-side
+decorations) has no menu bar, so it shows the same hamburger menu, but only when
+the shell's preload sets `linuxAppMenu`; an older shell omits the flag and the
+trigger stays off.
 
 In macOS native fullscreen AppKit owns the top strip (pointing at it slides the
 menu bar down), so the dashboard pads the app frame (`data-testid="app-frame"`)
