@@ -56,6 +56,8 @@ from kiro_crew.mcp_discovery_probe_state import (
 from kiro_crew.mcp_discovery_remote import _probe_remote
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
 from kiro_crew.mcp_entry import lists_before_handlers
+from kiro_crew.mcp_gateway.apps import strip_model_hidden_tools
+from kiro_crew.mcp_gateway.backend_mcp_apps import _inject_client_extensions
 from kiro_crew.mcp_gateway.read_limits import resolve_read_buffer_limit
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
@@ -839,26 +841,29 @@ async def probe_server(
         # gets one retry on the same pipe with the newest older one it lists,
         # the step-down the HTTP probe takes (``mcp_discovery_remote``).
         protocol_version = MCP_CLIENT_PROTOCOL_VERSION
+        # A server the gateway serves reaches sessions through a stub, whose backend
+        # declares the MCP Apps UI extension and withholds app-only tools; the probe
+        # does the same for it so it sees the tools a session receives. A server a
+        # session launches directly gets neither. Off the loop: it reads disk.
+        gateway_served = await asyncio.to_thread(_served_by_gateway, server.name)
         while True:
-            init_req = (
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "initialize",
-                        "params": {
-                            "protocolVersion": protocol_version,
-                            "capabilities": {},
-                            "clientInfo": (
-                                dict(client_info)
-                                if client_info
-                                else {"name": "kirocrew-probe", "version": "1.0.0"}
-                            ),
-                        },
-                    }
-                )
-                + "\n"
-            )
+            init_frame: dict[str, Any] = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": protocol_version,
+                    "capabilities": {},
+                    "clientInfo": (
+                        dict(client_info)
+                        if client_info
+                        else {"name": "kirocrew-probe", "version": "1.0.0"}
+                    ),
+                },
+            }
+            if gateway_served:
+                init_frame = _inject_client_extensions(init_frame)
+            init_req = json.dumps(init_frame) + "\n"
             proc.stdin.write(init_req.encode())
             await proc.stdin.drain()
 
@@ -962,6 +967,10 @@ async def probe_server(
             cache_on_exit = client_info is None
             return server
         result = resp2.get("result", {}) if isinstance(resp2, dict) else {}
+        if gateway_served and isinstance(result, dict):
+            # The gateway withholds an app-only tool from every session's listing,
+            # so the probe does not report it as one of the server's tools.
+            strip_model_hidden_tools(result)
         tools_data = result.get("tools") if isinstance(result, dict) else None
         if not isinstance(tools_data, list):
             # A response without a tools LIST is malformed, not "no tools":

@@ -986,6 +986,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.mcp_entry import (  # noqa: F401
         lists_before_handlers,
     )
+    from kiro_crew.mcp_gateway.apps import (  # noqa: F401
+        strip_model_hidden_tools,
+    )
+    from kiro_crew.mcp_gateway.backend_mcp_apps import (  # noqa: F401
+        _inject_client_extensions,
+    )
     from kiro_crew.mcp_gateway.hashing import (  # noqa: F401
         hash_command,
         hash_effective_env,
