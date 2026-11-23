@@ -6,7 +6,7 @@
  * controls it places come from `AboutPanelUpdateFlow.tsx`; `AboutPanel.tsx` derives the
  * verdicts it shares with the hero card and passes them in.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, type QueryClient } from '@tanstack/react-query'
 import { RefreshCw, CheckCircle2, GitBranch, ArrowUp, Package, X, Copy } from 'lucide-react'
 import { Btn } from '../../components/ui'
@@ -30,6 +30,9 @@ import { reportForError, type ErrorReport } from '../../utils/errorReport'
 // restart is in flight), so the trap is wired with Escape off and a stable
 // no-op in its place.
 const NO_ESCAPE = () => {}
+
+/** Mirrors the gateway's `_MANUAL_VERDICT_TTL_S` (600 s) in `updates_check.py`. */
+const MANUAL_VERDICT_TTL_MS = 600_000
 
 /**
  * Why the GATEWAY update check produced no verdict.
@@ -142,7 +145,8 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   const [applyDirty, setApplyDirty] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const gwCheck = useMutation({
-    mutationFn: () => api.checkUpdate(),
+    // Only ever run from a click, so it is the manual check.
+    mutationFn: () => api.checkUpdate({ manual: true }),
     // Where the saved switch's entry stood, so a late answer cannot overwrite a newer read.
     onMutate: () => configReads(queryClient),
     onSuccess: (d, _vars, readsWhenSent) => {
@@ -303,12 +307,12 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   const newestCheckFailed = newestIsLocal ? local.failed : background.status === 'failed'
   const newestCheckSucceeded = newestIsLocal ? gwChecked : background.status === 'succeeded'
 
-  // Discard the whole local answer when a newer background check supersedes it.
-  // In particular, cached notes must not skip the Update button's fresh check
-  // or appear in a confirmation naming the background check's target.
+  // Discard the whole local answer when a newer background check supersedes it,
+  // or when the gateway's own copy of it has expired. In particular, cached notes
+  // must not skip the Update button's fresh check or appear in a confirmation
+  // naming the background check's target.
   const resetCheck = gwCheck.reset
-  useEffect(() => {
-    if (local === null || newestIsLocal) return
+  const discardLocal = useCallback(() => {
     setLocal(null)
     setGwChanges('')
     setGwTarget('')
@@ -325,7 +329,20 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
     setGwCommandCopied(false)
     setGwCommandCopyFailed(false)
     resetCheck()
-  }, [local, newestIsLocal, resetCheck])
+  }, [resetCheck])
+  useEffect(() => {
+    if (local === null || newestIsLocal) return
+    discardLocal()
+  }, [local, newestIsLocal, discardLocal])
+  // The gateway keeps a click's verdict for MANUAL_VERDICT_TTL_MS (a git checkout
+  // whose fetch only the owner's credentials reach). Past that the Update button
+  // would arm against a verdict the gateway no longer holds, so the panel drops
+  // its copy on the same clock and Update runs a fresh check first.
+  useEffect(() => {
+    if (local === null) return
+    const timer = setTimeout(discardLocal, MANUAL_VERDICT_TTL_MS)
+    return () => clearTimeout(timer)
+  }, [local, discardLocal])
 
   return {
     newestIsLocal, newestCheckFailed, newestCheckSucceeded,

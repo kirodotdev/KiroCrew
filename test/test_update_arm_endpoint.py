@@ -400,3 +400,57 @@ async def test_an_arm_with_the_record_held_past_the_read_retry_still_arms(
     assert json.loads(resp.body) == {"ok": True, "armed": True, "version": "9.9.9"}
     armed = update_next_start.read()
     assert (armed.armed_version, armed.attempts) == ("9.9.9", 0)
+
+
+_LIVE_LIFETIME = 10**12
+_EXPIRED_LIFETIME = -1
+
+
+def _lifetime(monkeypatch, seconds: int) -> None:
+    monkeypatch.setattr(updates, "_MANUAL_VERDICT_TTL_S", seconds)
+
+
+def _failed_isolated_check_beside_a_click_verdict(monkeypatch, *, live: bool) -> AsyncMock:
+    """The cache holds an isolated fetch failure; the owner's click found 9.9.9."""
+    from kiro_crew.dashboard.handlers import _update_info
+
+    _update_info.clear()
+    _update_info.update({"check_status": "failed", "error_code": "git_fetch_failed"})
+    monkeypatch.setattr(
+        updates,
+        "_manual_verdict",
+        {
+            "check_status": "succeeded",
+            "update_available": True,
+            "latest_version": "9.9.9",
+            "commits_behind": 3,
+        },
+    )
+    monkeypatch.setattr(updates, "_manual_verdict_at", 0.0)
+    # A test never waits on a clock: the verdict is live or already expired by its lifetime.
+    _lifetime(monkeypatch, _LIVE_LIFETIME if live else _EXPIRED_LIFETIME)
+    check = AsyncMock(return_value=None)
+    monkeypatch.setattr(updates, "_do_update_check", check)
+    return check
+
+
+@pytest.mark.asyncio
+async def test_a_live_click_verdict_is_what_an_arm_names(tmp_path, monkeypatch, spies) -> None:
+    check = _failed_isolated_check_beside_a_click_verdict(monkeypatch, live=True)
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 202
+    assert update_next_start.read().armed_version == "9.9.9"
+    check.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_expired_click_verdict_arms_nothing(tmp_path, monkeypatch, spies) -> None:
+    _failed_isolated_check_beside_a_click_verdict(monkeypatch, live=False)
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 409
+    assert json.loads(resp.body)["code"] == "arm_check_failed"
+    assert update_next_start.read().armed is False

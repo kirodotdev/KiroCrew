@@ -29,7 +29,7 @@ from kiro_crew import (
 from kiro_crew.cron import stop_cron_before_restart
 from kiro_crew.dashboard import restart_resume
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.updates_check import _do_update_check
+from kiro_crew.dashboard.handlers.updates_check import _do_update_check, _live_manual_verdict
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.platform_compat import (
@@ -462,7 +462,19 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # An arm names the version the person was offered, so it needs a verdict. Right
     # after the gateway starts there is none yet: run the shared check and wait for
     # it, bounded, rather than record an arm the next start would consume empty.
-    if _update_info.get("check_status") != CHECK_SUCCEEDED:
+    #
+    # The version the About page shows can be the owner's own click verdict, which
+    # lives apart from the cache (:func:`_live_manual_verdict`). An arm records the
+    # version and nothing else, and the apply at the next start fetches with the
+    # operator's transport, so an arm names that verdict rather than re-running an
+    # isolated check that cannot sign in and would refuse an offered Update.
+    manual = _live_manual_verdict()
+    verdict = (
+        manual
+        if manual is not None and manual.get("check_status") == CHECK_SUCCEEDED
+        else _update_info
+    )
+    if verdict is _update_info and _update_info.get("check_status") != CHECK_SUCCEEDED:
         # The check is the shared shielded task, so a wait that gives up leaves it running.
         arm_check_timeout_secs = 30.0
         try:
@@ -487,11 +499,11 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-    if not _update_info.get("update_available"):
+    if not verdict.get("update_available"):
         return web.json_response(
             {"error": "There is no newer version to install", "code": "no_update"}, status=409
         )
-    version = str(_update_info.get("latest_version") or "")
+    version = str(verdict.get("latest_version") or "")
     if not version:
         return web.json_response(
             {
@@ -500,7 +512,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    behind = _update_info.get("commits_behind")
+    behind = verdict.get("commits_behind")
     armed = await asyncio.to_thread(
         lambda: update_next_start.arm(version, behind=behind if isinstance(behind, int) else 0)
     )
