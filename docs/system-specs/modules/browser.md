@@ -346,7 +346,8 @@ person's browser usable. If Kiro's Chromium is not downloaded yet, the start
 fails saying so, and Settings shows Install on the main card. A hand pick of
 `user_chrome` never falls back: it fails with the remote-debugging step.
 
-A Kiro's Chromium that exits before the daemon answers fails the start at once
+A Kiro's Chromium that exits before its debugging port opens, or before the
+daemon answers, fails the start at once
 with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
 to a pipe of the gateway's own, drained for the browser's whole life (only the
 newest 4 KiB kept, in memory), and its last stderr lines follow, redacted, so a
@@ -1308,7 +1309,8 @@ args, *, state, caller)`, which answers `(body, http_status)`. The route only
 authenticates and validates the body, then calls it; an app's `PagePort`
 (`apps/browser_page_port.py`, handed out by `ctx.browser.page(slot)`) calls the same function with the slot's own
 runtime key (`dashboard:<slot>`), so the Bot and an app share every gate from one
-copy, in this order: the `capabilities.browse` check for that key; the navigate gate
+copy (all but the gateway's own origins, which only the route's request carries),
+in this order: the `capabilities.browse` check for that key; the navigate gate
 on the address the op asks to open (`navigate`, and `tabs new` with a URL), which
 answers `url_blocked` before the browser starts, so a refused address is never
 requested even by a caller inside the gateway that skips the shim; an app slot's
@@ -1667,6 +1669,26 @@ key. Link and history landings are checked again before a page read, input or
 live-card follow with the same gate, so an unlisted private destination is blanked
 and refused rather than being operated through a link.
 
+The dashboard is refused under every name the gateway trusts as itself, not only
+its loopback port: a public URL whose origin (scheme, host, port, compared after
+the gate's own host folding) is in the gateway's live `allowed_origins` is
+refused. That set holds whichever of these the gateway trusts at the time:
+`dashboard.url` (and its host on the served port), a connected tunnel, the tailnet
+name, `KIROCREW_CORS_ORIGINS` entries, and the machine host name in a build that
+is not local-only; governance may drop any of them (an LTS build keeps only the
+ones a policy names). That set is what the CSRF and WebSocket checks accept as the
+owner's dashboard, and the agent's browser may be the person's own signed-in
+Chrome, so such a tab would act as the owner. Only the gateway knows that set (a
+tunnel or tailnet name joins at runtime), so the gateway judges the URL
+`navigate`, `tabs new` or `http_get` asks for (`url_blocked`) before it is
+requested, as well as every landing. An operator-listed loopback origin keeps its
+own rule above. The set comes from the route's request, so it is the Bot's: an
+app's own `PagePort` ops (one door, above) do not carry it, since an app's
+in-gateway code runs trusted and this gate is no boundary against it. **Accepted
+residual:** an address that reaches the gateway but is not one of those origins
+(another scheme or port on a trusted host, say) passes the gate, on the request
+and on every landing.
+
 Passwords never pass the model: `type` and `paste` refuse a password field, the
 frame masks one, and logins happen during takeover.
 
@@ -1682,8 +1704,9 @@ method (play, pause, seek, volume, state of the main `<video>`/`<audio>`) in the
 isolated world after the same page check (`browser_harness/media.py`). When the app
 declares `backend.hooks.on_browser_media_ended`, `handlers/browser_media_watch.py` makes
 that same `state` read every 3 s on the slot's tab after the agent's first successful op,
-never queueing for the op lock (a busy tick is skipped), and hands each ending to the
-owning app's backend ([app-kit-platform §45](app-kit-platform.md)).
+never queueing for the op lock (a busy tick is skipped), and hands each ending the
+walker counted (a new `endId`; the walker's `mediaEnds` also counts a source taken away
+at the end) to the owning app's backend ([app-kit-platform §45](app-kit-platform.md)).
 
 **A person's site grant.** A chat's own `browser` card offers, inside its Trust
 menu, a grant on the site the call acts on: "Trust reading pages on `<host>`" on a
@@ -1901,7 +1924,7 @@ modifies it, and the row is silent when the directory is absent.
 | A provider widens what it may set | off unless `browser.credentials.enabled`; cookies outside BOTH its declared domains and `browser.credentials.domains` are dropped; every cookie is a session cookie; the provider adds no launch switch |
 | A provider sends the tab somewhere the agent did not ask for | only after an agent `navigate` landed on a page of the provider's own (both domain lists, `https`, Kiro's Chromium, the opt-in on); the URL it returns must be `https`, in both domain lists and pass the committed-URL gate, and its landing is gated again; one try per op; the agent, the live card and the SEL see hosts and outcome codes, never the URL's path or query. **Accepted residual:** the single-use URL is visible in the tab's own address and history (Credentials, residual iv) |
 | A provider reads a file the agent planted | `credential_files.read_source_file`: `O_NOFOLLOW`, `fstat` on the open descriptor, owner uid, no group/other bits, size cap |
-| Local addresses | `navigate` keeps the public-only gate plus `dashboard.browser_local_origins`, applied TWICE by one shared predicate (`browser_harness/url_gate.py`): in the shim to the URL asked for, and in the gateway to the URL the navigation (or `back`) committed on, so a public page that redirects to loopback, private or link-local is refused (`redirect_refused`) and the tab moved to `about:blank`. **Accepted residual:** DNS rebinding (a public name resolving to a private address) is not seen by either check; names are not resolved |
+| Local addresses | `navigate` keeps the public-only gate plus `dashboard.browser_local_origins`, applied by one shared predicate (`browser_harness/url_gate.py`): in the shim to the URL asked for, and in the gateway to the URL asked for and the URL the navigation (or `back`) committed on, so a public page that redirects to loopback, private or link-local is refused (`redirect_refused`) and the tab moved to `about:blank`. The gateway adds the origins it trusts as itself (`allowed_origins`), so the dashboard is refused under a tunnel, tailnet or `dashboard.url` name too (`url_blocked` before the request). **Accepted residuals:** DNS rebinding (a public name resolving to a private address) is not seen by either check; names are not resolved. An address that reaches the gateway but is not one of its trusted origins passes |
 | Governance | `capabilities.browse` is checked on every call and a denial never falls back; the gateway asks it again, fail-closed, at every browser route, the engine start and every helper, so a direct POST or a policy pushed mid-session cannot keep a browser running |
 | Page content | treated as untrusted input; a URL, instruction or form target read off a page never decides the next navigation |
 | Agent obtains a vault login through a quick ask | the agent's `ask` and its outcome words are unchanged; the owner's card shows each login's entry name and username, never a password; a vault fill needs the person's click on the owner-only answer route (which refuses the internal secret) and goes through the same bound, re-verified fill; the item is re-read and re-matched against the bound origin at answer time; values never reach a log, the SEL, the replay, the live event, the poll or the tool result |

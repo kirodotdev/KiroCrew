@@ -613,6 +613,8 @@ async def _on_subagent_list(turn: _ChatTurn, event) -> None:
         len(event.subagents or []),
         slot.key,
     )
+    # A co-tenant's roster, fanned out by a shared runtime, is not this turn's.
+    turn._turn_native_activity = turn._turn_native_activity or not event.runtime_global
     _native_subagent_sync(state, slot, event.subagents, _native_tracker, _native_card_output)
 
 
@@ -621,6 +623,7 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
     _native_tc_card = turn._native_tc_card
     _native_tracker = turn._native_tracker
     slot = turn.slot
+    turn._turn_native_activity = True
     # kiro-cli's _kiro.dev/session/update tags a sub-agent's inner
     # tool call with its sessionId. This ALWAYS arrives before the
     # corresponding flat tool_call/tool_call_update, so building the

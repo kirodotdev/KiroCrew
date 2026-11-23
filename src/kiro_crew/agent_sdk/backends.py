@@ -222,6 +222,10 @@ with no row here.
    * - ``ACP_BACKENDS_FAST_MODE_CONFIG_OPTION``
      - driver-internal (whether the session's advertised ``fast`` switch is read
        and written, by ``AcpProvider.fast_mode_enabled`` / ``set_fast_mode``)
+   * - ``ACP_BACKENDS_APPROVE_FOR_ME``
+     - driver-internal (whether a session may opt into ``approveForMe``: its engine
+       switch, the option's settle and the audit row, by ``acp.kas_approve_for_me``,
+       and the dashboard's approve-for-me route)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -420,7 +424,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import FrozenSet, Set
+from typing import FrozenSet, Iterable, Set
 
 logger = logging.getLogger(__name__)
 
@@ -1304,6 +1308,23 @@ def kiro_cli_pick_backend() -> str:
     return ACP_BACKEND_KIRO
 
 
+def requested_kiro_pick(backend: str | None, available: Iterable[str]) -> str | None:
+    """*backend*, or the id a Kiro CLI pick loads as when *backend* is the Kiro CLI id.
+
+    For a backend a caller names for one run (``spawn_run(backend=...)``, a
+    workflow step's ``backend=``): a requested ``"kiro"`` follows the rule a stored
+    pick follows (:func:`kiro_cli_pick_backend`), so it runs kiro-cli's v3 engine
+    through KAS where a saved Kiro CLI choice would. The answer must also be in
+    *available* (what can start here), so a KAS this host cannot run never
+    replaces a Kiro CLI that can.
+    """
+    if backend == ACP_BACKEND_KIRO:
+        picked = kiro_cli_pick_backend()
+        if picked in available:
+            return picked
+    return backend
+
+
 # ── Capability membership (harness-parity H6, H7) ──
 # Every capability a backend may claim is an OPT-IN set in this vocabulary, never a negation at
 # the call site. ``not is_claude_backend`` reads correctly with two backends and
@@ -1410,6 +1431,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REGISTRY_NAMESPACE_BY_BACKEND,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,

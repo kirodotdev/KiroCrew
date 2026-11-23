@@ -581,6 +581,18 @@ is confirmed no longer enabled; absence from the on-disk map is not by itself
 proof (a clean rebuild starts from an empty map, and dropping on that basis made
 an enabled app's tools vanish).
 
+The writers that share `agents_spec_lock` — the agent-detail PATCH, fork and
+publish, the background fork refresh — are serialized from the other end, because
+the rebuild reads its merge base long before it takes that lock. Under the lock,
+just before the write, it reads the file again: identical bytes change nothing,
+and otherwise every top-level key the rebuild left as its base had it takes the
+file's current value (`_carry_concurrent_spec_edits`), so a save committed mid
+rebuild is kept instead of reverted. A key the rebuild derived itself stays as
+derived, the `includeMcpJson: false` pin included, a carried `allowedTools`
+runs through the final auto-approve pass again, and a carried `toolsSettings`
+loses the retired `deniedCommands`/`autoAllowReadonly` again, so carrying can
+never widen a grant.
+
 ### Servers a connected computer exposes (`connected-computer-<name>`)
 
 A chat bound to a connected computer (feature preview; providers.md § Connected computers
@@ -636,7 +648,7 @@ quarantine exclusion, and the discover-and-sync step (`sync_discovered_servers`,
 
 | Owner | Owns |
 |---|---|
-| `mcp_discovery_server_info.py` | `McpServerInfo`, the scope names and config-source tables, and `redact_mcp_headers` / `redact_mcp_error` |
+| `mcp_discovery_server_info.py` | `McpServerInfo`, the scope names and config-source tables, and `redact_mcp_headers` / `redact_mcp_error` (the configured header values are masked first, then the generic credential scanners) |
 | `mcp_discovery_probe_state.py` | the protocol revision every client handshake offers and steps down to, the probe timeouts and error cap, the once-only warning ledgers, and the probe-result cache |
 | `mcp_discovery_managed.py` | the managed servers' subcommand and tool-module tables, `managed_server_is_session_bound`, the in-process tool read, and stale-command repair |
 | `mcp_discovery_config.py` | loading the agent config and the `mcp.json` sources per scope, and `list_servers` |
@@ -1748,6 +1760,22 @@ is still stubbed, restarted so every stub is re-emitted with or without
 `--poolable`, and sessions are relinked. A write that bypasses that endpoint takes
 effect at the next gateway start.
 
+A per-server share (`POST /api/mcp-gateway/servers/stub`) applies the same way,
+with the configured set: the broker is stopped and started with it
+(`mcp_broker._apply_mcp_stub`), because a routed server's target lives in the
+daemon's environment from spawn (`daemon.launch.env_target_resolver`) and the
+overlays are written with it. The gateway keeps running. Chats attached to the old
+daemon get their in-flight routed calls failed with a retryable error after
+`DRAIN_SECS`. Stubs for retained targets reconnect (`stub.py`) unless they have
+requested resource subscriptions, which the new daemon cannot recover. Every
+broker restart resets open chats through `reset_sessions`, including additions
+and approved launches; removing a served target also resets them. Busy chats
+reset when their turn ends (`defer_busy=True`, `keep_busy=True`), and the response
+reports `sessions_reset`. This applies even when an `mcp.server` card leaves
+**Restart open chats to use it** unchecked. Starting the first broker only
+refreshes defaults; the card's checked option resets open chats so they pick up
+the new toolset.
+
 `response_spill_threshold_bytes` is read in the BROKER process
 (`gatewayd`), which runs no config watcher — `config.live.snapshot()` is always
 `None` there — so a per-use read of the live snapshot would be inert and the
@@ -2257,6 +2285,16 @@ zero workspace agents. `_project_shadow_of` takes `dispatchable_only` for that, 
 its default is unchanged so the governance refusal in `agent_materialization/worker_agent.py`, for which a file
 in any state is a claim on the name, keeps refusing.
 
+A checkout whose `.kiro/agents/` is the folder the overlay was rewritten from is
+not a checkout for this rule. The home folder is exactly that when the user-level
+agents live in `~/.kiro/agents`, so a chat, cron run or sub-agent working in `~`
+finds the user-level spec itself there. `session_servers._is_overlay_source`
+compares the two folders by file identity (`config.paths.spec_dir_for`), and such a
+spec is not a shadow: the overlay stays in effect and every shared server stays
+brokered. Counted as a shadow, it would run those servers raw inside the session;
+on the Claude Code backend that is inside the chat's sandbox, where a stdio server
+that keeps its sign-in outside its own process finds none.
+
 ### Bot overlays
 
 A Bot's worker runs on `kirocrew-mate-worker`, and both that base spec and
@@ -2335,11 +2373,14 @@ swap landing in between is not caught, the same race the top-level overlay
 folder has.
 
 A worker session finds its stubs by its own execution record, never by the shared
-name, and only on KAS: `_pooled_session_servers_and_ref_spec` passes the session
-key on a positive `backend == kas` check, and `session_servers` answers
-`kirocrew-mate-worker` with that key only through
-`mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. Every other host
-passes no key and gets no stub for `kirocrew-mate-worker`: the stock worker spec is
+name: KAS (`_pooled_session_servers_and_ref_spec`, on a positive `backend == kas`
+check) and the mirrored hosts (`AcpRuntime._mirrored_session_mcp`,
+`AcpClient._resolve_session_mcp_servers`) pass the session key, as pi
+(`AcpClient._pooled_broker_stubs`) does only when the session is a pi worker
+whose slot this process has noted (`members.is_crewmate_worker_session`), and
+`session_servers` answers `kirocrew-mate-worker` with that key only through
+`mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. A lookup with no
+key gets no stub for `kirocrew-mate-worker`: the stock worker spec is
 rewritten like the conductor's (`with_conductor_source`), so
 `<overlay_dir>/kirocrew-mate-worker.json` exists, and a lookup by that name would
 hand its base stubs to a session without that session's merged limits. The record
@@ -2370,8 +2411,25 @@ mutes or marks registry-governed is withdrawn (`SessionExtras.withdrawn_stub_nam
 and both session start paths remove it from the session-level array before the
 hoist: a mute or a `type: registry` saved while a worker starts still takes effect. The
 same captured names reach the KAS projection for the background helper
-`kirocrew-lite`, which withdraws every stub its spec does not mount. claude's mirrored worker path is
-unchanged.
+`kirocrew-lite`, which withdraws every stub its spec does not mount. A
+mirrored host (codex, claude) withholds from its projection the names of exactly the
+stubs that lookup returned, and its mirror holds them to the projection's own read
+of the worker spec, as it does any agent's stubs: the `tools` allowlist with its
+mutes, codex's withhold rules and session-bound stub shape, claude's deny rules.
+That read also re-checks them as KAS does (`withdrawn_worker_stubs`): a stub whose
+server it drops, mutes or marks registry-governed leaves the array, and its name
+stays withheld, so neither half mounts it. So a Codex worker reaches
+`kirocrew-work` through a stub bound to its own session token.
+On pi, `AcpClient._resolve_session_mcp_servers` withholds from the
+worker's spec mounts the names of the stubs that keyed lookup returned, so the
+gateway, not pi, starts a Bot-added server and resolves its `secret://` values;
+the worker base's own routed servers (`kirocrew-core` and the rest) are stubs in
+place of their spec entries too.
+The stubs that reach pi come from a second keyed lookup made after that spec read,
+so the merged-spec check above drops a stub whose server was removed, muted or
+marked registry-governed in between, and they pass the worker spec's `tools`
+allowlist (`_member_stub_allowlist`), which a worker records whether or not the
+session is marked a member.
 
 An app callback from a Bot's stub is governed as that worker's tool calls
 are. The spool record carries the stub identity `crewmate:<id>`, which no profile
@@ -3071,7 +3129,9 @@ server's args, env, url and headers) and refuses the proposal with `400
 invalid_text` naming the offending path, because the card shows the parameters
 and Apply sends them as written; the plan is never rewritten at publication. An
 ordinary server URL is not exfiltration-shaped and passes. Because of that, an
-`mcp.add_custom` card shows everything Apply sends: the full launch line
+`mcp.add_custom` card (no longer raised by an agent: `propose_change` refuses it
+with `use_request_server`, and `request_server` raises `mcp.server` instead) shows
+everything Apply sends: the full launch line
 (`shlex.join` of command and args, or the url; the row wraps), every env and
 header value (`KEY=value`, `Name: value`), and any other spec field, each passed
 through the credential redactor as a second line of defence. `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change` and `get_change_status` are exact
@@ -3599,7 +3659,15 @@ change card, and the server is written to the template's additions record
   (`member_capability_catalog.resolve_server`, shared with
   `request_capabilities`): `source: "gateway"` copies a server this gateway runs
   and has switched on, `source: "registry"` takes the official registry's
-  install plan. An id the official registry cannot resolve (absent, as on an
+  install plan. The server name follows the additions record's own rule, which
+  the card applies too (`template_mcp_additions._check_server`: letters, digits,
+  `.`, `_`, `-` and a `:` inside the name, up to 64 characters), so a name with
+  `/` or `@` is refused with a reason that says it cannot be added to an agent
+  template. A name with `:` must be one the user's own MCP config declares and
+  no installed app mints (`template_server_request._users_own_server`), else
+  `400 app_server`: an app's `<app>:<server>` key lives in the rendered spec,
+  and a template's copy would not follow the app's own install. An id the
+  official registry cannot resolve (absent, as on an
   edition that withholds it, or lacking the id) but the edition package
   registry holds (`mcp_discover.edition_package_detail`, the `capability`
   provider) is refused `edition_package`: that registry installs through the
@@ -3875,7 +3943,7 @@ a count of package modules each.
 
 `mcp_cron.py` keeps the cron server itself — argument validation, the call path, the
 caller's identity and ownership checks, the tool bodies (`_call_tool_inner`) and the
-stdio entry point — and is a mirror facade over four sibling owners, so every name
+stdio entry point — and is a mirror facade over five sibling owners, so every name
 still reads and patches as `mcp_cron.<name>`. New cron-server code goes to the owner of
 its responsibility:
 
@@ -3885,6 +3953,7 @@ its responsibility:
 | `mcp_cron_vet` | the cron gate: the governance, command and script vets, the fire-time re-vet `vet_job_at_fire_time`, the storage-time denial audit, and the folder `cron_add` names |
 | `mcp_cron_tool_list` | the tool catalogue `tools/list` returns |
 | `mcp_cron_list_render` | `cron_list`'s full, compact and JSON renderings and the run-history fold |
+| `mcp_cron_chat_folder` | the sidebar chat folder `cron_add` / `cron_update` file a job's chat in: the Schedule form's checks, folder-store hold and tab move, run on the `POST /api/crons/tools` route's loop the route marks per call |
 
 The remaining upward dependency is known: the plumbing could move to a module the
 handlers own, which would make `mcp_tools` a leaf. That is a separate change —

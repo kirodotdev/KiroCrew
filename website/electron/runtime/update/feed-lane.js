@@ -13,6 +13,7 @@ const {
   withinFreshnessBound,
   createFreshnessGate,
 } = require("./freshness-gate");
+const { noteRelaunch } = require("../../relaunch-intent");
 
 const FORCE_EXIT_AFTER_MS = 5 * 1000; // failsafe: guarantee exit after quitAndInstall
 // darwin: how long after `before-quit-for-update` Squirrel's own quit may take
@@ -29,12 +30,14 @@ function showNotice(Notification, title, body) {
   try { new Notification({ title, body }).show(); } catch { /* notifications optional */ }
 }
 
-// The quit-time notification for an install refused because a gateway from
-// this app's bundle kept running. Main-process copy is English-only (outside
-// the renderer catalogs, like the other update notifications here).
+// The "Update not installed" body. `stopCommand` stops a gateway from this
+// app's bundle that kept running; without one the holder is unidentified and no
+// command is named. Main-process copy is English-only (outside the renderer
+// catalogs, like the other update notifications here).
 function gatewayStillRunningNotificationBody(stopCommand) {
-  const command = stopCommand || "kirocrew stop";
-  return `The background gateway Kiro Crew started earlier is still running. To install the update, run “${command}” in Terminal, then reopen Kiro Crew. It stops only that gateway; your chats and settings are kept.`;
+  return stopCommand
+    ? `The background gateway Kiro Crew started earlier is still running. To install the update, run “${stopCommand}” in Terminal, then reopen Kiro Crew. It stops only that gateway; your chats and settings are kept.`
+    : "Something Kiro Crew could not identify may still be using its gateway, so the update was not installed. The update stays ready and installs when you reopen Kiro Crew once its gateway is free.";
 }
 
 /**
@@ -154,8 +157,8 @@ function createFeedLane({
   // `verifyingStage`, `preparingDownload`, `verifyQuiet`, `abandonedCheck`,
   // `abandonedError`, `inFlightCheckError` -- are this lane's check state, read
   // and written through `gate`; the stage and the feed channel stay here and are
-  // handed to it as readers. `configureFeed` and `safeCheck` are hoisted
-  // declarations below, so they can be passed before their definition.
+  // handed to it as readers. `configureFeed`, `safeCheck` and `offerVerdict` are
+  // hoisted declarations below, so they can be passed before their definition.
   const gate = createFreshnessGate({
     autoUpdater,
     log,
@@ -164,6 +167,7 @@ function createFeedLane({
     stage: () => ({ ready: updateReady, version: stagedVersion, channel: stagedChannel }),
     configureFeed,
     safeCheck,
+    offerVerdict,
     emit,
   });
 
@@ -497,8 +501,8 @@ function createFeedLane({
   }
 
   // The pre-install freshness verdict is `gate.verifyStageIsLatest()` (see
-  // freshness-gate.js): it re-consults the feed through an ordinary check and
-  // reads the answer back out of the stage the handlers below leave behind.
+  // freshness-gate.js): it reads the feed without a check and judges the offer
+  // with `offerVerdict`, as the `update-available` handler below does.
 
   // Force-exit failsafe — ONLY safe once the platform's installer has actually
   // taken over.
@@ -707,6 +711,8 @@ function createFeedLane({
   function relaunch() {
     if (updateReady && stagedArmed) {
       relaunchAfterInstall = true;
+      // The installer relaunches the app, so this quit is a restart, not a Quit.
+      noteRelaunch();
       app.quit();
       return;
     }
@@ -1327,15 +1333,14 @@ function createFeedLane({
     }
     reportUpdaterFailure(err);
   });
-  // Suppressed for the freshness gates' own re-checks, for the reason spelled out
-  // at the emit in safeCheck: `checking` unmounts the update card, so a gate
-  // running inside a Download or Install click would blank the surface the user
-  // just acted on. This handler needs both flags where safeCheck needs only one —
-  // verifyStageIsLatest calls autoUpdater.checkForUpdates() directly, so this is
-  // the only place its check would reach the renderer.
+  // Suppressed for the Download click's own re-check, for the reason spelled out
+  // at the emit in safeCheck: `checking` unmounts the update card, so the gate
+  // running inside that click would blank the surface the user just acted on.
+  // The pre-install gate sends no check of its own (it reads the feed), so the
+  // click's flag is the only one this needs.
   autoUpdater.on("checking-for-update", () => {
     log.info("[update] checking…");
-    if (!gate.ownsCheck()) emit("checking");
+    if (!gate.preparingDownload) emit("checking");
   });
   autoUpdater.on("update-not-available", () => {
     if (gate.abandonedCheck) {
@@ -1382,6 +1387,45 @@ function createFeedLane({
     log.info("[update] up to date");
     emit("not-available");
   });
+  /**
+   * What the followed lane's offer of `version` means for this lane: the one
+   * verdict the `update-available` handler below acts on and the freshness
+   * gate's read reports. "not-newer" is the direction gate, the fix for the
+   * "update to an OLDER version" nag: with allowDowngrade=true electron-updater
+   * offers ANY version that differs from the running one, so a same-channel
+   * version that is not newer is up to date (a deliberate channel switch,
+   * followed !== default lane, is exempt). "staged" is the build already
+   * staged, "newer" anything else.
+   */
+  function offerVerdict(version) {
+    if (
+      version &&
+      !shouldAutoOffer({
+        candidate: version,
+        current: app.getVersion(),
+        // The channel THIS candidate's feed was configured for, captured at
+        // check time (feedChannel), NOT a live currentChannel() read. If the
+        // preference flipped while this check was in flight, a live read would
+        // pair the new channel with the OLD feed's candidate and wrongly treat
+        // a stale-feed downgrade as a deliberate switch. Falls back to a live
+        // read only before the first configureFeed() has run.
+        followedChannel: feedChannel || currentChannel(),
+        // The lane this build follows with NO preference. Folds a promoted
+        // stable build's insider-stamped bytes back to stable, so only an
+        // explicit preference that MOVES the install off its default lane reads
+        // as a deliberate channel switch (see shouldAutoOffer). A required
+        // channel is the default lane too, so an LTS build on lts is no switch.
+        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), "", getRequiredChannel()),
+      })
+    ) {
+      return "not-newer";
+    }
+    // Because the RUNNING version never changes mid-session, the updater
+    // reports "available" for the staged version too — so this comparison is
+    // what separates a stage that is still the latest from a superseded one.
+    return updateReady && stagedVersion && version === stagedVersion ? "staged" : "newer";
+  }
+
   // DISCOVERY, before any bytes move. electron-updater's autoDownload stays
   // false so it never fetches inside checkForUpdates; whether a download
   // follows is OUR decision, made here from the preference, so the automatic
@@ -1416,34 +1460,8 @@ function createFeedLane({
     // publishes 0.4.1; you are running bytes it never shipped" instead of
     // folding its version to a stable release that does not exist.
     recordLaneVersion(foundVersion, feedChannel);
-    // Direction gate — the fix for the "update to an OLDER version" nag.
-    // electron-updater fires this for ANY feed version that DIFFERS from the
-    // running one, because allowDowngrade=true — so on a build running ahead of
-    // its channel's published latest it reports a DOWNGRADE as available. When
-    // this is a same-channel version that is not newer, suppress the automatic
-    // path entirely: discard any stage armed for it, report up to date, and do
-    // NOT download or nag. A deliberate channel switch (followed !== default
-    // lane) is exempt, and explicit user downloads are unaffected.
-    if (
-      foundVersion &&
-      !shouldAutoOffer({
-        candidate: foundVersion,
-        current: app.getVersion(),
-        // The channel THIS candidate's feed was configured for, captured at
-        // check time (feedChannel), NOT a live currentChannel() read. If the
-        // preference flipped while this check was in flight, a live read would
-        // pair the new channel with the OLD feed's candidate and wrongly treat
-        // a stale-feed downgrade as a deliberate switch. Falls back to a live
-        // read only before the first configureFeed() has run.
-        followedChannel: feedChannel || currentChannel(),
-        // The lane this build follows with NO preference. Folds a promoted
-        // stable build's insider-stamped bytes back to stable, so only an
-        // explicit preference that MOVES the install off its default lane reads
-        // as a deliberate channel switch (see shouldAutoOffer). A required
-        // channel is the default lane too, so an LTS build on lts is no switch.
-        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), "", getRequiredChannel()),
-      })
-    ) {
+    const verdict = offerVerdict(foundVersion);
+    if (verdict === "not-newer") {
       log.info(
         `[update] feed offers ${foundVersion} but running ${app.getVersion()} is not older `
           + "on the same channel — treating as up to date (suppressing downgrade nag)",
@@ -1463,23 +1481,18 @@ function createFeedLane({
       return;
     }
     // A stage is only useful if it is still the latest thing on the feed.
-    // Because the RUNNING version never changes mid-session, the updater
-    // reports "available" for the staged version too — so the comparison
-    // below is what separates the two cases.
+    if (verdict === "staged") {
+      log.info(`[update] ${stagedVersion} already downloaded — awaiting install`);
+      // This lane serves the very build that is staged (a promoted release is
+      // the same bytes on both channels), so the stage now belongs to it.
+      stagedChannel = feedChannel;
+      // Not for a check an install gate joined: the quit path has already
+      // emitted `installing`, and a `downloaded` here would replace that
+      // overlay with the "Update ready" dialog while the gateway stops.
+      if (!gate.verifyingStage) emit("downloaded", downloadedPayload());
+      return;
+    }
     if (updateReady && stagedVersion) {
-      if (foundVersion === stagedVersion) {
-        log.info(`[update] ${stagedVersion} already downloaded — awaiting install`);
-        // This lane serves the very build that is staged (a promoted release is
-        // the same bytes on both channels), so the stage now belongs to it.
-        stagedChannel = feedChannel;
-        // Not for an install gate's own re-check: the renderer is already on
-        // this stage, the manual path emits `installing` next, and the quit
-        // path has emitted it already. A `downloaded` here would replace the
-        // installing overlay with the "Update ready" dialog while the gateway
-        // stops.
-        if (!gate.verifyingStage) emit("downloaded", downloadedPayload());
-        return;
-      }
       // Superseded: drop the stale stage so the next download takes the NEWEST
       // build rather than installing an already-old one.
       log.info(`[update] staged ${stagedVersion} superseded by ${foundVersion} — discarding stage`);

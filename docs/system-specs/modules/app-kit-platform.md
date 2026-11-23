@@ -1580,6 +1580,12 @@ when a manifest source's directory inode or mtime moves, when the sources change
 and after `execution.invalidate_shipped_builtin_apps`, which every app-record write
 and `invalidate_orphan_cache` (uninstall, cleanup, adoption) call.
 
+`discovery.discover_builtin_apps` keeps its scan of the package's own `builtins/`
+per process too, so gateway boot's registration, orphan check and public-id read
+share one scan. It is scanned again when that directory's inode or mtime moves, and
+a scan that skipped a manifest or left a path unchecked is never kept. Each caller
+gets its own copy of the list.
+
 ### 5.1 Resource-path containment is host-independent and flavour-explicit
 
 Every manifest resource path (`agents`/`skills`/`sops`, `ui.entry`,
@@ -3308,6 +3314,11 @@ Not ownership-judged yet: `/api/sessions/{id}/agents` and its `/{agent_id}` and
 `/api/sessions/usage` (with `usage/refresh`), `/health` and `/memory`. An app
 that declares `/api/sessions/*` still reaches them as before; narrowing them is
 a follow-up. The `/api/sessions/{id}/crew-log*` reads are owner-only already.
+`POST /api/sessions/restart` runs behind `dashboard_owner_surface_guard`
+(its module's `guard_owner_surface_routes(..., dashboard_owner_only=True)`),
+which judges only a dashboard user: a dashboard session that is not the
+owner's is refused 403 `owner_only`, and an app token or an internal caller
+passes it unjudged.
 
 **Every per-slot route takes one ownership decision.** `permissions.api` is a
 prefix match, so an app granted `/api/chat` reaches every
@@ -3540,7 +3551,7 @@ with a compensating per-response control — event scoping is that control for
 returns owner hash, host specs, cron and usage stats, and the live safety-override
 state, and an app that wants it declares it in `permissions.api`.
 
-**A dashboard PUT to the generic config route is owner-only.** `PUT /api/apps/<name>/config` (`apps/routes_listing.py` `handle_app_config`, which serves every app that registers no `/config` route of its own) refuses a dashboard subject that is not the owner with the shared 403 `owner_only`, while an app token stays within the grant the `token_auth` middleware gave it (its own namespace, or a `permissions.api` entry).
+**A dashboard PUT to the generic config route is owner-only.** `PUT /api/apps/<name>/config` (`apps/routes_listing.py` `handle_app_config`, which serves every app that registers no `/config` route of its own) refuses a dashboard subject that is not the owner with the shared 403 `owner_only`, while an app token stays within the grant the `token_auth` middleware gave it (its own namespace, or a `permissions.api` entry); a GET carries the file's `ETag` (`conditional_get.strong_content_etag` of its bytes), and a PUT with `If-Match` is written only while the file still has that tag, else 412 `config_changed` with nothing written, the handler's seed and its compare-and-write holding the app's own `config.json.lock` (the lock an app backend such as Issue Radar holds across its own config read-modify-write), so a write by the app cannot land between the compare and the write.
 
 **Install, update and registry writes are owner-only for every caller.**
 `POST /api/apps/install`, `POST /api/apps/registry/install`,
@@ -6117,9 +6128,12 @@ label, so `validate()` refuses it on a name longer than 63 characters.
 
 **Routing.** `apps/app_web_origin.py::app_web_origin_middleware` sits in the
 dashboard chain directly inside the deny-audit boundary and outside the host
-canonicalization and the `Host` barrier (§ the chain in
+canonicalization, the headless dashboard filter and the `Host` barrier (§ the chain in
 `dashboard/server_runtime/middleware_chain.py`). A `Host` under `.apps.localhost`
-is decided there and reaches no dashboard layer:
+is decided there and reaches no dashboard layer. Headless mode keeps this dispatch:
+an enabled app's root page, assets and unmatched navigation paths belong to the app,
+not to the removed dashboard. The app's locality, listener and enablement checks
+still decide every request:
 
 - served only to a direct local request (`is_direct_local_request`, and not
   `is_proxied_request`): a loopback peer with no forwarding header, not relayed.
@@ -6152,7 +6166,12 @@ is decided there and reaches no dashboard layer:
   from many frames or a compressed one. When either side ends, both legs close
   with the code that side reported: no status (an empty close frame, or 1005)
   becomes 1000, a dropped connection (1006, or 1015) becomes 1001, and a code outside
-  1000-4999 becomes 1002, because those codes are never sent.
+  1000-4999 becomes 1002, because those codes are never sent. The relay follows
+  no upstream redirect: `ws_connect` has no switch for that, so both sessions
+  the relay dials through carry a `TraceConfig` (`_NO_REDIRECTS`) that closes a
+  30x answer and fails the upgrade with 502, and `Kiro-Relay-Authorization`
+  never reaches the redirect target. The HTTP relay passes
+  `allow_redirects=False` itself.
 
 **Remote Crew pane ports.** A pane loads this dashboard at
 `http://<hub's loopback name>:P`, where P is the hub's SSH forward port and
@@ -7214,25 +7233,29 @@ this repository without core changing.
 | worker slot modes | `register_worker_slot_mode(app_id)`, one per app | `dashboard/chat_handlers.py` `_CREATABLE_MODES` (section 23a) | the chat create paths accept `""` alone, plus an installed app's own id when it declares `permissions.hiddenSessions` (section 23a) |
 
 A builtin app registers from a `seams.py` at its package root. The first lookup of any
-seam imports every such module once, for each name in `BUILTIN_NAMES`, found by file so
-that no other app's package is imported. A seam therefore answers the same in the
-gateway, a CLI process and a test. That module is imported by core callers that never
-load the app's backend, so it binds paths and small provider objects, and each provider
+seam, or a `seams.release_app` that runs before any lookup, imports every such module
+once, for each name in `BUILTIN_NAMES`, found by file so that no other app's package is
+imported. A seam therefore answers the same in the gateway, a CLI process and a test.
+That module is imported by core callers that never load the app's backend, so it binds
+paths and small provider objects, and each provider
 method imports what it delegates to at call time. The aws-control package `__init__`
 serves `register_routes` lazily for the same reason. Any other in-process code, such as
 an installed app's `on_startup` hook, calls `seams.register` itself.
 
 An installed copy of a builtin (an adopted former built-in, section 33) registers under
-the builtin's id from its `on_startup`, so it replaces the builtin's provider while it
-is loaded. Its provider imports the copy's own modules at call time, and a disable, an
-update or an uninstall unloads them (`module_loader.unload_app_modules`), after which it
-could only raise. The unload therefore calls `seams.release_app(name)`, which hands each
-seam that app holds back to the provider its builtin's `seams.py` registered during the
-one-time load (kept in `_builtin_providers`). The core feature then answers from the wheel
-copy exactly as it did before adoption, whether or not the app is enabled. A seam no
-builtin provides stays with its app, and a builtin's own provider is never touched. A CLI
-process, and a gateway that boots with the app disabled, never run the copy's
-`on_startup`, so the builtin's provider answers there throughout.
+the builtin's id from its `on_startup`, so its provider answers while it is loaded,
+whether its `on_startup` runs before or after the one-time load: a load that finds the
+seam already held by the same id keeps the builtin's provider for the hand-back only.
+Its provider imports the copy's own modules at call time, and a disable, an update or an
+uninstall unloads them (`module_loader.unload_app_modules`), after which it could only
+raise. The unload therefore calls `seams.release_app(name)`. It first runs the one-time
+load if no lookup has run it yet, then hands each seam that app holds back to the
+provider its builtin's `seams.py` registered during that load (kept in
+`_builtin_providers`). The core feature then answers from the wheel copy exactly as it
+did before adoption, whether or not the app is enabled. A seam no builtin provides stays
+with its app, and a builtin's own provider is never touched. A CLI process, and a
+gateway that boots with the app disabled, never run the copy's `on_startup`, so the
+builtin's provider answers there throughout.
 
 A provider answers whether or not its app is enabled, because the core features above
 worked with aws-control switched off (its default). One app holds a seam: a second app
@@ -7243,8 +7266,10 @@ never the registry's, so a provider module registering from another thread canno
 deadlock it; a seams module therefore only registers while it is imported, and never
 looks a seam up. The registry is process state and holds no per-caller data.
 
-`test_app_seams.py` pins the registry, the shipped providers, the hand-back on an
-installed copy's unload, and each core caller's answer with no provider. `test_core_aws_control_decoupling.py` is the gate: no module
+`test_app_seams.py` pins the registry, the shipped providers, an installed copy's
+provider answering when it registers before the first lookup, the hand-back on its
+unload before or after that lookup, and each core caller's answer with no provider.
+`test_core_aws_control_decoupling.py` is the gate: no module
 under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
 `kiro_crew.apps.builtins.aws_control` in any form. The string constants there that still
 name the package are a pinned list that may only shrink (see `aws-control.md`,
@@ -7782,7 +7807,8 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 `useBrowserMedia` (§45), and `ctx.embed`'s batch members; level 11 adds the SDK's `BrowserView`,
 `useBrowserView` and `useBrowserCoords` (RFC app-sdk-browser, step 1c) and the SDK's
 `appWebOriginStatus` (§18k); level 12 adds `permissions.kiroOperations`, its route and
-`ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l). Several seams share level 7,
+`ctx.kiro_call` (§47), and the SDK's `SessionChanges` and `DiffView` (§18l); level 13 adds
+`/api/apps/<name>/browser-sites` and the SDK's `useBrowserSites` (§45). Several seams share level 7,
 three share level 8, and the open batch that level 10 starts shares level 10, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
@@ -10334,6 +10360,45 @@ entries it returns, the app is enabled and `third_party_ceiling_closed` admits i
 disable, an uninstall, a withdrawn trust grant or an update that drops a site ends the
 grant at the next call.
 
+**The owner's own edits (seam level 13).** The owner may add a site the app never
+declared, remove one, or turn one off (`browser_sites.site_change`). They live in the
+gateway-only record `member-records/app-browser-sites/<app>.json`
+(`protected_app_state.read_owner_browser_sites`, keys `added`, `disabled`, `removed`),
+never in the app's tree. The record names its install (`installedAt`). That value comes from the app's own `installed.json`, which the app's sandboxed code can rewrite, so a mismatch only narrows: the record's `added` entries are dropped and its `disabled` and `removed` entries stay in force. An uninstall, a fresh install and a new registration under the name remove it; the edit holds the app's record lock across the install check and the write. `app_browser_sites` returns the
+approved declared entries the owner did not remove, plus the added ones, less the turned-off
+ones, under the same enabled and trusted checks; an unreadable record grants nothing. An
+added entry meets `entry_refusal`, the rule a declared one meets (https only; no bare `*`,
+wildcard host, public suffix, IP, `localhost`, port or user info), and the owner may add at
+most `MAX_OWNER_SITES` (32). `add` of a declared entry approves it and of a turned-off one
+turns it back on; a removed declared entry stays removed across updates, is still listed
+with status `removed` so the owner can add it back, and cannot be removed or turned off
+again (`not_listed`); the owner's ruled entries are not staged on the detail page. A removal or turn-off ends at the next op,
+as a withdrawn approval does: the op route reads the list fresh and blanks a tab on a site
+no longer listed.
+
+`GET /api/apps/{name}/browser-sites` (`apps/browser_sites_routes.py`) answers
+`{sites: [{site, source: app|owner, status: approved|pending|disabled|removed}], active}` to the
+owner, the app's own token and an internal caller. `POST` with `{action: add|remove|disable,
+site}` is owner-only: an app token is `app_token_forbidden`, an internal caller (an agent's
+MCP tools, kiro-cli) is `dashboard_session_required`, any other dashboard session is
+`owner_only` (`require_owner_dashboard_request`), all 403 and audited. An app's backend is
+not refused: it can mint an owner token through the local owner mint (`/api/token/local`,
+basis `spawned-app`), which carries no app claim, and post `add` with no dialog, the same
+reach it has over `/enable`; the hard refusal covers the app token and the agent's tools,
+not the backend process. `browser-sites` is a
+reserved core segment (`CORE_APP_ROUTE_SEGMENTS`). The SDK's `useBrowserSites`
+(`website/src/app-sdk/browserSites.ts`) reads the list, applies `requestRemove` and
+`requestDisable` at once, and draws the dashboard's own dialog (`askAppConfirm`) before
+`requestAdd` sends anything, naming the site and what the agent may then do. That dialog
+is a guardrail, not a boundary: an app page runs in the dashboard document with the
+owner's session and could call the route without it, as it can call `/enable`
+(`docs/architecture/app-platform-trust-model.md`). The detail page lists every site with a
+Remove, a turned-off one with a Turn on and a removed one with an Add back (no Remove); both
+ask the owner to confirm in the owner's own words (the site, and what the agent may then do
+there) before they send `add`, not with the app's request dialog, since the owner chose
+it there (`pages/AppDetailBrowserSites.tsx`). A refused off-list request tells the agent
+which sites it may open (`site_not_allowed`), so it can look on a site the owner added.
+
 **Two enforcement points.** The tool gate's `app-browser-sites` row
 (`hooks._tier_app_browser_sites`, its conditions in `browser_sites.gate_grants` imported at call time, after every deny row and governance) auto-approves a
 call only when the caller is the app's own dashboard slot (`facts.app`, the slot's
@@ -10376,15 +10441,26 @@ walker's `media` method in the isolated world (`browser_harness/media.py`), afte
 page check. A play the browser refuses gets one click on the element, after the page is judged again, and a `state` read writes no audit row (a player polls it). The SDK's
 `useBrowserMedia` (`website/src/app-sdk/browserMedia.ts`) is the page's handle (its `pollMs` is raised to at least 500 ms; a non-finite or non-positive value reads once); it sends
 through the scoped client, so the app declares `/api/browser/media`. Its `onEnded` option
-is the continuous-play cue: called once per ending, derived in the page from the `ended`
-field of the state it already polls, so it adds no route, no event and nothing the agent
-can reach. With the page closed the gateway itself reports the ending to the app's
+is the continuous-play cue: called once per ending, derived in the page from the `endId`
+field of the state it already polls (the first answer, with nothing to compare, counts an
+`ended` element), so it adds no route, no event and nothing the agent can reach. The
+walker counts endings in the tab itself (`mediaEnds` in `snapshot_walker.js`, once per
+document, in the isolated world): the `ended` event, or `emptied` within `END_NEAR_S`
+(2 s) of the end, since YouTube removes `src` at the end and leaves an element that is
+never `ended`. An ending counts after `END_GRACE_MS` (3 s) with no `playing` on the same
+`pathname` + `search` (an advert handing over to the video is dropped), or at once when
+`playing` comes at another address (the site's own autoplay); `ended` then reads true
+until the next `playing`, and `endId` (`<document id>:<count>`, null before the first)
+changes. Only the largest shown element's events count (a preview or sound effect is
+ignored), an element already ended when the listeners go in is counted at once, and a
+`playing` past the grace with no read between still counts the ending. The address is
+compared in the page and never returned. With the page closed the gateway itself reports the ending to the app's
 backend, when the app declares `backend.hooks.on_browser_media_ended`
 (`dashboard/handlers/browser_media_watch.py`): a successful op of the app's own agent
 (`browser_ops.run_browser_op`, a slot with approved sites) starts one watch per slot,
 which every `WATCH_S` (3 s) makes the same `state` read on the slot's own tab, skipping
 the tick while an agent op, a media request or a takeover holds the tab, and calls the
-hook once per ending with `(ctx, {"event": "browser_media_ended", "session_key",
+hook once per new `endId` (a watch's first read counts an `ended` element) with `(ctx, {"event": "browser_media_ended", "session_key",
 "origin", "duration"})` through `hooks_integration.dispatch_app_event` and
 `LifecycleDispatcher.start_event` / `finish_event`. The checks below and the hook's start
 run under `app_lifecycle_lock(app)`, and the started task joins `_DETACHED_HOOK_TASKS`,
@@ -10405,7 +10481,9 @@ Writers: `apps/browser_sites.py`, `apps/manifest_sections.py` (`Permissions.brow
 `hooks.py` (`GATE_TIERS`), `dashboard/handlers/browser_ops.py`,
 `dashboard/handlers/browser_media.py`, `browser_harness/media.py`,
 `browser_harness/snapshot_walker.js` (`media`), `website/src/app-sdk/browserMedia.ts`,
-`website/src/pages/AppDetailPage.tsx`.
+`website/src/pages/AppDetailPage.tsx`, `apps/browser_sites_routes.py`,
+`apps/protected_app_state.py`, `apps/manager_uninstall.py`,
+`website/src/app-sdk/browserSites.ts`, `website/src/pages/AppDetailBrowserSites.tsx`.
 
 ## 46. An app's grant to the browser tabs of its own chats (RFC #38322, step 1a)
 

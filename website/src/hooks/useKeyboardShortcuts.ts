@@ -25,6 +25,8 @@ import {
   SHORTCUT_OVERRIDES_KEY,
   SHORTCUT_REGISTRY,
   chordMatchesEvent,
+  keyCapGlyph,
+  type LayoutMap,
   loadShortcutOverrides,
   matchShortcutEvent,
   resolveShortcuts,
@@ -491,11 +493,13 @@ export function jumpIndexForCode(code: string): number {
 }
 
 /** Badge label for the Nth (0-based) jump target: '1'–'9' then the letter
- *  sequence; null past the addressable range. */
-export function jumpLabelFor(index: number): string | null {
+ *  sequence, as `layout` (default: the page's) prints each key; null past the
+ *  addressable range. */
+export function jumpLabelFor(index: number, layout?: LayoutMap | null): string | null {
   if (index < 0) return null
-  if (index < 9) return String(index + 1)
-  return jumpLetters()[index - 9] ?? null
+  if (index < 9) return keyCapGlyph(String(index + 1), layout)
+  const letter = jumpLetters()[index - 9]
+  return letter ? keyCapGlyph(letter, layout).toLowerCase() : null
 }
 
 /** Map a KeyboardEvent.code to the display key the shortcuts modal shows. */
@@ -675,7 +679,7 @@ export function formatShortcut(def: ShortcutDef): string {
   if (def.ctrl) parts.push(mac ? '\u2303' : 'Ctrl')
   if (def.alt) parts.push(mac ? '\u2325' : 'Alt')
   if (def.shift) parts.push(mac ? '\u21e7' : 'Shift')
-  const keyLabel = def.key === 'ArrowLeft' ? '\u2190' : def.key === 'ArrowRight' ? '\u2192' : def.key === 'ArrowUp' ? '\u2191' : def.key === 'ArrowDown' ? '\u2193' : def.key === '`' ? '`' : def.key === 'Enter' ? (mac ? '\u23ce' : 'Enter') : def.key === ',' ? ',' : def.key === 'Escape' ? 'Esc' : def.key === 'Tab' ? (mac ? '\u21e5' : 'Tab') : def.key.toUpperCase()
+  const keyLabel = def.key === 'ArrowLeft' ? '\u2190' : def.key === 'ArrowRight' ? '\u2192' : def.key === 'ArrowUp' ? '\u2191' : def.key === 'ArrowDown' ? '\u2193' : def.key === 'Enter' ? (mac ? '\u23ce' : 'Enter') : def.key === 'Escape' ? 'Esc' : def.key === 'Tab' ? (mac ? '\u21e5' : 'Tab') : keyCapGlyph(def.key)
   parts.push(keyLabel)
   return parts.join(mac ? '' : ' + ')
 }

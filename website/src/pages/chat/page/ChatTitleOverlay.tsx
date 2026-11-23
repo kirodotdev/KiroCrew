@@ -23,6 +23,7 @@ import { useLabelTip } from '../../../components/InstantTip'
 import { i18nT } from '../../../i18n/t'
 import { uiLocation } from '../../../uiLocations/uiLocation'
 import { crewRootOf, mateRootOf } from '../../../lib/crewMode'
+import { platformShortcut } from '../../../utils/platform'
 
 interface ChatTitleOverlayProps {
   embedMode?: 'chat' | 'sessions'
@@ -266,7 +267,7 @@ export default function ChatTitleOverlay({
           <Columns2 size={13} /> {i18nT('pages.chatPage.in_split')}
         </Clickable>
         ) : (
-          <Clickable className="opacity-40 hover:opacity-100 transition-opacity cursor-pointer pointer-events-auto" onClick={() => enterSplit(activeSlot)} title={i18nT('pages.chatPage.split_view_d')} aria-label={i18nT('pages.chatPage.enter_split_view')}>
+          <Clickable className="opacity-40 hover:opacity-100 transition-opacity cursor-pointer pointer-events-auto" onClick={() => enterSplit(activeSlot)} title={i18nT('pages.chatPage.split_view_d', { shortcut: platformShortcut('Cmd+D') })} aria-label={i18nT('pages.chatPage.enter_split_view')}>
           <Columns2 size={14} />
         </Clickable>
         ))}

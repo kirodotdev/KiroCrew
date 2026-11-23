@@ -278,9 +278,9 @@ class AcpClient:
         # array cache: the host already holds the array this describes, and dropping
         # the cache for the NEXT session must not erase what THIS one consumed.
         self._session_agent_spec: dict[str, Any] | None = None
-        # A member session's spec ``tools`` allowlist on a mirror-less array host
-        # (pi), from the same parse; the pooled stubs pass through it.
+        # pi: the stubs' spec ``tools`` allowlist, and a worker's stub names withheld.
         self._member_stub_allowlist: ToolsAllowlist | None = None
+        self._pi_worker_stub_names: frozenset[str] = frozenset()
         self.member_context = False
         self._loaded_capability_template = ""
         self._capability_projection_gaps: tuple[str, ...] = ()
@@ -1110,7 +1110,7 @@ class AcpClient:
         return False, None
 
     def _note_worker_builtin_tools(self, builtin_tools: tuple[str, ...] | None) -> None:
-        """Keep the built-ins a crewmate worker's projection allows: this backend has
+        """Keep the built-ins a worker's or a named agent's projection allows: this backend has
         no option that carries them."""
 
     def _worker_settings_lag(self, spec: dict[str, Any] | None) -> bool:

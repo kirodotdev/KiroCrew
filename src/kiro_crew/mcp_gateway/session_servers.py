@@ -36,6 +36,13 @@ written at daemon launch from the rewriter's ``target_env``, and a stub carries
 its target only in its argv and its fallback log -- so an overlay written for a
 project agent after launch has no target the daemon can resolve.
 
+A checkout whose ``.kiro/agents/`` IS the folder the overlay was rewritten from
+declares nothing of its own: the home folder is exactly that when ``~/.kiro/agents``
+is the user-level directory, so a chat working there would otherwise run every
+shared server unpooled. Such a folder holds no spec of its own, so the lookup
+answers as it does with no checkout and the overlay stays in effect
+(``_is_overlay_source``).
+
 Precedence caveat: same-name override is verified against the shipped binary
 (``test_mcp_gateway_session_inject.py`` pins it, including a live check when
 kiro-cli is on PATH and ``KIROCREW_E2E_REAL_KIRO_CLI=1`` is set) but is NOT
@@ -50,9 +57,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.config.paths import spec_dir_for
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args, expand_stub_flags
@@ -271,6 +280,15 @@ def _project_spec_for_agent(
                 agent,
             )
             return None
+        if _is_overlay_source(agent, spec):
+            logger.debug(
+                "MCP-gateway: %s is the spec the overlay for %r was rewritten from "
+                "(this checkout's .kiro/agents is the user-level folder), so the "
+                "overlay stays in effect",
+                spec,
+                agent,
+            )
+            return None
         return spec
     except Exception:
         logger.debug(
@@ -334,23 +352,41 @@ def _pinned_overlay(overlay_dir: Path, agent: str) -> tuple[bool, dict[str, Any]
     return True, None
 
 
+def _is_overlay_source(agent: str, spec: Path) -> bool:
+    """Whether *spec* sits in the folder the overlay for *agent* is rewritten from.
+
+    That folder is :func:`~kiro_crew.config.paths.spec_dir_for`, the folder the
+    rewriter reads this agent's source from. A checkout whose ``.kiro/agents``
+    resolves to it (the home folder, with the user-level agents in
+    ``~/.kiro/agents``) holds no spec of its own, so the lookup resolves the agent
+    exactly as it does with no checkout: a pin, then the by-name overlay.
+    Compared by identity rather than by path text, so a symlinked folder answers
+    the same. A folder that cannot be compared answers ``False``:
+    the file still counts as a shadow, the direction this module already takes
+    for a stub it cannot vouch for.
+    """
+    try:
+        return os.path.samefile(spec.parent, spec_dir_for(agent))
+    except (OSError, ValueError):
+        return False
+
+
 def _load_overlay_for_agent(
     overlay_dir: Path,
     agent: str,
     work_dir: str | Path | None = None,
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
-    kas_worker_session_key: str | None = None,
+    worker_session_key: str | None = None,
 ) -> dict[str, Any] | None:
     """Locate the rewritten overlay spec for *agent*, or ``None``.
 
-    *kas_worker_session_key* is set only on KAS, by
-    ``acp.runtime_session_setup._pooled_session_servers_and_ref_spec``'s positive
-    ``backend == kas`` check. With it, a crewmate's worker
+    *worker_session_key* is the session's own key, passed by KAS, by the
+    mirrored hosts (codex, claude) and by pi. With it, a crewmate's worker
     (``kirocrew-mate-worker``) is not looked up by that shared name: its overlay
     is the session's own crewmate's
     (:func:`kiro_crew.mcp_gateway.mate_overlays.worker_overlay_spec`). Without it
-    -- every other host -- the lookup below runs exactly as before.
+    the worker gets no overlay, and every other agent ignores it.
 
     Package-installed agents are written to the overlay directory under a
     package-qualified filename (e.g. ``Pkg-gpu-dev.json``) while the session
@@ -374,13 +410,13 @@ def _load_overlay_for_agent(
     an exception.
     """
     if agent == MATE_WORKER_AGENT:
-        # A worker's stubs are its own session's (KAS, keyed by the session). The
+        # A worker's stubs are its own session's (keyed by the session). The
         # stock worker overlay is also written under this name, and a lookup by
         # name would hand it to any session that runs the worker spec without
         # that session's merged limits, so no other host reads it.
-        if not kas_worker_session_key:
+        if not worker_session_key:
             return None
-        return worker_overlay_spec(overlay_dir, kas_worker_session_key)
+        return worker_overlay_spec(overlay_dir, worker_session_key)
     project = _project_spec_for_agent(agent, work_dir, markdown_specs, dispatchable_only)
     if project is not None:
         # WARNING, not debug. This is not an error path: it is the posture this
@@ -502,7 +538,7 @@ def pooled_session_servers(
     work_dir: str | Path | None = None,
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
-    kas_worker_session_key: str | None = None,
+    worker_session_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return ACP ``session/new`` entries for *agent*'s broker stubs.
 
@@ -530,11 +566,13 @@ def pooled_session_servers(
     agree on which file the session's agent is, or the stub set and the spec it
     shadows are read from different agents.
 
-    ``kas_worker_session_key`` names a KAS session, for the one agent whose
-    overlay is the session's rather than the agent's: a crewmate's worker
-    (:func:`_load_overlay_for_agent`). Every other agent, and every other host,
-    ignores it. KAS subtracts the names of exactly the entries this returns
-    (``acp/harness/kas.py``), so the two sets come from this one lookup.
+    ``worker_session_key`` names the session, for the one agent whose overlay
+    is the session's rather than the agent's: a crewmate's worker
+    (:func:`_load_overlay_for_agent`). Every other agent ignores it. The caller
+    withholds the names of exactly the entries this returns (KAS in
+    ``acp/harness/kas.py``, a mirrored host from its spec projection, pi from its
+    spec mounts), so the
+    two sets come from this one lookup.
 
     Fail-soft by design: any unreadable or malformed overlay yields ``[]``, so a
     bad rewrite degrades to unpooled operation rather than breaking the spawn.
@@ -547,7 +585,7 @@ def pooled_session_servers(
         work_dir,
         markdown_specs,
         dispatchable_only,
-        kas_worker_session_key,
+        worker_session_key,
     )
     if not isinstance(spec, dict):
         return []
@@ -605,8 +643,8 @@ def injection_server_names(
 
     This is deliberately cheap (one file read, no shaping) so it can be called
     as a post-launch health check without adding latency to the session path.
-    It never answers for a crewmate's worker on KAS: that host subtracts the
-    names of the entries :func:`pooled_session_servers` already returned for the
+    It never answers for a crewmate's worker: its host withholds the names of
+    the entries :func:`pooled_session_servers` already returned for the
     session, so no second lookup can disagree with the first.
     """
     if not overlay_dir or not agent:

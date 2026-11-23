@@ -114,6 +114,10 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # absolute, exist, and be under subagent_cwd_allowed_roots. Validated
         # in SubagentManager.spawn.
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # Optional ``"worktree"``: each task gets a git worktree of its own of the
+        # repository ``cwd`` is in. Shape only here; the value and the cwd it
+        # needs are checked at admission, so a refusal is counted like a bad cwd.
+        FieldSpec("isolate", str, max_len=MAX_SHORT_STRING),
         # Optional model override for the subagent (e.g. "deepseek-3.2").
         # When set, the subagent runs on this model instead of the gateway default.
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),

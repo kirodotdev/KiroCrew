@@ -73,7 +73,11 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
             "(the queued list is partial: more spawns may be queued than listed here; "
             "they are accepted and start on their own -- do not spawn them again)"
         )
-    if not agents and not lines:
+    if d.get("error"):
+        # A failed read (a timeout, a refused connection, an HTTP error) has no
+        # run list; calling it empty would tell the caller its runs do not exist.
+        lines.append(f"Error: {d['error']}")
+    elif not agents and not lines:
         lines.append("No subagents running.")
     else:
         for a in agents:
@@ -224,6 +228,13 @@ def spawn_status(name: str, args: dict[str, Any]) -> "str | DeferredTool":
         result = (
             f"(ran on {d.get('backend', '?')!r}: {d['failover_from']!r} could not start,"
             " agent.acp_failover)\n" + result
+        )
+    worktree = d.get("worktree")
+    if isinstance(worktree, dict) and worktree.get("path"):
+        # spawn_run isolate: where this run works, while its record lives.
+        result = (
+            f"(worktree: {worktree['path']} detached at {str(worktree.get('base', ''))[:12]})\n"
+            + result
         )
     if not running:
         # The same notes spawn_sub_agents and the completion event attach, so a

@@ -214,25 +214,52 @@ def _resolve_nvm_path(binary_name: str) -> str | None:
         return None
 
 
-def _find_node_binary() -> str | None:
-    """Find a usable node binary.
+def _find_node_tool(name: str) -> str | None:
+    """Find *name* (``node`` or ``npm``) for an app backend.
 
     Search order:
     1. nvm-managed node (via nvm.sh, :func:`_resolve_nvm_path`)
     2. System PATH
+    3. The Node.js install directories the MCP and build lookups already search
+       (:func:`kiro_crew.env.augmented_path`: Homebrew, ``/usr/local/bin``, mise,
+       asdf, fnm, Volta, n, nvm-windows), which a gateway opened from the macOS
+       Dock lacks: it inherits launchd's ``/usr/bin:/bin:/usr/sbin:/sbin``. Last,
+       so a node that steps 1 and 2 find keeps winning. Each directory is probed
+       with ``which_within``, so on Windows a file in the working directory
+       cannot answer for it.
     """
-    nvm_path = _resolve_nvm_path("node")
+    nvm_path = _resolve_nvm_path(name)
     if nvm_path:
         return nvm_path
-    return shutil.which("node")
+    found = shutil.which(name)
+    if found:
+        return found
+    from kiro_crew import env, soffice_discovery
+
+    for directory in env.augmented_path("").split(os.pathsep):
+        if directory and os.path.isabs(directory):
+            hit = soffice_discovery.which_within(os.path.join(directory, name), directory)
+            if hit:
+                return hit
+    return None
+
+
+def _find_node_binary() -> str | None:
+    """Find a usable node binary; the search order is :func:`_find_node_tool`'s."""
+    return _find_node_tool("node")
 
 
 def _find_npm_binary() -> str | None:
     """Find npm binary, same search order as node."""
-    nvm_path = _resolve_nvm_path("npm")
-    if nvm_path:
-        return nvm_path
-    return shutil.which("npm")
+    return _find_node_tool("npm")
+
+
+def _npm_child_path(node: str, path: str) -> str:
+    """*path* with *node*'s directory appended, for npm's ``#!/usr/bin/env node``.
+
+    Appended, so a node *path* already holds keeps winning.
+    """
+    return os.pathsep.join(p for p in (path, os.path.dirname(node)) if p)
 
 
 def _is_asgi_entry(entry: Any) -> bool:
@@ -955,7 +982,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         if not node_bin:
             logger.error(
                 "App %s declares a Node.js backend but no node binary found. "
-                "Searched: nvm, PATH.",
+                "Searched: nvm, PATH, the Node.js install directories.",
                 app_name,
             )
             return None
@@ -995,10 +1022,11 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                     extra_hidden_dirs=app_backend_secret_mask_targets(),
                 )
                 sandboxed_npm = cgroup_scope_argv(sandboxed_npm)  # cgroup DoS ceiling
+                npm_path = _npm_child_path(node_bin, install_env.get("PATH", ""))
                 npm_run = run_limited(
                     sandboxed_npm,
                     cwd=str(pkg_dir),
-                    env={**install_env, "NODE_ENV": "production"},
+                    env={**install_env, "NODE_ENV": "production", "PATH": npm_path},
                     capture_output=True,
                     timeout=120,
                 )

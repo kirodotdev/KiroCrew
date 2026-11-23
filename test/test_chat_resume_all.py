@@ -573,6 +573,8 @@ _COUNT_ROW_FIELDS = frozenset(
         "executor",
     }
 )
+#: Fields a fixture row names only where they are set.
+_OPTIONAL_ROW_FIELDS = frozenset({"crew_root", "cron_run_read_only"})
 _TRANSCRIPTS = {
     "interrupted": _interrupted,
     "interrupted_long_ago": _interrupted_long_ago,
@@ -606,6 +608,8 @@ def _build_from_facts(state, entries: list[dict], monkeypatch) -> None:
             building.add(slot.key)
         if "executor" in facts:
             slot.executor = facts["executor"]
+        if facts.get("cron_run_read_only"):
+            slot.cron_run_read_only = True
         if "mode" in facts:
             slot.mode = facts["mode"]
         if "agent" in facts:
@@ -646,13 +650,15 @@ def test_the_server_total_is_the_count_the_sidebar_reads_from_the_shared_fixture
             assert entry["key"] not in payload, f"{entry['key']} is in the slots payload"
             continue
         assert (
-            _COUNT_ROW_FIELDS <= set(want) <= _COUNT_ROW_FIELDS | {"crew_root"}
+            _COUNT_ROW_FIELDS <= set(want) <= _COUNT_ROW_FIELDS | _OPTIONAL_ROW_FIELDS
         ), f"{entry['key']}: name every field the count reads"
         # ``crew_root`` is on a worker's row only; a row the fixture gives none
         # must carry none, or the sidebar would drop a row this case counts.
+        # ``cron_run_read_only`` is named only on the row that is marked.
         got = {field: payload[entry["key"]].get(field) for field in _COUNT_ROW_FIELDS}
         got["crew_root"] = payload[entry["key"]].get("crew_root") or None
-        assert got == {"crew_root": None, **want}, entry["key"]
+        got["cron_run_read_only"] = payload[entry["key"]].get("cron_run_read_only")
+        assert got == {"crew_root": None, "cron_run_read_only": False, **want}, entry["key"]
 
     crew = case.get("crew_mode", False)
     picked = mod.collect_interrupted_idle(state, crew_mode=crew)

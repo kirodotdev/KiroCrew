@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -36,6 +37,11 @@ _SUBAGENTS_DIR: Path | None = None
 # conversations never couple.
 SUBAGENT_CONVERSATION_PREFIX = "subagent:"
 _CLEANUP_IDENTITIES_FILE = "cleanup-identities.json"
+#: The worktree an isolated run works in (``spawn_run`` ``isolate``), in the run
+#: folder, which the sandbox seals read-only (``trust`` is a read-write leaf): the
+#: only record its removal reads.
+_RUN_WORKTREE_FILE = "run-worktree.json"
+_RUN_WORKTREE_BASE_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _CLEANUP_IDENTITIES_TRUST_DIR = "subagent-cleanup-identities"
 _CLEANUP_IDENTITY_LOCK = threading.Lock()
 _LIVE_CLEANUP_IDENTITIES: dict[str, list[dict[str, object]]] = {}
@@ -114,6 +120,46 @@ class _CleanupIdentitySweepReader:
         _lock_down_cleanup_dir(path.parent)
         _lock_down_cleanup_file(path)
         return _parse_cleanup_identities_file(path)
+
+
+def write_run_worktree_record(agent_id: str, path: str, base: str) -> None:
+    """Record the worktree run *agent_id* works in: its folder and the commit it was made at.
+
+    Owner-only, in the run folder, which the sandbox seals read-only, so sandboxed
+    code cannot point the removal at another folder or move the base it is judged
+    against (``trust`` is a sandbox read-write leaf). Blocks.
+    """
+    target = _agent_dir(agent_id) / _RUN_WORKTREE_FILE
+    _atomic_write(target, {"path": path, "base": base})
+    platform_compat.restrict_to_owner(target)
+
+
+def read_run_worktree_record(agent_id: str) -> tuple[str, str] | None:
+    """``(path, base)`` of run *agent_id*'s worktree, else ``None`` (none, or unreadable).
+
+    Never raises for a bad record: a record that does not parse names nothing
+    to remove. Blocks.
+    """
+    try:
+        target = _agent_dir(agent_id) / _RUN_WORKTREE_FILE
+    except (OSError, ValueError):
+        return None
+    return _parse_run_worktree_file(target)
+
+
+def _parse_run_worktree_file(target: Path) -> tuple[str, str] | None:
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    path, base = payload.get("path"), payload.get("base")
+    if not isinstance(path, str) or not os.path.isabs(path) or not isinstance(base, str):
+        return None
+    if not _RUN_WORKTREE_BASE_RE.fullmatch(base):
+        return None
+    return path, base
 
 
 def _delete_cleanup_identities_file(agent_id: str) -> None:

@@ -10,8 +10,8 @@
 // badge and no recovery. (Observed: a blocking close() on the loop thread froze
 // the backend for ~10h while the app sat connected-but-blank.)
 //
-// This monitor polls a real loop-turning endpoint (/api/status, via the same
-// checkBackend used at boot) on an interval AFTER handoff. N consecutive
+// This monitor polls a real loop-turning endpoint (/api/live, built by the same
+// probe factory as the boot poll) on an interval AFTER handoff. N consecutive
 // failures mean the backend is alive-but-unresponsive — a distinct condition
 // from "the process exited", which main.js already handles via the spawn 'exit'
 // watcher. On the Nth failure it fires onUnresponsive ONCE so main.js can
@@ -50,7 +50,7 @@ function createLivenessMonitor({
   onUnresponsive,
   onRecovered = () => {},
   isWindowAlive = () => true,
-  // About a minute at the 10s cadence: a busy startup can leave /api/status
+  // About a minute at the 10s cadence: a busy startup can leave /api/live
   // unanswered for half a minute and still recover.
   failureThreshold = 6,
   intervalMs = 10_000,
@@ -138,7 +138,7 @@ function createLivenessMonitor({
   return { start, stop, tick, getState };
 }
 
-// How long ONE post-handoff probe waits for /api/status before it counts as a
+// How long ONE post-handoff probe waits for /api/live before it counts as a
 // miss. This is deliberately NOT the 2s the boot poll uses. The boot poll runs
 // every 500ms and a slow answer just means "poll again"; here a run of misses
 // force-kills the gateway, so the budget has to tell a loop that is merely
@@ -154,7 +154,7 @@ const LIVENESS_PROBE_TIMEOUT_MS = 8_000;
 
 /**
  * Build the probe the post-handoff monitor polls with: one GET against the
- * loop-turning status endpoint, resolving on any non-5xx answer and rejecting
+ * loop-turning liveness endpoint, resolving on any non-5xx answer and rejecting
  * on a connection error, a 5xx, or `timeoutMs` of silence.
  *
  * Pure and injectable like the monitor itself: `httpMod` is whatever exposes

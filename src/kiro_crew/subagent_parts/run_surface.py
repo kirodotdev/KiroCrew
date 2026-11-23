@@ -176,6 +176,10 @@ async def _start_result_file(self: SubagentManager, info: SubagentInfo, text: st
     return await self._run_events._start_result_file_impl(info, text)
 
 
+async def _append_result_chunk(self: SubagentManager, info: SubagentInfo, text: str) -> bool:
+    return await self._run_events._append_result_chunk_impl(info, text)
+
+
 async def _drain_state_writer(
     self: SubagentManager,
     info: SubagentInfo,

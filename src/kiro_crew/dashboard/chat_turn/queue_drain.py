@@ -483,6 +483,12 @@ _REPLAYS_COMPLETION_KEY = "_replays_completion"
 #: loop like the cycle it carries. Never persisted: it is not a durable queue key.
 _RECOVERED_WAKE_KEY = "_recovered_wake"
 
+#: Process-local key on a synthetic-recovery queue entry that a restored turn
+#: queued for itself: the retry runs with ``_turn_provenance_restored`` like the
+#: turn it repeats. Not :data:`RESTORED_QUEUE_KEY`, which holds an entry as an
+#: unsent card. Never persisted: a kinded entry is not durable.
+_RESTORED_RETRY_KEY = "_restored_retry"
+
 
 def idle_slot_admits_drain(state: DashboardState, slot: _ChatSlot) -> bool:
     """Whether an injector may start the queued head of an idle *slot* now.
@@ -1569,8 +1575,9 @@ async def _start_next_queued_turn(
     # construction (`sanitize_restored_queue` drops the stamp with the directive
     # flags), and an absent actor reads as `user` below -- so without this the one
     # arm that spends on an actor of `user` would take a turn whose author is
-    # whoever could write the session file.
-    if any(item.get(RESTORED_QUEUE_KEY) for item in consumed):
+    # whoever could write the session file. A restored turn's own retry carries
+    # the `user` fallback as its stamp, so it is marked at requeue instead.
+    if any(item.get(RESTORED_QUEUE_KEY) or item.get(_RESTORED_RETRY_KEY) for item in consumed):
         _run_kwargs["_turn_provenance_restored"] = True
     # A BACKGROUND start only when EVERY consumed entry asked for one: a person's
     # typed message drained in the same batch keeps its FOREGROUND start.

@@ -434,6 +434,53 @@ export function eventKeyToken(e: Pick<KeyboardEvent, 'code' | 'key'>): string | 
   return key.length === 1 ? key.toLowerCase() : key
 }
 
+// ---- Labels -----------------------------------------------------------------
+
+export type LayoutMap = ReadonlyMap<string, string>
+
+/**
+ * The user's keyboard layout (`navigator.keyboard.getLayoutMap()`, Chromium and
+ * Electron), so a positional chord is labelled with the character its key
+ * prints: AZERTY's `BracketLeft` is `^`. `null` until it loads and wherever the
+ * API is missing or refuses, which keeps the US glyph. Read once per page load.
+ */
+let layoutMap: LayoutMap | null = null
+const layoutListeners = new Set<() => void>()
+
+export async function loadKeyboardLayout(): Promise<void> {
+  const keyboard = (globalThis.navigator as { keyboard?: { getLayoutMap?: () => Promise<LayoutMap> } } | undefined)?.keyboard
+  try {
+    layoutMap = (await keyboard?.getLayoutMap?.()) ?? null
+  } catch {
+    layoutMap = null
+  }
+  for (const listener of layoutListeners) listener()
+}
+void loadKeyboardLayout()
+
+export function subscribeKeyboardLayout(listener: () => void): () => void {
+  layoutListeners.add(listener)
+  return () => { layoutListeners.delete(listener) }
+}
+
+export function keyboardLayoutSnapshot(): LayoutMap | null {
+  return layoutMap
+}
+
+/**
+ * The keycap for a chord key token: what the layout prints on the physical key
+ * that fires it (the code {@link eventKeyToken} reads as `token`), else
+ * `token.toUpperCase()` (the US glyph). Letter positions render upper-case
+ * where that is reversible (Greek `ς` and Turkish `ı` would read as another
+ * key's letter), other positions verbatim (AZERTY `Digit2` is `é`).
+ */
+export function keyCapGlyph(token: string, layout: LayoutMap | null = layoutMap): string {
+  const glyph = [...(layout ?? [])].find(([code]) => eventKeyToken({ code, key: code }) === token)?.[1]
+  if (!glyph) return token.toUpperCase()
+  const upper = glyph.toUpperCase()
+  return /^[a-z]$/i.test(token) && upper.toLowerCase() === glyph ? upper : glyph
+}
+
 /**
  * True when `e` is EXACTLY `chord` on `platform`. Every modifier must match —
  * a ⌘⌥N miss never satisfies ⌘N, and Shift is significant — and the primary

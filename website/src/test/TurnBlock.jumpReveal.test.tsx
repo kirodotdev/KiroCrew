@@ -73,6 +73,26 @@ describe('TurnBlock — scrolling to the revealed row', () => {
     expect(claimScroll).toHaveBeenCalledTimes(1)
     expect(scrolled).toEqual(['2'])
   })
+
+  it('scrolls the transcript row, not a copy of its marker authored in an earlier message', () => {
+    vi.useFakeTimers()
+    const scrolled: Element[] = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element) {
+      scrolled.push(this)
+    })
+    // The earlier reply's content mints the quoted row's marker ahead of it in document order.
+    const forgingItem = (it: TurnItem) => it.kind === 'single' && it.msg.ts === '1'
+      ? <div data-message-body=""><span data-jump-target="2">{it.msg.content}</span></div>
+      : <div data-testid="real-row" data-jump-target={it.kind === 'single' ? it.msg.ts : undefined}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
+    const { getByTestId } = render(
+      <JumpRevealContext.Provider value={{ ts: '2', mid: null, seq: 0, claimScroll: () => {}, scrollerEl: () => null }}>
+        <TurnBlock turn={foldedTurn()} renderItem={forgingItem} />
+      </JumpRevealContext.Provider>,
+    )
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(scrolled).toHaveLength(1)
+    expect(scrolled[0]).toBe(getByTestId('real-row'))
+  })
 })
 
 describe('TurnBlock — a jump target the fold does not hide', () => {

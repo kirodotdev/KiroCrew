@@ -7,7 +7,8 @@ URL is cloned first, with the operator's own git credentials (``_resolve_install
 running gateway when one answers (``_apply_through_gateway``); otherwise it is applied
 to the files alone (``update`` has no file-only form and refuses), ``enable`` and
 ``disable`` say so (``_print_file_only_app_result``),
-and the backend, cron and hook follow-ups are applied or warned about here.
+and the backend, cron and hook follow-ups are applied or warned about here. ``config``
+reads or sets an app's config through the gateway only (``_handle_app_config``).
 
 An owner of the mirror facade ``kiro_crew.cli_commands``: callers and tests reach every
 name here as ``kiro_crew.cli_commands.<name>``, and a patch through the facade reaches
@@ -624,7 +625,7 @@ def _handle_app_import(args: argparse.Namespace) -> None:
     print(f"\n✅ wrote {out_dir / 'app.json'}")
 
     if not getattr(args, "install", False):
-        print(f"\n   Run: kirocrew app install {out_dir}")
+        print(f"\n   Run: kirocrew app install {_shell_quoted(str(out_dir))}")
         return
 
     result = install_app(str(out_dir))
@@ -683,6 +684,112 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
         )
 
 
+def _config_get_phase(app_name: str, *, setting: bool) -> tuple[object, str]:
+    """GET the app's config through the gateway, or exit 1 saying why it was not read.
+
+    *setting* adds that nothing was set, since a failed read sends no write.
+    """
+    tail = " Nothing was set." if setting else ""
+    try:
+        answer = app_lifecycle_client.app_config_request(app_name, "GET")
+    except app_lifecycle_client.AppGatewayTimeout as exc:
+        print(f"⏳ {str(exc).rstrip('.')}.{tail}", file=sys.stderr)
+        sys.exit(1)
+    except app_lifecycle_client.AppGatewayError as exc:
+        print(
+            f"❌ could not read the config of {app_name}: {str(exc).rstrip('.')}.{tail}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if answer is None:
+        done = "nothing was set" if setting else "nothing was read"
+        print(
+            f"❌ No running gateway answered, so {done}. Start it (kirocrew gateway) and "
+            "run this again.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return answer
+
+
+def _set_app_config_value(app_name: str, key: str, raw_value: str) -> None:
+    """Set one top-level *key* of the host-stored config of *app_name*, or exit 1."""
+    # Call-time import: a module-level import would make this module serve the
+    # name through the ``cli_commands`` facade it does not own.
+    from kiro_crew.cli_config import _parse_value
+
+    if not key:
+        print("❌ the key is empty; nothing was set", file=sys.stderr)
+        sys.exit(1)
+    value = _parse_value(raw_value)
+    config, etag = _config_get_phase(app_name, setting=True)
+    if not etag:
+        print(
+            "❌ this app's config is not answered by the host's app config store (the app "
+            "serves its own config route, or the running gateway is older than this "
+            "command; restart it to use `set`). Nothing was set.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not isinstance(config, dict):
+        print("❌ the app's config is not a JSON object. Nothing was set.", file=sys.stderr)
+        sys.exit(1)
+    merged = {**config, key: value}
+    try:
+        json.dumps(merged, allow_nan=False)
+    except ValueError:
+        print(
+            "❌ the config would hold a non-finite number (NaN or Infinity), which JSON "
+            "cannot store. Nothing was set.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    check = f" Run `kirocrew app config {app_name} get` to see the current value."
+    try:
+        answer = app_lifecycle_client.app_config_request(
+            app_name, "PUT", config=merged, if_match=etag
+        )
+    except app_lifecycle_client.AppGatewayTimeout as exc:
+        print(
+            f"⏳ {str(exc).rstrip('.')}, so the value may or may not have been set.{check}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except app_lifecycle_client.AppGatewayError as exc:
+        print(f"❌ {str(exc).rstrip('.')}.{check}", file=sys.stderr)
+        sys.exit(1)
+    if answer is None:
+        # No secret or socket at the PUT's own mint: no request was built.
+        print("❌ No running gateway answered; nothing was set.", file=sys.stderr)
+        sys.exit(1)
+    result, _etag = answer
+    if not (isinstance(result, dict) and result.get("ok") is True):
+        print(f"❌ the gateway's answer did not confirm the change.{check}", file=sys.stderr)
+        sys.exit(1)
+    print(safe_terminal_line(f"✅ {app_name}: {key} = {json.dumps(value)}"))
+
+
+def _handle_app_config(args: argparse.Namespace) -> None:
+    """``kirocrew app config NAME [get | set KEY VALUE]``, through the gateway only."""
+    _refuse_unsafe_app_name(args.name)
+    import socket
+
+    if not hasattr(socket, "AF_UNIX"):
+        # The requests travel only over the dashboard's Unix socket.
+        print(
+            "❌ `kirocrew app config` is not available on native Windows (it needs the "
+            "dashboard's Unix socket). Edit the app's apps/<name>/data/config.json under "
+            "the data home instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if getattr(args, "config_action", None) == "set":
+        _set_app_config_value(args.name, args.key, args.value)
+        return
+    config, _etag = _config_get_phase(args.name, setting=False)
+    print(json.dumps(config, indent=2))
+
+
 def _handle_app(args: argparse.Namespace) -> None:
     """Dispatch app subcommands: install, list, enable, disable, uninstall, info."""
     action = getattr(args, "app_action", None)
@@ -696,6 +803,10 @@ def _handle_app(args: argparse.Namespace) -> None:
 
     if action == "import":
         _handle_app_import(args)
+        return
+
+    if action == "config":
+        _handle_app_config(args)
         return
 
     if action == "install":
@@ -1030,12 +1141,13 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"✅ Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")
+        # Quoted, so a folder with a space in its path still pastes as one argument.
         if include_ui:
             # One command per line: Windows PowerShell 5.1 rejects `&&`.
-            print(f"   cd {app_dir}/ui")
+            print(f"   cd {_shell_quoted(f'{app_dir}/ui')}")
             print("   npm install")
             print("   npm run build")
-        print(f"   kirocrew app install {app_dir}")
+        print(f"   kirocrew app install {_shell_quoted(str(app_dir))}")
 
     else:
         # No sub-action (the subparser is not `required`, matching every CLI

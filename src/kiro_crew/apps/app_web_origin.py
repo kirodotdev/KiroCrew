@@ -417,11 +417,37 @@ async def _backend_port(name: str) -> int | None:
 _MAX_HTML_EDIT_BYTES = 2 * 1024 * 1024
 
 
+async def _refuse_redirect(
+    _session: aiohttp.ClientSession,
+    _ctx: Any,
+    params: aiohttp.TraceRequestRedirectParams,
+) -> None:
+    """Stop a relayed request at its first redirect instead of following it.
+
+    ``ws_connect`` has no ``allow_redirects`` switch, and on a cross-origin hop
+    aiohttp strips only ``Authorization``/``Cookie``, so a followed redirect
+    would carry ``Kiro-Relay-Authorization`` to wherever it points. Browsers
+    never follow a WebSocket redirect, so nothing that works today relies on it.
+    """
+    params.response.close()
+    raise aiohttp.ClientError(f"upstream redirected the upgrade ({params.response.status})")
+
+
+#: Attached to every session the relay dials through; see :func:`_refuse_redirect`.
+_NO_REDIRECTS = aiohttp.TraceConfig()
+_NO_REDIRECTS.on_request_redirect.append(_refuse_redirect)
+
+
 def _client_session(request: web.Request) -> tuple[aiohttp.ClientSession, bool]:
     session = request.app.get("_proxy_session")
     if session is None or session.closed:
         jar = aiohttp.DummyCookieJar()
-        return aiohttp.ClientSession(auto_decompress=False, cookie_jar=jar), True
+        return (
+            aiohttp.ClientSession(
+                auto_decompress=False, cookie_jar=jar, trace_configs=[_NO_REDIRECTS]
+            ),
+            True,
+        )
     return session, False
 
 

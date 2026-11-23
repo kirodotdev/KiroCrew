@@ -58,6 +58,8 @@ Examples:
   kirocrew chat -m 'check my CRs'    # Single message
   git diff | kirocrew chat -m -      # Single message read from stdin
   kirocrew chat --model claude-opus  # Use specific model
+  kirocrew chat --continue           # Reopen your last chat in this directory
+  kirocrew chat --list               # Recent terminal chats, newest first
 
 Tool permission prompt (same keys as kiro-cli chat):
   y  allow this call once
@@ -79,6 +81,21 @@ Tool permission prompt (same keys as kiro-cli chat):
         "--model", help="Model to use (default: from config; `kirocrew models` lists the names)"
     )
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
+    earlier = chat_parser.add_mutually_exclusive_group()
+    earlier.add_argument(
+        "--list",
+        dest="list_chats",
+        action="store_true",
+        help="List the recent terminal chats (id, last message time, directory, --agent, first "
+        "prompt line) and exit",
+    )
+    earlier.add_argument(
+        "--continue",
+        dest="continue_chat",
+        action="store_true",
+        help="Reopen the newest terminal chat started in this directory with the same --agent, "
+        "on KAS or Kiro CLI. Exits 1, starting no new chat, when it cannot be restored",
+    )
     # --headless (rfc-builtin-eval.md §12): one unattended run on the local gateway.
     headless = chat_parser.add_argument_group("headless run (kirocrew chat --headless)")
     headless.add_argument(
@@ -566,7 +583,7 @@ Examples:
   kirocrew spawn run --crew ops 'triage alerts' # Run as Bot 'ops'
   kirocrew spawn run --agent reviewer 'review'  # Run under agent 'reviewer'
   kirocrew spawn run --model MODEL_ID 'task'    # Run on model MODEL_ID
-  kirocrew spawn list                           # Show active subagents
+  kirocrew spawn list                           # Show subagents that no session started
 """,
         formatter_class=_fmt,
     )
@@ -597,7 +614,7 @@ Examples:
         metavar="ID",
         help="Run on this model id; it outranks the member's and the template's pin",
     )
-    spawn_sub.add_parser("list", help="List subagents")
+    spawn_sub.add_parser("list", help="List subagents that no session started (CLI and app runs)")
     spawn_parser.add_argument(
         "--port",
         type=int,
@@ -984,6 +1001,14 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_import.add_argument(
         "--store", default=None, help="Store to import into (default: the default store)"
     )
+    mem_import_text = mem_sub.add_parser(
+        "import-text",
+        help="Save facts from a text or Markdown file another assistant wrote about you",
+    )
+    mem_import_text.add_argument("file", help="Path to a plain text or Markdown file")
+    mode = mem_import_text.add_mutually_exclusive_group()
+    mode.add_argument("--yes", action="store_true", help="Save every listed fact without asking")
+    mode.add_argument("--dry-run", action="store_true", help="List the facts and save nothing")
     mem_dream = mem_sub.add_parser(
         "dream",
         help="Ask for a Dreaming run, or list what it proposed (memory.dream propose)",
@@ -1208,6 +1233,7 @@ Examples:
   kirocrew app enable oncall-watchtower
   kirocrew app update oncall-watchtower
   kirocrew app update oncall-watchtower --source /path/to/oncall-watchtower
+  kirocrew app config oncall-watchtower set root /srv/oncall
   kirocrew app disable oncall-watchtower
   kirocrew app info oncall-watchtower
   kirocrew app uninstall oncall-watchtower
@@ -1272,6 +1298,22 @@ Examples:
             "App directory to update from; it becomes the app's recorded source "
             "(default: the recorded source, where it was installed or last updated from)"
         ),
+    )
+    app_config = app_sub.add_parser(
+        "config",
+        help="Read or set an installed app's config (needs a running gateway; not on "
+        "native Windows)",
+        description="Print an installed app's config, or set one top-level key in it, "
+        "through the running gateway. `set` runs none of the app's own checks and works "
+        "only for an app whose config the host stores.",
+    )
+    app_config.add_argument("name", help="App name")
+    app_config_sub = app_config.add_subparsers(dest="config_action")
+    app_config_sub.add_parser("get", help="Print the app's config (the default)")
+    app_config_set = app_config_sub.add_parser("set", help="Set one top-level key")
+    app_config_set.add_argument("key", help="Top-level key, taken literally (a.b is one key)")
+    app_config_set.add_argument(
+        "value", help="Value, typed as `kirocrew config set` types it (JSON for an object)"
     )
     app_disable = app_sub.add_parser("disable", help="Disable an installed app")
     app_disable.add_argument("name", help="App name to disable")

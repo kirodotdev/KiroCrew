@@ -66,7 +66,7 @@ def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentIn
 
     All must hold: session_sharing config True; parent session exists and
     is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare);
-    no per-spawn backend.
+    no per-spawn backend; the host is not a codex process a subagent has left.
     """
     # Member capability and native prompt documents are prepared at launch.
     if info._force_dedicated:
@@ -87,7 +87,25 @@ def _should_use_session_sharing_impl(self: RunEventCoordinator, info: SubagentIn
         return False
     if not info.parent_session_key:
         return False
-    return self._manager._sessions.is_session_sharing_eligible(info.parent_session_key)
+    eligible = self._manager._sessions.is_session_sharing_eligible(info.parent_session_key)
+    if eligible is not True:
+        return eligible
+    # Imported here: a rebound ``_impl`` resolves globals in ``kiro_crew.subagent``.
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX
+
+    # codex starts an MCP fleet per session that ``session/close`` leaves running
+    # (``acp/harness/codex.py``), so a codex process a subagent has left takes no new
+    # one: the fleets left there stay bounded, and later runs get their own process.
+    # The host is the runtime ``_create_shared_session`` would place the run on.
+    host = self._manager._get_parent_runtime(info.parent_session_key) or getattr(
+        self._manager._sessions, "_subagent_runtimes", {}
+    ).get(info.parent_session_key)
+    if (
+        getattr(host, "acp_backend", None) == ACP_BACKEND_CODEX
+        and getattr(host, "subagent_departed", False) is True
+    ):
+        return False
+    return eligible
 
 
 def _sharing_plan_impl(

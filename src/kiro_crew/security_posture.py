@@ -674,6 +674,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/session_handle_native_children.py",
         "acp/session_handle_permissions.py",
         "acp/session_handle_turn.py",
+        # Redacts the tool title of the security-event row for a call KAS approved
+        # on its own; the row goes to the security event log, not to an output.
+        "acp/kas_approve_for_me.py",
         "platform/defaults.py",
         "platform/interfaces.py",
         # Inbound sanitization: the browser MCP tool redacts UNTRUSTED native-panel
@@ -1184,6 +1187,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # own uploaded file before it enters the prompt. Inbound sanitisation,
         # not agent output on its way to a user.
         "messaging/attachments.py",
+        # Inbound sheet digest: redacts the text of a user's own uploaded CSV or
+        # TSV before its digest enters the prompt, as the ingestion above does.
+        "acp/sheet_digest.py",
         "slack/interactions.py",
         "slack/interactions_approvals.py",
         "slack/interactions_modals.py",

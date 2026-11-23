@@ -474,6 +474,41 @@ def test_a_ready_environment_has_no_issue(tmp_path) -> None:
     assert strands_mod.strands_python_env_issue(str(tmp_path)) == ""
 
 
+def test_a_host_the_sandbox_floor_refuses_gets_no_python_setup_steps(monkeypatch, tmp_path) -> None:
+    """No ``.venv`` yet, on a tier that drops the credential mask: the floor sentence is
+    the refusal, before even the CLI lookup, and the launch leaves no project folder or
+    sealed gate behind."""
+    from kiro_crew.acp.harness.base import SpawnContext
+    from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
+
+    strands_bin = "/opt/strands/bin/strands"
+    looked_up: list[str] = []
+
+    async def cli(backend):
+        looked_up.append(backend)
+        return strands_bin, [strands_bin, "--acp-server"], "strands", "strands"
+
+    monkeypatch.setattr(strands_mod.launch_mod, "resolve_self_served_launch", cli)
+    monkeypatch.setattr(strands_mod, "_strands_version_issue", lambda _bin: "")
+    monkeypatch.setattr(pi_mod, "_pi_gate_artifact_dir", lambda: str(tmp_path))
+    ctx = SpawnContext(
+        agent="",
+        work_dir=tmp_path,
+        model=None,
+        environ={},
+        home=tmp_path,
+        sandbox_mode="off",
+        session=SimpleNamespace(),
+    )
+
+    with pytest.raises(AcpError) as refused:
+        asyncio.run(strands_mod.StrandsLaunch().resolve_spawn(ctx))
+    assert str(refused.value) == gate.sandbox_floor_refusal(STRANDS, "off")
+    assert isinstance(refused.value, AcpToolGateUnroutable)
+    assert looked_up == []
+    assert not (tmp_path / "strands").exists()
+
+
 # ── The child environment ──
 
 

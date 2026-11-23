@@ -12,7 +12,7 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_engine_is_child``,
 ``_exit_watch_task``, ``_initialize_result``, ``_initialized``, ``_kas_engine_bundle``,
-``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
+``_kas_host_auth``, ``_kas_machine_auth``, ``_last_activity``, ``_launch_copy_spec``,
 ``_launch_cwd_roots``, ``_launch_process_cwd``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_native_launch_resources``,
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
@@ -42,7 +42,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import agent_scratch, build_reuse, member_essential_context, platform_compat
-from kiro_crew.acp import kas_cli_settings, kas_memory, kas_secret_storage, scope_admission
+from kiro_crew.acp import (
+    kas_approve_for_me,
+    kas_cli_settings,
+    kas_memory,
+    kas_secret_storage,
+    scope_admission,
+)
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.client import (
@@ -395,6 +401,7 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
         raise AcpRuntimeError(str(exc)) from exc
     self._kas_host_auth = plan.host_auth
     self._kas_engine_bundle = plan.engine_bundle
+    self._kas_machine_auth = plan.machine_auth
     self._native_launch_sources = dict(plan.native_context_documents)
     self._native_launch_view_alias = None
     self._native_launch_resources = None
@@ -836,6 +843,8 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             self._harness.apply_spawn_env(
                 env, spawned_binary=spawned_binary, cli_owned_auth=not plan.host_auth
             )
+            # The approve-for-me engine switch, from this runtime's own extra_env alone.
+            kas_approve_for_me.apply_runtime_env(env, self._acp_backend, self._extra_env)
             # A host that keeps private state may prepare it before the child
             # exists; one more blocking file copy, so it rides here.
             _seed_private_state(env, plan, private_state_dir)
@@ -1355,6 +1364,9 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     and ``codeIntelligence`` carries kiro-cli's own ``chat.enableCodeIntelligence``.
     """
     base = self._harness.client_capabilities
+    base = kas_approve_for_me.with_checks_auto_approvals(
+        base, getattr(self, "_acp_backend", ""), getattr(self, "_extra_env", None)
+    )
     base = await _with_mcp_sign_in_storage(self, base)
     if self._harness.client_meta_settings:
         # KAS takes the opt-out only at initialize. It is judged on the child's own

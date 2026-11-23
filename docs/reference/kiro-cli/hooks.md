@@ -71,8 +71,11 @@ An MCP tool arrives under its namespaced name, such as `@postgres/query`.
     below): kiro-cli's contract holds, so a crash, kill or timeout is a warning
     and the tool goes ahead. A spec hook that a policy (governance or the shell
     deny list) refused to run blocks the call, with the refusal as the reason.
-  - **All other events**: warn-only — STDERR is shown as a warning and
-    execution continues.
+  - **All other events**: warn-only — execution continues. On a dashboard
+    turn, a channel turn's prompt hooks and a subagent's `PostToolUse`, the
+    failure is logged as one warning naming the hook, the event and the hook's
+    error, its STDERR tail, or `exited with code N`; the other surfaces log it
+    at INFO only ([#37234](https://github.com/kirodotdev/KiroCrew/issues/37234)).
 
 There is no per-hook advisory/fail-open opt-out for PreToolUse.
 

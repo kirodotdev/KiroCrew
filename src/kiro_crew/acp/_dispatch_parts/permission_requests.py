@@ -804,6 +804,8 @@ def build_permission_event(
         return None, None
     # A float id is kept exactly as the frame sent it, so the answer echoes it.
     request_id = cast("str | int", msg.id)
+    from kiro_crew.acp.kas_approve_for_me import auto_approval_by
+
     params = msg.params or {}
     tool_call = params.get("toolCall", {})
     tool_call = tool_call if isinstance(tool_call, dict) else {}
@@ -1511,5 +1513,7 @@ def build_permission_event(
             and kind_to_id.get("reject_once")
             and recorded.get("reject") == kind_to_id.get("reject_once")
         ),
+        # The engine's own verdict, read only off a KAS request; Crew's checks decide.
+        kas_auto_approval=auto_approval_by(params) if kas_consent_meta else "",
     )
     return event, recorded

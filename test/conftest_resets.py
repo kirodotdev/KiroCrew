@@ -266,6 +266,27 @@ def _reset_browser_media_watches():
 
 
 @per_test_guard
+def _reset_kas_machine_fence_config():
+    """Start each test with no reused config read behind the machine token fence.
+
+    ``agent_sdk.kas_machine.fenced_token_path`` keeps a ``config.json`` read for two
+    seconds where no watcher runs, and the agent file gate asks it on every path, so
+    one test's machine mode would fence (or miss) the next test's token file.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.agent_sdk.kas_machine")
+        if module is not None:
+            module._fence_config = None
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _forget_pending_trace_links():
     """Start each test with no pending worker-creation or patrol report links.
 
@@ -464,6 +485,7 @@ def _reset_safety_override_between_tests():
 
     _reset_safety_override()
     _reset_yolo_policy_state()
+    _reset_kept_grants()
     yield
     # Drained BEFORE the reset below, and (by pytest's fixture teardown order --
     # finalizers run in reverse of setup order, so a fixture set up AFTER this
@@ -479,6 +501,26 @@ def _reset_safety_override_between_tests():
     drain_breadcrumb_writes()
     _reset_safety_override()
     _reset_yolo_policy_state()
+    _reset_kept_grants()
+
+
+def _reset_kept_grants() -> None:
+    """Forget the boot verdict and stop recording kept grants, as a new process would.
+
+    The verdict is decided once per process image and the recorders arm once per
+    boot, so without this the first test that boots a dashboard decides both for
+    every later test in the worker. Imported lazily: only a test that loaded the
+    modules can have armed them.
+    """
+    kept_grants = sys.modules.get("kiro_crew.kept_grants")
+    if kept_grants is not None:
+        kept_grants._reset_for_tests()
+    kept_yolo = sys.modules.get("kiro_crew.kept_yolo")
+    if kept_yolo is not None:
+        kept_yolo._reset_for_tests()
+    chat_trust_restart = sys.modules.get("kiro_crew.dashboard.chat_trust_restart")
+    if chat_trust_restart is not None:
+        chat_trust_restart._reset_for_tests()
 
 
 @per_test_guard
@@ -1019,6 +1061,23 @@ def _isolate_context_store_caches(_floor_monkeypatch):
 
 
 @per_test_guard
+def _isolate_kas_approve_for_me():
+    """Drop the approve-for-me owner check and engine answer a test left behind.
+
+    A gateway boot registers an owner check bound to its own ``DashboardState``
+    and may cache the engine's answer; both are process state. Only a module
+    already imported can hold them, so a run that never imports it pays nothing.
+    """
+    module = sys.modules.get("kiro_crew.acp.kas_approve_for_me")
+    if module is not None:
+        module.reset_owner_check()
+    yield
+    module = sys.modules.get("kiro_crew.acp.kas_approve_for_me")
+    if module is not None:
+        module.reset_owner_check()
+
+
+@per_test_guard
 def _isolate_member_identity_cache(_floor_monkeypatch):
     """Give each test an empty cache of passed member-database identity checks.
 
@@ -1198,6 +1257,28 @@ def _reset_subagent_memory_price_holders():
 
 
 @per_test_guard
+def _reset_builtin_discovery_scan():
+    """Start each test with no kept scan of the package's builtin apps.
+
+    ``apps.discovery._package_scan`` keeps the last whole scan of the package's
+    ``builtins/`` for the process, keyed on that directory's inode and mtime only. A
+    test that patches the manifest reader or the path screen would otherwise read the
+    scan an earlier test on the worker left.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.apps.discovery")
+        if module is not None:
+            module._package_scan = None
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_subagent_not_due_memo():
     """Start each test with no remembered not-yet-due runs from the tombstone sweep.
 
@@ -1210,6 +1291,30 @@ def _reset_subagent_not_due_memo():
         module = sys.modules.get("kiro_crew.subagent_persistence")
         if module is not None:
             module._NOT_DUE_MEMO.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_persisted_truncation_reports():
+    """Start each test with no truncated spawn listing already reported.
+
+    ``api_spawn_list`` remembers the truncation it last logged per audit identity,
+    and the owner's identity is ``<owner>`` in every test, so a report one test
+    left would turn the next test's WARNING into a DEBUG. A module without the
+    name is left alone, so ``prove.py``'s reverted tree still reaches the tests'
+    own assertions.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.handlers.messaging")
+        reported = getattr(module, "_PERSISTED_TRUNCATION_REPORTED", None)
+        if reported is not None:
+            reported.clear()
 
     clear()
     try:

@@ -183,6 +183,7 @@ if TYPE_CHECKING:
         _SHUTDOWN_TIMEOUT_SECS,
         _reset_all_sessions,
         api_sessions_restart,
+        reset_sessions,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.memory_route import (  # noqa: F401
         _memory_sampler,
@@ -292,6 +293,7 @@ from kiro_crew import _facade_mirror
 from kiro_crew import workload_identity as _workload_identity
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
+from kiro_crew.agent_sdk.kas_machine import person_vault_fenced
 from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
@@ -309,6 +311,7 @@ from kiro_crew.dashboard.handlers.sessions_parts.usage_scrape import (
     _WHOAMI_SAME,
     _WHOAMI_UNPROVEN,
     _account_type_only,
+    _arnless_email_fields,
     _credential_rejected,
     _fetch_whoami,
     _fetch_whoami_or_none,
@@ -800,6 +803,9 @@ async def _reading_not_servable(
     the reading but does not own usage now, so it is not the kiro-cli account's.
     """
     if vault_owned:
+        # A person's reading under an edition sign-in or machine mode is foreign too.
+        if _names_account(payload) and await asyncio.to_thread(person_vault_fenced):
+            return "foreign"
         return "foreign" if await _cached_reading_is_foreign(payload, payload_fp) else ""
     if _names_account(payload) and payload_fp:
         return "vault_unowned"
@@ -837,9 +843,8 @@ async def _refresh_from_vault() -> None:
     so it describes the credential the fingerprints bracket. The enterprise
     profile name rides in from the usage API as it does for the kiro-cli path.
     """
-    if _workload_identity.active():
-        # vault_holds_identity says yes here for the workload identity alone, so the
-        # person vault is neither read nor refreshed: no reading, no sign-in prompt.
+    # No person vault reading for the workload identity or an edition or machine sign-in.
+    if _workload_identity.active() or await asyncio.to_thread(person_vault_fenced):
         _publish_usage({"available": False})
         return
     # Deferred: see _vault_owns_usage_sync.
@@ -1040,59 +1045,6 @@ async def fetch_local_identity() -> dict[str, object] | None:
     if not kiro_bin:
         return {}
     return await _fetch_whoami_or_none(kiro_bin)
-
-
-def _arnless_email_fields(
-    api_arn: object, api_email: object, identity: dict[str, object]
-) -> dict[str, object]:
-    """The whoami identity fields to attach to an ARN-less reading, tied to the bill.
-
-    The ARN match in :func:`_identity_matches_account` is the proof for an
-    account that has a profile ARN, and it rejects every account that does not --
-    an individual / Builder ID account, which reports no ARN on either side. This
-    names that account instead, and only when the name provably belongs to the
-    credential that was billed.
-
-    The tie is ``api_email``: the e-mail GetUsageLimits returned for the token it
-    actually read (``isEmailRequired``, requested on the ARN-less path in
-    :func:`kiro_crew.dashboard.handlers.kiro_usage_api.fetch_usage_limits`). That
-    is the billing account's own address, so attaching a whoami e-mail only when
-    it EQUALS ``api_email`` ties the displayed identity to the credential that
-    supplied the numbers -- not to a whoami that merely stayed unchanged across
-    the read.
-
-    That extra tie matters because the before/after whoami bracket
-    (:func:`_whoami_agreement`) proves whoami did not change during the read, NOT
-    that the credential :func:`...kiro_usage_api.fetch_usage_limits` selected
-    belongs to that whoami account. On the ARN-less path that credential is
-    chosen by SOURCE ANCHORING -- it must come from kiro-cli's own store
-    (``from_cli_store``) -- which narrows but does not uniquely pin the account:
-    a host with two trusted kiro-cli stores (the Windows Local and legacy Roaming
-    locations) can rank a still-valid token from the signed-out account first, so
-    the numbers can be one account's while whoami names another. Requiring the
-    billed e-mail to match closes that gap; if source anchoring were ever widened
-    (e.g. re-admitting an IDE cache), this equality check would still refuse a
-    mismatch rather than mislabel the bill.
-
-    Returns exactly ``email`` and the ``account_type`` the provider badge renders
-    from (never ``start_url`` or the private ``_profile_arn``), or ``{}`` to
-    attach nothing -- when the account has an ARN (:func:`_identity_matches_account`), when whoami
-    carries no e-mail, when the API returned no billed e-mail, or when the two
-    differ. An ARN-less reading that attaches nothing still publishes its numbers
-    alone, exactly as before this change.
-    """
-    if api_arn is not None:
-        return {}
-    whoami_email = identity.get("email")
-    if not (isinstance(whoami_email, str) and whoami_email):
-        return {}
-    if not (isinstance(api_email, str) and api_email and api_email == whoami_email):
-        return {}
-    fields: dict[str, object] = {"email": _redact_strings(whoami_email)}
-    account_type = identity.get("account_type")
-    if isinstance(account_type, str) and account_type:
-        fields["account_type"] = _redact_strings(account_type)
-    return fields
 
 
 #: Outcome of a refresh whose API read returned no plan while the scrape was

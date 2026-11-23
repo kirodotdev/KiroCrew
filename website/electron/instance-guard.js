@@ -30,9 +30,9 @@
 const { channelForVersion, isNewerVersion } = require("./auto-update");
 
 // The endpoint that carries the gateway's identity fields ({app, version}).
-// MUST be /api/health -- the shell's liveness probe uses /api/status, whose
-// payload has NO `app` field; probing it would classify every gateway as
-// "unidentified" and silently disable the takeover path (caught in review).
+// MUST be /api/health -- /api/status's payload has NO `app` field, so probing
+// it would classify every gateway as "unidentified" and silently disable the
+// takeover path (caught in review).
 const HEALTH_IDENTITY_PATH = "/api/health";
 
 // The endpoint that distinguishes a SERVING gateway from one that is merely

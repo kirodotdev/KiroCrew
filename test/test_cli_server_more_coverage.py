@@ -651,6 +651,45 @@ class TestUpdateGitPath:
         assert ["/usr/bin/kiro-cli", "update"] in stub.calls
         assert any("setup" in c for c in stub.calls)
 
+    @pytest.mark.parametrize(
+        ("main", "member", "runs"),
+        [
+            ("claude", "claude", False),
+            ("codex", "claude", False),
+            # "" is ACP_BACKEND_KIRO, the Kiro CLI backend's id.
+            ("claude", "", True),
+            ("", "claude", True),
+        ],
+    )
+    def test_kiro_cli_update_runs_only_when_a_selected_role_runs_kiro_cli(
+        self, monkeypatch, git_checkout, capsys, main, member, runs
+    ) -> None:
+        """With no selected backend on kiro-cli the step is skipped, the reason
+        printed, and kiro-cli is never launched (its 120 s wait is the gateway's
+        downtime).
+
+        RED-BEFORE: on main every row runs ``kiro-cli update``.
+        """
+        from kiro_crew.config import KiroCrewConfig
+
+        real_load = KiroCrewConfig.load
+
+        def _load(*args, **kw):
+            cfg = real_load(*args, **kw)
+            cfg.agent.acp_backend = main
+            cfg.agent.member_acp_backend = member
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_load))
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
+        cli_server._update()
+        out = capsys.readouterr().out
+        assert (["/usr/bin/kiro-cli", "update"] in stub.calls) is runs
+        assert ("no selected backend runs kiro-cli" in out) is not runs
+        assert "Kiro Crew updated!" in out
+
     def test_agent_config_refresh_failure_only_warns(
         self, monkeypatch, git_checkout, capsys
     ) -> None:

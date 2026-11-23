@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 SECTIONS = agent_state.CAPABILITY_SECTIONS
 
+#: A file field a Bot edit can take out that is not a capability row: the file's
+#: own ``toolsSettings`` (from an add or the upgrade move), one tool's entry per ``remove``.
+TOOLS_SETTINGS = "toolsSettings"
+
 
 def skill_catalog(member: str, catalog: Callable[[str], dict[str, str]]) -> dict[str, str]:
     """The skill catalog for *member*'s in-place path: *catalog* over its project dir.
@@ -132,6 +136,36 @@ def _drop_listed_skills(spec: dict, operations: list[dict]) -> dict:
         spec["skills"] = kept
     else:
         spec.pop("skills")
+    return spec
+
+
+def _tools_settings(spec: dict) -> dict:
+    """*spec*'s ``toolsSettings`` object; ``{}`` when it has none or holds another type."""
+    settings = spec.get(TOOLS_SETTINGS)
+    return settings if isinstance(settings, dict) else {}
+
+
+def _drop_tools_settings(spec: dict, operations: list[dict]) -> dict:
+    """*spec* without the ``toolsSettings`` entries a ``toolsSettings`` remove names. In place.
+
+    An add or the upgrade move writes ``toolsSettings`` into the file a tool's entry
+    at a time, so a remove takes one tool's entry out whole, its limits and grants
+    alike: the worker's next session carries none of it, for ``shell`` no
+    ``deniedCommands`` and so no ``spec-unjudged-denies`` hold. Only ``remove``:
+    nothing sets one here.
+    """
+    from kiro_crew.agent_capabilities import CapabilityError
+
+    ops = [op for op in operations if op["section"] == TOOLS_SETTINGS]
+    if any(op["action"] != "remove" for op in ops):
+        raise CapabilityError("invalid_operation", 400)
+    settings = _tools_settings(spec)
+    if not ops or not settings:
+        return spec
+    for op in ops:
+        settings.pop(op["id"], None)
+    if not settings:
+        spec.pop(TOOLS_SETTINGS)
     return spec
 
 
@@ -319,7 +353,8 @@ def _base_toggles(path: Any, body: Any) -> tuple[list[str], list[str]]:
     off: list[str] = []
     on: list[str] = []
     commit = isinstance(body, dict) and "preview_token" in body
-    for op in validate_request(body, commit=commit)["operations"]:
+    request = validate_request(body, commit=commit, sections=(*SECTIONS, TOOLS_SETTINGS))
+    for op in request["operations"]:
         section, ref, action = op["section"], op["id"], op["action"]
         if section not in _APPROVAL_SECTIONS:
             continue
@@ -417,7 +452,9 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
 
     Read from the merged worker spec (``mate_worker.member_worker_spec``), not
     the file alone, so the summary and the Tools / MCP / Skills / Resources lists
-    read one set. ``None`` when that spec is unreadable.
+    read one set. The Tool settings rows are the file's own ``toolsSettings``
+    entries beyond the worker base, each removable. ``None`` when that spec is
+    unreadable.
     """
     from kiro_crew import mate_worker
 
@@ -472,6 +509,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
     stored: dict[str, dict] = {}
     reachers: dict[str, Any] = {}
     listed_skills: set[str] = set()
+    added_settings: Any = None
     file_spec: dict[str, Any] = {}
     _path: Any = None
     try:
@@ -480,6 +518,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         from kiro_crew.agent_sdk import agent_specs
         from kiro_crew.agent_sdk.mcp_refs import OtherReach, ReachIndex, glob_free
         from kiro_crew.config.loader import default_project_dir
+        from kiro_crew.mate_spec_policy import policy_of, without_held
         from kiro_crew.mate_worker import MATE_WORKER_AGENT, worker_additions
         from kiro_crew.skill_runtime.catalog import (
             _alias_candidates,
@@ -572,6 +611,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         listed_skills = set(_listed_skills(file_spec))
         local = _effective(file_spec)
         reachers = {section: OtherReach(local[section]) for section in ("tools", "allowedTools")}
+        added_settings = without_held(policy_of(file_spec), base).get(TOOLS_SETTINGS)
     except Exception:  # noqa: BLE001 - a summary is display only; default to inherited
         logger.debug("worker base/file unreadable; all rows read inherited", exc_info=True)
 
@@ -633,6 +673,23 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
         _row("resources", key, entry)
         for key, entry in _resource_rows(spec.get("resources")).items()
     ]
+    # Each tool's settings the file adds beyond the base, from an add or the upgrade
+    # move (a shell ``deniedCommands`` list among them): Remove takes that tool's
+    # entry out, so a person lifts such a limit here instead of in the file.
+    rows += [
+        {
+            "section": TOOLS_SETTINGS,
+            "id": tool,
+            "label": tool,
+            "state": "local",
+            "present": True,
+            "value": entry,
+            "managed": False,
+            "shared_reference": False,
+            "remove": {"section": TOOLS_SETTINGS, "id": tool},
+        }
+        for tool, entry in (added_settings if isinstance(added_settings, dict) else {}).items()
+    ]
     directions = ""
     if stored.get("prompt"):
         from kiro_crew.mate_worker_kit import _worker_base_or_none, slot_directions
@@ -669,13 +726,15 @@ def _edit(
     """Shared read-apply-materialize for preview and put. Returns (old, new, path-str)."""
     from kiro_crew.agent_capabilities import CapabilityError, _materialize, _rows, validate_request
 
-    request = validate_request(body, commit=commit)
+    request = validate_request(body, commit=commit, sections=(*SECTIONS, TOOLS_SETTINGS))
     path, spec = _load_spec(member)
     if request["revision"] != _revision(spec):
         raise CapabilityError("stale_revision")
     rows = _rows(spec, catalog)
-    _apply_operations(rows, request["operations"], catalog)
-    new_spec = _drop_listed_skills(_materialize(spec, rows, catalog), request["operations"])
+    operations = [op for op in request["operations"] if op["section"] != TOOLS_SETTINGS]
+    _apply_operations(rows, operations, catalog)
+    new_spec = _drop_listed_skills(_materialize(spec, rows, catalog), operations)
+    _drop_tools_settings(new_spec, request["operations"])
     new_spec["name"] = member
     return spec, new_spec, str(path)
 
@@ -726,6 +785,19 @@ def preview(member: str, body: Any, catalog: dict[str, str]) -> dict:
                     "approval_expanded": False,
                 }
             )
+    # Nor does a tool's settings leaving the file.
+    kept_settings = _tools_settings(new_spec)
+    impact += [
+        {
+            "member": member,
+            "section": TOOLS_SETTINGS,
+            "id": tool,
+            "change": "removed",
+            "approval_expanded": False,
+        }
+        for tool in _tools_settings(old_spec)
+        if tool not in kept_settings
+    ]
     # A base approval switched off or on moves no file row but is an impact.
     path, _ = _load_spec(member)
     base_off, base_on = _base_toggles(path, body)

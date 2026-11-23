@@ -291,6 +291,7 @@ from kiro_crew.platform.spec_denied_grant import (  # noqa: F401  (read by tool_
 from kiro_crew.platform.tool_names import (  # noqa: F401  (read by hook_runtime owners)
     DEEPSEEK_READ_ONLY_TOOLS,
     KIRO_TOOL_ALIASES,
+    builtin_names,
     deepseek_policy_alias,
     policy_alias_split,
     policy_aliases,

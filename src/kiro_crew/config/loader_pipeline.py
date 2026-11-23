@@ -97,6 +97,7 @@ from kiro_crew.config.section_builders import (
     _build_cron_history_config,
     _build_discord_config,
     _build_feishu_config,
+    _build_heartbeat_config,
     _build_imessage_config,
     _build_instances_config,
     _build_knowledge_config,
@@ -131,7 +132,6 @@ from kiro_crew.config.sections import (
     BrowserConfig,
     ChannelConfig,
     DecisionsConfig,
-    HeartbeatConfig,
     InstancesConfig,
     KiroCrewAgentConfig,
     MemoryStoreConfig,
@@ -154,6 +154,30 @@ from kiro_crew.config.validation import validate_config_data as _validate_config
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, memory_store_name_defect
 
 logger = logging.getLogger("kiro_crew.config.loader")
+
+
+def _drop_unsafe_agent_rows(data: dict) -> None:
+    """Remove each ``agents`` row whose key or ``member_id`` is not one path component.
+
+    The row is dropped, not repaired: blanking a ``member_id`` would read as "no identity
+    yet" and let the upgrade mint a new one. One log line per row names the key, cut short.
+    """
+    from kiro_crew.members import is_single_path_component
+
+    agents = data.get("agents")
+    if not isinstance(agents, dict):
+        return
+    for key, row in list(agents.items()):
+        member_id = row.get("member_id") if isinstance(row, dict) else None
+        if is_single_path_component(key) and not (
+            isinstance(member_id, str) and member_id and not is_single_path_component(member_id)
+        ):
+            continue
+        del agents[key]
+        logger.warning(
+            "config agents: dropped row %r: its name or member_id is not a single path component",
+            str(key)[:40],
+        )
 
 
 def _recording_config_reader(
@@ -699,6 +723,10 @@ def read_config_document() -> ConfigDocument:
     agents_before = data.get("agents")
     names_before = set(agents_before) if isinstance(agents_before, dict) else None
     _validate_config_data(data)
+    # A roster key or member id that is not one path component is joined into file paths
+    # later, so its row is not part of the roster. Dropped here, before ``kept`` is
+    # taken, so the read reports it as a repair.
+    _drop_unsafe_agent_rows(data)
     # A present ``agents`` that is not an object, or a name the build will not read as
     # a crewmate (dropped, or left as a non-object), is a repair of this read. It is
     # recorded per load, never in the sticky set: once the file is fixed the next read
@@ -978,12 +1006,7 @@ def build_config(
     mint_timeout_raw = instances.get("mint_timeout_secs")
     mcp_gateway_data = _coerced_section(data, "mcp_gateway", _degraded)
     mcp_data = _coerced_section(data, "mcp", _degraded)
-    heartbeat = _sections.SectionReader(
-        HeartbeatConfig, _coerced_section(data, "heartbeat", _degraded)
-    )
-    heartbeat_default_deliver = str(heartbeat.get("default_deliver")).strip().lower()
-    if heartbeat_default_deliver not in ("slack", "dashboard"):
-        heartbeat_default_deliver = heartbeat.default("default_deliver")
+    heartbeat_data = _coerced_section(data, "heartbeat", _degraded)
     # A stored document written before this key existed has no "monitoring"
     # object at all, and that is the case that must keep working: the miss
     # resolves to the dataclass default, which is the off position. So an
@@ -1315,7 +1338,7 @@ def build_config(
         mcp_gateway=_build_mcp_gateway_config(mcp_gateway_data),
         mcp=_build_mcp_config(mcp_data),
         instances=_build_instances_config(connect_timeout_raw, instances_data, mint_timeout_raw),
-        heartbeat=HeartbeatConfig(default_deliver=heartbeat_default_deliver),
+        heartbeat=_build_heartbeat_config(heartbeat_data),
         monitoring=_build_monitoring_config(monitoring_data, monitoring_prefer_structured_arming),
         decisions=DecisionsConfig.from_raw(decisions_data),
         browser=BrowserConfig.from_raw(browser_data),

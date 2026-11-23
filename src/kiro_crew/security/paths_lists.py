@@ -521,6 +521,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     "panel-dismissals",
     # Pending deletes of released engine records (``released_sessions``); also masked.
     "released-sessions",
+    # Kept-grant records and the user-stop mark (``kept_grants``); also masked.
+    "kept-grants",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
@@ -1369,6 +1371,31 @@ _KIRO_SETTINGS_MCP_JSON = ".kiro/settings/mcp.json"
 
 
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
+
+
+# ── Kiro Crew's own MCP registry (<data home>/mcp.json) ──
+# The MCP page's store: every agent spec the gateway renders merges it, and a
+# shared server's backend is launched from it outside the sandbox. Only the person
+# changes it, through the MCP page or a ``request_server`` card
+# (the "agents ask before changing gateway-trusted files" entry in docs/decisions/),
+# so the gateway can trust what it holds. Write-protected rather than read+write
+# sensitive: the in-sandbox readers (``kirocrew doctor``, the MCP report) still read
+# it. The OS half is ``sandbox_leaves._CREW_READONLY_LEAVES``; the gateway's own
+# writes go through ``mcp_config_files._atomic_write`` and never ask this gate.
+_CREW_MCP_JSON_LEAF = "mcp.json"
+_CREW_MCP_REGISTRY_ROWS: list[str] = [
+    f"{prefix}/{_CREW_MCP_JSON_LEAF}" for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += _CREW_MCP_REGISTRY_ROWS
+
+#: Every MCP registry an agent's file tool is refused on. A refusal on one of these
+#: names the way forward (:data:`MCP_REGISTRY_REMEDY`) instead of ending the attempt.
+_MCP_REGISTRY_ROWS: list[str] = [_KIRO_SETTINGS_MCP_JSON, *_CREW_MCP_REGISTRY_ROWS]
+#: What the refusal tells the agent to do instead.
+MCP_REGISTRY_REMEDY = (
+    "To add, change or remove an MCP server, call the request_server tool "
+    "(action add, change or remove); the user applies it from a card."
+)
 
 
 # ── kiro-cli's tool auto-approve rules (opt-in) ──

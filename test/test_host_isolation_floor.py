@@ -365,6 +365,7 @@ class TestNoConsentWorkerOutlivesItsTest:
     def _schedule_worker(monkeypatch, load):
         """Start a real consent worker whose ``KiroCrewConfig.load`` is *load*."""
         from kiro_crew.metrics import provider
+        from kiro_crew.metrics.consent_worker_stacks import describe_consent_workers
 
         scripted = load
 
@@ -373,7 +374,9 @@ class TestNoConsentWorkerOutlivesItsTest:
 
         monkeypatch.setattr(provider, "KiroCrewConfig", _Config)
         with provider._lock:
-            assert not provider._check_in_flight, "a worker is already in flight; test order?"
+            assert not provider._check_in_flight, (
+                "a worker is already in flight; test order? " + describe_consent_workers()
+            )
             provider._schedule_consent_check_locked()
         workers = _root._live_telemetry_consent_workers()
         assert len(workers) == 1, workers

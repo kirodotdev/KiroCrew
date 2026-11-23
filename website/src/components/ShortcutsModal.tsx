@@ -14,6 +14,7 @@ import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { Toggle, SearchInput, FilteredEmpty } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { useKeyboardLayout } from '../hooks/useNavShortcutHint'
 import { shortcutPlatform, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
 import { matchShortcutEvent } from '../lib/shortcutRegistry'
 
@@ -374,6 +375,7 @@ function matchesQuery(text: string, query: string, queryWithoutPlus: string): bo
 }
 
 export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
+  const layout = useKeyboardLayout()
   const { enabled, macCtrl, toggle, toggleMacCtrl, saveError } = useShortcutPrefs()
   const { config: quickSearchConfig } = useQuickSearchShortcut()
   const { bindings: panelBindings } = usePanelToggleShortcuts()
@@ -420,6 +422,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
   }
 
   const filteredGroups = useMemo(() => {
+    void layout // chord glyphs follow the keyboard layout
     return SHORTCUT_GROUPS.map(group => {
       const entries = groupShortcuts(group, macCtrl)
       const groupName = shortcutGroupLabel(group).toLowerCase()
@@ -438,9 +441,10 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
       })
       return { group, entries: matchingEntries }
     }).filter(g => g.entries.length > 0)
-  }, [macCtrl, normalizedQuery, queryWithoutPlus])
+  }, [layout, macCtrl, normalizedQuery, queryWithoutPlus])
 
   const showSearchEverywhere = useMemo(() => {
+    void layout
     if (!normalizedQuery) return true
     const label = i18nT('components.shortcutsModal.search_everywhere').toLowerCase()
     const sectionName = i18nT('components.shortcutsModal.search').toLowerCase()
@@ -450,9 +454,10 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
       matchesQuery(sectionName, normalizedQuery, queryWithoutPlus) ||
       matchesQuery(capsStr, normalizedQuery, queryWithoutPlus)
     )
-  }, [normalizedQuery, queryWithoutPlus, quickSearchConfig])
+  }, [layout, normalizedQuery, queryWithoutPlus, quickSearchConfig])
 
   const matchingPanelToggleIds = useMemo(() => {
+    void layout
     const activeIds = PANEL_TOGGLE_IDS.filter(id => !TERMINAL_PANEL_TOGGLE_IDS.has(id) || terminalEnabled)
     if (!normalizedQuery) return activeIds
     const sectionName = i18nT('components.shortcutsModal.panel_toggles').toLowerCase()
@@ -466,7 +471,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
         matchesQuery(chordStr, normalizedQuery, queryWithoutPlus)
       )
     })
-  }, [normalizedQuery, panelBindings, queryWithoutPlus, terminalEnabled])
+  }, [layout, normalizedQuery, panelBindings, queryWithoutPlus, terminalEnabled])
 
   const showGlobalHotkey = useMemo(() => {
     if (!globalHotkey) return false

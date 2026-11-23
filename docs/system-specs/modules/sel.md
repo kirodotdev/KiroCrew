@@ -212,6 +212,8 @@ Every process that writes the log can rotate and trim it, each at its own moment
 | TaskRunner | `tool_invocation` rows for permission decisions during decomposition and step execution | `task_planner.py`, `tool_permission.py` (`TaskrunnerRows`, through `task_executor.py`'s `sel`) |
 | Subagent | Permission requests during subagent execution | `tool_permission.py` (`SubagentRows`, through `subagent.py`'s `sel`) |
 | Background tasks | Permission requests via `_resolve_permission()` | `llm_helpers_parts/tool_approval.py` |
+| MCP tool calls | the `tool_invocation` rows the shared audit wrapper writes for MCP tool calls (`source=mcp`, `operation` = tool name, `outcome` completed / failed, `error` `validation_failed` / `execution_failed`); an `execution_failed` answer that ends in ` [code]` or ` [code, field=...]`, where the code is a lowercase letter then up to 63 lowercase letters, digits or `_` (the work-ledger tools' documented codes, e.g. `crew_log_off`), records that token as `metadata.code`. Only the answer's tail is read, so any answer text that ends this way (a caller-chosen field value included) records its token; no other part of the answer is logged | `mcp_shared_calls.py` (`call_tool_with_logging`) |
+| Tool gate refusals | every `tool_invocation` row a surface writes for a `HookManager` deny verdict (`error=hook_deny` on dashboard chat, Slack, the task runner and its decomposition, subagents, the webhook and `kirocrew chat`; `metadata.mechanism` `always_deny_hook` / `policy_deny` on a `HOOK_BASED` or `READ_ONLY` background turn) records the gate row that refused as `metadata.rule_id`, the key `failure_recurrence`'s signature reads: the verdict's `ToolHookResult.tier`, a `GATE_TIERS` row or per-target rule name (`sensitive-bash`, `deny-rules`, `governance`, ...), never the rule's pattern, the path or the command. A deny no row decided (a gate crash, a busy gate) records none, as do a dashboard deny-override card's refusal (it keeps its own `metadata.reason`) and a row built from a gate answer that is only a reason string (`permission_floor.refusal_for`: agent channels, the eval runner, an `AUTO_APPROVE` background turn, the transport floor's own refusal rows); a background turn's own deny scans, which run before the gate is asked (`mechanism` `always_deny` / `always_deny_input`, or `policy_deny` for a pinned rule), record none either | `tool_permission.py` (`HookGate`, `SubagentRows`, `TaskrunnerRows`), `dashboard/chat_turn/tool_approval.py`, `slack/handler_runtime/permission_ladder.py`, `task_planner.py`, `dashboard/handlers/hooks.py`, `cli_chat.py`, `llm_helpers_parts/tool_approval.py` |
 | MCP core tools | `spawn_run`, `learn_add`, `task_run` calls and outcomes | `mcp_core.py` |
 | MCP cron tools | `cron_add`, `cron_remove`, etc. calls and outcomes | `mcp_cron.py`, `mcp_cron_vet.py` |
 | Session directives | Structured monitor create/update/stop application outcomes; every refusal records `denied` rather than `success` | `dashboard/session_directive_apply.py` |
@@ -241,11 +243,26 @@ Every process that writes the log can rotate and trim it, each at its own moment
 
 ```text
 kirocrew security events [-n LIMIT] [--since AGE_OR_TIME] [--until AGE_OR_TIME]
+                         [--operation V] [--outcome V] [--source V] [--caller V]
+                         [--format text|jsonl|csv] [--out FILE]
 kirocrew security verify
 ```
 
 `events` defaults to 20 rows. `--since` and `--until` accept relative ages such
 as `30m`, `2h`, and `7d`, or ISO 8601 dates/timestamps.
+
+`--operation`, `--outcome`, `--source` and `--caller` each keep a row only when its
+`operation`, `outcome`, `source` or `caller_identity` equals the value exactly (no
+pattern); several flags must all match. The time window applies first, then the field
+filters over at most 50,000 of the newest rows in that window (`sel_filter.CLI_SCAN_LIMIT`),
+then `-n` cuts the result. A scan that used the whole budget without filling `-n` prints a
+note on stderr: set an earlier `--until` to reach older rows. With no field flag, the
+log's own `recent` answers as before.
+
+`--format jsonl` or `csv` writes every match oldest first (unless `-n` was typed) to
+stdout, or with `--out FILE` to a new owner-only file; an existing `FILE` or
+`FILE.manifest.json` is an error and nothing is written. The manifest holds the filters,
+window, row count, first and last timestamp and `entry_hash`, `scan_capped`, `sha256`. CSV cells that start with `=`, `+`, `-`, `@`, a tab or a CR get a leading `'`.
 
 ## Thread Safety
 

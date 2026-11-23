@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills"
 PREPARE_PR = SKILLS / "kirocrew-dev" / "kirocrew-prepare-pr" / "SKILL.md"
@@ -37,7 +39,7 @@ def _skill_files() -> list[Path]:
 
 def test_prepare_pr_skill_defines_the_decision_disposition() -> None:
     """The skill that owns the disposition vocabulary must carry both names."""
-    text = PREPARE_PR.read_text(encoding="utf-8")
+    text = skill_text(PREPARE_PR)
     assert DEFERRED in text, f"{PREPARE_PR.name} lost the deferred disposition entirely"
     assert DECISION in text, (
         f"{PREPARE_PR.name} no longer offers `{DECISION}`. Without it every advisory "
@@ -48,7 +50,7 @@ def test_prepare_pr_skill_defines_the_decision_disposition() -> None:
 
 def test_prepare_pr_skill_forbids_filing_an_issue_for_a_decision() -> None:
     """The load-bearing half is the prohibition, not the label."""
-    text = PREPARE_PR.read_text(encoding="utf-8")
+    text = skill_text(PREPARE_PR)
     assert "not** file an issue" in text or "not file an issue" in text, (
         f"{PREPARE_PR.name} no longer tells the agent to skip filing an issue for a "
         f"`{DECISION}` concern. The label alone does not stop the issue being filed."
@@ -64,7 +66,7 @@ def test_every_disposition_enumeration_offers_the_decision_branch() -> None:
     """
     stale: list[str] = []
     for path in _skill_files():
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for lineno, line in enumerate(skill_text(path).splitlines(), start=1):
             if DEFERRED in line and DECISION not in line:
                 stale.append(f"{path.relative_to(ROOT)}:{lineno}")
     assert not stale, (
@@ -93,7 +95,7 @@ ONE_RATIONALE = "one rationale covers exactly one finding"
 
 def test_disposition_step_scopes_a_comment_to_one_lane() -> None:
     """`target=` names a lane, so a second lane's concern needs its own comment."""
-    text = PREPARE_PR.read_text(encoding="utf-8")
+    text = skill_text(PREPARE_PR)
     assert ONE_LANE in text, (
         f"{PREPARE_PR.name} no longer says a disposition comment covers one lane. "
         "Nothing parses `target=`, so without this rule one GPT-targeted comment "
@@ -103,7 +105,7 @@ def test_disposition_step_scopes_a_comment_to_one_lane() -> None:
 
 def test_disposition_step_scopes_a_rationale_to_one_finding() -> None:
     """Coverage is scoped by rationale, so a shared rationale claims every finding."""
-    text = PREPARE_PR.read_text(encoding="utf-8")
+    text = skill_text(PREPARE_PR)
     assert ONE_RATIONALE in text, (
         f"{PREPARE_PR.name} no longer says one rationale covers one finding. The "
         "adjudication ledger widens a ruling to everything its rationale fits, so "
@@ -119,7 +121,7 @@ def test_the_disposition_step_offers_the_whole_vocabulary() -> None:
     follows while writing, so `accepted-and-deferred` and `needs-a-decision`
     silently collapse into a bare `accepted`.
     """
-    text = PREPARE_PR.read_text(encoding="utf-8")
+    text = skill_text(PREPARE_PR)
     assert "`fixed`/`rebutted`/`accepted` " not in text, (
         f"{PREPARE_PR.name} carries a stale three-disposition enumeration. Every "
         "place that lists the vocabulary must list all four."
@@ -175,7 +177,7 @@ def test_the_skill_tells_the_writer_to_claim_the_span() -> None:
     the skill step that writes the comment must say so, or every agent's
     first disposition after a finding blocks readiness with no instruction
     for avoiding it."""
-    text = PREPARE_PR.read_text(encoding="utf-8")
+    text = skill_text(PREPARE_PR)
     assert "span=" in text, (
         f"{PREPARE_PR.name} no longer tells the writer to name the finding's "
         "span= identity in the disposition comment"

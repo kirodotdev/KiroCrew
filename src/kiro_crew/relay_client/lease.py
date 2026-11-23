@@ -980,7 +980,7 @@ class LeaseHostTokenSource:
             self._stop(
                 "the lease service refused the Crew's credential (HTTP 401): check that "
                 "tunnel.relay_lease_credential's credential is current and that "
-                "tunnel.relay_lease_token_type matches its kind (a team Crew on a crew API "
+                "tunnel.relay_lease_token_type matches its kind (a Shared Crew on a crew API "
                 "key needs API_KEY, a token from an outside identity provider needs "
                 "EXTERNAL_IDP, and a Kiro sign-in leaves it empty), then restart Remote Control"
                 + self._region_hint()

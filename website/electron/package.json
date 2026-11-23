@@ -103,6 +103,9 @@
     "rpm": {
       "packageName": "kirocrew",
       "packageCategory": "Development/Tools",
+      "fpm": [
+        "--rpm-rpmbuild-define=_build_id_links none"
+      ],
       "publish": [
         {
           "provider": "generic",
@@ -267,11 +270,13 @@
       "runtime/crash/scan.js",
       "disable-gpu.js",
       "gpu-crash-fallback.js",
+      "relaunch-intent.js",
       "early-boot-guard.js",
       "memory-watch-log.js",
       "launch-log.js",
       "frame-load-log.js",
       "pane-asset-journal.js",
+      "remote-crew-usage.js",
       "cage-trace.js",
       "pyspy-dump.js",
       "perf-metrics.js",

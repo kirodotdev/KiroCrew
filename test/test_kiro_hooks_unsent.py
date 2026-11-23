@@ -34,7 +34,7 @@ from kiro_crew.dashboard.handlers.hooks import api_kiro_hooks
 
 _CMD = "/usr/local/bin/guard.sh"
 
-#: The seven kiro-agent triggers kiro-cli names no event for, as the issue lists them.
+#: The nine kiro-agent triggers kiro-cli names no event for.
 _NO_EVENT_TRIGGERS = (
     "SessionEnd",
     "PreTaskExec",
@@ -43,6 +43,8 @@ _NO_EVENT_TRIGGERS = (
     "PostFileSave",
     "PostFileDelete",
     "Manual",
+    "PreCompact",
+    "PostCompact",
 )
 _EVENT_TRIGGERS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "Stop")
 

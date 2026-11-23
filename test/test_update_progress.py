@@ -196,6 +196,7 @@ class TestUpdateEndpoints:
         request = MagicMock()
         request.app = app
         request.json = AsyncMock(return_value={"delay": 0.01})
+        _as_owner(request)
 
         resp = await api_update_simulate(request)
         data = json.loads(resp.body)
@@ -234,6 +235,7 @@ class TestUpdateEndpoints:
         request = MagicMock()
         request.app = app
         request.json = AsyncMock(return_value={"delay": 0.01, "fail_at": "building"})
+        _as_owner(request)
 
         await api_update_simulate(request)
         await asyncio.sleep(0.15)
@@ -259,6 +261,7 @@ class TestUpdateEndpoints:
         request = MagicMock()
         request.app = app
         request.json = AsyncMock(return_value={"reject": True})
+        _as_owner(request)
 
         resp = await api_update_simulate(request)
         assert resp.status == 409
@@ -280,6 +283,7 @@ class TestUpdateEndpoints:
         app["state"] = state
         request = MagicMock()
         request.app = app
+        _as_owner(request)
 
         resp = await api_update_cancel(request)
         assert resp.status == 200

@@ -58,14 +58,23 @@ from kiro_crew.history_projection_contract import (
     TranscriptRevisionChanged,
     _history_facade,
 )
-from kiro_crew.history_rewrite import rewrite_metadata_line, rewrite_transcript
+from kiro_crew.history_rewrite import (
+    rewrite_head_streaming,
+    rewrite_metadata_line,
+    rewrite_transcript,
+)
 from kiro_crew.jsonl_util import (
     bounded_raw_records,
     raise_if_splitlines_boundary,
     strict_raw_records_with_offsets,
 )
 from kiro_crew.preview_text import speech_preview
-from kiro_crew.transcript_count import count_messages, message_row
+from kiro_crew.transcript_count import (
+    bump_after_append,
+    count_messages,
+    message_row,
+    stamp_before_append,
+)
 from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 if TYPE_CHECKING:
@@ -536,6 +545,22 @@ class SessionMetadataProjection:
         """
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
+        # Only line 0 changes, so the rows are copied in chunks rather than read
+        # into memory; None means this file needs the whole-file path below.
+        count_before = stamp_before_append(path)
+        streamed = rewrite_head_streaming(
+            path,
+            lambda head: self._metadata_replacement(key, head, fields),
+            fsync=durable,
+            replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+        )
+        if streamed is not None:
+            if streamed:
+                _history_facade()._restore_mtime(path, previous_mtime)
+                # The rows are unchanged, so their stored count still holds.
+                bump_after_append(path, count_before, "")
+                self._log._invalidate_cache(key)
+            return streamed
         # An undecodable first line comes back as a blank placeholder, so the
         # corrupt-line rewrite below can replace it (see _split_transcript_bytes).
         text = "".join(_split_transcript_bytes(path.read_bytes())) if path.exists() else None

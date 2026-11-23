@@ -148,3 +148,46 @@ async def test_a_named_create_that_can_reopen_a_saved_session_counts_nothing(
     assert state._slots["chat-saved"].crew_mode_agent == CONDUCTOR
     counters.new_chat.assert_not_called()
     counters.turned_on.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_chat_born_on_a_default_agent_conductor_leaves_it_unstamped_before_a_message(
+    state, counters, _floor_monkeypatch
+) -> None:
+    # Pins the move the dashboard's picker relies on while the configured conductor
+    # is the default agent: a root stamped at its create switches onto a template
+    # that is no conductor before its first message, and comes out unstamped.
+    import json
+
+    from kiro_crew import agent_discovery
+    from kiro_crew.config.paths import kiro_agents_dir
+
+    for name in ("my-custom", "my-other"):
+        spec = kiro_agents_dir() / f"{name}.json"
+        spec.parent.mkdir(parents=True, exist_ok=True)
+        spec.write_text(json.dumps({"name": name, "prompt": ""}), encoding="utf-8")
+    agent_discovery.clear_list_agents_cache()
+    cfg = chat_handlers.KiroCrewConfig.load()
+    cfg.agent.default_agent = cfg.agent.crew_mode_agent = "my-custom"
+    _floor_monkeypatch.setattr(crew_mode, "_live_cfg", lambda: cfg)
+    before = set(state._slots)
+
+    assert await _post_create(state, {"agent": "my-custom", "agent_kind": "template"}) == 200
+
+    (key,) = set(state._slots) - before
+    assert state._slots[key].crew_mode_agent == "my-custom"
+    app = web.Application()
+    app["state"] = state
+    app.router.add_post("/api/chat/slots/{slot}/agent", chat_handlers.api_chat_slot_agent)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post(
+            f"/api/chat/slots/{key}/agent", json={"agent": "my-other", "agent_kind": "template"}
+        )
+        assert response.status == 200, await response.text()
+        await async_wait_until(
+            lambda: state._slots_broadcast_timer is None,
+            describe=lambda: "a trailing slots push is still armed",
+        )
+    agent_discovery.clear_list_agents_cache()
+    assert state._slots[key].agent == "my-other"
+    assert state._slots[key].crew_mode_agent == ""

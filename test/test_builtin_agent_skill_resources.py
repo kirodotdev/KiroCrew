@@ -61,23 +61,38 @@ _STEERING_GLOB = "file://.kiro/steering/**/*.md"
 AGENTS: dict[str, tuple[object, tuple[str, ...]]] = {
     "kirocrew-conductor": (
         conductor_agents._install_conductor_agent,
-        ("goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
+        ("goal-conductor", "dashboard", "widgets", "living-ui", "living-ui-blocks", "artifacts"),
     ),
     "kirocrew-ledger-conductor": (
         conductor_agents._install_ledger_conductor_agent,
-        ("goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
+        ("goal-conductor", "dashboard", "widgets", "living-ui", "living-ui-blocks", "artifacts"),
     ),
     "kirocrew-pipeline-conductor": (
         conductor_agents._install_pipeline_conductor_agent,
-        ("pipeline-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
+        (
+            "pipeline-conductor",
+            "dashboard",
+            "widgets",
+            "living-ui",
+            "living-ui-blocks",
+            "artifacts",
+        ),
     ),
     "kirocrew-security-conductor": (
         conductor_agents._install_security_conductor_agent,
-        ("security-conductor", "widgets", "living-ui", "artifacts"),
+        ("security-conductor", "widgets", "living-ui", "living-ui-blocks", "artifacts"),
     ),
     "kirocrew-team-lead": (
         service_agents._install_team_lead_agent,
-        ("team-lead", "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
+        (
+            "team-lead",
+            "goal-conductor",
+            "dashboard",
+            "widgets",
+            "living-ui",
+            "living-ui-blocks",
+            "artifacts",
+        ),
     ),
     "kirocrew-dashboard-manager": (
         service_agents._install_dashboard_manager_agent,

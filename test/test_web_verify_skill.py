@@ -9,6 +9,8 @@ joints; drop any of them and the loop goes quiet without a test failing.
 
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / "src" / "kiro_crew" / "builtin_skills"
 WEB_VERIFY = SKILLS / "web-verify" / "SKILL.md"
@@ -46,7 +48,7 @@ def _flat(path: Path) -> str:
     setup` and `does not flip` during review), so phrase assertions normalize
     whitespace first and stay robust to reflow.
     """
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(skill_text(path).split())
 
 
 def test_browser_skills_name_the_settings_toggle_not_only_a_cli() -> None:
@@ -158,5 +160,5 @@ def test_siblings_route_to_web_verify() -> None:
 
 
 def test_prepare_pr_sources_screenshots_from_verification() -> None:
-    body = PREPARE_PR.read_text(encoding="utf-8")
+    body = skill_text(PREPARE_PR)
     assert "web-verify" in body

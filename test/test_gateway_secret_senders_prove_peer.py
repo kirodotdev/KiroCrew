@@ -78,7 +78,10 @@ class TestSpawnSendsThroughThePeerProof:
         assert port == _PORT
         assert operation == "cli_spawn_list"
         assert req.get_header("X-internal-secret") == "s"
-        assert "No subagents." in capsys.readouterr().out
+        assert (
+            "No subagents started from the CLI. Runs that a chat or another "
+            "session started are not listed here; see them in the dashboard."
+        ) in capsys.readouterr().out
 
     def test_run_and_its_poll_go_through_the_proof(self, secret: None, capsys: Any) -> None:
         sender = _ProvenSender([{"id": "ag1", "task": "t"}, {"done": True, "result": "finished"}])

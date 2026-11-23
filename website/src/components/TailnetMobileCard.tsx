@@ -347,7 +347,7 @@ export function TailnetMobileCard() {
         accept(await api.tailnetMobile())
         const previousBootId = current.boot_id
         setSetupRestarting(true)
-        await api.restartGateway()
+        await api.restartGateway({ keepTab: true })
         current = await waitForRestartedGateway(previousBootId, accept)
         setSetupRestarting(false)
       }
@@ -359,7 +359,7 @@ export function TailnetMobileCard() {
         if (current.step === 'restart_gateway') {
           const previousBootId = current.boot_id
           setSetupRestarting(true)
-          await api.restartGateway()
+          await api.restartGateway({ keepTab: true })
           current = await waitForRestartedGateway(previousBootId, accept)
           setSetupRestarting(false)
         }

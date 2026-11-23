@@ -4887,7 +4887,7 @@ comment header per owner. The module-level code these owners hold is re-imported
 | Module | Owns |
 |---|---|
 | `skills_auto_model` | The `auto/` namespace and its on-disk layout, `AutoSkillProvenance` and the generated `SKILL.md` renderer, `ClaimRefusal`, and the pending-queue observer hooks |
-| `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md`, screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
+| `skills_discovery` | The skills directory, the packaged and trusted provider roots, the installed package's RECORD admission of a hardlinked `SKILL.md` or packaged built-in skill file (`kiro_crew/builtin_skills/`), screening and adoption of the configured extra roots (`reconfigure`), the tree walk `_iter_skill_files` with its no-follow traversal of a trusted project, and the bounds on how long a walk's answer is served |
 | `skills_builtin_provenance` | The tree fingerprint, the provenance marker, the ownership check (`_verified_unchanged_fingerprint`), `installed_skill_currency`, the released-former-built-in skip it shares with the sync (`_ships_for_released_app`), and the deployed cron-script source verdicts |
 | `skills_builtin_sync` | The packaged-skill sync (`_ensure_builtin_skills`, `sync_builtins`) with its claim, retirement, quarantine and opt-out carry, stale and relocated cleanup (`_RELOCATED_SKILLS`), and `remove_retired_conductor_skill` |
 | `skills_body_reads` | The project trust key and its audit, the enumerated-read choke point (`_read_enumerated_skill_bytes`) and the frontmatter cache, `load_skill` and the global body reader, exact-key reads of the scoped catalog with their paging, and the shapes that mark a tool call as a skill-body read |
@@ -5500,7 +5500,17 @@ also keeps the `RECORD` rows for `.json` files under `kiro_crew/apps/builtins/<a
 which `_installed_builtin_app_file_match` checks for a shipped built-in app's
 `app.json` and the agent specs its manifest declares, never another `.json` the
 `RECORD` lists ([security](security.md)); `_installed_package_bytes_match` admits only
-a path named `SKILL.md`.
+a path named `SKILL.md`. It also keeps the `RECORD` rows for every file under
+`kiro_crew/builtin_skills/`. The built-in skill sync reads the packaged tree through
+them: `skills_builtin_provenance._skill_tree_fingerprint`, when it hashes the
+packaged source (`assume_owner_rwx_dirs`), passes
+`admit_hardlinked=_recorded_bytes_match`, so a hardlinked packaged file counts only
+when its bytes match the digest `RECORD` lists for that exact path. The update
+fingerprint, the provenance marker and the doctor's currency check therefore hold on
+a hardlinked install. The installed copy in the skills dir is always hashed with the
+plain refusal. `skills_builtin_sync._carried_skill_md` reads the packaged `SKILL.md`
+with `admit_hardlinked=_installed_package_bytes_match`, so a carried
+`inject_on_trigger: false` survives an update on such an install.
 Rewriting `RECORD` takes write access to the tree holding the package code, which
 already decides what the gateway runs. Project reads retain descriptor confinement
 and their byte cap.
@@ -5562,9 +5572,13 @@ those trees after session start, and a name with glob characters is never
 written as a `match` entry (it would deny in-scope skills too), so such a skill
 stays offered. Every projection that adds the rules records one
 `kas_skill_scope_denied` security event (source `kas_agent_projection`) naming
-the agent and what the rules keep or deny, at most 40 names per line. Any failure
-adds no rule and logs a warning, so the session starts with KAS's default trees
-rather than not at all. Pinned by `test/test_kas_skill_scope.py`, which models
+the agent and what the rules keep or deny, at most 40 names per line. When the
+scope or its rules cannot be worked out, the session still starts, but with one
+rule that denies every skill except the copies already made; the error is logged
+and, for the session's own agent, the chat shows one notice (a sub-agent target
+gets the same rule and the log line). A failure making the copies only drops the
+copies.
+Pinned by `test/test_kas_skill_scope.py`, which models
 KAS's filter over the payload the harness builds and compares it to the kiro-cli
 scope.
 
@@ -6348,12 +6362,19 @@ exclude). To keep it off the per-message filesystem/config hot path:
   resolve, deduplicate, sort or probe a path: the loader below remains the only authority, and
   a path it declines is skipped there rather than rejected at the save;
 - `extra_paths` is re-resolved by `reconfigure(cfg)` on a config write, running
-  the SAME screening as construction — expanduser, resolve, `is_sensitive_path`
-  reject, existence check — and failing closed per entry, so a root added by hand
-  to `config.json` can no more reach a credential directory than one present at
-  boot. An entry that cannot be resolved at all (an unknown `~user`, an embedded
-  NUL) is skipped with a warning at construction and on reload, never raised, so
-  one bad entry cannot stop the loader. Edition-contributed roots are preserved and stay LAST (lowest
+  the SAME screening as construction (`_screen_extra_paths`) — expanduser, resolve,
+  `is_sensitive_path` reject, existence check — and failing closed per entry, so a
+  root added by hand to `config.json` can no more reach a credential directory than
+  one present at boot. Each skipped entry logs a warning naming its position
+  (`skills.extra_paths[1]`), never its value. An entry that cannot be resolved at
+  all (an unknown `~user`, an embedded NUL) is skipped, never raised, so one bad
+  entry cannot stop the loader; one that is not a directory (a missing folder, or a
+  Windows network share that cannot be reached) is skipped the same way. A root on
+  a slow or network mount blocks the resolve until the mount answers, so gateway
+  start, `kirocrew run` and the eval runner build the loader in a worker thread (it
+  holds no asyncio primitives): the event loop keeps running, and start, the
+  dashboard bind included, still waits for the screening.
+  Edition-contributed roots are preserved and stay LAST (lowest
   precedence): they come from the platform context, not config, so a config write
   must not drop them. The discovery cache is cleared, so the next listing walks
   the new roots instead of serving the old set for the rest of the TTL;
@@ -7887,8 +7908,10 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
 - `trigger` accepts the whole alias table from the trigger alias table in `kiro-team/kiro-agent` (blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, `trigger-names.ts` under its hooks package) — twelve canonical triggers with their PascalCase identity rows, the IDE's
   legacy camelCase spellings, the CLI aliases and one Open Plugins legacy alias —
   keyed case-insensitively, which is one deliberate leniency over kiro-agent's
-  own case-sensitive lookup. That blob is the version to re-read when adding a
-  name
+  own case-sensitive lookup. The two compaction triggers, `PreCompact` and
+  `PostCompact` (and their camelCase spellings), come from the same table in the
+  pinned engine 0.66.117's published bundle, for fourteen in all. That blob and
+  that bundle are the ones to re-read when adding a name
 - `action` is `{"type": "command", "command": ...}` or
   `{"type": "agent", "prompt": ...}`; the type must be a string and the payload a
   non-empty string within `_MAX_HOOK_PAYLOAD_LEN`
@@ -7905,9 +7928,13 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
 Left out of the kiro-cli emission, kept in the stored spec — and left out for
 that TRIGGER only, since autoimport still discovers a script in the hooks
 directory on its own unless a suppressed document names it: an `action` of type
-`agent`, the seven triggers kiro-cli has no event name for (`SessionEnd`, `PreTaskExec`,
-`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`), and
-the per-hook `name`, `description` and `timeout`. `enabled: false` and
+`agent`, the nine triggers kiro-cli has no event name for (`SessionEnd`, `PreTaskExec`,
+`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`,
+`PreCompact`, `PostCompact`), and
+the per-hook `name`, `description` and `timeout`. Crew's own conversion
+(`agent_sdk/spec_hooks._from_documents`) gives a `PreCompact` or `PostCompact`
+document no number, so the other documents' `<agent>/<Event>/<n>` policy names
+are the ones they would have without it. `enabled: false` and
 `confirm: true` are NOT in that class: each grants less execution than the object
 form can express, so either one keeps the hook out of the kiro-cli spec entirely,
 with a log line and a SEL audit naming which. `hook_documents_suppressed_commands()`

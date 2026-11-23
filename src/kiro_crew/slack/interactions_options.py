@@ -5,7 +5,9 @@
 Both answers go through ``_answer_options``: it refuses a superseded or already answered
 control (``_refuse_stale_options``, an "Already answered" ephemeral), edits the card in
 place to "<who> chose <choice>" and sends the choice to the agent session. An ``action::`` button reaches
-the session through ``_route_action_to_session``. ``_import_thread_to_slot`` fetches a
+the session through ``_route_action_to_session``; one on the Home tab
+(``_is_home_tab_action_button``) is routed by ``_handle_home_tab_action`` into the
+clicker's DM with the bot. ``_import_thread_to_slot`` fetches a
 Slack thread, redacts it and imports it into a new dashboard slot.
 
 Split out of ``kiro_crew.slack.interactions``, which stays the import path and the
@@ -228,7 +230,7 @@ async def _shared_destination_refused(
 async def _route_action_to_session(
     channel: str,
     msg_ts: str,
-    thread_ts: str,
+    thread_ts: str | None,
     user_id: str,
     team_id: str,
     label: str,
@@ -244,12 +246,15 @@ async def _route_action_to_session(
     *user_meta* is the routed user row's meta (a code channel's Slack sender).
     *pinned_slot* is a bound code channel's session: the answer is delivered
     there, and its label posts top-level like every other post in the channel.
+    An empty *msg_ts* means the click came from no message (the Home tab): no
+    message is edited, and a ``None`` *thread_ts* posts the label top-level.
     """
     assert _orch and _orch.slack  # caller already checked  # noqa: S101
 
-    if await _shared_answer_refused(channel, user_id, thread_ts, label, context_tag):
+    src_thread = thread_ts or ""
+    if await _shared_answer_refused(channel, user_id, src_thread, label, context_tag):
         return
-    if await _shared_destination_refused(channel, user_id, thread_ts, context_tag, pinned_slot):
+    if await _shared_destination_refused(channel, user_id, src_thread, context_tag, pinned_slot):
         return
 
     # Redact label before any Slack surface
@@ -257,11 +262,12 @@ async def _route_action_to_session(
     label = redact_credentials(label)[0]
 
     # Update the message: replace clicked element with ✓ label
-    updated_blocks = _mark_button_clicked(blocks, action_id_value, label)
-    try:
-        await _orch.slack.update_message(channel, msg_ts, text=label, blocks=updated_blocks)
-    except Exception:
-        logger.debug("Failed to update action message", exc_info=True)
+    if msg_ts:
+        updated_blocks = _mark_button_clicked(blocks, action_id_value, label)
+        try:
+            await _orch.slack.update_message(channel, msg_ts, text=label, blocks=updated_blocks)
+        except Exception:
+            logger.debug("Failed to update action message", exc_info=True)
 
     # Post display text as visible user message
     new_ts = await _orch.slack.post_message(channel, label, None if pinned_slot else thread_ts)
@@ -318,6 +324,79 @@ async def _route_action_to_session(
     )
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
+
+
+def _is_home_tab_action_button(payload: dict, action: dict) -> bool:
+    """Whether a click is a Home-tab element of a card's action-button shape.
+
+    The shape a message card's action button already has: an
+    ``OPTIONS_ACTION_PREFIX`` action id that is not a numbered OPTIONS choice and
+    carries no ``_done_`` marker, whose value (or selected option's value) starts
+    with ``action::``. Every other Home-tab click keeps its own path.
+    """
+    if (payload.get("view") or {}).get("type") != "home":
+        return False
+    action_id = action.get("action_id", "")
+    suffix = action_id[len(OPTIONS_ACTION_PREFIX) :]
+    if not action_id.startswith(OPTIONS_ACTION_PREFIX) or "_done_" in action_id:
+        return False
+    if suffix.isascii() and suffix.isdigit():
+        return False
+    value = action.get("value", "") or (action.get("selected_option") or {}).get("value", "")
+    return value.startswith(_ACTION_PREFIX)
+
+
+async def _handle_home_tab_action(payload: dict, action: dict, user_id: str) -> None:
+    """Route a Home-tab action button into the clicker's DM with the bot.
+
+    The Home tab stays the owner's, so a ``slack.shared_access`` person the
+    dispatcher admits for card answers is refused here. A Home-tab payload has
+    no channel and no message, so the click is gated on the DM it posts into
+    rather than on an empty channel id: the ``channels`` governance gate, then
+    the DM is opened (as the Home tab's Resume button does), then that DM's
+    channel policy. The label starts a new top-level thread there and the turn
+    runs exactly as a card click's does. The Home view itself is never edited.
+    """
+    if not (_orch and _orch.slack):
+        return
+    if not is_allowed_user(user_id):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.interactive",
+            outcome="denied",
+            source="slack",
+            resources=action.get("action_id", ""),
+            error="owner-only action",
+        )
+        return
+    if not await channel_inbound_permitted("slack"):
+        logger.info("slack Home tab action dropped: denied by channels governance policy")
+        return
+    try:
+        dm_id = await _orch.slack.open_dm(user_id)
+    except Exception:
+        logger.exception("Home tab action: open_dm failed for user %s", user_id)
+        return
+    if not dm_id:
+        return
+    if channel_refusal(dm_id, operation="slack.interactive", caller=user_id):
+        logger.info("slack Home tab action dropped: denied by the DM's channel policy")
+        return
+    selected = action.get("selected_option") or {}
+    choice = action.get("value", "") or selected.get("value", "")
+    label = action.get("text", {}).get("text", "") or selected.get("text", {}).get("text", "")
+    await _route_action_to_session(
+        dm_id,
+        "",
+        None,
+        user_id,
+        (payload.get("team") or {}).get("id", ""),
+        label,
+        choice[len(_ACTION_PREFIX) :],
+        "Action button clicked",
+        action.get("action_id", ""),
+        [],
+    )
 
 
 class ChannelAgentMismatchError(Exception):

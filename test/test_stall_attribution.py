@@ -202,7 +202,7 @@ class TestMarkers:
         )
         dead_pids.add(4_000_002)  # a live sibling gateway
         assert [m.job_id for m in cron_inflight.abandoned_markers(tmp_path)] == ["dead"]
-        assert cron_inflight.sweep_abandoned_markers(tmp_path) == 1
+        assert cron_inflight.remove_markers(cron_inflight.abandoned_markers(tmp_path)) == 1
         assert sorted(m.job_id for m in cron_inflight.read_markers(tmp_path)) == ["live", "other"]
 
     @pytest.mark.skipif(os.name != "posix", reason="symlinks are a POSIX fixture")
@@ -575,7 +575,7 @@ class TestAttribution:
         assert cron_inflight.record_attribution(
             tmp_path, dump.name, first.candidates, first.unrelated_abandoned
         )
-        cron_inflight.sweep_abandoned_markers(tmp_path)
+        cron_inflight.remove_markers(cron_inflight.abandoned_markers(tmp_path))
         again = attribute_dump(dump, tmp_path)
         assert len(again.candidates) == 120  # never dropped
         assert all(len(m.name) == cron_inflight._RECORD_NAME_MAX_CHARS for m in again.candidates)
@@ -616,7 +616,7 @@ class TestAttribution:
         cron_inflight.record_attribution(
             tmp_path, dump.name, first.candidates, first.unrelated_abandoned
         )
-        assert cron_inflight.sweep_abandoned_markers(tmp_path) == 3
+        assert cron_inflight.remove_markers(cron_inflight.abandoned_markers(tmp_path)) == 3
         assert cron_inflight.read_markers(tmp_path) == []
         again = attribute_dump(dump, tmp_path)
         assert again.job is None

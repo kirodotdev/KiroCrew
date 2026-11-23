@@ -27,6 +27,8 @@ import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
 import FilePopoutFrame from './pages/FilePopoutFrame'
+import CrewPopoutFrame from './pages/CrewPopoutFrame'
+import { CREW_POPOUT_ROUTE } from './lib/crewPopout'
 import AppPopoutFrame, { AppPopoutHardExit } from './pages/AppPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
@@ -639,6 +641,9 @@ export default function App() {
   return (
     <ZoomProvider>
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
+    {/* A crew's pop-out framed by a desktop hub's window learns its host here;
+        no-op when not framed. */}
+    {isPopout && <EmbeddedHostBridge />}
     {/* The import row's outcome lands after its menu has closed, so every layout
         that can host the row hosts the notice: the popout and embed frames here,
         the dashboard inside the local pane (below), where it hides with the
@@ -681,6 +686,7 @@ export default function App() {
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/terminal" element={<ErrorBoundary><TerminalPopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/file" element={<ErrorBoundary><FilePopoutFrame /></ErrorBoundary>} />
+        <Route path={CREW_POPOUT_ROUTE} element={<ErrorBoundary><CrewPopoutFrame /></ErrorBoundary>} />
         {/* Belt-and-braces: any stray in-window navigation re-pins to the
             frame this window loaded as (isPopout is sticky, so the dashboard
             branch is unreachable — without this the wildcard would bounce a

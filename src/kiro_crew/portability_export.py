@@ -4,7 +4,8 @@ The walk that reads the live home by descriptor and refuses a link at any level,
 SQLite backups taken from a checkpointed database, and the session transcripts and their
 companions within the manifest's budget: the session planner and writer
 (:func:`_plan_sessions`, :func:`_write_sessions`) that ``kiro_crew.portability_stream``
-drives when it builds the archive.
+drives when it builds the archive. Also names the installed apps an export does not
+carry (:func:`unbundled_apps`).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterator
 from pathlib import Path, PurePath, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
@@ -48,6 +49,7 @@ from kiro_crew.portability_archive import (
     _transcript_header_verdict,
     logger,
 )
+from kiro_crew.portability_templates import MAX_TEMPLATE_WARNINGS, _clip
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import _DB_SIDECAR_GLOBS
 
@@ -647,3 +649,53 @@ def _chat_companions(mc_real: str, stem: str) -> Iterator[tuple[PurePath, int]]:
                 yield rel, fd
         finally:
             os.close(fd)
+
+
+def unbundled_apps() -> tuple[list[str], int]:
+    """The installed apps a whole-install export leaves behind, with their data.
+
+    No export carries an app or its data, so every installed app is named except a
+    built-in that is off (:func:`_named_in_export`). An app is named as the Apps page
+    shows it, the manifest's display name or else its id, so a damaged manifest still
+    names the app. Returns ``(names, more)``, sorted case-insensitively and bounded like
+    :func:`~kiro_crew.portability_templates.unbundled_agent_templates`. Read-only: it
+    creates no folder, and an unreadable apps folder answers ``([], 0)``, because this
+    feeds a warning and must never fail the export.
+    """
+    from kiro_crew.apps import manager  # noqa: PLC0415 -- the apps family imports heavily
+
+    try:
+        ids = manager._recorded_app_names(manager.apps_dir())
+    except OSError as exc:
+        logger.warning("Export: could not list the installed apps: %s", exc)
+        return [], 0
+    labels = (
+        manager._app_display_name(app_id) for app_id in ids if _named_in_export(manager, app_id)
+    )
+    names = sorted(labels, key=lambda n: (n.casefold(), n))
+    kept = names[:MAX_TEMPLATE_WARNINGS]
+    return [_clip(n) for n in kept], len(names) - len(kept)
+
+
+def _named_in_export(manager: Any, app_id: str) -> bool:
+    """Whether the export notice names *app_id*.
+
+    A folder with no install record is not an installed app (an uninstall that kept
+    the app's data leaves one). A built-in that is off, adopted onto its repository or
+    not, is not named: every install registers it switched off, and nothing on disk
+    tells one the person used from one they never opened. A record that cannot be read
+    is named, never a failed export.
+    """
+    from kiro_crew.apps.builtin_adoption import is_adopted_record  # noqa: PLC0415 -- as above
+
+    try:
+        if not (manager.app_dir(app_id) / manager.INSTALLED_META_FILENAME).is_file():
+            return False
+        record = manager._read_installed(app_id)
+        return (
+            record is None
+            or record.enabled
+            or not (manager._builtin_owns_install(record) or is_adopted_record(app_id, record))
+        )
+    except Exception:  # noqa: BLE001 - app-writable record: unreadable reads as named
+        return True

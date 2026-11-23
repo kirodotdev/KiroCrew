@@ -16,9 +16,21 @@ What bounds it
   to :data:`MAX_REPLY_BYTES`, which is above the largest PNG a 1280 by 800 viewport can
   produce once it is base64-encoded.
 
+The page's text
+---------------
+Right after the picture the run also reads the page's rendered text, the whole page and
+not the first screen only (:func:`read_text`): ``document.body.innerText`` once each
+field the frame marked "not current" or "may be out of date" has that mark written after
+it as text, since the frame draws the marks with CSS, which ``innerText`` leaves out. The
+document is the run's throwaway copy and the picture is already taken, so the write
+changes neither the picture nor a person's tab. The whole text comes back, up to
+:data:`MAX_READ_CHARS` characters, so the caller can redact it before it cuts it to
+:data:`MAX_TEXT_CHARS`; a page longer than :data:`MAX_READ_CHARS` gives no text.
+
 Nothing here talks to the browser itself: :func:`capture` is handed the call that sends
-``Page.captureScreenshot`` and returns its result, so the run keeps its one pipe, its
-deadline and its error handling.
+``Page.captureScreenshot`` and :func:`read_text` the one that sends ``Runtime.evaluate``,
+each returning its result, so the run keeps its one pipe, its deadline and its error
+handling.
 """
 
 from __future__ import annotations
@@ -31,11 +43,16 @@ from typing import Any, Final
 
 __all__ = [
     "MAX_IMAGE_BYTES",
+    "MAX_READ_CHARS",
     "MAX_REPLY_BYTES",
+    "MAX_TEXT_CHARS",
     "PNG_SIGNATURE",
     "PageImage",
+    "PageText",
+    "TEXT_EXPRESSION",
     "capture",
     "png_size",
+    "read_text",
 ]
 
 #: The largest PNG kept, in bytes. A 1280 by 800 page of flat colour and text is a few
@@ -51,6 +68,38 @@ SMALLER_SCALE: Final[float] = 0.5
 
 #: The eight bytes every PNG file starts with.
 PNG_SIGNATURE: Final[bytes] = b"\x89PNG\r\n\x1a\n"
+
+#: The most characters of the page's text kept: a page's worth of values and labels,
+#: a bounded cost to the agent whatever the page holds. Characters are code points on
+#: both sides (``Array.from`` in the page, ``len`` here), so an emoji counts once.
+MAX_TEXT_CHARS: Final[int] = 6000
+
+#: The most characters of the page's text read back before it is redacted. The text is
+#: redacted whole and only then cut to :data:`MAX_TEXT_CHARS`, because a cut first can
+#: keep the start of a secret too short for the redactor to know. Bounded so
+#: the reply fits the run's DevTools message cap (4 MiB): a code point is at most twelve
+#: bytes of JSON (an escaped surrogate pair), so this is at most 2.4 MB. A page over it
+#: gives no text.
+MAX_READ_CHARS: Final[int] = 200_000
+
+#: The one expression :func:`read_text` evaluates in the page. It writes each frame mark
+#: after its field as text (a field marked missing is never also marked out of date), then
+#: returns the body's whole rendered text (``null`` over :data:`MAX_READ_CHARS`) and its
+#: length.
+TEXT_EXPRESSION: Final[str] = (
+    "(() => {"
+    "for (const node of document.querySelectorAll("
+    '\'[data-dashboard-missing="true"], [data-dashboard-out-of-date="true"]\')) {'
+    "const label = node.getAttribute('data-dashboard-missing') === 'true'"
+    " ? node.getAttribute('data-dashboard-missing-label')"
+    " : node.getAttribute('data-dashboard-out-of-date-label');"
+    "node.appendChild(document.createTextNode(' [' + (label || '') + ']'));"
+    "}"
+    "const chars = Array.from(document.body ? document.body.innerText : '');"
+    f"return {{text: chars.length > {MAX_READ_CHARS} ? null : chars.join(''),"
+    " length: chars.length};"
+    "})()"
+)
 
 #: Base64 characters that decode to at most :data:`MAX_IMAGE_BYTES`, so a reply that
 #: cannot fit is turned away before it is decoded.
@@ -68,6 +117,18 @@ class PageImage:
     width: int = 0
     height: int = 0
     reason: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class PageText:
+    """The page's rendered text and its length in characters.
+
+    As :func:`read_text` returns it, the text is whole and not yet redacted (at most
+    :data:`MAX_READ_CHARS`); the caller redacts it, then cuts it to :data:`MAX_TEXT_CHARS`.
+    ``length`` is the page's own, over :data:`MAX_TEXT_CHARS` exactly when it was cut."""
+
+    text: str
+    length: int
 
 
 def png_size(data: bytes) -> tuple[int, int] | None:
@@ -128,3 +189,31 @@ def capture(
             "so it was not kept"
         )
     )
+
+
+def read_text(call: Callable[[Mapping[str, Any]], Mapping[str, Any]]) -> PageText | None:
+    """The page's rendered text with the frame's marks, or ``None`` when the page gave none.
+
+    *call* sends ``Runtime.evaluate`` with the parameters it is given and returns the
+    reply's ``result``; its exceptions are the caller's, as for :func:`capture`. The page's
+    script ran before this and can have replaced anything the expression uses, so the
+    reply is checked here and not trusted: a text over :data:`MAX_READ_CHARS` is no text
+    (never cut here, since a cut before redaction can keep part of a secret), a ``length``
+    that is not a whole number at least as large as the text replaced by the text's own,
+    and lone surrogates, which no UTF-8 reader takes, dropped. The text is NOT redacted or
+    cut to :data:`MAX_TEXT_CHARS`: the caller does both, in that order.
+    """
+    reply = call({"expression": TEXT_EXPRESSION, "returnByValue": True})
+    if reply.get("exceptionDetails"):
+        return None
+    result = reply.get("result")
+    value = result.get("value") if isinstance(result, Mapping) else None
+    if not isinstance(value, Mapping) or not isinstance(value.get("text"), str):
+        return None
+    if len(value["text"]) > MAX_READ_CHARS:
+        return None
+    text = value["text"].encode("utf-8", "ignore").decode("utf-8")
+    length = value.get("length")
+    if not isinstance(length, int) or isinstance(length, bool) or length < len(text):
+        length = len(text)
+    return PageText(text, length)

@@ -61,6 +61,7 @@ RECORD_KINDS: tuple[str, ...] = (
     "local-grants",
     "app-ui",
     "app-dashboard-proxy",
+    "app-browser-sites",
 )
 
 #: The kinds the one-time move carries from ``trust/``: the ones an older build kept

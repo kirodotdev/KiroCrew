@@ -36,6 +36,7 @@ from aiohttp import web
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
+from kiro_crew.apps.app_web_origin import _NO_REDIRECTS
 from kiro_crew.apps.backend import (
     get_app_backend_port,
     list_app_processes,
@@ -250,8 +251,12 @@ def register_app_routes(app: web.Application) -> None:
         # Content-Length, so the body must stay the bytes those headers describe.
         # No cookie jar: a relayed answer's cookies belong to the browser that asked,
         # never to the next request this shared session makes for anyone else.
+        # No redirects: the WebSocket relay dials through this session and
+        # ws_connect cannot turn redirects off itself.
         app["_proxy_session"] = aiohttp.ClientSession(
-            auto_decompress=False, cookie_jar=aiohttp.DummyCookieJar()
+            auto_decompress=False,
+            cookie_jar=aiohttp.DummyCookieJar(),
+            trace_configs=[_NO_REDIRECTS],
         )
 
     async def _close_proxy_session(app: web.Application) -> None:
@@ -302,6 +307,10 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_post("/api/apps/{name}/dashboard-proxy/restart", handle_dashboard_proxy_restart)
     # An app's calls to its approved Kiro operations (`permissions.kiroOperations`).
     register_kiro_call_routes(app)
+    # The owner's edits of the pages the app's own agent may browse.
+    from kiro_crew.apps.browser_sites_routes import register_browser_sites_routes
+
+    register_browser_sites_routes(app)
     app.router.add_delete("/api/apps/{name}/migrate-cleanup", handle_migrate_cleanup)
     app.router.add_get("/apps/{name}/ui/{path:.*}", handle_app_ui_file)
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
@@ -476,6 +485,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _installed_app_detail,
         _listed_apps_with_trust,
         _provider_is_configured,
+        _read_config_bytes,
         _stamp_installed_trust_repository,
         collect_publish_providers,
     )

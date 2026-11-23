@@ -41,6 +41,7 @@ vi.mock('../../store', () => ({
   useAppStore: () => ({ getState: () => storeState }),
 }))
 vi.mock('../../store/chatSlice', () => ({
+  selectSlotStreamState: () => 'idle',
   createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
   setPendingInput: (text: string) => ({ type: 'setPendingInput', text }),
   // Mirrors the real thunk's `SwitchSlotArg`: a bare key, or an options object whose

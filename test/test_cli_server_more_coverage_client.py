@@ -329,6 +329,23 @@ class TestPortOwnershipGuard:
         read.assert_called_once()
         assert "token=tok" in capsys.readouterr().out
 
+    def test_token_bearer_asks_for_a_session_and_prints_it_alone(self, monkeypatch, capsys) -> None:
+        asked: list[str] = []
+
+        def _open(*args, **_kwargs):
+            asked.extend(a.full_url for a in args if hasattr(a, "full_url"))
+            return _Resp(b'{"token": "tok"}')
+
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", MagicMock(return_value="s3cr3t"))
+        monkeypatch.setattr(cli_server, "loopback_urlopen", _open)
+        cli_server._token(argparse.Namespace(**{"ttl": "1h", "port": None, "bearer": True}))
+        # No dashboard link: the credential never appears inside a URL.
+        assert capsys.readouterr().out == "tok\n"
+        assert [url.rpartition("?")[2] for url in asked] == ["ttl=1h&kind=session"]
+
     def test_logout_proceeds_when_the_gateway_is_verified(self, monkeypatch, capsys) -> None:
         monkeypatch.setattr(platform_compat, "IS_POSIX", True)
         read = MagicMock(return_value="s3cr3t")

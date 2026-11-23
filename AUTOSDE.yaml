@@ -85,8 +85,20 @@ custom-rules:
       - Auto-approve / YOLO mode: an AD-HOC activation (Slack command, dashboard
         picker, API) MUST auto-expire — either on a timed TTL capped at the
         SafetyOverride 24h ceiling, or, when the operator selects the
-        `until_shutdown` duration, when the process stops. Never persist an
-        ad-hoc grant across a restart. A grant the operator DECLARED in
+        `until_shutdown` duration, when the user stops Kiro Crew. An ad-hoc
+        YOLO grant and an owner's dashboard chat Trust / Trust reads are KEPT
+        across every exit the user did not choose (any restart, an update's
+        re-exec, a crash or kill, a host reboot, a SIGTERM nobody sent through
+        Kiro Crew) and end only on a stop the user chose, which writes the
+        user-stop mark first (decision
+        docs/decisions/2026-11-18-yolo-and-chat-trust-survive-every-exit-the-user-did-not-choose.md).
+        Persist such a grant ONLY through kept_grants.py: an HMAC-signed record
+        under the sandbox-HIDDEN `kept-grants` directory, never the transcript or
+        any agent-writable file; read fail-closed (unsigned, malformed or
+        tampered means no grant); restore only what the ceiling in force still
+        permits (approval_modes, yolo_max_seconds from the ORIGINAL activation,
+        session_mode_permitted), never extending a timed grant; and audit every
+        restore and every clear as the manual mode_change does. A grant the operator DECLARED in
         owner-only config (`agent.dangerously_skip_permissions`; the camelCase and legacy `yolo` spellings are also read) MAY
         persist without expiry and IS re-established at each startup: it is a
         standing instruction, is held in memory only (never written to disk), is
@@ -517,6 +529,17 @@ custom-rules:
           stand-in answers only where that check gives no verdict
           (testing-conventions § A host probe that asks a different program
           than the one under test).
+      14. (D1) A scripted event stream (`_set_stream`, `_async_iter`, a list
+          of events a fake client yields) whose events start a TASK in the
+          product, followed by an assertion on what that task did inside the
+          same turn, when the script ends the turn right after the event that
+          starts it. Production's next model step runs for seconds; the
+          script's runs in a few loop steps, so a task that hops a thread
+          loses on a slow runner (a held steer's boundary flush, #38449, red
+          on five macOS PRs). The script must wait on the task's own signal
+          before its next event, the way a real model step outlasts it
+          (testing-conventions § A scripted stream that ends at once races
+          any task its events start).
 
       14. (D13) A test that lets the HOST answer what the code reads: a real tool
           found on the inherited `PATH` or in a fixed install directory (the

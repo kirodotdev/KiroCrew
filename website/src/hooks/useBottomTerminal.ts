@@ -169,9 +169,6 @@ const DEFAULT_HEIGHT = 300
 export const MIN_WIDTH = 200
 /** Default panel width when first docked right. */
 const DEFAULT_WIDTH = 420
-/** Max concurrent terminal tabs (each is a live PTY). */
-export const MAX_TERMINALS = 8
-
 /** Fraction of the viewport height the bottom-docked panel may occupy. */
 export const MAX_VH = 0.72
 /** Fraction of the viewport width the right-docked panel may occupy. */
@@ -235,7 +232,6 @@ function loadPersisted(open = loadOpen(), fullscreen = loadFullscreen()): Bottom
     if (!p || typeof p !== 'object') return base
     const rawTabs = Array.isArray(p.tabs) ? p.tabs : Array.isArray(p.splits) ? p.splits : []
     const tabs = (rawTabs.filter(t => t && typeof (t as TermTab).id === 'string') as TermTab[])
-      .slice(0, MAX_TERMINALS)
       .map(withLiveName)
     return {
       // Only keep "open" when there are tabs to show — an open flag with no
@@ -422,15 +418,10 @@ export function toggleBottomTerminal(cwd?: string): void {
   else openBottomTerminal(cwd)
 }
 
-/** Open a new terminal tab instantly (mints a fresh PTY session). At the cap,
- *  focuses the last tab instead of spawning. Returns the new session id, or
- *  null at the cap. */
-export function addTab(cwd?: string, chatSlot?: string): string | null {
-  if (state.tabs.length >= MAX_TERMINALS) {
-    const last = state.tabs[state.tabs.length - 1]
-    if (last) set({ ...state, open: true, activeId: last.id })
-    return null
-  }
+/** Open a new terminal tab instantly (mints a fresh PTY session). There is no
+ *  tab cap here: the gateway's own ceiling refuses a shell past it, and that
+ *  tab says so. Returns the new session id. */
+export function addTab(cwd?: string, chatSlot?: string): string {
   const id = mintId()
   set({ ...state, open: true, tabs: [...state.tabs, { id, cwd, ...(chatSlot ? { chatSlot } : {}) }], activeId: id })
   return id
@@ -440,10 +431,9 @@ export function addTab(cwd?: string, chatSlot?: string): string | null {
  *  when moving a chat's terminal into the app-wide panel. The session id is
  *  preserved so its live shell + scrollback come along (the PTY/xterm live in
  *  terminalRegistry/termCache keyed by session id, independent of the view).
- *  Returns false at the cap so the caller leaves the tab in its source view. */
+ *  Always true: the dock has no tab cap. */
 export function adoptTab(id: string, cwd?: string): boolean {
   if (state.tabs.some(t => t.id === id)) { set({ ...state, open: true, activeId: id }); return true }
-  if (state.tabs.length >= MAX_TERMINALS) return false
   set({ ...state, open: true, tabs: [...state.tabs, { id, cwd }], activeId: id })
   return true
 }
@@ -465,8 +455,7 @@ export function hasTab(id: string): boolean {
  *
  *  "Current" means the focused tab, not simply the most recently created one:
  *  a user may select an older shell because that is where their active login
- *  lives. A stale or missing active id falls back to the last tab, matching the
- *  cap fallback in `addTab` and keeping old persisted state recoverable. The
+ *  lives. A stale or missing active id falls back to the last tab, keeping old persisted state recoverable. The
  *  PTY is NEVER minted here: a null return means there is no settled shell to
  *  focus, so the caller skips the focus step — it does NOT mint and run a fresh
  *  tab, because reuse-on always copies the command for manual paste and never
@@ -637,6 +626,9 @@ export function useBottomTerminalOpen(): boolean {
  *  way a `toggleBottomTerminal` is about to go — see `terminalChordFocus.ts`,
  *  which has to decide about focus BEFORE the panel unmounts. */
 export function isBottomTerminalOpen(): boolean { return state.open }
+
+/** The dock tab on screen now, or null while the panel is closed. */
+export function shownTabId(): string | null { return state.open ? state.activeId : null }
 
 /** Selector for just the `fullscreen` flag. A primitive so the Object.is check
  *  skips re-renders on unrelated state changes, same as the open selector. */

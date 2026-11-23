@@ -115,7 +115,9 @@ async def _cron_run_sequence(
     from kiro_crew.cron_service.fields import cron_session_cwd
 
     for agent in agents:
-        _seq_kagent, _seq_cwd, _seq_crew = self._resolve_cron_agent(
+        # Off the loop: the workspace folder is resolved and judged on the filesystem.
+        _seq_kagent, _seq_cwd, _seq_crew = await asyncio.to_thread(
+            self._resolve_cron_agent,
             cron_execution,
             agent,
             sequence_step=True,
@@ -729,7 +731,9 @@ async def _cron_run_single(
         # Collapse an alias (channel-bound agent) to its real kiro mode
         # + workspace before dispatch; falls back to the raw value when
         # it is already a real mode or unset.
-        _single_kagent, _single_cwd, _single_crew = self._resolve_cron_agent(
+        # Off the loop: the workspace folder is resolved and judged on the filesystem.
+        _single_kagent, _single_cwd, _single_crew = await asyncio.to_thread(
+            self._resolve_cron_agent,
             cron_execution,
             cron_agent or None,
             template_namespace=_default_substituted
@@ -841,6 +845,23 @@ async def _cron_run_single(
         from kiro_crew.cron_service.identity import rebind_cron_session_template
 
         await asyncio.to_thread(rebind_cron_session_template, session_key, cron_execution, job.name)
+        # The job's own ``auto``, else the grant of the Bot that made it, read
+        # against the live Profile (``owner_grant``) and re-read on every request.
+        # The Bot's grant reaches only this turn's own calls: the session's stored
+        # policy and a spawn's ``KIROCREW_APPROVAL_MODE`` keep the job's own mode,
+        # so no child holds a grant the Bot's Profile could not take back.
+        # shortcut: a spawn_run child of a Bot-granted job asks; carry the grant to
+        # children once the Profile change can revoke a cron session's policy.
+        from kiro_crew.cron_service.owner_grant import fire_approval_mode
+
+        _fire_execution = cron_execution
+
+        def _fire_mode() -> str:
+            return fire_approval_mode(
+                job, _fire_execution, live.snapshot() or getattr(self, "_cfg", None)
+            )
+
+        _single_mode = _fire_mode()
         (
             client,
             is_new,
@@ -990,7 +1011,7 @@ async def _cron_run_single(
             unattended=True,
             approval_policy=(
                 ToolApprovalPolicy.AUTO_APPROVE
-                if effective_job_approval_mode(job.approval_mode) == "auto"
+                if _single_mode == "auto"
                 else ToolApprovalPolicy.HOOK_BASED
             ),
             hooks=self.ctx_builder.hooks,
@@ -1003,9 +1024,10 @@ async def _cron_run_single(
                         requester=f"cron job {job.id}"
                         + (f", agent {cap.gate_agent}" if cap.gate_agent else "")
                         + f": {job.name}",
-                    )
+                    ),
+                    holds=lambda: _fire_mode() == "auto",
                 )
-                if effective_job_approval_mode(job.approval_mode) == "auto"
+                if _single_mode == "auto"
                 else self._interactive_approval(
                     "cron",
                     requester=f"cron job {job.id}"

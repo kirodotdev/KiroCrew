@@ -321,6 +321,9 @@ async def _force_reap(
             # Record timeout in history
             try:
                 record = CronRunRecord(
+                    # The run's marker token: a boot that finds its marker
+                    # left on disk sees the run is filed (``_file_cut_run``).
+                    run_id=taken.marker_run,
                     job_id=job_id,
                     trigger=reap_trigger,
                     started_at=reap_started_at,
@@ -595,6 +598,9 @@ async def cancel(self: CronService, job_id: str) -> bool:
                 pause_not_saved = seams.CronPauseNotSaved(message)
             try:
                 record = CronRunRecord(
+                    # The run's marker token: a boot that finds its marker
+                    # left on disk sees the run is filed (``_file_cut_run``).
+                    run_id=claim.marker_run,
                     job_id=job_id,
                     trigger=trigger,
                     started_at=started_at,

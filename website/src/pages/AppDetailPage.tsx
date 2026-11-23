@@ -62,7 +62,7 @@ import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
 import AppDetailPageMcpServers from './AppDetailPageMcpServers'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
 import AppDetailBotGrants, { StagedBotScopes, stagedBotScopes } from './AppDetailBotGrants'
-import AppDetailDashboardAccess from './AppDetailDashboardAccess'
+import AppDetailAppAccess from './AppDetailAppAccess'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
@@ -885,7 +885,7 @@ export default function AppDetailPage() {
       if (res.uninstall_log) setInstallLog(res.uninstall_log)
       recordEvent('app_uninstall', { app: app.name, version: app.installedVersion || app.version })
       window.dispatchEvent(new Event('mc:apps-changed'))
-      navigate('/apps')
+      navigate('/apps', { state: { appNotice: appActionNotice(appDisplayName(app), res, 'uninstall') } })
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_uninstall'))
     } finally {
@@ -1285,6 +1285,7 @@ export default function AppDetailPage() {
                   await load({ keepView: true })
                   // The Bot card's own query: `mc:apps-changed` marks it stale without a refetch.
                   if (stagedBots.length) void queryClient.invalidateQueries({ queryKey: ['apps', app.name, 'bot-grants'] })
+                  if (stagedBrowserSites.length) void queryClient.invalidateQueries({ queryKey: ['apps', app.name, 'browser-sites'] })
                   window.dispatchEvent(new Event('mc:apps-changed'))
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e))
@@ -1843,8 +1844,7 @@ export default function AppDetailPage() {
             </Card>
           )}
 
-          {app.installed && <AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} />}
-          {app.installed && <AppDetailDashboardAccess appName={app.name} displayName={appDisplayName(app)} onUpdate={isRegistrySourced(app) ? () => handleAction('update') : undefined} />}
+          {app.installed && <><AppDetailBotGrants appName={app.name} declared={app.manifest?.permissions?.bots} /><AppDetailAppAccess appName={app.name} displayName={appDisplayName(app)} onChanged={() => void load({ keepView: true })} onUpdate={isRegistrySourced(app) ? () => handleAction('update') : undefined} /></>}
 
           <AppDetailPageMcpServers servers={app.manifest?.mcpServers} />
 

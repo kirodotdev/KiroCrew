@@ -156,7 +156,6 @@ export function useChatEventBridges({
         window.dispatchEvent(new CustomEvent('mc:prefill-terminal-result', { detail: { reqId, ok } }))
       if (typeof command !== 'string' || !command || /[\r\n]/.test(command)) { emit(false); return }
       const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
-      if (!sessionId) { emit(false); return }
       let settled = false
       const unsub = onTerminalReady(sessionId, () => {
         settled = true

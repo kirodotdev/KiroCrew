@@ -106,8 +106,14 @@ def refusal_response(request: web.Request, reason: str) -> web.Response:
 
     from aiohttp import web
 
+    from kiro_crew.dashboard.headless import HEADLESS_KEY
+
     message = _REFUSAL_TEXT.get(reason, _REFUSAL_TEXT[REFUSE_NOT_INVITED])
     if request.method in ("GET", "HEAD") and "text/html" in request.headers.get("Accept", ""):
+        if request.app.get(HEADLESS_KEY, False) is True:
+            return web.json_response(
+                {"error": message, "code": CODE_REFUSED, "reason": reason}, status=403
+            )
         body = (
             '<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'

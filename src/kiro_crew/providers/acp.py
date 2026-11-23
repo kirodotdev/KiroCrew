@@ -298,6 +298,8 @@ class AcpProvider(LLMProvider):
         # conversation_log into the fresh session on the first prompt so the slot
         # is not context-free.
         self._history_replay_needed: bool = False
+        # The sid whose KAS load replayed no turn; get_or_create refuses its next prefetch.
+        self._resume_refused_sid: str = ""
         # Only the direct-dashboard Tool Search compatibility path owns the
         # dashboard runner's durable replay settlement contract. Generic
         # session/load recovery (including channel dispatchers) still requests
@@ -902,7 +904,14 @@ class AcpProvider(LLMProvider):
         adapted provider is classified by its own declaration rather than by
         whichever internal shape it happens to expose.
         """
-        return self._client.backend in host_auth.backends_retired_by_host_logout()
+        # A KAS machine-mode process reads a host token file instead
+        # (``agent_sdk/kas_machine.py``), so a personal sign-out does not retire it.
+        from kiro_crew.agent_sdk.kas_machine import runs_machine_auth
+
+        runtime = getattr(self._client, "_runtime", None)
+        return self._client.backend in host_auth.backends_retired_by_host_logout() and not (
+            runs_machine_auth(runtime)
+        )
 
     @property
     def member_capabilities_supported(self) -> bool:

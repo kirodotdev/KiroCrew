@@ -500,6 +500,40 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(draft.operations).toEqual([{ section: 'mcpServers', id: 'github', action: 'remove' }])
   })
 
+  it("lists a tool's carried settings under Tool settings and removes them on confirm", async () => {
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [{
+        section: 'toolsSettings', id: 'shell', label: 'shell', state: 'local', present: true,
+        value: { deniedCommands: ['(touch|mkdir).*'] }, managed: false, shared_reference: false,
+        remove: { section: 'toolsSettings', id: 'shell' },
+      }] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1', unenforced_denies: ['(touch|mkdir).*'] })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(await within(dialog).findByTestId('worker-kit-unenforced-current')).toBeInTheDocument()
+    expect(within(added).getByTestId('next-band-added-group-toolsSettings')).toHaveTextContent('Tool settings')
+    // The row and its confirm name what goes in words, never the file's keys.
+    const row = within(added).getByTestId('next-band-added-row')
+    expect(row).toHaveTextContent('Terminal')
+    expect(row).toHaveTextContent('blocked commands')
+    expect(row).not.toHaveTextContent('deniedCommands')
+    expect(row).not.toHaveTextContent('shell')
+    fireEvent.click(within(added).getByTestId('next-band-remove-toolsSettings-shell'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “Terminal: blocked commands”?' })
+    expect(ask).toHaveTextContent("This bot stops applying these settings and every limit that comes from them, such as blocked terminal commands. Anything they allow goes through this bot's approvals again. This is saved right away.")
+    expect(ask).not.toHaveTextContent('deniedCommands')
+    expect(ask).not.toHaveTextContent('shell')
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r2', unenforced_denies: [] })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.save).toHaveBeenCalled())
+    expect(mockCaps.preview.mock.calls[0][1].operations).toEqual([{ section: 'toolsSettings', id: 'shell', action: 'remove' }])
+    // The notice it lifted goes with it, without reopening the editor.
+    await waitFor(() => expect(within(dialog).queryByTestId('worker-kit-unenforced-current')).toBeNull())
+  })
+
   it('removes against the revision shown when Remove was pressed, not a fresh read', async () => {
     const view: CapabilityView = {
       ...CAPS_VIEW, mode: 'mate', revision: 'r1',

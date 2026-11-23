@@ -86,7 +86,7 @@ claim that a hostile in-process agent is fully contained.
 | `launch_state.py` | The product-owned launch record (`cloud_launch_state.json`): the profile, region and tag a LAUNCH decided. One writer, three fields, frozen dataclass, whole-record `atomic_write`. `load()` falls back to the legacy fields in `cloud.json` when the record holds none, read-only, so `cloud launch` works on an install that predates it. `clear_tag(expect)` clears only while the pointer still names the stack `destroy` deleted. See "Where launch state lives" below. |
 | `launch_job.py` | The dashboard's non-interactive launch, run as a background job whose state is persisted to disk: the job model (`LaunchJob`, `LaunchStep`, `SigninPrompt`), `LaunchJobStore` (one JSON file per job, atomic writes), the `LaunchEngine` / `SigninHandle` protocols, and `run_launch` / `run_signin_retry`, which drive an injected engine through the steps and persist state after every transition. No HTTP (that is `dashboard/handlers_cloud.py`) and no terminal output. |
 | `launch_engine.py` | `RealLaunchEngine`, the EC2 `LaunchEngine` the launch job drives. It adds no AWS logic of its own beyond reading `ec2.list_stack_events` for the provision step's sub-step (below): preflight is `iam.reachability_check`, provision is `ec2.deploy`, sign-in is `login.*` (wrapped as a `SigninHandle`), and register is `connect.register_instance`, the same calls the CLI wizard makes. |
-| `sizes.py` | arm64/Graviton (and x86_64) size tiers. The default is the Development tier (`DEFAULT_TIER_KEY = "balanced"`, `m7g.2xlarge`); `t4g.xlarge` is the 16 GB Light floor, not the default. Each tier's `approx_usd_per_hr` is the `PRICE_REGION` (`us-east-1`) on-demand rate, display only. The CLI prints it hourly and for a 30-day month with `price_basis(region)`, which in any other Region says it is the us-east-1 rate and that other Regions may differ; the dashboard size cards (`remoteCrewPanelModel.ts`) show the same figures and the `--size` key (a code constant, `SIZE_FLAG`, rendered in `<code>`), with the same note above them for another Region. `test_cloud_sizes_ui_parity.py` pins the cards' shapes, prices and `PRICE_REGION` to this file. |
+| `sizes.py` | arm64/Graviton (and x86_64) size tiers. The default is the Development tier (`DEFAULT_TIER_KEY = "balanced"`, `m7g.2xlarge`); `t4g.xlarge` is the 16 GB Light floor, not the default. Each tier's `approx_usd_per_hr` is the `PRICE_REGION` (`us-east-1`) on-demand rate, display only. The CLI prints it hourly and for a 30-day month with `price_basis(region)`, which in any other Region says it is the us-east-1 rate and that other Regions may differ; the dashboard size cards (`remoteCrewPanelModel.ts`) show the same figures and the `--size` key (a code constant, `SIZE_FLAG`, rendered in `<code>`), with the same note above them for another Region, and above them in every Region a note that a stopped crew still bills for its disk, and for any setup file kept in S3, until it is deleted (`stop()` pauses only compute). `test_cloud_sizes_ui_parity.py` pins the cards' shapes, prices and `PRICE_REGION` to this file. |
 | `fargate/` | A crew's Fargate task definition and `RunTask` request produced as **data**, by pure functions that call nothing. `identity.py` recovers which crew an ARN belongs to and refuses a document naming more than one; `taskdef.py` holds the revision key and the `RegisterTaskDefinition` document; `runtask.py` holds the launch request and the closed set of overrides it may carry. See "Fargate task definitions as data" below. |
 | `fargate_engine.py` | The `LaunchEngine` for Fargate, reachable through `engine_for("aws_fargate")` when -- and only when -- `cloud.json` carries a complete `fargate` block (see the `config.py` row and "The Fargate lane's configuration home" below). The lane is registered by `DefaultRemoteProvisionerProvider`, which appends the descriptor to `provisioners()` on the same condition; an absent or incomplete block leaves the lane unregistered rather than registered and refusing, and `engine_for` then raises the same `KeyError` an unknown id raises. Registration makes the lane reachable through the API and does **not** put a row in the Set-up picker: `kind` names a frontend form and no renderer claims this kind yet, so the dashboard skips it. Its teardown decides ownership from a task's tags: the `kirocrew:managed` marker is checked as a boolean gate **before** the identifier, so a task whose marker holds anything other than `true` is `UNMARKED` and is never stopped, and identity is then read under the imported `LAUNCH_TAG_KEY`. A running task this launch started but whose launch tag is absent or names another launch is `MISLABELLED`; both it and a running `UNMARKED` task carrying this launch's `startedBy` are REFUSED rather than deleted, and the plan returns `confirmed=False` naming the ARNs, because deleting on a `startedBy` match alone is a guess and reporting `True` would tell the operator their billing stopped when a task may still be running. Neither the marker's key nor its value nor the launch-tag key is spelled here; all three are imported from the modules that own them. |
 | `microvm/` | The Lambda MicroVM lane (see "The MicroVM lane" below). `config.py` holds `MicroVmConfig`, the typed `microvm` block, judged complete-or-absent like the Fargate block. `api.py` is every `lambda-microvms` call, through `aws.run_aws` / `checked_json` only (no boto3), with `endpoint_url` for the local harness. `image.py` resolves a crew's image: reuse a built one by digest, or build it once. `recipe.py` zips the SAME crew recipe the Fargate lane builds (the headless runtime base plus that crew's signed bundle) so `CreateMicrovmImage` runs the build on Lambda. `payload.py` builds the run-hook payload, the one channel into the VM at boot: the SSM activation, references (never values) to the control secret and the model credential, and the crew generation. `record.py` is the crew store (below). `states.py` holds where a crew can be and the only function that moves it. `engine.py` is `MicroVmLaunchEngine`, the five-method `LaunchEngine`, reachable through `engine_for("microvm")` only when the block is complete. |
@@ -128,6 +128,11 @@ health and the success signal without replacing the checkout, while a reboot
 before installation completes stops any partially enabled gateway and safely
 reruns the idempotent install. Once `signal-complete` exists, later host reboots
 skip bootstrap and only the normal gateway service starts.
+
+The script writes `kcfetch.sh` and the gateway unit through unquoted heredocs, so
+their variables expand at write time. Their bodies therefore carry no backtick:
+bash would run the quoted word as a command while writing the file, comment lines
+included (`test_cloud_ec2_heredoc.py`).
 
 The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry. This installs the existing `voice` extra (`boto3` and
@@ -179,7 +184,9 @@ refusals name the dead route (subnet and target) instead of only asking for a
 route the table already has.
 
 With no default VPC, discovery falls back to the Region's only VPC (none, or two
-or more, is the "no default VPC" error). That pick is the launcher's, not the
+or more, is the "no default VPC" error, which gives the Region and the count of
+other VPCs and names the Subnet ID field beside `--subnet`; the no-egress and
+private-zone refusals name the field the same way). That pick is the launcher's, not the
 user's, so `discover_network(on_fallback=...)` hands one sentence naming the
 region, the VPC, the subnet and its egress (NAT or internet gateway), saying the
 launch goes on and that a subnet ID picks another network next time, to
@@ -205,6 +212,16 @@ under the running provision step on the launch card and under the "Setting up"
 row's status, the time since Launch (`created_at`, on the shared 1 Hz
 clock); past 6 minutes a built-in (`aws_ec2`) job reads "Past the 6-minute
 estimate, … so far" instead.
+
+A launch card closes only when the launch needs nothing more
+(`launchCardDismissable` in `website/src/pages/settings/remoteCrewPanelModel.ts`):
+the job is `done`, its crew is registered with no error, and its sign-in is
+confirmed with no code left. Such a card shows a Hide card button and also
+closes by itself `LAUNCH_CARD_SHOWN_MS` (2 minutes) after the job's last write
+(`updated_at`). The closed job ids stay in this browser's `localStorage`
+(`mc-cloud-launch-dismissed`, the last 50), so a reload does not bring the
+card back. A failed, cancelled or running launch, or one still waiting on
+sign-in, keeps its card.
 
 `launch --subnet <subnet-id>` (and the optional Subnet ID field in Settings ›
 Remote Crew › Add Crew › Set up a new Crew, which reaches the same `ec2.deploy(subnet_id=...)`
@@ -782,10 +799,15 @@ all matter more to the operator than a pointer -- and those flags reach the stac
     ones in `cloud/iam.py`; the step adds no permission of its own. Each goes
     through the same `_ensure_boundary` sequence a launch uses, so a re-run is a
     no-op for a boundary whose content matches, and a boundary that has drifted
-    from its document is refused, never re-versioned or overwritten. The three
+    from its document is refused, never re-versioned or overwritten. The refusal
+    says in plain words that a policy of that name exists with other contents and
+    is not used, and that once the operator or their AWS admin deletes it a retry
+    creates it again or names the admin step that does; it never offers this step
+    alone as the fix, because a re-run meets the same refusal. The three
     are attempted independently, so one refusal still reports the other two; the
     step exits non-zero when any is not ready and then tells the operator to keep
-    `iam:CreatePolicy` in the statement, because the one statement covers all
+    `iam:CreatePolicy` in that statement of the applied launcher policy (the one
+    `kirocrew cloud iam-policy` prints), because the one statement covers all
     three names and removing the action while a boundary is missing leaves no
     principal allowed to create it. A launch whose `create-policy` is denied names
     this admin step at the head of its error, ahead of AWS's own text.

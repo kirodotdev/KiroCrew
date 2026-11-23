@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 from kiro_crew import session_head
-from kiro_crew.acp import batch_guard, kas_cli_settings, kas_env_launch
+from kiro_crew.acp import batch_guard, kas_approve_for_me, kas_cli_settings, kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_host_auth import sign_in_refused
@@ -65,12 +65,14 @@ from kiro_crew.acp.session_handle import (
 )
 from kiro_crew.acp.session_handle_agent_turns import AgentTurnQueue
 from kiro_crew.acp.session_handle_mcp import MOUNTED_MCP_WAIT_SECS, KasGovernanceOffError
+from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored
 from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
 from kiro_crew.acp.transport_errors import AcpAuthRequired
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
@@ -238,6 +240,7 @@ async def load_session(
     session_work_dir = str(await self._session_work_dir(cwd))
     denied_tools: frozenset[tuple[str, str]] = frozenset()
     zero_tools = False
+    builtin_tools: tuple[str, ...] | None = None
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
@@ -275,6 +278,7 @@ async def load_session(
         stub_token = mirrored.stub_token
         denied_tools = mirrored.denied_tools
         zero_tools = mirrored.zero_tools
+        builtin_tools = mirrored.builtin_tools
         mirrored_snapshot = mirrored.derived_spec_snapshot
         consumed_spec = mirrored.agent_spec
         ref_spec = mirrored.ref_spec
@@ -441,9 +445,9 @@ async def load_session(
         # its servers, and the managed ones must win the same-name contest
         # on load exactly as they did on new. User-declared servers stay in the
         # agent block, as on new: KAS launches block servers on a cold
-        # session/load too, and only the block carries the ``timeout``
-        # (finish_settings_mcp); a session-level element has no ``timeout`` slot,
-        # so a hoisted server got KAS's 60 s. Probe record: the session/load
+        # session/load too, and the block carries a user server's ``timeout``
+        # (finish_settings_mcp); a session-level element gets KAS's 60 s unless
+        # its ``_meta.kiro`` names one the engine reads. Probe record: the session/load
         # hoist section of docs/system-specs/modules/acp-client.md.
         # Read BEFORE the hoist: it moves launcher entries out of the batch, and
         # the recorded batch then lacks the snapshots this projection wrote.
@@ -521,7 +525,11 @@ async def load_session(
         # state, built after the final array it travels with: a resume carries
         # the same settings exclusion its session/new did.
         meta = self._harness.session_meta(
-            harness_state, wire_servers, zero_tools=zero_tools, stub_token=stub_token
+            harness_state,
+            wire_servers,
+            zero_tools=zero_tools,
+            builtin_tools=builtin_tools,
+            stub_token=stub_token,
         )
         if meta is not None:
             load_params["_meta"] = {**(load_params.get("_meta") or {}), **meta}
@@ -579,7 +587,7 @@ async def load_session(
         # teardown verb deletes the record, and a refusal that was wrong would
         # then lose a real conversation. The caller starts a fresh session.
         await self.evict_session(resume_sid)
-        raise AcpRuntimeError(
+        raise AcpResumeNotRestored(
             f"session/load of {resume_sid} replayed no earlier turn: "
             "the stored conversation was not restored"
         )
@@ -702,6 +710,9 @@ async def load_session(
     # cleanup below.
     try:
         await handle.apply_session_permission_routing()
+        if self.acp_backend in ACP_BACKENDS_APPROVE_FOR_ME:
+            # Before any prompt: the session's approve-for-me reads ``on`` or ``off``.
+            await kas_approve_for_me.settle(handle)
     except Exception:
         await self.terminate_session(resume_sid)
         raise

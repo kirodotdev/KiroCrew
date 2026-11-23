@@ -1140,6 +1140,15 @@
       "hint": "When enabled, inline tool pills show simplified tool use purpose instead of the exact command being run"
     },
     {
+      "id": "chat.since-you-left-briefs",
+      "label": "Since you left briefs",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.warm_task_brief",
+      "description": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief.",
+      "hint": "Off: a return posts no brief. Takes effect on your next return.",
+      "configKey": "dashboard.warm_task_brief"
+    },
+    {
       "id": "chat.soft-stop-budget-seconds",
       "label": "Soft-stop budget (seconds)",
       "tab": "chat",
@@ -1568,6 +1577,14 @@
       "description": "People tab, invites and shared sessions"
     },
     {
+      "id": "developer.use-your-company-s-sign-in",
+      "label": "Use your company's sign-in",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.use-your-company-s-sign-in",
+      "description": "Uses your company's own sign-in for its portal. Nothing changes until you sign in with that portal.",
+      "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes."
+    },
+    {
       "id": "developer.visual-refresh",
       "label": "Visual refresh",
       "tab": "developer",
@@ -1872,6 +1889,13 @@
       "hint": "Select a theme for the dashboard"
     },
     {
+      "id": "display.touch-screen-layout",
+      "label": "Touch screen layout",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.touch-screen-layout",
+      "hint": "Use this if your browser has no Request desktop site option. Automatic follows the browser's mobile or desktop site mode. The desktop layout applies from 768px up; below that the phone layout stays. Saved on this browser only."
+    },
+    {
       "id": "display.translucent-panels",
       "label": "Translucent panels",
       "tab": "display",
@@ -1898,6 +1922,12 @@
       "tab": "instances",
       "route": "/settings/instances?highlight=instances.auto-connect-crews",
       "hint": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it."
+    },
+    {
+      "id": "instances.crews-kept-loaded",
+      "label": "Crews kept loaded",
+      "tab": "instances",
+      "route": "/settings/instances?highlight=instances.crews-kept-loaded"
     },
     {
       "id": "instances.enable-remote-crew-management",

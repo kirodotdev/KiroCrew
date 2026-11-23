@@ -311,6 +311,12 @@ def _matches_gate_rows(
         rows, parents, stalled = (), (), exc
     if rows and under(list(rows)):
         return True
+    try:
+        token = _machine_token_targets(inline=pre_resolved)
+    except PathResolutionStalled as exc:
+        token, stalled = set(), stalled or exc
+    if token and any(cand.casefold() in token for cand in candidates):
+        return True
     # A canonical spelling is matched as itself, so a name with no artifact suffix is no
     # artifact, and skipping it spares the inline caller an anchor resolution.
     if (
@@ -523,9 +529,13 @@ def sensitive_write_path_refusal(path_str: str, base_dir: str | None = None) -> 
             matched = under(rule_rows)
         matched = matched or _native_store_write(path_str, base_dir)
         matched = matched or _install_root_write(path_str, base_dir)
+        remedy = matched and _path_in_home_dirs(path_str, _MCP_REGISTRY_ROWS, base_dir, strict=True)
     except PathResolutionStalled as exc:
         return _stall_refusal(exc, path_str)
-    return f"Blocked: write to protected path: {path_str}" if matched else None
+    if not matched:
+        return None
+    refusal = f"Blocked: write to protected path: {path_str}"
+    return f"{refusal}. {MCP_REGISTRY_REMEDY}" if remedy else refusal
 
 
 def _stall_refusal(exc: PathResolutionStalled, path_str: str) -> str:
@@ -592,6 +602,8 @@ def path_contains_sensitive(
         target_sets = [_home_dir_targets(_SENSITIVE_HOME_DIRS, inline=pre_resolved, roots=roots)]
         if app_rows := list(_app_credential_mask_rows(inline=pre_resolved).rows):
             target_sets.append(_home_dir_targets(app_rows, inline=pre_resolved, roots=roots))
+        if token := _machine_token_targets(inline=pre_resolved):
+            target_sets.append(token)
         candidates = _candidate_forms(dir_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
         return True  # fail closed: see _path_in_home_dirs
@@ -873,8 +885,10 @@ from .paths_lists import (  # noqa: E402
     _KEYSTONE_ARTIFACT_PARENTS,
     _KEYSTONE_ARTIFACT_SUFFIXES,
     _KIRO_PERMISSION_RULE_LEAVES,
+    _MCP_REGISTRY_ROWS,
     _SENSITIVE_HOME_DIRS,
     _WRITE_PROTECTED_HOME_PATHS,
+    MCP_REGISTRY_REMEDY,
     _leaf_segments,
     _native_store_write,
 )
@@ -893,6 +907,7 @@ from .paths_targets import (  # noqa: E402
     _decision_roots,
     _has_target_ancestor,
     _home_dir_targets,
+    _machine_token_targets,
     _resolve_root_anchors,
     _ResolvedRoots,
     _target_ancestors,
@@ -914,6 +929,8 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.security.paths_lists import (  # noqa: F401
+        _CREW_MCP_JSON_LEAF,
+        _CREW_MCP_REGISTRY_ROWS,
         _CREW_SECRET_LEAVES,
         _KIRO_AGENTS_DIR,
         _KIRO_CLI_WRITE_TIER_LEAVES,

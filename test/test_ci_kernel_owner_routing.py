@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 from coverage import CoverageData
-from test_ci_ipv6_routing import _env, _run, _shell, _step
+from test_ci_ipv6_routing import _combine_body, _env, _run, _shell, _step
 from test_gateway_lock_diagnosis import _STRICT_ENV
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -255,7 +255,7 @@ def test_combine_requires_the_strict_lane_data_before_producing_a_report(jobs, c
         data.write()
     env = _env(coverage_root)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env["PATH"]
-    body = _step(jobs, "coverage-combine", "Combine into")["run"]
+    body = _combine_body(jobs, coverage_root)
     for name in (".coverage.1", ".coverage.ipv6"):
         shutil.copyfile(staged / name, coverage_root / name)
     result = _shell(body, coverage_root, env)

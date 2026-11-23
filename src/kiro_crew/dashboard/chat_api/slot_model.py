@@ -39,12 +39,14 @@ if TYPE_CHECKING:
         _sync_served_model,
         app_owns_slot_session,
         capabilities_of,
+        config_options_refuse_auto,
         deny_app_slot_access,
         effective_session_key,
         logger,
         model_registry,
         pick_epoch_host,
         provider_model_pin_refused,
+        provider_raw_model,
         read_bounded_json,
         relay_archive_refusal,
         sel,
@@ -171,8 +173,8 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
     Returns "" when the change cannot be expressed as a ``set_model`` on this
     backend, which tells the caller to fall back to a session reset.
     """
-    # The dashboard sends "" for Auto, but the literal "auto" also passes the
-    # guard (stale clients / direct API calls), so both mean "provider default".
+    # "" (Inherited, or no pick) and the literal "auto" both mean "provider
+    # default", except on KAS below, where only "auto" is an Auto pick.
     is_default = model_name in ("", "auto")
     namespace = capabilities_of(provider).model_id_namespace
     if namespace != MODEL_NAMESPACE_ACP:
@@ -180,11 +182,39 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
         # default needs a reset.
         return "" if is_default else model_registry.to_provider_id(model_name, namespace)
     if is_default:
+        if model_name == "auto" and getattr(provider, "is_kas_backend", False) is True:
+            # KAS advertises no list, and a reset would reload the session on the
+            # model it runs; ``auto`` is what a new KAS session runs. Only a known
+            # select that leaves it out keeps the reset. ``""`` (Inherited) is no
+            # Auto pick here: it keeps the reset, whose cold start runs the
+            # inherited model.
+            options = getattr(provider.client, "acp_config_options", None)
+            return "" if config_options_refuse_auto(options) else "auto"
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.
         advertised = {m.get("modelId", "") for m in provider.available_models()}
         return "auto" if "auto" in advertised else ""
     return model_registry.to_acp_id(model_name)
+
+
+def _auto_repick_moves_session(provider: LLMProvider | None, model_name: str) -> bool:
+    """Whether an Auto pick on a slot that already holds ``auto`` must still go live.
+
+    On KAS a slot can hold ``auto`` while its live session runs a concrete model:
+    a reopened chat comes back on the model it ran, and a start inherits kiro-cli's
+    ``chat.defaultModel``. Picking Auto again there is a request to move the
+    session, so the same-value shortcut must not answer it; the live switch below
+    judges and sends it as it does any Auto pick. Every other harness, a KAS
+    session already on ``auto`` or on a model not yet known, and one whose known
+    select leaves ``auto`` out (``_wire_model_id`` keeps the reset there) keep the
+    shortcut.
+    """
+    if model_name != "auto" or not isinstance(provider, AcpProvider):
+        return False
+    if provider.is_kas_backend is not True:
+        return False
+    running = provider_raw_model(provider.client)
+    return bool(running) and running != "auto" and _wire_model_id(provider, "auto") == "auto"
 
 
 async def _reapply_effort_after_live_switch(
@@ -560,6 +590,7 @@ async def switch_slot_model(
             slot.model == model_name
             and not slot._active_fallback_model
             and not slot._refusal_fallback_primary
+            and not _auto_repick_moves_session(state.sessions.get_provider(session_key), model_name)
         ):
             # Same-value pick: nothing to switch, but the user's EXPLICIT
             # affirmation of this model must still be recorded — the fallback

@@ -20,6 +20,7 @@ from session_handle_helpers import bare_session_handle
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
 from kiro_crew.acp.harness.kas import KasHarness
+from kiro_crew.acp.kas_subagent_targets import mounts_subagent_tool
 
 #: Shaped like a kiro-cli or AIM spec: ``allowedTools`` and ``toolsSettings``, no
 #: ``permissions`` block, which KAS's own loader skips as a CLI-only profile.
@@ -235,14 +236,16 @@ async def test_the_targets_past_the_cap_are_named(agents_dir, monkeypatch):
     import kiro_crew.acp.kas_subagent_targets as targets_mod
 
     monkeypatch.setattr(targets_mod, "MAX_SUBAGENT_TARGETS", 1)
-    _write(agents_dir, _delegator("slack-agent", "slack-bot"))
+    _write(agents_dir, _delegator("slack-*"))
     for name in ("slack-agent", "slack-bot"):
         _write(agents_dir, {**_SLACK, "name": name})
 
     extras = await _extras()
 
     assert _ids(extras) == ["delegator", "slack-agent"]
-    assert "1 more agents (slack-bot) (only the first 1" in extras.withheld_credentials_notice
+    assert "1 more agents its patterns match (slack-bot) (patterns add at most 1" in (
+        extras.withheld_credentials_notice
+    )
 
 
 @pytest.mark.asyncio
@@ -419,6 +422,74 @@ async def test_registration_stops_at_the_cap_and_counts_the_rest(agents_dir):
 
     assert _ids(extras) == ["delegator", *names[:MAX_SUBAGENT_TARGETS]]
     assert "2 more agents" in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_every_agent_the_list_names_outright_is_registered_past_the_cap(agents_dir):
+    from kiro_crew.acp.kas_subagent_targets import MAX_SUBAGENT_TARGETS
+
+    names = [f"helper-{i:02d}" for i in range(MAX_SUBAGENT_TARGETS + 3)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names]
+    assert "more agents" not in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_name_after_a_pattern_that_matched_it_is_tried_past_the_cap(agents_dir):
+    from kiro_crew.acp.kas_subagent_targets import MAX_SUBAGENT_TARGETS
+
+    names = [f"helper-{i:02d}" for i in range(MAX_SUBAGENT_TARGETS + 2)]
+    _write(agents_dir, _delegator("helper-*", names[-1]))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names[:MAX_SUBAGENT_TARGETS], names[-1]]
+    assert "1 more agents its patterns match" in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_named_targets_stop_where_the_backend_batch_is_full(agents_dir):
+    from kiro_crew.acp.kas_agents import KAS_MAX_CUSTOM_AGENTS
+
+    # Fewer entries than one rule carries, more than the backend's batch holds.
+    names = [f"helper-{i:02d}" for i in range(KAS_MAX_CUSTOM_AGENTS + 5)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names[: KAS_MAX_CUSTOM_AGENTS - 1]]
+    left_out = names[KAS_MAX_CUSTOM_AGENTS - 1 :]
+    assert (
+        f"{len(left_out)} more agents ({', '.join(left_out)}) (a chat registers at most "
+        f"{KAS_MAX_CUSTOM_AGENTS}"
+    ) in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_session_whose_rule_spawns_nothing_registers_no_target(agents_dir):
+    # More distinct entries than one rule carries: the parent's entry denies
+    # every spawn, so a registered target could never be reached.
+    names = [f"helper-{i:02d}" for i in range(65)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert {"capability": "subagent", "effect": "deny"} in (
+        extras.custom_agents[0]["permissions"]["rules"]
+    )
+    assert _ids(extras) == ["delegator"]
+    assert "cannot hand work to" not in extras.withheld_credentials_notice
 
 
 @pytest.fixture
@@ -1208,6 +1279,87 @@ async def test_with_no_list_the_notice_names_each_agent_the_backend_skips(agents
     assert "agent delegator cannot hand work to slack-agent (its agent file has" in notice
     assert "no permissions block" in notice
     assert "kas-ready" not in notice and "plain" not in notice
+
+
+def _subagent_denies(entry: dict) -> list[dict]:
+    rules = (entry.get("permissions") or {}).get("rules") or []
+    return [r for r in rules if r.get("capability") == "subagent" and r.get("effect") == "deny"]
+
+
+#: The engine's bundled agents whose own tools reach past a narrowed parent's.
+_WIDE_DENY = {
+    "capability": "subagent",
+    "match": ["custom-agent-creator", "general-task-execution"],
+    "effect": "deny",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "narrowing",
+    [
+        pytest.param({}, id="built-ins-listed-one-by-one"),
+        pytest.param(
+            {"tools": ["@builtin"], "excludedTools": ["execute_bash"]}, id="built-in-excluded"
+        ),
+    ],
+)
+async def test_with_no_list_a_narrowed_agent_cannot_reach_the_engines_wide_agents(
+    agents_dir, narrowing
+):
+    """The engine runs its bundled ``general-task-execution`` with every tool, so a
+    parent that leaves out a built-in has it, and ``custom-agent-creator``, denied."""
+    _write(agents_dir, _open_delegator(**narrowing))
+
+    extras = await _extras()
+
+    [parent] = extras.custom_agents
+    assert mounts_subagent_tool(parent)
+    assert _WIDE_DENY in _subagent_denies(parent)
+    notice = extras.withheld_credentials_notice
+    assert "general-task-execution (a built-in agent with more built-in tools" in notice
+    assert "custom-agent-creator (" in notice
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "spec_extra",
+    [
+        pytest.param({"tools": ["*"]}, id="every-tool"),
+        pytest.param({"tools": ["@builtin", "@some-server"]}, id="every-built-in"),
+        pytest.param(
+            {"tools": ["*"], "excludedTools": ["@some-server"]}, id="only-a-server-excluded"
+        ),
+    ],
+)
+async def test_with_no_list_an_agent_with_every_built_in_keeps_the_engines_agents(
+    agents_dir, spec_extra
+):
+    _write(agents_dir, _open_delegator(**spec_extra))
+
+    extras = await _extras()
+
+    [parent] = extras.custom_agents
+    assert _subagent_denies(parent) == []
+    assert "general-task-execution" not in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_an_agent_that_names_its_sub_agents_is_left_to_its_own_list(agents_dir):
+    """``availableAgents`` already denies every agent it does not name, the engine's
+    own included; naming one keeps it reachable."""
+    _write(agents_dir, _delegator("general-task-execution"))
+
+    extras = await _extras()
+
+    parent = extras.custom_agents[0]
+    assert _WIDE_DENY not in _subagent_denies(parent)
+    assert {
+        "capability": "subagent",
+        "match": ["*"],
+        "exclude": ["general-task-execution"],
+        "effect": "deny",
+    } in _subagent_denies(parent)
 
 
 @pytest.mark.asyncio

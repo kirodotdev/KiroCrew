@@ -527,6 +527,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         protected_app_state.forget_deleted_app_crons(name)
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's deleted cron jobs", exc_info=True)
+    try:
+        protected_app_state.forget_owner_browser_sites(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear an uninstalled app's browser sites", exc_info=True)
     # The Bots the owner ticked go only once the uninstall committed, so a failed one
     # keeps them. A record left by a failure here grants nothing to a later install:
     # it names this install's ``installedAt`` (``bot_grant_store.read_granted_bots``).

@@ -22,6 +22,7 @@ import { previewFlagsLocked } from '../utils/previewFlags'
 import { featurePreviewLockKnown } from '../utils/editionLocks'
 import { tabStatus } from './sessionTabs'
 import type { ProfileTab } from '../pages/members/CrewProfilePanel'
+import type { ViewKind } from '../hooks/usePanelTabs'
 
 /** Whether this build offers conductor mode: every build but LTS, the one that
  *  turns every Feature Preview off. Off until the gateway's lock is known (a cached
@@ -266,6 +267,25 @@ function rosterCopyOfTemplate(row: ConductorFilterRow): boolean {
   return row.source !== 'kirocrew' || (row.memory_store ?? 'default') === 'default'
 }
 
+/** The tabs conductor mode puts on a chat's strip: Crew and Dashboard. */
+export const BOARD_VIEWS: readonly ViewKind[] = ['workers', 'command-center']
+
+/** Whether `slot` is a conductor mode root that keeps its agent picker because its
+ *  conductor is also the default agent, so every new chat starts on it: the
+ *  gateway lets such a root move onto another agent template until its first
+ *  message (the caller checks that and the running turn). Every other chat keeps
+ *  its usual picker rule; one the gateway stamps no root (`showsAsCrewMode`), an
+ *  Incognito or Temporary chat included, already keeps its picker. */
+export function conductorDefaultPicker(slot: {
+  agent?: string; agent_kind?: string; crew_mode_agent?: string; crew_mode_root?: boolean; crew_root?: string | null
+  mode?: string; memory_mode?: string; instance_id?: string; origin?: string; created_by?: unknown; parent?: unknown
+} | undefined, defaultAgent: string): boolean {
+  if (!slot || !gatewayRunsCrewMode() || slot.mode || slot.instance_id || slot.origin === 'app') return false
+  if (!memoryModeAllowsCrewMode(slot.memory_mode) || !runsConductor(defaultAgent, 'template') || !showsAsCrewMode(slot)) return false
+  // `isRootSession` (command-center/model.ts) imports this module, so not reused here.
+  return !slot.created_by && !slot.parent
+}
+
 /** Rows of a normal chat's agent picker: every conductor left out, since the
  *  composer's Crew Mode switch (this part) is the way onto one, and so is the
  *  roster's copy of a conductor template; crewmates kept whatever their name.
@@ -373,8 +393,9 @@ export function autoOpenRows<T extends { crew_root?: string; mate_root?: string;
  *  in every build, LTS included (the gateway runs them either way), so a chord can
  *  never move a normal chat onto a conductor and turn Crew Mode on by accident;
  *  the picker is the way onto one. `null` when there is nothing to
- *  cycle: an empty list, a chat in Crew Mode (`runsCrewMode`), which has no agent
- *  picker to mirror, or a `locked` chat: the caller passes the row's RAW
+ *  cycle: an empty list, a chat in Crew Mode (`runsCrewMode`), since a chord never
+ *  takes a chat out of it (where its picker shows, the picker button is reachable by
+ *  keyboard), or a `locked` chat: the caller passes the row's RAW
  *  `crew_mode_root` stamp, set only on a chat the gateway refuses to move.
  *  Crewmates are kept whatever their name; the roster's copy of a conductor
  *  template is skipped with it. */
@@ -382,7 +403,7 @@ export function agentCycleTarget<T extends ConductorFilterRow>(
   agents: T[], current: string, currentKind: string | undefined, step: 1 | -1, crewStamp?: string, locked = false,
 ): string | null {
   // The raw `crew_mode_root` stamp is the gateway's own lock (`crew_mode_locked`),
-  // in every build; where conductor mode is offered, every such chat has no picker.
+  // in every build; where conductor mode is offered, no chord moves such a chat.
   if (locked || runsCrewMode(current, currentKind, crewStamp)) return null
   const rows = agents.filter(a => (a.selection_kind === 'member' && !rosterCopyOfTemplate(a)) || !conductors.has(a.name))
   if (rows.length === 0) return null

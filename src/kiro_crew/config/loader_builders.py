@@ -101,6 +101,9 @@ _JSON_TYPE_LABELS: dict[str, str] = {
 }
 
 
+_POD_ENV = "KIROCREW_POD"
+
+
 def resolve_loop_stall_exit_after(
     dashboard_data: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
@@ -120,11 +123,12 @@ def resolve_loop_stall_exit_after(
             LOOP_STALL_EXIT_AFTER_MAX,
         )
     source = os.environ if environ is None else environ
-    # The generated service definition is the sole launch-class authority.
-    # Inferring from systemd metadata is ambiguous because descendants inherit
-    # INVOCATION_ID; old definitions are reported by ``kirocrew doctor`` with
-    # the one-time regeneration command instead.
-    managed = source.get(_MANAGED_SERVICE_ENV) == "1"
+    # The generated service definition is the live service's launch-class
+    # authority; systemd metadata is ambiguous because descendants inherit
+    # INVOCATION_ID. A pod gateway is booted by its own service manager with no
+    # desktop app watching it, so the pod marker its boot sets counts too; that
+    # boot never sets the live marker, which the restart checks also read.
+    managed = source.get(_MANAGED_SERVICE_ENV) == "1" or source.get(_POD_ENV) == "1"
     return LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT if managed else LOOP_STALL_EXIT_AFTER_DEFAULT
 
 
@@ -136,16 +140,19 @@ def consume_managed_service_launch_environment(
     The generated service definition sets this marker for the gateway itself.
     Consuming it before the dashboard starts app backends or child terminals
     prevents those descendants from being misclassified as managed services.
+    A pod marker is copied into the result but left in place, since every
+    descendant of a pod gateway is still in that pod.
     """
     source = os.environ if environ is None else environ
+    launch = {_POD_ENV: "1"} if source.get(_POD_ENV) == "1" else {}
     value = source.pop(_MANAGED_SERVICE_ENV, None)
     if value is None:
-        return {}
+        return launch
     if environ is None:
         # Consumed for descendants only: the gateway's own exec successor (an
         # in-app restart) is the same service launch and gets it back.
         platform_compat.keep_for_reexec(_MANAGED_SERVICE_ENV, value)
-    return {_MANAGED_SERVICE_ENV: value}
+    return {**launch, _MANAGED_SERVICE_ENV: value}
 
 
 def launched_as_managed_service() -> bool:
@@ -815,6 +822,12 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         kas_sso_start_url=str(section.get("kas_sso_start_url") or "").strip(),
         kas_sso_region=str(section.get("kas_sso_region") or "").strip(),
+        kas_auth=section.get("kas_auth"),
+        kas_token_path=section.get("kas_token_path"),
+        kas_endpoint=section.get("kas_endpoint"),
+        kas_control_plane_endpoint=section.get("kas_control_plane_endpoint"),
+        kas_region=section.get("kas_region"),
+        kas_machine_env_drop=section.get("kas_machine_env_drop"),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
         crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),
@@ -1146,6 +1159,9 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         timeout_secs=section.read(
             "timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
         ),
+        automated_idle_timeout_secs=section.read(
+            "automated_idle_timeout_secs", _safe_int, SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX
+        ),
         idle_exempt_keys=_load_idle_exempt_keys(section.get("idle_exempt_keys")),
         empty_response_auto_continue=bool(section.get("empty_response_auto_continue")),
         # RANGE-clamped like the other session ints: a hand-edited 0
@@ -1425,6 +1441,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             _sections.UPLOAD_MAX_MB_MIN,
             _sections.UPLOAD_MAX_MB_MAX,
         ),
+        attachment_sheet_digest=section.read("attachment_sheet_digest", _safe_bool),
         mcp_probe_timeout_secs=section.read(
             "mcp_probe_timeout_secs", _safe_int, MCP_PROBE_TIMEOUT_MIN, MCP_PROBE_TIMEOUT_MAX
         ),
@@ -1453,6 +1470,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         cautious_boot=section.read("cautious_boot", _safe_bool),
         auto_open_browser=section.get("auto_open_browser"),
         prevent_sleep=section.read("prevent_sleep", _safe_bool),
+        warm_task_brief=section.read("warm_task_brief", _safe_bool),
         quick_send=section.get("quick_send"),
         model_picker_configured=(
             section.read("model_picker_configured", _safe_bool)

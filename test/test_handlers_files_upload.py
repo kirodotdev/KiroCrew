@@ -12,6 +12,7 @@ extensions (DOC + IMAGE), not text. These tests pin both the success path
 
 from __future__ import annotations
 
+import gzip
 import io
 import logging
 import mimetypes
@@ -318,6 +319,46 @@ async def test_upload_ooxml_template_is_accepted_and_zip_checked(
         resp = await client.post("/api/upload/file", data=form)
         assert resp.status == 400, await resp.text()
         assert "does not match its type" in (await resp.json())["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extension", "payload"),
+    [
+        (".htm", b"<!doctype html><title>t</title><p>hi</p>"),
+        (".tgz", gzip.compress(b"hello from a tarball", mtime=0)),
+    ],
+    ids=["htm", "tgz"],
+)
+async def test_upload_common_alias_is_accepted_like_its_base_type(
+    upload_dir: Path,
+    mock_sel,
+    extension: str,
+    payload: bytes,
+) -> None:
+    """``.htm`` uploads like ``.html`` and ``.tgz`` like ``.gz``, under its gzip check."""
+    async with TestClient(TestServer(_make_app())) as client:
+        form = aiohttp.FormData()
+        form.add_field(
+            "file", payload, filename=f"alias{extension}", content_type="application/octet-stream"
+        )
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        saved = Path((await resp.json())["paths"][0])
+        assert saved.name.endswith(extension)
+        assert saved.read_bytes() == payload
+
+        if extension == ".tgz":
+            form = aiohttp.FormData()
+            form.add_field(
+                "file",
+                b"<html>not gzip</html>",
+                filename="fake.tgz",
+                content_type="application/octet-stream",
+            )
+            resp = await client.post("/api/upload/file", data=form)
+            assert resp.status == 400, await resp.text()
+            assert "does not match its type" in (await resp.json())["error"]
 
 
 @pytest.mark.asyncio

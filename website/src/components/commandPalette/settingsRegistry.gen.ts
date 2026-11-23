@@ -1981,6 +1981,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.since-you-left-briefs",
+    "label": "Since you left briefs",
+    "labelKey": "pages.settings.chatPanel.warm_task_brief",
+    "description": "When you return to a conductor mode chat or a bot thread after 30 minutes away, post a catch-up brief.",
+    "hint": "Off: a return posts no brief. Takes effect on your next return.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.warm_task_brief"
+  },
+  {
     "id": "chat.soft-stop-budget-seconds",
     "label": "Soft-stop budget (seconds)",
     "labelKey": "pages.settings.chatPanel.soft_stop_budget_seconds",
@@ -2674,6 +2688,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.use-your-company-s-sign-in",
+    "label": "Use your company's sign-in",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_client",
+    "description": "Uses your company's own sign-in for its portal. Nothing changes until you sign in with that portal.",
+    "hint": "Some companies install Kiro Crew with their own company sign-in. Turn this on to use it. While you're signed in with it, you can't chat with the agent on this computer, and the sign-in form says so first. Otherwise nothing changes.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.visual-refresh",
     "label": "Visual refresh",
     "labelKey": "pages.developer.featurePreviewsTab.visual_refresh",
@@ -3191,6 +3218,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.touch-screen-layout",
+    "label": "Touch screen layout",
+    "labelKey": "pages.settings.displayPanel.touch_layout",
+    "hint": "Use this if your browser has no Request desktop site option. Automatic follows the browser's mobile or desktop site mode. The desktop layout applies from 768px up; below that the phone layout stays. Saved on this browser only.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
+  },
+  {
     "id": "display.translucent-panels",
     "label": "Translucent panels",
     "labelKey": "pages.settings.displayPanel.translucent_panels",
@@ -3233,6 +3272,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "hint": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it.",
     "tab": "instances",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "instances.crews-kept-loaded",
+    "label": "Crews kept loaded",
+    "labelKey": "pages.settings.remoteCrewPanel.warm_cap",
+    "tab": "instances",
+    "type": "stepper",
     "occurrence": 1
   },
   {

@@ -4,7 +4,8 @@ A user-level spec copied from ``kirocrew.json`` names the payload that wrote it
 (``.../toolbox/kirocrew/<version>/.venv/bin/kirocrew``). Kiro Crew never rewrites
 a spec it does not own, so once an upgrade removes that payload the entry names a
 missing launcher. Where a key such as ``timeout`` keeps the entry
-out of the per-session element (the KAS agent block, the kiro-cli skill view),
+out of the per-session element (the KAS agent block with no session token, the
+kiro-cli skill view),
 the session starts it as written and the server fails with ENOENT. Both paths
 launch the managed invocation instead and keep the user's other keys.
 """
@@ -49,8 +50,8 @@ def installed(tmp_path, monkeypatch):
     return state
 
 
-def test_kas_relaunches_a_reserved_entry_its_timeout_keeps_in_the_agent_block(installed):
-    spec = _spec(
+def _timeout_spec(installed):
+    return _spec(
         name="mtp-inputs",
         tools=["@kirocrew-core", "@kirocrew-guide"],
         mcpServers={
@@ -62,14 +63,38 @@ def test_kas_relaunches_a_reserved_entry_its_timeout_keeps_in_the_agent_block(in
             },
         },
     )
-    projected = to_client_custom_agent("mtp-inputs", spec, "p", session_key="cron:mtp")
+
+
+def test_kas_hoists_a_reserved_entry_with_a_timeout_onto_the_installed_payload(installed):
+    # With a session token the timeout is dropped so the entry can carry it;
+    # the reaped launcher still never starts.
+    projected = to_client_custom_agent(
+        "mtp-inputs", _timeout_spec(installed), "p", session_key="cron:mtp"
+    )
+    resolved = kas_agents.resolve_managed_entries([projected], "mtp-inputs")
+    agents, array = hoist_servers_for_session(
+        [projected], "mtp-inputs", [], session_token="tok", managed_entries=resolved
+    )
+    assert "mcpServers" not in agents[0]
+    by_name = {e["name"]: e for e in array}
+    assert by_name["kirocrew-guide"]["command"] == installed.launcher
+    assert by_name["kirocrew-guide"]["args"] == ["mcp", "guide"]
+    assert "timeout" not in by_name["kirocrew-guide"]
+    assert by_name["kirocrew-core"]["command"] == installed.launcher
+
+
+def test_kas_relaunches_a_reserved_entry_its_timeout_keeps_in_the_agent_block(installed):
+    projected = to_client_custom_agent(
+        "mtp-inputs", _timeout_spec(installed), "p", session_key="cron:mtp"
+    )
     before = copy.deepcopy(projected)
     # Resolved off the event loop, as the KAS harness does before the hoist.
     resolved = kas_agents.resolve_managed_entries([projected], "mtp-inputs")
     installed.calls.clear()
 
+    # No session token: nothing to gain by hoisting, so the block keeps it.
     agents, array = hoist_servers_for_session(
-        [projected], "mtp-inputs", [], session_token="tok", managed_entries=resolved
+        [projected], "mtp-inputs", [], managed_entries=resolved
     )
 
     assert installed.calls == [], "the hoist resolves nothing on the event loop"
@@ -79,8 +104,8 @@ def test_kas_relaunches_a_reserved_entry_its_timeout_keeps_in_the_agent_block(in
     assert guide["args"] == ["mcp", "guide"]
     assert guide["timeout"] == 120000, "the user's timeout still reaches KAS"
     assert guide["env"]["KIROCREW_SESSION_KEY"] == "cron:mtp", "the projected env stays"
-    (core,) = [e for e in array if e["name"] == "kirocrew-core"]
-    assert core["command"] == installed.launcher
+    # The tokened relaunch of the hoisted kirocrew-core is the test above's.
+    assert [e["name"] for e in array] == ["kirocrew-core"]
 
 
 def test_kas_leaves_a_block_entry_whose_managed_invocation_does_not_resolve(installed):

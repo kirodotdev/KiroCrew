@@ -673,11 +673,28 @@ def _update(force: bool = False) -> None:
     # lays down for the new release's pin (``release_apply``). Decided before the
     # kiro-cli pin so a host without kiro-cli prints the reason, not a PATH note.
     # Local import: this body runs on the ``cli_server`` facade's globals.
+    from kiro_crew import crewmate_harness
     from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.config import KiroCrewConfig
 
+    # No configured harness choice (main, crewmate, a Bot's pin, an enabled failover
+    # chain) spawns kiro-cli. An unreadable config reads as "one does", so the step
+    # keeps running as it did.
+    try:
+        no_kiro_cli_role = not crewmate_harness.kiro_cli_runs_anywhere(KiroCrewConfig.load())
+    except Exception:
+        no_kiro_cli_role = False
     if kas_bundle.kas_bundle_route():
         print(
             "  ℹ️  kiro-cli update skipped: KAS runs Kiro Crew's own engine bundle, not kiro-cli."
+        )
+        kiro_cli_bin, unpinned_kiro_cli = None, False
+    elif no_kiro_cli_role:
+        # The self-update has no result this install reads, and a slow link makes
+        # it run to its 120 s timeout while the gateway is down.
+        print(
+            "  ℹ️  kiro-cli update skipped: no selected backend runs kiro-cli "
+            "(run `kiro-cli update` by hand if an agent spec pins it)."
         )
         kiro_cli_bin, unpinned_kiro_cli = None, False
     else:

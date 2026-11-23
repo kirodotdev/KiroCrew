@@ -9,11 +9,13 @@ and opens a later turn by writing it again. That text is not a reply: it must
 never become a transcript row.
 
 The live stream holds a segment while it could still be this text and drops it
-when it is: the dashboard runner (``stream_chunks._on_text_chunk``) and the
-channel turn driver (``messaging.driver.TurnDriver``) alike. A turn whose only
-text was the placeholder then gets the usual empty-reply handling. Rows an older build already
-stored with only that text are left as they are. The model's
-own history is untouched: the backend keeps its placeholder.
+when it is: the dashboard runner (``stream_chunks._on_text_chunk``), the channel
+turn driver (``messaging.driver.TurnDriver``), the shared collector
+(``llm_helpers.stream_and_collect``) and the native Slack turn
+(``slack/handler_runtime/stream.py``) alike. A turn whose only text was the
+placeholder then gets the usual empty-reply handling. Rows an older build already
+stored with only that text are left as they are. The model's own history is
+untouched: the backend keeps its placeholder.
 """
 
 from __future__ import annotations

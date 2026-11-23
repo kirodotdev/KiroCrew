@@ -24,6 +24,11 @@
   "app.notification_count",
   "app.show_more_apps",
   "app.subagent_cap_explained",
+  "nav.badge_unread_conversations_count",
+  "nav.badge_unread_member_threads_count",
+  "nav.badge_approvals_needed_count",
+  "app.updates_count",
+  "app.subagents_in_flight_count",
   "apps.autoTriagePipeline.global.resumed_times",
   "apps.autoTriagePipeline.global.step_heading",
   "apps.autoTriagePipeline.global.turns_n",
@@ -311,6 +316,8 @@
   "pages.membersPage.member_count",
   "pages.membersPage.member_count_filtered",
   "pages.membersPage.patrol_tasks_open",
+  "pages.membersPage.schedule_state_auto_paused",
+  "pages.membersPage.schedule_failed_notice_more",
   "pages.membersPage.patrol_tasks_still_open",
   "pages.membersPage.team_crewmate_count",
   "pages.membersPage.team_need_you_count",
@@ -586,5 +593,6 @@
   "pages.settings.slackSharedAccess.confirm_label",
   "components.globalChatSearch.more_matches",
   "pages.settings.slackPanel.slackCode.box_slack_mcp",
-  "pages.mcpManagement.share_diagram_copies"
+  "pages.mcpManagement.share_diagram_copies",
+  "pages.chat.errorCard.repeated_in_a_row"
 ]

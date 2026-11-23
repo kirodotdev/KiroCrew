@@ -944,6 +944,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         MCP_REDACTED_HEADER_VALUE,
         SCOPE_CC_GLOBAL,
         SCOPE_KIRO_GLOBAL,
+        _configured_value_spans,
         _extra_scope_sources,
         _extra_scopes,
         _mcp_credential_token_pattern,
@@ -1028,6 +1029,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         redact_credentials,
         redact_exfiltration_urls,
     )
+    from kiro_crew.security.redaction import redact_credentials_and_spans  # noqa: F401
     from kiro_crew.user_json import (  # noqa: F401
         loads_user_jsonc,
         wide_bom_reason,

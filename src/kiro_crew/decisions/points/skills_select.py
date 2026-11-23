@@ -67,7 +67,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from kiro_crew import decisions as core
+from kiro_crew.decisions import gate as _gate
 from kiro_crew.decisions import log as _log
+from kiro_crew.decisions.local_models import is_loopback_endpoint
 from kiro_crew.decisions.points import MAX_KEY_CHARS, build_history
 from kiro_crew.decisions.points import history_budget as _history_budget
 from kiro_crew.decisions.points import prior_turns as _prior_turns
@@ -78,11 +80,21 @@ logger = logging.getLogger(__name__)
 
 POINT = "skills.select"
 
-#: Cap on how many skills are described to the oracle. The menu has to stay a
-#: small prompt, so the lowest-scoring tail is dropped rather than sent. 99 so
-#: the Choice, with its "none" option, is at most the 100 options Laya's local
-#: server accepts.
+#: Cap on how many skills are described to the oracle, unless the endpoint is on
+#: this machine (:data:`LOCAL_MAX_CANDIDATES`). The menu has to stay a small
+#: prompt, so the lowest-scoring tail is dropped rather than sent. 99 so the
+#: Choice, with its "none" option, is at most the 100 options Laya's server
+#: accepts, which still binds a Laya server reached by a name such as
+#: ``localhost``.
 MAX_CANDIDATES = 99
+
+#: Cap on the menu when the decision endpoint is on this machine
+#: (:func:`~kiro_crew.decisions.local_models.is_loopback_endpoint`). A 4B model run
+#: on the owner's CPU takes longer for every option it reads -- about 25 s for 99
+#: options and 2.8 s for 10, measured on a 48-vCPU host -- while a turn waits at
+#: most :data:`MAX_WAIT_SECS`, so a full menu would time out on every turn. The menu
+#: is sorted best-scoring first, so the cut keeps the strongest candidates.
+LOCAL_MAX_CANDIDATES = 10
 MAX_MESSAGE_CHARS = 2000
 MAX_DESCRIPTION_CHARS = 200
 
@@ -378,12 +390,16 @@ def _record_menu_failure(session_key: str | None) -> None:
 def screen_candidates(candidates: Sequence[dict[str, str]]) -> list[dict[str, str]]:
     """The menu rows that may be sent: capped, key-screened, description-clipped.
 
-    The message and each description are truncated because they are prose. Keys
-    are not, for the reason :data:`~kiro_crew.decisions.points.MAX_KEY_CHARS`
-    exists: an over-long key is dropped by the enumerator instead.
+    The cap is :data:`LOCAL_MAX_CANDIDATES` when the decision endpoint is on this
+    machine and :data:`MAX_CANDIDATES` otherwise. The message and each description
+    are truncated because they are prose. Keys are not, for the reason
+    :data:`~kiro_crew.decisions.points.MAX_KEY_CHARS` exists: an over-long key is
+    dropped by the enumerator instead.
     """
+    local = is_loopback_endpoint(_gate.configured_endpoint())
+    cap = LOCAL_MAX_CANDIDATES if local else MAX_CANDIDATES
     rows: list[dict[str, str]] = []
-    for candidate in list(candidates)[:MAX_CANDIDATES]:
+    for candidate in list(candidates)[:cap]:
         key = str(candidate.get("key", ""))
         if not key or len(key) > MAX_KEY_CHARS:
             continue

@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -157,3 +158,74 @@ def is_rollup_graphql_read(args: list[str]) -> bool:
     return args[:3] == ["gh", "api", "graphql"] and any(
         a.startswith("query=") and "statusCheckRollup" in a for a in args[3:]
     )
+
+
+_REFERENCE = re.compile(r"references/([A-Za-z0-9_./-]+\.md)")
+#: How a reference split out of its core says so on its first lines.
+_MOVED = "Moved verbatim from the "
+
+
+def _ref_segments(ref: Path) -> list[tuple[str, list[str]]]:
+    """A reference file cut at its ``#``/``##`` headings: ``(title, body lines)``.
+
+    Those two levels are the file's own title and the section names the split
+    gave each moved part; the moved text keeps its own deeper headings.
+    """
+    segments: list[tuple[str, list[str]]] = [("", [])]
+    for line in ref.read_text(encoding="utf-8").splitlines():
+        if re.match(r"#{1,2} ", line):
+            segments.append((line.lstrip("#").strip(), []))
+        elif not line.startswith(_MOVED):
+            segments[-1][1].append(line)
+    return [(title, body) for title, body in segments if any(x.strip() for x in body)]
+
+
+def skill_text(path: Path) -> str:
+    """A ``SKILL.md`` with its ``references/`` read back in where the detail came from;
+    any other file as is.
+
+    A built-in skill keeps a short core in ``SKILL.md`` and moves detail, verbatim,
+    to ``references/``, leaving a pointer where it was. A test that pins a rule's
+    wording, or the section it sits in, pins that the skill still carries it there,
+    so it reads the core with each moved part placed back: a part filed under a
+    heading the core also has goes after that heading's first paragraph, and the
+    rest of a file after the paragraph that first names it. Only files that say
+    they were moved out of the core are read in; a reference written as one stays
+    out, as it always was. ``living-ui``'s blocks are their own skill,
+    ``living-ui-blocks``.
+    """
+    text = path.read_text(encoding="utf-8")
+    refs = path.parent / "references"
+    if path.name != "SKILL.md" or not refs.is_dir():
+        return text
+    lines = text.splitlines()
+    titles = {ln.lstrip("#").strip() for ln in lines if ln.startswith("#")}
+    under: dict[str, list[str]] = {}
+    whole: dict[str, list[str]] = {}
+    for ref in sorted(refs.rglob("*.md")):
+        name = ref.relative_to(refs).as_posix()
+        if _MOVED not in ref.read_text(encoding="utf-8"):
+            continue  # written as a reference, never part of the core
+        for title, body in _ref_segments(ref):
+            target = under if title in titles else whole
+            target.setdefault(title if title in titles else name, []).extend(["", *body])
+    out: list[str] = []
+    pending: list[str] = []
+    seen_body = False
+    for line in lines:
+        if line.startswith("#"):
+            out.extend(pending)
+            pending = list(under.pop(line.lstrip("#").strip(), []))
+            seen_body = False
+        elif not line.strip() and seen_body and pending:
+            out.extend(pending)
+            pending = []
+        elif line.strip():
+            seen_body = True
+        out.append(line)
+        for name in _REFERENCE.findall(line):
+            pending.extend(whole.pop(name, []))
+    out.extend(pending)
+    for rest in (*under.values(), *whole.values()):
+        out.extend(rest)
+    return "\n".join(out) + "\n"

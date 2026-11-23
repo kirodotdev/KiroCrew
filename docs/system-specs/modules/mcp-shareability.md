@@ -130,7 +130,7 @@ Path: `<records dir>/observed-hazards.json`, a sibling of `hot-keys.json`. Write
 Codes are a closed vocabulary; an unknown code is refused on write and dropped on read, because a typo that silently became a permanent hazard would disqualify a server for ever with no way to read why:
 
 - `unroutable_server_request` — a server-initiated request arrived with no `relatedRequestId` while more than one stub shared the backend. Unroutable without a cross-tenant leak, so the backend is recycled.
-- `unattributable_notification` — a request-scoped notification could not be attributed to a pending call, so it was dropped rather than broadcast. A request-scoped frame on a 2026-07-28 `subscriptions/listen` stream (its acknowledgement, a list change) is attributed by the listen id its `_meta` carries (`io.modelcontextprotocol/subscriptionId`): the server saw the gateway's forward id, so the frame goes only to the stub whose pending listen that is, tagged back with the stub's own id (`backend_routing._listen_stream_frame`). A `notifications/resources/updated` on such a stream is still routed by URI only, so it is dropped unless a `resources/subscribe` named that URI.
+- `unattributable_notification` — a request-scoped notification could not be attributed to a pending call, so it was dropped rather than broadcast. A request-scoped frame on a 2026-07-28 `subscriptions/listen` stream (its acknowledgement, a list change) is attributed by the listen id its `_meta` carries (`io.modelcontextprotocol/subscriptionId`): the server saw the gateway's forward id, so the frame goes only to the stub whose pending listen that is, tagged back with the stub's own id (`backend_routing._listen_stream_frame`). A `notifications/resources/updated` on such a stream goes the same way, but only when its URI is one that listen named (`_PendingRequest.listen_uris`): the tag is the server's word, the URI list the stub's. Any other update is routed by URI through the `resources/subscribe` table, and dropped when no stub subscribed to it.
 
 Both are recorded ONLY for a shared backend (`exclusive_token` empty). A 1:1 backend legitimately owns its single client, so the same frame there proves nothing, and recording it would disqualify servers for behaviour that is correct when unshared.
 
@@ -253,7 +253,8 @@ Measured against that, three codes would disqualify on an inference alone, so th
   `notifications/resources/updated` carries no entry here because it needs none:
   the broker keeps the `uri -> {stub_uuid}` subscription table
   (`backend._resource_subscriptions`) and delivers each update to exactly the
-  stubs subscribed to its URI. The table's contract is delete-not-relax — an
+  stubs subscribed to its URI, or to the listener whose `subscriptions/listen`
+  named it. The table's contract is delete-not-relax — an
   entry leaves the moment the broker learns to attribute the frames it covers.
 - `rotating_secret_env` — a secret-prefixed key is never forwarded into a shared
   backend at all (`daemon/launch.py::_declared_non_secret_env`), so a pooled backend
@@ -299,7 +300,8 @@ one to `_SHARED_BACKEND_DEGRADATIONS` means adding a per-entry detection mode
 alongside it. `resources.subscribe` is deliberately NOT in the table: the broker
 keeps a `uri -> {stub_uuid}` subscription table (`backend._resource_subscriptions`)
 and delivers each `notifications/resources/updated` to exactly the stubs
-subscribed to its URI, so subscriptions survive pooling and there is nothing to
+subscribed to its URI (a listen-stream update to the listener whose listen
+named it), so subscriptions survive pooling and there is nothing to
 warn the operator about.
 
 Tool annotations (`readOnlyHint` and friends) exist only from MCP 2025-03-26 onward. The HTTP probes (`mcp_discovery._probe_remote`, `connections/l1_smoke.py`), the stdio probe and the gateway backend handshake offer `MCP_CLIENT_PROTOCOL_VERSION` (`2025-06-18`) and step down once to an older listed revision such as `2024-11-05` on a `-32602` answer (`downgrade_protocol_version`). Annotations are therefore treated as opportunistic positive evidence: present means something, absent means nothing.

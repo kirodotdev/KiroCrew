@@ -53,6 +53,8 @@ vi.mock('../api/client', () => ({
     getAppDashboardAccess: () =>
       Promise.resolve({ granted: false, offer: null, platform_supported: true, needs_access: false }),
     members: (...a: unknown[]) => members(...a),
+    // The browsing sites card reads its own list; an empty one draws nothing.
+    getAppBrowserSites: () => Promise.resolve({ sites: [], active: [] }),
   },
 }))
 

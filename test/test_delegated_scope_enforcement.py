@@ -153,8 +153,6 @@ async def test_the_other_method_of_a_listed_path_is_refused(state, granted):
         ("POST", "/api/chat/mode"),
         ("POST", "/api/restart"),
         ("POST", "/api/update/approve"),
-        ("GET", "/v1/crew/owner/approvals"),
-        ("POST", "/v1/crew/owner/grant-requests/abc/decision"),
     ],
 )
 async def test_each_refused_route_answers_delegated_credential_refused(
@@ -164,6 +162,61 @@ async def test_each_refused_route_answers_delegated_credential_refused(
         resp = await client.request(method, path, params=_delegated(), json={})
         assert resp.status == 403, await resp.text()
         assert (await resp.json())["code"] == _REFUSED_CODE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("as_bearer", [False, True])
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/v1/crew/owner/approvals"),
+        ("POST", "/v1/crew/owner/grant-requests/abc/decision"),
+    ],
+)
+async def test_a_delegated_token_never_opens_a_crew_api_route(
+    state, granted, method, path, as_bearer
+):
+    """The Crew API (``/v1/``) takes its credential in ``Authorization: Bearer`` and refuses
+    ``?token=``; a delegated token is a link, which is not a session, so neither way opens a
+    route. The refusal comes from the bearer check, ahead of the delegated rows."""
+    async with _serve(state) as client:
+        if as_bearer:
+            headers = {"Authorization": "Bearer " + _delegated()["token"]}
+            resp = await client.request(method, path, headers=headers, json={})
+        else:
+            resp = await client.request(method, path, params=_delegated(), json={})
+        assert resp.status == 401, await resp.text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/v1/models"),
+        ("GET", "/v1/crew/owner/bots"),
+        ("GET", "/v1/crew/owner/approvals"),
+        ("POST", "/v1/crew/owner/approvals/abc/decision"),
+        ("POST", "/v1/crew/owner/grant-requests/abc/decision"),
+    ],
+)
+async def test_a_delegated_session_bearer_is_refused_on_the_crew_api(
+    state, granted, method, path
+):
+    """The bearer check passes a ``kind=session`` token, so a session that carries ``via_app``
+    meets the delegated rows next: no row opens ``/v1/``, so each answers 403."""
+    from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
+
+    extra = {"via_app": _APP, "via_grant": dashboard_proxy.grant_claim(_APP)}
+    token = token_auth.generate_token(
+        "local-app", extra=owner_mint_extra(extra), session=True, register_nonce=False
+    )
+    async with _serve(state) as client:
+        resp = await client.request(
+            method, path, headers={"Authorization": "Bearer " + token}, json={}
+        )
+        assert resp.status == 403, await resp.text()
+        assert _REFUSED_CODE in await resp.text()
 
 
 @pytest.mark.asyncio

@@ -123,6 +123,7 @@ def test_the_spelled_names_match_their_owners() -> None:
         local_authorization.LOCAL_GRANTS_KIND,
         protected_app_ui.APP_UI_KIND,
         dashboard_proxy.APP_DASHBOARD_PROXY_KIND,
+        protected_app_state.APP_BROWSER_SITES_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,

@@ -786,6 +786,47 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     }
   })
 
+  it('hands the agent the failed read\'s report, also while the next poll is out', async () => {
+    __resetErrorJournalForTests()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const spy = stubFetch({ armStatus: () => ({ armed: false }) })
+      const live = spy.getMockImplementation()!
+      const qc = newQueryClient()
+      render(withProviders(qc, <InAppUpdateFlow version="9.9.9" manualCommand="" />))
+      await waitFor(() => expect(qc.getQueryData(['update-arm-status'])).toEqual({ armed: false }))
+      fireEvent.click(screen.getByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-armed')
+
+      // Three polls of one read plus one retry are refused; the fourth poll's read
+      // never answers, and React Query clears `failureReason` when a poll starts.
+      const body = JSON.stringify({ error: 'update state unavailable', code: 'update_state_unavailable' })
+      let reads = 0
+      spy.mockImplementation(async (input: unknown, init?: { method?: string }) => {
+        if (!String(input).includes('/api/update/arm') || init?.method === 'POST') return live(input, init)
+        reads += 1
+        if (reads > 6) return new Promise(() => {}) as never
+        return {
+          ok: false, status: 503,
+          json: async () => JSON.parse(body),
+          text: async () => body,
+          headers: new Headers({ 'content-type': 'application/json' }),
+        } as never
+      })
+      // Bounded: 25 s of fake time (five 5 s poll intervals), in quarter-second steps.
+      for (let step = 0; step < 100 && reads < 7; step++) await vi.advanceTimersByTimeAsync(250)
+      expect(reads).toBe(7)
+      expect(qc.getQueryState(['update-arm-status'])?.fetchFailureReason).toBeNull()
+      const err = await screen.findByTestId('arm-poll-error')
+      fireEvent.click(within(err).getByRole('button', { name: 'Ask the agent' }))
+      const prompt = consumeChatHandoff() ?? ''
+      expect(prompt).toContain('HTTP 503')
+      expect(prompt).toContain('update_state_unavailable')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('reads the arm again on Try again, so an arm made by another copy\'s retry shows', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {

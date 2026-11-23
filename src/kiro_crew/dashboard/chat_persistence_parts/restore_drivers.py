@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _apply_restored_open_slot,
         _build_kiro_model_map,
         _ChatSlot,
+        _commit_tab_id_backfills,
         _deletion_during_read,
         _has_validated_effort_marker,
         _load_restore_cfg,
@@ -839,29 +840,8 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             # Copied here, on the loop: the report runs in a worker thread.
             deferred=frozenset(state.deferred_member_slot_keys),
         )
-        # Commit the tab-id backfills (each an os.replace) BEFORE returning: on
-        # Windows a caller's on-loop read of a file still mid-replace raises
-        # PermissionError. Awaited one at a time off the loop.
-        #
-        # ``update_metadata_if(require_existing=True)``, not ``update_metadata``:
-        # a ``DELETE /api/sessions/{key}`` during the restore must not be undone
-        # by recreating a metadata-only transcript that reopens as an empty tab.
-        # Best-effort: the slot already holds this metadata, so failures are logged.
-        for _bk_key, _bk_fields in pending_backfills:
-            try:
-                await asyncio.to_thread(
-                    conv_log.update_metadata_if,
-                    _bk_key,
-                    _bk_fields,
-                    lambda _meta: True,
-                    require_existing=True,
-                )
-            except Exception:  # noqa: BLE001 - best-effort metadata backfill
-                logger.warning(
-                    "restore_open_slots: tab-id backfill failed for %s",
-                    _bk_key,
-                    exc_info=True,
-                )
+        # Committed BEFORE returning; see _commit_tab_id_backfills.
+        await _commit_tab_id_backfills(conv_log, pending_backfills, driver="restore_open_slots")
     finally:
         # Always clear, even if a rehydrate raises — a stuck flag would silently
         # disable open-tab persistence for the rest of the process's life.
@@ -1083,29 +1063,10 @@ async def restore_recent_sessions_async(
                 await _recover_mcp_app_claims_async(_recovered_slot)
             await asyncio.sleep(0)
         _sync_dashboard_slots(state)
-        # Commit the tab-id backfills (each an os.replace) BEFORE returning: on
-        # Windows a caller's on-loop read of a file still mid-replace raises
-        # PermissionError. Awaited one at a time off the loop.
-        #
-        # ``update_metadata_if(require_existing=True)``, not ``update_metadata``:
-        # a ``DELETE /api/sessions/{key}`` during the restore must not be undone
-        # by recreating a metadata-only transcript that reopens as an empty tab.
-        # Best-effort: the slot already holds this metadata, so failures are logged.
-        for _bk_key, _bk_fields in pending_backfills:
-            try:
-                await asyncio.to_thread(
-                    conv_log.update_metadata_if,
-                    _bk_key,
-                    _bk_fields,
-                    lambda _meta: True,
-                    require_existing=True,
-                )
-            except Exception:  # noqa: BLE001 - best-effort metadata backfill
-                logger.warning(
-                    "restore_recent_sessions: tab-id backfill failed for %s",
-                    _bk_key,
-                    exc_info=True,
-                )
+        # Committed BEFORE returning; see _commit_tab_id_backfills.
+        await _commit_tab_id_backfills(
+            conv_log, pending_backfills, driver="restore_recent_sessions"
+        )
     finally:
         state.restoring_open_slots = False
     return restored

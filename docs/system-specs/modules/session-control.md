@@ -827,7 +827,8 @@ and `session_revive` refuse a named folder in another Bot's home
 in a Bot's home the forker does not own (the person's Fork, or `session_fork`
 by anyone but that Bot) is left unfiled (`inherited_folder`), a scheduled job
 is saved with a chat folder there only when it runs on that Bot's store (the
-cron create and update routes refuse it `mate_home_locked` (403) and record the
+cron create and update routes refuse it `mate_home_locked` (403), the `cron_add` /
+`cron_update` tools refuse it the same way, and each records the
 denial in the security event log, the Schedule form offers such a folder only
 for a job that runs as that Bot, and the tab placement re-checks it at run time and records a refusal
 the same way), and the name lookups that adopt an existing
@@ -951,7 +952,9 @@ the spawn endpoint's own check (`messaging_api/spawn.py` `_requested_backend`),
 so a pick that is unknown, not selectable under governance, not installed, or
 installed after the gateway started is refused with that endpoint's codes
 (`unknown_backend`, `backend_not_installed`, `backend_restart_required`, each
-listing the backends that can start), and with no session made. An enabled
+listing the backends that can start), and with no session made. A `kiro`
+pick runs on KAS where a stored Kiro CLI pick would ([harness-parity](harness-parity.md)
+H1). An enabled
 `agent.acp_failover` chain may move it to a later member, and the reply says so
 (`failover_from`). With `crew` (or a hub-placed `work_item`) it is refused with
 `backend_with_crew`. `model` is judged against the pick (`model_rejected`), an

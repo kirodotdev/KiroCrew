@@ -623,7 +623,9 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     if failed:
         ui.detail(
             "Keep the iam:CreatePolicy action in the IamInstanceBoundaryCreateOnce "
-            "statement until every boundary above is ready, then re-run this step."
+            "statement in the applied launcher policy (the one `kirocrew cloud "
+            "iam-policy` prints) until every boundary above is ready, then re-run "
+            "this step."
         )
         return 1
     ui.detail(

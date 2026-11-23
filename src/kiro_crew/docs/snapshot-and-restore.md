@@ -93,6 +93,16 @@ restores your recall without also restoring every unrelated working file in
 `workspace/`. Selections may overlap — asking for both `memory` and `workspace`
 stages the shared paths once.
 
+Restoring `workspace` never installs the bundle's agent config found anywhere under
+`workspace/`, in Replace or Merge: `.claude/`, `.mcp.json`, `.kiro/`, `.codex/`, `.goose/`,
+`.goosehints`, `.opencode/`, `opencode.json(c)`, `.pi/` and `.mimocode/`, `mimocode.json(c)`.
+An agent session started in `workspace/` or one of its project folders reads them, and a
+bundle can come from someone else. Your own copies are kept, and the result names what was
+left out. Notes (`CLAUDE.md`, `AGENTS.md`) restore as usual, and the result names each one
+it installed so you can read it. The crewmate skills under `workspace/.kiro/skills` are
+held back the same way, so a restore onto a fresh home does not bring them back; copy them
+from the archive by hand after reading them.
+
 `artifacts` carries the artifact library — every report, log and generated file
 saved from a session. `uploads` carries the files handed to the product from your own
 disk. Both are absent on a home that has never made one, and absent is not a failure:
@@ -365,8 +375,14 @@ and prompt). Its tags, steering folders, and any app, crew member or channel
 it belonged to stay behind. A folder is not added where its parent already
 holds one of the same name, and one that would land inside a crew member's
 home goes to the top level. At most 500 folders are kept, and the import warns
-with how many folders it did not add. Installed apps and their data are not
-carried yet.
+with how many folders it did not add.
+
+Installed apps and their data are not carried. Once the download starts, the
+dashboard export names every app that is on and every app you installed
+yourself, so you can install it again or turn it back on on the other machine;
+an app's data stays on this one. A built-in app that is off is not named,
+because every install starts with it switched off, and its data, if it has
+any, is not carried either. A memory-only export names none.
 
 The dashboard export leaves out folders that tools rebuild inside your
 workspace folder (`node_modules`, `.venv`, `venv` and tool caches such as

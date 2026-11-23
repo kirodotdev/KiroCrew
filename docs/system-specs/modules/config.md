@@ -109,7 +109,7 @@ module imports the ACP layer. The rest lives in one owner per responsibility, lo
 | Owner | Owns |
 |---|---|
 | `config/loader_credentials.py` | Credential keys (`CRED_*`, `CREDENTIAL_KEYS`, named by [code-style](../common/code-style.md)), the `.env` reader and its decoder, `secret://` env resolution, the `kiro-cli` API-key injection, the dashboard port. |
-| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `materialize_workspace_dir`), `read_local_secret`, and `read_merged_config_files`, the raw read for a reader that stays off the dataclass graph: it merges `config.local.json` over `config.json` as whole documents, as the loader does, before any section is read. |
+| `config/loader_locations.py` | The data-home and workspace path helpers (`config_path`, `config_local_path`, the per-feature state paths, `workspace_root`, `workspace_dir_from_entry`, `usable_workspace_dir_from_entry` (the base workspace folder instead of one that is missing, sensitive, or exactly the filesystem root, the owner's home folder or the data home (`_is_broad_root`), for a cron fire and a Slack channel turn), `materialize_workspace_dir`), `read_local_secret`, and `read_merged_config_files`, the raw read for a reader that stays off the dataclass graph: it merges `config.local.json` over `config.json` as whole documents, as the loader does, before any section is read. |
 | `config/loader_document.py` | Document I/O: `_raw_config`, `read_config_for_update`, the publish floor, `write_config_atomically`, `update_config_locked` and its lock, the meta stamp, the unsandboxed-exec policy and `acp_backend_declared` read from the raw document, and the validated-document cache fingerprint. The config-writer scans exempt it with `loader_config.py` (`save`). |
 | `config/write_provenance.py` | The record of the latest `config.json` / `config.local.json` inode this gateway process published (read from the staged descriptor, held open), vouched for from each file of the bounded run of its own saves that led to it, with its per-process nonce, read by the Linux launcher's pin (security.md). Written by `write_config_atomically`; logs under `kiro_crew.config.loader`. |
 | `config/loader_builders.py` | The load-time field readers, the security clamp and its SEL event, the agent, session, telemetry and dashboard `_build_*` helpers, the harness-choice mapping (`_read_backend_choice`, `_stored_agent_dict`, `_restore_stored_harness_fields`), and the loop-stall and managed-launch readers. |
@@ -1655,7 +1655,8 @@ and session merges it runs (`_vet_archive_settings`, `_merge_settings`,
 work goes to the one that owns it: `portability_archive.py` (what an archive holds,
 member names and limits both ways), `portability_templates.py` (agent templates, bundled
 on export and installed on import), `portability_export.py` (what an export reads: the
-walk, the SQLite backups, the session planner and writer) and `portability_vetting.py`
+walk, the SQLite backups, the session planner and writer, and the installed apps it
+names but leaves out) and `portability_vetting.py`
 (`validate_import_zip` and the staged cron and store checks). A patch of
 `portability.<name>` reaches every owner holding the name. The archive builders
 (`create_export_zip`, `stream_export_zip`, `plan_export`) live in `portability_stream.py`,
@@ -3085,7 +3086,13 @@ that hit a one-off transient failure (an `OSError`, e.g. a Windows sharing
 violation mid-rotation) is retried on the very next cycle instead of being
 silently dropped the moment the file's mtime stops moving; a persistently bad
 file just pays a harmless repeated re-read (the undecodable warning still
-fires only once).
+fires only once). Boot's `load_credentials` and the per-key reader
+`read_env_file_credential` (a kiro-cli spawn's `KIRO_API_KEY` lookup among its
+callers) read an undecodable file of either kind the same way: the same
+warning, nothing loaded from it, and a non-definitive answer to a caller that
+asks. So such a file stops neither the gateway at boot, a session start, nor
+`kirocrew doctor`, while the in-place rewriters still refuse it, so they
+never overwrite a file they could not parse.
 
 The apply itself is the other way the cycle can fail, and it is treated the
 same way. `apply_env_credential_changes` is best-effort — a bad apply must not
@@ -3768,6 +3775,7 @@ class AgentConfig:
 @dataclass
 class SessionConfig:
     timeout_secs: int = 3600       # 60 min idle timeout (DEFAULT_SESSION_TIMEOUT)
+    automated_idle_timeout_secs: int = 0  # idle timeout for a session whose last released turn declared a trigger other than user (session_idle_clock.idle_limit); used only when shorter than timeout_secs; 0 off. Load-time clamped to [SESSION_TIMEOUT_MIN, SESSION_TIMEOUT_MAX]; read at every sweep. See session.md "Idle cleanup".
     idle_exempt_keys: list[str] = []  # session keys the idle sweep never expires on the clock (a dashboard chat is dashboard:<sid>; a tab linked to a cron job or channel thread uses that link's key, e.g. cron:<job>, per chat_utils.session_key_for). Loaded as stripped non-empty strings, at most IDLE_EXEMPT_KEYS_MAX (= POOL_SIZE_MAX, 10: each listed key can keep a whole kiro-cli process tree running, the warm pool's per-entry cost) keys of at most IDLE_EXEMPT_KEY_MAX_CHARS (512) characters each; a longer key is dropped rather than truncated, and one warning is logged per load when any key is dropped; a non-list loads as []. Read at every sweep. A listed dashboard or cron-linked session is still reaped when its tab closes (a channel thread's session is channel-owned, so closing its viewer never reaps it), and the RSS recycle, when enabled, still applies. A listed key that never had a tab, such as a cron job run without one, is reaped on neither axis, even after its job is deleted; that recycle or a restart still ends it, and so does the identity sweep (retire_kiro_identity_sessions, which reads no list). Before each session acquire (chat_turn.account_identity._retire_sessions_on_identity_change: the dashboard chat turn runs it, and SessionManager.get_or_create, open_task_session and try_acquire run it before every other acquire) it retires a kiro-backed one once the live Kiro account is no longer the one it was spawned under, except that an acquire other than a dashboard chat turn touches no session when the live fingerprint is empty without proving a sign-out (a social login the reader cannot identify, an unreadable or relocated store); a Kiro sign-out from the dashboard (kas_login._retire_runtimes_after_sign_out) runs it with no live account, which retires every idle kiro-backed session at once, whatever account each signed in with; a busy session is flagged and retired later. See session.md "Idle cleanup".
     empty_response_auto_continue: bool = True  # after TWO consecutive empty model responses, auto-send synthetic "continue" nudges on the same live session (transcript-visible notice; count bounded by empty_response_max_continues; the config gate fails OPEN to the default so a config-load hiccup cannot disable self-healing). See session.md "Empty-response recovery ladder".
     empty_response_max_continues: int = 1  # how many continue nudges may run back to back before the give-up card (EMPTY_RESPONSE_MAX_CONTINUES_MIN/MAX; load-time clamped to [1, 10] so a hand-edited 0 cannot disable recovery and a large value cannot arm an unbounded ladder). Default 1 keeps the pre-knob behavior byte-identical; above 1 the notice numbers each recovery ("recovery 2 of 3").

@@ -288,6 +288,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.image_refs import (  # noqa: F401
         strip_image_refs,
     )
+    from kiro_crew.messaging.alternation_echo import (  # noqa: F401
+        could_be_echo,
+        echo_prefix_len,
+        is_echo,
+    )
     from kiro_crew.messaging.link import (  # noqa: F401
         canonical_key,
     )

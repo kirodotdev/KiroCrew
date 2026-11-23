@@ -1098,6 +1098,52 @@ session's messages, the cron list or the subagent list through `useAppApi()`
 A built-in page gets every member as the dashboard has it; outside an app every member
 refuses.
 
+## Browser Sites
+
+`useBrowserSites()` reads the pages your app's own agent may browse and lets your page
+ask the owner to change that list. It needs `APP_SDK_LEVEL >= 13` and no
+`permissions.api` entry: it reads and writes your app's own
+`/api/apps/<name>/browser-sites`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const { sites, active, loading, error, refresh, requestAdd, requestRemove, requestDisable } = sdk.useBrowserSites()
+// sites:  [{ site: 'https://music.example.net/song/*', source: 'owner', status: 'approved' }, ...]
+// active: the sites the agent may open right now
+const result = await requestAdd('https://music.example.net/song/*')
+if (!result.ok && result.code === 'declined') { /* the owner pressed Cancel */ }
+```
+
+Each row has `site`, `source` (`app`: your manifest's `permissions.browserSites`
+declares it; `owner`: the owner added it) and `status` (`approved`, `pending`: declared
+and not yet approved, `disabled`: the owner turned it off, or `removed`: a declared site
+the owner removed, listed so it can be added back and never in force).
+
+- `requestAdd(site)` widens the list: a new site, a turned-off or removed one back on, or a
+  declared one still waiting. The dashboard shows its own dialog with the site and what the agent
+  may then do, and sends the change only when the owner presses **Allow site**. A new
+  site follows the `permissions.browserSites` entry rules: an `https://` origin with a
+  path pattern; no bare `*`, wildcard host, IP, `localhost`, port or public suffix.
+- `requestRemove(site)` and `requestDisable(site)` only shrink the list, so they apply at
+  once. The agent's next browser step is refused on that site, and a tab on it is blanked.
+  Neither acts on a `removed` row (`not_listed`).
+
+Each resolves `{ ok: true, sites, active }`, or `{ ok: false, code, error }` with `code`
+one of `declined`, `bad_site`, `too_many`, `not_listed`, `bad_action`, `not_found`,
+`app_token_forbidden`, `dashboard_session_required`, `owner_only` or `request_failed`.
+
+Your backend and your agent read the same list with
+`GET /api/apps/<name>/browser-sites` (the app token reaches it), which answers
+`{ sites, active }`. Only the owner's dashboard may change it: the `POST` refuses your
+app token, an agent's tools and every other session. A browser step your agent takes off
+the list is refused with `site_not_allowed`, and the message names the sites in force.
+
+The dialog is a guardrail, not a security boundary: your page runs in the dashboard's
+document with the owner's session, and a backend that mints an owner token through the
+local owner mint reaches the `POST` too, as it reaches `/enable` (see the
+[trust model](../architecture/app-platform-trust-model.md)).
+
 ## Browser Media
 
 `useBrowserMedia(sessionKey, { pollMs })` gives your page play, pause, seek and volume
@@ -1117,10 +1163,10 @@ const { media, error, busy, play, pause, seek, setVolume } = sdk.useBrowserMedia
 
 | Member | Does |
 |---|---|
-| `media` | the playing element's state: `kind`, `paused`, `ended`, `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
+| `media` | the playing element's state: `kind`, `paused`, `ended` (true once the tab counted an ending, also one the site answered by taking the source away, until something plays), `currentTime`, `duration` (null when unknown), `volume` (0 to 1), `muted`; null before the first answer |
 | `error` | the last refusal's code: `no_tab` (no tab open for that session yet), `no_media` (no `<video>` or `<audio>` on the page), `redirect_refused` (the page left your approved sites; it was moved to `about:blank`), `not_app_browser`, `not_declared`, `policy_denied` |
 | `play()`, `pause()`, `seek(seconds)`, `setVolume(0..1)`, `refresh()` | one request each: a `POST` per button; `refresh`, the first read and each poll are a `GET` that changes nothing |
-| `onEnded(media)` (option) | called once each time an answer first shows `ended: true`; again only after the element plays and ends anew. A song that has already ended when the page mounts counts once |
+| `onEnded(media)` (option) | called once for each ending the tab counted; again only after something plays and ends anew. A song that has already ended when the page mounts counts once |
 
 For continuous play, poll and let the ending pick the next song:
 
@@ -1162,9 +1208,18 @@ async def on_media_ended(ctx, event):
 The gateway calls it once per ending, whether or not your page is open: after your
 agent's first successful `browser` op in a slot, it reads that tab's media state every 3
 seconds (the read `useBrowserMedia` makes, skipped while the browser is busy or the
-person has taken the tab over) and calls your hook when an element newly shows
-`ended`. The same ending is not reported twice; a new song that plays and ends is a new
-call. The hook runs in the gateway like your other hooks, with the same `ctx`; an async
+person has taken the tab over) and calls your hook for each new ending the tab counted.
+The same ending is not reported twice; a new song that plays and ends is a new call.
+
+The tab counts an ending as it happens, so neither the page nor the gateway has to read
+at that moment: the element's `ended` event, or its source going away within 2 seconds
+of the end (YouTube removes the source when a song ends, leaving the element paused at
+0 with no duration, and `duration` in the event is then `null`). An ending counts once
+nothing plays on the same page for 3 seconds after it, so an advert that hands over to
+the video on the same page is not one, and the reports arrive up to that much later.
+The page moving on to another address and playing there (the site's own autoplay) counts
+at once. Only the page's largest media element is followed, so a small preview ending
+is not one, and media already ended when the tab is first read counts once. The hook runs in the gateway like your other hooks, with the same `ctx`; an async
 hook gets 30 seconds before the gateway stops waiting for it. Keep it short: turning
 your app off or uninstalling it waits for a hook that is still running, and
 withdrawing its trust fails until the hook returns. Nothing of the page is
@@ -2449,7 +2504,8 @@ shared embedder's batch members (`ctx.embed.embed_batch`, see
 adds the page's [`BrowserView`, `useBrowserView` and `useBrowserCoords`](#browser-view) and the
 dashboard's `appWebOriginStatus(name)`, and level 12 adds
 `permissions.kiroOperations` with its route and `ctx.kiro_call` ([Kiro calls](#kiro-calls)) and the dashboard's
-[`SessionChanges` and `DiffView`](#session-changes-and-diff-view); each level
+[`SessionChanges` and `DiffView`](#session-changes-and-diff-view), and level 13 adds
+[`useBrowserSites`](#browser-sites) and `/api/apps/<name>/browser-sites`; each level
 includes every level below it. Several seams share level 7, three share level 8, and
 level 10 is shared by the seams of the batch it opens, so an app that needs one
 feature-detects it, never the level alone. Read it
@@ -3080,7 +3136,7 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | POST | `/api/apps/registry/install-stream` | Install from registry with an SSE progress stream (owner only) |
 | GET | `/api/apps/{name}` | Get app details, including cached `update` state |
 | GET | `/api/apps/{name}/manifest` | Get app manifest |
-| GET/PUT | `/api/apps/{name}/config` | Read/write app config (PUT from a dashboard subject: owner only) |
+| GET/PUT | `/api/apps/{name}/config` | Read/write app config (PUT from a dashboard subject: owner only). A GET carries the file's `ETag`, and a PUT with `If-Match` is written only while the file still has that tag, else 412 `config_changed` |
 | POST | `/api/apps/{name}/update` | Update installed app (owner only) |
 | POST | `/api/apps/{name}/uninstall` | Uninstall app (owner only) |
 | POST | `/api/apps/{name}/enable` | Enable app (owner only) |

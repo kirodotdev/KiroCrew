@@ -232,10 +232,13 @@ _MAX_CLOSERS = 8
 #: and 7 end at a blank line, and the separator is preceded by one, so they can
 #: never reach the next heading and need no entry.
 #:
-#: The openers are the parser's own, flags included. The parser reads ``\s`` as
-#: Unicode whitespace and folds case by Unicode rules, so ``<pre`` followed by a
-#: no-break space opens a block it will not end: a table that stopped at ASCII
-#: would find no closer for a block the parser had already opened.
+#: Each opener accepts whatever any supported parser release opens, since a
+#: table narrower than the parser finds no closer for a block it already opened.
+#: Every release reads ``\s`` as Unicode whitespace, so ``<pre`` followed by a
+#: no-break space opens a block it will not end. 4.2 folds a tag name's case by
+#: Unicode rules (``<ſcript>``); 4.3 opens a declaration on a lowercase letter
+#: (``<!doctype``). The table is read only for a block the parser opened, so
+#: the wider form never closes one that is not there.
 #:
 #: For a comment the closer is a whole comment rather than a bare ``-->``: the
 #: line is a complete, self-contained comment in Markdown, so it is right
@@ -245,7 +248,7 @@ _HTML_BLOCK_CLOSERS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"<!--"), "<!-- -->"),
     (re.compile(r"<\?"), "?>"),
     (re.compile(r"<!\[CDATA\["), "]]>"),
-    (re.compile(r"<![A-Z]"), ">"),
+    (re.compile(r"<![A-Za-z]"), ">"),
 )
 
 

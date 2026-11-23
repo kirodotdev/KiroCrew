@@ -42,10 +42,12 @@ first.
 `.localhost`, private, link-local, CGNAT or metadata address is refused. The
 one exception is an exact `host:port` (`localhost`, `127.0.0.1` or `[::1]`
 plus a port) the user listed under **Settings → Browser → Local preview
-origins**; the gateway's own port is refused even when listed, and you cannot
-edit that list. So a local dev server is the **web-preview** marker (the
-dashboard's Preview tab) unless the user told you its origin is listed; a
-refusal means it is not, so ask them to add it or to open it themselves.
+origins**; the gateway's own port is refused even when listed, and so is this
+dashboard under the other names the gateway knows it by (its tunnel, tailnet
+name or `dashboard.url`). You cannot edit the Local preview list. So a local dev
+server is the **web-preview** marker (the dashboard's Preview tab) unless the
+user told you its origin is listed; a refusal means it is not, so ask them to
+add it or to open it themselves.
 
 The gate does not resolve DNS: an internal hostname passes it, so a successful
 `navigate` is not proof the host is public.

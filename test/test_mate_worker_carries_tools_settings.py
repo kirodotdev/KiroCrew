@@ -289,6 +289,30 @@ def test_unjudged_denies_refuse_a_command_that_is_not_read_only(bot, work, tmp_p
     assert ls.action == TOOL_AUTO_APPROVE
 
 
+def test_removing_the_shell_settings_lifts_the_hold_on_the_next_session(
+    bot, work, tmp_path, monkeypatch
+) -> None:
+    """The Abilities section's Remove on the Bot's ``shell`` settings row lifts it."""
+    from kiro_crew import mate_capabilities
+
+    monkeypatch.setattr(mate_capabilities, "mate_agents_dir", paths.mate_agents_dir)
+    bot({"shell": {"deniedCommands": MIXED_DENIED}})
+    held = _judge(_own_request(_shell(f"touch {work}/t.txt"), _worker_batch(tmp_path), work))
+    assert held.tier == "spec-unjudged-denies"
+    _, spec = mate_capabilities._load_spec("pixel")
+    body = {
+        "revision": mate_capabilities._revision(spec),
+        "operations": [{"section": "toolsSettings", "id": "shell", "action": "remove"}],
+    }
+    preview = mate_capabilities.preview("pixel", body, {})
+    mate_capabilities.put("pixel", {**body, "preview_token": preview["preview_token"]}, {})
+
+    batch = _worker_batch(tmp_path)
+    assert CREW_UNJUDGED_DENIES_KEY not in batch[0]
+    touch = _judge(_own_request(_shell(f"touch {work}/t.txt"), batch, work))
+    assert touch.tier != "spec-unjudged-denies"
+
+
 @pytest.mark.parametrize(
     ("pattern", "command"),
     [
@@ -580,7 +604,7 @@ async def test_session_extras_attaches_unjudged_denies_only_to_the_worker(
         spec["toolsSettings"] = settings
     (paths.kiro_agents_dir() / f"{agent}.json").write_text(json.dumps(spec), encoding="utf-8")
     monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _agent: None)
-    monkeypatch.setattr(kas_model_catalog, "vault_identity", lambda: None)
+    monkeypatch.setattr(kas_model_catalog, "vault_identity", lambda *_a: None)
 
     extras = await KasHarness().session_extras(agent, work_dir=work, session_key="worker-1")
 

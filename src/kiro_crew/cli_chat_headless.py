@@ -962,6 +962,19 @@ def main(args: argparse.Namespace) -> int:
     except UsageError as exc:
         print(f"kirocrew chat --headless: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    from kiro_crew.cloud.aws import _in_agent_session
+
+    # A run signs in as the owner and can open a Trust chat, which an agent's own
+    # shell must not do outside its session's approval mode.
+    if _in_agent_session():
+        print(
+            "kirocrew chat --headless: refused inside an agent session: it signs in as "
+            "the owner and opens a new chat outside this session's approval mode. "
+            "Run it yourself from a normal terminal, or start a sub-agent from the "
+            "agent instead (spawn_run).",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.port_resolution import resolve_client_port
 

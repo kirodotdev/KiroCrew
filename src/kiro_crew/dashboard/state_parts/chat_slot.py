@@ -10,6 +10,7 @@ from kiro_crew._facade_bindings import own_methods
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.dashboard import deferred_steer
 from kiro_crew.dashboard import run_clock as _run_clock
+from kiro_crew.dashboard.chat_trust_restart import note_trust_changed
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -254,6 +255,7 @@ class _ChatSlot:
         "_fallback_slot_model",
         "_model_pick_gen",
         "_model_runtime_pick_gen",
+        "_turn_pick_gen",
         "_fallback_pick_gen",
         "_fallback_client_pick_epoch",
         "_refusal_fallback_primary",
@@ -344,6 +346,8 @@ class _ChatSlot:
         "executor",
         "instance_id",
         "remote_slot",
+        # A cron run's transcript reopened from History with nothing to save to.
+        "cron_run_read_only",
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
         "_restored_turn_marker",
@@ -474,6 +478,7 @@ class _ChatSlot:
     executor: str
     instance_id: str
     remote_slot: str
+    cron_run_read_only: bool
     created_at: str
     _titled: bool
     _title_origin: str
@@ -506,7 +511,8 @@ class _ChatSlot:
     # this gateway run; in memory only, so a restart shows it once more.
     _hidden_scratch_notice_shown: bool
     # Whether this chat has shown its "waiting for a sign-in" notice during this
-    # gateway run; in memory only, so a restart shows it once more.
+    # gateway run; in memory only. After a restart a row still among the chat's
+    # restored rows keeps a server it names from being named again here.
     _mcp_sign_in_notice_shown: bool
     # A mark of the last KAS telemetry notice this chat showed, "" for none; saved
     # on the metadata line, so a restart does not show the same notice again.
@@ -538,6 +544,10 @@ class _ChatSlot:
     _pending_thread_parent: tuple[str, str, str] | None
     _model_pick_gen: int
     _model_runtime_pick_gen: int | None
+    #: The ``_model_pick_gen`` this slot's last turn ran under (stamped by the
+    #: turn's model settle), so a pick made since its session last ran a turn is
+    #: told from an older value. Runtime only, like the generation itself.
+    _turn_pick_gen: int
     _pending_memory_mode: str | None
     _app: str
     _human_seen: bool
@@ -813,7 +823,8 @@ class _ChatSlot:
     _disk_older_durable_count: int
     _disk_window_len: int
     _disk_tail_ts: str | None
-    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
+    # The prefix entry is its text, or ``(offset, size[, crc, msgs])`` in the file.
+    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int | None, ...], list[str]] | None
     _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool
@@ -1044,9 +1055,14 @@ class _ChatSlot:
     def _trust(self) -> bool:
         return self._trust_held and session_mode_permitted("trust")
 
+    # A change is reported to ``chat_trust_restart``, which records the chats holding a
+    # mode right away, so a grant ended just before a crash is not kept by the next boot.
     @_trust.setter
     def _trust(self, value: bool) -> None:
+        was = getattr(self, "_trust_held", False)
         self._trust_held = bool(value) and session_mode_permitted("trust")
+        if self._trust_held != was:
+            note_trust_changed()
 
     @property
     def _trust_reads(self) -> bool:
@@ -1054,7 +1070,10 @@ class _ChatSlot:
 
     @_trust_reads.setter
     def _trust_reads(self, value: bool) -> None:
+        was = getattr(self, "_trust_reads_held", False)
         self._trust_reads_held = bool(value) and session_mode_permitted("trust_reads")
+        if self._trust_reads_held != was:
+            note_trust_changed()
 
     @property
     def _has_reader(self) -> bool:

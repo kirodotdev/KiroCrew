@@ -590,6 +590,68 @@ describe('a session start that failed twice in a row swaps Resume for the restar
   })
 })
 
+describe('a run of identical failures draws as one card (#38910)', () => {
+  const notReady = (ts: string) => msg('error', {
+    content: 'The agent could not start because its built-in tools were not ready in time.',
+    ts,
+    meta: { notice: 'tools_not_ready' },
+  })
+  // The `inject` row a Resume press lands as (the RecoveryCard row).
+  const resumed = () => msg('inject', { content: '[Continue — requested by the user]\nplease carry on', meta: { injectKind: 'recovery' } })
+  // A red notice row too, so only its `kind` keeps two of them apart.
+  const denied = (ts: string) => msg('error', { content: 'Access denied. Please check your authentication.', ts, meta: { kind: 'auth_required', notice: 'kas_signed_out' } })
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+  const drawn = (rows: ChatMessage[]) => rows.map((m, i) => render(m, recoverable, { index: i, messages: rows }))
+
+  it('draws nine Resume-separated failures as one card on the first row, which offers Resume', () => {
+    const rows: ChatMessage[] = [msg('user', { content: 'hi' })]
+    for (let i = 0; i < 9; i++) {
+      if (i > 0) rows.push(resumed())
+      rows.push(notReady(`2026-11-18T20:5${i}:00Z`))
+    }
+    const out = drawn(rows)
+    const card = out[1] as ReactElement
+    expect(card.type).toBe(ErrorCard)
+    expect(card.props.attempts).toEqual(rows.filter(m => m.role === 'error'))
+    expect(card.props.onContinue).toBeTypeOf('function')
+    // Every later failure, and every Resume press between two of them, draws nothing.
+    expect(out.slice(2).every(o => o === null)).toBe(true)
+  })
+
+  it('keeps a different failure as its own card, which ends the run on each side of it', () => {
+    const rows = [
+      msg('user', { content: 'hi' }),
+      notReady('2026-11-18T20:50:00Z'), resumed(), notReady('2026-11-18T20:51:00Z'), resumed(),
+      denied('2026-11-18T20:52:00Z'), resumed(),
+      notReady('2026-11-18T20:53:00Z'), resumed(), notReady('2026-11-18T20:54:00Z'),
+    ]
+    const out = drawn(rows)
+    expect(out.map(o => o !== null)).toEqual([true, true, false, false, true, true, true, true, false, false])
+    expect((out[1] as ReactElement).props.attempts).toEqual([rows[1], rows[3]])
+    expect((out[5] as ReactElement).props.attempts).toBeUndefined()
+    expect((out[7] as ReactElement).props.attempts).toEqual([rows[7], rows[9]])
+    // Resume only on the card whose run holds the chat's newest error.
+    expect((out[1] as ReactElement).props.onContinue).toBeUndefined()
+    expect((out[7] as ReactElement).props.onContinue).toBeTypeOf('function')
+  })
+
+  it('never folds a row that is a card of its own, nor across a reply', () => {
+    const twice = [msg('user', { content: 'hi' }), denied('2026-11-18T20:50:00Z'), resumed(), denied('2026-11-18T20:51:00Z')]
+    expect(drawn(twice).every(o => o !== null)).toBe(true)
+    const answered = [msg('user', { content: 'hi' }), notReady('2026-11-18T20:50:00Z'), msg('assistant', { content: 'Still here.' }), notReady('2026-11-18T20:51:00Z')]
+    const out = drawn(answered)
+    expect(out.every(o => o !== null)).toBe(true)
+    expect((out[1] as ReactElement).props.attempts).toBeUndefined()
+  })
+
+  it('leaves a lone failure, and the Resume press after it, as they are', () => {
+    const rows = [msg('user', { content: 'hi' }), notReady('2026-11-18T20:50:00Z'), resumed()]
+    const out = drawn(rows)
+    expect(out.every(o => o !== null)).toBe(true)
+    expect((out[1] as ReactElement).props.attempts).toBeUndefined()
+  })
+})
+
 describe('a context overflow swaps Resume for a fresh session', () => {
   const TOO_LONG = 'Input is too long: this conversation does not fit in one request to the model.'
   const overflow = () => msg('error', { content: TOO_LONG, meta: { kind: 'context_overflow' } })

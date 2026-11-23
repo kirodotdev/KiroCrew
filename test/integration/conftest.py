@@ -318,7 +318,7 @@ from kiro_crew import (
     vector_memory_member,
 )
 from kiro_crew.acp import client as acp_client
-from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk import host_auth, kas_machine
 from kiro_crew.apps import (
     credential_masks,
     execution,
@@ -826,6 +826,8 @@ def _reset_home_bound_globals() -> None:
     token_auth._app_perms_denied.clear()
     revocation_gen._gen = None
     crash_guard._CRASH_LOG = None
+    # The machine token fence's config.json read, keyed on the home's file.
+    kas_machine._fence_config = None
     config_live.reset_for_tests()
     # The once-per-process boot ``.env`` record: a fresh boot in a different
     # home must not keep the prior home's credential map as its diff baseline,
@@ -868,6 +870,14 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_AGENTS_READY = False
     governance._CONFIRM_PATTERNS_MEMO = None
     recall_pool._settings_cache = None
+    # The kept-grant boot state (verdict, recorders, the chats prompt writer): a
+    # second boot reads its own home's records, as a fresh process would.
+    from kiro_crew import kept_grants, kept_yolo
+    from kiro_crew.dashboard import chat_trust_restart
+
+    kept_grants._reset_for_tests()
+    kept_yolo._reset_for_tests()
+    chat_trust_restart._reset_for_tests()
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None

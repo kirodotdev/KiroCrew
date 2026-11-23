@@ -934,8 +934,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # failing the turn. The folder's un-hide and claim are writes, so
             # they run once nothing later can refuse the create (below);
             # this only reads whether the folder is there.
+            # An agent-socket call carries no secret but is marked internal_auth.
             claim_folder = (
-                folder_id != previous_folder and request.headers.get("X-Internal-Secret") is None
+                folder_id != previous_folder
+                and request.headers.get("X-Internal-Secret") is None
+                and request.get("internal_auth") is not True
             )
             if not await state.read_folders(
                 lambda folders: any(f["id"] == folder_id for f in folders)

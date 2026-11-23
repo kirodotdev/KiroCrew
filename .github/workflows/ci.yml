@@ -234,6 +234,8 @@ jobs:
               - 'website/electron/runtime/update/**'
               # Loaded by both update lanes: the pre-swap stop's refusal code.
               - 'website/electron/gateway-stop.js'
+              # Loaded by the feed lane: a Restart now is a relaunch, not a Quit.
+              - 'website/electron/relaunch-intent.js'
               # gateway-stop.js loads it to pick the shutdown secret.
               - 'website/electron/local-token.js'
               - 'website/electron/bundle-location.js'
@@ -3690,8 +3692,9 @@ jobs:
     timeout-minutes: 15
     steps:
       # Sparse: this job reads only setup.cfg (the [coverage:*] sections), the
-      # measured source and pyproject.toml (setup-uv hashes it with setup.cfg
-      # for its cache key). Every file the shards measure is under src/: each
+      # measured source, the script that builds the reports and pyproject.toml
+      # (setup-uv hashes it with setup.cfg for its cache key). Every file the
+      # shards measure is under src/: each
       # `--cov` target is a package or a directory there, and [coverage:paths]
       # maps every spelling onto it. A measured file outside this list stops
       # `coverage xml` and `coverage report` with "No source for code", so a
@@ -3705,6 +3708,7 @@ jobs:
             /src/
             /setup.cfg
             /pyproject.toml
+            /scripts/ci/coverage_chunked_report.py
           sparse-checkout-cone-mode: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -3718,8 +3722,11 @@ jobs:
             pyproject.toml
             setup.cfg
 
+      # defusedxml is for the report script, which parses each range's XML;
+      # the version range is the one setup.cfg declares and Coverage Gate
+      # installs.
       - name: Install coverage
-        run: uv pip install --system coverage==7.10.6
+        run: uv pip install --system coverage==7.10.6 'defusedxml>=0.7,<1'
 
       - name: Download shard coverage data
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -3739,13 +3746,17 @@ jobs:
 
       - name: Combine into unified coverage.xml
         # The downloaded .coverage.<group> files are parallel data files;
-        # `coverage combine` merges them. -o pins the output path (setup.cfg's
-        # [coverage:xml] otherwise redirects it under build/coverage/).
+        # `coverage combine` merges them.
         #
-        # `xml` and `report` each re-analyse every measured source file (~80s
-        # apiece on the combined data, against ~4s for the combine), and both
-        # only READ .coverage, so they run side by side. Each exit status is
-        # waited on by PID, so either one failing still fails the step.
+        # Analysing every measured source file takes one process about 140s
+        # (the combine takes 5s), and `coverage xml` and `coverage report`
+        # each do it. The script analyses once: it deals the files into one
+        # contiguous range per CPU, runs `coverage xml` on every range side by
+        # side, merges the XML into coverage.xml, and derives the per-file
+        # table from that merged XML in the layout `coverage report` prints.
+        # It exits non-zero when any command does, when the merged XML does
+        # not account for every measured file exactly once, and when the
+        # table's totals differ from the XML's.
         #
         # setup.cfg is asserted because coverage runs without it too: with no
         # `relative_files` it matches no recorded path to a source file and
@@ -3755,15 +3766,11 @@ jobs:
           test -f .coverage.ipv6 || { echo "::error::required IPv6 coverage data missing"; exit 1; }
           test -f .coverage.kernel-lock-owner || { echo "::error::required kernel lock owner coverage data missing"; exit 1; }
           coverage combine
-          coverage xml -o coverage.xml &
-          xml_pid=$!
-          coverage report > coverage-report.txt &
-          report_pid=$!
-          xml_rc=0; wait "$xml_pid" || xml_rc=$?
-          report_rc=0; wait "$report_pid" || report_rc=$?
-          cat coverage-report.txt
-          [ "$xml_rc" = 0 ] || { echo "::error::coverage xml failed ($xml_rc)"; exit "$xml_rc"; }
-          [ "$report_rc" = 0 ] || { echo "::error::coverage report failed ($report_rc)"; exit "$report_rc"; }
+          report_rc=0
+          python3 scripts/ci/coverage_chunked_report.py --xml coverage.xml --report coverage-report.txt || report_rc=$?
+          [ ! -f coverage-report.txt ] || cat coverage-report.txt
+          [ "$report_rc" = 0 ] || { echo "::error::building coverage.xml and the text report failed ($report_rc)"; exit "$report_rc"; }
+          test -s coverage.xml || { echo "::error::coverage.xml was not written"; exit 1; }
 
       - name: Upload combined coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

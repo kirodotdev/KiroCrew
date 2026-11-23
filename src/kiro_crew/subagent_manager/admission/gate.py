@@ -121,6 +121,7 @@ class _GateMixin(ManagerComponent):
         backend: str | None = None,
         failover_from: str | None = None,
         label: str = "",
+        isolate: str = "",
         _execution_context: dict | None = None,
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _parent_project_dirs: "list[str] | None" = None,
@@ -173,6 +174,9 @@ class _GateMixin(ManagerComponent):
                 rejected spawns return a done ``SubagentInfo`` with ``error``
                 set. Enables cwd-relative resource globs (``AGENTS.md``,
                 ``.kiro/steering``, ``CLAUDE.md``) to resolve correctly.
+            isolate (str): ``"worktree"`` gives the run a git worktree of the
+                repository *cwd* is in, made at run start; needs a *cwd*.
+                Any other non-empty value is refused here, without git.
             approval_mode (str | None): "auto" to skip spawn gate and
                 set session-level auto-approve.  Only honored from
                 authenticated internal callers (X-Internal-Secret).
@@ -563,6 +567,37 @@ class _GateMixin(ManagerComponent):
             {"task": _redacted_task[:120]} if _persistent_diagnostics else {"subagent_id": agent_id}
         )
 
+        # --- isolate: the two checks that need no git (the rest run at run start) ---
+        if isolate and _gate:
+            isolate_err = (
+                "isolate must be 'worktree'"
+                if isolate != "worktree"
+                else "" if cwd else "isolate needs a cwd: the repository the worktree is made from"
+            )
+            if isolate_err:
+                logger.warning("Subagent %s refused: %s", agent_id, isolate_err)
+                sel().log_tool_invocation(
+                    session_key=parent_session_key or "",
+                    source="subagent",
+                    tool_name="spawn_run",
+                    outcome="rejected_invalid_isolate",
+                    metadata={"reason": isolate_err, **_task_audit},
+                )
+                return _refuse_row(
+                    SubagentInfo(
+                        id=agent_id,
+                        task=_redacted_task,
+                        memory_mode=_memory_mode,
+                        agent=agent,
+                        parent_session_key=parent_session_key,
+                        app=app,
+                        done=True,
+                        error=f"spawn refused: {isolate_err}",
+                        batch_id=batch_id,
+                        batch_total=max(0, int(batch_total)),
+                    )
+                )
+
         # --- CWD validation: reject bad paths before consuming a slot ---
         resolved_cwd = cwd if cwd and not _gate else ""
         if cwd and _gate:
@@ -753,6 +788,8 @@ class _GateMixin(ManagerComponent):
             "failover_from": failover_from,
             # Same reason: a queued row would otherwise start under its task text.
             "label": label,
+            # Same reason: a queued row would otherwise start in the shared checkout.
+            "isolate": isolate,
             "allowed_tools": allowed_tools,
             "bare": bare,
             "cwd": resolved_cwd,
@@ -1090,6 +1127,7 @@ class _GateMixin(ManagerComponent):
             "keep": keep,
             "execution_context": execution,
             "cwd": resolved_cwd,
+            "isolate": isolate,
         }
         if _dispatch_now:
             # The claim re-entry registers at the price its first half CHECKED;

@@ -303,7 +303,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, register: 'Callable[[], Awaitable[bool]] | None' = None) -> 'dict'",
         ),
         ("_apply_mcp_gateway_enabled", "async method", "(self, enabled: 'bool') -> 'dict'"),
-        ("_apply_mcp_stub", "async method", "(self) -> 'dict'"),
+        (
+            "_apply_mcp_stub",
+            "async method",
+            "(self, *, launch_approved: 'bool' = False) -> 'dict'",
+        ),
         ("_wire_mcp_gateway_dashboard", "method", "(self) -> 'None'"),
     ),
     "memory_lifecycle": (
@@ -574,7 +578,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "run_gateway",
             "async function",
-            "(cfg: 'KiroCrewConfig', *, no_dashboard: 'bool' = False, no_crons: 'bool' = False, no_tunnel: 'bool' = False, no_open: 'bool' = False, port_override: 'str | None' = None, json_ready: 'bool' = False, approval_mode: 'str | None' = None, test_mode: 'bool' = False) -> 'None'",
+            "(cfg: 'KiroCrewConfig', *, no_dashboard: 'bool' = False, headless: 'bool' = False, no_crons: 'bool' = False, no_tunnel: 'bool' = False, no_open: 'bool' = False, port_override: 'str | None' = None, json_ready: 'bool' = False, approval_mode: 'str | None' = None, test_mode: 'bool' = False) -> 'None'",
         ),
         ("BOOT_RESTART_HINT", "value", "'str'"),
         ("_SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS", "value", "'float'"),
@@ -695,7 +699,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "__init__",
             "method",
-            "(self, cfg: 'KiroCrewConfig', *, no_dashboard: 'bool' = False, no_crons: 'bool' = False, no_open: 'bool' = False, port_override: 'str | None' = None, json_ready: 'bool' = False, approval_mode: 'str | None' = None, test_mode: 'bool' = False, credentials: 'Mapping[str, str] | None' = None) -> 'None'",
+            "(self, cfg: 'KiroCrewConfig', *, no_dashboard: 'bool' = False, headless: 'bool' = False, no_crons: 'bool' = False, no_open: 'bool' = False, port_override: 'str | None' = None, json_ready: 'bool' = False, approval_mode: 'str | None' = None, test_mode: 'bool' = False, credentials: 'Mapping[str, str] | None' = None) -> 'None'",
         ),
     ),
     "subagent_wiring": (

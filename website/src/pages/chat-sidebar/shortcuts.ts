@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo, type RefObject } from 'react'
 import { SESSION_ROW_SELECTOR } from '../chat/sessionRowNav'
 import { useDigitModifierHeld, jumpLabelFor } from '../../hooks/useKeyboardShortcuts'
+import { useKeyboardLayout } from '../../hooks/useNavShortcutHint'
 import { setSidebarOrder } from '../../store/dashboardSlice'
 import type { AppDispatch } from '../../store'
 import type { Slot } from './types'
@@ -89,6 +90,7 @@ export function useShortcutOrder({ sidebarRootRef, dispatch, localSlots }: {
   // letter sequence — see jumpLabelFor), shown as row badges while the jump
   // modifier is held (Ctrl on Mac in Ctrl+digit mode, Alt elsewhere —
   // mirrors the jump chords).
+  const layout = useKeyboardLayout()
   const shortcutDigitByKey = useMemo(() => {
     // Compact the frozen order exactly like the jump handler's
     // orderSlotsBySidebar does — drop keys whose session no longer exists —
@@ -103,7 +105,7 @@ export function useShortcutOrder({ sidebarRootRef, dispatch, localSlots }: {
     const m = new Map<string, string>()
     let idx = 0
     for (const k of effectiveOrderKeys) {
-      const label = jumpLabelFor(idx)
+      const label = jumpLabelFor(idx, layout)
       if (label === null) break
       if (!live.has(k)) continue
       // Letters badge unconditionally, including while a text field is
@@ -116,6 +118,6 @@ export function useShortcutOrder({ sidebarRootRef, dispatch, localSlots }: {
       idx++
     }
     return m
-  }, [effectiveOrderKeys, localSlots])
+  }, [effectiveOrderKeys, localSlots, layout])
   return { digitModifierHeld, shortcutDigitByKey }
 }

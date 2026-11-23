@@ -5,6 +5,7 @@ import { writeFile } from '../hooks/usePanelDocumentActions'
 import { onDocumentBodiesEvicted } from '../hooks/usePanelTabs'
 import { appSpacePath } from './AppPopoutFrame'
 import { HydratingFileTab } from './chat/SidePanel'
+import { i18nT } from '../i18n/t'
 import { closeSelf, forwardToMain } from '../utils/filePopout'
 import type { PartialCause } from '../utils/fileReadQuery'
 
@@ -73,6 +74,13 @@ export default function FilePopoutFrame() {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [guard])
+
+  // Name the file in the window/taskbar title so several pop-outs can be told
+  // apart, as the other pop-out windows do.
+  const fileName = path.split(/[\\/]/).pop()
+  useEffect(() => {
+    if (fileName) document.title = i18nT('app.tab_title', { label: fileName })
+  }, [fileName])
 
   const fromDisk = (text: string, binary?: boolean, partial?: PartialCause | false, placeholder?: boolean) =>
     setDoc(d => ({ text, saved: text, binary: binary ?? d?.binary, partial: partial ?? d?.partial, placeholder }))

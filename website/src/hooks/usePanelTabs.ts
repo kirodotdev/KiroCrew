@@ -283,10 +283,6 @@ function localiseTitles(tabs: PanelTab[]): PanelTab[] {
  *  re-creates the tab and re-renders it. Only in-app edit state is lost. */
 export const MAX_APP_TABS_PER_CHAT = 3
 
-/** Max concurrent terminal tabs per chat (each is a live PTY). At the cap,
- *  openTerminal focuses/reuses the most-recent terminal instead of spawning. */
-export const MAX_TERMINALS_PER_CHAT = 4
-
 /** Monotonic id for reveal requests — see `PanelTab.revealLine`. Module-level so
  *  it is unique across slots and across tab identities, which is all the
  *  consumer's effect needs to tell one request from the next. */
@@ -1377,20 +1373,10 @@ export function usePanelTabs(
 
   /** Open a NEW terminal tab (its own PTY session). Unlike singleton views,
    *  every call mints a fresh session so a chat can hold several shells; the
-   *  per-slot bucketing makes those sessions chat-specific automatically. At
-   *  the per-chat cap we focus (reuse) the most-recent terminal instead of
-   *  spawning another. Returns the session id to connect / run against. */
+   *  per-slot bucketing makes those sessions chat-specific automatically.
+   *  No per-chat cap: the gateway's ceiling refuses a shell past it, and that
+   *  tab says so. Returns the session id to connect / run against. */
   const openTerminal = useCallback((opts?: { cwd?: string; remoteSlot?: string; title?: string }): string => {
-    const terms = tabs.filter(t => t.kind === 'terminal')
-    if (terms.length >= MAX_TERMINALS_PER_CHAT) {
-      // Reuse only a terminal on the same machine: a remote request must never
-      // land in a gateway shell, nor a local one in a workspace. None: refuse.
-      const same = terms.filter(t => (t.remoteSlot ?? '') === (opts?.remoteSlot ?? ''))
-      const last = same[same.length - 1]
-      if (!last) return ''
-      setActive(last.id)
-      return last.sessionId ?? ''
-    }
     // Cryptographically-strong id — a terminal session id is a security token
     // that addresses a live PTY, so it must not come from Math.random().
     // secureRandomId() uses crypto.randomUUID in a secure context and a
@@ -1405,7 +1391,7 @@ export function usePanelTabs(
       ...(opts?.remoteSlot ? { remoteSlot: opts.remoteSlot } : {}),
     })
     return sessionId
-  }, [tabs, upsert, setActive])
+  }, [upsert])
 
   const activeTab = useMemo(() => tabs.find(t => t.id === effectiveActiveId) ?? null, [tabs, effectiveActiveId])
 

@@ -282,6 +282,12 @@ export interface KasLoginStatus {
    * older gateway.
    */
   company_sign_in?: { start_url: string; region: string }
+  /**
+   * Company portal URLs whose sign-in turns the local agent off (an edition's own
+   * sign-in, `crew_client` preview). Empty while the preview is off; absent on an
+   * older gateway.
+   */
+  local_agent_off_start_urls?: string[]
 }
 
 /** One stored sign-in as `/api/kas-login/sources` names it. No token, no ARN. */

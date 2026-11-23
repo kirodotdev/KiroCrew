@@ -92,8 +92,9 @@ def identity_fingerprint(path: Path, *, definitive: list[bool] | None = None) ->
 
     ``definitive``, when given, receives ONE bool: whether this answer fully
     describes the store. True only when the store was read and audited and
-    every credential row in it was identified, or when there is no store file
-    at all. Every failure returns the same ``""`` as a genuine sign-out, and a
+    every credential row in it (a row whose value is a JSON object; any other
+    row names no login and is ignored) was identified, or when there is no
+    store file at all. Every failure returns the same ``""`` as a genuine sign-out, and a
     store holding a credential row with no stable claim (a social login) can
     also come out ``""`` or omit that row; a caller that must not mistake
     either for "nobody is signed in here" reads this flag.
@@ -131,6 +132,9 @@ def identity_fingerprint(path: Path, *, definitive: list[bool] | None = None) ->
             if "auth_kv" in present:
                 for key, value in connection.execute("SELECT key, value FROM auth_kv").fetchall():
                     claims = _identity_claims(str(key), value)
+                    if claims is None:
+                        # Not a credential blob (e.g. kiro-cli's refresh timestamp).
+                        continue
                     if not claims:
                         # A row carrying NO stable claim is deliberately skipped
                         # ENTIRELY -- its key name is not recorded either. Recording
@@ -246,7 +250,7 @@ def _api_key_identity_claim(
     """The hashed identity claim of Kiro CLI's own API-key credential, or ``""``.
 
     A host authenticated by :data:`CRED_KIRO_API_KEY` keeps NOTHING about that
-    identity in the kiro-cli store -- ``auth_kv`` holds only SSO/social blobs --
+    identity in the kiro-cli store -- no ``auth_kv`` row names it --
     so :func:`identity_fingerprint` reads such a store as signed out. Absent is
     never reconciled as a baseline, so without this component every turn on an
     API-key host re-sweeps and retires idle sessions along with their running
@@ -319,21 +323,22 @@ def _claim_digest(value: object) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _identity_claims(key: str, value: object) -> list[str]:
-    """Return hashed STABLE claims from one ``auth_kv`` blob.
+def _identity_claims(key: str, value: object) -> list[str] | None:
+    """Return hashed STABLE claims from one ``auth_kv`` blob, or ``None`` for a non-blob row.
 
-    Anything that is not a JSON object contributes nothing: the row's key name is
-    already recorded by the caller, and guessing at an opaque value risks pulling
-    in a rotating one. Fields outside :data:`_IDENTITY_CLAIM_FIELDS` are skipped
-    whatever their name.
+    Only a JSON object is a credential blob. Any other value (a timestamp, a flag,
+    text that is not JSON) is ``None``: it names no login, and guessing at an
+    opaque value risks pulling in a rotating one. A blob with no stable claim is
+    ``[]``. Fields outside :data:`_IDENTITY_CLAIM_FIELDS` are skipped whatever
+    their name.
     """
 
     try:
         blob = json.loads(value if isinstance(value, (str, bytes)) else str(value))
     except (ValueError, TypeError):
-        return []
+        return None
     if not isinstance(blob, dict):
-        return []
+        return None
     claims: list[str] = []
     for claim in sorted(_IDENTITY_CLAIM_FIELDS):
         if claim not in blob:

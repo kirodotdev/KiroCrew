@@ -177,6 +177,28 @@ before they become adoptable. A rejected warm claim is released, so a later
 Connect follows the cold path and reaches this single retry owner rather than
 carrying a second policy in the warm engine or dashboard handler.
 
+A cold mint whose kiro-cli cannot start names the cause for the card. A failure
+with no reason of its own records the coarse `mint_<exception type>` (for example
+`mint_acperror`), which the card shows as its generic setup failure. A spawn
+refused with the `kiro_cli_missing` tag records `mint_kiro_cli_missing`. Any
+other such failure of the readiness wait (an `ensure_ready` error, for example,
+or the `_MINT_READY_TIMEOUT_SECONDS` deadline) then asks kiro-cli whether it is
+signed out, through `kiro_prerequisite.kiro_signed_out_confirmed()` (its
+`whoami`, see [acp-client](acp-client.md)). That runs after the dedicated process is released
+and outside the mint table's lock, and a True answer records
+`mint_kiro_cli_signed_out`, so the deadline can end there rather than at
+`mint_timeouterror`. A disproved stored grant keeps `mint_grant_unproven` (see
+below), and the outcomes of the wait for the server's report,
+`mint_server_failed` and `mint_process_gone`, come after kiro-cli started:
+none of them is asked about. The
+card shows the same `mint_failure_kiro_cli_missing` sentence for the missing and
+the signed-out reason: Connect needs kiro-cli installed and signed in. The
+verdict comes from kiro-cli, never from the error's text: a remote server's own
+401 can sit in the same stderr tail. A failure anywhere else in the mint (the
+spec write, the URL gate) keeps its coarse reason.
+Decision:
+[2026-11-16](../../decisions/2026-11-16-a-signed-out-kiro-cli-gets-the-connect-cards-sign-in-message.md).
+
 A refused sign-in ends the attempt. kiro-cli answers the loopback callback before
 it exchanges the code, so a code the provider rejects never lands a grant: kiro-cli
 reports it only as a `server_init_failure` frame for that server and closes the
@@ -1522,7 +1544,10 @@ plain-http `localhost` redirect from a PKCE app alone. Slack answers errors as a
 200 with `{"ok": false, "error": ...}`; `invalid_refresh_token` asks the user to
 reconnect. Its refresh tokens rotate and are single-use, which the
 commit-before-use refresh already handles. Disconnect revokes the access token
-with `auth.revoke` and reads `revoked` from the body; Slack has no endpoint that
+with `auth.revoke` and reads `revoked` from the body. Slack revokes only a live
+access token (its access tokens last 12 hours), so a held one that is expiring is
+renewed once first and the fresh pair is revoked; a failed renewal still revokes
+the held token. Slack has no endpoint that
 revokes a refresh token, so that token lives on upstream until Slack's 30-day
 expiry, and the card's revoke page ends the whole grant. Crew's own sign-in takes
 Slack's client from Settings → Connections only, and reads it from the vault.

@@ -179,6 +179,7 @@ from kiro_crew.config.section_builders import (  # noqa: F401
     _build_cron_history_config,
     _build_discord_config,
     _build_feishu_config,
+    _build_heartbeat_config,
     _build_imessage_config,
     _build_instances_config,
     _build_knowledge_config,
@@ -745,6 +746,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _HARNESS_CHOICE_KEYS,
         _JSON_TYPE_LABELS,
         _MEMBER_HARNESS_KEY,
+        _POD_ENV,
         _SECURITY_BOUNDED_FIELDS,
         MEMBER_BACKEND_INHERITED_ATTR,
         _agent_section_fields,
@@ -940,6 +942,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     from kiro_crew.config.loader_locations import (  # noqa: F401
         WorkspaceDirUnusable,
         _first_non_directory_on_path,
+        _is_broad_root,
         _PinnedCreateRefusal,
         _read_saved_workspace_dir,
         _resolve_workspace_root,
@@ -971,12 +974,14 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         resolve_agent_config_path,
         shared_crew_preview_path,
         ssh_auth_sock_consent_path,
+        usable_workspace_dir_from_entry,
         workspace_dir_from_entry,
         workspace_root,
     )
     from kiro_crew.config.loader_pipeline import (  # noqa: F401
         _TOP_LEVEL_DEFAULTS,
         ConfigDocument,
+        _drop_unsafe_agent_rows,
         _parse_app_settings,
         _parse_template_settings,
         _recording_config_reader,

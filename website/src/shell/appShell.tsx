@@ -78,7 +78,7 @@ import { useRequestFeature } from './topbar/requestFeature'
 import { useShellKeyboard } from './shortcuts/shellKeyboard'
 import { formatShortcut, shortcutDefFromChord, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
 import { shortcutEntry } from '../lib/shortcutRegistry'
-import { ariaKeyshortcutsFor, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
+import { ariaKeyshortcutsFor, useKeyboardLayout, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
 import type { MobileRosterBarState } from '../components/MobileNavRailContext'
 import { i18nT } from '../i18n/t'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -278,6 +278,8 @@ export function useAppShell() {
   // must not be advertised.
   const shortcutBindings = useShortcutBindings()
   const shortcutsEnabled = useShortcutsEnabled()
+  // Re-render once the keyboard layout loads: both focus-mode sentences name the chord's key.
+  useKeyboardLayout()
   const focusModeChordDef = (() => {
     if (!shortcutsEnabled) return null
     const entry = shortcutEntry('toggle-focus-mode')
@@ -1112,10 +1114,13 @@ export function useAppShell() {
   })
   const tabLabel = instancesData?.instances.find(i => i.id === activeInstanceId)?.name || titleLabel
   const tabProduct = instanceLabel ? i18nT('app.tab_title', { label: instanceLabel, productName: botName }) : botName
+  // A pop-out window titles itself (its frame under `pages/*PopoutFrame`), so
+  // the shell leaves its title alone there.
   useEffect(() => {
+    if (isPopout) return
     const base = tabLabel ? i18nT('app.tab_title', { label: tabLabel, productName: tabProduct }) : tabProduct
     document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
-  }, [totalAttention, tabProduct, tabLabel])
+  }, [isPopout, totalAttention, tabProduct, tabLabel])
   // Name the history entry on screen for the Back/Forward arrows' history
   // menu (#17453): the session on chat, the page anywhere else, and nothing on
   // a route with no rail row, so that entry is left out of the list. Re-run on

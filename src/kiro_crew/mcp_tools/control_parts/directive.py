@@ -148,6 +148,18 @@ def nothing_to_do(name: str, args: dict[str, Any]) -> str:
     )
 
 
+#: The one wording, shared by the replies of set_project, chat_tag and
+#: suggest_followup, of the turns the user-origin gate
+#: (``directive_origin.user_origin_gate_admits``) refuses.
+#: The model reads only the reply: the gate runs after the tool has returned.
+_REFUSED_TURNS = (
+    "A message from a messaging channel may be refused as well, and any other "
+    "turn (a heartbeat, a goal check-in, a worker report, a monitor wake, a "
+    "cron job, a sub-agent, a task run, a turn an app started, a message "
+    "another session sent) is refused and changes nothing"
+)
+
+
 def set_project(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SET_PROJECT_SCHEMA)
     # Stateless: the session-aware consumer (chat_runner) applies the
@@ -155,10 +167,11 @@ def set_project(name: str, args: dict[str, Any]) -> str:
     return _emit_directive(
         "set_project",
         {"project": args.get("path", ""), "clear": bool(args.get("clear"))},
-        "Project change requested for this session; if the path is valid "
-        "and permitted it takes effect on the next message (cold-start with "
-        "the new CWD and project steering). An invalid or sensitive path is "
-        "rejected when this turn's result is processed.",
+        "Project change requested for this session. It takes effect on the "
+        "next message (cold-start with the new CWD and project steering) only "
+        "when a person sent this turn and the path is valid and permitted. "
+        f"{_REFUSED_TURNS}. An invalid or sensitive path is rejected when this "
+        "turn's result is processed.",
     )
 
 
@@ -201,10 +214,10 @@ def chat_tag(name: str, args: dict[str, Any]) -> str:
     return _emit_directive(
         "chat_tag",
         payload,
-        "Board tag change requested for this session; if the tags are "
-        "agent-writable it takes effect when this turn's result is processed, "
-        "and the result reports the session's resulting tags. A human-only tag, "
-        "an unknown tag, or a headless caller (cron/subagent) is refused.",
+        "Board tag change requested for this session; on a turn a person sent, "
+        "if the tags are agent-writable it takes effect when this turn's result "
+        "is processed, and the result reports the session's resulting tags. A "
+        f"human-only tag or an unknown tag is refused. {_REFUSED_TURNS}.",
     )
 
 
@@ -240,8 +253,9 @@ def suggest_followup(name: str, args: dict[str, Any]) -> str:
     return _emit_directive(
         "suggest_followup",
         {"items": items},
-        "Follow-up card requested for this session. It is delivered to a "
-        "connected dashboard client only; if none is attached the card is "
-        "dropped, so restate the follow-ups in your reply text if they "
-        "must not be lost. End your turn now.",
+        "Follow-up card requested for this session. It is shown only on a "
+        "turn a person sent, and only to a connected dashboard client; if "
+        f"none is attached the card is dropped. {_REFUSED_TURNS} (no card "
+        "is shown). Restate the follow-ups in your reply text if they must "
+        "not be lost. End your turn now.",
     )

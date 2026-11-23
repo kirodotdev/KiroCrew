@@ -68,6 +68,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
   // Settings -> Chat -> Copy on Select, the same device-only key the Sessions
   // chat reads (transcriptRendering), so a reply here copies a selection too.
   const [copyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
+  const unfold = useCallback(() => setOpenFold(foldBefore), [foldBefore])
   const listMessages = useMemo(
     () => foldEarlierConversation(messages, foldBefore, foldOpen),
     [messages, foldBefore, foldOpen],
@@ -118,7 +119,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOp
       : rows
   }, [baseRenderers, foldBefore, foldOpen, crewmate, slotKey])
 
-  return { listMessages, renderers }
+  return { listMessages, renderers, unfold }
 }
 
 export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages, crewmate, crewmateLive, running, slotDetailFailed, refetchSlotDetail, hideEmptyHint, crewmateQuietUnproven, onOpenCrewWorkLog, warmHasMore, pagesPane, onOpenFull }: {

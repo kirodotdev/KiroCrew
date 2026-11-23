@@ -4,7 +4,8 @@ On KAS a server that needs a sign-in exposes no tools, and its sign-in is offere
 only when the user's message names it. A chat that never names it shows missing
 tools and nothing that says why. ``chat_runner._notice_mcp_sign_in_needed`` adds
 one row naming the servers the session reports as waiting, read from the
-session's own MCP report, and starts no sign-in.
+session's own MCP report, and starts no sign-in. A server is named once per
+gateway run, not once in every chat.
 """
 
 from __future__ import annotations
@@ -37,15 +38,31 @@ def rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return seen
 
 
-def _slot(*messages: dict[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(_mcp_sign_in_notice_shown=False, messages=list(messages), key="chat-1")
+def _slot(
+    *messages: dict[str, Any],
+    origin: str = "user",
+    app: str = "",
+    mode: str = "",
+    created_by: str = "",
+) -> SimpleNamespace:
+    """A chat; by default a person's own plain dashboard chat."""
+    return SimpleNamespace(
+        _mcp_sign_in_notice_shown=False,
+        messages=list(messages),
+        key="chat-1",
+        _origin=origin,
+        _app=app,
+        mode=mode,
+        _created_by=created_by,
+    )
 
 
 def _state(live_child: str = "") -> SimpleNamespace:
     """A dashboard whose session for the chat runs the child *live_child*, or none."""
     provider = SimpleNamespace(is_process_alive=lambda: True, process_instance=live_child)
     return SimpleNamespace(
-        sessions=SimpleNamespace(get_provider=lambda key: provider if live_child else None)
+        sessions=SimpleNamespace(get_provider=lambda key: provider if live_child else None),
+        _mcp_sign_in_notice_servers=set(),
     )
 
 
@@ -55,10 +72,14 @@ def _client(backend: str = ACP_BACKEND_KAS) -> SimpleNamespace:
 
 
 def _notice(
-    slot: SimpleNamespace, *waiting: str, live_child: str = "", backend: str = ACP_BACKEND_KAS
+    slot: SimpleNamespace,
+    *waiting: str,
+    live_child: str = "",
+    backend: str = ACP_BACKEND_KAS,
+    state: SimpleNamespace | None = None,
 ) -> None:
     chat_runner._notice_mcp_sign_in_needed(
-        _state(live_child), slot, {"awaiting_auth": list(waiting)}, _client(backend)
+        state or _state(live_child), slot, {"awaiting_auth": list(waiting)}, _client(backend)
     )
 
 
@@ -82,6 +103,51 @@ def test_a_waiting_server_is_named_once_with_how_to_sign_in(rows: list) -> None:
     # The same chat does not say it again, whatever waits later.
     _notice(slot, "notes", "tasks")
     assert len(rows) == 1
+
+
+def test_a_server_named_in_one_chat_is_not_named_again_in_another(rows: list) -> None:
+    state = _state()
+    _notice(_slot(), "notes", state=state)
+    # Every new chat's session reports the same unsigned server; only the first
+    # chat is told, and a server no chat has named yet is still named.
+    _notice(_slot(), "notes", state=state)
+    _notice(_slot(), "notes", "tasks", state=state)
+    assert [row["meta"]["servers"] for row in rows] == [["notes"], ["tasks"]]
+
+
+@pytest.mark.parametrize(
+    ("origin", "app", "mode", "created_by"),
+    [
+        ("cron", "", "", ""),
+        ("user", "an-app", "", ""),
+        ("", "", "", ""),
+        ("user", "", "design-critique", ""),
+        ("user", "", "", "chat-conductor"),
+    ],
+)
+def test_a_chat_no_person_has_open_does_not_use_up_the_row(
+    rows: list, origin: str, app: str, mode: str, created_by: str
+) -> None:
+    # A cron's, an app's, a channel's, an app page's worker chat or a session an
+    # agent opened may never be read: it still gets its row, and a person's own
+    # chat after it is still told.
+    state = _state()
+    _notice(_slot(origin=origin, app=app, mode=mode, created_by=created_by), "notes", state=state)
+    _notice(_slot(), "notes", state=state)
+    assert [row["meta"]["servers"] for row in rows] == [["notes"], ["notes"]]
+
+
+def test_a_chat_whose_transcript_already_names_the_server_does_not_name_it_again(
+    rows: list,
+) -> None:
+    # A chat reopened after a gateway restart: its in-memory flag and the
+    # gateway's set start empty, and its transcript keeps the earlier row.
+    earlier = {
+        "role": "notice",
+        "meta": {"kind": "mcp_sign_in_needed", "servers": ["notes"], "more": 0},
+    }
+    _notice(_slot(earlier), "notes", "tasks")
+    assert [row["meta"]["servers"] for row in rows] == [["tasks"]]
 
 
 def test_several_servers_share_one_row_and_a_long_list_is_counted(rows: list) -> None:
@@ -150,7 +216,7 @@ def test_a_finished_card_that_kept_its_link_does_not_count(rows: list, flag: str
 @pytest.mark.parametrize("payload", [None, {}, {"awaiting_auth": []}, {"awaiting_auth": [7, ""]}])
 def test_nothing_waiting_shows_nothing(rows: list, payload: Any) -> None:
     slot = _slot()
-    chat_runner._notice_mcp_sign_in_needed(SimpleNamespace(), slot, payload, _client())
+    chat_runner._notice_mcp_sign_in_needed(_state(), slot, payload, _client())
     assert rows == []
     assert slot._mcp_sign_in_notice_shown is False
 
@@ -217,5 +283,5 @@ def test_publishing_a_report_with_a_refused_sign_in_shows_the_row(
     provider = SimpleNamespace(
         mcp_session_report=lambda: report, session_id="s1", capabilities=capabilities_for("kas")
     )
-    chat_runner._publish_session_mcp_report(SimpleNamespace(), slot, provider)
+    chat_runner._publish_session_mcp_report(_state(), slot, provider)
     assert [row["meta"]["servers"] for row in rows] == [["notes"]]

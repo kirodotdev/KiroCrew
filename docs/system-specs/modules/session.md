@@ -180,6 +180,12 @@ history, and a too-recent result is cached in memory until it can expire, so
 repeated focus frames stay cheap. A return while the thread runs a turn
 waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
+`dashboard.warm_task_brief` (default on) turns the brief off: off, a return that
+would qualify schedules nothing (skip reason
+`turned_off`), while the on-screen stamps and the leave rule still run. Each
+such return reads it from the live config watcher's in-memory snapshot, never
+from `config.json` on the loop (no snapshot reads as on), so it takes effect on
+the next one; a brief already being prepared when it flips still finishes.
 
 A conductor mode root (a root chat running a conductor) is eligible on the same
 rules as a Bot thread, trigger included: a switch to another chat, from the
@@ -429,7 +435,12 @@ carrying `instance_id` or `adopt_remote_slot` is refused with
 crew and opened here through its window. A slot already on disk with
 `executor: "remote"` still loads, as a read-only relay archive: a send, regenerate, rewind,
 continue or checklist write, and a change of agent, model, effort or workspace, answer
-`409 relay_archive_read_only` (`dashboard/relay_archive.py`).
+`409 relay_archive_read_only` (`dashboard/relay_archive.py`). A cron run's transcript
+(a sequence agent's `cron_<job id>_<agent>` or a stateless run's `cron_<job id>_<run id>`)
+that the dashboard user reopens from History with no `linked_session_key` is read-only the
+same way: the resume marks the slot `cron_run_read_only` (in memory, on the wire beside
+`executor`), the same actions answer `409 cron_run_read_only`, the turn chokepoint refuses
+any other start with its own notice row, and Resume all skips it.
 
 A create body carrying `app_launch: <app>` is an app's page opening a person's chat
 under that app's `permissions.chatLaunch`: right after the title check it is held to the
@@ -713,22 +724,35 @@ workflow ceiling read it, so the sessions a card-trusted worker opens are born
 asking, on the same card. A revoke clears `_trust` and writes `""`, so a subagent
 spawned after it asks again, and one already running loses its `parent_policy=auto`
 grant on its next tool request ([subagent](subagent.md) § Revoked parent trust).
-Trust is in memory only and never persisted. A pending
+Trust is never written to the transcript or its metadata; an owner's mode is kept
+across an exit the user did not choose through a signed record only (below). A pending
 approval's slot row carries `trust_grantable` (the slot approve route's own proof
 that Trust may be offered) and, for a coordinator request such as a spawn,
 `request_instance` (names THIS record, since the id can recur), so a card that
 relays the decision can pin it.
 
-**A restart ends a chat's Trust or Read mode, and says so**
-(`dashboard/chat_trust_restart.py`). Without a notice, a loop or task left in a
-trusted chat waits on approvals after any restart (the in-place re-exec, `kirocrew
-restart`, an update, a crash relaunch) and nobody is told why. The periodic flush and
-the shutdown save every restart runs (`save_all_slots_to_history`) write the open
-persistent chats holding a mode to `chat_trust_held.json` in the data home, but only
-once this process's boot has taken the previous record. `_restore_dashboard_sessions`
-takes it (reads it once and deletes it) before the open-tab restore and, after it,
-posts one `agent` bell note (`meta.slot`, `meta.approval_mode`) and one system row in
-each recorded chat that came back without its mode. A chat whose tools still run
+**A chat's Trust or Read mode is kept across an exit the user did not choose, and
+the chat says so** (`dashboard/chat_trust_restart.py`; the store and the user-stop
+mark are [security](security.md), "Grants kept across an exit the user did not
+choose"). The periodic flush, the shutdown save every restart runs
+(`save_all_slots_to_history`) and a write the gateway loop schedules right after any
+slot's mode changes write the open persistent chats holding a mode to the signed
+chats record (`kept_grants.CHATS_RECORD`), each with its session key and whether it is kept: an owner's
+own mode is, a worker's inherited posture (`_posture_inherited`), a Profile-seeded
+crewmate chat (`_member_approval_seeded`) and a card-scoped crew-member trust
+(`_trust_card_scoped`) are not. Nothing is written before this process's boot has
+taken the previous record. `_restore_dashboard_sessions` takes it before the open-tab
+restore and, after it, gives each kept chat its mode back with the picker's own
+writes (every slot sharing the session, the stored `approval_policy`, the
+inherited-posture walk for its workers), audited as `mode_change:<mode>`, with one
+`agent` bell note ("... was kept after a restart") and one system row. A kept chat is
+refused, and gets the turned-off notice instead, when it now addresses another
+session or the ceiling denies the mode. After a stop the user chose, nothing is kept
+and nothing is posted.
+Every other recorded chat that came back without its mode gets one `agent` bell note
+(`meta.slot`, `meta.approval_mode`) and one system row saying it was turned off; an
+unsigned `chat_trust_held.json` an earlier release left at the data-home root is read
+once for that notice and deleted. A chat whose tools still run
 unasked with nobody acting is owed no notice. An app-owned chat (`_app`) is never
 recorded, because its mode is the app's to set and the app sets it again. A chat a live
 auto-approve grant reaches (`is_yolo_active` and `yolo_reaches`, the tool gate's own
@@ -740,9 +764,8 @@ crewmate's conductor chat or worker is skipped when its Profile
 (`agents.<name>.approval_mode`, unset read as `trust`, clamped by policy) seeds the
 recorded mode back at its next turn (`crewmate_approval.seed_for_turn`); a Profile that
 seeds less still gets the notice.
-The record grants nothing: no reader turns it back into a mode, and the notice names
-the live chat's own title, so a forged record can at most notify a chat that is open.
-The system row carries `meta.kind = "trust_reset_notice"` and `meta.approval_mode`;
+Both notices name the live chat's own title, never text from the record.
+The turned-off system row carries `meta.kind = "trust_reset_notice"` and `meta.approval_mode`;
 the dashboard draws it as a localized card (`pages/chat/TrustResetNoticeCard.tsx`)
 with one **Turn Trust back on** (or **Turn Reads back on**) button, gone once the chat holds
 the mode again. The button is the person's pick: it dispatches the composer picker's
@@ -751,7 +774,8 @@ every caller check, and the inherited-posture walk re-raises the chat's workers 
 creation edge the crew log records, exactly as a picker pick does. A conductor mode lead
 is an ordinary owner chat here, so it gets the card. A crew window's peer rows leave
 it out (`PEER_SAFE_ROWS`), because the pick would go to this gateway.
-`test_chat_trust_restart_notice.py` and `TrustResetNoticeCard.test.tsx` pin it.
+`test_chat_trust_restart_notice.py`, `test_kept_grants.py` and
+`TrustResetNoticeCard.test.tsx` pin it.
 
 **A person's steer is a ledger event.** The work ledger accepts a `steer` event
 (`work_vocab`: actor `person`, kind `steer`, the person's own text redacted and cut
@@ -772,7 +796,8 @@ turn's `[DASHBOARD]` block then names it, so the conductor's task board lives th
 instead of in its replies.
 A person who wants every new chat
 on the conductor sets it as the default agent (`agent.default_agent`); every chat
-then already starts on the conductor.
+then already starts on the conductor, and a new one can still move to another
+agent template from its picker until its first message.
 
 ## Private member session ownership
 
@@ -1404,8 +1429,11 @@ in the store, and without the key component it read as signed out on every
 turn — every dashboard send retired idle sessions and cancelled their
 `spawn_run` children. The key joins only a DEFINITIVE store answer
 (read and audited with every credential row identified, or no store file at
-all): after an unauditable, unreadable or relocated store read, or one that
-found a login no stable claim identifies (a social login), only the key
+all). Only a row whose value is a JSON object is a credential row: any other
+value, such as the `kirocli:auth:last-forced-refresh-at` timestamp an earlier
+login leaves behind, names no login and is ignored. After an unauditable,
+unreadable or relocated store read, or one that found a login no stable claim
+identifies (a social login), only the key
 component is withheld and the fingerprint is exactly what it was before the key
 was counted, because a child can authenticate from the store rather than the
 key, and a key-only baseline would let a store account switch compare equal.
@@ -2269,6 +2297,22 @@ against sweep completeness, and are torn down at `close_all`.
   (`dashboard:{slot_key}`) idle-expire like any other session. A Bot's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`.
+  `session.automated_idle_timeout_secs` (default 0, off) is the timeout for a
+  session whose last turn automation started: `release(key)` stamps
+  `_Session.last_turn_automated` from `session_idle_clock.turn_was_automated()`,
+  which reads the releasing turn's declared trigger
+  (`metrics.usage_attrs.current_trigger`) and is true only for a declared
+  trigger other than `user`, so a context that declared none keeps
+  `session.timeout_secs`. A Slack thread's auto-nudge wake
+  (`_fire_slack_nudge`) declares `monitor` for its turn and restores the
+  caller's trigger after it; a Discord or Webex DM nudge, the first admitted
+  turn of its `turn_ceiling.generated_turn` span (`claim_generated_turn`),
+  declares `monitor` inside its admitted run, while admission still charges it
+  as before. `session_idle_clock.idle_limit` applies it only when
+  it is shorter than `session.timeout_secs`, and the passive-frame grace above is
+  then one window of that shorter timeout. A person's next turn clears the
+  stamp. The sweep reads the value at every pass; with `session.timeout_secs`
+  at 0 the sweep does not run, so it has no effect.
   A key listed in `session.idle_exempt_keys` never expires on the idle clock,
   for a chat that automation wakes hours apart and that would otherwise pay a
   cold start on every wake. `SessionCleanup._idle_exempt_keys()` reads the list
@@ -2667,7 +2711,14 @@ against sweep completeness, and are torn down at `close_all`.
   session gets one `leftover_memory` notice per turn (re-armed when the turn releases the session)
   (`SessionManager.on_leftover_memory`, wired by the dashboard). With
   `session.watchdog_end_leftovers_mid_turn` (default off) they are also ended
-  then. Ending is Linux only, as the pinned terminator is; macOS reports.
+  then. `AcpRuntime.kill` and `AcpClient.shutdown` also read their root's
+  leftovers before they signal and end them the same way once the root is gone
+  (`runtime_tree_kill.kill_ending_session_leftovers`), so a job a closed chat's
+  shell already left does not outlive it, and a recycle through either leaves
+  `end_after_recycle` nothing to end. A job whose shell is still running at that
+  read is in the live tree, so this step does not read or end it. Ending is
+  Linux only, as the pinned terminator is; macOS reports and its teardown leaves
+  them running.
   Resident pages are summed across the
   tree and converted to MiB once at the end. The tree RSS is measured once per
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,
@@ -4356,6 +4407,25 @@ a marker that names a different sid. This covers every discard-based recovery (t
 poisoned-conversation canary, image-history replay), because each one ends in a
 fresh first turn that arms the debt. On kiro-cli its own `.jsonl` check answers
 instead.
+
+A refused speculative resume is remembered apart from that marker. A KAS
+`session/load` that replays no earlier turn raises `AcpResumeNotRestored`, and the
+provider records the refused id (`AcpProvider._resume_refused_sid`). When a resume
+prefetch (`speculative_resume=True`) then comes back not resumed, `get_or_create`
+keeps that id per key in memory (`SessionRegistryState.refused_resume_sids`)
+before it raises `SpeculativeResumeRefused`, and a later prefetch of the same id
+is refused before any process starts. The session map is left alone: the marker
+would make `get` refuse the id for every caller, and the next turn would then
+start without the chat's recorded scratch tree and stored folder, which only a
+resume rejoins. So the next turn still resumes the id, has its load refused once,
+and starts fresh with the conversation replayed in the same tree. Registering a
+session for the key drops the entry, and a restart forgets it, which costs one
+more refused prefetch
+(`test_eager_spawn_resume_prefetch.py::TestRefusedKasResumeIsNotRetried`). A lock
+that never cleared and every other failed load record nothing, so the next
+prefetch loads the id again
+(`test_acp_provider.py::TestLoadSessionWithRetry::test_persistent_lock_exhausts_and_falls_back`,
+`TestStartKiroRuntimeResume::test_failed_load_falls_back_to_create_session`).
 
 **The session-head record.** Every claim runs `SessionManager.note_session_head`
 (`session_parts/claims.get_or_create`), so every surface that starts or resumes a
@@ -6312,8 +6382,8 @@ a trust root on its own; publication therefore also writes a
   attempt — the `.1` slot blocked by a planted directory, a sharing violation
   that never clears — is logged at WARNING with its sizes, since the primitive
   tells its caller nothing and its own hourly WARNING carries the path, the
-  error class and the cap of a refused rename but no sizes (and there is none at
-  all for a lock file it could not open); the line is throttled to one per
+  error class and the cap, for a refused rename or for a lock file it could
+  not open, but no sizes; the line is throttled to one per
   `shell_audit_log.SHELL_AUDIT_LOG_WARN_INTERVAL_SECS` (an hour) per data home,
   not one per attempt, because the tick retries for the gateway's whole life and
   a blocked slot does not clear itself, and it names the usual causes rather than

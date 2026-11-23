@@ -540,6 +540,7 @@ cannot drift.
 | `instances.max_recovery_attempts` | `8` | Consecutive self-heal attempts before the tunnel is left disconnected. Below 1 falls back to the default; above `MAX_RECOVERY_ATTEMPTS_CEILING` (100) is clamped with a warning, so a pathological setting cannot turn bounded self-heal into a near-infinite retry loop. |
 | `instances.recover_backoff_max_secs` | `30.0` | Cap on the per-attempt backoff. Non-positive falls back to the default; above `RECOVER_BACKOFF_MAX_CEILING_SECS` (300) is clamped, bounding the worst-case wall-clock recovery window. |
 | `instances.probe_failure_threshold` | `3` | Consecutive health-probe failures before a non-forwarding tunnel is torn down. Below 1 falls back to the default. |
+| `instances.managed_env_endpoint` | `""` | HTTPS base URL of the Kiro managed-environment service (`kiro_crew.managed_env`); plain `http://` only to a loopback host. Read only while the `crew_client` feature preview is on, so never on an LTS build (`managed_env/settings.read_settings`). Empty or malformed, every call raises `SettingsMissing`, which names the key. No route or dashboard entry calls the client yet. |
 
 ```bash
 kirocrew config set instances.warm_set_cap 3
@@ -547,6 +548,13 @@ kirocrew config set instances.ssh_compression false
 kirocrew config set instances.connect_timeout_secs 45
 kirocrew config set instances.mint_timeout_secs 60
 ```
+
+`instances.warm_set_cap` is also set in **Settings → Remote Crew → Settings**
+("Crews kept loaded"): a stepper for 1..20 and **Use automatic** for 0. Below
+it, in the desktop app, a read-only row shows how many remote Crews are loaded
+and their memory and CPU (`remote-crew:usage`, `website/electron/remote-crew-usage.js`).
+A pane Chromium hosts in the main window's own process is counted but not
+measured, and the row says so.
 
 Constants that are **not** user-configurable: the probe interval (10s), the
 end-to-end health-probe timeout (`DEFAULT_PROBE_HEALTH_TIMEOUT_SECS`, 4s), the
@@ -1461,7 +1469,12 @@ aws-cli v1 is Python; the ssh children keep them, since a `ProxyCommand` can run
 any program of the user's and stripping there would change more than `aws`. When
 the proxy still cannot find its program, the tunnel and mint errors say so and
 name the `PATH` the child was given, instead of the "connection closed" that ssh
-prints afterwards reading as a network drop. When that program is a refused
+prints afterwards reading as a network drop. "Cannot find" means ssh exited 255
+and its stderr holds a phrase in `token_mint.PROXY_TOOL_MISSING_SIGNALS`: the SSM
+plugin's "not installed" wording, a POSIX shell's "not found", or Windows
+OpenSSH's `posix_spawnp: No such file or directory` (it starts a `ProxyCommand`
+without a shell). Its `CreateProcessW failed error:2` line is not used, because
+`error:2` also begins unrelated codes such as `error:225`. When that program is a refused
 `session-manager-plugin`, they name its file, the refusal and the fix instead
 (`cloud.ssm.session_manager_plugin_unavailable_message`). For any other
 missing program, a refused plugin or `aws` is named when it is what hid that
@@ -1676,7 +1689,7 @@ whose current variable parts are all charset-bound literals.
 |---------|--------------------|
 | Settings → Remote Crew shows the opt-in card | `instances.enabled` is false. Set it and restart. |
 | Enabled but the panel says "not active" | The flag was set after the gateway started; the SSH manager is created at startup only. Restart. |
-| "Pop out to window" in a crew's pane says the desktop app can't open it | Expected in the desktop app. The pane runs on the crew's tunnel port, so its pop-out URL is never the window's own origin, and the desktop window-open handler (`website/electron/external-scheme.js`, same-origin only) would send it, without its token, to the system browser. The pane knows its hub is the desktop app from the host model's `electron` field (`isDesktopAppPane` in `website/src/lib/hostRelay.ts`), so the pop-out controller refuses before calling `window.open` and says why. A pane whose hub is a browser still opens its own window. |
+| "Pop out to window" in a crew's pane, in the desktop app | Opens a desktop window that frames the crew's own pop-out page. The pane runs on the crew's tunnel port, and the desktop window-open handler (`website/electron/external-scheme.js`) opens in-app only a page on the window's own origin, so the pane (it knows its hub is the desktop app from the host model's `electron` field, `isDesktopAppPane` in `website/src/lib/hostRelay.ts`) opens the HUB's `/popout/crew?port=<pane port>&path=<pop-out path>` instead (`website/src/lib/crewPopout.ts`). That page (`website/src/pages/CrewPopoutFrame.tsx`) frames the path only when `port` is a connected crew's tunnel port and the path stays on that crew's origin under `/popout/`, with the credential the viewport's warm path gets (`onlyIfConnected`, `paneCredentialFor`) and the pane's own `allow` list; otherwise it says so and frames nothing. It answers the framed page's handshake with a host model naming the desktop app, so a pop-out opened inside it takes the same path, and closes its window when the framed page's Return asks (`mc-close-popout`). The framed pop-out does not get the pane's clipboard-image or native-notification relays. The pane takes this path only when its hub's host model advertises the framing page (`crewPopout`), so under an older desktop hub, or before any host model, it still says the desktop app can't open it. A pane whose hub is a browser opens its own window, and crews opened through the relay deny pop-ups as before. Decision: [2026-11-22](../../decisions/2026-11-22-a-remote-crew-pane-pops-out-into-a-framed-desktop-window.md). |
 | Iframe is blank or black | On a loopback dashboard origin, the pane's embedded SPA never announced readiness within 15s, so the error panel with **Retry** appears (Retry force-reloads even an identical src). An iframe reports no load error to its parent, so this watchdog is the only signal. On a non-loopback origin the CSP `frame-src` refuses the frame outright, so no iframe is mounted and no watchdog runs: the pane shows the "needs a local dashboard" card (see §4 step 1), and Retry would not help — open the dashboard on a loopback origin instead. |
 | Connect fails with `ssh tunnel transport drop (… check this instance's ssh_host)` | The ssh child died before the forward ever came up, which is how a proxy answers for a host that no longer exists under that name (rebuilt, renamed, decommissioned). Fix `ssh_host` in the instance's settings. A drop on a tunnel that was up does not carry this hint — that host was reachable. |
 | Token mint fails with `exited 127` / `kirocrew binary not found` | The remote's `kirocrew` is in none of the candidate paths (§12). The stderr names the override: set the instance's `remote_bin` to its path in `~/` form. |

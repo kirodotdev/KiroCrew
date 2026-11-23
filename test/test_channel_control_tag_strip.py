@@ -26,7 +26,11 @@ from test_webex_renderer import FakeClient as WebexFake
 from kiro_crew.constants import split_trailing_protocol_suffix, strip_control_comments
 from kiro_crew.discord.renderer import DiscordRenderer
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
-from kiro_crew.slack.handler import _filter_options_brackets, _resolve_comment_hold
+from kiro_crew.slack.handler import (
+    _filter_options_brackets,
+    _resolve_comment_hold,
+    _resolve_options_hold,
+)
 from kiro_crew.slack.renderer import SlackRenderer
 from kiro_crew.telegram.renderer import TelegramRenderer
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
@@ -162,7 +166,8 @@ class TestSlackStreamHold:
         # The ``[`` that proves a tag is not the tail must still open the
         # bracket-hold, or the OPTIONS marker after it would stream raw.
         hold, buf = _filter_options_brackets(f"Report\n{TAG}\n[OPTIONS: a | b]", "", "")
-        assert hold == "" and buf == f"Report\n{TAG}\n"
+        assert buf == f"Report\n{TAG}\n"
+        assert _resolve_options_hold(hold) == ("", "")
 
     def test_tail_inside_an_open_fence_is_released_at_the_seal(self) -> None:
         text = "```\n<!-- keep-visible -->"

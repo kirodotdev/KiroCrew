@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -507,6 +508,29 @@ class TestNodeDispatch:
         assert seen["argv"][0] == "/usr/bin/node"
         assert seen["kwargs"]["env"]["NODE_ENV"] == "production"
         assert runs == [["/usr/bin/npm", "install", "--production", "--no-audit", "--no-fund"]]
+
+    def test_an_off_path_npm_reaches_the_backends_node(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """npm starts with ``#!/usr/bin/env node``, so with no node on the
+        gateway's PATH the npm child needs the backend's node directory on its own,
+        even when npm sits elsewhere (a user-level npm prefix)."""
+        (spawn_root / "server.js").write_text("// noop\n")
+        (spawn_root / "package.json").write_text(json.dumps({"name": "x"}))
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setattr(bmod, "_find_node_binary", lambda: "/opt/homebrew/bin/node")
+        monkeypatch.setattr(bmod, "_find_npm_binary", lambda: "/home/u/.npm-packages/bin/npm")
+        child_paths: list[str] = []
+
+        def _run(_argv: Any, **kwargs: Any) -> Any:
+            child_paths.append(kwargs["env"]["PATH"])
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(bmod, "run_limited", _run)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("nodeapp4", _manifest("server.js"))
+        assert child_paths == [os.pathsep.join(["/usr/bin", "/opt/homebrew/bin"])]
 
     def test_npm_install_is_skipped_when_node_modules_is_present(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch

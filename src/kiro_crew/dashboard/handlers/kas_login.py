@@ -125,11 +125,21 @@ def _company_sign_in() -> dict[str, str]:
     return company_sign_in_default(agent)
 
 
+def _local_agent_off_start_urls() -> list[str]:
+    """Start URLs whose sign-in turns the local agent off (``crew_client`` preview)."""
+    from kiro_crew.auth.login.endpoints import edition_idc_profiles
+
+    return sorted(edition_idc_profiles())
+
+
 async def api_kas_login_status(request: web.Request) -> web.Response:
     """GET /api/kas-login — auth state + the transport this install shape supports.
 
     ``company_sign_in`` carries the start URL and region the company SSO form
-    starts with (both ``""`` when nothing supplies one).
+    starts with (both ``""`` when nothing supplies one). ``local_agent_off_start_urls``
+    lists the start URLs an edition gives its own sign-in profile, so the form can
+    say before sign-in that no local agent runs on them (``[]`` while the
+    ``crew_client`` preview is off).
     """
     service = _service(request)
     if service is None:
@@ -137,6 +147,7 @@ async def api_kas_login_status(request: web.Request) -> web.Response:
     try:
         body = await service.status()
         body["company_sign_in"] = await asyncio.to_thread(_company_sign_in)
+        body["local_agent_off_start_urls"] = await asyncio.to_thread(_local_agent_off_start_urls)
         return web.json_response(body)
     except TokenStoreError as err:
         # A refused (e.g. linked) token-store directory is a coded storage

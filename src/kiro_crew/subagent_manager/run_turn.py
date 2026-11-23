@@ -19,14 +19,14 @@ they read unqualified are that module's, imported here for typing only; this mod
 no other.
 
 The manager fields this module uses. Writes: ``_agents``, ``_conversations``. Reads:
-``_clear_tool_dispatch``, ``_completion_keep``, ``_completion_keep_chars``, ``_ctx_builder``,
-``_effective_turn_limit``, ``_fire_event``, ``_leave_startup``, ``_note_tool_dispatch``,
-``_note_tool_result``, ``_note_tool_update``, ``_provider_label_of``, ``_sessions``,
-``_sharing_plan``, ``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
-``_stop_recovery_wanted``, ``_touch_activity``, ``_write_finished_result_off_loop``,
-``_write_state_off_loop``, ``_write_tombstone``, ``_yield_for_dependency``,
-``_yield_for_infra_retry``, ``_yield_for_stop_recovery``, ``arm_report_in_flight``,
-``dependency_coordinator_async``, ``hook_store``.
+``_append_result_chunk``, ``_clear_tool_dispatch``, ``_completion_keep``,
+``_completion_keep_chars``, ``_ctx_builder``, ``_effective_turn_limit``, ``_fire_event``,
+``_leave_startup``, ``_note_tool_dispatch``, ``_note_tool_result``, ``_note_tool_update``,
+``_provider_label_of``, ``_sessions``, ``_sharing_plan``, ``_shutting_down``,
+``_start_result_file``, ``_stop_error_text``, ``_stop_recovery_wanted``, ``_touch_activity``,
+``_write_finished_result_off_loop``, ``_write_state_off_loop``, ``_write_tombstone``,
+``_yield_for_dependency``, ``_yield_for_infra_retry``, ``_yield_for_stop_recovery``,
+``arm_report_in_flight``, ``dependency_coordinator_async``, ``hook_store``.
 """
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         FALLBACK_CANDIDATE_ATTEMPTS,
         HOOK_EVENT_POST_TOOL_USE,
         STOP_CLASS_CANCELLED,
+        STOP_REASON_STALE_RECOVER,
         TERMINAL_TOOL_STATUSES,
         TRANSIENT_RETRIES,
         Any,
@@ -150,7 +151,11 @@ async def _run_inner_impl(
     # Local imports: this body runs on ``kiro_crew.subagent``'s globals
     # (bind_component_globals), which do not export these names.
     from kiro_crew.agent_sdk import capture_prompt_timeout
-    from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_STRUCTURED_STATUS
+    from kiro_crew.agent_sdk.drivers.acp_vocab import (
+        EVENT_STRUCTURED_STATUS,
+        EVENT_SUBAGENT_ACTIVITY,
+        EVENT_SUBAGENT_LIST,
+    )
     from kiro_crew.recovery.ladder import InfraError
     from kiro_crew.taskq.dependency import classify_exception
 
@@ -264,6 +269,17 @@ async def _run_inner_impl(
             source="subagent",
             resources=f"subagent_id={info.id},inherited_agent={agent}",
         )
+    if info.isolate and not info.conversation_key:
+        # ``spawn_run``'s ``isolate``: the run's own worktree of the repository its
+        # cwd is in, made once here and before the session, so the provider, the
+        # session record and every continuation take it as the run's cwd. A
+        # refusal fails this admitted run with its reason. A recovery attempt
+        # makes it again from the cwd the run was admitted with.
+        from kiro_crew.subagent_worktree import prepare_run_worktree
+
+        source = info.worktree.source_cwd if info.worktree is not None else info.cwd
+        info.worktree = await asyncio.to_thread(prepare_run_worktree, info.id, source)
+        info.cwd = info.worktree.cwd
     effective_cwd = info.cwd or str(getattr(self._manager._sessions, "_pool_cwd", "") or "")
     from kiro_crew.mate_worker import is_own_worker_execution
 
@@ -725,7 +741,7 @@ async def _run_inner_impl(
             if _attempt_has_text:
                 info.streaming_text += "\n\n"
             if _result_file_started:
-                _result_file_started = write_result_chunk(info.id, "\n\n")
+                _result_file_started = await self._manager._append_result_chunk(info, "\n\n")
         return _next
 
     async def _stream_with_transient_retry():
@@ -795,6 +811,8 @@ async def _run_inner_impl(
 
         _active_line = ActiveModelLine(full_message, client)
         msg = full_message
+        # Whether a native sub-agent of this session reported in: it may have acted.
+        _child_activity = False
         while True:
             usage.begin(client)
             # A new prompt starts with nothing in flight. A call the last
@@ -812,16 +830,15 @@ async def _run_inner_impl(
                     from kiro_crew.messaging.identity import publish_turn_identity
 
                     await publish_turn_identity(self._manager._sessions, session_key)
-                # A completion whose stop reason classifies as RECOVERABLE
-                # (tool stall, stale_recover) is withheld from the run loop
-                # while budget remains: the slot is yielded, re-admitted,
-                # and a continue-nudge is sent on the SAME session so the
-                # preserved partial is finished in place — never a verbatim
-                # re-run of the original task. Mirrors chat_runner's
-                # tool-stall continuation and shares its budget
-                # (STOP_RECOVERY_MAX_RETRIES). Once the budget is spent the
-                # completion is surfaced and the run ends `failed` with the
-                # partial flagged.
+                # A completion whose stop reason classifies as RECOVERABLE (tool stall,
+                # stale_recover) is withheld from the run loop while budget remains: the
+                # slot is yielded, re-admitted, and a continue-nudge is sent on the SAME
+                # session so the preserved partial is finished in place, never a verbatim
+                # re-run of the original task. A stale_recover of a run that streamed nothing
+                # (no text, tool call or sub-agent activity) sends the probed prompt again: the
+                # agent may not hold a prompt it never answered. Mirrors chat_runner's stall
+                # continuations and shares their budget (STOP_RECOVERY_MAX_RETRIES). Once
+                # spent, the completion is surfaced and the run ends `failed`, partial flagged.
                 #
                 # A completion that ended NORMALLY right after a tool call
                 # the MCP gateway refused for capacity (``last_infra_error``
@@ -865,6 +882,8 @@ async def _run_inner_impl(
                         # that saw only co-tenant traffic reads apart from
                         # one whose stream stayed silent.
                         info._startup_cotenant_frames += 1
+                    if _ev.kind in (EVENT_SUBAGENT_LIST, EVENT_SUBAGENT_ACTIVITY):
+                        _child_activity = _child_activity or not _ev.runtime_global
                     if _ev.kind == EVENT_STRUCTURED_STATUS:
                         # W4: the execution layer (or the liveness oracle)
                         # says a tool is waiting for real input. The lane
@@ -968,16 +987,16 @@ async def _run_inner_impl(
                 else:
                     _nudge = await self._manager._yield_for_stop_recovery(info, _withheld)
                 if _nudge is None:
-                    # Re-admission failed: surface the withheld completion
-                    # so the run ends through the classifier as `failed`
-                    # (or, for a spent L1 budget, as the normal completion
-                    # it was -- the parent sees the refused call in the
-                    # partial).
+                    # Re-admission failed: surface the withheld completion so the run
+                    # ends through the classifier as `failed` (or, for a spent L1 budget,
+                    # as the normal completion it was: the parent sees the refused call).
                     yield _withheld
                     return
                 _report_if_landed(_withheld)
                 _final_segment = ""
-                msg = _nudge
+                _silent = not (result_text or turns or info.tool_count or _child_activity)
+                _replays = getattr(_withheld, "stop_reason", "") == STOP_REASON_STALE_RECOVER
+                msg = msg if _silent and _replays else _nudge
                 continue
             except asyncio.CancelledError:
                 raise
@@ -1223,7 +1242,7 @@ async def _run_inner_impl(
             if _result_file_started:
                 # A refused append starts the file over on the next
                 # chunk, so a lost chunk leaves no hole mid-file either.
-                _result_file_started = write_result_chunk(info.id, event.text)
+                _result_file_started = await self._manager._append_result_chunk(info, event.text)
             else:
                 _result_file_started = await self._manager._start_result_file(info, result_text)
             await self._manager._fire_event("subagent_chunk", info, {"text": redacted})
@@ -1490,7 +1509,7 @@ async def _run_inner_impl(
                     _out = _redact((event.tool_output or "")[:2000])
                     # The child's own ACP session id, for its spec hooks only.
                     _sid = getattr(client, "session_id", "") if _spec.hooks else ""
-                    await self._manager.hook_store.fire(
+                    results = await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
                         tool_response={"output": _out},
@@ -1516,11 +1535,13 @@ async def _run_inner_impl(
                         ),
                         acp_session_id=_sid if isinstance(_sid, str) and _sid else None,
                     )
+                    for r in results or ():
+                        if r.exit_code not in (0, 2):
+                            logger.warning(
+                                "Hook %s (%s) failed: %s", r.hook_name, r.event, r.failure_detail
+                            )
                 except Exception:
-                    logger.debug(
-                        "PostToolUse hook error in subagent",
-                        exc_info=True,
-                    )
+                    logger.warning("PostToolUse hook error in subagent", exc_info=True)
         elif event.kind == EVENT_COMPLETE:
             _complete_event = event
             usage.settle(event)
@@ -1630,6 +1651,8 @@ async def _run_inner_impl(
         info.result = f"{_warn}\n\n{info.result}"
         info.partial = True
         # result.txt is what spawn_status / spawn_run read for a done run.
+        # Once per run and on the loop: an await here would let a cancel cut
+        # this tail before the ending below is recorded.
         write_result_chunk(info.id, f"\n\n{_warn}\n")
     # The whole answer a claimed completed ending rewrites result.txt from.
     _finished_text = result_text

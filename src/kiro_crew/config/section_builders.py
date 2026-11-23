@@ -128,6 +128,7 @@ from kiro_crew.config.sections import (
 )
 from kiro_crew.config.service_sections import (
     CronHistoryConfig,
+    HeartbeatConfig,
     MessagingConfig,
     MonitoringConfig,
     PowerConfig,
@@ -214,6 +215,17 @@ def _build_cron_history_config(cron_history_data: dict) -> CronHistoryConfig:
         cron_trace_cap_kb=section.read("cron_trace_cap_kb", _safe_int),
         cron_max_records_per_job=section.read("cron_max_records_per_job", _safe_int),
         cron_max_index_records=section.read("cron_max_index_records", _safe_int),
+    )
+
+
+def _build_heartbeat_config(heartbeat_data: dict) -> HeartbeatConfig:
+    section = SectionReader(HeartbeatConfig, heartbeat_data)
+    default_deliver = str(section.get("default_deliver")).strip().lower()
+    if default_deliver not in ("slack", "dashboard"):
+        default_deliver = section.default("default_deliver")
+    return HeartbeatConfig(
+        default_deliver=default_deliver,
+        keep_backoff=section.read("keep_backoff", _safe_bool),
     )
 
 
@@ -658,6 +670,7 @@ def _build_instances_config(
         max_recovery_attempts=section.read("max_recovery_attempts", _safe_int),
         recover_backoff_max_secs=section.read("recover_backoff_max_secs", _safe_float),
         probe_failure_threshold=section.read("probe_failure_threshold", _safe_int),
+        managed_env_endpoint=section.read("managed_env_endpoint", _safe_str),
     )
 
 

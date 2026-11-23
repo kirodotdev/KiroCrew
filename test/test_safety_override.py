@@ -1218,7 +1218,7 @@ class TestGrantLifetimeCopy:
             mock_sel.return_value = MagicMock()
             so.activate_declared()
         text = describe_grant_lifetime()
-        assert "restart" in text
+        assert "until you stop" in text
         assert "remaining" not in text
         assert "-1" not in text
 
@@ -1230,7 +1230,7 @@ class TestGrantLifetimeCopy:
             mock_sel.return_value = MagicMock()
             so.activate("slack")
         text = describe_grant_lifetime()
-        assert "restart" in text
+        assert "until you stop" in text
         assert "min remaining" not in text
 
     def test_timed_grant_still_reports_minutes(self) -> None:
@@ -1247,8 +1247,8 @@ class TestGrantLifetimeCopy:
 
     def test_new_grant_description_matches_the_grant(self) -> None:
         _, describe_new_grant = self._helpers()
-        assert "restart" in describe_new_grant(0)
-        assert "restart" in describe_new_grant(-1)
+        assert "until you stop" in describe_new_grant(0)
+        assert "until you stop" in describe_new_grant(-1)
         assert describe_new_grant(3600) == "auto-expires in 1h"
 
     def test_no_slack_surface_renders_a_raw_remaining_figure(self) -> None:

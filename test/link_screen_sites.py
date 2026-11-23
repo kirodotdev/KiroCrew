@@ -236,6 +236,7 @@ DECLARED_SITES = frozenset(
         ("skills_builtin_sync.py", "remove_retired_conductor_skill"),
         ("skills_candidate_tree.py", "_candidate_has_symlink"),
         ("skills_discovery.py", "_iter_skill_files.probe"),
+        ("snapshot.py", "_hold_back_agent_config"),
         ("snapshot_archive.py", "_copytree_safe._ignore_unsafe"),
         ("snapshot_build.py", "_build_snapshot"),
         ("snapshot_build.py", "_estimate_selected_bytes"),

@@ -209,16 +209,58 @@ def test_a_profile_may_not_deny_trust_only_the_policy_may():
 
 class TestThePickerList:
     def test_the_owner_rule_hides_trust(self):
+        # Approve for me follows Trust: KAS answers those calls, not Crew.
         _install(OWNER_RULE)
-        assert so_mod.cached_disabled_approval_modes() == ["trust", "yolo"]
+        assert so_mod.cached_disabled_approval_modes() == ["trust", "approve_for_me", "yolo"]
 
-    def test_all_three_hides_only_yolo(self):
+    def test_all_three_hides_yolo_and_the_unlisted_approve_for_me(self):
         _install(ALL_THREE)
-        assert so_mod.cached_disabled_approval_modes() == ["yolo"]
+        assert so_mod.cached_disabled_approval_modes() == ["approve_for_me", "yolo"]
 
-    def test_no_rule_hides_nothing(self):
+    def test_allowing_trust_does_not_allow_approve_for_me(self):
+        _install(ALL_THREE)
+        assert amp.session_mode_permitted("trust") is True
+        assert amp.session_mode_permitted("approve_for_me") is False
+        assert "approve_for_me" in so_mod.cached_disabled_approval_modes()
+
+    def test_a_rule_listing_approve_for_me_allows_it(self):
+        _install({"mode": "allow", "allow": ["normal", "trust", "approve_for_me"]})
+        assert amp.session_mode_permitted("approve_for_me") is True
+        assert "approve_for_me" not in so_mod.cached_disabled_approval_modes()
+
+    def test_composed_tiers_that_both_list_it_allow_it(self, monkeypatch):
+        from kiro_crew.platform.governance_parts.archetypes import _AndRuleset
+        from kiro_crew.safety_override_permits import _APPROVAL_MODES_SCOPE
+
+        def _control(rule):
+            ceiling = parse_policy(
+                {"version": 1, "boot": {"fail_closed": True}, "approval_modes": rule}
+            )
+            return ceiling.get(_APPROVAL_MODES_SCOPE)
+
+        both = _AndRuleset(
+            outer=_control({"mode": "allow", "allow": ["normal", "approve_for_me"]}),
+            inner=_control({"mode": "allow", "allow": ["normal", "trust", "approve_for_me"]}),
+        )
+        monkeypatch.setattr(amp, "_ceiling_control", lambda: both)
+        assert amp._ceiling_lists_approve_for_me() is True
+        one_omits = _AndRuleset(
+            outer=_control({"mode": "allow", "allow": ["normal", "approve_for_me"]}),
+            inner=_control({"mode": "allow", "allow": ["normal", "trust"]}),
+        )
+        monkeypatch.setattr(amp, "_ceiling_control", lambda: one_omits)
+        assert amp._ceiling_lists_approve_for_me() is False
+        none_lists = _AndRuleset(
+            outer=_control({"mode": "deny", "deny": ["yolo"]}),
+            inner=_control({"mode": "deny", "deny": ["trust"]}),
+        )
+        monkeypatch.setattr(amp, "_ceiling_control", lambda: none_lists)
+        assert amp._ceiling_lists_approve_for_me() is False
+
+    def test_no_rule_hides_only_approve_for_me(self):
+        # Approve for me is permitted only where a rule lists it by name.
         _install(None)
-        assert so_mod.cached_disabled_approval_modes() == []
+        assert so_mod.cached_disabled_approval_modes() == ["approve_for_me"]
 
 
 class TestAGrantMadeBeforeTheDeny:

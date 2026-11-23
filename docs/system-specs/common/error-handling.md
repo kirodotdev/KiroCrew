@@ -118,7 +118,7 @@ instead of the row simply disappearing.
 | Integer field in a dashboard JSON body | Read through `dashboard/body_numbers.body_int`, which raises `ValueError` for `1e999`/`-1e999` (infinite floats after `json.loads`) where `int()` raises `OverflowError`. The handler's own `except (TypeError, ValueError)` then gives the infinite value the same 400 or fallback any other malformed value gets there, never a 500. A site does not add `OverflowError` to its own except clause instead |
 | Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
-| A host that does not answer (`kirocrew kas login`, the KAS engine manifest fetch, `kirocrew update` (its release feed and the manifest and wheel fetch), `kirocrew memory forget`, the policy fetch, a pinned download) | The message names what it was reaching and leads with the cause in plain words. `asset_downloader.network_failure_cause` reads it from the exception types (urllib's `URLError.reason`, aiohttp's `os_error`), never their text: `connection refused`, `the host name could not be resolved` or `timed out`. Any other failure keeps the library's own text, which is then the only clue there is, and so does an aiohttp exception with no `host` (a connect timeout names its host only in its text). A site that already had its own rule keeps it: the policy fetch passes that other text through its sanitizer, `kirocrew update` shows its manifest and wheel failure redacted (`wheel_apply.shown_failure_text`), `kirocrew memory forget` answers a refused or missing dashboard socket at the credential mint with its own sentence pointing at the dashboard Memory page, and a pinned download (`download_to`) reports only the exception's type, because the text can carry a credentialed url |
+| A host that does not answer (`kirocrew kas login`, the KAS engine manifest fetch, `kirocrew update` (its release feed and the manifest and wheel fetch), `kirocrew memory forget`, the policy fetch, a pinned download) | The message names what it was reaching and leads with the cause in plain words. `asset_downloader.network_failure_cause` reads it from the exception types and errno (urllib's `URLError.reason`, aiohttp's `os_error`), never their text: `connection refused`, `the host name could not be resolved`, `timed out`, `the connection was reset`, `the connection was closed`, `the host is unreachable` or `the network is unreachable` (the last four from a socket error's errno, which on Windows is the Winsock number the `errno` names hold there). Any other failure keeps the library's own text, which is then the only clue there is, and so does an aiohttp exception with no `host` (a connect timeout names its host only in its text). A site that already had its own rule keeps it: the policy fetch passes that other text through its sanitizer, `kirocrew update` shows its manifest and wheel failure redacted (`wheel_apply.shown_failure_text`), `kirocrew memory forget` answers a refused or missing dashboard socket at the credential mint with its own sentence pointing at the dashboard Memory page, and a pinned download (`download_to`) reports only the exception's type, because the text can carry a credentialed url |
 | Notes git subprocess (`md_notebook/git_ops.py`) | A non-zero exit reports git's last 3 stderr lines PLUS the first transport-caused line when one sits outside that tail. git ends every fetch/push failure with the same access-rights boilerplate and prints an SSH diagnosis first, so a tail alone reports a permission problem the operator does not have (a host reachable only via `~/.ssh/config` never resolved at all). The extra line widens what the message reports; it does not decide whether the command failed. |
 | Auto-Improvement git step (`auto_improvement/backend/clone_setup.py`) | A failed clone, branch list, checkout or fetch reports git's last 2 stderr lines after dropping blank lines and git's access-rights advisory (`Please make sure you have the correct access rights` / `and the repository exists.`), redacted and then bounded. The advisory follows every transport or auth fatal, so keeping it reports a repository problem in place of the `Permission denied (publickey).` line above it. |
 | App Store install clone, pinned fetch and pull (`apps/registry_pipeline/checkout.py`) | A credential-free (catalog or `index`-tier registry) fetch of an ssh remote whose output holds ssh's own `ssh: Could not resolve hostname` line returns `git_clone_failed_strict_ssh_route` with a fixed sentence: the fetch ran in the strict sandbox, which hides `~/.ssh`, so neither `~/.ssh/config` nor the ssh-agent applied, and a host reachable only through an ssh config route is installed from the operator's own clone with `kirocrew app install <dir>`. It carries no proxy hint, because ssh never reads `HTTPS_PROXY`; an owner-credentialed clone and an HTTPS remote keep the network hint. |
@@ -191,6 +191,23 @@ reports at the end. The job and run ids let the agent read more history itself.
 `cancelled` and `success` rows offer nothing. The hand-off goes to the ordinary
 chat with no per-job "debug agent" setting: the agent that opens is the one the
 user would otherwise paste the log into, and a history row holds no draft.
+
+## Repeated failure cards
+
+A chat whose agent fails the same way again and again writes one red row per
+attempt. The dashboard's transcript rows (`createTranscriptRenderers`: the chat
+page, a split pane, the crew window) draw a run of rows that carry the same
+gateway notice, token and values (`errorNoticeRunKey` in `gatewayNotice.ts`), as
+ONE card on the run's first row (`website/src/pages/chat/errorRuns.ts`), so the
+card keeps its place while later attempts land. It says how many times it
+happened and when the newest did; expanded, it lists every attempt's time. Two
+attempts are consecutive when nothing but the Resume press that re-ran the first
+(its `[Continue — requested by the user]` inject) lies between them; that press
+folds into the run, and any other row ends it. The card offers Resume only when
+the run's newest row is the chat's newest error, as that row would. A row whose
+`kind` or `code` marks it as a card of its own (a sign-in, a usage limit, a turn
+limit, a failed session start, a capability refusal) is never folded, and the
+app-sdk default rows an embedded app draws are unchanged.
 
 ## Backend Error Classification
 
@@ -434,6 +451,21 @@ the text keeps "throttling" for the same `_TRANSIENT_MARKERS` reason.
 `AcpError.server_error` on a transient provider 5xx (`acp_error_is_server_error` reads
 it, with the same text fallback as `acp_error_is_throttle`); the dashboard model
 fallback reads both (`modules/model-fallback.md`).
+
+**Model-switch advice is per row.** The throttle, 5xx and two kiro-cli wrapper rows
+tell the user to switch model because the failure each one matches can belong to the
+selected model alone: a provider throttle (a provider's quotas and capacity are per
+model, as Bedrock's are), a 5xx that keeps coming back, and kiro-cli's "failed to
+generate a response" and "failed to process the request" wrappers (a capacity or
+rollout blip on one model, which another model does not share). Kiro's per-user
+request-rate limit (`acp/user_rate_limit_errors.py`) counts every model against one
+allowance, so its row says a switch will not help. The automatic-retry throttle
+notices (`TRANSIENT_THROTTLE_*_TEXT` in `dashboard/chat_utils.py`, the
+`pages.chat.transientNotice.throttle_*` copy) name no one: the `throttle` tag that
+picks them is set for that per-user limit as well as for a provider throttle, so the
+retrying, resuming and give-up rows (`throttle_give_up`,
+`TRANSIENT_THROTTLE_GIVE_UP_TEXT`) say "Requests are being throttled", which is true
+of both.
 
 A **network-path drop** is the one transient class that waits by time rather
 than by count. `AcpError.connection_failure` is set from the raw frame when the

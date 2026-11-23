@@ -701,18 +701,18 @@ def mirror_withheld_crew_refs(agent: str) -> frozenset[str]:
 def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
     """*spec* with Crew's default servers added, or *spec* itself when that cannot be read.
 
-    Only ``tools`` and ``mcpServers`` decide a ref, so the helper is handed the spec
-    without ``allowedTools``: under a governance ceiling it withholds an entry that
-    would auto-approve the added servers and records that in the security event
-    log, a decision a spawn makes and a read-only diagnostic must not record. The
-    helper also reads capability and app state from disk; a diagnostic that cannot
-    read them judges the spec as written rather than failing.
+    The helper is handed the whole spec, ``allowedTools`` included, because a
+    wildcard there keeps an app's server out as it does at a spawn. ``audit=False``:
+    under a governance ceiling the helper withholds an entry that would
+    auto-approve the added servers and records that in the security event log, a
+    decision a spawn makes and a read-only diagnostic must not record. The helper
+    also reads capability and app state from disk; a diagnostic that cannot read
+    them judges the spec as written rather than failing.
     """
     from kiro_crew.acp.default_crew_servers import with_default_crew_servers
 
-    probe = {key: value for key, value in spec.items() if key != "allowedTools"}
     try:
-        return with_default_crew_servers(agent, probe)
+        return with_default_crew_servers(agent, spec, audit=False)
     except Exception:
         logger.debug("default Crew servers for %r could not be resolved", agent, exc_info=True)
         return spec

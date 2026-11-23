@@ -7,10 +7,12 @@ import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
 import { isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout } from '../utils/terminalPopout'
-import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells, getTerminalInputWs } from '../utils/terminalRegistry'
+import { isTerminalAtLimit, onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells, getTerminalInputWs } from '../utils/terminalRegistry'
 import { errMessage } from '../utils/thunkError'
 import { noteTerminalRun, type TerminalRunOutcome, type TerminalRunReason, type TerminalRunSource } from '../utils/terminalRunNote'
-import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal } from './useBottomTerminal'
+import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal, shownTabId as shownDockTerminal } from './useBottomTerminal'
+import { isTouchDevice } from '../utils/isTouchDevice'
+import { skipFocusOnNextShow } from '../utils/terminalQuietShow'
 
 /** The refs the Run-in-terminal handler reads at event time. They mirror the
  *  host page's state so the listener installs once. */
@@ -159,7 +161,11 @@ export function useRunInTerminalBridge({
         // copy proceeds whether or not a reusable tab exists. `reuseCurrentTab`
         // returns null when there is no settled tab to focus; that is not a
         // reason to run, only a reason to skip the focus step.
+        const shownBefore = shownDockTerminal()
         const reusedId = reuseDockTerminal()
+        // On a touch device the terminal it brings up stays unfocused, so the
+        // on-screen keyboard does not cover it (terminalQuietShow).
+        if (reusedId && reusedId !== shownBefore && isTouchDevice()) skipFocusOnNextShow(reusedId)
         // Raise the popped-out window whenever a tab was reused: the main-window
         // BroadcastChannel map (isTerminalPopoutOpen) is not synchronously
         // correct across a main-window reload — in the beacon-only window it
@@ -222,21 +228,14 @@ export function useRunInTerminalBridge({
         showActionError(i18nT('pages.chatPage.run_in_terminal_config_read_failed_error'))
       }
       const sessionId = addDockTerminal(cwdRef.current ?? undefined, slotRef?.current ?? undefined)
+      if (isTouchDevice()) skipFocusOnNextShow(sessionId)
       let settled = false
-      const emit = (ok: boolean) => {
+      const emit = (ok: boolean, noTab = false) => {
         if (settled) return
         settled = true
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
         if (ok) report('ran')
-        else report('failed', sessionId ? 'not_sent' : 'no_tab')
-      }
-      if (!sessionId) {
-        // F3: no fresh tab could be minted (the terminal cap is full). The
-        // command is neither copied nor run, so say so through ErrorNotice
-        // rather than leaving only the button's error glyph
-        // (errors-use-error-notice).
-        showActionError(i18nT('pages.chatPage.run_in_terminal_no_tab_error'))
-        emit(false); return
+        else report('failed', noTab ? 'no_tab' : 'not_sent')
       }
       // The shell is known only once `ready` has arrived, which is exactly when
       // this fires — so read it here, not at dispatch time.
@@ -247,6 +246,14 @@ export function useRunInTerminalBridge({
         emit(sendToTerminalSession(sessionId, text))
       }, () => {
         if (settled) return
+        if (isTerminalAtLimit(sessionId)) {
+          // F3: the gateway refused a fresh shell at its terminal ceiling. The
+          // command is neither copied nor run, so say so through ErrorNotice
+          // rather than leaving only the button's error glyph
+          // (errors-use-error-notice).
+          showActionError(i18nT('pages.chatPage.run_in_terminal_no_tab_error'))
+          emit(false, true); return
+        }
         // Local disposal removes the socket before notifying failure, but the
         // tab-close caller removes the tab afterwards. Socket ownership here
         // distinguishes that release from an error on an upgraded connection;

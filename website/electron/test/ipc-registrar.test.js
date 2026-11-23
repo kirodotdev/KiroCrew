@@ -29,6 +29,7 @@ const {
   lastCall,
   wslEvent,
   assertWslRejected,
+  PICK_REJECTIONS,
 } = require("./ipc-registrar-test-helpers");
 
 test("the updater's handlers are the update:* channels the preload invokes", () => {
@@ -785,13 +786,6 @@ test("dashboard:open-file hardens the launcher PATH across the native launch", a
 // three-gate local-dashboard check; the availability probe answers `false`
 // where the pick itself would be refused, and neither ever reaches the dialog
 // from a rejected sender.
-const PICK_REJECTIONS = [
-  ["wrong origin", {}, "https://remote.example/chat"],
-  ["remote window", { wslOwner: { fake: "remote-window" }, wslGatewayLocal: false }, undefined],
-  ["foreign port owner", { primaryPortOwner: "foreign" }, undefined],
-  ["unknown port owner", { primaryPortOwner: "unknown" }, undefined],
-];
-
 test("dashboard:pick-folder is refused outside the local dashboard and opens no dialog", async () => {
   for (const [label, options, url] of PICK_REJECTIONS) {
     const h = harness({

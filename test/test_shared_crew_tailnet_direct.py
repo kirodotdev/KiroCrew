@@ -160,6 +160,7 @@ async def _client(gate: DirectGate | None) -> TestClient:
     )
     app.router.add_get("/api/whoami", _whoami)
     app.router.add_get("/api/internal/x", _whoami)
+    app.router.add_get("/v1/whoami", _whoami)
     client = TestClient(TestServer(app, host="127.0.0.1"))
     await client.start_server()
     return client
@@ -378,6 +379,22 @@ async def test_an_app_cookie_on_the_owners_device_keeps_its_app_scope():
         await client.close()
     # The token flow answers for the app; the direct gate never names it the owner.
     assert not (status == 200 and body.get("provenance") == "tailscale_listener")
+
+
+@pytest.mark.asyncio
+async def test_an_app_bearer_on_the_crew_api_keeps_its_app_scope():
+    """The bearer twin of the app cookie above, on a ``/v1/`` path."""
+    from kiro_crew.dashboard.token_auth import generate_token
+
+    app_token = generate_token("local-app", app="notes")
+    client = await _client(_gate())
+    try:
+        headers = {**_direct("100.64.0.3"), "Authorization": f"Bearer {app_token}"}
+        status, body = await _get(client, headers, path="/v1/whoami")
+    finally:
+        await client.close()
+    assert status != 200
+    assert not (isinstance(body, dict) and body.get("provenance") == "tailscale_listener")
 
 
 @pytest.mark.asyncio

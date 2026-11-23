@@ -328,6 +328,10 @@ export interface ChatSlot extends TurnIdentityFields {
    *  inside a request routed back through that instance. */
   executor?: 'local' | 'remote'
   instance_id?: string
+  /** A cron run's transcript (a sequence agent's or a stateless run's) reopened
+   *  from History with no session to save a reply to: read-only, like a relay
+   *  archive (`slotIsRemoteBound`). Absent from an older gateway. */
+  cron_run_read_only?: boolean
   /** The identity the sidebar renders this row under, resolved by the SERVER.
    *
    *  A purely local session is its own key. A remote-bound one — minted on a crew

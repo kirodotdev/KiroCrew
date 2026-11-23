@@ -1,12 +1,16 @@
 """The MCP client a cron script calls tools through.
 
-``McpToolClient`` spawns one MCP server as a subprocess, speaks JSON-RPC to it over
-stdio and closes it; ``KeptMcpServers`` keeps one client per server for the length
-of a script run. ``_resolve_mcp_server`` turns a server name into the argv and
-environment to spawn, from Crew's own agent spec (``kirocrew.json``), under the
-launch rules the session and gateway paths apply: a muted, registry or remote entry
-is refused, and ``${VAR}`` in the server's ``env`` is resolved as kiro-cli resolves
-it. ``KeptMcpServers.call_tool`` refuses a tool the user switched off.
+``McpToolClient`` spawns one local MCP server as a subprocess and speaks JSON-RPC to
+it over stdio, or, for a remote (``url``) entry, speaks the same JSON-RPC to it over
+streamable HTTP through :class:`kiro_crew.kas_http_bridge.Bridge` from this process;
+``KeptMcpServers`` keeps one client per server for the length of a script run.
+``_resolve_mcp_server`` turns a server name into the argv and environment to spawn,
+or the url and headers to call, from Crew's own agent spec (``kirocrew.json``),
+under the launch rules the session and gateway paths apply: a muted or registry
+entry is refused, so is a remote entry the bridge cannot call as configured
+(:func:`_refuse_uncallable_remote`), and ``${VAR}`` in a local server's ``env`` and
+a remote server's ``headers`` is resolved as kiro-cli resolves it.
+``KeptMcpServers.call_tool`` refuses a tool the user switched off.
 
 Part of :mod:`kiro_crew.cron_script`, the import path callers, tests and docs use: it
 reaches every name here, and a patch through it reaches this module too
@@ -15,15 +19,18 @@ reaches every name here, and a patch through it reaches this module too
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
+import queue
 import subprocess
 import tempfile
 import threading
+import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from kiro_crew import mcp_structured_text as _structured_text
 from kiro_crew import platform_compat
@@ -83,8 +90,56 @@ def _joined_text(content: object) -> str:
     return "\n".join(texts)
 
 
+class _RemoteMcpServer(NamedTuple):
+    """A remote entry as :func:`_resolve_mcp_server` resolves it: what the bridge dials."""
+
+    url: str
+    headers: dict[str, str]
+
+
+class _AnswerLines(io.BytesIO):
+    """The ``out`` stream a :class:`~kiro_crew.kas_http_bridge.Bridge` writes answers to.
+
+    Each newline-terminated line the bridge writes is put on :attr:`lines` as it
+    arrives, so a call can take its own answer while the request that carried it is
+    still reading an event stream the server keeps open.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lines: queue.Queue[bytes] = queue.Queue()
+        self._partial = b""
+
+    def write(self, data: Any, /) -> int:
+        chunk = self._partial + bytes(data)
+        *complete, self._partial = chunk.split(b"\n")
+        for line in complete:
+            self.lines.put(line)
+        return len(data)
+
+
+#: How long a remote call waits for its own answer. The bridge answers a request
+#: itself (code -32000) once a read from the server has blocked for its own
+#: ``_READ_TIMEOUT_SECS``, so this bound only names a call that nothing answers.
+_REMOTE_ANSWER_SECS = 630.0
+
+
 class McpToolClient:
-    """Minimal MCP JSON-RPC client. Spawns server subprocess, calls tool, closes."""
+    """Minimal MCP JSON-RPC client: one server per client, a tool call at a time.
+
+    A local entry is spawned as a subprocess and spoken to over stdio. A remote
+    (``url``) entry is spoken to over streamable HTTP by a
+    :class:`kiro_crew.kas_http_bridge.Bridge` held in this process, with in-memory
+    streams in place of the process's pipes: each request is sent on a daemon
+    thread of its own, as ``Bridge.serve`` sends it, so a call returns once its own
+    id is answered even when the server keeps the event stream open. A failure the
+    bridge reports as its own (it writes the reason to its ``err`` stream and
+    answers the id with code -32000) raises ``RuntimeError``, so
+    :class:`KeptMcpServers` stops the client; a JSON-RPC error the server sends
+    stays :class:`McpToolError`, as for a local server.
+    """
+
+    _bridge: Any = None
 
     def __init__(self, server_name: str, session_key: str = ""):
         self._server_name = server_name
@@ -92,6 +147,9 @@ class McpToolClient:
         resolved = _resolve_mcp_server(server_name)
         if not resolved:
             raise RuntimeError(f"MCP server '{server_name}' not found in agent config")
+        if isinstance(resolved, _RemoteMcpServer):
+            self._open_remote(resolved)
+            return
         argv, spec_env = resolved
         sandboxed_argv, self._sandbox_cleanup = wrap_argv(list(argv), mode="standard")
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
@@ -182,9 +240,13 @@ class McpToolClient:
             raise
         assert self._proc.stdin is not None
         assert self._proc.stdout is not None
+        self._initialize()
+
+    def _initialize(self) -> None:
+        """The MCP handshake; a failure closes the client and raises."""
         self._req_id = 0
         try:
-            self._rpc(
+            answer = self._rpc(
                 "initialize",
                 {
                     "protocolVersion": "2024-11-05",
@@ -192,12 +254,54 @@ class McpToolClient:
                     "clientInfo": {"name": "kirocrew-cron-script", "version": "0.1"},
                 },
             )
+            if self._bridge is not None and "error" in answer:
+                error = answer["error"]
+                message = error.get("message") if isinstance(error, dict) else error
+                raise RuntimeError(
+                    f"MCP server '{self._server_name}' refused 'initialize': {str(message)[:300]}"
+                )
             self._send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
         except Exception:
             self.close()
             raise
 
+    def _open_remote(self, remote: _RemoteMcpServer) -> None:
+        """Hold a bridge to *remote* in place of a process, then run the handshake.
+
+        The request leaves from this process: there is no local server to confine,
+        so no subprocess or sandbox wrapper is involved.
+        """
+        # Deferred for the reason given in _switched_off_tools.
+        from kiro_crew.kas_http_bridge import Bridge
+
+        self._answers = _AnswerLines()
+        self._bridge_err = io.StringIO()
+        self._closed = False
+        self._bridge = Bridge(
+            remote.url,
+            remote.headers,
+            server=self._server_name,
+            out=self._answers,
+            err=self._bridge_err,
+        )
+        self._initialize()
+
     def _send(self, msg: dict) -> None:
+        if self._bridge is not None:
+            line = json.dumps(msg).encode("utf-8")
+            if "id" not in msg:
+                # A notification is sent before the next message, as Bridge.serve
+                # sends it, so the server sees ``initialized`` before the call.
+                self._bridge.send(line)
+                return
+            self._request = threading.Thread(
+                target=self._bridge.send,
+                args=(line,),
+                name=f"mcp-remote-{self._server_name}",
+                daemon=True,
+            )
+            self._request.start()
+            return
         assert self._proc.stdin is not None
         self._proc.stdin.write(json.dumps(msg) + "\n")
         self._proc.stdin.flush()
@@ -270,6 +374,8 @@ class McpToolClient:
         req_id = self._req_id
         name = getattr(self, "_server_name", "?")
         self._send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}})
+        if self._bridge is not None:
+            return self._remote_answer(method, req_id)
         for _ in range(1000):
             msg = self._recv()
             if msg is None:
@@ -282,6 +388,58 @@ class McpToolClient:
             if msg.get("id") == req_id:
                 return msg
         raise RuntimeError(f"MCP server '{name}' did not respond to '{method}' within 1000 lines")
+
+    def _remote_answer(self, method: str, req_id: int) -> dict:
+        """The bridge's answer to *req_id*, taken as soon as it is written.
+
+        Raises ``RuntimeError`` naming the server and the bridge's reason (which
+        never carries a header value) when the answer is the bridge's own failure,
+        when the request ended without answering *req_id* (a 202 to a request, say),
+        or when nothing answers within ``_REMOTE_ANSWER_SECS``.
+        """
+        name = self._server_name
+        deadline = time.monotonic() + _REMOTE_ANSWER_SECS
+        while True:
+            remaining = deadline - time.monotonic()
+            try:
+                line = self._answers.lines.get(timeout=max(0.0, min(remaining, 1.0)))
+            except queue.Empty:
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"MCP server '{name}' did not answer '{method}' within "
+                        f"{_REMOTE_ANSWER_SECS:g}s"
+                    ) from None
+                # The request writes its answer before it ends, so an ended request
+                # with nothing queued will never answer.
+                if not self._request.is_alive() and self._answers.lines.empty():
+                    raise RuntimeError(
+                        f"MCP server '{name}' ended its answer to '{method}' without a response"
+                    ) from None
+                continue
+            msg = parse_json_object_line(line.decode("utf-8", errors="replace"))
+            if msg is None or msg.get("id") != req_id or "method" in msg:
+                continue
+            reason = self._bridge_failure(msg.get("error"))
+            if reason is not None:
+                raise RuntimeError(f"MCP server '{name}' {reason} (during '{method}')")
+            return msg
+
+    def _bridge_failure(self, error: object) -> str | None:
+        """The bridge's own reason when *error* is its failure, not the server's error.
+
+        The bridge prints each failure to its ``err`` stream before it answers the
+        ids with it, so an error the server sent itself, -32000 included, is told
+        apart by that line being absent.
+        """
+        from kiro_crew.kas_http_bridge import _BRIDGE_ERROR
+
+        if not isinstance(error, dict) or error.get("code") != _BRIDGE_ERROR:
+            return None
+        message = error.get("message")
+        if not isinstance(message, str) or message not in self._bridge_err.getvalue().splitlines():
+            return None
+        prefix = f"kirocrew: MCP server {self._server_name!r} "
+        return message[len(prefix) :] if message.startswith(prefix) else message
 
     def call_tool(self, name: str, arguments: dict) -> str:
         r = self._rpc("tools/call", {"name": name, "arguments": arguments})
@@ -296,10 +454,20 @@ class McpToolClient:
         return _joined_text(content)
 
     def is_running(self) -> bool:
-        """Whether the server process is still up and so can take another call."""
+        """Whether the server process is still up (a remote client: not yet closed),
+        and so can take another call."""
+        if self._bridge is not None:
+            return not self._closed
         return self._proc.poll() is None
 
     def close(self) -> None:
+        if self._bridge is not None:
+            self._closed = True
+            try:
+                self._bridge.close()  # best-effort session DELETE
+            except Exception:
+                logger.debug("ending a remote MCP session failed", exc_info=True)
+            return
         try:
             if platform_compat.IS_WINDOWS:
                 # A server behind a ``.cmd`` wrapper is a grandchild terminate() misses.
@@ -495,8 +663,9 @@ def _refuse_unlaunchable(name: str, spec: dict[str, Any]) -> None:
     (:func:`kiro_crew.mcp_cleanup.mcp_server_muted_in_any_store`, fail-closed on a
     ``disabled`` that is not a boolean). A ``"type": "registry"`` entry names an
     admin catalog record, not a local process. A ``url`` entry is a remote server,
-    and is refused before ``command`` is read so a placeholder command beside the
-    url is never run. An entry with no command has nothing to start.
+    called rather than started: :func:`_refuse_uncallable_remote` holds what stays
+    refused for it, and ``command`` is never read, so a placeholder command beside
+    the url is never run. An entry with no command has nothing to start.
     """
     # Deferred for the reason given in _switched_off_tools.
     from kiro_crew.mcp_cleanup import mcp_entry_is_registry_governed, mcp_server_muted_in_any_store
@@ -513,23 +682,141 @@ def _refuse_unlaunchable(name: str, spec: dict[str, Any]) -> None:
         )
     url = spec.get("url")
     if isinstance(url, str) and url:
-        raise RuntimeError(
-            f"MCP server '{name}' is a remote (url) server; ctx.call_tool starts only local "
-            "command servers"
-        )
+        _refuse_uncallable_remote(name, spec, url)
+        return
     command = spec.get("command")
     if not isinstance(command, str) or not command:
         raise RuntimeError(f"MCP server '{name}' declares no command")
 
 
+def _refuse_uncallable_remote(name: str, spec: dict[str, Any], url: str) -> None:
+    """Raise ``RuntimeError`` naming why ``ctx.call_tool`` may not call remote ``spec``.
+
+    Checked before any request. A url that is not ``http`` or ``https`` is not one
+    the bridge can dial (KAS's launcher refuses it too). An ``sse`` entry speaks the
+    older two-endpoint transport the bridge does not. A header holding a ``secret://`` reference is not
+    resolved for a remote server, so, as the dashboard probe does, the server is not
+    contacted with the reference as its credential; only the header's name is given.
+    A plain ``http`` url to a host that is not loopback is refused when it carries
+    headers only while the operator's ``agent.kas_refuse_plain_http_mcp_headers``
+    opt-in is on (:func:`kiro_crew.agent_sdk.agent_specs.plain_http_headers_refused`),
+    as KAS's bridge refuses it; otherwise it is called, as that bridge calls it.
+    """
+    # Deferred for the reason given in _switched_off_tools.
+    from kiro_crew.agent_sdk.agent_specs import plain_http_headers_refused
+    from kiro_crew.mcp_gateway.secret_uri import display_header_names, header_secret_refs
+
+    if not url.strip().lower().startswith(("https://", "http://")):
+        raise RuntimeError(
+            f"MCP server '{name}' has a url that is not http or https; ctx.call_tool calls "
+            "only an http(s) server"
+        )
+    if spec.get("type") == "sse":
+        raise RuntimeError(
+            f"MCP server '{name}' is an 'sse' server; ctx.call_tool calls only a remote "
+            "server that speaks streamable HTTP"
+        )
+    headers = spec.get("headers")
+    vaulted = header_secret_refs(headers)
+    if vaulted:
+        raise RuntimeError(
+            f"MCP server '{name}' has a secret:// reference in header "
+            f"{display_header_names(vaulted)}, which is not resolved for a remote server, "
+            "so ctx.call_tool does not contact it"
+        )
+    if isinstance(headers, dict) and headers and plain_http_headers_refused(url):
+        raise RuntimeError(
+            f"MCP server '{name}' would send its headers unencrypted to a plain http url on "
+            "another host, which agent.kas_refuse_plain_http_mcp_headers refuses"
+        )
+
+
+def _placeholder_source() -> dict[str, str]:
+    """The view ``${VAR}`` in a server's ``env`` or ``headers`` is filled in from.
+
+    The shared view drops only a narrow prefix list of credential names. A granted
+    run's os.environ also holds the job's vault values, which _clean_cron_env keeps
+    from a server because the grant covers the approved script body and not the
+    servers it calls; a reference to one, or to a _CRON_ENV_DENY name, is therefore
+    a miss and stays literal, so the value cannot reach the server under a name the
+    entry chooses.
+    """
+    # Deferred for the reason given in _switched_off_tools.
+    from kiro_crew.mcp_gateway.rewriter_env import _placeholder_source_env
+
+    return {
+        k: v
+        for k, v in _placeholder_source_env().items()
+        if k not in _CRON_ENV_DENY and k not in _GRANTED_ENV_KEYS
+    }
+
+
+def _expanded(name: str, raw: dict[Any, Any]) -> dict[Any, Any]:
+    """*raw* with ``${VAR}`` / ``${env:VAR}`` in each string value filled in, as the
+    broker and KAS paths fill them in (``_expand_env_placeholders``), from
+    :func:`_placeholder_source`; a miss stays literal, as in kiro-cli."""
+    from kiro_crew.mcp_gateway.rewriter_env import _expand_env_placeholders
+
+    source = _placeholder_source()
+    return {
+        k: (_expand_env_placeholders(v, source=source, server=name) if isinstance(v, str) else v)
+        for k, v in raw.items()
+    }
+
+
+#: A header name urllib sends as written: an RFC 9110 token.
+_HEADER_NAME_CHARS = frozenset(
+    "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+
+def _remote_headers(name: str, raw: object) -> dict[str, str]:
+    """The entry's ``headers`` as the bridge sends them, ``${VAR}`` filled in.
+
+    A non-object block is ignored, and a header that cannot be sent as written (a
+    value that is not a string, a name that is not a token, a line break or NUL in
+    the value) is dropped, each with a log line naming the header and never its
+    value, which can hold a credential.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning(
+            "MCP server %r declares a non-object 'headers' (%s); ignoring it",
+            name,
+            type(raw).__name__,
+        )
+        return {}
+    headers: dict[str, str] = {}
+    for key, value in _expanded(name, raw).items():
+        if not isinstance(value, str):
+            reason = "value is not a string"
+        elif not isinstance(key, str) or not key or not set(key) <= _HEADER_NAME_CHARS:
+            reason = "not a header name"
+        elif any(c in value for c in "\r\n\0"):
+            reason = "line break or NUL byte in value"
+        else:
+            headers[key] = value
+            continue
+        logger.warning(
+            "MCP server %r declares an invalid header %r (%s); ignoring it", name, key, reason
+        )
+    return headers
+
+
 @lru_cache(maxsize=16)
-def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | None:
+def _resolve_mcp_server(
+    name: str,
+) -> tuple[tuple[str, ...], dict[str, str]] | _RemoteMcpServer | None:
     """Read MCP server command + env from Crew's agent spec (cached per process).
 
-    Returns ``(argv, env)``, or ``None`` when the spec declares no such server
-    (an entry that is not a non-empty object counts as none). Raises
-    ``RuntimeError`` naming the reason when the entry is one ``ctx.call_tool`` may
-    not start (:func:`_refuse_unlaunchable`). The per-server ``env`` block is
+    Returns ``(argv, env)``, or for a ``url`` entry a :class:`_RemoteMcpServer`
+    holding :func:`kiro_crew.agent_sdk.agent_specs.remote_bridge_url` of it (the spelling KAS's
+    bridge dials) and its headers (:func:`_remote_headers`), or ``None`` when the
+    spec declares no such server (an entry that is not a non-empty object counts as
+    none). Raises ``RuntimeError`` naming the reason when the entry is one
+    ``ctx.call_tool`` may not start or call (:func:`_refuse_unlaunchable`). The
+    per-server ``env`` block is
     required for launchers that shell out to a helper binary only reachable via
     the ``PATH`` the config supplies: dropping it makes the spawned MCP die at the
     JSON-RPC ``initialize`` handshake. When the config has no ``env`` block -- or
@@ -551,6 +838,11 @@ def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | N
     if not isinstance(spec, dict) or not spec:
         return None
     _refuse_unlaunchable(name, spec)
+    url = spec.get("url")
+    if isinstance(url, str) and url:
+        from kiro_crew.agent_sdk.agent_specs import remote_bridge_url
+
+        return _RemoteMcpServer(remote_bridge_url(url), _remote_headers(name, spec.get("headers")))
     argv = tuple([spec["command"]] + spec.get("args", []))
     # A hand-edited config can spell `env` as anything JSON allows. Only a
     # mapping has .items(), so a string/list/number would raise AttributeError
@@ -567,29 +859,7 @@ def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | N
         )
         raw_env = None
     if raw_env:
-        # Deferred for the reason given in _switched_off_tools.
-        from kiro_crew.mcp_gateway.rewriter_env import (
-            _expand_env_placeholders,
-            _placeholder_source_env,
-        )
-
-        # The shared view drops only a narrow prefix list of credential names. A
-        # granted run's os.environ also holds the job's vault values, which
-        # _clean_cron_env keeps from this server because the grant covers the
-        # approved script body and not the binaries it calls; a reference to one,
-        # or to a _CRON_ENV_DENY name, is therefore a miss and stays literal, so
-        # the value cannot reach the server under a name the entry chooses.
-        source = {
-            k: v
-            for k, v in _placeholder_source_env().items()
-            if k not in _CRON_ENV_DENY and k not in _GRANTED_ENV_KEYS
-        }
-        raw_env = {
-            k: (
-                _expand_env_placeholders(v, source=source, server=name) if isinstance(v, str) else v
-            )
-            for k, v in raw_env.items()
-        }
+        raw_env = _expanded(name, raw_env)
     env: dict[str, str] = {}
     for raw_key, raw_value in (raw_env or {}).items():
         key, value = str(raw_key), str(raw_value)
