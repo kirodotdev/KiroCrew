@@ -735,8 +735,8 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # on page-wide never re-enables it (it only enables servers
                 # nobody chose for).
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
-                # The operator's answer to "does it work on the project's
-                # files?" (null when unanswered), and whether it is never asked.
+                # The operator's answer to "share this server across chats?"
+                # (null when unanswered), and whether it is never asked.
                 # A ``not_used`` answer given for a different launch than the one
                 # this name declares now reads as unanswered, so the page asks.
                 "cwd_use": effective_cwd_answer(
