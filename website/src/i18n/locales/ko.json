@@ -22750,6 +22750,8 @@
       "profile_dashboard_card_send_failed_off": "원클릭 전송을 끄지 못했습니다. 아직 켜져 있습니다. 다시 시도해 보세요.",
       "goals_loading": "목표를 불러오는 중…",
       "goals_load_failed": "목표를 불러오지 못했습니다.",
+      "bot_sessions_all_switch": "내 세션에 모든 bot 표시",
+      "bot_sessions_this_switch": "내 세션에 {{name}} 표시",
       "goals_save_failed": "변경 사항을 저장하지 못했습니다. 다시 시도해 주세요.",
       "goals_page_gone": "이 항목은 다른 곳에서 삭제되어 저장할 수 없습니다. 보관하려면 텍스트를 복사하세요.",
       "goals_page_gone_draft": "저장되지 않은 텍스트",

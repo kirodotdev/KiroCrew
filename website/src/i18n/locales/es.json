@@ -23922,6 +23922,8 @@
       "profile_dashboard_card_send_failed_off": "No se pudo desactivar el envío con un clic. Sigue activado. Inténtalo de nuevo.",
       "goals_loading": "Cargando objetivos…",
       "goals_load_failed": "No se pudieron cargar los objetivos.",
+      "bot_sessions_all_switch": "Mostrar todos los bots en mis sesiones",
+      "bot_sessions_this_switch": "Mostrar {{name}} en mis sesiones",
       "goals_save_failed": "No se pudo guardar el cambio. Inténtalo de nuevo.",
       "goals_page_gone": "Esto se eliminó en otro lugar, así que no se puede guardar. Copia tu texto si quieres conservarlo.",
       "goals_page_gone_draft": "Tu texto sin guardar",

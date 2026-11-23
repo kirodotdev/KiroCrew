@@ -22750,6 +22750,8 @@
       "profile_dashboard_card_send_failed_off": "ワンクリック送信をオフにできませんでした。オンのままです。もう一度お試しください。",
       "goals_loading": "目標を読み込んでいます…",
       "goals_load_failed": "目標を読み込めませんでした。",
+      "bot_sessions_all_switch": "すべての bot をセッションに表示",
+      "bot_sessions_this_switch": "{{name}} をセッションに表示",
       "goals_save_failed": "変更を保存できませんでした。もう一度お試しください。",
       "goals_page_gone": "この項目は別の場所で削除されたため、保存できません。残したい場合はテキストをコピーしてください。",
       "goals_page_gone_draft": "保存されていないテキスト",

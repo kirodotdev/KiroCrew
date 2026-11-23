@@ -1085,6 +1085,13 @@
       "configKey": "session.max_per_creator"
     },
     {
+      "id": "chat.show-all-bots-in-my-sessions",
+      "label": "Show all bots in my Sessions",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.show_bot_sessions_in_list",
+      "configKey": "dashboard.show_bot_sessions_in_list"
+    },
+    {
       "id": "chat.show-context-percentage",
       "label": "Show Context Percentage",
       "tab": "chat",

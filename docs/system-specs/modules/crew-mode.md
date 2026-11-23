@@ -2887,8 +2887,18 @@ with the Bot's `GET .../crew-workers` answer, which adds closed sessions, the
 ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). While
 the Bot's thread is live, the same sessions leave the person's own lists (sidebar,
 Recents, grid, unread counts and a person's `GET /api/chat/slots`; `crewModeView`,
-`crew_mode.list_view`). There is no switch to keep them listed; a stored
-`show_sessions_in_list` value is ignored. A session's wait still reaches the
+`crew_mode.list_view`), unless a switch keeps them listed. Two switches do:
+**Show all bots in my Sessions** (`dashboard.show_bot_sessions_in_list`, in
+Settings > Chat > Sessions and at the top of every Bot's Sessions list) lists
+every Bot's sessions, and while it is on no Bot's own switch applies; while it is
+off, **Show {name} in my Sessions** (the Bot's `show_sessions_in_list`, at the top
+of that Bot's Sessions list) decides for that Bot. The server folds the two into
+one stamp on the Bot thread's row (`bot_sessions_listed`,
+`crew_mode.mate_lists_sessions`), which `list_view` and `crewModeView`
+(`mateThreadsHidingSessions`) read; a Bot's own switch reads on and cannot be
+pressed while the global one is on (`BotSessionListSwitches`). A listed session
+sits in its Bot's home folder, so the Sessions list groups them by Bot, and it
+opens like any other row. A session's wait still reaches the
 person as a wait: while it waits on a tool approval or a question, the Bots
 roster marks the Bot as needing you (`mateNeedsYouByKey`), the side panel's
 Sessions tab counts it, and All Dashboards shows a card on the Bot thread that

@@ -23922,6 +23922,8 @@
       "profile_dashboard_card_send_failed_off": "Impossibile disattivare l'invio con un clic. È ancora attivo. Riprova.",
       "goals_loading": "Caricamento degli obiettivi…",
       "goals_load_failed": "Impossibile caricare gli obiettivi.",
+      "bot_sessions_all_switch": "Mostra tutti i bot nelle mie sessioni",
+      "bot_sessions_this_switch": "Mostra {{name}} nelle mie sessioni",
       "goals_save_failed": "Impossibile salvare la modifica. Riprova.",
       "goals_page_gone": "Questo elemento è stato rimosso altrove, quindi non può essere salvato. Copia il testo se vuoi conservarlo.",
       "goals_page_gone_draft": "Il tuo testo non salvato",

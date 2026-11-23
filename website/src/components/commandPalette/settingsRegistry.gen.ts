@@ -1886,6 +1886,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "session.max_per_creator"
   },
   {
+    "id": "chat.show-all-bots-in-my-sessions",
+    "label": "Show all bots in my Sessions",
+    "labelKey": "pages.membersPage.bot_sessions_all_switch",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.show_bot_sessions_in_list"
+  },
+  {
     "id": "chat.show-context-percentage",
     "label": "Show Context Percentage",
     "labelKey": "pages.settings.chatPanel.show_context_percentage",

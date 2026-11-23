@@ -46,6 +46,7 @@ import { useConfirm } from '../../components/ConfirmDialog'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import CrewNotesTab from './CrewNotesTab'
 import MateSessionsList from './MateSessionsList'
+import BotSessionListSwitches from './BotSessionListSwitches'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import CrewWakeSection from '../../components/CrewWakeSection'
 import { crewWakeQueryKey, wakesCrew } from '../../components/crew/wakesCrew'
@@ -700,6 +701,7 @@ export function MembersPageProfileCard({
         slotsLoaded={slotsLoaded}
         empty={sessionsEmpty}
         onOpen={(w) => openSessionInPanel(w.key)}
+        header={active && <BotSessionListSwitches member={activeView ?? active} displayName={crewDisplayName(active)} />}
       />
     </div>
   )

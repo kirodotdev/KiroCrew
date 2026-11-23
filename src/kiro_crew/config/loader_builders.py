@@ -1493,6 +1493,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         auto_open_git_panel=section.read("auto_open_git_panel", _safe_bool),
         side_panel_always_open=section.read("side_panel_always_open", _safe_bool),
         side_panel_pin_summary=section.read("side_panel_pin_summary", _safe_bool),
+        show_bot_sessions_in_list=section.read("show_bot_sessions_in_list", _safe_bool),
         auto_open_conductor_board=section.read("auto_open_conductor_board", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),

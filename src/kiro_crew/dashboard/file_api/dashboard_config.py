@@ -97,6 +97,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "auto_open_git_panel",
             "side_panel_always_open",
             "side_panel_pin_summary",
+            "show_bot_sessions_in_list",
             "auto_open_conductor_board",
             "folder_suggestions_enabled",
             "folder_suggestions_auto_apply",
@@ -506,6 +507,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["side_panel_pin_summary"] = val
+        if "show_bot_sessions_in_list" in body:
+            val = body["show_bot_sessions_in_list"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "show_bot_sessions_in_list must be a boolean",
+                        "code": "invalid_show_bot_sessions_in_list",
+                    },
+                    status=400,
+                )
+            updates["show_bot_sessions_in_list"] = val
         if "auto_open_conductor_board" in body:
             val = body["auto_open_conductor_board"]
             if not isinstance(val, bool):
@@ -803,6 +818,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "side_panel_always_open": cfg.dashboard.side_panel_always_open,
             "side_panel_pin_summary": cfg.dashboard.side_panel_pin_summary,
+            "show_bot_sessions_in_list": cfg.dashboard.show_bot_sessions_in_list,
             "auto_open_conductor_board": cfg.dashboard.auto_open_conductor_board,
             "session_card_source_links": cfg.dashboard.session_card_source_links,
             "session_folder_root": cfg.dashboard.session_folder_root,
