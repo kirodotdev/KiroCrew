@@ -19,6 +19,18 @@ import { resumeFromHistory, switchSlot } from '../store/chatSlice'
 import { sseDisconnected } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
+import type { ChatHistorySearchProps } from '../components/chatHistorySearch/ChatHistorySearch'
+import { closeCrewWindow, openCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
+
+vi.mock('../pages/chat/crew-window/CrewChatWindow', () => ({
+  default: () => <div data-testid="crew-chat-window" />,
+}))
+
+vi.mock('../components/chatHistorySearch/ChatHistorySearch', () => ({
+  default: ({ onQuoteMessage, onForkMessage }: ChatHistorySearchProps) => (
+    <div data-testid="history-search" data-quote={typeof onQuoteMessage} data-fork={typeof onForkMessage} />
+  ),
+}))
 
 let assistantMounted = false
 vi.mock('../pages/chat', async () => {
@@ -43,6 +55,7 @@ vi.mock('../components/ChatInput', async (importOriginal) => {
 })
 
 interface GridProps {
+  onClose: () => void
   openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
   onFolderOpen?: (path: string, opts?: { slot?: string | null }) => void
 }
@@ -243,6 +256,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  act(() => { closeCrewWindow() })
   vi.clearAllTimers()
   vi.useRealTimers()
 })
@@ -279,5 +293,35 @@ describe('ChatPage Split View folder opener', () => {
     // Its switch to a pane's chat would be rejected offline and blank that pane.
     act(() => { store.dispatch(sseDisconnected()) })
     await waitFor(() => expect(gridProps!.onFolderOpen).toBeUndefined())
+  })
+})
+
+describe('ChatPage history search in Split View', () => {
+  it('withholds quotes until the page owns the composer, while keeping fork available', async () => {
+    await renderSplit()
+    fireEvent.keyDown(document, { key: 'f', metaKey: true })
+    // Wait for ChatSidePanels' lazy history-search boundary.
+    const search = await screen.findByTestId('history-search', {}, { timeout: 5000 })
+    expect(search).toHaveAttribute('data-quote', 'undefined')
+    expect(search).toHaveAttribute('data-fork', 'function')
+
+    act(() => { gridProps!.onClose() })
+    await waitFor(() => expect(screen.queryByTestId('session-grid')).toBeNull())
+    expect(screen.getByTestId('history-search')).toHaveAttribute('data-quote', 'function')
+
+    act(() => { openCrewWindow({ instanceId: 'peer-1', key: 'peer-chat-1' }) })
+    // Wait for ChatPaneChrome's lazy CrewChatWindow boundary.
+    expect(await screen.findByTestId('crew-chat-window', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.getByTestId('history-search')).toHaveAttribute('data-quote', 'undefined')
+    expect(screen.getByTestId('history-search')).toHaveAttribute('data-fork', 'function')
+
+    act(() => { closeCrewWindow() })
+    await waitFor(() => expect(screen.queryByTestId('crew-chat-window')).toBeNull())
+    expect(screen.getByTestId('history-search')).toHaveAttribute('data-quote', 'function')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Enter split view' }))
+    await waitFor(() => expect(screen.getByTestId('session-grid')).toBeInTheDocument())
+    expect(screen.getByTestId('history-search')).toHaveAttribute('data-quote', 'undefined')
+    expect(screen.getByTestId('history-search')).toHaveAttribute('data-fork', 'function')
   })
 })

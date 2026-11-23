@@ -126,6 +126,9 @@ export interface MessageRenderContext {
    *  bubble arms its context menu. Receives the row's own fields, so the
    *  renderer never has to know what the host stores. */
   onQuoteMessage?: (role: 'user' | 'assistant', content: string, ts?: string, mid?: string) => void
+  /** Fork the chat from an assistant reply, by its `meta.mid`. Absent: the row
+   *  offers no fork (a reply with no `mid` offers none either). */
+  onForkMessage?: (mid: string) => void | Promise<unknown>
   /** Jump to the message a sent quote card quotes, in the host's own
    *  transcript. A host capability: absent, a sent quote card is a plain
    *  card, not a control. */
@@ -621,6 +624,14 @@ export function quoteMessageFor(m: ChatMessage, ctx: MessageRenderContext, role:
   return (shown?: string) => fn(role, typeof shown === 'string' ? shown : m.content, m.ts, mid)
 }
 
+/** The fork props of a finished reply whose host offers `onForkMessage`. */
+function forkPropsFor(m: ChatMessage, ctx: MessageRenderContext): { onFork?: () => void | Promise<unknown>; forkIndex?: number; forkMessageId?: string } {
+  const fn = ctx.onForkMessage
+  const mid = typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
+  if (!fn || !mid || m.role === 'streaming') return {}
+  return { onFork: () => fn(mid), forkIndex: ctx.index, forkMessageId: mid }
+}
+
 export function renderAssistantBubble(
   m: ChatMessage,
   ctx: MessageRenderContext,
@@ -683,6 +694,7 @@ export function renderAssistantBubble(
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
       onQuoteMessage={quoteMessageFor(m, ctx, 'assistant')}
+      {...forkPropsFor(m, ctx)}
       // A structured warm brief draws as a fixed card in place of the markdown,
       // inside this same bubble, so it keeps the timestamp and row actions.
       body={warmBriefBodyOf(m)}

@@ -2,9 +2,10 @@ import type { Dispatch, SetStateAction } from 'react'
 import { useRef } from 'react'
 import { act, renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, type QueryClientProviderProps } from '@tanstack/react-query'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppDispatch } from '../store'
+import { isMac } from '../utils/platform'
 import type { ResizeInfo } from '../utils/resizeImage'
 
 const captureSeam = vi.hoisted(() => ({
@@ -23,15 +24,21 @@ const panelTabs = vi.hoisted(() => ({
   openDiff: vi.fn(),
 }))
 const closeSearch = vi.hoisted(() => vi.fn())
+// The find-shortcut cases run the real hook; every other case keeps the stub.
+const searchSeam = vi.hoisted(() => ({ real: false }))
 
 vi.mock('../components/ChatDropOverlay', () => ({
   useChatFileDrop: () => ({ active: false, dropTargetProps: {} }),
 }))
 vi.mock('../components/WebPreviewPanel', () => ({ PREVIEW_SNIP_EVENT: 'kirocrew-web-preview-snip' }))
 vi.mock('../utils/browserAnnotations', () => ({ PREVIEW_ANNOTATE_EVENT: 'kirocrew-preview-annotate' }))
-vi.mock('../hooks/useMessageSearch', () => ({
-  useMessageSearch: () => ({ isOpen: false, close: closeSearch }),
-}))
+vi.mock('../hooks/useMessageSearch', async () => {
+  const actual = await vi.importActual<typeof import('../hooks/useMessageSearch')>('../hooks/useMessageSearch')
+  return {
+    useMessageSearch: (...args: Parameters<typeof actual.useMessageSearch>) =>
+      searchSeam.real ? actual.useMessageSearch(...args) : { isOpen: false, close: closeSearch },
+  }
+})
 vi.mock('../hooks/panelTabRegistry', () => ({ usePanelTabDescriptors: () => [] }))
 vi.mock('../hooks/usePanelTabs', () => ({
   useAnyLiveAppTab: () => false,
@@ -205,5 +212,36 @@ describe('a snip the embedded-pane trust gate refuses', () => {
 
     expect(captureSeam.showActionError).toHaveBeenCalledTimes(1)
     expect(captureSeam.release).toHaveBeenCalledWith('slot-a')
+  })
+})
+
+describe('the find shortcut on ChatPage', () => {
+  // ChatPage narrows the chat pane and hides the side panel while the search is
+  // open, but the pane itself renders only for a chat. With no chat open, ⌘F
+  // opening it left a blank column that only Escape cleared.
+  beforeEach(() => {
+    vi.clearAllMocks()
+    searchSeam.real = true
+  })
+  afterEach(() => { searchSeam.real = false })
+
+  const find = () => new KeyboardEvent('keydown', { key: 'f', metaKey: isMac, ctrlKey: !isMac, cancelable: true })
+
+  it('with no chat open, leaves the key to the browser and the search closed', () => {
+    const { result } = renderHook(() => useSlotlessController(null), { wrapper })
+    const event = find()
+
+    act(() => { document.dispatchEvent(event) })
+
+    expect(result.current.search.isOpen).toBe(false)
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('with a chat open, opens the search', () => {
+    const { result } = renderHook(() => useSlotlessController('slot-a'), { wrapper })
+
+    act(() => { document.dispatchEvent(find()) })
+
+    expect(result.current.search.isOpen).toBe(true)
   })
 })

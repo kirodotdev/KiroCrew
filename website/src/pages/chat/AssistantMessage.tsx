@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, Split, GitFork, EyeOff, VenetianMask, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
+import { useDoneFlash } from '../../hooks/useDoneFlash'
+import QuotedMark, { QUOTED_BTN_CLS } from './QuotedMark'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { useMessageActionsFor, useMessageActionsLoadFailed } from '../../messageActions/MessageActionMenuItems'
@@ -503,7 +505,10 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // (they are the agent's receipt of a redirect, not part of its answer).
   // Same text Copy copies: the keep-visible marker is a transcript control,
   // not part of the reply, so a quote must not hand it to the model.
-  const quoteShown = () => onQuoteMessage?.(quotableText)
+  // The quote lands in the composer, which can sit far from this row (a search
+  // preview beside the chat), so the row says it took for a moment.
+  const [quoted, flashQuoted] = useDoneFlash()
+  const quoteShown = () => { onQuoteMessage?.(quotableText); flashQuoted(true) }
   // App message actions (`contributes.messageActions`) the owner approved for
   // replies: rows at the end of More, never row buttons.
   const appActions = useMessageActionsFor('assistant', !isStreaming && showFooter && quotableText.length > 0)
@@ -949,7 +954,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             Regenerate holds the seat over Fork; on the newest reply of a loaded
             window, where both draw, Fork follows Copy so Copy stays second. */}
         {quoteOffered && (regenButton ?? forkButton)}
-        {quoteRow && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" data-testid="quote-message" title={i18nT('pages.chat.assistantMessage.quote_message')} aria-label={i18nT('pages.chat.assistantMessage.quote_message')} onClick={quoteShown}><Quote size={14} /></button>}
+        {quoteRow && <button className={`inline-flex items-center gap-1 text-muted hover:text-text p-0.5 rounded transition-colors ${quoted ? QUOTED_BTN_CLS : ''}`} data-testid="quote-message" title={i18nT('pages.chat.assistantMessage.quote_message')} aria-label={i18nT('pages.chat.assistantMessage.quote_message')} onClick={quoteShown}>{quoted ? <QuotedMark /> : <Quote size={14} />}</button>}
+        {quoted && !quoteRow && <span className="inline-flex items-center gap-1 p-0.5" data-testid="quote-done"><QuotedMark /></span>}
         {!copyInMenu && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" aria-label={copyOutcomeLabel(copied, i18nT('pages.chat.assistantMessage.copy'), i18nT(rowCopiedRich ? 'pages.chat.assistantMessage.copied_as_rich_text' : 'pages.chat.assistantMessage.copied_as_markdown'))} title={copied === 'ok' ? i18nT(rowCopiedRich ? 'pages.chat.assistantMessage.copied_as_rich_text' : 'pages.chat.assistantMessage.copied_as_markdown') : i18nT(richByRightClick ? 'pages.chat.assistantMessage.copy_as_markdown_right_click' : 'pages.chat.assistantMessage.copy_as_markdown')} onClick={() => copyMessage()}>{copyOutcomeIcon(copied, <Copy size={14} />)}</button>}
         {quoteOffered && regenButton && forkButton}
         {!linkPinInMenu && messageTs && slotKey && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.copy_link_to_message')} aria-label={copyOutcomeLabel(linkCopied, i18nT('pages.chat.assistantMessage.copy_link_to_message'))} onClick={() => { copySessionLink(slotKey, slotTitle, messageTs, mode).then(ok => { flashCopy(setLinkCopied)(ok); if (!ok) setCopyFailed(true) }, () => { flashCopy(setLinkCopied)(false); setCopyFailed(true) }) }}>{copyOutcomeIcon(linkCopied, <Link2 size={14} />)}</button>}

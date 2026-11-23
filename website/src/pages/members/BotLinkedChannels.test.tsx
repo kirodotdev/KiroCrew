@@ -57,6 +57,7 @@ vi.mock('../../components/ui/dropdown-menu', async importOriginal => {
       return <div role="menu">{children}</div>
     },
     DropdownMenuItem: Item,
+    DropdownMenuSeparator: () => <hr data-testid="menu-separator" />,
   }
 })
 
@@ -157,6 +158,45 @@ describe('BotLinkedChannels', () => {
     // The chip and its rows share one query: showing the rows must not hide
     // the chip again and refetch in a loop.
     expect(channelTargets.mock.calls.length).toBeLessThan(5)
+  })
+
+  it('with a link, the chip keeps its label and Search is the first row of its menu', () => {
+    const onOpenSearch = vi.fn()
+    renderWithProviders(
+      <BotLinkedChannels slotKey={BOT_SLOT} inBar={false} onOpenSearch={onOpenSearch} searchFallback={<span data-testid="search-fallback" />} />,
+      { store: storeWith([slackLink()]) },
+    )
+    // The header's two peers: this chip (its label still names the link) and
+    // the panel opener, so Search is not a third button.
+    expect(screen.getByRole('button', { name: i18nT('pages.membersPage.linked_to', { label: 'Slack' }) })).toBeInTheDocument()
+    expect(screen.queryByTestId('search-fallback')).toBeNull()
+    const menu = screen.getByRole('menu')
+    const first = menu.firstElementChild as HTMLElement
+    expect(first).toHaveTextContent('Search')
+    expect(first).toHaveTextContent('Ctrl+F')
+    expect(first.nextElementSibling).toBe(screen.getByTestId('menu-separator'))
+    fireEvent.click(first)
+    expect(onOpenSearch).toHaveBeenCalledTimes(1)
+  })
+
+  it('with no chip, the header gets the Search button in its place', () => {
+    renderWithProviders(
+      <BotLinkedChannels slotKey={BOT_SLOT} inBar={false} onOpenSearch={vi.fn()} searchFallback={<span data-testid="search-fallback" />} />,
+      { store: storeWith([]) },
+    )
+    expect(screen.getByTestId('search-fallback')).toBeInTheDocument()
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('once the read answers nothing to connect, the set-up link takes the chip place and Search does not join it', async () => {
+    renderWithProviders(
+      <BotLinkedChannels slotKey={BOT_SLOT} inBar={false} onOpenSearch={vi.fn()} searchFallback={<span data-testid="search-fallback" />} />,
+      { store: storeWith([]) },
+    )
+    // Two peers in the header (`max-two-buttons-per-row`): this link and the
+    // panel opener. Search stays on the + menu and the shortcut.
+    expect(await screen.findByTestId('member-set-up-channel')).toBeInTheDocument()
+    expect(screen.queryByTestId('search-fallback')).toBeNull()
   })
 
   it('a paused link reads as paused with the menu closed', () => {

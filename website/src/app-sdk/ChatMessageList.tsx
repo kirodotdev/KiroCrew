@@ -107,6 +107,8 @@ export interface ChatMessageListProps {
   /** Quote a whole row into the host's next send. Host capability; absent
    *  hides the action on every row (see `MessageRenderContext.onQuoteMessage`). */
   onQuoteMessage?: MessageRenderContext['onQuoteMessage']
+  /** Fork from an assistant reply by its id (see `MessageRenderContext.onForkMessage`). */
+  onForkMessage?: MessageRenderContext['onForkMessage']
   /** Jump to the message a sent quote card quotes, in this host's transcript.
    *  Host capability; absent, no sent quote card is a control (see
    *  `MessageRenderContext.onJumpToQuote`). */
@@ -255,6 +257,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   onQuote,
   onAsk,
   onQuoteMessage,
+  onForkMessage,
   onJumpToQuote,
   threads,
   renderTool,
@@ -430,6 +433,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       onQuote,
       onAsk,
       onQuoteMessage,
+      onForkMessage,
       onJumpToQuote,
       threads,
       hideCardOwnedOAuth,
@@ -444,7 +448,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     return searchRows && node != null
       ? <MessageSearchScope key={key} messageIdx={i}>{node}</MessageSearchScope>
       : node
-  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, onJumpToQuote, revealTs, revealMid, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun, searchRows])
+  }, [versioned, queued, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, onForkMessage, onJumpToQuote, revealTs, revealMid, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun, searchRows])
 
 
   // Render a TurnItem (single or group)

@@ -139,8 +139,8 @@ export interface TranscriptRendererOptions {
   /** Open a directory in the host's side panel. Same #3300 blocker. */
   onFolderOpen?: (path: string) => void
   /** Reveal the Crew (Workers) tab from the Crew Mode dispatch-notice button.
-   *  Host-owned because it must close the find pane (which keeps the dock
-   *  unmounted while open) and rebind a background pane's slot to the active one
+   *  Host-owned because it must end the history search, as every tab opened
+   *  from the chat does, and rebind a background pane's slot to the active one
    *  before opening — neither reachable from the card. Absent (a side/embedded
    *  chat, a crew window) leaves the card's button inert, the same opt-in shape
    *  as the other host reveals above. */

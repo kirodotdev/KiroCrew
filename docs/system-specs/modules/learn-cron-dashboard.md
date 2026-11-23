@@ -6573,7 +6573,7 @@ scroll shell) and the owners under `pages/chat/page/`:
 | `ChatTitleOverlay.tsx` | The session title row, the pinned-prompt fold sentinel and the pinned prompt |
 | `ChatTranscriptView.tsx` | The transcript column: the welcome hero, or the minimap and the scroll shell with its rows, earlier-messages bar, measurement farm and footer; the restore skeleton |
 | `ComposerDockView.tsx` | The floating composer dock and everything in it (status stack, input area, the composer) and the composer toolbar's pop-ups |
-| `ChatSidePanels.tsx` | The find pane and the side panel, inline or portaled into the shell's activity column |
+| `ChatSidePanels.tsx` | The side panel, inline or portaled into the shell's activity column, with the history search's on-demand Search tab |
 | `crewModeSwitch.ts`, `crewModeMidChatConfirm.tsx`, `chatTrackpadSwipe.ts`, `jumpMark.ts`, `UnrestoredTabsNotice.tsx`, `useUnrestoredTabs.ts` | Crew Mode on the composer and the confirm before it turns on mid-chat; the trackpad swipe that opens and closes the side panel; the jump highlight durations; the "N tabs were not restored" notice and its read |
 
 The views are module-level components with no hooks: ChatPage passes each one the values it renders. The page's own slot switches (fork, the signed chat link, the follow-up session, a split pane's Side Chat) are hooks in `pages/useChatPageSlotSwitches.ts`, beside the page and outside `pages/chat/page/`, whose owners never switch slots.

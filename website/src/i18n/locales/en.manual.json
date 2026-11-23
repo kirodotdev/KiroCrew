@@ -3635,18 +3635,6 @@
       "beside_hint": "Relaunches the agent behind every open chat so saved changes apply. Chats and their history stay; a reply in progress stops.",
       "restart_failed_because": "Could not restart — {{reason}}. Wait a moment, then press Apply & Restart again."
     },
-    "searchBar": {
-      "next": "Next ({{mod}})",
-      "no_results": "No results",
-      "previous": "Previous ({{mod}})",
-      "no_results_loaded_only": "No results in loaded history",
-      "results_loaded_only": "{{current}}/{{total}} results in loaded history"
-    },
-    "searchResultsList": {
-      "assistant": "Assistant",
-      "selected": "selected",
-      "you": "You"
-    },
     "secretField": {
       "hide": "Hide",
       "show": "Show"
@@ -6177,7 +6165,8 @@
         "fork_as_temporary": "Fork as temporary",
         "copy_failed": "Copy failed",
         "quote_message": "Quote message",
-        "speaker_heading": "{{productName}}"
+        "speaker_heading": "{{productName}}",
+        "quoted": "Quoted"
       },
       "messageContextMenu": {
         "copy_link_text": "Copy link text",
@@ -7151,7 +7140,6 @@
       "knowledge_context_not_kept": "Its knowledge context was not kept — re-pick it before you resend.",
       "more_actions": "More actions",
       "update_entry_load_failed": "Couldn't load the update entry. Check for updates in Settings.",
-      "no_results": "No results",
       "no_tools": "No tools",
       "open_activity_panel": "Open activity panel",
       "open_file": "Open file {{path}}",
@@ -7174,7 +7162,6 @@
       "tool_status_deferred": "Deferred",
       "tool_status_disabled": "Disabled",
       "tool_status_loaded": "Loaded this session",
-      "type_to_search_this_conversation": "Type to search this conversation.",
       "unknown_error": "unknown error",
       "upload_failed_check_file_type_and_size_max_50_mb": "Upload failed — check file type and size (max 50 MB)",
       "upload_failed_error": "Upload failed: {{error}}",

@@ -9,10 +9,9 @@ import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery } from '@tanstack/react-query'
 import ChatMessageList from '../app-sdk/ChatMessageList'
-import SearchBar from './SearchBar'
-import SearchHighlightContext from '../hooks/SearchHighlightContext'
+import ChatPaneHistorySearch from './chatHistorySearch/ChatPaneHistorySearch'
 import JumpRevealContext from '../hooks/JumpRevealContext'
-import { useChatPaneFind } from '../hooks/useChatPaneFind'
+import { useMessageSearch } from '../hooks/useMessageSearch'
 import { RunInTerminalOriginSlot } from './runInTerminalScope'
 import type { VirtualTranscriptHandle } from '../app-sdk/ChatMessageList'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
@@ -126,8 +125,6 @@ export { useChatPaneUploads } from './useChatPaneUploads'
  *  crewmate's last words (about a thousand rows at the older-page size). */
 const CREWMATE_AUTO_WALK_MAX_PAGES = 10
 
-/** The floating find bar's height plus the gap below it (SearchBar, undocked). */
-const FIND_BAR_CLEARANCE_PX = 48
 
 export default function ChatPane({
   slotKey,
@@ -144,6 +141,9 @@ export default function ChatPane({
   followContentWidth,
   pushToTalk = false,
   findInChat = false,
+  historySearchHost,
+  onHistorySearchOpenChange,
+  onHistorySearchOpener,
   hideEmptyHint,
   openSideChat,
   leading,
@@ -830,17 +830,21 @@ export default function ChatPane({
   })
   // The Crew Mode dispatch-notice reveal is the host's single `onOpenCrewTab`
   // (one reveal path: switch to the card's slot so the panel it opens is that
-  // chat's, select Workers, open the dock, close Find). It is threaded down from
+  // chat's, select Workers, open the dock, end the history search). It is threaded down from
   // ChatPage so a split pane uses the SAME reveal as the single-chat surface,
   // with no second copy here.
   // The slot whose playback the browser blocked, as the crewmate's
   // VoicePlaybackNotice reports it; its replies reveal their action rows.
   const [voiceRecoverySlot, setVoiceRecoverySlot] = useState<string | null>(null)
   const { listMessages, renderers, unfold } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume, revealActions: voiceRecoverySlot === slotKey, linkPreviews: dashCfg?.link_previews === true })
-  const find = useChatPaneFind({ enabled: findInChat, messages: listMessages, slotKey, displayItemsRef: pinItemsRef, listRef, scrollerRef })
-  // The open find bar floats over the scroller's top edge; the scroller pays
-  // for that strip so the first row and a centred match are not under it.
-  const findBarH = find.search.isOpen ? FIND_BAR_CLEARANCE_PX : 0
+  // ⌘F / Ctrl+F opens the chat's history search while this pane offers it.
+  const search = useMessageSearch(slotKey, findInChat)
+  const { open: openSearch, close: closeSearch } = search
+  useEffect(() => {
+    if (!onHistorySearchOpener) return
+    onHistorySearchOpener(openSearch, closeSearch)
+    return () => onHistorySearchOpener(null)
+  }, [onHistorySearchOpener, openSearch, closeSearch])
   // A sent quote card lands its row in THIS pane's transcript, through the
   // pinned prompt's virtualized glide (the row may not be mounted). Exact: the
   // quoted row itself, never the head of the prompt run above it.
@@ -1021,17 +1025,20 @@ export default function ChatPane({
             getBoundingClientRect — and the banner with it under a host band
             floating over the pane's top, so the pinned prompt never hides
             under that band. */}
-        {find.search.isOpen && (
-          // The bar floats at `top-14` (56px), clear of the Sessions chat's own
-          // title row; here the host band is `topInset` tall, so the wrapper
-          // lifts it to 8px under that band.
-          <div className="relative z-[3]" style={{ top: topInset - 48 }}>
-            <SearchBar term={find.search.term} setTerm={find.search.setTerm} matches={find.search.matches} currentIdx={find.search.currentIdx} next={find.search.next} prev={find.search.prev} close={find.search.close} caseSensitive={find.search.caseSensitive} toggleCaseSensitive={find.search.toggleCaseSensitive} focusNonce={find.search.focusNonce} goTo={find.search.goTo} scopeLimited={olderHasMore} />
-          </div>
-        )}
-        {/* An open find bar takes the strip under the host band, so the
-            banner moves down under the bar instead of hiding beneath it. */}
-        <div className="relative z-[2]" style={topInset + findBarH ? { top: topInset + findBarH } : undefined}>
+        {/* The chat's history search, in the host's side panel tab. It reads
+            the transcript from the server, so the rows this pane holds stay as
+            they are. */}
+        <ChatPaneHistorySearch
+          isOpen={search.isOpen}
+          focusNonce={search.focusNonce}
+          onClose={search.close}
+          host={historySearchHost}
+          onOpenChange={onHistorySearchOpenChange}
+          slotKey={slotKey}
+          bot={crewmate ? { name: crewmate.label || crewmate.name, seed: crewmate.name, avatar: crewmate.avatar } : undefined}
+          onQuoteMessage={messageQuote.quoteMessage}
+        />
+        <div className="relative z-[2]" style={topInset ? { top: topInset } : undefined}>
           <div ref={pin.pinFoldRef} aria-hidden className="h-0" />
           {pinnedState && (
             <div className="absolute top-0 left-0 right-1.5 pointer-events-none">
@@ -1065,7 +1072,6 @@ export default function ChatPane({
             TranscriptScrollShell for the style contract it enforces. */}
         <ChatProjectDirCtx.Provider value={paneProjectDir}>
           <RunInTerminalOriginSlot.Provider value={crewmate ? slotKey : null}>
-          <SearchHighlightContext.Provider value={find.highlight}>
           <JumpRevealContext.Provider value={quoteJump.reveal}>
           <ChatMessageList
             ref={listRef}
@@ -1088,11 +1094,6 @@ export default function ChatPane({
             // chat: it draws messages only (docs/decisions/2026-10-09), so it
             // has no working steps, and folding would hide the Bot's own words.
             collapseAllSteps={!crewmate && chatConfig.collapseAllSteps}
-            // Always on, whether or not this pane answers ⌘F: the pane always
-            // supplies its own SearchHighlightContext above, and a value that
-            // followed `findInChat` would change every row's root element
-            // type when a side panel takes focus, remounting every row.
-            searchRows
             onQuote={onQuote}
             onQuoteMessage={messageQuote.quoteMessage}
             onJumpToQuote={quoteJump.onJumpToQuote}
@@ -1116,7 +1117,7 @@ export default function ChatPane({
               // scroller's scroll padding, so a control the keyboard or a
               // `scrollIntoView` brings into view (a card's buttons) lands clear
               // of both bands instead of under the glass.
-              scrollerStyle: { paddingTop: 12 + topInset + findBarH, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0, scrollPaddingTop: 12 + topInset + findBarH, scrollPaddingBottom: dockH + DOCK_CLEARANCE_PX },
+              scrollerStyle: { paddingTop: 12 + topInset, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0, scrollPaddingTop: 12 + topInset, scrollPaddingBottom: dockH + DOCK_CLEARANCE_PX },
               // handOff off, like the list's own notices (see `handOff` above).
               earlier: pagesActiveSlot
                 ? { hasMore: activeHasMore, loading: loadingOlder, failed: olderFailed, onLoad: loadOlder, handOff: false }
@@ -1197,7 +1198,6 @@ export default function ChatPane({
             }}
           />
           </JumpRevealContext.Provider>
-          </SearchHighlightContext.Provider>
           </RunInTerminalOriginSlot.Provider>
         </ChatProjectDirCtx.Provider>
         {/* Between the host band and the dock, so the header and the composer

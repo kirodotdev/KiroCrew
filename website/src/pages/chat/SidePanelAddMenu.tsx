@@ -11,7 +11,7 @@
  * callers import from there. This module never imports `SidePanel.tsx`.
  */
 import { forwardRef, type ComponentPropsWithoutRef, type ElementRef, type ReactNode } from 'react'
-import { Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitPullRequest, GitBranch, History, Component, Globe, CircleDot, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin, Users } from 'lucide-react'
+import { Bot, Search, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitPullRequest, GitBranch, History, Component, Globe, CircleDot, Folders, Link as LinkIcon, PanelRight, Layers, ListTree, Pin, Users } from 'lucide-react'
 import type { ViewKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS } from '../../hooks/usePanelTabs'
 import { DropdownMenuItem } from '../../components/ui/dropdown-menu'
@@ -29,10 +29,10 @@ import { DropdownMenuItem } from '../../components/ui/dropdown-menu'
  * — `i18nT(item.labelKey)` over a loop variable cannot be resolved, so a field
  * on `NEW_MENU` would have made every menu key unverifiable.
  *
- * Keyed by `ViewKind | 'terminal'` (not `string`) so adding a view without its
+ * Keyed by `AddMenuKind` (not `string`) so adding a view without its
  * label and description is a type error rather than a missing-key render.
  */
-export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
+export const NEW_MENU_LABEL_KEY: Record<AddMenuKind, string> = {
   'command-center': 'commandCenter.title',
   workers: 'commandCenter.workers',
   changes: 'pages.chat.sidePanel.menu_changes',
@@ -51,11 +51,12 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
   git: 'pages.chat.sidePanel.menu_git',
   summary: 'pages.chat.sidePanel.menu_summary',
   pins: 'pages.chat.sidePanel.menu_pins',
+  search: 'components.chatHistorySearch.open',
 }
 
 /** `null` where the label already says it all (Git, Logs, Links, Pins, Issues,
  *  Files, Browser): the launcher renders no second line for those rows. */
-export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string | null> = {
+export const NEW_MENU_DESC_KEY: Record<AddMenuKind, string | null> = {
   'command-center': 'commandCenter.description',
   workers: 'commandCenter.workers_description',
   changes: 'pages.chat.sidePanel.menu_changes_desc',
@@ -74,7 +75,12 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string | null> = {
   git: null,
   summary: 'pages.chat.sidePanel.menu_summary_desc',
   pins: null,
+  search: null,
 }
+
+/** What a + menu row opens: a chat view, the per-chat Terminal, or the chat's
+ *  history search, which the host owns and draws outside the strip. */
+export type AddMenuKind = ViewKind | 'terminal' | 'search'
 
 /** Views offered by the + menu, in the three semantic groups the menu renders
  *  with a separator between them. `kind` is the PERSISTED tab id
@@ -97,7 +103,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string | null> = {
  *  Every key of `NEW_MENU_LABEL_KEY` must appear exactly once across the
  *  groups — `sidePanelAddMenu.test.tsx` pins that partition, so adding a view
  *  without placing it in a group fails rather than silently dropping it. */
-const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind | 'terminal'; icon: ReactNode }[] }[] = [
+const NEW_MENU_GROUPS: { id: string; items: { kind: AddMenuKind; icon: ReactNode }[] }[] = [
   // Session output — what this chat referenced or produced. (Changes / Files /
   // Artifacts are auto-pinned and filtered out below; they are listed here so
   // this table stays the complete catalog of views.)
@@ -126,6 +132,9 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind | 'terminal'; icon:
   {
     id: 'workspaces',
     items: [
+      // The chat's history search: offered only where the host owns one for
+      // the chat on screen (`searchAvailable`).
+      { kind: 'search', icon: <Search size={15} /> },
       { kind: 'side', icon: <MessageCircleQuestionMark size={15} /> },
       { kind: 'browser', icon: <Globe size={15} /> },
       { kind: 'terminal', icon: <TerminalSquare size={15} /> },
@@ -156,7 +165,9 @@ const AddMenuItem = forwardRef<ElementRef<typeof DropdownMenuItem>, ComponentPro
  *  **Summary is hidden while session summaries are disabled**,
  *  **Workers is offered only on a Crew Mode root or one of its workers**
  *  (`crewMode`), and **Workflows is hidden until the chat has a workflow run**
- *  (`hasWorkflowRuns`): with none, that panel can only say there are none.
+ *  (`hasWorkflowRuns`): with none, that panel can only say there are none,
+ *  and **Search is offered only while the host has a chat to search**
+ *  (`searchAvailable`).
  *  The permanently pinned views (Changes / Files / Artifacts) are never listed;
  *  they are always present in the strip.
  *
@@ -179,8 +190,8 @@ const AddMenuItem = forwardRef<ElementRef<typeof DropdownMenuItem>, ComponentPro
  *  bucket would be orphaned by the re-key). Withheld here and from the pinned
  *  block alike — an empty view is worse than no view. */
 export function newMenuSections(
-  opts: { terminalEnabled: boolean; summaryEnabled: boolean; hasWorkflowRuns: boolean; hiddenViews?: ReadonlySet<SidePanelWithholdable>; crewMode?: boolean },
-): { id: string; items: { kind: ViewKind | 'terminal'; icon: ReactNode }[] }[] {
+  opts: { terminalEnabled: boolean; summaryEnabled: boolean; hasWorkflowRuns: boolean; hiddenViews?: ReadonlySet<SidePanelWithholdable>; crewMode?: boolean; searchAvailable?: boolean },
+): { id: string; items: { kind: AddMenuKind; icon: ReactNode }[] }[] {
   return NEW_MENU_GROUPS
     .map(group => ({
       id: group.id,
@@ -189,7 +200,8 @@ export function newMenuSections(
         && (opts.summaryEnabled || item.kind !== 'summary')
         && (!!opts.crewMode || item.kind !== 'workers')
         && (opts.hasWorkflowRuns || item.kind !== 'workflows')
-        && !opts.hiddenViews?.has(item.kind)
+        && (!!opts.searchAvailable || item.kind !== 'search')
+        && (item.kind === 'search' || !opts.hiddenViews?.has(item.kind))
         && !(PINNED_VIEWS as string[]).includes(item.kind),
       ),
     }))

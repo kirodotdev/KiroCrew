@@ -73,6 +73,14 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     ("PATCH", "/api/chat/slots/{slot}/source-links-off"): RouteAccess(
         "chat.source_links_off.change", UNSTABLE
     ),
+    # Dashboard user, or the slot's owner app through the slot-ownership checkpoint
+    # (chat_history_search.py); bounded transcript reads, writes nothing.
+    ("GET", "/api/chat/slots/{slot}/history/search"): RouteAccess(
+        "chat.history_search.read", UNSTABLE
+    ),
+    ("GET", "/api/chat/slots/{slot}/history/around"): RouteAccess(
+        "chat.history_around.read", UNSTABLE
+    ),
     # Owner gate, then the machine owner alone (crew_api_grant_requests). The Crew API
     # RFC marks the Owner tier experimental. Contract test: test_crew_api_grant_requests.py.
     ("GET", "/v1/crew/owner/grants"): RouteAccess("crew_api.grants.list", PREVIEW),

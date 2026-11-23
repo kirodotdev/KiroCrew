@@ -57,7 +57,6 @@ interface SessionsDrawerOptions {
   jiraSourceHostsRef: MutableRefObject<string[]>
   bitbucketServerSourceHostsRef: MutableRefObject<string[]>
   gerritSourceHostsRef: MutableRefObject<string[]>
-  search: ReturnType<typeof useChatPageResourcesController>['search']
   selectSource: (kind: SourceLinkKind, url: string, forSlot?: string) => void
   setRevealedSources: Dispatch<SetStateAction<RevealedSources>>
   setSourceDismissed: ReturnType<typeof useChatPageResourcesController>['setSourceDismissed']
@@ -97,7 +96,7 @@ export function workerHideRestore(prior: boolean | null, pinnedNow: boolean): bo
 
 export function useSessionsDrawer({
   embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, personSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
+  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
   toggleAct,
 }: SessionsDrawerOptions) {
   /**
@@ -425,8 +424,8 @@ export function useSessionsDrawer({
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and ChatTitleOverlay's render so the two cannot disagree. */
   const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
-  const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
-    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
+  const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard })
+    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard })
   // Mobile right-panel overlay: slide in when the panel wants the screen,
   // slide out (keeping it mounted for the travel) when it stops wanting it.
   useEffect(() => {
@@ -479,11 +478,10 @@ export function useSessionsDrawer({
    *  FAB) would land on top of the panel's own controls, so it is gated on
    *  this. Reuses the panel's own mount/visibility predicates rather than
    *  re-deriving them from `activityOpen`, which is only one of their inputs (a
-   *  live app or browser tab keeps the panel mounted through a close, and the
-   *  find pane hides it while owning the dock). */
+   *  live app or browser tab keeps the panel mounted through a close). */
   const inlineSidePanelShowing = !activitySlot
-    && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
-    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
+    && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard })
+    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard })
   // ONE binding per panel, each covering both of ITS directions: a rightward
   // drag opens the sessions drawer, a leftward drag on the open drawer closes
   // it. Which rule applies is read live from `open` inside the hook, so the
@@ -540,11 +538,9 @@ export function useSessionsDrawer({
     },
   })
   // Right-hand side panel, same gesture mirrored. Not bound when the actbar
-  // column owns the panel (desktop) or while the find pane holds the dock —
-  // there the store's mount predicate refuses to keep the panel open, so a
-  // committed drag would be undone by the effect above on the next render.
+  // column owns the panel (desktop).
   useDrawerSwipe(chatContainerRef, {
-    enabled: isMobile && !embedded && !activitySlot && !search.isOpen && drawerPhase !== 'open',
+    enabled: isMobile && !embedded && !activitySlot && drawerPhase !== 'open',
     side: 'right',
     open: sideOverlayPhase === 'open',
     x: sideOverlayX,
@@ -616,19 +612,13 @@ export function useSessionsDrawer({
     // Addressed by slot, not through tabsCtl: that binding is still the chat
     // being left, so the tab would open on the wrong strip.
     openPanelView(slot, view)
-    // The find pane owns the right-hand dock exclusively (shouldMountSidePanel
-    // returns false while it is open), so revealing into a session with search
-    // open would suppress the chip's navigation and then mount nothing at all.
-    // Same reason handleFileOpen / handleOpenDiff close it before opening a dock
-    // panel.
-    search.close()
     dispatch(openActivityToTab(view))
     // The mobile session drawer covers the panel it would reveal into. The
     // activeSlot effect closes it on a real switch, but a chip on the session
     // already open does not change activeSlot.
     if (isMobile) closeSidebar()
     return true
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only `search.close()` is read off `search`, and that member is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render, so depending on it would recreate this reveal handler continuously
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the source-host refs and the state setter are stable; only the listed values change this handler
   }, [dispatch, isMobile, selectSource, setSourceDismissed, closeSidebar])
   // Web Preview expand mode — broadcast by the Web Preview tab's
   // expand toggle. When on, hide the session list and maximize the side panel
@@ -726,8 +716,8 @@ export function useSessionsDrawer({
   // ── Collapsed-sidebar hover flyout ──────────────────────────────────────
   // Hovering the toggle while collapsed opens a recents list over the chat, so
   // switching sessions stops being expand → switch → collapse. It is purely an
-  // overlay: it never touches `sidebarPinned`, because `panelReserve` and
-  // `panelFillWidth` (paneLayout.tsx) both read `sidebarOpen`, and flipping it to show a
+  // overlay: it never touches `sidebarPinned`, because
+  // `panelFillWidth` (paneLayout.tsx) reads `sidebarOpen`, and flipping it to show a
   // transient popover would re-run the side panel's width maths and visibly
   // resize the chat every time the pointer rested on a 28px button.
   const flyoutTriggerRef = useRef<HTMLButtonElement>(null)

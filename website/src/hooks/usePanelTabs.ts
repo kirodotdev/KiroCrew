@@ -510,7 +510,7 @@ function mutateSlot(key: string, fn: (b: Bucket) => Bucket, unfocusedShows: stri
  * while Summary stays pinned and active. The chat page reports the strip with
  * `notePanelShown`, which ends a show when the panel closes or shows another
  * chat; the panel calls `takePlainPanelShow` when it shows a strip. A remount
- * (the find pane closing, a resize across the phone breakpoint, or a return to
+ * (a resize across the phone breakpoint, or a return to
  * the chat page on the same chat) stops nothing, so it lands nothing. With Keep
  * side panel open on, a phone width or an embedded chat holds the setting off
  * and closes a panel the setting opened, so the panel it reopens afterwards is
@@ -810,6 +810,10 @@ export function closePanelTerminalTabs(sessionId: string): void {
   }
 }
 
+/** Every `keepFocusIds` entry any strip was given: on-demand host tabs whose
+ *  focus `serializeBucket` never persists. */
+const onDemandFocusIds = new Set<string>()
+
 /** Strip heavy bodies (file/diff/artifact content) before persisting — those
  *  can be MBs and blow the localStorage quota. Terminal + view tabs and all
  *  tab METADATA (path / slug / sessionId / cwd / order / focus) are kept, so
@@ -839,12 +843,15 @@ function serializeBucket(b: Bucket): string {
   const droppedFocus = b.activeId !== null
     && b.tabs.some(t => t.id === b.activeId)
     && !tabs.some(t => t.id === b.activeId)
+  // The focus history loses the same dropped tabs and keeps every other id,
+  // a leading tab's included, for the reason the focus above does. An on-demand
+  // host tab (`keepFocusIds`) is never written: a reload must not bring it back.
+  const recent = b.recent?.filter(id => !onDemandFocusIds.has(id) && (tabs.some(t => t.id === id) || !b.tabs.some(t => t.id === id)))
   const activeId = droppedFocus
     ? (tabs.length ? tabs[tabs.length - 1].id : null)
-    : b.activeId
-  // The focus history loses the same dropped tabs and keeps every other id,
-  // a leading tab's included, for the reason the focus above does.
-  const recent = b.recent?.filter(id => tabs.some(t => t.id === id) || !b.tabs.some(t => t.id === id))
+    : b.activeId !== null && onDemandFocusIds.has(b.activeId)
+      ? (recent?.at(-1) ?? tabs.at(-1)?.id ?? null)
+      : b.activeId
   return JSON.stringify({ activeId, tabs, recent })
 }
 
@@ -978,10 +985,17 @@ export function usePanelTabs(
      *  own, the Git tab) adds or updates its tab and leaves the focus where it
      *  is: on the Board, or on the tab the person last clicked. */
     boardFirst?: boolean
+    /** Ids of on-demand host tabs, shown only while something is open (a
+     *  chat's history search): like `leadingIds`, a focus on one is never
+     *  "repaired" away by `syncPinned`, but none is ever the strip's default
+     *  focus, and none is persisted. Pass a module constant. */
+    keepFocusIds?: readonly string[]
   },
 ) {
   const key = bucketKey(slotKey)
   const leadingIds = opts?.leadingIds
+  const keepFocusIds = opts?.keepFocusIds
+  keepFocusIds?.forEach(id => onDemandFocusIds.add(id))
   const boardFirst = !!opts?.boardFirst
   const defaultLeadingId = leadingIds?.[0] ?? null
   const bySlot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
@@ -1112,7 +1126,7 @@ export function usePanelTabs(
       // would throw away a choice the person made.
       // Without leading tabs there is nothing to derive from on read, so the
       // first pinned view is still written, exactly as before.
-      const keep = b.activeId && (leadingIds?.includes(b.activeId) || nextTabs.some(t => t.id === b.activeId))
+      const keep = b.activeId && (leadingIds?.includes(b.activeId) || keepFocusIds?.includes(b.activeId) || nextTabs.some(t => t.id === b.activeId))
         ? b.activeId
         : null
       const activeId = keep
@@ -1123,7 +1137,7 @@ export function usePanelTabs(
       if (sameOrder && activeId === b.activeId) return b
       return { tabs: nextTabs, activeId }
     })
-  }, [update, leadingIds])
+  }, [update, leadingIds, keepFocusIds])
 
   const openFile = useCallback((path: string, content: string, slot: string | null = null, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; binary?: boolean; partial?: PartialCause | false; placeholder?: boolean; hold?: boolean }) => {
     // `revealLine` is always present in the object, `undefined` when absent:

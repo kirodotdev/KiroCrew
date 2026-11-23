@@ -182,7 +182,6 @@
   "components.queueStack.hidden_attachments",
   "components.queueStack.hidden_lines",
   "components.queueStack.sub_agent_results_ready",
-  "components.searchBar.result_position",
   "components.skillBrowserModal.file",
   "components.skillBrowserModal.installed_files",
   "components.skillBrowserModal.reinstalled_files",
@@ -476,7 +475,6 @@
   "pages.overview.vectorMemoryCard.showing_entries",
   "pages.overview.vectorMemoryCard.showing_events",
   "pages.overview.vectorMemoryCard.showing_events_filtered",
-  "components.searchResultsList.showing_matches",
   "apps.issueRadar.views.settings.repoSettings.first_issue_friendly_count",
   "pages.overview.vectorMemoryCard.showing_semantic",
   "pages.overview.vectorMemoryCard.showing_semantic_filtered",
@@ -610,5 +608,7 @@
   "pages.appsPage.disable_bot_chat_stop_failed",
   "pages.appsPage.bot_chat_stop_retry",
   "pages.appsPage.bot_chat_stop_retry_all",
-  "pages.appsPage.blanket_bot_chat_stop_failed"
+  "pages.appsPage.blanket_bot_chat_stop_failed",
+  "components.chatHistorySearch.image_count",
+  "components.chatHistorySearch.file_count"
 ]

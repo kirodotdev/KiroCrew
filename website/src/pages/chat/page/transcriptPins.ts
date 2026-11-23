@@ -7,7 +7,7 @@ import type { DisplayItem } from '../types'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { inspectorOn, devLog } from '../../../dev/scrollInspector'
 import { useTurnStepper } from '../useTurnStepper'
-import { openPanelView } from '../../../hooks/usePanelTabs'
+import { offerPanelView, openPanelView } from '../../../hooks/usePanelTabs'
 import { useChatNavigation } from '../../../hooks/useChatNavigation'
 import { useChatPins } from '../../../hooks/useChatPins'
 import type { ChatMessage } from '../../../types'
@@ -215,9 +215,10 @@ export function useTranscriptPins({
       return
     }
   }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToMessage, editSeqRef, messagesRef, setEditLast])
-  const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin, fill }: { origin: PendingJumpOrigin; fill?: boolean }) => {
+  /** True when the jump (and its fill) landed now; false when it is pending or unavailable. */
+  const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin, fill }: { origin: PendingJumpOrigin; fill?: boolean }): boolean => {
     // A jump that lands at once replaces a pending one, so its fill cannot fire later.
-    if (jumpToLoadedPinnedMessage(messageTs, mid, fill, origin === 'link')) { setPendingPinnedJump(null); return }
+    if (jumpToLoadedPinnedMessage(messageTs, mid, fill, origin === 'link')) { setPendingPinnedJump(null); return true }
     // Pending while the message may still turn up: older history to page in, a
     // cursor that still describes another chat, or rows on screen that trail
     // the list, where a loaded message has no row yet (the effect below waits
@@ -227,11 +228,12 @@ export function useTranscriptPins({
       setPinNotice(null)
       setPinLoadError(null)
       setPendingPinnedJump({ slotKey: activeSlot, messageTs, mid, origin, fill })
-      return
+      return false
     }
     // Same writer as the async branch below, so the synchronous dead-link case
     // cannot drift into pin wording while the paging case reports the truth.
     setPinNotice(jumpUnavailableNotice(origin))
+    return false
   }, [activeSlot, cursorIsForActiveSlot, jumpToLoadedPinnedMessage, rowsTrailList, slotHasMore, slotOldestIndex])
   // A sent quote card jumps to the quoted row through the pinned-message jump,
   // which already pages older history in when the target is off the loaded window.
@@ -244,10 +246,12 @@ export function useTranscriptPins({
   const handleJumpToPin = useCallback((messageTs: string, mid?: string) => {
     handleJumpToPinnedMessage(messageTs, mid, { origin: 'pin' })
   }, [handleJumpToPinnedMessage])
-  // Put in composer on a pinned user message: the same jump, plus one composer fill.
-  const handlePutPinInComposer = useCallback((messageTs: string, mid?: string) => {
+  // Put in composer on a pinned user message: the same jump, plus one composer
+  // fill. True only when the fill happened now, so the button claims nothing a
+  // pending page-in may still fail to do.
+  const handlePutPinInComposer = useCallback((messageTs: string, mid?: string): boolean => (
     handleJumpToPinnedMessage(messageTs, mid, { origin: 'pin', fill: true })
-  }, [handleJumpToPinnedMessage])
+  ), [handleJumpToPinnedMessage])
   useEffect(() => {
     if (!pendingPinnedJump) return
     if (pendingPinnedJump.slotKey !== activeSlot) {
@@ -357,14 +361,16 @@ export function useTranscriptPins({
     if (isFirstPin && activeSlot) {
       // Addressed by slot, not through tabsCtl, for the same reason as the
       // source-reveal path: that binding can be a chat being left.
-      openPanelView(activeSlot, 'pins')
       // Pinning is NOT a navigation request, so it must not cost the user state
       // they are mid-way through. Unlike the source-reveal path this does not
-      // close the find pane: someone who searched the transcript to FIND the
-      // message they are pinning would lose the pane and its results on the very
-      // click that acts on a result. Below the mobile breakpoint the panel opens
-      // full width, so opening it would navigate them off the chat entirely.
-      // The tab is still created above -- it is revealed quietly instead.
+      // end the history search: someone who searched the transcript to FIND the
+      // message they are pinning would lose the search and its results on the
+      // very click that acts on a result. On desktop the Pins tab is added
+      // behind the Search tab, which stays in front. Below the mobile breakpoint
+      // the panel opens full width, so opening it would navigate them off the
+      // chat entirely; the tab is created and revealed quietly instead.
+      if (search.isOpen && !isMobile) offerPanelView(activeSlot, 'pins')
+      else openPanelView(activeSlot, 'pins')
       if (!search.isOpen && !isMobile) dispatch(openActivityPanel())
     }
   }, [activeSlot, chatPins.length, dispatch, isMobile, isPinned, pinMessage, search.isOpen, unpinMessage])
