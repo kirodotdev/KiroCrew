@@ -2,18 +2,19 @@
 
 Pinned on a fixture tree: one src file per tier, a pattern only a comment or a
 docstring carries (not matched), each `windows_targeting` rule, a file Windows
-never collects, and the absent-table case; plus `build` writing the tables.
+never collects, and the absent-table case; plus `bundle` writing the tables.
 """
 
 from __future__ import annotations
 
-import json
+import ast
 from pathlib import Path
 
 import pytest
 
 from scripts import ci_test_map as ctm
 from scripts import ci_test_os_tables as ost
+from scripts import ci_test_selection as cts
 
 SRC = {
     "w1.py": "import sys\n\nif sys.platform == 'win32':\n    pass\n",
@@ -65,14 +66,19 @@ def tree(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_each_src_file_takes_its_strongest_tier(tree: Path) -> None:
+def test_each_src_file_takes_its_strongest_tier_and_the_table_holds_w1_and_w2(
+    tree: Path,
+) -> None:
+    tiers = {name: ost.file_tier(body) for name, body in SRC.items()}
+    assert {tiers[name] for name in ("w1.py", "w1_exe.py", "both.py")} == {"W1"}
+    assert (tiers["w2.py"], tiers["w3.py"], tiers["plain.py"]) == ("W2", "W3", None)
+    # Every W1 and W2 file outside `_vendor` and `tests`, and no other.
     assert ost.os_sensitive(tree) == {
-        "src/kiro_crew/both.py": "W1",
-        "src/kiro_crew/w1.py": "W1",
-        "src/kiro_crew/w1_exe.py": "W1",
-        "src/kiro_crew/w2.py": "W2",
-        "src/kiro_crew/w3.py": "W3",
+        f"src/kiro_crew/{name}": tier
+        for name, tier in tiers.items()
+        if tier in ost.STORED_TIERS and "/" not in name
     }
+    assert set(ost.os_sensitive(tree).values()) == set(ost.STORED_TIERS)
 
 
 def test_a_pattern_in_a_comment_or_docstring_is_not_matched() -> None:
@@ -82,10 +88,75 @@ def test_a_pattern_in_a_comment_or_docstring_is_not_matched() -> None:
     assert ost.tier_of(ost.code_only("X = 'a.cmd'\n")) == "W1"
 
 
-def test_a_string_beside_code_stays_code() -> None:
-    # An argument on its own line, an implicit concatenation, a list item.
-    source = "run(\n    'tool.exe'\n)\nX = (\n    'a'\n    'b.bat'\n)\nY = [\n    'c.cmd'\n]\n"
-    assert ost.code_only(source) == source
+# Where a string can sit alone on its line. `{}` takes the string.
+OPERAND_SHAPES = [
+    "run(\n    {}\n)\n",
+    "run(\n    # why\n    {}\n)\n",
+    "run(a,  # why\n    {}\n)\n",
+    "x = (a or\n    {}\n)\n",
+    "x = (a if b else\n    {}\n)\n",
+    "x = (a +\n    {}\n)\n",
+    "x = (a -\n    {}\n)\n",
+    "x = (a *\n    {}\n)\n",
+    "x = (a |\n    {}\n)\n",
+    "ok = (name ==\n    {}\n)\n",
+    "ok = (name in\n    {}\n)\n",
+    "d = {{'k':\n    {}\n}}\n",
+    "f = (lambda:\n    {}\n)\n",
+    "x = [\n    {}\n]\n",
+    "x = y[\n    {}\n]\n",
+    "x = (\n    'a'\n    {}\n)\n",
+    "x = a + \\\n    {}\n",
+    "def f(a=(\n    {}\n)):\n    pass\n",
+]
+STATEMENT_SHAPES = [
+    "{}\n",
+    "{}\nimport json\n",
+    "def f():\n    {}\n",
+    "def f():\n    # why\n    {}\n    return 1\n",
+    "class C:\n\n    {}\n",
+    "def f(a=(1, 2)): {}\n",
+    "async def f():\n    {}\n",
+    "x = (1,\n     2)\n{}\n",
+    "def f():\n    x = [1]\n    {}  # why\n",
+]
+LITERALS = [
+    "'tool.exe'",
+    '"tool.exe"',
+    '"""tool.exe"""',
+    "r'tool.exe'",
+    '"""a\ntool.exe"""',
+]
+
+
+def _string_statements(source: str) -> list[str]:
+    """The string literals `ast` says are statements of their own."""
+    return [
+        ast.get_source_segment(source, node.value) or ""
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    ]
+
+
+@pytest.mark.parametrize("shape", OPERAND_SHAPES + STATEMENT_SHAPES)
+@pytest.mark.parametrize("literal", LITERALS)
+def test_a_string_is_blanked_only_where_python_reads_it_as_a_statement(
+    shape: str, literal: str
+) -> None:
+    source = shape.format(literal)
+    is_statement = _string_statements(source) == [literal]
+    assert is_statement == (shape in STATEMENT_SHAPES)
+    # An operand keeps its signal, whatever line it is on; a docstring loses it.
+    assert ost.file_tier(source) == (None if is_statement else "W1")
+    assert (ost.code_only(source).count("tool.exe") == 0) == is_statement
+    assert len(ost.code_only(source)) == len(source)
+
+
+def test_brackets_that_do_not_balance_keep_every_string_as_code() -> None:
+    assert ost.file_tier("x = (\n'tool.exe'\n") == "W1"
+    assert ost.file_tier(")\n'tool.exe'\n") is None
 
 
 def test_a_standalone_f_string_runs_code_so_it_stays_code() -> None:
@@ -165,27 +236,53 @@ def test_each_targeting_rule_and_the_collect_ignore_list(tree: Path) -> None:
     ]
 
 
-def test_a_table_that_cannot_be_built_is_absent(tmp_path: Path, tree: Path) -> None:
-    assert ost.os_tables(tmp_path / "nothing") == {}
-    tables = ost.os_tables(tree)
-    assert set(tables) == {"os_sensitive", "windows_targeting"}
-    # A tree whose scan finds nothing leaves the table out rather than writing it empty.
+def test_bundle_writes_the_tables_of_its_root_or_leaves_them_out(
+    tmp_path: Path, tree: Path
+) -> None:
+    test_map = ctm.merge_parts(
+        [{"test/test_skip.py": {"nodes": 1, "files": ["src/kiro_crew/w1.py"]}}], commit="c"
+    )
+    tables = ("os_sensitive", "windows_targeting")
+    doc, absent = ctm.bundle(test_map, tree)
+    assert doc["os_sensitive"] == ost.os_sensitive(tree)
+    assert doc["windows_targeting"] == ost.windows_targeting(tree)
+    assert not set(tables) & set(absent)
+    # A missing tree, and a tree whose scan finds nothing, leave the table out with
+    # the reason rather than writing it empty.
     quiet = tmp_path / "quiet"
     (quiet / "src" / "kiro_crew").mkdir(parents=True)
     (quiet / "src" / "kiro_crew" / "plain.py").write_text("X = 1\n", encoding="utf-8")
-    assert ost.os_tables(quiet) == {}
+    (quiet / "test").mkdir()
+    (quiet / "test" / "test_plain.py").write_text("X = 1\n", encoding="utf-8")
+    for root in (tmp_path / "nothing", quiet):
+        doc, absent = ctm.bundle(test_map, root)
+        assert not set(tables) & set(doc)
+        assert all("found no" in absent[table] for table in tables)
 
 
-def test_build_writes_the_tables_of_its_root(tmp_path: Path, tree: Path) -> None:
-    parts = tmp_path / "parts"
-    parts.mkdir()
-    (parts / "part-gw0.json").write_text(
-        json.dumps({"test/test_skip.py": {"nodes": 1, "files": ["src/kiro_crew/w1.py"]}}),
-        encoding="utf-8",
+def test_the_tables_change_no_selection_because_nothing_reads_them_yet(tree: Path) -> None:
+    test_map = ctm.merge_parts(
+        [{"test/test_skip.py": {"nodes": 1, "files": ["src/kiro_crew/w1.py"]}}], commit="c"
     )
-    out = tmp_path / "map.json"
-    argv = ["--root", str(tree), "build", "--parts", str(parts), "--out", str(out)]
-    assert ctm.main(argv) == 0
-    built = ctm.load_map(out)
-    assert built["os_sensitive"]["src/kiro_crew/w2.py"] == "W2"
-    assert "test/test_skip.py" in built["windows_targeting"]
+    with_tables, _ = ctm.bundle(test_map, tree)
+    tables = ("os_sensitive", "windows_targeting")
+    assert set(tables) <= set(with_tables)
+    without = {key: value for key, value in with_tables.items() if key not in tables}
+    changes = [("M", ["src/kiro_crew/w1.py"])]
+    guard = ["test/test_marker.py"]
+    universe = [f"test/{name}" for name in TESTS if name.startswith("test_")]
+
+    def answers(bundle: dict) -> tuple:
+        cts.check_tables(bundle)
+        verdict = cts.score(
+            changes,
+            bundle,
+            universe,
+            guard,
+            skippable={"G"},
+            narrow_reach_max=1,
+            grep=lambda m: set(),
+        )
+        return ctm.select(changes, bundle, guard), verdict
+
+    assert answers(with_tables) == answers(without)

@@ -1,10 +1,10 @@
 """OS-sensitivity tables for the test map: which files Windows can run differently.
 
-SHADOW ONLY: `scripts/ci_test_map.py build` adds these tables to the map, and
-nothing in CI reads them yet. They are computed from the tree at every build,
-because a hand-kept list goes stale and cannot be small.
+SHADOW ONLY: `scripts/ci_test_map.py bundle` adds these tables to the selection
+file, and nothing in CI reads them yet. They are computed from the tree at every
+build, because a hand-kept list goes stale and cannot be small.
 
-    "os_sensitive": {src file: "W1" | "W2" | "W3"}   (files with no signal left out)
+    "os_sensitive": {src file: "W1" | "W2"}   (every other file left out)
     "windows_targeting": [test file, ...]
 
 * W1 -- branches on the OS, or calls a Windows API;
@@ -13,12 +13,14 @@ because a hand-kept list goes stale and cannot be small.
   replace and modes, symlinks, separators, encodings, sockets, temp and home).
 
 A file takes its strongest tier. Only code is matched: comments and docstrings
-are blanked first. The patterns live here alone so the scorer can apply the
-same W1/W2 patterns to the added lines of a diff (`tier_of`).
+are blanked first. The table holds the W1 and W2 files, the ones the Windows
+test set is chosen from; W3 is matched only on the lines a diff adds, so it is
+a pattern here (`tier_of`) and not a row. The patterns live here alone so the
+scorer applies the same ones to those lines.
 
-A table that cannot be built (its tree is missing, or the scan found nothing)
-is left out of the map, never written empty: a dead scan and a quiet tree
-would otherwise look the same.
+`bundle` leaves out a table that cannot be built or that comes out empty (its
+tree is missing, or the scan found nothing): a dead scan and a quiet tree would
+otherwise look the same.
 """
 
 from __future__ import annotations
@@ -26,10 +28,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 SRC_DIR = "src/kiro_crew"
 TEST_DIRS = ("test", "src/kiro_crew/apps/builtins")
+STORED_TIERS = ("W1", "W2")
 COLLECT_IGNORE = "test/windows-collect-ignore.txt"
 
 
@@ -199,12 +202,14 @@ _BRACKETS = re.compile(_LEXEME.pattern + r"|(?P<bracket>[()\[\]{}])", re.DOTALL)
 # A `def` or `class` header whose body starts on the same line, after its colon.
 _INLINE_BODY = re.compile(r"[ \t]*(?:async[ \t]+)?(?:def|class)\b[^#\n]*:[ \t]*\Z")
 _REST_OF_LINE = re.compile(r"[ \t]*(?:#[^\n]*)?(?:\r?\n|$)")
-# A string after one of these continues an expression, so it is not a docstring.
-_CONTINUES = frozenset("([{,=+%\\\"'")
 
 
 def _is_docstring(source: str, match: re.Match[str]) -> bool:
-    """Is the string *match* a statement of its own: alone on its lines, not an operand?"""
+    """Is the string *match*, which sits inside no bracket, a statement of its own?
+
+    Outside brackets a string alone on its lines is an operand only after a
+    backslash continuation. An f-string runs code, so it is never a docstring.
+    """
     literal = match.group()
     if "f" in literal[: len(literal) - len(literal.lstrip("rRbBuUfF"))].lower():
         return False
@@ -215,26 +220,28 @@ def _is_docstring(source: str, match: re.Match[str]) -> bool:
     head = source[line_start:start]
     if head.strip(" \t"):
         return bool(_INLINE_BODY.match(head))
-    before = line_start - 1
-    while before >= 0 and source[before] in " \t\r\n":
-        before -= 1
-    return before < 0 or source[before] not in _CONTINUES
+    return not source[:line_start].rstrip("\r\n").endswith("\\")
 
 
 def code_only(source: str) -> str:
     """*source* with comments and docstrings blanked; offsets and line breaks kept.
 
-    A docstring here is a string other than an f-string (which runs code) that
-    stands alone as a statement. A string the pass cannot close (broken source)
-    stays code, so a broken file over-matches rather than hides a signal.
+    A docstring here is a string that stands alone as a statement. A string
+    inside brackets is an operand whatever line it is on, and so is one the pass
+    cannot place (a string it cannot close, brackets that do not balance), so a
+    broken file over-matches rather than hides a signal.
     """
-
-    def blank(match: re.Match[str]) -> str:
-        if match.group("comment") is not None or _is_docstring(source, match):
-            return _NOT_A_BREAK.sub(" ", match.group())
-        return match.group()
-
-    return _LEXEME.sub(blank, source)
+    out: list[str] = []
+    done = depth = 0
+    for match in _BRACKETS.finditer(source):
+        bracket = match.group("bracket")
+        if bracket is not None:
+            depth = max(depth + (1 if bracket in "([{" else -1), 0)
+        elif match.group("comment") is not None or (depth == 0 and _is_docstring(source, match)):
+            out += [source[done : match.start()], _NOT_A_BREAK.sub(" ", match.group())]
+            done = match.end()
+    out.append(source[done:])
+    return "".join(out)
 
 
 def _hits(rules: Iterable[Rule], text: str) -> bool:
@@ -275,7 +282,7 @@ def _is_test_name(name: str) -> bool:
 
 
 def os_sensitive(root: Path) -> dict[str, str]:
-    """`{src file: tier}` over `src/kiro_crew`, tests and `_vendor` left out."""
+    """`{src file: W1 or W2}` over `src/kiro_crew`, tests and `_vendor` left out."""
     table: dict[str, str] = {}
     for path in _py_files(root, SRC_DIR):
         rel = path.relative_to(root).as_posix()
@@ -283,7 +290,7 @@ def os_sensitive(root: Path) -> dict[str, str]:
         if "_vendor" in parts or "tests" in parts or _is_test_name(parts[-1]):
             continue
         tier = file_tier(_read(path))
-        if tier:
+        if tier in STORED_TIERS:
             table[rel] = tier
     return table
 
@@ -309,16 +316,3 @@ def windows_targeting(root: Path) -> list[str]:
             ):
                 found.add(rel)
     return sorted(found)
-
-
-def os_tables(root: Path) -> dict[str, Any]:
-    """The tables that could be built from *root*; a missing or empty one is left out."""
-    tables: dict[str, Any] = {}
-    for key, build in (("os_sensitive", os_sensitive), ("windows_targeting", windows_targeting)):
-        try:
-            table = build(root)
-        except (OSError, ValueError):
-            continue
-        if table:
-            tables[key] = table
-    return tables

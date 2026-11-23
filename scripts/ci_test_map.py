@@ -29,11 +29,7 @@ to the test files that touched it.
 The map
 -------
     {"schema": 1, "commit": SHA, "tests": {test file: node ids run},
-     "files": {executed file: [index into sorted(tests)]},
-     "os_sensitive": {src file: tier}, "windows_targeting": [test file, ...]}
-
-The last two are computed from the tree `--root` names at build time, and are
-absent when they cannot be built (`scripts/ci_test_os_tables.py`).
+     "files": {executed file: [index into sorted(tests)]}}
 
 Paths are repository-relative POSIX paths. Files are the unit CI shards and
 runs, so a node id counts for its test FILE.
@@ -45,6 +41,11 @@ The map, with the two tables `scripts/ci_test_selection.py` reads beside it:
     "cochange": {src file: [test file, ...]},  # changed together in one of the
                                                # last N first-parent commits
     "guard": [test file, ...]                  # leaf_test_scope.corpus_gates
+
+and two tables no reader on main takes yet (`scripts/ci_test_os_tables.py`):
+
+    "os_sensitive": {src file: "W1" | "W2"},
+    "windows_targeting": [test file, ...]
 
 A table that cannot be built, or that comes out empty, is left out of the file,
 never written empty, so a reader can tell "no data" from "no links". A shallow
@@ -95,7 +96,7 @@ SCHEMA = 1
 FULL = 3
 CO_CHANGE_COMMITS = 2000
 GIT_LOG_TIMEOUT_SECS = 600.0
-BUNDLE_TABLES = ("cochange", "guard")
+BUNDLE_TABLES = ("cochange", "guard", "os_sensitive", "windows_targeting")
 NO_GUARD = "corpus_gates found no guard test"
 
 # Where pytest collects (setup.cfg `testpaths`). A changed test file outside
@@ -359,6 +360,18 @@ def bundle(
             "no commit in the window changed a src file and a test file together",
         ),
         ("guard", lambda: guard_tier(root), "corpus_gates failed", NO_GUARD),
+        (
+            "os_sensitive",
+            lambda: _os_tables_module.os_sensitive(root),
+            "src scan failed",
+            "the scan found no OS-sensitive src file",
+        ),
+        (
+            "windows_targeting",
+            lambda: _os_tables_module.windows_targeting(root),
+            "test scan failed",
+            "the scan found no test file that targets Windows",
+        ),
     )
     for name, build, failed, empty in tables:
         try:
@@ -388,17 +401,12 @@ def _cmd_bundle(args: argparse.Namespace) -> int:
 
 def _cmd_build(args: argparse.Namespace) -> int:
     doc = merge_parts(read_parts(Path(args.parts)), args.commit)
-    doc.update(_os_tables_module.os_tables(Path(args.root).resolve()))
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
     Path(args.out).write_text(text + "\n", encoding="utf-8")
     nodes = sum(doc["tests"].values())
     print(
         f"map: {len(doc['files'])} executed files, {len(doc['tests'])} test files, "
         f"{nodes} test node ids, {len(text.encode()) / 1e6:.2f} MB"
-    )
-    print(
-        f"os tables: {len(doc.get('os_sensitive', {}))} os-sensitive src files, "
-        f"{len(doc.get('windows_targeting', []))} windows-targeting test files"
     )
     if not doc["files"]:
         print("::error::the parts recorded no executed file")

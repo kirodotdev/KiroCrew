@@ -174,7 +174,7 @@ def test_the_scorer_reads_what_bundle_writes_and_holds_files_for_a_table_left_ou
         commit="c0ffee",
     )
     doc, absent = ctm_.bundle(test_map, repo)
-    assert sorted(absent) == sorted(left_out)
+    assert {table for table in absent if table in ("cochange", "guard")} == set(left_out)
     scans.clear()
     monkeypatch.setattr(ctm_, "guard_tier", scan)
     (tmp_path / "bundle.json").write_bytes(gzip.compress(json.dumps(doc).encode("utf-8")))
