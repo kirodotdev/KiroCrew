@@ -14904,6 +14904,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "手動",
+      "sort_active_then_date": "進行中を先頭、その後は新しい順",
       "folder_order": "フォルダーの順序",
       "folder_order_custom": "カスタム",
       "folder_order_name": "名前順",

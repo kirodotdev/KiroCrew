@@ -14905,6 +14905,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "手动",
+      "sort_active_then_date": "运行中优先，其余最新",
       "folder_order": "文件夹顺序",
       "folder_order_custom": "自定义",
       "folder_order_name": "按名称",

@@ -15283,6 +15283,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "ম্যানুয়াল",
+      "sort_active_then_date": "চলমান আগে, তারপর সবচেয়ে নতুন",
       "folder_order": "ফোল্ডারের ক্রম",
       "folder_order_custom": "কাস্টম",
       "folder_order_name": "নাম অনুসারে",

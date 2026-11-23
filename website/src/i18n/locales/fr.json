@@ -15661,6 +15661,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "Manuel",
+      "sort_active_then_date": "En cours d’abord, puis plus récentes",
       "folder_order": "Ordre des dossiers",
       "folder_order_custom": "Personnalisé",
       "folder_order_name": "Par nom",

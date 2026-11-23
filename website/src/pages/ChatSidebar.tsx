@@ -359,12 +359,15 @@ function ChatSidebarBody({
     pinned, pinnedOrder, pinnedRank, reorderPinned, pinnedOrderError, setPinnedOrderError,
     orderState: pinnedOrderState,
   } = usePinnedSessionOrder({ localSlots, sortKey })
+  // While a drag is in flight the row model keeps the filtered list it had when the
+  // drag started, so the lanes hold still under the pointer.
+  const [dragFrozen, setDragFrozen] = useState(false)
   // The manual order (sort "Manual"): the unpinned rows' places, the drop that
   // writes them in any sort, and the "Sorted by hand" undo it offers.
   const {
     manualRank, drawnIndex, drawnOrder, reorderManual, pickSort, manualOrderError, setManualOrderError,
     offer: manualSortOffer, undo: undoManualSort, dismiss: dismissManualSort, bar: manualSortBar,
-  } = useManualSessionOrder({ localSlots, pinned, sortKey, setSortKey })
+  } = useManualSessionOrder({ localSlots, pinned, running: runningSet, sortKey, setSortKey, frozen: dragFrozen })
 
   const {
     staleCollapseMs, setStaleCollapseMs, staleExpanded, setStaleExpanded, setStaleRecentlyMoved,
@@ -469,10 +472,7 @@ function ChatSidebarBody({
   // The drawn folder order: the mode's order, with unread folders first when the
   // person turned that on. While it is on, a sibling drag would be judged against
   // an order that is not the stored one, so reordering (and its hint) is off.
-  // While a drag is in flight the row model keeps the filtered list it had when the
-  // drag started, so the lanes hold still under the pointer.
-  const [dragFrozen, setDragFrozen] = useState(false)
-  // Its native counterpart: the board card in flight, which no DndContext sees.
+  // The native counterpart of `dragFrozen`: the board card in flight, which no DndContext sees.
   const { nativeSessionDrag, startNativeSessionDrag, endNativeSessionDrag } = useNativeSessionDrag()
   const liveUnreadLatest = useMemo(
     () => (foldersUnreadFirst ? unreadFolderLatest(folders, localSlots, slotFolders, unreadSet) : null),

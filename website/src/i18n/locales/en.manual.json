@@ -7220,6 +7220,7 @@
       "sort_name_asc": "A → Z",
       "sort_name_desc": "Z → A",
       "sort_manual": "Manual",
+      "sort_active_then_date": "In progress, then newest",
       "folder_order": "Folder order",
       "folder_order_custom": "Custom",
       "folder_order_name": "By name",

@@ -3950,7 +3950,7 @@ class DashboardConfig:
     command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
     channels_enabled: bool = False  # whether Channels (/channels) has a sidebar row and a Search Everywhere result; only a literal true shows them. Replaced the former hidden `channels` app's enabled state; the boot cleanup carries a record's opt-in here (apps/builtin_fold.py), and `kirocrew app enable/disable channels` writes it. The page and /api/channels are served either way. PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
-    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
+    session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order), "active-then-date" (running sessions first, then the rest, each part by last activity). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     unfiled_sessions_above_folders: bool = False  # draw the sessions filed in no folder above the folder list (true) or below it (false), in the list view's folder tree and in each board column. A view preference; the drop that removes a session from its folder works in both layouts. See "Unfiled sessions above folders" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
@@ -4753,7 +4753,8 @@ in either layout, and its `before`/`after` anchors name folders.
 
 `DashboardConfig.session_sort` is the chat sidebar's session sort key: `date-desc`
 (last settled activity, newest first; the default) or `date-asc`, `created-desc` /
-`created-asc` (the slot's creation time) and `name-asc` / `name-desc` (the title).
+`created-asc` (the slot's creation time), `name-asc` / `name-desc` (the title),
+`manual` (below) and `active-then-date`.
 It is stored here rather than in the browser so a pick follows the person to every
 browser and the desktop app. Written only through the `PATCH /api/config/kirocrew`
 allowlist (`dashboard.session_sort`, enum `SESSION_SORT_MODES`). A carry-over PATCH
@@ -4794,6 +4795,16 @@ writes it: the one writer refuses a caller whose origin is not `dashboard` (an
 agent or crew member, which reaches the gateway with `X-Internal-Secret`) and an
 app or member principal; no MCP tool writes it. A build without `manual` reads
 the key as `date-desc` and never touches the second file.
+
+`active-then-date` draws the unpinned sessions the In progress filter chip
+matches (the agent's own turn, a live workflow, a running automation, working
+sub-agents) above the rest, each part in `date-desc` order. Under `date-desc` a
+long turn ranks by when it began, so newer idle chats pass it; here it stays on
+top until the turn ends, then drops back to its date position. The running rows
+draw without date headers, as pinned rows do; the rest keep the date headers and
+the stale-session collapse. A drag in this sort seeds `manual` with the order on
+screen, running rows first. The History pane reads the key as `date-desc`. A
+build without `active-then-date` reads it as `date-desc`.
 
 ### Interactive model picker visibility
 
