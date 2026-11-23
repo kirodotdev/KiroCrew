@@ -5901,9 +5901,11 @@ The two callers hang it off different layers on purpose:
 - **`release.yml`** — the release wheel and desktop builds depend directly on the gate, so all
   publish, sign, and GitHub Release jobs are transitively unreachable when it fails.
 - **`nightly.yml`** — every job that ships bytes to a nightly-channel user (`publish-cli`, the six
-  `publish-linux-*` callers, `publish-windows-x64`, `publish-docker`, and the three sign jobs
-  `sign-and-notarize`, `sign-and-notarize-arm64` and `sign-and-notarize-x64`) depends on the gate;
-  no build job does. main has no dependency gate of its own, so without this a
+  `publish-linux-*` callers, `publish-windows-x64`, `publish-docker`, and the three macOS
+  publish halves `publish-macos`, `publish-macos-arm64` and `publish-macos-x64`) depends on the
+  gate; no build job does. The three `sign-and-notarize*` calls before them run with
+  `stage: prepare` and write nothing public, so they run ungated beside the builds (see the
+  "Split calls" note in `sign-and-notarize.yml`). main has no dependency gate of its own, so without this a
   high/critical production vulnerability landing on main shipped to nightly users unaudited until
   the next tagged release. Gating the builds instead is what once failed the nightly for hours at a
   stretch — hanging it off publication means a slow registry delays publishing an already-built

@@ -686,7 +686,14 @@ the same name the fresh path wrote into its own gated artifact. On `release.yml`
 the two single-arch callers are required lanes beside the universal one:
 `record-promotion`, `github-release` and `record-stable-promotion` all wait on
 all three, and the release page carries `KiroCrew-<v>-{universal,arm64,x64}.dmg`
-with the matching `*-mac.zip`.
+with the matching `*-mac.zip`. `nightly.yml` splits each of its three calls in
+two with the `stage` input: `sign-and-notarize*` (`stage: prepare`: `sign` and
+`notarize`, nothing public) starts as soon as `build-desktop` is done, and
+`publish-macos*` (`stage: publish`: `blockmap` and `publish`, reading the same
+run's gated artifact) waits for it and for the nightly's publish gates. That
+takes signing and Apple notarization off the back of the macOS test suite.
+`release.yml` and `release-lts.yml` leave `stage` empty and run the four jobs
+as one call.
 
 1. **sign** (ubuntu). Flattens the build artifacts, attests SLSA provenance for
    the wheel, sdist, and AppImages (not the mac zip or DMG, whose bytes are not
