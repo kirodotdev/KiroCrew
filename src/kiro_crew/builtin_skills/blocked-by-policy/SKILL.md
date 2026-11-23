@@ -88,7 +88,7 @@ not exist here, and it is never grounds for explaining the architecture. Under
 MCP Tool Search a tool's spec is absent from your list until you load it, and a
 keyword query can score below the match threshold while the exact id hits. So:
 
-1. Retry with the exact id — `tool_search(tool_id="<server>::<tool>")` — not a
+1. Retry with the exact id, loaded as the `[TOOL NAMES]` block says — not a
    keyword query. This alone resolves most cases.
 2. If it still misses, the server may be registered but not mounted for THIS
    session. Say that, and name the three things that cause it: the session

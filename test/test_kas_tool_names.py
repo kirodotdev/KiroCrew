@@ -177,7 +177,9 @@ class TestActiveToolContract:
             provider_type=PROVIDER_LABEL_DEFAULT,
             context_provider=_Provider(),
         )
-        assert ("[TOOL NAMES]" in message) is expected
+        assert "[TOOL NAMES]" in message
+        assert ("Deferred tools and executors:" in message) is expected
+        assert ('tool_search(tool_id="<server>::<tool>")' in message) is not expected
 
     def test_the_post_compaction_reinjection_carries_the_block(self, tmp_path):
         from kiro_crew.context_assembly import turn as _turn
@@ -212,12 +214,22 @@ class TestActiveToolContract:
         assert _resolvable_names(deferred, _work_tools()) == {}
 
 
-class TestOtherHarnessesAreUnchanged:
+class TestOtherHarnessesGetTheirOwnBlock:
     @pytest.mark.parametrize(
-        "provider_type",
-        [PROVIDER_LABEL_DEFAULT, None, PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_CODEX],
+        "provider_type", [PROVIDER_LABEL_DEFAULT, PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_CODEX]
     )
-    def test_no_block_off_kas(self, tmp_path, provider_type):
+    def test_no_kas_rules_off_kas(self, tmp_path, provider_type):
+        block = tool_names.tool_names_block(provider_type)
+        assert block.startswith("[TOOL NAMES]\n")
+        assert "Deferred tools and executors:" not in block
+        assert "mcp_<server>_<tool>" not in block
+        context = _builder(tmp_path).build_session_context(
+            session_key="dashboard:chat-v2", agent="kirocrew-worker", provider_type=provider_type
+        )
+        assert block in context
+
+    @pytest.mark.parametrize("provider_type", [None, "", "not-a-harness"])
+    def test_an_unknown_harness_gets_no_block(self, tmp_path, provider_type):
         assert tool_names.tool_names_block(provider_type) == ""
         context = _builder(tmp_path).build_session_context(
             session_key="dashboard:chat-v2", agent="kirocrew-worker", provider_type=provider_type
