@@ -33,17 +33,13 @@ def _consented_kas_project_hooks(agent_id: str, checkout: str) -> dict[str, Any]
     ``None`` when the checkout does not declare the agent or its hooks are off; a
     declared spec that cannot be read raises, so PreToolUse fails closed.
     """
-    from kiro_crew.acp.session_mcp import project_agent_spec
-    from kiro_crew.project_hooks_consent import hooks_enabled
+    from kiro_crew.project_hooks_consent import consented_project_hooks
 
     if _live_bot_owns(agent_id):
         return None
-    declared, spec = project_agent_spec(agent_id, checkout)
-    if not declared or not hooks_enabled(checkout)[0]:
-        return None
-    if spec is None:
-        raise ValueError(f"the project spec for agent {agent_id!r} could not be read")
-    return {"hooks": spec["hooks"]} if "hooks" in spec else {}
+    # The hooks come from the same read the consent was checked against, never a
+    # second one a rewrite could slip other hooks into.
+    return consented_project_hooks(checkout, agent_id)
 
 
 class KasProjectHooks(NamedTuple):

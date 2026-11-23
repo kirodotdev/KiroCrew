@@ -257,15 +257,33 @@ async def test_loopback_stray_hits_without_our_state_change_nothing(tmp_path, lo
 
 
 @pytest.mark.asyncio
-async def test_loopback_portal_error_is_error(tmp_path, loopback_shape):
+@pytest.mark.parametrize(
+    "error, page_says",
+    [
+        ("access_denied", "Login failed: the sign-in was cancelled or not approved. You can"),
+        ("server_error", "Login failed: the sign-in service ran into a problem. You can"),
+        (
+            "temporarily_unavailable",
+            "Login failed: the sign-in service is temporarily unavailable.",
+        ),
+        ("invalid_scope", "Login failed: the sign-in service did not accept the request. You"),
+        ("not_an_rfc_code", "Login failed. You can close this window"),
+    ],
+)
+async def test_loopback_portal_error_is_error(tmp_path, loopback_shape, error, page_says):
+    """The tab names an RFC 6749 error code's reason in fixed words, never the provider's text."""
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
-    await _hit_callback(begin["port"], {"error": "access_denied"})
+    page = await _hit_callback(
+        begin["port"], {"error": error, "error_description": "<b>provider text</b>"}
+    )
+    assert page_says in page
+    assert "provider text" not in page
     result = await _poll_until_terminal(service, begin["login_id"])
     assert result == {
         "status": "error",
         "code": "loopback_failed",
-        "error": "portal returned error: access_denied",
+        "error": f"portal returned error: {error}",
     }
 
 

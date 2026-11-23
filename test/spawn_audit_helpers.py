@@ -1224,6 +1224,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here
         # individually because _SPAWN_NAMES collects bare-name calls to it.
         "sandbox_rlimit.py::create_subprocess_limited",
+        # The gateway Unix loop's off-loop Popen: it builds, on a worker thread, the
+        # child an asyncio subprocess call already asked for, with that call's argv.
+        # The call sites are the ones this audit holds to the chokepoint.
+        "platform_compat_offloop_spawn.py::_posix_popen",
         # The synchronous siblings of the above, same reasoning: they wrap an argv
         # they are handed and cannot route on its behalf.
         "sandbox_rlimit.py::run_limited",

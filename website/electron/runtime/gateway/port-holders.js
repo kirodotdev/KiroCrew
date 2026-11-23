@@ -161,6 +161,15 @@ function createPortHolders({
     });
   }
 
+  // The local mint's listener proof. The mint refuses when it cannot be taken,
+  // so on Windows one failed or slow netstat run must not decide that: two
+  // bounded attempts, rejecting with how the last one failed so the refusal can
+  // say so. Force-stop's three of 10 s would hold a boot connect for ~31 s.
+  function mintPortPids(probePort) {
+    if (!IS_WIN) return snapshotGatewayPortPids(probePort);
+    return windowsListenPidsRetrying(probePort, { execFileFn: execFile, attempts: 2, timeoutMs: 5000, sleep });
+  }
+
   function unverifiedIncumbent(pids) {
     return incumbentSnapshotBlocksRespawn({ pids, isWindows: IS_WIN });
   }
@@ -368,6 +377,7 @@ function createPortHolders({
     launchdJobPids,
     isLaunchdJob,
     snapshotGatewayPortPids,
+    mintPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,
     forceStopGatewayPort,
