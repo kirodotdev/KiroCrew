@@ -815,11 +815,23 @@ export function useComposerSend({
       // App payloads remain in the page-level error notice for copying; the
       // composer was never consumed and must not gain the app's text or chips.
       if (!slot || isolated) return
-      restoreSentTurn(slot, { inlined: turn.inlined, pastes: activePastes, sessionRefs: sentSessionRefs, quote: sentQuote, slotTokens: sentSlotTokens, ...(wasDictated ? { dictated: true } : {}) })
+      restoreSentTurn(slot, { inlined: turn.inlined, pastes: activePastes, sessionRefs: sentSessionRefs, quote: sentQuote, slotTokens: sentSlotTokens, knowledge: knowledgeBlock?.items, ...(wasDictated ? { dictated: true } : {}) })
     }
     // A send carries the revision it is based on (first submit wins); one
     // pressed before this tab learned it waits for the session's read, bounded.
     const baseRevision = await baseRevisionForPress(slot, slot === entrySendSlot ? baseAtPress : baseRevisionFor(slot))
+    if (slot && stopHold?.signal.aborted) {
+      // Stop landed during the wait above, so nothing left the browser. Known
+      // unsent, unlike a cancelled POST: the bubble goes, the draft returns,
+      // and the caller hears the send was not delivered. An app payload has
+      // no draft to return to, so it stays copyable in the page notice.
+      if (bubbleMinted) dispatch(resolveOptimisticSteer({ slot, sendId, outcome: 'queued' }))
+      endOwnLocalTurn()
+      restoreComposerAfterFailedSend()
+      if (isolated && !ownsFailureReport) setActionError({ message: i18nT('appChatLaunch.unsent', { error: i18nT('pages.chat.stopEventCard.stopped'), message: raw }), preserveOnSwitch: true })
+      onUndelivered?.('refused')
+      return false
+    }
     // The POST, its 10 s deadline, the resolves-not-rejects trap and the body
     // classification all live in the chat-core transport now; this surface
     // only decides how to REACT to the receipt. `sendTurn` never rejects.
