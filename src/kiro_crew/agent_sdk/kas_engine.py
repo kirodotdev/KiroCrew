@@ -8,15 +8,25 @@ only the stdlib.
 from __future__ import annotations
 
 
+def _field(provider: object, name: str) -> str:
+    """*provider*'s str field *name*, or its ``client``'s, else ``""``."""
+    value = getattr(provider, name, None)
+    if not isinstance(value, str):
+        value = getattr(getattr(provider, "client", None), name, None)
+    return value if isinstance(value, str) else ""
+
+
 def discards_mcp_oauth(provider: object) -> bool:
     """Whether *provider*'s engine is KNOWN to drop a remote MCP server's ``oauth``.
 
-    Known only on Crew's own bundle route, whose engine version Crew installed.
-    *provider* carries the version itself, or its ``client`` does.
+    Known on Crew's own bundle route from the engine version Crew installed, and
+    on the relay from the engine kiro-cli unpacked, read at spawn. The bundle
+    version wins when set. *provider* carries the versions itself, or its
+    ``client`` does.
     """
     from kiro_crew.acp.kas_engine_features import engine_discards_oauth
 
-    version = getattr(provider, "kas_bundle_engine_version", None)
-    if not isinstance(version, str):
-        version = getattr(getattr(provider, "client", None), "kas_bundle_engine_version", None)
-    return engine_discards_oauth(version if isinstance(version, str) else None)
+    engine = _field(provider, "kas_bundle_engine_version") or _field(
+        provider, "kas_relay_engine_version"
+    )
+    return engine_discards_oauth(engine)
