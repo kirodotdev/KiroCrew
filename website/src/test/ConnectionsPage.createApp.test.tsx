@@ -54,6 +54,10 @@ import { ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { mount, card } from './ConnectionsPage.coverageTestUtils'
 
+// The page reads the manifests, and only once they hold an app reads the saved
+// clients; the buttons render after both. Every wait behind that two-request
+// chain gets this named ceiling instead of Testing Library's 1 s default.
+const CHAIN_WAIT = { timeout: 5000 }
 const CREATE_URL = 'https://api.slack.com/apps?new_app=1&manifest_yaml=display_information%3A'
 const LOAD_FAILED = 'Could not load the buttons that create an app.'
 const MANIFEST = 'display_information:\n  name: test-app\n'
@@ -111,14 +115,28 @@ describe('Create the Slack app', () => {
     mount()
 
     const tip = await openSlackTip()
-    const create = await within(tip).findByRole('link', { name: /Create the Slack app/ })
+    const create = await within(tip).findByRole('link', { name: /Create the Slack app/ }, CHAIN_WAIT)
     expect(create).toHaveAttribute('href', CREATE_URL)
     expect(create).toHaveAttribute('target', '_blank')
     expect(create.getAttribute('rel')).toContain('noopener')
-    const hint = 'First, create the Slack app. Slack opens with it filled in: pick your workspace and click Create, then copy its Client ID and Client Secret into this card.'
+    // One numbered list: creating the app is step 1, and the last step says
+    // where its Client ID and Client Secret go once sign-in is on.
+    expect(tip.textContent).toContain(
+      'Slack signs in through Kiro Crew. To connect it: (1) create the Slack app with the button below (Slack opens with it filled in, and nothing changes in your workspace until you click Create), (2) turn on Kiro Crew sign-in with the button on this card, (3) in Settings, set chats to run on Kiro Agent, (4) back here, click Set up Slack and paste the app’s Client ID and Client Secret into its form.',
+    )
+    expect(tip.textContent).not.toContain('Start by creating')
+    expect(within(tip).getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/settings/agent')
+  })
+
+  it('leads the client-not-saved tip with the create step, naming the Set up button', async () => {
+    slackStatus({ needsClientConfig: true })
+    mount()
+
+    const tip = await openSlackTip({ closed: true })
+    await within(tip).findByRole('link', { name: /Create the Slack app/ }, CHAIN_WAIT)
+    const hint = 'Start by creating the Slack app: Slack opens with it filled in, and nothing changes in your workspace until you click Create. Then click Set up Slack on this card and paste the app’s Client ID and Client Secret into its form.'
     expect(tip.textContent).toContain(hint)
-    // The create step leads the tip, before the steps that need its Client ID.
-    expect(tip.textContent!.indexOf(hint)).toBeLessThan(tip.textContent!.indexOf('To connect it'))
+    expect(tip.textContent!.indexOf(hint)).toBeLessThan(tip.textContent!.indexOf('needs a one-time setup'))
   })
 
   it('copies the same manifest text the link carries', async () => {
@@ -126,9 +144,9 @@ describe('Create the Slack app', () => {
     mount()
 
     const tip = await openSlackTip({ closed: true })
-    fireEvent.click(await within(tip).findByRole('button', { name: 'Copy manifest' }))
-    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(MANIFEST))
-    expect(await within(tip).findByText('Copied')).toBeInTheDocument()
+    fireEvent.click(await within(tip).findByRole('button', { name: 'Copy manifest' }, CHAIN_WAIT))
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(MANIFEST), CHAIN_WAIT)
+    expect(await within(tip).findByText('Copied', undefined, CHAIN_WAIT)).toBeInTheDocument()
   })
 
   it('offers no second app once the card’s client is saved', async () => {
@@ -137,7 +155,7 @@ describe('Create the Slack app', () => {
     mount()
 
     const tip = await openSlackTip()
-    await waitFor(() => expect(connectionsOAuthClients).toHaveBeenCalled())
+    await waitFor(() => expect(connectionsOAuthClients).toHaveBeenCalled(), CHAIN_WAIT)
     expect(within(tip).queryByRole('link', { name: /Create the Slack app/ })).not.toBeInTheDocument()
     expect(within(tip).queryByRole('button', { name: 'Copy manifest' })).not.toBeInTheDocument()
   })
@@ -148,7 +166,7 @@ describe('Create the Slack app', () => {
     mount()
 
     const tip = await openSlackTip()
-    await waitFor(() => expect(connectionsAppManifests).toHaveBeenCalled())
+    await waitFor(() => expect(connectionsAppManifests).toHaveBeenCalled(), CHAIN_WAIT)
     expect(within(tip).queryByRole('link', { name: /Create the Slack app/ })).not.toBeInTheDocument()
     expect(connectionsOAuthClients).not.toHaveBeenCalled()
     expect(document.body.textContent).not.toContain(LOAD_FAILED)
@@ -159,7 +177,7 @@ describe('Create the Slack app', () => {
     slackStatus({ needsCrewSignIn: true })
     mount()
 
-    await waitFor(() => expect(document.body.textContent).toContain(LOAD_FAILED))
+    await waitFor(() => expect(document.body.textContent).toContain(LOAD_FAILED), CHAIN_WAIT)
   })
 
   it('says so when the saved-client lookup that gates the buttons fails', async () => {
@@ -167,18 +185,18 @@ describe('Create the Slack app', () => {
     slackStatus({ needsCrewSignIn: true })
     mount()
 
-    await waitFor(() => expect(document.body.textContent).toContain(LOAD_FAILED), { timeout: 10000 })
+    await waitFor(() => expect(document.body.textContent).toContain(LOAD_FAILED), CHAIN_WAIT)
   })
 
   it('withdraws the cached buttons when a refetch of the manifests fails', async () => {
     slackStatus({ needsCrewSignIn: true })
     const { queryClient }: { queryClient: QueryClient } = mount()
     const tip = await openSlackTip()
-    await within(tip).findByRole('link', { name: /Create the Slack app/ })
+    await within(tip).findByRole('link', { name: /Create the Slack app/ }, CHAIN_WAIT)
 
     connectionsAppManifests.mockRejectedValue(new ApiError(500, 'manifest template missing'))
     await queryClient.invalidateQueries({ queryKey: ['slack-manifest'] })
-    await waitFor(() => expect(document.body.textContent).toContain(LOAD_FAILED))
+    await waitFor(() => expect(document.body.textContent).toContain(LOAD_FAILED), CHAIN_WAIT)
     expect(document.querySelector('a[href^="https://api.slack.com/apps"]')).toBeNull()
   })
 
@@ -188,17 +206,17 @@ describe('Create the Slack app', () => {
     mount()
 
     const tip = await openSlackTip()
-    await waitFor(() => expect(connectionsOAuthClients).toHaveBeenCalled())
+    await waitFor(() => expect(connectionsOAuthClients).toHaveBeenCalled(), CHAIN_WAIT)
     expect(within(tip).queryByRole('link', { name: /Create the Slack app/ })).not.toBeInTheDocument()
   })
 
   it('refreshes the manifests when a Slack manifest save invalidates them', async () => {
     slackStatus({ needsCrewSignIn: true })
     const { queryClient }: { queryClient: QueryClient } = mount()
-    await waitFor(() => expect(connectionsAppManifests).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(connectionsAppManifests).toHaveBeenCalledTimes(1), CHAIN_WAIT)
 
     await queryClient.invalidateQueries({ queryKey: ['slack-manifest'] })
-    await waitFor(() => expect(connectionsAppManifests).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(connectionsAppManifests).toHaveBeenCalledTimes(2), CHAIN_WAIT)
   })
 
   it('never offers a create link that is not https', async () => {
@@ -209,7 +227,7 @@ describe('Create the Slack app', () => {
     mount()
 
     const tip = await openSlackTip()
-    await within(tip).findByRole('button', { name: 'Copy manifest' })
+    await within(tip).findByRole('button', { name: 'Copy manifest' }, CHAIN_WAIT)
     expect(within(tip).queryByRole('link', { name: /Create the Slack app/ })).not.toBeInTheDocument()
   })
 })

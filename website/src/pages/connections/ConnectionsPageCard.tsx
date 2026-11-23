@@ -214,7 +214,7 @@ function PrerequisiteTip({ label, heading, text, redirect, link, app }: {
   text: ReactNode
   /** The provider's OAuth app the gateway can generate: a button that opens
    *  the vendor's create page with it filled in, and one that copies it. */
-  app?: { provider: string; manifest: ConnectionAppManifest }
+  app?: { provider: string; manifest: ConnectionAppManifest; inSteps?: boolean }
   /** Where this card's sign-in returns, each value with its own copy control, so
    *  an org admin can be handed the whole address (`signInRedirect` on the
    *  status row). */
@@ -377,10 +377,12 @@ function PrerequisiteTip({ label, heading, text, redirect, link, app }: {
           style={{ ...pos(), backgroundColor: 'var(--card)', boxShadow: 'var(--shadow-lg)' }}
         >
           <span id={headingId} className="block font-medium text-text-strong">{heading}</span>
-          {/* The app comes first: every step the text names needs its Client ID
-              and Client Secret, so its line says "First". */}
-          {app && <CreateAppActions provider={app.provider} manifest={app.manifest} />}
-          {text && <span className={`${app ? 'mt-2' : 'mt-0.5'} block`}>{text}</span>}
+          {/* The app comes first: every later step needs its Client ID and
+              Client Secret. When the text already numbers the steps (step 1
+              creates the app), the buttons follow it with no line of their own. */}
+          {app && !app.inSteps && <CreateAppActions provider={app.provider} manifest={app.manifest} hint />}
+          {text && <span className={`${app && !app.inSteps ? 'mt-2' : 'mt-0.5'} block`}>{text}</span>}
+          {app?.inSteps && <CreateAppActions provider={app.provider} manifest={app.manifest} hint={false} />}
           {redirect && (
             <>
               <span className="mt-1.5 block text-muted">{redirect.caption}</span>
@@ -402,7 +404,7 @@ function PrerequisiteTip({ label, heading, text, redirect, link, app }: {
  *  copy that manifest. The create link opens the vendor's page in a new tab,
  *  and only an https link is offered. The copy acknowledgment and its refusal
  *  work as `RedirectValue`'s do. */
-function CreateAppActions({ provider, manifest }: { provider: string; manifest: ConnectionAppManifest }) {
+function CreateAppActions({ provider, manifest, hint }: { provider: string; manifest: ConnectionAppManifest; hint: boolean }) {
   const { t } = useTranslation()
   const [failed, setFailed] = useState(false)
   const copyRef = useRef<HTMLButtonElement>(null)
@@ -415,7 +417,7 @@ function CreateAppActions({ provider, manifest }: { provider: string; manifest: 
   const createUrl = manifest.create_url.startsWith('https://') ? manifest.create_url : ''
   return (
     <>
-      <span className="mt-0.5 block">{t('pages.connectionsPage.create_app_hint', { provider })}</span>
+      {hint && <span className="mt-0.5 block">{t('pages.connectionsPage.create_app_hint', { provider })}</span>}
       <span className="mt-1.5 flex flex-wrap items-center gap-2">
         {createUrl && (
           <a
@@ -929,13 +931,23 @@ function ConnectionCard({
         label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
         heading={t('pages.connectionsPage.before_you_connect')}
         text={(
-          <Trans
-            i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
-            values={{ provider: provider.name }}
-            components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
-          />
+          // With an app to create, creating it is step 1 of the same numbered
+          // list, and its last step says where the Client ID and Secret go.
+          createApp ? (
+            <Trans
+              i18nKey="pages.connectionsPage.needs_crew_sign_in_with_app_help"
+              values={{ provider: provider.name }}
+              components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
+            />
+          ) : (
+            <Trans
+              i18nKey="pages.connectionsPage.needs_crew_sign_in_help"
+              values={{ provider: provider.name }}
+              components={{ settingsLink: <Link to={settingsPath({ tab: 'agent' })} className="underline hover:text-accent" /> }}
+            />
+          )
         )}
-        app={createApp}
+        app={createApp && { ...createApp, inSteps: true }}
       />
       <Link
         to={settingsPath({ tab: 'developer', sub: 'feature-previews', highlight: CREW_SIGN_IN_SETTING_ID })}
