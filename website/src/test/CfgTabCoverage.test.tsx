@@ -14,6 +14,8 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { AGENT_SANDBOX_HIGHLIGHT_ANCHOR } from '../hooks/useSettingHighlight'
 import { AGENT_SANDBOX_PATH } from '../pages/overview/agentSandboxLink'
+import { i18next } from '../i18n/all'
+import zh from '../i18n/locales/zh-CN.json'
 
 vi.mock('../api/client')
 
@@ -342,6 +344,20 @@ describe('KiroCrewCfgTab — numeric rows', () => {
 
     expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
     expect(screen.queryByText('invalid')).toBeNull()
+  })
+
+  it('writes the seconds unit in the reader language', async () => {
+    // The unit after a seconds field comes from the catalog, so a Chinese reader
+    // sees 秒 rather than an English `s`.
+    await i18next.changeLanguage('zh-CN')
+    onTestFinished(() => i18next.changeLanguage('en'))
+    renderWithProviders(<><KiroCrewCfgTab /><AgentRunSettings /></>)
+
+    const cfgTab = zh.pages.overview.kiroCrewCfgTab
+    for (const label of [cfgTab.session_timeout, cfgTab.pool_ttl]) {
+      const input = await screen.findByRole('spinbutton', { name: label })
+      expect(input.nextElementSibling?.textContent).toBe('秒')
+    }
   })
 })
 
