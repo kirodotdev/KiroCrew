@@ -123,13 +123,17 @@ def test_the_slot_wake_types_cover_every_eager_slot_folds_types():
     )
 
 
-def test_every_committed_type_wakes_because_session_folds_read_every_type():
+def test_every_committed_type_wakes_because_session_folds_read_every_type(monkeypatch):
     """MUTATION-SENSITIVE: a ``message/chunk`` wakes the worker, not just a slot type.
 
     ``status`` and ``class`` consume the whole vocabulary, so an append-path filter would
     pass everything; one that kept the old slot-only filter would leave both stale.
+
+    ``_run`` is stubbed, not just stopped: ``note_commit`` starts the worker itself, and a
+    live one can take the wake off the queue before this test reads it.
     """
     eager.stop_for_tests()
+    monkeypatch.setattr(eager, "_run", lambda: None)
     eager.note_commit("s-any", "message/chunk", 3)
     queued = eager._queue
     assert queued is not None and not queued.empty(), "a message chunk did not wake"
@@ -453,7 +457,7 @@ def test_the_real_append_path_wakes_the_eager_fold(monkeypatch):
     assert crew_log.read_slot_projection(slot, "work").value["items"]
 
 
-def test_drain_waits_for_a_wake_it_has_not_folded_yet():
+def test_drain_waits_for_a_wake_it_has_not_folded_yet(monkeypatch):
     """``drain`` answers about FOLDING, not about the queue being empty.
 
     The counters are taken when a wake is ENQUEUED rather than when the worker takes one,
@@ -462,6 +466,7 @@ def test_drain_waits_for_a_wake_it_has_not_folded_yet():
     nobody, so a ``drain`` that answered on emptiness alone would say True here.
     """
     eager.stop_for_tests()
+    monkeypatch.setattr(eager, "_run", lambda: None)
     slot = WORK_SLOT
     handle = _slot_log("s-pending", slot)
     seq = _work_entry(handle, "it-1")
