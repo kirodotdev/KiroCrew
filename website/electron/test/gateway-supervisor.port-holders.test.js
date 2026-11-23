@@ -31,7 +31,7 @@ function windowsOwnerExecFile(state) {
     const tool = String(file).toLowerCase();
     if (tool.includes("netstat")) {
       state.netstatCalls = (state.netstatCalls || 0) + 1;
-      if (state.probeFails || state.failNetstatCall === state.netstatCalls) {
+      if (state.probeFails || state.failNetstatCalls?.includes(state.netstatCalls)) {
         callback(new Error("netstat unavailable"));
         return;
       }
@@ -415,10 +415,10 @@ test("win32 refuses the respawn when the incumbent PID cannot be captured", asyn
     ownVersion: PROD_VERSION,
     otherVersion: NIGHTLY_VERSION,
     responses: [0],
-    // Call 1 classifies the owner; call 2 is the PID snapshot. Failing only the
-    // second is the transient-probe case: port free would then be read as lock
-    // free, and the replacement would race the incumbent's gateway.lock.
-    state: { held: true, incumbentAlive: true, failNetstatCall: 2 },
+    // Call 1 classifies the owner; calls 2 and 3 are the PID snapshot's two
+    // attempts. A snapshot that never answers would let port free be read as
+    // lock free, and the replacement would race the incumbent's gateway.lock.
+    state: { held: true, incumbentAlive: true, failNetstatCalls: [2, 3] },
     quits,
   });
 
@@ -426,6 +426,26 @@ test("win32 refuses the respawn when the incumbent PID cannot be captured", asyn
   assert.strictEqual(shown.length, 0, "no Retry is offered that could not be honoured");
   assert.strictEqual(spawnCalls.length, 0);
   assert.ok(logs.some((line) => line.includes("could not capture the incumbent PID on :5476")));
+  assert.deepStrictEqual(quits, []);
+});
+
+test("win32 still offers the manual quit when one snapshot netstat run fails", async () => {
+  const quits = [];
+  const { supervisor, logs, spawnCalls, shown } = conflictHarness({
+    platform: "win32",
+    ownVersion: PROD_VERSION,
+    otherVersion: NIGHTLY_VERSION,
+    // Cancel at the prompt: reaching it is what this test pins.
+    responses: [1],
+    state: { held: true, incumbentAlive: true, failNetstatCalls: [2] },
+    quits,
+  });
+
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(shown.length, 1, "the second netstat attempt named the incumbent");
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.ok(!logs.some((line) => line.includes("could not capture the incumbent PID")));
+  assert.ok(logs.some((line) => line.includes("netstat probe 1/2 on :5476 failed")));
   assert.deepStrictEqual(quits, []);
 });
 
@@ -459,7 +479,7 @@ test("linux refuses the respawn too, where unverifiedIncumbent is false by desig
 // the harness reports the app quitting as soon as the probe has answered once
 // (so a transient miss stops at the first backoff check instead of sleeping).
 function drainingGatewayHarness({ isPackaged = false, gatewayPid }) {
-  const state = { held: true, failNetstatCall: 2, gatewayPidCalls: 0 };
+  const state = { held: true, failNetstatCalls: [2, 3], gatewayPidCalls: 0 };
   const ownerExecFile = windowsOwnerExecFile(state);
   const quits = [];
   let built = null;
