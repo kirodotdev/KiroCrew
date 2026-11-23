@@ -14,8 +14,8 @@ which files it really executed (`scripts/ci_test_file_map.py`) links a change
 to the test files that touched it.
 
     build   merge the plugin's `part-*.json` files into the map
-    bundle  wrap a map, the co-change history and the guard tier into one
-            gzip selection artifact (schema 2, below)
+    bundle  add the co-change history and the guard tier to a map and write
+            the gzip selection file the scorer reads (below)
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
             map or bundle, print the test files it would run, or fall back to
             the full suite and say why
@@ -36,14 +36,15 @@ runs, so a node id counts for its test FILE.
 
 The bundle (gzip JSON)
 ----------------------
-    {"schema": 2, "commit": SHA, "built_at": ISO,
-     "map": <the schema-1 map, unchanged>,
-     "co_change": {src file: {test file: count}},  # last N first-parent commits
-     "guard": [test file, ...]}                    # leaf_test_scope.corpus_gates
+The map, with the two tables `scripts/ci_test_selection.py` reads beside it:
+
+    "cochange": {src file: [test file, ...]},  # changed together in one of the
+                                               # last N first-parent commits
+    "guard": [test file, ...]                  # leaf_test_scope.corpus_gates
 
 A table that cannot be built, or that comes out empty, is left out of the file,
 never written empty, so a reader can tell "no data" from "no links". A shallow
-clone cannot build `co_change` unless it holds `--commits` commits and the one
+clone cannot build `cochange` unless it holds `--commits` commits and the one
 before them: a part of the window would read as the whole of it.
 
 What the selector falls back on (prints nothing, exit 3)
@@ -75,17 +76,15 @@ import subprocess
 import sys
 import zlib
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = 1
-BUNDLE_SCHEMA = 2
 FULL = 3
 CO_CHANGE_COMMITS = 2000
 GIT_LOG_TIMEOUT_SECS = 600.0
-BUNDLE_TABLES = ("co_change", "guard")
+BUNDLE_TABLES = ("cochange", "guard")
 NO_GUARD = "corpus_gates found no guard test"
 
 # Where pytest collects (setup.cfg `testpaths`). A changed test file outside
@@ -127,7 +126,8 @@ def read_parts(directory: Path) -> list[dict[str, Any]]:
     return [json.loads(p.read_text(encoding="utf-8")) for p in paths]
 
 
-def _read_json(path: Path) -> Any:
+def read_json(path: Path) -> Any:
+    """The JSON in a plain or gzip file; damaged gzip data is a `ValueError`."""
     raw = path.read_bytes()
     if raw[:2] == b"\x1f\x8b":
         try:
@@ -137,21 +137,9 @@ def _read_json(path: Path) -> Any:
     return json.loads(raw.decode("utf-8"))
 
 
-def load_bundle(path: Path) -> dict[str, Any]:
-    """Read a schema-2 bundle; its map is checked like a schema-1 map file."""
-    doc = _read_json(path)
-    if not isinstance(doc, dict) or doc.get("schema") != BUNDLE_SCHEMA:
-        raise ValueError(f"{path}: not a schema-{BUNDLE_SCHEMA} selection bundle")
-    _check_map(doc.get("map"), path)
-    return doc
-
-
 def load_map(path: Path) -> dict[str, Any]:
-    """Read and check a map file, or the map inside a bundle; a wrong schema is a usage error."""
-    doc = _read_json(path)
-    if isinstance(doc, dict) and doc.get("schema") == BUNDLE_SCHEMA:
-        return _check_map(doc.get("map"), path)
-    return _check_map(doc, path)
+    """Read and check a map file, plain or gzip; a wrong schema is a usage error."""
+    return _check_map(read_json(path), path)
 
 
 def _check_map(doc: Any, path: Path) -> dict[str, Any]:
@@ -298,16 +286,17 @@ def git_first_parent_files(
     return found
 
 
-def co_change(commits: Iterable[list[str]]) -> dict[str, dict[str, int]]:
-    """`src/` file -> {test file: how many commits changed both}."""
-    counts: dict[str, dict[str, int]] = {}
+def co_change(commits: Iterable[list[str]]) -> dict[str, list[str]]:
+    """`src/` file -> the test files some commit changed together with it."""
+    links: dict[str, set[str]] = {}
     for paths in commits:
-        tests = sorted({p for p in paths if is_test_file(p)})
-        for src in sorted({p for p in paths if p.startswith("src/") and not is_test_file(p)}):
-            row = counts.setdefault(src, {})
-            for test in tests:
-                row[test] = row.get(test, 0) + 1
-    return {src: row for src, row in sorted(counts.items()) if row}
+        tests = {p for p in paths if is_test_file(p)}
+        if not tests:
+            continue
+        for src in paths:
+            if src.startswith("src/") and not is_test_file(src):
+                links.setdefault(src, set()).update(tests)
+    return {src: sorted(tests) for src, tests in sorted(links.items())}
 
 
 def is_shallow(root: Path, timeout: float | None = None) -> bool:
@@ -326,7 +315,7 @@ def is_shallow(root: Path, timeout: float | None = None) -> bool:
 
 def co_change_window(
     root: Path, ref: str, commits: int, timeout: float | None = None
-) -> dict[str, dict[str, int]]:
+) -> dict[str, list[str]]:
     """`co_change` over the last `commits` first-parent commits of `ref`.
 
     Raises when a shallow clone does not also hold the commit before the window:
@@ -345,17 +334,15 @@ def bundle(
     commits: int = CO_CHANGE_COMMITS,
     timeout: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """The schema-2 bundle, and why each table left out of it could not be built."""
-    doc: dict[str, Any] = {
-        "schema": BUNDLE_SCHEMA,
-        "commit": test_map.get("commit", ""),
-        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "map": test_map,
-    }
+    """The map with the tables that could be built, and why each other one could not.
+
+    A table the map already carries is not kept: it is built here or left out.
+    """
+    doc: dict[str, Any] = {k: v for k, v in test_map.items() if k not in BUNDLE_TABLES}
     absent: dict[str, str] = {}
     tables: tuple[tuple[str, Callable[[], Any], str, str], ...] = (
         (
-            "co_change",
+            "cochange",
             lambda: co_change_window(root, ref, commits, timeout),
             "history read failed",
             "no commit in the window changed a src file and a test file together",
@@ -439,15 +426,15 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--parts", required=True, help="directory holding part-*.json")
     build.add_argument("--out", required=True, help="map JSON to write")
     build.add_argument("--commit", default="", help="commit the parts were recorded on")
-    pack = sub.add_parser("bundle", help="map JSON -> schema-2 gzip selection bundle")
-    pack.add_argument("--map", required=True, help="schema-1 map (or a bundle) to wrap")
+    pack = sub.add_parser("bundle", help="map JSON -> gzip selection bundle")
+    pack.add_argument("--map", required=True, help="map to add the tables to")
     pack.add_argument("--out", required=True, help="gzip JSON bundle to write")
-    pack.add_argument("--ref", default="HEAD", help="branch whose first parents feed co_change")
+    pack.add_argument("--ref", default="HEAD", help="branch whose first parents feed cochange")
     pack.add_argument(
         "--commits", type=int, default=CO_CHANGE_COMMITS, help="first-parent commits to read"
     )
     pick = sub.add_parser("select", help="print the test files a diff would run")
-    pick.add_argument("--map", required=True, help="schema-1 map or schema-2 bundle")
+    pick.add_argument("--map", required=True, help="map or bundle, plain or gzip")
     pick.add_argument("--base")
     pick.add_argument("--head")
     pick.add_argument("--name-status", help="file holding `git diff --name-status -M` output")

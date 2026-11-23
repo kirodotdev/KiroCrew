@@ -7,7 +7,7 @@ Four properties are pinned:
 * RECORD -- the plugin, in a real pytest session, links each test file to the
   repository files its tests executed, and to nothing another test ran.
 * BUILD -- plugin parts merge into the file -> test-file map, and `bundle`
-  wraps it with the co-change and guard tables, leaving out a table it cannot
+  adds the co-change and guard tables to it, leaving out a table it cannot
   build.
 * SELECT -- every fall-back rule in the module docstring yields the full suite,
   and a mapped edit yields its tests plus the guard tier.
@@ -128,7 +128,7 @@ def _shallow_clone(repo: Path, depth: int) -> Path:
     return clone
 
 
-def test_co_change_counts_the_first_parent_commits_that_changed_both(tmp_path: Path) -> None:
+def test_co_change_links_what_a_first_parent_commit_changed_together(tmp_path: Path) -> None:
     repo = _fixture_repo(tmp_path)
     commits = ctm.git_first_parent_files(repo, "HEAD", 3, FALLBACK_TIMEOUT_SECS)
     assert commits == [
@@ -136,8 +136,8 @@ def test_co_change_counts_the_first_parent_commits_that_changed_both(tmp_path: P
         *[["src/kiro_crew/a.py", "test/test_a.py"]] * 2,
     ]
     whole = {
-        "src/kiro_crew/a.py": {"test/test_a.py": 2},
-        "src/kiro_crew/café.py": {"test/test_café.py": 1},
+        "src/kiro_crew/a.py": ["test/test_a.py"],
+        "src/kiro_crew/café.py": ["test/test_café.py"],
     }
     # The root commit lists no paths, so it pairs nothing; nor does a commit with no test.
     assert ctm.co_change_window(repo, "HEAD", 10, FALLBACK_TIMEOUT_SECS) == whole
@@ -167,13 +167,11 @@ def test_bundle_cli_writes_one_gzip_file_select_reads(
     argv = ["--root", str(repo), "bundle", "--map", str(map_path), "--out", str(out)]
     assert ctm.main(argv) == 0
     doc = json.loads(gzip.decompress(out.read_bytes()))
-    assert doc["schema"] == 2 and doc["commit"] == "abc" and doc["built_at"]
-    assert doc["map"] == MAP and doc["guard"] == TIER
-    assert doc["co_change"]["src/kiro_crew/a.py"]["test/test_a.py"] == 2
-    assert set(doc) == {"schema", "commit", "built_at", "map", *ctm.BUNDLE_TABLES}
-    assert ctm.load_bundle(out) == doc and ctm.load_map(out) == MAP
-    with pytest.raises(ValueError):
-        ctm.load_bundle(map_path)
+    # The map as it was, with the two tables beside it.
+    assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
+    assert doc["guard"] == TIER
+    assert doc["cochange"]["src/kiro_crew/a.py"] == ["test/test_a.py"]
+    assert ctm.load_map(out) == doc
     # select reads the bundle as it reads a schema-1 map.
     diff = tmp_path / "diff.txt"
     diff.write_text("M\tsrc/kiro_crew/b.py\n", encoding="utf-8")
@@ -204,12 +202,12 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
         (build(repo, lambda root: TIER), {}),
         (build(repo, lambda root: []), {"guard": ctm.NO_GUARD}),
         (build(repo, scan_fails), {"guard": "corpus_gates failed: unreadable test tree"}),
-        (build(repo, lambda root: TIER, ref="no-such-ref"), {"co_change": "history read failed"}),
+        (build(repo, lambda root: TIER, ref="no-such-ref"), {"cochange": "history read failed"}),
         # A window with no pair, and a clone holding a part of the window: no data, not no links.
-        (build(repo, lambda root: TIER, commits=0), {"co_change": "no commit in the window"}),
+        (build(repo, lambda root: TIER, commits=0), {"cochange": "no commit in the window"}),
         (
             build(_shallow_clone(repo, 1), scan_fails),
-            {"co_change": "1 of the 2001", "guard": "failed"},
+            {"cochange": "1 of the 2001", "guard": "failed"},
         ),
     ]
     for (doc, absent), reasons in cases:
@@ -218,7 +216,12 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
         # Every table is in the file with rows, or named as left out: never both, never empty.
         assert {t for t in ctm.BUNDLE_TABLES if t in doc} == set(ctm.BUNDLE_TABLES) - set(absent)
         assert all(doc[t] for t in ctm.BUNDLE_TABLES if t in doc)
-        assert doc["map"] == MAP
+        assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
+    # A table the map already carries is rebuilt or left out, never carried over.
+    stale = {**MAP, "cochange": {"src/kiro_crew/a.py": ["test/test_stale.py"]}, "guard": ["x"]}
+    monkeypatch.setattr(ctm, "guard_tier", scan_fails)
+    doc, absent = ctm.bundle(stale, _shallow_clone(repo, 3), timeout=FALLBACK_TIMEOUT_SECS)
+    assert doc == MAP and sorted(absent) == sorted(ctm.BUNDLE_TABLES)
     # The CLI names each table it left out, and still writes the map.
     map_path = tmp_path / "map.json"
     map_path.write_text(json.dumps(MAP), encoding="utf-8")
@@ -229,7 +232,7 @@ def test_a_table_that_cannot_be_built_is_absent_not_empty(
     printed = capsys.readouterr().out
     assert "bundle: tables none" in printed
     assert all(f"::warning::{table} left out" in printed for table in ctm.BUNDLE_TABLES)
-    assert ctm.load_map(out) == MAP and not set(ctm.load_bundle(out)) & set(ctm.BUNDLE_TABLES)
+    assert ctm.load_map(out) == MAP
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
