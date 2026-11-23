@@ -63,6 +63,8 @@ unreachable, on another version or have the switch off, and answers
 `crew_none_available` when none admits the item. With `requires`, a refusal
 `crew_requirements_unmet` names what each crew lacked (`login gh (expired)`,
 `tag gpu`): tell the user which crew to sign in or tag rather than retrying.
+A crew named `could not be checked` is not a sign-in or tag fix: retry once in
+a later owner turn (`crew_list` shows that crew's state).
 A crew that already holds a session for this item (an earlier create whose reply was lost) is skipped and named under `skipped`; that leftover session stays on the crew, so tell the user to close it there.
 A login named `still checking` is not a missing sign-in: retry once in a later
 owner turn. Either way the item stays open
