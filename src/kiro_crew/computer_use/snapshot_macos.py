@@ -48,7 +48,7 @@ from dataclasses import dataclass, replace
 from typing import Iterator
 
 from kiro_crew import platform_compat
-from kiro_crew.computer_use import macos_ffi
+from kiro_crew.computer_use import macos_ffi, render
 from kiro_crew.computer_use.types import (
     AX_CHILD_ATTRIBUTES,
     AX_CHILDREN,
@@ -555,7 +555,7 @@ def _selected_text(focused: object, *, text_limit: int) -> str:
     subrole = macos_ffi.ax_str(focused, AX_SUBROLE)
     if _is_secure(role, subrole):
         return ""
-    return macos_ffi.ax_str(focused, AX_SELECTED_TEXT)
+    return render._clip(macos_ffi.ax_str(focused, AX_SELECTED_TEXT), text_limit)
 
 
 def _needs_manual_accessibility(window: "object | None", err: int, stats: WalkStats) -> bool:
