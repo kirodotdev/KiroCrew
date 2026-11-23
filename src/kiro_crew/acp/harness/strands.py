@@ -918,6 +918,12 @@ class StrandsLaunch(ProcessAdapter):
         session = ctx.session
         assert session is not None, "the Strands harness is launched for one session"
         self._session = session
+        # The sandbox floor first: a host that cannot apply the credential mask gets
+        # its refusal before any install or Python setup advice, and before this
+        # launch creates the project folder or seals the gate in it.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
         strands_bin, argv, spawn_label, stderr_label = await launch_mod.resolve_self_served_launch(
             self.backend
         )
@@ -966,9 +972,6 @@ class StrandsLaunch(ProcessAdapter):
         # server unconfigured while the launch file mounts it.
         session._launch_mcp_servers = list(kept)
         await session._discard_copilot_mcp_config()
-        hidden = await launch_mod._run_preflight_bounded(
-            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
-        )
         expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # The CLI is a Node script whose shebang finds ``node`` on the child's PATH;
         # below its ``engines`` floor it dies at load with nothing on the wire. The

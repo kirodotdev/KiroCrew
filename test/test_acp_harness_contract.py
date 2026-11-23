@@ -1671,6 +1671,7 @@ def test_a_missing_self_served_binary_names_its_install_command(
     import asyncio
 
     from kiro_crew.acp import client as acp_client
+    from kiro_crew.acp import launch as launch_mod
     from kiro_crew.acp.harness import process_adapter_for
     from kiro_crew.acp.transport_errors import AcpError
     from kiro_crew.agent_sdk.backends import launch_for
@@ -1681,6 +1682,9 @@ def test_a_missing_self_served_binary_names_its_install_command(
     monkeypatch.delenv(launch.bin_env_var, raising=False)
     monkeypatch.setattr(acp_client, "_mise_which", lambda _name: None)
     monkeypatch.setattr(acp_client, "augmented_path", lambda _path: str(empty))
+    # A host whose sandbox floor passes: a harness that applies the floor before the
+    # binary lookup would otherwise refuse with the floor sentence where no backend exists.
+    monkeypatch.setattr(launch_mod, "_sandbox_preflight", lambda backend, mode: ())
     # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
     # host's home, where a real ``.mcp.json`` would refuse the spawn.
     (tmp_path / ".git").mkdir()
