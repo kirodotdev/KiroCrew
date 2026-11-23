@@ -177,6 +177,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.messaging.renderer import (  # noqa: F401 - read by the owners
     count_redaction_tags,
+    mcp_identity_line,
     redaction_notice,
     trusted_mcp_identity,
 )
@@ -551,11 +552,6 @@ _SLACK_SECTION_TEXT_LIMIT = 2900
 
 # Truncation marker appended when tool_input exceeds the limit
 _TRUNCATION_MARKER = "\n… [truncated]"
-
-# Bound on each name an approval card's MCP identity line shows, taken before
-# escaping: a kept name runs to 512 characters and escaping can grow it fourfold,
-# so two unbounded names could pass the 3000 characters Slack allows one text.
-_IDENTITY_NAME_MAX = 200
 
 # Slack UX strings
 _THINKING = "_Thinking…_"
