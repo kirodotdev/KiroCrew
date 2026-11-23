@@ -4,7 +4,7 @@ status: partial
 author: kseam
 created: 2026-10-16
 last-audited: 2026-11-20
-audited-at: 0c5d8bd5f3
+audited-at: 4158830b79
 doc-pr:
 implementation-prs: [21425, 21410, 22001, 21993, 22370, 38112, 38181, 38240, 38243, 38998]
 tracking-issues: [15175]
@@ -85,6 +85,15 @@ superseded-by: []
     On main a row shows no PR or CI, the Code tab shows only the channel's own
     diff, the wrap-up lists only the channel's own PR, and an idle `!stop` gives a
     count of running helper agents and points at the board.
+- Amended 2026-11-20: a shared user may open and drive a code channel of their
+  own (Non-goals; §3, "Authorization" and "Stop"; §4). The owner decided it, and it takes
+  effect when the owner merges this amendment. The decision, the rules and the
+  security trade-off are recorded in
+  [rfc-slack-shared-access](rfc-slack-shared-access.md), "A shared user's own code
+  channel". Not built: on main `4158830b79`, `_route_message` in `slack/events.py`
+  skips `code_channel_dispatch` for a shared sender, who is refused in every code
+  channel. The
+  code is open in [#40181](https://github.com/kirodotdev/KiroCrew/pull/40181).
 - Author: kseam
 - Created: 2026-10-16
 - Prior art: issue [#15175](https://github.com/kirodotdev/KiroCrew/issues/15175)
@@ -161,8 +170,14 @@ before the switch silently lacks `code_channels:manage` and every call fails.
 * HTTP (Events API over a public URL) transport. Kiro Crew is Socket Mode only,
   and the reference implementation refuses code channels over HTTP for the same
   reasons: cross-worker Stop and slash routing.
-* Multi-user Slack. Slack stays owner-only; a code channel inherits the
-  authorization of the conversation it was opened from.
+* Multi-user code channels. A code channel inherits the authorization of the
+  conversation it was opened from, and membership of the channel admits nobody.
+  Amended 2026-11-20: with `slack.shared_access` on, a confirmed shared user may
+  open a code channel of their own, which admits the owner and that opener only;
+  its settings, Trust this channel, the helper-agent Turn-on, its slash commands
+  and Archive stay the owner's, and the owner's own code channels stay the
+  owner's alone ([rfc-slack-shared-access](rfc-slack-shared-access.md), "A shared
+  user's own code channel").
 
 ## Design
 
@@ -444,7 +459,10 @@ crewmates' private copies.
   restored from the durable origin binding even with a cold cache; a channel
   Kiro Crew did not create is recognised through `conversations.info`
   (`record_type == "agent_channel"` and this bot among its agents), re-checked on
-  every message.
+  every message. Amended 2026-11-20: a channel opened from a confirmed shared
+  user's request records them as its opener (`opener` on the route and binding)
+  and admits the owner and that opener; a channel with no opener, including one
+  Slack's own UI opened and one bound before the field existed, is the owner's.
 * **Worktree, diff and context bar.** When the project is a git repository the
   session works in its own worktree off the project's default branch. After each
   turn the gateway publishes the unified diff against the base as the channel's
@@ -646,7 +664,11 @@ crewmates' private copies.
     they are.
   * **Who may press it.** Unchanged: only Kiro Crew's owner, in a channel whose
     origin conversation still admits the bot, from an admitted workspace. Anyone
-    else is refused and audited, and nothing is stopped.
+    else is refused and audited, and nothing is stopped. Amended 2026-11-20: in a
+    code channel a shared user opened, its opener may also use Slack's Stop, the
+    context bar's Stop (which runs the same check) and `!stop`, under the same
+    channel and workspace checks. The context bar's Create PR, the Workers tab's
+    per-helper Stop and the restart notice's Stop and Resume stay the owner's.
   * **What the channel says.** How many it stopped (none, when nothing was
     running), and that nothing starts again until someone sends a message here.
   * **What happens next.** Nothing starts again on its own. The channel's session
@@ -671,7 +693,8 @@ chats, skills and the knowledge library) or Trust (every tool runs without askin
 * **Who changes it.** Only Kiro Crew's owner (or a user the owner explicitly
   authorizes) can raise or lower a code channel's mode, checked by the identity of
   the person clicking or sending, never by being in the channel, a wider allow-list
-  (shared users included) or a value carried in the request. That holds on every
+  (shared users included, the opener of a shared user's code channel too) or a
+  value carried in the request. That holds on every
   path: the kickoff's Approval mode select (Reads and Trust ask first, privately),
   its confirmation, `/kirocrew approval normal|reads|trust`, **Trust this channel**
   and the dashboard. Anyone else is refused with a private notice and an audit row;
@@ -683,10 +706,14 @@ chats, skills and the knowledge library) or Trust (every tool runs without askin
   in group channels offer Approve / Reject only, no Trust, to limit blast radius),
   which every other group channel keeps: a code channel is a single task with a
   single owner, not a shared room. The owner's decision is recorded on the PR that
-  adds it (#21991).
+  adds it (#21991). It stays owner-only in a code channel a shared user opened
+  (amended 2026-11-20).
 * **Workers.** Approval prompts of workers the channel's session started are
   relayed into the channel, answered by the same owner-only buttons; a mode change
   reaches them through the creator-mode cascade, and lowering always reaches them.
+  Amended 2026-11-20: in a code channel a shared user opened, its opener may also
+  answer Approve / Reject on these prompts and on the channel session's own, never
+  Trust.
 
 ## Migration plan
 
@@ -716,7 +743,9 @@ but its scope not yet granted, or Slack answering `feature_disabled`, the runtim
 behaves exactly as with the switch off and the settings page says why (also
 pinned). The
 `_slack_manifest_payload_re` helper returns a tuple of patterns instead of one; it
-is private to the security package.
+is private to the security package. A shared user's own code channel (amended
+2026-11-20) adds no switch: a route or binding stored before its `opener` field
+existed reads as the owner's, so a channel already bound stays the owner's.
 
 ## Security considerations
 
@@ -736,7 +765,11 @@ is private to the security package.
   listed before the user reinstalls. The scope-ratchet test pins the exact set
   per switch.
 * **Phase 2 authorization** is the origin conversation's, never the new channel's
-  membership, and every agent tool is pinned to its own channel.
+  membership, and every agent tool is pinned to its own channel. With shared
+  access on (amended 2026-11-20), a shared user's own code channel admits its
+  opener, re-checked at every act; the trade-off is recorded in
+  [rfc-slack-shared-access](rfc-slack-shared-access.md), "A shared user's own code
+  channel".
 * **The routing classifier holds no capability.** It runs with no tools, MCP
   servers, hooks or resources, so text in the request or its context window can
   at most choose `stay` or `code_channel` and suggest a title. The title is
