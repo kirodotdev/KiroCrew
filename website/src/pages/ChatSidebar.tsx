@@ -562,12 +562,14 @@ function ChatSidebarBody({
   // model's origin check. Rebuilt every render from the previous result: each
   // memoized output keeps its identity while the inputs it reads hold still; the
   // result, its `lanes`, `staleSplit` and `views` are fresh per build.
+  // Read only while Unread is on, so a chat switch does not re-render the body otherwise.
+  const unreadOpenSlot = useRowStatusSelect(activeFilters.has('unread') ? selectActiveSlot : selectNoSlot)
   const previousRowsRef = useRef<SidebarRows | null>(null)
   const sidebarRows = buildSidebarRows({
     rows: allRows,
     local: {
       folderOf: slotFolders, pinned, pinnedRank, unread: unreadSet, running: runningSet, recent: recentSet,
-      searchRanks: searchRanked, manualRank, drawnIndex,
+      searchRanks: searchRanked, manualRank, drawnIndex, openKey: unreadOpenSlot ?? null,
     },
     filters: {
       tags: { resolved: activeTagIds, raw: filterTagIds },
