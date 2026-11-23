@@ -5327,7 +5327,12 @@ sends it once on success, through `_announce_app_ui_changed`: `handle_install_ap
 both branches of `handle_update_app` (`kirocrew app update` and the Sync button),
 `handle_registry_install` and `handle_registry_install_stream`. The dev-mode
 watcher sends the same frame on a `ui/` edit. A failed install or update replaced
-nothing and sends nothing. A mounted host reloads at once. A document that
+nothing and sends nothing. A mounted host on screen reloads at once, unless another
+app's page is kept hidden (below): then it shows the reload notice instead, so the
+reload does not end the hidden page's work unasked. Every host under the kept-page
+provider reads that hold itself (`keptAppReloadHold.ts`), a routed page and a chat
+side-panel tab alike; `appHostRenderSites.test.ts` lists each render site. A hidden kept host is released
+instead of reloading. A document that
 imported the app's bundle earlier and hears the announcement while no host shows
 the app records it, and the next host that mounts that app reloads the window
 instead of importing, because the import would return the module the page already
@@ -5345,6 +5350,25 @@ Apart from those views, an announcement for an app the document never imported
 changes nothing.
 The boot-time adoption swap (§33) sends no frame: it runs
 before any route is registered, so no dashboard socket is open to hear one.
+
+**Kept pages.** Every routed installed-app page, `AppPage` and an adopted former
+built-in in `InstalledAppSurface` alike, renders through one shell layer
+(`website/src/components/KeptAppPages.tsx`): the route lends only a slot, and the
+page's host is portalled into an element that moves between that slot and a hidden
+park, so leaving the route never unmounts a page whose app is busy (`useKeepAlive`,
+level 16). Each portalled page has its own `ErrorBoundary`, since the route's is not
+above it. The store (`keptAppPagesStore.ts`) keeps one holder per `useKeepAlive`
+call; an app is busy while any holder is, and the release after the last holder
+lets go waits for the end of the commit, so a caller that remounts keeps the page.
+A hidden page's host passes `active=false`, and the SDK's paths to shared dashboard
+state wait on it: `navigate` (and so `openChat` and `useChatSession`) does nothing,
+`openChat` leaves no launch intent, and `ChatPanel`'s `useOwnSlotChat` neither
+activates nor switches back to its session and mounts no chat until shown. Its
+overlays and key handlers are off screen (`OffScreenOverlayScope`), and an embed's
+read marks already wait on `active`; the app's own work keeps running.
+At most two apps hold a keep-alive. A hidden page is released when its last holder
+lets go, when the person presses Stop, when the app throws, is turned off or
+uninstalled, or when its files are replaced. A page reload keeps nothing.
 
 Shared host capability reaches an app through `@kirocrew/app-sdk`, which the host
 provides rather than publishing to npm — the SDK lives in the dashboard bundle, so
@@ -8190,6 +8214,9 @@ share level 7, three share level 8, the open batch that level 10 starts shares l
 batch shares level 14, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
+
+Level 16 adds the SDK's `useKeepAlive`, which keeps a routed page mounted, hidden, while the
+app says it is busy. An app detects it by the export, as for every level.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
 `_route_fields`: an `AppRoute`, or any object whose `method` is a str naming GET, POST,

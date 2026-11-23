@@ -68,6 +68,7 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
 
 import ChatPanel from '../app-sdk/ChatPanel'
+import { AppApiProvider } from '../app-sdk'
 import { api } from '../api/client'
 
 const LAST_USED = 'chat-1-100'
@@ -77,7 +78,7 @@ const slot = (key: string): ChatSlot => ({
   key, title: key, messages: 0, running: false, mode: '', created: '', last_ts: '',
 })
 
-function renderPanel(dashboard: Partial<RootState['dashboard']> = {}) {
+function renderPanel(dashboard: Partial<RootState['dashboard']> = {}, hostActive?: boolean) {
   const store = createTestStore({
     dashboard: {
       ...dashboardReducer(undefined, { type: '@@INIT' }),
@@ -91,7 +92,12 @@ function renderPanel(dashboard: Partial<RootState['dashboard']> = {}) {
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter initialEntries={['/apps/diagram']}>
-            <ChatPanel slotKey={NEW_SLOT} conversationOnly />
+            {hostActive === undefined ? <ChatPanel slotKey={NEW_SLOT} conversationOnly /> : (
+              <AppApiProvider appName="diagram" appVersion="1" allowedApiPaths={[]} allowedEvents={[]}
+                subscribeFn={() => () => {}} navigateFn={() => {}} notifyFn={() => {}} active={hostActive}>
+                <ChatPanel slotKey={NEW_SLOT} conversationOnly />
+              </AppApiProvider>
+            )}
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -116,6 +122,19 @@ describe('app SDK ChatPanel with a slot the slot list does not have yet', () => 
       expect(store.getState().dashboard.slots.map(s => s.key)).toContain(NEW_SLOT)
       expect(store.getState().chat.activeSlot).toBe(NEW_SLOT)
     })
+  })
+
+  it('takes the handed slot under a visible app host too', async () => {
+    const store = renderPanel({}, true)
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+  })
+
+  it('under a hidden app host, neither makes the slot active nor mounts the chat', async () => {
+    const store = renderPanel({}, false)
+    // The optimistic row is the mount effect's own signal that the panel ran.
+    await waitFor(() => expect(store.getState().dashboard.slots.map(s => s.key)).toContain(NEW_SLOT))
+    expect(store.getState().chat.activeSlot).not.toBe(NEW_SLOT)
+    expect(api.chatSlotDetail).not.toHaveBeenCalled()
   })
 
   it('does not re-add a slot the user is closing', async () => {

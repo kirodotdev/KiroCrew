@@ -6156,6 +6156,14 @@
       "this_app_is_disabled": "此应用已停用",
       "this_app_provides_agents_and_skills_but_no_visua": "此应用提供代理和技能，但没有可视界面。请在聊天中使用它的代理。"
     },
+    "keptAppPages": {
+      "open_named": "打开 {{name}}",
+      "region_label": "后台运行的应用",
+      "running": "{{name}} 仍在运行",
+      "status_check_failed": "无法确认 {{name}} 是否仍处于启用状态；它会继续运行。{{error}}",
+      "stop_hint": "停止会关闭 {{name}}，并结束它正在进行的操作。",
+      "stop_named": "停止 {{name}}"
+    },
     "appPopoutTitleBar": {
       "return": "返回",
       "return_to_main_window_and_close_this_popout": "返回主窗口并关闭此弹出窗口"

@@ -6332,6 +6332,14 @@
       "this_app_is_disabled": "এই অ্যাপটি বন্ধ করা আছে",
       "this_app_provides_agents_and_skills_but_no_visua": "এই অ্যাপটি এজেন্ট ও স্কিল দেয়, কিন্তু কোনও ভিজ্যুয়াল ইন্টারফেস নেই।\n            চ্যাট থেকে এর এজেন্টগুলি ব্যবহার করুন।"
     },
+    "keptAppPages": {
+      "open_named": "{{name}} খোলো",
+      "region_label": "পটভূমিতে চলা অ্যাপ",
+      "running": "{{name}} এখনও চলছে",
+      "status_check_failed": "{{name}} এখনও চালু আছে কি না নিশ্চিত করা যায়নি; এটি চলতে থাকবে। {{error}}",
+      "stop_hint": "থামালে {{name}} বন্ধ হয়ে যাবে এবং এটি যা করছে তা শেষ হবে।",
+      "stop_named": "{{name}} থামাও"
+    },
     "appPopoutTitleBar": {
       "return": "ফিরে যাও",
       "return_to_main_window_and_close_this_popout": "মূল উইন্ডোতে ফিরে যাও এবং এই পপআউটটি বন্ধ করো"

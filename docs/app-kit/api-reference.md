@@ -1201,6 +1201,44 @@ document with the owner's session, and a backend that mints an owner token throu
 local owner mint reaches the `POST` too, as it reaches `/enable` (see the
 [trust model](../architecture/app-platform-trust-model.md)).
 
+## Keep Alive
+
+`useKeepAlive(busy)` keeps your routed page running, hidden, when the person opens
+another dashboard page, for as long as `busy` is true: a recording, an upload, anything
+that must not stop when the page closes. It needs `APP_SDK_LEVEL >= 16` and no
+`permissions.api` entry.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const status = sdk.useKeepAlive?.(recording) ?? 'unsupported'
+// 'off' | 'on' | 'refused' | 'unsupported'
+```
+
+It is never on by default. Set `busy` true only while the work runs, and back to false
+as soon as it ends: a hidden page closes once no caller is busy.
+
+You may call it from several components. The page stays while any of them passes
+`busy` true; one caller going false, or unmounting, ends only its own hold.
+
+- While your page is hidden, every dashboard page shows a bar naming your app, with
+  **Open** (back to your page, the same instance) and **Stop** (the page closes, as it
+  would without keep-alive). `useAppInfo().active` is `false` while hidden.
+- At most two apps hold a keep-alive at once. A third gets `refused`; ask again by
+  setting `busy` false and then true.
+- A hidden page also closes when your app throws, or is turned off or uninstalled from
+  this dashboard.
+- `unsupported` means the surface cannot keep the page: a side-panel tab, a desktop
+  window, or a popped-out page.
+- Moving the page in and out of view moves its elements, so an `<iframe>` in it
+  reloads each time.
+- While hidden, the SDK leaves the dashboard the person is using alone: `useNavigate`
+  and `useChatLauncher().openChat` do nothing (a console warning says so), and a
+  `ChatPanel` neither opens its session nor shows its chat until the page is shown
+  again. Your own timers, sockets and microphone keep running. Read
+  `useAppInfo().active` to hold back anything else of yours that touches the page
+  around it.
+
 ## Browser Media
 
 `useBrowserMedia(sessionKey, { pollMs })` gives your page play, pause, seek and volume
@@ -2633,6 +2671,8 @@ feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.
+
+Level 16 adds the dashboard SDK's [`useKeepAlive`](#keep-alive).
 
 ### Backend SDK (`kiro_crew.apps.backend_sdk`)
 

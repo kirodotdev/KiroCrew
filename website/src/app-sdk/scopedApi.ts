@@ -97,9 +97,12 @@ export interface AppInfo {
    *  does not say (treat as on). The SDK's `BrowserView` stops once it is false. */
   enabled?: boolean
   /** Whether the app's host surface is currently visible. A routed page is
-   *  always the visible surface (`true`); a body-owning side-panel tab stays
-   *  mounted while hidden and reads this to pause polling or release global
-   *  keys. Absent on hosts that predate the flag — treat `undefined` as `true`. */
+   *  visible (`true`) unless the shell keeps it running after the person left
+   *  (`useKeepAlive`); that page and a body-owning side-panel tab stay mounted
+   *  while hidden and read this to pause polling or release global keys. While
+   *  it is false the SDK's own paths to shared dashboard state wait: `navigate`,
+   *  `openChat` and `ChatPanel`'s session switch. Absent on hosts that predate the
+   *  flag — treat `undefined` as `true`. */
   active?: boolean
   /**
    * Update state for this app, when the host has an answer.
@@ -121,6 +124,16 @@ export interface AppInfo {
   session?: AppSession
 }
 
+/** A hidden host surface (a kept app page the person left, a side-panel tab out of
+ *  view) does not move the dashboard the person is using. True when *active* is
+ *  false, after saying so on the console, the only signal an app has. */
+export function navigationHeldWhileHidden(active: boolean, app: string, path: string): boolean {
+  if (active) return false
+  // eslint-disable-next-line no-console -- the app asked to navigate and nothing happened; say why
+  console.warn(`[app-sdk] ${app}: navigation to ${path} ignored while the app's page is hidden`)
+  return true
+}
+
 /** The session key a routed `ui.pages` page sends (InstalledAppSurface); not a chat. */
 const ROUTED_PAGE_SESSION_KEY = 'dashboard:ui'
 
@@ -133,7 +146,10 @@ export interface AppSdkContextValue {
   api: AppApi
   info: AppInfo
   subscribe: (event: string, cb: (data: unknown) => void) => () => void
+  /** Moves the dashboard; does nothing while the host surface is hidden. */
   navigate: (path: string) => void
+  /** Whether the host surface is on screen right now; absent on hosts that do not say. */
+  isActive?: () => boolean
   notify: (message: string, opts?: { type?: 'info' | 'success' | 'error' }) => void
   /** The host's per-slot change signal; absent when the host has none (see slotPush.ts). */
   slotPush?: SlotPush
@@ -456,6 +472,13 @@ export function AppScopedApiProvider({
   // the context — and with it the scoped API client — on every render.
   const updateKey = JSON.stringify(appUpdate ?? null)
   const browserKey = JSON.stringify(approvedBrowserVerbs ?? null)
+  // Read at call time, so a navigate an app kept from an earlier render is fenced too.
+  const activeRef = React.useRef(active)
+  activeRef.current = active
+  const navigate = React.useCallback((path: string) => {
+    if (navigationHeldWhileHidden(activeRef.current, resolvedName, path)) return
+    navigateFn(path)
+  }, [navigateFn, resolvedName])
   const value = React.useMemo<AppSdkContextValue>(() => ({
     api: createScopedApi(allowedApiPaths, resolvedName, sessionKey, appDisplayName || resolvedName),
     info: {
@@ -476,12 +499,13 @@ export function AppScopedApiProvider({
       ...(sessionKey && sessionKey !== ROUTED_PAGE_SESSION_KEY ? { session: { sessionKey } } : {}),
     },
     subscribe: subscribeFn,
-    navigate: navigateFn,
+    navigate,
+    isActive: () => activeRef.current,
     notify: notifyFn,
     slotPush,
     launchChat: createChatLauncher(resolvedName, sessionKey),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, browserKey, appEnabled, sessionKey, active, subscribeFn, navigateFn, notifyFn, slotPush])
+  }), [resolvedName, appDisplayName, appVersion, updateKey, apiKey, eventsKey, browserKey, appEnabled, sessionKey, active, subscribeFn, navigate, notifyFn, slotPush])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

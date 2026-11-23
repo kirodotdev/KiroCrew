@@ -486,26 +486,31 @@ export function useChatLauncher(): {
    */
   createChat: (opts: ChatCreateOptions) => Promise<string>
 } {
-  const { navigate, launchChat } = useCtx()
+  const { navigate, launchChat, isActive } = useCtx()
 
   const openChat = useCallback((opts: ChatLaunchOptions = {}) => {
     // Session-shaping options describe a NEW session, so they are dropped for a
     // targeted launch rather than applied to a session the user already has.
     const memoryMode = opts.slotKey ? undefined : chatLaunchMemoryMode(opts.memoryMode)
     const sessionFolder = !opts.slotKey && opts.sessionFolder === false ? false : undefined
-    ;(window as Window & { __mc_chat_launch?: ChatLaunchIntent }).__mc_chat_launch = {
-      agent: opts.agent,
-      message: opts.message,
-      slotKey: opts.slotKey,
-      autoSend: opts.autoSend,
-      ...(memoryMode ? { memoryMode } : {}),
-      ...(sessionFolder === false ? { sessionFolder } : {}),
-      ts: Date.now(),
-    }
-    navigate(opts.slotKey
+    const target = opts.slotKey
       ? `/chat?sid=${encodeURIComponent(opts.slotKey)}`
-      : chatLaunchOpensDraft({ autoSend: opts.autoSend, memoryMode, sessionFolder }) ? '/chat?new=1' : '/chat')
-  }, [navigate])
+      : chatLaunchOpensDraft({ autoSend: opts.autoSend, memoryMode, sessionFolder }) ? '/chat?new=1' : '/chat'
+    // A hidden page leaves no launch intent behind, since the next /chat entry would
+    // claim it; `navigate` then refuses the move itself.
+    if (!isActive || isActive()) {
+      ;(window as Window & { __mc_chat_launch?: ChatLaunchIntent }).__mc_chat_launch = {
+        agent: opts.agent,
+        message: opts.message,
+        slotKey: opts.slotKey,
+        autoSend: opts.autoSend,
+        ...(memoryMode ? { memoryMode } : {}),
+        ...(sessionFolder === false ? { sessionFolder } : {}),
+        ts: Date.now(),
+      }
+    }
+    navigate(target)
+  }, [navigate, isActive])
 
   const createChat = useCallback((opts: ChatCreateOptions) => (
     launchChat
@@ -706,3 +711,6 @@ export { appWebOrigin, appWebOriginStatus } from './webOrigin'
 export type { AppWebOriginReason, AppWebOriginStatus } from './webOrigin'
 // The App Kit seam level; an app feature-detects the seams above by it.
 export { APP_SDK_LEVEL } from './sdkLevel'
+// Keep the routed page running, hidden, while the app is busy (level 16).
+export { useKeepAlive } from './keepAlive'
+export type { KeepAliveStatus } from './keepAlive'
