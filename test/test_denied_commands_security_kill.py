@@ -1368,9 +1368,20 @@ class TestWindowsKillByNamePrograms:
             "Get-Process {n} | Where-Object {{ 1; 1 }} | Stop-Process",
             "Stop-Process -Name:{n}",
             "Get-Process {n} | Stop-Process -WhatIf:$false",
+            # Command position after a wrapper, an assignment, a call operator or a block.
+            "cmd /c taskkill /im {n}.exe",
+            "sudo taskkill /im {n}.exe",
+            "timeout 5 taskkill /im {n}.exe",
+            "A=1 taskkill /im {n}.exe",
+            "& taskkill /im {n}.exe",
+            "Get-ChildItem | ForEach-Object {{ Stop-Process -Name {n} }}",
+            # Printed words piped into a shell run.
+            "echo taskkill /im {n}.exe | sh",
+            # The image as the last segment of an executable path.
+            "wmic process where \"executablepath like '%\\{n}.exe'\" delete",
         ],
     )
-    def test_a_glued_separator_or_flag_value_does_not_hide_the_target(self, cmd):
+    def test_a_spelling_around_the_target_does_not_hide_it(self, cmd):
         assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
 
     @pytest.mark.parametrize(
@@ -1392,7 +1403,17 @@ class TestWindowsKillByNamePrograms:
             # Mentions outside the target place.
             "git log --grep spps -- src/{n}",
             "taskkill /pid 1234 /s {n}-host",
+            # A product-named checkout folder earlier in an executable path.
+            "wmic process where \"name='node.exe' and executablepath like"
+            " '%\\{N}\\frontend\\node_modules\\%'\" delete",
+            # The program named as prose (heredoc bodies) or in a comment.
+            "git commit -F - <<'EOF'\nfix: x\n\nThe floor now reads taskkill /im {n}.exe,"
+            " Stop-Process -Name {n}\nand Get-Process {n} | Stop-Process.\nEOF",
+            "gh pr create --title x --body-file - <<'EOF'\nRefuses wmic process where"
+            " name='{n}.exe' delete and spps -Name {n}.\nKeeps taskkill /pid 1234 allowed.\nEOF",
+            "cat >> docs/windows.md <<'EOF'\nTo stop it from a terminal: taskkill /im {n}.exe\nEOF",
+            "# taskkill /im {n}.exe",
         ],
     )
     def test_the_name_outside_the_target_place_stays_allowed(self, cmd):
-        assert _denied_by(cmd.format(n=_NAME)) is None
+        assert _denied_by(cmd.format(n=_NAME, N=_NAME.upper())) is None

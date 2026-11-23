@@ -13,8 +13,12 @@ exclusion filter, a later command or a printed message is not a kill:
 * ``wmic``: an ``=`` or ``like`` comparison in the ``where`` clause of a ``delete``
   or ``terminate``. A comparison after ``not`` spares the name.
 
-The tokenizer splits on whitespace only, so a word glued to ``|`` or ``;``
-(``kirocrew|``, ``delete;``) is split here first.
+  For ``executablepath`` only the last path segment, the image, counts.
+
+A program counts only in command position (:func:`_in_command_position`), so
+heredoc prose or a message that names it is not a kill. The tokenizer splits on
+whitespace only, so a word glued to ``|`` or ``;`` (``kirocrew|``, ``delete;``) is
+split here first.
 
 shortcut: an alias (``tk=taskkill``), a backslash path the tokenizer flattens, a
 ``powershell -c`` payload and a ``Where-Object`` filter that selects the product
@@ -29,14 +33,19 @@ from __future__ import annotations
 
 import re
 
+from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
+
 from . import shell_normalizer as _shell_normalizer
-from .shell_normalizer import _argv_programs, _data_consumer_exempt, _debracket
+from .shell_normalizer import _debracket
 from .vocabulary import _SELF_NAME_RE, _WINDOWS_KILL_BY_NAME_PROGRAMS
 
 #: A run of pipe and statement separators glued inside a word.
 _GLUED_SEPARATOR_RE = re.compile(r"([|;]+)")
-#: PowerShell programs that print their arguments, as ``echo`` does.
-_PRINTERS = frozenset({"write-host", "write-output"})
+#: Programs that run the command after their own flags (``cmd /c``, ``sudo``).
+_WRAPPERS = frozenset(
+    {"cmd", "sudo", "start", "call", "env", "nohup", "nice", "time", "timeout", "xargs"}
+    | {"command", "exec", "builtin", "doas"}
+)
 #: The pipeline source whose operands name the processes a piped ``Stop-Process`` ends.
 _GET_PROCESS = frozenset({"get-process", "gps"})
 #: ``-Name`` and the prefixes PowerShell accepts for it on both cmdlets.
@@ -44,8 +53,9 @@ _NAME_FLAGS = frozenset({"-n", "-na", "-nam", "-name"})
 _WHATIF = frozenset({"-whatif", "-whatif:$true"})
 #: One ``where`` comparison: an optional ``not``, the field, the operator, the value.
 _WMIC_COMPARISON_RE = re.compile(
-    r"(\bnot\s+)?\b[\w.]+\s*(<>|!=|=|\blike\b)\s*('[^']*'|\"[^\"]*\"|[^\s)]+)"
+    r"(\bnot\s+)?\b([\w.]+)\s*(<>|!=|=|\blike\b)\s*('[^']*'|\"[^\"]*\"|[^\s)]+)"
 )
+_PATH_SEPARATOR_RE = re.compile(r"[\\/]+")
 
 
 def _is_separator(word: str) -> bool:
@@ -116,8 +126,14 @@ def _wmic_kills_product(args: "list[str]") -> bool:
     if not {"delete", "terminate"}.intersection(args):
         return False
     for match in _WMIC_COMPARISON_RE.finditer(" ".join(args)):
-        negated, operator, value = match.groups()
-        if not negated and operator in ("=", "like") and _names_product(value):
+        negated, field, operator, value = match.groups()
+        if negated or operator not in ("=", "like"):
+            continue
+        if field == "executablepath":
+            # The image is the last path segment; a product-named checkout folder
+            # earlier in the path (``%\kirocrew\frontend\...``) is not the target.
+            value = _PATH_SEPARATOR_RE.split(value.strip("'\"%").rstrip("\\/%"))[-1]
+        if _names_product(value):
             return True
     return False
 
@@ -147,21 +163,54 @@ def _pipeline_source_names_product(words: "list[str]", pipe_at: int) -> bool:
     return False
 
 
+def _program_of(word: str) -> str:
+    return _shell_normalizer._program_basename(word).removesuffix(".exe")
+
+
+def _in_command_position(words: "list[str]", i: int) -> bool:
+    """True if ``words[i]`` is what its statement runs.
+
+    That is the first word after a separator or an opening ``{``/``(``, past any
+    ``VAR=value`` words and any :data:`_WRAPPERS` with their flags (``cmd /c``,
+    ``sudo``, ``timeout 5``). A word anywhere else is an argument: prose in a
+    heredoc body, a message, a search pattern. A comment is never a command.
+    shortcut: a wrapper option that takes a value (``sudo -u bob``) is not read,
+    so that line reaches approval as it does on main; widen ``_WRAPPERS``' reading
+    when such a spelling shows up.
+    """
+    start = 0
+    for k in range(i - 1, -1, -1):
+        word = words[k]
+        if _is_separator(word) or word in ("{", "(") or word.endswith("{"):
+            start = k + 1
+            break
+    wrapped = False
+    for word in words[start:i]:
+        if word.startswith("#"):
+            return False
+        if ENV_ASSIGNMENT_RE.match(word):
+            continue
+        if _program_of(word) in _WRAPPERS:
+            wrapped = True
+            continue
+        if wrapped and (word[:1] in "-/" or word.isdigit()):
+            continue
+        return False
+    return True
+
+
 def _windows_self_kill(tokens: "list[str]") -> bool:
     """True if a Windows by-name kill in this token frame targets the product."""
     if not any(p in token for token in tokens for p in _WINDOWS_KILL_BY_NAME_PROGRAMS):
         return False
     words = _split_glued(tokens)
-    programs = _argv_programs(words)
-    disqualified = _shell_normalizer._data_consumer_command_disqualified(words)
+    # ``echo taskkill /im <name> | sh`` runs the printed words: read every position.
+    executes = _shell_normalizer._data_consumer_command_disqualified(words)
     for i, word in enumerate(words):
-        program = _shell_normalizer._program_basename(word).removesuffix(".exe")
+        program = _program_of(word)
         if program not in _WINDOWS_KILL_BY_NAME_PROGRAMS:
             continue
-        # ``echo taskkill /im <name>`` and ``Write-Host ... taskkill`` print words.
-        if _data_consumer_exempt(i, word, programs, words, command_disqualified=disqualified):
-            continue
-        if i and programs[i] in _PRINTERS and not disqualified:
+        if not executes and not _in_command_position(words, i):
             continue
         args = _own_args(words, i)
         if program == "taskkill":
