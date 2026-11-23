@@ -1146,7 +1146,20 @@ def _self_tokens(
         # The reset reads the bodies on the text as written (*cased* when given), then
         # lowers and folds what is left; a ``<<`` only the fold forms keeps the folded read.
         if _HEREDOC_RESET.get() and "<<" in source:
-            command = _fold_line_continuations(_heredoc_body_quotes_literal(source).lower())
+            # Strip each here-document body and re-read what surrounds it, keeping
+            # the result in the CASE of this walk's own text: lower it only when the
+            # walk is already reading a lowered line. The git/tar floor runs this
+            # reader over both an original-case and a lowered copy of the command and
+            # pairs the two passes frame for frame. If the reset reading lowered the
+            # original-case pass too, a frame the lowered pass dedups would survive in
+            # the original-case pass, the two frame counts would diverge, and the
+            # floor would drop the option words it reads in the written case and lose
+            # a denial it should make. This holds whether the ``<<`` opens a real body
+            # or none at all (a here-string ``<<<``, an arithmetic ``<<`` shift).
+            stripped = _heredoc_body_quotes_literal(source)
+            command = _fold_line_continuations(
+                stripped.lower() if text_lower == text_lower.lower() else stripped
+            )
         elif _HEREDOC_RESET.get() and "<<" in command:
             command = _heredoc_body_quotes_literal(command)
         if "\n" in command:
