@@ -7,6 +7,7 @@ channel, a user's profile, and the app manifest.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -474,19 +475,25 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     """GET /api/slack/manifest — rendered Slack app manifest + create URL.
 
     Mirrors ``kirocrew manifest --url`` so the settings UI can offer one-click
-    Slack app creation without the CLI: the bundled template gets the user's
-    alias substituted, and the comment-stripped YAML is URL-encoded into
-    Slack's new-app deep link. ``command`` is the slash command that manifest
-    registers. The gateway answers it as it is and this endpoint writes no
-    config, so a caller that passes ``?alias=`` saves it as ``slack.command``
-    (applied live, no restart) for later manifest updates to keep it. With no
-    alias, the
-    endpoint renders for this install: the alias the saved ``slack.command`` was
-    generated from, and that command, so a manifest copied to update an existing
-    app keeps its slash command. Serves only the public template — no secrets.
+    Slack app creation without the CLI: the bundled template gets the app name,
+    the bot's ``@`` name and the slash command substituted, and the
+    comment-stripped YAML is URL-encoded into Slack's new-app deep link. This
+    endpoint writes no config: a caller that renders names it has not saved
+    saves them (``PUT /api/slack/config``; ``command`` applies live, no restart)
+    so the gateway answers that command and later manifest updates keep them.
+
+    * ``?app_name=&bot_name=&command=`` renders the names a form holds; a name
+      left empty is ``kirocrew``. Each is checked against Slack's limits (400).
+    * ``?alias=`` (legacy) renders ``legacy_names(alias)``: the alias-based names and command.
+    * Neither renders for THIS install: its saved names and command, so the
+      manifest an existing app is updated from keeps its name, ``@`` mentions
+      and ``/command`` (:func:`slack_manifest.install_names`).
+
+    Serves only the public template — no secrets. No default is identifying:
+    $USER is a host account name and is never volunteered to a client.
     """
     from kiro_crew import slack_manifest
-    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.loader import CRED_SLACK_BOT_TOKEN, KiroCrewConfig
     from kiro_crew.dashboard.handlers._update_announce import https_url
     from kiro_crew.slack.features import manifest_features
 
@@ -494,17 +501,47 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
         cfg = KiroCrewConfig.load()
     except Exception:
         cfg = None
-    explicit = request.query.get("alias", "").strip()
-    # With no ?alias, render for THIS install: the alias its saved slash command
-    # was generated from, and that command itself, so the manifest an existing
-    # app is updated from keeps the name and the /command the gateway answers.
-    # The default alias stays non-identifying: $USER is a host account name and
-    # is never volunteered to an authenticated client.
-    saved_command = str(getattr(getattr(cfg, "slack", None), "command", "") or "")
-    alias = explicit or slack_manifest.alias_for_command(saved_command)
-    if not slack_manifest.valid_alias(alias):
-        return web.json_response({"error": "invalid alias"}, status=400)
-    command = None if explicit else saved_command or None
+    slack = getattr(cfg, "slack", None)
+    query = request.query
+    alias = query.get("alias", "").strip()
+    entered = [key for key in ("app_name", "bot_name", "command") if key in query]
+    if alias and entered:
+        return web.json_response(
+            {"error": "alias cannot be combined with names", "code": "alias_with_names"}, status=400
+        )
+    names: slack_manifest.AppNames
+    if entered:
+        command = query.get("command", "").strip()
+        names = slack_manifest.AppNames(
+            app_name=query.get("app_name", "").strip() or slack_manifest.DEFAULT_NAME,
+            bot_name=query.get("bot_name", "").strip() or slack_manifest.DEFAULT_NAME,
+            command=(command[1:] if command.startswith("/") else command)
+            or slack_manifest.DEFAULT_NAME,
+        )
+    elif alias:
+        if not slack_manifest.valid_alias(alias):
+            return web.json_response({"error": "invalid alias"}, status=400)
+        names = slack_manifest.legacy_names(alias)
+    else:
+        # A Slack app exists once a bot token does; until then the install is
+        # fresh and an unsaved name is kirocrew. Off-loop: a secret:// value is
+        # read and decrypted from the vault.
+        # Unreadable credentials count as an app, as the save does: keeping an
+        # existing app's name is the side that renames nothing.
+        try:
+            creds = await asyncio.to_thread(cfg.load_credentials, propagate=False) if cfg else {}
+            existing = bool(creds.get(CRED_SLACK_BOT_TOKEN))
+        except Exception:
+            existing = True
+        names = slack_manifest.install_names(
+            str(getattr(slack, "app_name", "") or ""),
+            str(getattr(slack, "bot_name", "") or ""),
+            str(getattr(slack, "command", "") or ""),
+            existing=existing,
+        )
+    problem = names.error()
+    if problem:
+        return web.json_response({"error": problem, "code": "invalid_slack_names"}, status=400)
     # The SAME switches `kirocrew manifest` renders for: the manifest a user
     # copies here must ask Slack for what the gateway will use.
     try:
@@ -512,16 +549,17 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     except Exception:
         features = frozenset()
     try:
-        rendered = slack_manifest.render(alias, features=features, command=command)
-        create_url = slack_manifest.deep_link(alias, features)
+        rendered = slack_manifest.render(names, features=features)
+        create_url = slack_manifest.deep_link(names, features)
     except FileNotFoundError:
         return web.json_response({"error": "manifest template missing"}, status=500)
     return web.json_response(
         {
-            "alias": alias,
+            "app_name": names.app_name,
+            "bot_name": names.bot_name,
             "manifest": rendered,
             "create_url": create_url,
-            "command": command or slack_manifest.slash_command(alias),
+            "command": names.command,
             "features": [f for f in slack_manifest.FEATURES if f in features],
             # The setup wizard's link to this organization's own guide: only a
             # bounded https:// URL (the shared check), and the dashboard checks

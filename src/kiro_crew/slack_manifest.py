@@ -6,7 +6,8 @@ Three callers need the same bytes and MUST not disagree about them:
 * the dashboard's ``GET /api/slack/manifest`` serves both to Settings → Messaging
   Channels → Slack,
 * ``security._kirocrew_slack_app_link_alias`` decides whether a deep link is
-  ours by rebuilding the expected payload and comparing.
+  ours by reading the three names out of it, re-rendering with exactly those
+  names through :func:`render` and comparing.
 
 The third one is why this module exists rather than the render being inlined at
 each call site. The exfil redactor exempts our deep link only when the payload
@@ -28,25 +29,43 @@ exact scope, event and feature lines a switch adds or removes.
 from __future__ import annotations
 
 import itertools
+import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from importlib.resources import files as _pkg_files
 from typing import Iterable
 from urllib.parse import quote
 
-#: Placeholder substituted with the operator's alias, in two places.
-ALIAS_PLACEHOLDER = "{{ALIAS}}"
+#: Placeholder for the app name (``display_information.name``).
+APP_NAME_PLACEHOLDER = "__APP_NAME__"
+#: Placeholder for the bot user's name, what people type after ``@``
+#: (``features.bot_user.display_name``).
+BOT_NAME_PLACEHOLDER = "__BOT_NAME__"
 
-#: Placeholder substituted with ``slash_command(alias)``. Slack resolves
+#: Placeholder for the slash command, without its ``/``. Slack resolves
 #: slash-command names across a whole Enterprise Grid org, so two installs that
 #: both register ``/kirocrew`` collide and Slack routes the command to the wrong
-#: app. Naming the command after the alias keeps each install's command its own.
+#: app. The settings page says so next to the command field, and the legacy
+#: alias path names the command after the alias (:func:`slash_command`).
 COMMAND_PLACEHOLDER = "{{COMMAND}}"
 
 #: The alias the dashboard renders with when the caller names none. It keeps
 #: the generic ``/kirocrew`` command: that path saves no ``slack.command``, so
 #: the gateway listens for the default and a renamed command would go unanswered.
 DEFAULT_ALIAS = "kirocrew"
+
+#: What a fresh install calls its app, its bot and its slash command.
+DEFAULT_NAME = "kirocrew"
+
+#: Prefix of the app and bot name an alias rendered before names were settable
+#: (``KiroCrew-<alias>``). Existing apps keep it until their owner renames them.  # brand-ok
+LEGACY_NAME_PREFIX = "KiroCrew-"  # brand-ok
+
+#: Slack's limits (App manifest reference): the app name is at most 35
+#: characters and the bot user's display name at most 80.
+APP_NAME_MAX = 35
+BOT_NAME_MAX = 80
 
 #: Prefix of every alias-named slash command.
 SLASH_COMMAND_PREFIX = "kirocrew-"
@@ -77,12 +96,9 @@ def is_app_command(command: str, *names: object) -> bool:
 #: Slack's limit on a slash command, leading ``/`` included.
 SLASH_COMMAND_MAX = 32
 
-#: Longest accepted alias. Both emitters enforce this, and the validator's
-#: derived pattern is bounded by it. It is deliberately tight: the alias is the
-#: ONLY caller-controlled span inside an exempted deep link, so its width is the
-#: width of the channel the exemption opens. 32 also matches the Slack app-name
-#: budget the manifest spends it on.
-ALIAS_MAX = 32
+#: Longest accepted alias (the legacy ``?alias=`` / ``--alias`` path). With the
+#: ``KiroCrew-`` prefix it still fits Slack's 35-character app name.  # brand-ok
+ALIAS_MAX = 26
 
 #: Accepted alias shape, anchored. Kept in sync with ``ALIAS_MAX``.
 ALIAS_RE = re.compile(rf"\A[A-Za-z0-9_-]{{1,{ALIAS_MAX}}}\Z")
@@ -90,9 +106,6 @@ ALIAS_RE = re.compile(rf"\A[A-Za-z0-9_-]{{1,{ALIAS_MAX}}}\Z")
 #: A slash-command name Slack accepts (no leading ``/``), as ``slack.command``
 #: stores it.
 _COMMAND_RE = re.compile(rf"\A[a-z0-9_-]{{1,{SLASH_COMMAND_MAX - 1}}}\Z")
-
-#: Alias body for embedding in a larger pattern (unanchored, no group).
-ALIAS_PATTERN = rf"[A-Za-z0-9_-]{{1,{ALIAS_MAX}}}"
 
 APP_CREATE_HOST = "api.slack.com"
 APP_CREATE_PATH = "/apps"
@@ -102,6 +115,125 @@ _APP_CREATE_BASE = f"https://{APP_CREATE_HOST}{APP_CREATE_PATH}"
 def valid_alias(alias: str) -> bool:
     """True when *alias* is a shape both emitters will substitute."""
     return ALIAS_RE.match(alias) is not None
+
+
+def valid_command(command: str) -> bool:
+    """True when *command* (no leading ``/``) is a slash command Slack accepts:
+    lowercase letters, digits, ``-`` and ``_``, 31 characters at most."""
+    return _COMMAND_RE.match(command) is not None
+
+
+#: Unicode categories refused in a name: controls, format characters (zero-width
+#: and bidi overrides, which make one name look like another), surrogates,
+#: private-use and unassigned code points, and line or paragraph separators.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def _valid_name(name: str, limit: int) -> bool:
+    return (
+        0 < len(name) <= limit
+        and name == name.strip()
+        and not any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in name)
+    )
+
+
+def valid_app_name(name: str) -> bool:
+    """True for an app name Slack accepts: 1-35 characters, no edge spaces,
+    no control or invisible characters."""
+    return _valid_name(name, APP_NAME_MAX)
+
+
+def valid_bot_name(name: str) -> bool:
+    """True for a bot display name Slack accepts: 1-80 characters, no edge
+    spaces, no control or invisible characters."""
+    return _valid_name(name, BOT_NAME_MAX)
+
+
+@dataclass(frozen=True)
+class AppNames:
+    """What the manifest names: the app, its bot user (``@``) and its command (``/``).
+
+    ``command`` carries no leading ``/``, as ``slack.command`` stores it.
+    """
+
+    app_name: str = DEFAULT_NAME
+    bot_name: str = DEFAULT_NAME
+    command: str = DEFAULT_NAME
+
+    def error(self) -> str | None:
+        """Why Slack would refuse these names, or None when it accepts them all."""
+        if not valid_app_name(self.app_name):
+            return f"app_name must be 1-{APP_NAME_MAX} characters, with no control characters"
+        if not valid_bot_name(self.bot_name):
+            return f"bot_name must be 1-{BOT_NAME_MAX} characters, with no control characters"
+        if not valid_command(self.command):
+            return f"command must be 1-{SLASH_COMMAND_MAX - 1} lowercase letters, digits, - or _"
+        return None
+
+
+#: Fresh-install names: ``kirocrew``, ``@kirocrew`` and ``/kirocrew``.
+DEFAULT_NAMES = AppNames()
+
+
+def legacy_names(alias: str) -> AppNames:
+    """The names an *alias* rendered before they were settable.
+
+    ``LEGACY_NAME_PREFIX + alias`` for the app and the bot, :func:`slash_command` for the
+    command: what every app created from an alias is called, so rendering an
+    existing app from its alias does not rename it.
+    """
+    legacy = LEGACY_NAME_PREFIX + alias
+    return AppNames(app_name=legacy, bot_name=legacy, command=slash_command(alias))
+
+
+def install_names(
+    app_name: str = "", bot_name: str = "", command: str = "", *, existing: bool
+) -> AppNames:
+    """The names this install's manifest uses, from its saved config.
+
+    A saved ``slack.app_name`` / ``slack.bot_name`` wins. An unsaved one is
+    ``kirocrew`` only on a fresh install: one with the default command and no
+    Slack app yet (*existing* false: no bot token). Anything else keeps the
+    ``LEGACY_NAME_PREFIX + alias`` name it has always rendered, the alias read back from
+    the saved command, so updating an existing app from this manifest never
+    renames its bot or breaks its ``@`` mentions.
+    """
+    saved = command or DEFAULT_NAME
+    alias = alias_for_command(saved)
+    if existing or saved != DEFAULT_NAME:
+        fallback = LEGACY_NAME_PREFIX + alias
+    else:
+        fallback = DEFAULT_NAME
+    # A command saved before Slack's rule was checked (uppercase, too long)
+    # renders the alias command, as the manifest always did for such a value.
+    rendered = saved if valid_command(saved) else slash_command(alias)
+    return AppNames(app_name=app_name or fallback, bot_name=bot_name or fallback, command=rendered)
+
+
+#: A name YAML reads back as the same string when written bare. Anything else
+#: (a space, ``:``, ``#``, a quote, non-ASCII, a leading digit) is written as a
+#: double-quoted JSON string, which YAML reads as the same text.
+_PLAIN_SCALAR_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9_.-]*\Z")
+#: Bare words YAML 1.1 reads as a boolean or null rather than a string.
+_YAML_WORDS = frozenset({"y", "n", "yes", "no", "true", "false", "on", "off", "null"})
+
+
+def yaml_scalar(value: str) -> str:
+    """*value* as the YAML scalar the manifest writes it as."""
+    if _PLAIN_SCALAR_RE.match(value) and value.lower() not in _YAML_WORDS:
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def scalar_value(scalar: str) -> str | None:
+    """The string a :func:`yaml_scalar` output stands for, or None for any other text."""
+    if not scalar.startswith('"'):
+        return scalar
+    try:
+        value = json.loads(scalar)
+    except ValueError:
+        return None
+    return value if isinstance(value, str) else None
 
 
 def slash_command(alias: str) -> str:
@@ -213,26 +345,39 @@ def stripped_template(features: Iterable[str] | None = None) -> str:
 
 
 def render(
-    alias: str,
+    names: AppNames | str,
     *,
     strip_comments: bool = False,
     features: Iterable[str] | None = None,
-    command: str | None = None,
 ) -> str:
-    """The manifest with *alias* substituted, for the switches in *features*.
+    """The manifest naming *names*, for the switches in *features*.
 
+    A plain string is a legacy alias (:func:`legacy_names`). Names Slack would
+    refuse raise ``ValueError``: callers check :meth:`AppNames.error` first.
     ``strip_comments=False`` keeps the guidance comments, which is what a human
-    reads or pastes into Slack. ``True`` yields exactly the deep-link payload.
+    reads or pastes into Slack. ``True`` yields exactly the deep-link payload,
+    which the exfil validator rebuilds through this same function.
     No *features* renders the manifest with every Slack Code switch off.
-    *command* overrides the slash command (default ``slash_command(alias)``):
-    the manifest an EXISTING app is updated from must keep the command that app
-    already registers, which the gateway answers as ``slack.command``. A
-    command of the wrong shape is ignored. The deep link never takes one: its
-    payload must stay one the exfil validator can rebuild from the alias.
     """
+    resolved = legacy_names(names) if isinstance(names, str) else names
+    problem = resolved.error()
+    if problem:
+        raise ValueError(problem)
     text = stripped_template(features) if strip_comments else template(features)
-    slash = command if command and _COMMAND_RE.match(command) else slash_command(alias)
-    return text.replace(COMMAND_PLACEHOLDER, slash).replace(ALIAS_PLACEHOLDER, alias)
+    # One pass, so a name that contains another placeholder's text stays literal.
+    values = {
+        APP_NAME_PLACEHOLDER: yaml_scalar(resolved.app_name),
+        BOT_NAME_PLACEHOLDER: yaml_scalar(resolved.bot_name),
+        COMMAND_PLACEHOLDER: resolved.command,
+    }
+    return _PLACEHOLDER_RE.sub(lambda m: values[m.group(0)], text)
+
+
+_PLACEHOLDER_RE = re.compile(
+    "|".join(
+        re.escape(p) for p in (APP_NAME_PLACEHOLDER, BOT_NAME_PLACEHOLDER, COMMAND_PLACEHOLDER)
+    )
+)
 
 
 def alias_for_command(command: str) -> str:
@@ -250,13 +395,13 @@ def alias_for_command(command: str) -> str:
     return DEFAULT_ALIAS
 
 
-def deep_link(alias: str, features: Iterable[str] | None = None) -> str:
+def deep_link(names: AppNames | str, features: Iterable[str] | None = None) -> str:
     """Slack's new-app deep link carrying the rendered manifest.
 
     ``quote`` (not ``quote_plus``): a literal ``+`` would decode back as a space
     under form-encoding, and ``%20`` is unambiguous everywhere Slack parses this.
     """
-    encoded = quote(render(alias, strip_comments=True, features=features), safe="")
+    encoded = quote(render(names, strip_comments=True, features=features), safe="")
     return f"{_APP_CREATE_BASE}?new_app=1&manifest_yaml={encoded}"
 
 
@@ -377,7 +522,7 @@ def requirements(features: Iterable[str] | None = None) -> ManifestRequirements:
     """Parse the manifest for *features* into its scope, event, feature and setting sets."""
     import yaml  # type: ignore[import-untyped]
 
-    parsed = yaml.safe_load(render(DEFAULT_ALIAS, features=features)) or {}
+    parsed = yaml.safe_load(render(DEFAULT_NAMES, features=features)) or {}
     oauth = (parsed.get("oauth_config") or {}).get("scopes") or {}
     events = (parsed.get("settings") or {}).get("event_subscriptions") or {}
     settings = frozenset(

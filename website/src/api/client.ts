@@ -289,6 +289,8 @@ export type {
   SlackCodeChannelEffective,
   SlackManifestChange,
   SlackManifestStatus,
+  SlackAppNames,
+  SlackManifest,
   DiscordConfigData,
   TelegramConfigData,
   DiscordConfigSave,

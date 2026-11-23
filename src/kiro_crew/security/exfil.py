@@ -165,25 +165,29 @@ def _exfil_exempt_hosts() -> frozenset[str]:
 # The carve-out VALIDATES rather than trusts the destination: the decoded payload
 # must reproduce the bundled template, so an approved (host, path) carries no
 # arbitrary bytes. A different path, an extra or missing parameter, a repeated
-# parameter, or a payload that does not rebuild the template all keep the full
-# heuristics. This is deliberately NOT a host exemption: ``_exempt_exact_hosts``
-# is companion-owned tenant trust, and widening it here would exempt every URL at
-# api.slack.com including a model-authored one.
+# parameter, or a payload that is not byte-for-byte what ``slack_manifest.render``
+# emits for the names it carries all keep the full heuristics. This is
+# deliberately NOT a host exemption: ``_exempt_exact_hosts`` is companion-owned
+# tenant trust, and widening it here would exempt every URL at api.slack.com
+# including a model-authored one.
 #
-# The ALIAS is the one caller-controlled span, so it does NOT ride free: the
-# caller feeds it back through the base64-blob heuristic (see
-# ``_exfil_url_warning``) instead of zeroing the heuristic payload. Zeroing it was
-# a real bypass — the alias slot accepted 64 chars of ``[A-Za-z0-9_-]``, which is
-# wide enough for a 40-char alphanumeric secret, and ``_EXFIL_PATTERNS`` needs a
-# 40+ char run to fire. ``slack_manifest.ALIAS_MAX`` (32) now makes such a run
-# impossible AND the surviving span is still scanned, so an ``AKIA…`` id or an
-# ``xox…`` token short enough to fit is caught on the alias alone.
+# The THREE NAMES (app name, bot name, slash command) are the caller-controlled
+# spans, so they do NOT ride free: the caller feeds them back through the
+# base64-blob and length heuristics (see ``_exfil_url_warning``) instead of
+# zeroing the heuristic payload. Zeroing it was a real bypass when the one span
+# was an alias: a 40-char alphanumeric secret fits a wide enough slot, and
+# ``_EXFIL_PATTERNS`` needs a 40+ char run to fire. The spans are joined with
+# ``&`` so no run crosses from one name into the next, and each still meets the
+# heuristics, so a 40+ char run, an ``AKIA…`` id or an ``xox…`` token in any one
+# name is caught on the names alone.
 #
-# Residual, stated rather than implied: an alias of up to ALIAS_MAX chars that
-# resembles no known credential is exempt from the base64/length heuristics. That
-# opens no NEW capability — any URL at any host may already carry a query under
-# _EXFIL_QUERY_MIN_LEN (200) chars without tripping either heuristic, so this
-# span is strictly narrower than what is available without the carve-out.
+# Residual, stated rather than implied: names within Slack's limits (35 + 80 + 31
+# chars, ``slack_manifest.APP_NAME_MAX`` / ``BOT_NAME_MAX`` / the command class)
+# that resemble no known credential are exempt from the base64/length
+# heuristics. That opens no NEW capability — any URL at any host may already
+# carry a query under _EXFIL_QUERY_MIN_LEN (200) chars without tripping either
+# heuristic, and the joined names are shorter than that, so these spans are
+# strictly narrower than what is available without the carve-out.
 #
 # Every unconditional check runs BEFORE this point and is unaffected:
 # hard-credential markers, canonical provider tokens, the multi-pass decode (and
@@ -192,40 +196,76 @@ _SLACK_APP_CREATE_PARAMS = frozenset({"new_app", "manifest_yaml"})
 # Single-slot cache for the derived pattern. A plain module constant would read
 # packaged data at import time, which ``security`` avoids: it is imported by the
 # stdio MCP servers, where import-time file I/O is on the critical path.
-_slack_manifest_re_slot: list[tuple[re.Pattern[str], ...] | None] = []
+_slack_manifest_re_slot: list[tuple[tuple[frozenset[str], re.Pattern[str]], ...] | None] = []
 
 
 def _slack_manifest_variant_re(slack_manifest: Any, combo: frozenset[str]) -> re.Pattern[str]:
-    """Pattern for one switch combination's stripped manifest with any one alias."""
+    """Pattern for one switch combination's stripped manifest with any three names.
+
+    Each placeholder must appear exactly once. The name slots stay on one line
+    and are bounded by the widest scalar ``yaml_scalar`` writes for a name; the
+    caller re-renders what they captured, so the slots only locate the names.
+    """
     rendered = slack_manifest.stripped_template(combo)
-    placeholder, alias_body = slack_manifest.ALIAS_PLACEHOLDER, slack_manifest.ALIAS_PATTERN
-    command_slot = (re.escape(slack_manifest.COMMAND_PLACEHOLDER), "(?P<command>[a-z0-9_-]+)")
-    if placeholder not in rendered or slack_manifest.COMMAND_PLACEHOLDER not in rendered:
-        raise ValueError("manifest template lacks its alias or command placeholder")
-    parts = rendered.split(placeholder)
-    pattern = re.escape(parts[0]).replace(*command_slot)
-    for index, part in enumerate(parts[1:]):
-        slot = f"(?P<alias>{alias_body})" if index == 0 else "(?P=alias)"
-        pattern += slot + re.escape(part).replace(*command_slot)
-    return re.compile(pattern)
+    name_body = f"[^\\n]{{1,{2 * slack_manifest.BOT_NAME_MAX + 2}}}"
+    slots = {
+        slack_manifest.APP_NAME_PLACEHOLDER: f"(?P<app_name>{name_body})",
+        slack_manifest.BOT_NAME_PLACEHOLDER: f"(?P<bot_name>{name_body})",
+        slack_manifest.COMMAND_PLACEHOLDER: (
+            f"(?P<command>[a-z0-9_-]{{1,{slack_manifest.SLASH_COMMAND_MAX - 1}}})"
+        ),
+    }
+    if any(rendered.count(placeholder) != 1 for placeholder in slots):
+        raise ValueError("manifest template must hold each name placeholder exactly once")
+    pieces = re.split("(" + "|".join(re.escape(p) for p in slots) + ")", rendered)
+    return re.compile("".join(slots.get(piece) or re.escape(piece) for piece in pieces))
 
 
-def _slack_manifest_payload_re() -> tuple[re.Pattern[str], ...] | None:
+def _slack_manifest_payload_re() -> tuple[tuple[frozenset[str], re.Pattern[str]], ...] | None:
     """One exact pattern per switch combination, built by the emitters' own
-    ``stripped_template()``; ``{{ALIAS}}`` repeats are backreferences, ``{{COMMAND}}``
-    is pinned by the caller. A variant that does not build is left out (refused)."""
+    ``stripped_template()``, with the combination it was built for. A variant
+    that does not build is left out (refused)."""
     if not _slack_manifest_re_slot:
-        built: list[re.Pattern[str]] = []
+        built: list[tuple[frozenset[str], re.Pattern[str]]] = []
         try:
             from kiro_crew import slack_manifest
 
             for combo in slack_manifest.feature_sets():
                 with contextlib.suppress(Exception):
-                    built.append(_slack_manifest_variant_re(slack_manifest, combo))
+                    built.append((combo, _slack_manifest_variant_re(slack_manifest, combo)))
         except Exception:
             pass
         _slack_manifest_re_slot.append(tuple(built) or None)
     return _slack_manifest_re_slot[0]
+
+
+def _slack_manifest_names(payload: str) -> str | None:
+    """The names *payload* carries, ``&``-joined, when it is exactly what
+    ``slack_manifest.render`` emits for those names; else None.
+
+    The rebuild is the check: the captured scalars are read back, validated
+    against Slack's limits by ``render`` itself, and the payload must equal the
+    re-rendered manifest byte for byte, so no quoting trick or second spelling
+    of a name survives.
+    """
+    from kiro_crew import slack_manifest
+
+    for combo, pattern in _slack_manifest_payload_re() or ():
+        match = pattern.fullmatch(payload)
+        if match is None:
+            continue
+        app_name = slack_manifest.scalar_value(match["app_name"])
+        bot_name = slack_manifest.scalar_value(match["bot_name"])
+        if app_name is None or bot_name is None:
+            continue
+        names = slack_manifest.AppNames(app_name, bot_name, match["command"])
+        try:
+            rebuilt = slack_manifest.render(names, strip_comments=True, features=combo)
+        except ValueError:
+            continue
+        if rebuilt == payload:
+            return "&".join((names.app_name, names.bot_name, names.command))
+    return None
 
 
 def _kirocrew_slack_app_link_alias(
@@ -236,13 +276,13 @@ def _kirocrew_slack_app_link_alias(
     is_https: bool,
     port: str,
 ) -> str | None:
-    """The alias when this is our own Slack app-create link, else None.
+    """The names, ``&``-joined, when this is our own Slack app-create link, else None.
 
-    Returns the captured alias rather than a bool so the caller can keep that one
-    caller-controlled span under the heuristics. An empty-string alias is
-    impossible (the pattern requires at least one char), so a truthiness test on
-    the result would be safe — but callers should compare against None to keep
-    that dependence explicit.
+    Returns the captured names rather than a bool so the caller can keep those
+    caller-controlled spans under the heuristics. An empty result is impossible
+    (each name has at least one char), so a truthiness test on the result would
+    be safe — but callers should compare against None to keep that dependence
+    explicit.
 
     ``domain`` is expected already lowercased by the caller. HTTPS-only and no
     explicit port, matching the OAuth gate's posture.
@@ -263,11 +303,7 @@ def _kirocrew_slack_app_link_alias(
     payloads = params["manifest_yaml"]
     if len(payloads) != 1:
         return None
-    for pattern in _slack_manifest_payload_re() or ():
-        match = pattern.fullmatch(payloads[0])
-        if match is not None and match["command"] == slack_manifest.slash_command(match["alias"]):
-            return match.group("alias")
-    return None
+    return _slack_manifest_names(payloads[0])
 
 
 def _exfil_url_warning(
@@ -400,7 +436,7 @@ def _exfil_url_warning(
     ) is not None:
         # Our own app-create link: the payload reproduces the bundled template,
         # so the constant bytes are what caused the false positive and are
-        # excluded. The alias is the one caller-controlled span, so it STAYS
+        # excluded. The names are the caller-controlled spans, so they STAY
         # under the heuristics rather than riding free — zeroing this was a
         # bypass wide enough for a 40-char alphanumeric secret.
         heuristic_query = _slack_alias

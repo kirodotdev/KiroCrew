@@ -1,0 +1,2 @@
++36
+The Slack app-create deep-link carve-out in exfil.py reads three user-set names (app name, bot name, slash command) instead of one alias: one pattern slot per name, and a rebuild step that re-renders the manifest with the names it read and accepts only a byte-identical payload, with the names kept under the length and base64 heuristics.

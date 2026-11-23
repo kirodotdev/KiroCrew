@@ -62,7 +62,9 @@ afterEach(() => {
 type SaveResult = Awaited<ReturnType<typeof api.saveSlackConfig>>
 
 const MANIFEST = {
-  alias: 'tester',
+  app_name: 'KiroCrew-tester',  // brand-ok: an existing app's legacy name
+  bot_name: 'KiroCrew-tester',  // brand-ok
+  command: 'kirocrew',
   manifest: 'display_information:\n  name: KiroCrew-tester\n',  // brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
   create_url: 'https://example.invalid/apps/new',
 }
@@ -254,7 +256,7 @@ describe('SlackPanel manifest card', () => {
 
     const copy = screen.getByRole('button', { name: 'Copy manifest YAML' })
     expect(copy).toBeDisabled()
-    expect(screen.getByText(/named KiroCrew-you/)).toBeInTheDocument()  // brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
+    expect(screen.getByText(/named kirocrew\)/)).toBeInTheDocument()
 
     fireEvent.click(copy)
     expect(writeText).not.toHaveBeenCalled()
@@ -406,6 +408,97 @@ describe('SlackPanel save payload', () => {
       show_in_session_list: false,
     })
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
+  })
+
+  it('shows the names the manifest renders and saves them trimmed', async () => {
+    const { save } = seed({ app_name: 'KiroCrew-tester', bot_name: 'KiroCrew-tester' })  // brand-ok: legacy name
+    await hydrated()
+
+    const app = screen.getByLabelText('App name')
+    const bot = screen.getByLabelText('@ mention name')
+    expect(app).toHaveValue('KiroCrew-tester')  // brand-ok
+    expect(bot).toHaveValue('KiroCrew-tester')  // brand-ok
+    fireEvent.change(app, { target: { value: '  Team Bot ' } })
+    fireEvent.change(bot, { target: { value: 'teambot' } })
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ app_name: 'Team Bot', bot_name: 'teambot', command: 'kirocrew' })
+  })
+
+  it('offers no manifest while a name edit is unsaved, and says to save', async () => {
+    stubClipboard(() => Promise.resolve())
+    seed({ connected: true, bot_token_set: true, app_name: 'KiroCrew-tester', bot_name: 'KiroCrew-tester' })  // brand-ok
+    await hydrated()
+    const create = screen.getByRole('link', { name: 'Create Slack app' })
+    await waitFor(() => expect(create).toHaveAttribute('href', MANIFEST.create_url))
+    expect(screen.queryByTestId('slack-names-unsaved')).toBeNull()
+
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: 'crew' } })
+    expect(screen.getByTestId('slack-names-unsaved')).toBeInTheDocument()
+    expect(create).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', { name: 'Copy manifest YAML' })).toBeDisabled()
+
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: '/kirocrew' } })
+    expect(screen.queryByTestId('slack-names-unsaved')).toBeNull()
+  })
+
+  it('offers no manifest rendered for names other than the saved ones', async () => {
+    // A manifest fetched before a name save can land after it with the old names.
+    seed({ connected: true, bot_token_set: true, app_name: 'Renamed', bot_name: 'KiroCrew-tester' })  // brand-ok
+    await hydrated()
+    await waitFor(() => expect(api.getSlackManifest).toHaveBeenCalled())
+    expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', { name: 'Copy manifest YAML' })).toBeDisabled()
+  })
+
+  it('takes the saved names back after clearing one, even when the config reads the same', async () => {
+    // The server fills a cleared name with its default, so the refetch is equal.
+    const { save } = seed({ connected: true, bot_token_set: true, app_name: 'KiroCrew-tester', bot_name: 'KiroCrew-tester' })  // brand-ok
+    await hydrated()
+    const app = screen.getByLabelText('App name')
+    fireEvent.change(app, { target: { value: '' } })
+    expect(screen.getByTestId('slack-names-unsaved')).toBeInTheDocument()
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByLabelText('App name')).toHaveValue('KiroCrew-tester'))  // brand-ok
+    expect(screen.queryByTestId('slack-names-unsaved')).toBeNull()
+  })
+
+  it("still offers the manifest for a command saved before Slack's rule", async () => {
+    // The server renders such a command as the alias command (MANIFEST's kirocrew).
+    const legacy = { connected: true, bot_token_set: true, command: 'OldCmd', manifest_command: 'kirocrew', app_name: 'KiroCrew-tester', bot_name: 'KiroCrew-tester' }  // brand-ok
+    seed(legacy)
+    await hydrated()
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url))
+    expect(screen.queryByText('Use 1 to 31 lowercase letters, digits, - or _.')).toBeNull()
+  })
+
+  it('offers no manifest rendered for another command, even beside a legacy one', async () => {
+    // A manifest fetched for /crew before `slack.command` became OldCmd (which renders /kirocrew).
+    vi.spyOn(api, 'getSlackConfig').mockResolvedValue(config({ connected: true, bot_token_set: true, command: 'OldCmd', manifest_command: 'kirocrew', app_name: 'KiroCrew-tester', bot_name: 'KiroCrew-tester' }))  // brand-ok
+    vi.spyOn(api, 'getSlackManifest').mockResolvedValue({ ...MANIFEST, command: 'crew' })
+    vi.spyOn(api, 'saveSlackConfig').mockResolvedValue(OK)
+    renderWithProviders(<SlackPanel />)
+    await hydrated()
+    await waitFor(() => expect(api.getSlackManifest).toHaveBeenCalled())
+    expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('reads a saved command with a leading slash as unchanged', async () => {
+    seed({ connected: true, bot_token_set: true, command: '/kirocrew', manifest_command: 'kirocrew', app_name: 'KiroCrew-tester', bot_name: 'KiroCrew-tester' })  // brand-ok
+    await hydrated()
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Create Slack app' })).toHaveAttribute('href', MANIFEST.create_url))
+    expect(screen.queryByTestId('slack-names-unsaved')).toBeNull()
+  })
+
+  it('flags a name Slack would refuse at its field', async () => {
+    seed()
+    await hydrated()
+    fireEvent.change(screen.getByLabelText('App name'), { target: { value: 'a'.repeat(36) } })
+    expect(screen.getByText('Use at most 35 characters.')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('kirocrew'), { target: { value: 'Bad Cmd' } })
+    expect(screen.getByText('Use 1 to 31 lowercase letters, digits, - or _.')).toBeInTheDocument()
   })
 
   it('leaves the owner out of a save that did not edit it, so a claim confirmed meanwhile stays', async () => {
@@ -973,17 +1066,19 @@ describe('SlackPanel setup wizard', () => {
 
   it('keeps the command the wizard saved at Create in a later Save Slack settings', async () => {
     const { save } = seed({ connected: false, configured: false, bot_token_set: false })
-    vi.mocked(api.getSlackManifest).mockResolvedValue({ ...MANIFEST, alias: 'jdoe', command: 'kirocrew-jdoe' })
+    // The wizard names the app with three fields now; the command it saves is
+    // the one the server rendered for them.
+    vi.mocked(api.getSlackManifest).mockResolvedValue({ ...MANIFEST, app_name: 'kirocrew', bot_name: 'kirocrew', command: 'kirocrew-jdoe' })
     await hydrated()
     const shown = await openWizard()
     fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
-    fireEvent.change(screen.getByTestId('slack-wizard-alias'), { target: { value: 'jdoe' } })
+    fireEvent.change(screen.getByTestId('slack-wizard-command'), { target: { value: 'kirocrew-jdoe' } })
     const created = screen.getByRole('button', { name: /I created the app/ })
     await waitFor(() => expect(created).toBeEnabled())
     fireEvent.click(created)
     await waitFor(() => expect(shown).toHaveAttribute('data-step', 'bot_token'))
     expect(save).toHaveBeenCalledTimes(1)
-    expect(save.mock.calls[0][0]).toEqual({ command: 'kirocrew-jdoe' })
+    expect(save.mock.calls[0][0]).toEqual({ command: 'kirocrew-jdoe', app_name: 'kirocrew', bot_name: 'kirocrew' })
     fireEvent.click(saveBtn())
     await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
     expect(save.mock.calls[1][0]).toMatchObject({ command: 'kirocrew-jdoe' })

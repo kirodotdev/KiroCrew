@@ -77,10 +77,9 @@ describe('productName interpolation variable', () => {
       'components.sessionPulseSurveyCard.email_disclosure',
       'privacyDisclosure.installReceiptBody',
       'privacyDisclosure.installReceiptFields',
-      // Wire-format identifiers, not brand prose: the generated Slack app name
-      // and the webhook signature header names are fixed by the backend, so a
-      // rebranded UI must still spell them exactly.
-      'pages.settings.slackPanel.create_the_slack_app_from_the_manifest',
+      // Wire-format identifiers, not brand prose: the webhook signature header
+      // names are fixed by the backend, so a rebranded UI must still spell them
+      // exactly.
       'pages.webhooksPage.calls_must_send_signature_headers_detail',
     ])
     const flatten = (obj: unknown, prefix = ''): Record<string, string> => {

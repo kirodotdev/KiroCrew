@@ -100,34 +100,78 @@ def _manifest_features() -> frozenset[str]:
         return frozenset()
 
 
-def _manifest(alias: str | None = None, output: str | None = None, url: bool = False) -> None:
-    """Render slack-manifest.yaml with the user's alias and Slack Code switches."""
+def _saved_names() -> slack_manifest.AppNames | None:
+    """The install's names when ``slack.app_name`` or ``slack.bot_name`` is saved.
 
-    alias = alias or _get_alias()
-    if not slack_manifest.valid_alias(alias):
-        print(
-            "❌ Invalid alias — must be alphanumeric, hyphens, or underscores only, "
-            f"at most {slack_manifest.ALIAS_MAX} characters.",
-            file=sys.stderr,
-        )
+    The same names Settings → Messaging Channels → Slack renders for this install, so the CLI and the
+    dashboard hand out one manifest. None when neither is saved (or the config
+    cannot load): the CLI then keeps naming the app after the alias.
+    """
+    from kiro_crew.config.loader import CRED_SLACK_BOT_TOKEN
+
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        return None
+    slack = cfg.slack
+    if not (slack.app_name or slack.bot_name):
+        return None
+    try:
+        existing = bool(cfg.load_credentials(propagate=False).get(CRED_SLACK_BOT_TOKEN))
+    except Exception:
+        existing = True  # unreadable: keep an existing app's name, as the dashboard does
+    return slack_manifest.install_names(
+        slack.app_name, slack.bot_name, slack.command, existing=existing
+    )
+
+
+def _manifest(alias: str | None = None, output: str | None = None, url: bool = False) -> None:
+    """Render slack-manifest.yaml with the install's names and Slack Code switches.
+
+    ``--alias`` names the app after the alias (``legacy_names``). Without it, names saved in
+    ``slack.app_name`` / ``slack.bot_name`` win, else the login name is the alias.
+    """
+
+    names = None if alias else _saved_names()
+    from_alias = names is None
+    if names is None:
+        alias = alias or _get_alias()
+        if not slack_manifest.valid_alias(alias):
+            print(
+                "❌ Invalid alias — must be alphanumeric, hyphens, or underscores only, "
+                f"at most {slack_manifest.ALIAS_MAX} characters.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        names = slack_manifest.legacy_names(alias)
+    problem = names.error()
+    if problem:
+        print(f"❌ Invalid saved Slack names: {problem}", file=sys.stderr)
         sys.exit(1)
     features = _manifest_features()
     try:
-        rendered = slack_manifest.render(alias, features=features)
+        rendered = slack_manifest.render(names, features=features)
     except FileNotFoundError:
         print("❌ Cannot find slack-manifest.yaml", file=sys.stderr)
         sys.exit(1)
-    command = slack_manifest.slash_command(alias)
+    command = names.command
     switches = ", ".join(f"slack.{f}" for f in slack_manifest.FEATURES if f in features)
     hint = (
         f"   Slash command: /{command} — the gateway answers it as soon as the app is installed.\n"
         f"   Save the name so help text and manifest updates keep it (applies live, no restart):\n"
         f"   kirocrew config set slack.command {command}\n"
-        f"   Slack Code switches rendered: {switches or 'none'}\n"
+        + (
+            # An alias name is [A-Za-z0-9_-] after the prefix: safe to print bare.
+            f"   kirocrew config set slack.app_name {names.app_name}\n"
+            f"   kirocrew config set slack.bot_name {names.bot_name}\n"
+            if from_alias
+            else ""
+        )
+        + f"   Slack Code switches rendered: {switches or 'none'}\n"
     )
     if url:
         print("\n🔗 Click to create your Slack app:\n")
-        print(f"{slack_manifest.deep_link(alias, features)}\n")
+        print(f"{slack_manifest.deep_link(names, features)}\n")
         print(hint)
     elif output:
         out = Path(output)
@@ -141,7 +185,8 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
             reason = safe_terminal_line(str(exc.strerror or exc))
             print(f"❌ Could not write {shown}: {reason}", file=sys.stderr)
             sys.exit(1)
-        print(f"✅ Manifest written to {output} (name: KiroCrew-{alias})")  # brand-ok
+        shown_name = safe_terminal_line(names.app_name)
+        print(f"✅ Manifest written to {output} (name: {shown_name})")
         print(hint)
     else:
         print(rendered)
@@ -494,11 +539,12 @@ def _setup_impl(
     if slack or whatsapp:
         if slack:
             progress.begin("Slack tokens")
-            _setup_slack_tokens()
+            had_app = _setup_slack_tokens()
 
-            # 3b. Slash command name (Slack-only concept)
+            # 3b. Slash command name (Slack-only concept); it also stores the
+            # app's names while no token had been saved yet (see the step).
             progress.begin("slash command")
-            _setup_slash_command()
+            _setup_slash_command(had_app)
         if whatsapp:
             progress.begin("WhatsApp")
             _setup_whatsapp()
@@ -882,14 +928,18 @@ def _print_wide_env_remedy(cred_path: Path, exc: EnvFileWideEncodingError) -> No
     )
 
 
-def _setup_slack_tokens() -> None:
-    """Prompt for Slack tokens and owner ID, write to config_dir/.env."""
+def _setup_slack_tokens() -> bool | None:
+    """Prompt for Slack tokens and owner ID, write to config_dir/.env.
+
+    Returns whether a bot token was stored BEFORE this save (the install
+    already had a Slack app), or None when nothing was saved.
+    """
     cred_path = env_path()
     try:
         existing = _read_env_pairs(cred_path)
     except EnvFileWideEncodingError as exc:
         _print_wide_env_remedy(cred_path, exc)
-        return
+        return None
 
     print("── Slack Credentials ──\n")
     print(
@@ -900,7 +950,7 @@ def _setup_slack_tokens() -> None:
     answer = input("  Configure Slack tokens? [Y/n]: ").strip().lower()
     if answer in ("n", "no"):
         print("  ⏭  Skipped. Slack integration will be disabled.\n")
-        return
+        return None
 
     def _mask(val: str) -> str:
         return val[:8] + "…" if len(val) > 12 else val
@@ -933,7 +983,7 @@ def _setup_slack_tokens() -> None:
     )
     if app_token is None:
         _abort_rejected("app token")
-        return
+        return None
 
     bot_token, team = _prompt_verified_slack_value(
         f"  Bot Token (xoxb-...){hint_bot}: ",
@@ -943,7 +993,7 @@ def _setup_slack_tokens() -> None:
     )
     if bot_token is None:
         _abort_rejected("bot token")
-        return
+        return None
     if team:
         print(f"  ✅ Bot token verified — workspace: {team}")
 
@@ -978,7 +1028,7 @@ def _setup_slack_tokens() -> None:
 
     if not app_token or not bot_token:
         print("  ⚠️  Missing tokens — Slack integration will be disabled.\n")
-        return
+        return None
 
     # Serialize the read-modify-write against every OTHER .env writer (the
     # `kirocrew secrets import` migrator, the WeChat/Weixin QR handler, and the
@@ -991,6 +1041,15 @@ def _setup_slack_tokens() -> None:
     # fresh under the lock so we merge onto the latest on-disk state rather than
     # the possibly-stale snapshot read before the prompts.
     cred_path.parent.mkdir(parents=True, exist_ok=True)
+    # Whether the install already had a Slack app, read the way the manifest
+    # reads it (the process environment and the vault included), before this
+    # save adds a token. Unreadable counts as having one, as there.
+    try:
+        had_app = bool(
+            KiroCrewConfig.load().load_credentials(propagate=False).get(CRED_SLACK_BOT_TOKEN)
+        )
+    except Exception:
+        had_app = True
     lock_path = _env_lock_path(cred_path)
     lock_fd = platform_compat.open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     if not platform_compat.try_acquire_lock(lock_fd, exclusive=True):
@@ -1001,7 +1060,7 @@ def _setup_slack_tokens() -> None:
             "other operation finishes.\n",
             file=sys.stderr,
         )
-        return
+        return None
     try:
         # Re-read fresh under the lock, then merge the just-collected tokens on
         # top so a concurrent write that landed during the prompts is preserved.
@@ -1011,7 +1070,7 @@ def _setup_slack_tokens() -> None:
             # Re-saved as UTF-16 or UTF-32 while the prompts ran: never
             # overwrite it.
             _print_wide_env_remedy(cred_path, exc)
-            return
+            return None
         updates: dict[str, str | None] = {
             CRED_SLACK_APP_TOKEN: app_token,
             CRED_SLACK_BOT_TOKEN: bot_token,
@@ -1068,7 +1127,7 @@ def _setup_slack_tokens() -> None:
             _write_env_updates_locked(cred_path, updates)
         except EnvStagingRefused as exc:
             print(f"  ⚠  Nothing was saved. {exc}\n")
-            return
+            return None
     finally:
         platform_compat.release_lock(lock_fd)
         os.close(lock_fd)
@@ -1080,6 +1139,7 @@ def _setup_slack_tokens() -> None:
     # one command, and it could drop every in-flight session or spawn a gateway
     # nobody asked this wizard to start.
     print("  Restart the gateway to pick them up: kirocrew restart\n")
+    return had_app
 
 
 def _setup_whatsapp() -> None:
@@ -1244,8 +1304,17 @@ def _input_or_skip(prompt: str) -> str | None:
     return answer or None
 
 
-def _setup_slash_command() -> None:
-    """Prompt for custom slash command name, save to config.json."""
+def _setup_slash_command(had_app: bool | None = None) -> None:
+    """Prompt for custom slash command name, save to config.json.
+
+    *had_app* is what the token step returned. When it saved tokens, the same
+    locked write stores the app's names where none is stored yet: the names the
+    manifest rendered before the token (``kirocrew`` on a fresh install, the
+    alias-based name for an existing app or an alias command), as the dashboard
+    save does. Without that, the new token would make an app created as
+    ``kirocrew`` render the alias-based name, and updating it from that manifest
+    would rename its bot.
+    """
     cfg_file = config_path()
     cfg: dict = {}
     if cfg_file.exists():
@@ -1277,16 +1346,22 @@ def _setup_slash_command() -> None:
     prompt = (
         f"  Slash command name (must match your Slack app, e.g. kirocrew-<alias>) [{current}]: "
     )
-    raw = _input_or_skip(prompt) or ""
+    # EOF keeps the current value; when the token step just saved tokens, the
+    # names are still stored below before the wizard stops.
+    aborted: _SetupAborted | None = None
+    try:
+        raw = _input_or_skip(prompt) or ""
+    except _SetupAborted as exc:
+        if had_app is None:
+            raise
+        aborted, raw = exc, ""
     if raw:
         raw = raw.lstrip("/").strip()
     if not raw:
         raw = current
-    if not all(c.isalnum() or c in "-_" for c in raw):
-        print("  ⚠️  Command name should only contain letters, numbers, hyphens, or underscores.")
-        raw = current
-    if len(raw) > 32:
-        print("  ⚠️  Command name too long (max 32 chars).")
+    # Slack's own rule, the one the dashboard save applies to a changed command.
+    if raw != current and not slack_manifest.valid_command(raw):
+        print("  ⚠️  Command name must be 1-31 lowercase letters, numbers, hyphens or underscores.")
         raw = current
 
     # Re-checked under the lock, and it must ABORT rather than replace: a
@@ -1295,6 +1370,7 @@ def _setup_slash_command() -> None:
     # reporting success. Absent is the only case that may be created. Same rule
     # as the whatsapp and sandbox steps above.
     section_clash: list[str] = []
+    pinned: dict[str, str] = {}
 
     def _apply(data: dict) -> dict | None:
         section = data.get("slack")
@@ -1305,13 +1381,32 @@ def _setup_slash_command() -> None:
             section = {}
             data["slack"] = section
         section["command"] = raw
+        if had_app is not None:
+            defaults = slack_manifest.install_names(command=raw, existing=had_app)
+            for key in ("app_name", "bot_name"):
+                if not section.get(key):
+                    section[key] = getattr(defaults, key)
+                    pinned[key] = getattr(defaults, key)
         return data
 
     try:
         update_config_locked(cfg_file, mutate=_apply, stamp_meta=False)
     except ConfigReadError as exc:
+        if aborted is not None:
+            raise aborted from exc
         print(f"  ⚠️  Could not read {cfg_file}: {exc}")
         return
+    if pinned:
+        # Before a token, an app made from the dashboard card and one made by
+        # `kirocrew manifest` look the same here, so say what was stored.
+        shown = ", ".join(f"{k} {safe_terminal_line(v)}" for k, v in pinned.items())
+        print(
+            f"  ✅ Slack app names stored ({shown}). If your app has other names, run:\n"
+            "     kirocrew config set slack.app_name <name>\n"
+            "     kirocrew config set slack.bot_name <name>\n"
+        )
+    if aborted is not None:
+        raise aborted
     if section_clash:
         print("  ⚠️  'slack' section is not an object; leaving config untouched.\n")
         return

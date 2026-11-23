@@ -86,6 +86,11 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.slack_code_settings import code_settings_view
 
     code_view = await code_settings_view(cfg, state)
+    from kiro_crew import slack_manifest
+
+    names = slack_manifest.install_names(
+        slack.app_name, slack.bot_name, slack.command, existing=bool(bot)
+    )
     return web.json_response(
         {
             # True only when the socket-mode connect succeeded this session —
@@ -104,6 +109,13 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             "app_token_preview": _mask_secret(app),
             "owner_id": owner,
             "command": slack.command,
+            # The names the manifest renders for this install (saved, else the
+            # fresh or existing-app default), so the form shows what Slack gets.
+            "app_name": names.app_name,
+            "bot_name": names.bot_name,
+            # The command that manifest registers: `command` itself, or the alias
+            # command for a value saved before Slack's rule was checked.
+            "manifest_command": names.command,
             # allowed_users / open_channels are deliberately NOT exposed: the
             # runtime enforces owner-only access in this build (is_allowed_user
             # ignores both), so surfacing editors would create access rules
@@ -238,19 +250,43 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     staged: dict[str, object] = {}
     applied: list[str] = []
 
+    from kiro_crew import slack_manifest
+
     if "command" in body:
-        cmd = str(body.get("command", "")).strip().lstrip("/").strip()
-        if cmd and (len(cmd) > 32 or not all(c.isalnum() or c in "-_" for c in cmd)):
-            return _deny("command must be alphanumeric/-/_ and at most 32 chars")
+        cmd = str(body.get("command", "")).strip()
+        cmd = cmd[1:] if cmd.startswith("/") else cmd
         # Empty input resets to the default rather than silently keeping the
         # old value, so the slash command can be cleared. Stage only on actual
         # change: the UI sends the field on
         # every save, and command is boot-read, so staging an unchanged value
-        # would flag restart_required on every save.
+        # would flag restart_required on every save. Only a change is checked
+        # against Slack's rule, so a value saved before the check keeps saving.
         new_cmd = cmd or "kirocrew"
         if new_cmd != slack_cfg.get("command", "kirocrew"):
+            if not slack_manifest.valid_command(new_cmd):
+                return _deny("command must be 1-31 lowercase letters, digits, - or _")
             staged["command"] = new_cmd
             applied.append("command")
+
+    # The manifest's app and bot names. The gateway reads neither, so they are
+    # plain staged values; empty clears back to the install's default name.
+    for key, valid, limit in (
+        ("app_name", slack_manifest.valid_app_name, slack_manifest.APP_NAME_MAX),
+        ("bot_name", slack_manifest.valid_bot_name, slack_manifest.BOT_NAME_MAX),
+    ):
+        if key not in body:
+            continue
+        raw = body.get(key)
+        if not isinstance(raw, str):
+            return _deny(f"{key} must be a string")
+        value = raw.strip()
+        if value != str(slack_cfg.get(key, "") or ""):
+            if value and not valid(value):
+                return _deny(
+                    f"{key} must be at most {limit} characters, with no control characters"
+                )
+            staged[key] = value
+            applied.append(key)
 
     if "allowed_enterprise_ids" in body:
         try:
@@ -315,6 +351,39 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     if follows_enable:
         staged.pop(DISPATCH_KEY)
 
+    # Pin the manifest's names: a save stores the names the page rendered
+    # before it (fresh: kirocrew; existing app: its alias-based name), so a
+    # later token or command change cannot rename the app. Decided inside the
+    # locked write, from the section as re-read there and only where the key is
+    # still unset, so a name or command another writer (`kirocrew config set`)
+    # stored meanwhile is respected. A Slack app exists once a bot token does;
+    # unreadable credentials count as one, the side that renames nothing.
+    from kiro_crew.config.loader import CRED_SLACK_BOT_TOKEN, KiroCrewConfig
+
+    def _has_app() -> bool:
+        try:
+            creds = KiroCrewConfig.load().load_credentials(propagate=False)
+        except Exception:
+            return True
+        return bool(creds.get(CRED_SLACK_BOT_TOKEN))
+
+    had_app = await asyncio.to_thread(_has_app)
+    needs_pin = not (slack_cfg.get("app_name") and slack_cfg.get("bot_name"))
+    # This save's own command change is not what the page rendered with.
+    command_changes = "command" in staged
+    command_before = slack_cfg.get("command")
+
+    def _finalize(section: dict) -> None:
+        if follows_enable:
+            _unless_stored(section)
+        command = command_before if command_changes else section.get("command")
+        defaults = slack_manifest.install_names(
+            command=command if isinstance(command, str) else "", existing=had_app
+        )
+        for key in ("app_name", "bot_name"):
+            if not section.get(key):
+                section[key] = getattr(defaults, key)
+
     # ── Phase 1.5: verify newly pasted tokens against Slack before storing.
     # A token Slack rejects (invalid_auth etc.) fails the save right here,
     # where the user can act on it — instead of being stored and silently
@@ -345,15 +414,18 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         "slack",
         staged,
         merge_nested=("code_channel_defaults",),
-        finalize=_unless_stored if follows_enable else None,
+        finalize=_finalize,
     )
+    # A save that stages nothing still writes once while a name is unpinned:
+    # the first token save of a fresh install is the one that matters.
+    writes_config = bool(staged) or needs_pin
     # Hold the live-config watcher for the whole config+credential transaction:
     # the two files commit separately and a failed .env write rolls the config
     # back, so nothing between here and the end of the block may be applied to
     # the running gateway (a widened allow-list must never go live on a save
     # that then fails). The release wakes the watcher on the committed state.
     with live.hold():
-        if staged:
+        if writes_config:
             slack_cfg.update(staged)
             # Through ``update_config_locked``: it holds the advisory lock on the
             # sidecar ``<path>.lock`` across the whole read-modify-write, so a
@@ -371,7 +443,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         if env_updates:
             # A failed .env write undoes the config commit above, so a refused
             # save changes nothing (see _write_env_or_roll_back).
-            rollback = functools.partial(_cfg_write.rollback, "Slack") if staged else None
+            rollback = functools.partial(_cfg_write.rollback, "Slack") if writes_config else None
             await _write_env_or_roll_back(env_updates, rollback)
             # A Slack credential write that changes what an open owner-claim
             # window pinned closes it: a new token may name another workspace.

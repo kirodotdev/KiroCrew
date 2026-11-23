@@ -100,6 +100,14 @@
       "configKey": "browser.choice"
     },
     {
+      "id": "channels.mention-name-slack",
+      "label": "@ mention name (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.bot_name",
+      "description": "What people type after @ to mention the bot, at most 80 characters. Leave empty for the default name (kirocrew on a new install).",
+      "configKey": "slack.bot_name"
+    },
+    {
       "id": "channels.agent-sessions-slack",
       "label": "Agent sessions (Slack)",
       "tab": "channels",
@@ -207,6 +215,14 @@
       "tab": "channels",
       "route": "/settings/channels/teams?highlight=key%3Ateams.app_id",
       "configKey": "teams.app_id"
+    },
+    {
+      "id": "channels.app-name-slack",
+      "label": "App name (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.app_name",
+      "description": "The Slack app's name, at most 35 characters. Leave empty for the default name (kirocrew on a new install). An existing app is renamed when you update it in Slack.",
+      "configKey": "slack.app_name"
     },
     {
       "id": "channels.app-password-client-secret-teams",
@@ -538,7 +554,8 @@
       "label": "Slash command (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.slash-command-slack",
-      "description": "Trigger word for the Slack slash command (without the leading /)."
+      "description": "Trigger word for the Slack slash command (without the leading /).",
+      "hint": "If someone else in your Slack organization also uses Kiro Crew, pick a different slash command: two apps with the same command collide."
     },
     {
       "id": "channels.soft-context-threshold-discord",

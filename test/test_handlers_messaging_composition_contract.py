@@ -1698,7 +1698,7 @@ def test_a_config_json_that_is_not_an_object_is_corrupt_to_the_savers(
     [
         ({"bot_token": "xoxb-a b"}, "bot_token must not contain whitespace"),
         ({"owner_id": "X123"}, "owner_id must be a Slack member ID (starts with U or W)"),
-        ({"command": "bad cmd!"}, "command must be alphanumeric/-/_ and at most 32 chars"),
+        ({"command": "bad cmd!"}, "command must be 1-31 lowercase letters, digits, - or _"),
         ({"allowed_enterprise_ids": ["zzz"]}, "invalid enterprise ID: zzz"),
         ({"reactions_enabled": "yes"}, "reactions_enabled must be a boolean"),
     ],

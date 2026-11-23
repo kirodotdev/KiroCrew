@@ -211,6 +211,25 @@ class SlackConfig:
             # and is the name help text shows; the Slack applier refreshes it.
         ),
     )
+    app_name: str = field(
+        default="",
+        metadata=_meta(
+            "App Name",
+            "The Slack app's name in the manifest Settings and `kirocrew manifest` "
+            "render (at most 35 characters). Empty: kirocrew on a new install, and "
+            "the alias-based name an existing app already has otherwise.",
+            # Manifest only: the gateway reads nothing from it. The app is renamed
+            # when its owner updates it from the new manifest.
+        ),
+    )
+    bot_name: str = field(
+        default="",
+        metadata=_meta(
+            "Bot Name",
+            "The bot user's name in the manifest, what people type after @ "
+            "(at most 80 characters). Empty: the same default as App Name.",
+        ),
+    )
     setup_guide_url: str = field(
         default="",
         metadata=_meta(

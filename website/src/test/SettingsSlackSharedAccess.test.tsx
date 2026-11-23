@@ -616,7 +616,7 @@ describe('Share Slack access inside the Slack panel', () => {
       reactions_enabled: false, show_thinking: false,
     })
     vi.spyOn(liveApi, 'getSlackManifest').mockResolvedValue({
-      alias: 'tester', manifest: 'display_information:\n  name: tester\n', create_url: 'https://example.invalid/apps/new',
+      app_name: 'tester', bot_name: 'tester', command: 'kirocrew', manifest: 'display_information:\n  name: tester\n', create_url: 'https://example.invalid/apps/new',
     })
     vi.spyOn(liveApi, 'getSlackSharedAccess').mockResolvedValue(data())
     const { SlackPanel } = await import('../pages/settings/SlackPanel')
