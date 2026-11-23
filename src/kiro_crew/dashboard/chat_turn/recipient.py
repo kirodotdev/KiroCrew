@@ -19,7 +19,11 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
-from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, parse_session_key
+from kiro_crew.messaging.link import (
+    CHAT_TYPE_DIRECT,
+    parse_session_key,
+    split_namespaced_channel_id,
+)
 from kiro_crew.messaging.outbound_files import (
     OutboundFile,
     extract_local_refs_off_loop,
@@ -828,6 +832,70 @@ def _notice_unsigned_mirror_refusal(state: Any, slot: Any, session_key: str, lin
         logger.debug("cross-surface: could not show the mirror refusal notice", exc_info=True)
 
 
+#: The channel the unlinked-origin notice speaks for. A Feishu DM row can carry its
+#: ``feishu:<open_id>`` origin with no binding (one saved by a build that did not bind
+#: Feishu conversations); there the origin spells the very location the inbound bind
+#: writes, and no session-resume pick can move the conversation, so one message from the
+#: DM links it to the session that answers there. Other channels get no notice: Discord,
+#: Teams and Webex spell the origin differently from the bound location, Telegram,
+#: Discord and Teams offer resume picks, WhatsApp, Weixin and iMessage bind nothing, and
+#: WeCom can push only into a conversation the user has written to.
+_UNLINKED_ORIGIN_CHANNEL = "feishu"
+
+
+async def _notice_unlinked_origin(state: Any, slot: Any, session_key: str) -> None:
+    """Tell the dashboard chat that its replies reach no channel, though one shows as linked.
+
+    Called after the cross-surface leg found no binding at all. A channel-born
+    session can hold only its namespaced origin in ``slack_channel_id`` and no
+    ``mirror`` row. The dashboard draws that origin as a live link, but this leg
+    sends through the ``mirror`` row alone, so every reply is dropped until a
+    message from the conversation binds the session that answers it
+    (``bind_origin_mirror``). Says so once per conversation, in the chat and at
+    WARNING, for a :data:`_UNLINKED_ORIGIN_CHANNEL` DM key whose origin is on that
+    channel, while the channel runs, the origin is not muted and the conversation
+    has not opted out. Decides nothing: nothing was sent. Best-effort, never fails
+    a turn.
+    """
+    if slot is None:
+        return
+    try:
+        sessions = state.sessions
+        origin = split_namespaced_channel_id(sessions.get_slack_link(session_key)[1])
+        parsed = parse_session_key(session_key)
+        if origin is None or parsed is None or parsed.chat_type != CHAT_TYPE_DIRECT:
+            return
+        channel_type, conversation_id = origin
+        if channel_type != _UNLINKED_ORIGIN_CHANNEL or parsed.surface != channel_type:
+            return
+        if state.get_channel_transport(channel_type) is None:
+            return
+        if mirror_is_paused(state, session_key, origin=True):
+            return
+        # Off the loop: this read promotes a legacy opt-out, which writes the map.
+        if await asyncio.to_thread(sessions.mirror_opt_out, session_key):
+            return
+        # Ids stay out of the WARNING, as out of the admission refusals above.
+        _log_once(
+            ("unlinked-origin", channel_type, conversation_id),
+            logging.WARNING,
+            "cross-surface: a %s channel session has no mirror binding to the "
+            "conversation it started in, so its dashboard replies are not sent there; "
+            "the next message from that conversation binds the session that answers it",
+            channel_type,
+        )
+        text = (
+            f"This reply was not sent to the {channel_type} conversation this session "
+            "started in, because this session is not linked to it. One message from "
+            "that conversation links it to the session that answers there."
+        )
+        if not _session_notice_is_new(slot, text, channel_type, conversation_id):
+            return
+        append_and_surface(state, slot, "notice", text, "msg msg-info")
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("cross-surface: could not show the unlinked-origin notice", exc_info=True)
+
+
 async def _deliver_cross_surface_reply(
     state: Any, session_key: str, assistant_text: str, *, slot: Any = None
 ) -> None:
@@ -837,9 +905,11 @@ async def _deliver_cross_surface_reply(
     mirror link, resolves the registered ``MessagingTransport`` for that channel
     and pushes the reply via ``send_message`` — capability-gated on
     ``supports_proactive_send``. Slack keeps its dedicated rich streaming mirror
-    inline in the turn loop, so it is skipped here. Silent no-op when the session
+    inline in the turn loop, so it is skipped here. Sends nothing when the session
     has no non-Slack mirror, the transport is not registered, or the channel
-    cannot send proactively (WhatsApp outside its 24-hour window). A channel whose
+    cannot send proactively (WhatsApp outside its 24-hour window). A Feishu DM
+    with no binding says so in the chat (:func:`_notice_unlinked_origin`), as a
+    refused unsigned row does (:func:`_notice_unsigned_mirror_refusal`). A channel whose
     push is per-TARGET rather than blanket answers that in ``send_message`` itself
     — WeCom pushes through ``aibot_send_msg`` but only into a conversation the user
     has already written to. Best-effort: a delivery failure never disrupts the
@@ -886,7 +956,10 @@ async def _deliver_cross_surface_reply(
         return
     target = _resolve_channel_target(state, session_key, binding[0])
     if target is None:
-        _notice_unsigned_mirror_refusal(state, slot, session_key, binding[0])
+        if binding[0] is None:
+            await _notice_unlinked_origin(state, slot, session_key)
+        else:
+            _notice_unsigned_mirror_refusal(state, slot, session_key, binding[0])
         return
     link, transport = target
     # Local images first, BEFORE any splitter (the outbound-files contract): a
