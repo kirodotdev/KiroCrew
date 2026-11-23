@@ -36,6 +36,7 @@ import stat
 import sys
 import tempfile
 import zipfile
+from email.parser import Parser
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -148,8 +149,12 @@ def build(pure_wheel: Path, tag: str, out_dir: Path, base_url: str) -> Path:
                     continue
                 data = src.read(info)
                 if name == f"{dist_info}/WHEEL":
+                    # setuptools ends WHEEL with a blank line, and a blank line ends
+                    # the headers pip reads: drop it so the new Tag stays a header.
                     lines = [
-                        ln for ln in data.decode("utf-8").splitlines() if not ln.startswith("Tag:")
+                        ln
+                        for ln in data.decode("utf-8").splitlines()
+                        if ln and not ln.startswith("Tag:")
                     ]
                     lines.append(f"Tag: py3-none-{tag}")
                     data = ("\n".join(lines) + "\n").encode("utf-8")
@@ -252,10 +257,12 @@ def verify_wheel(wheel: Path, base_url: str, *, pure: Path | None = None) -> str
         node = zf.getinfo(f"{prefix}/{record['node_bin']}")
         if system != "Windows" and not (node.external_attr >> 16) & stat.S_IXUSR:
             raise GateError("the bundled node is not executable")
-        tag_line = f"Tag: py3-none-{match['tag']}"
+        want_tags = [f"py3-none-{match['tag']}"]
         wheel_meta = zf.read(f"{match['stem']}-{match['version']}.dist-info/WHEEL").decode()
-        if tag_line not in wheel_meta.splitlines():
-            raise GateError(f"WHEEL metadata does not say {tag_line!r}")
+        # Read the tags the way `pip check` does: only the header block counts.
+        tags = Parser().parsestr(wheel_meta).get_all("Tag", [])
+        if tags != want_tags:
+            raise GateError(f"WHEEL metadata tags are {tags!r}, expected {want_tags!r}")
         if pure is not None:
             _check_same_as_pure(zf, pure, f"{match['stem']}-{match['version']}.dist-info")
     return f"{wheel.name}: KAS {KAS_PIN_VERSION} + Node {record.get('node_version')} ({record['node_key']})"
