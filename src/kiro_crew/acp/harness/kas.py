@@ -79,6 +79,7 @@ from kiro_crew.acp.kas_settings_mcp import (
     include_mcp_json,
     stamp_settings_mcp,
 )
+from kiro_crew.acp.kas_skill_scope import _skill_scope
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
 from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
@@ -586,65 +587,6 @@ def resolve_projected_spec(
     if work_dir is None:  # unreachable: ``project_agent_spec`` declares nothing without one
         return spec, agents_dir
     return spec, paths_mod.project_agents_dir(work_dir)
-
-
-def _skill_scope(
-    agent: str,
-    spec: dict[str, Any],
-    spec_dir: Path,
-    work_dir: str | Path | None,
-    notices: list[str] | None = None,
-) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
-    """The ``skill`` deny rules and the extra ``skill://`` resources that give this
-    KAS session its kiro-cli skill set.
-
-    KAS loads ``~/.kiro/skills`` and the workspace's ``.kiro/skills`` for every
-    session on top of the agent's ``resources``; kiro-cli under Crew loads only the
-    scope Crew resolves (``acp/kas_skill_scope.py``). The resources are fixed
-    copies of in-scope skills KAS would drop (``refused_skill_copies``). A failure
-    here never costs the session, but it never widens the skill set either: when
-    the scope or its rules cannot be worked out, every skill is denied except the
-    copies already made, the error is logged, and *notices* gets one line.
-    """
-    from kiro_crew.acp import kas_skill_scope
-
-    def _failed(copy_names: list[str]) -> tuple[dict[str, Any], ...]:
-        logger.warning(
-            "KAS skill scope for %r failed; the session gets no skill but its copies",
-            agent,
-            exc_info=True,
-        )
-        if notices is not None:
-            notices.append(
-                f"⚠ Crew could not work out which skills agent {agent} may use, "
-                "so its skills are off for this session. Start a new chat to try again."
-            )
-        rule: dict[str, Any] = {"capability": kas_skill_scope.SKILL_CAPABILITY, "effect": "deny"}
-        # Only literal names can be ``exclude`` entries, and one rule holds a bounded
-        # list (``skill_scope_rules``); past it, the copies are denied too.
-        kept = sorted(n for n in copy_names if kas_skill_scope._literal(n))
-        if 0 < len(kept) <= kas_skill_scope._MAX_PATTERNS_PER_RULE:
-            rule["exclude"] = kept
-        return (rule,)
-
-    try:
-        globs = kas_skill_scope.scope_globs(agent, spec, agents_dir=spec_dir, work_dir=work_dir)
-    except Exception:  # see the docstring: no scope, so no copies and no skill
-        return _failed([]), ()
-    try:
-        copies = kas_skill_scope.refused_skill_copies(
-            agent, spec, globs, agents_dir=spec_dir, work_dir=work_dir
-        )
-    except Exception:  # see the docstring: the session runs without the copies
-        logger.warning("KAS skill copies for %r failed", agent, exc_info=True)
-        copies = []
-    try:
-        rules = kas_skill_scope.skill_scope_rules(
-            globs, work_dir=work_dir, also_allowed=frozenset(c.name for c in copies)
-        )
-    except Exception:  # see the docstring: only the copies stay usable
-        return _failed([c.name for c in copies]), tuple(c.uri for c in copies)
-    return tuple(rules), tuple(c.uri for c in copies)
 
 
 def mate_worker_projection(
@@ -1568,7 +1510,7 @@ class KasHarness(MembershipHarness):
             withheld: kas_agents_mod.WithheldOut = {}
             prompt_unread: list[Path] = []
             scope_rules, skill_copies = _skill_scope(
-                agent, spec, prompt_dir, work_dir, spec_notices
+                agent, spec, prompt_dir, work_dir, spec_notices, session_dir=session_cwd
             )
             projected = spec
             if skill_copies:

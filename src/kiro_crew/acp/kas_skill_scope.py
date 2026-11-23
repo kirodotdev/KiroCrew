@@ -51,7 +51,10 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import time
+import weakref
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -129,6 +132,226 @@ def _default_tree_globs(work_dir: str | Path | None) -> list[str]:
     if work_dir and project_skill_tree_present(work_dir):
         globs.append(str(Path(work_dir) / ".kiro" / "skills" / "*" / "SKILL.md"))
     return globs
+
+
+#: The census failure no new chat can cure; :func:`_skill_scope` says so.
+_NO_SAFE_WALK = "this platform cannot walk a project tree without following links"
+
+
+class WorkspaceSkillCensusIncomplete(RuntimeError):
+    """The workspace's skills could not all be named, so a deny list built from them
+    would leave the rest offered. :func:`skill_scope_rules` lets it propagate so the
+    caller denies every skill instead."""
+
+
+def _workspace_skill_files(root: Path) -> list[tuple[str, Path]]:
+    """``(folder, SKILL.md)`` for each skill file KAS reads in *root*'s ``.kiro/skills``.
+
+    KAS (``scanSkillsDirectory``) reads ``<entry>/SKILL.md`` for every top-level
+    entry that is a directory or a link, whatever its name (a dot folder or
+    ``node_modules`` too), following a link anywhere on that path. Crew follows no
+    link here, so anything on that path it cannot see as KAS does raises
+    :class:`WorkspaceSkillCensusIncomplete`: a link, a directory it cannot open or
+    list, or a ``SKILL.md`` that is not a regular file. Only absence is no skill: no
+    tree, a folder without ``SKILL.md``, or an entry that is neither a directory nor
+    a link, which KAS never opens.
+    """
+    from kiro_crew.skills import _open_project_dir_chain
+
+    base = root / ".kiro" / "skills"
+    for part in (root / ".kiro", base):
+        try:
+            mode = os.lstat(part).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            return []
+        except OSError as exc:
+            raise WorkspaceSkillCensusIncomplete(
+                f"workspace {os.fspath(part)!r} could not be read"
+            ) from exc
+        if stat.S_ISLNK(mode):
+            raise WorkspaceSkillCensusIncomplete(
+                f"workspace {os.fspath(part)!r} is a link KAS follows"
+            )
+        if not stat.S_ISDIR(mode):
+            return []
+    fd = _open_project_dir_chain(base)
+    if fd is None:
+        raise WorkspaceSkillCensusIncomplete(f"workspace {os.fspath(base)!r} could not be opened")
+    files: list[tuple[str, Path]] = []
+    try:
+        # Streamed: only a folder or link is kept, and the cap is enforced on the
+        # first one past it, so a huge listing is neither held nor read to its end.
+        folders: list[tuple[str, bool]] = []
+        with os.scandir(fd) as scan:
+            for entry in scan:
+                link = entry.is_symlink()
+                if not (link or entry.is_dir(follow_symlinks=False)):
+                    continue
+                if len(folders) >= _MAX_SKILL_FILES:
+                    raise WorkspaceSkillCensusIncomplete(
+                        f"workspace has more than {_MAX_SKILL_FILES} skill folders, the most one scope reads"
+                    )
+                folders.append((entry.name, link))
+        for name, link in sorted(folders):
+            if link:
+                raise WorkspaceSkillCensusIncomplete(
+                    f"workspace skill {name!r} is a link KAS follows"
+                )
+            try:
+                skill = os.stat(f"{name}/SKILL.md", dir_fd=fd, follow_symlinks=False).st_mode
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(skill):
+                raise WorkspaceSkillCensusIncomplete(
+                    f"workspace skill {name!r} has a SKILL.md that is not a regular file"
+                )
+            files.append((name, base / name / "SKILL.md"))
+    except OSError as exc:
+        raise WorkspaceSkillCensusIncomplete(
+            f"workspace {os.fspath(base)!r} could not be listed"
+        ) from exc
+    finally:
+        os.close(fd)
+    return files
+
+
+def _lists_no_kiro_dir(work_dir: str | Path) -> bool:
+    """Whether the absolute *work_dir*, as ACP sends it, lists no ``.kiro`` entry.
+
+    The absence proof for a platform without the no-follow walk. A directory
+    listing names its children without opening one, so no link or reparse point in
+    the checkout is resolved; an ``lstat`` of ``.kiro`` would not do, since on
+    Windows it resolves every reparse point that is not a name surrogate. Proof goes
+    no deeper: listing ``.kiro`` would resolve it by path. Names match case-blind,
+    as Windows does, and widely, since an over-match only fails closed.
+    """
+    raw_dir = os.fspath(work_dir)
+    if not os.path.isabs(raw_dir):
+        return False
+    try:
+        with os.scandir(raw_dir) as scan:
+            return not any(e.name.casefold() == ".kiro" or e.name.upper() == ".KIRO" for e in scan)
+    except (OSError, ValueError):
+        return False
+
+
+#: How much of a failed census's message is kept for the later askers of a start.
+_MAX_CENSUS_MESSAGE = 1024
+
+#: The censuses of the session start in progress: a reference to its
+#: ``build_reuse.one_build`` block, and each ``cwd``'s literal names or failure message.
+_CENSUSES: ContextVar[tuple[weakref.ref[Any], dict[str, frozenset[str] | str]] | None] = ContextVar(
+    "kas_workspace_censuses", default=None
+)
+
+
+def _workspace_skill_names(work_dir: str | Path | None) -> set[str]:
+    """:func:`_census`'s literal names, taken once per session start for each *work_dir*.
+
+    The parent and each sub-agent target of one start ask about the same ``cwd``.
+    The answer is kept beside ``build_reuse``'s budget, not in it: a wide parent's
+    skill reads can fill that budget first, and each target would census again. It
+    holds at most :data:`_MAX_SKILL_FILES` names of at most ``_MAX_PATTERN_LENGTH``
+    characters; :func:`skill_scope_rules` denies no other name. Outside a
+    ``one_build`` block every call censuses. A census that raised raises again, as
+    the same message, for every asker; only the message is kept, so the error has
+    no ``__cause__``.
+    """
+    from kiro_crew import build_reuse
+
+    def census() -> frozenset[str] | str:
+        try:
+            return frozenset(filter(_literal, _census(work_dir)))
+        except WorkspaceSkillCensusIncomplete as exc:
+            return str(exc)[:_MAX_CENSUS_MESSAGE]
+
+    build = build_reuse._KEPT.get()
+    if build is None:
+        got = census()
+    else:
+        slot = _CENSUSES.get()
+        if slot is None or slot[0]() is not build:
+            # A weak reference, so the slot never keeps a finished start's answers.
+            slot = (weakref.ref(build), {})
+            _CENSUSES.set(slot)
+        cwd = os.fspath(work_dir) if work_dir else ""
+        if cwd not in slot[1]:
+            slot[1][cwd] = census()
+        got = slot[1][cwd]
+    if isinstance(got, str):
+        raise WorkspaceSkillCensusIncomplete(got)
+    return set(got)
+
+
+def _census(work_dir: str | Path | None) -> frozenset[str]:
+    """The names KAS may give the skills in *work_dir*'s ``.kiro/skills``, trusted or not.
+
+    KAS loads that tree for every session whatever Crew's project trust says, while
+    :func:`_default_tree_globs` lists it for a trusted project only, so the
+    deny-by-name form names its skills from here too. The tree is listed as KAS lists
+    it (:func:`_workspace_skill_files`) and each file read through the
+    descriptor-pinned no-link read. Each skill is named as KAS names it
+    (:func:`_kas_reading`), not by its folder, and every front-matter ``name`` is
+    kept, whether or not KAS would accept the rest: denying a name KAS does not
+    load costs nothing.
+
+    For a deny list a partial census leaves the skills it missed offered, so every
+    skill it cannot name raises :class:`WorkspaceSkillCensusIncomplete`: a platform
+    that cannot walk the tree without following links, unless *work_dir* lists no
+    ``.kiro`` (:func:`_lists_no_kiro_dir`), a *work_dir* that is not
+    verifiably the absolute directory ACP names (it is never trimmed), a tree past
+    :data:`_MAX_SKILL_FILES` folders, one Crew cannot list as KAS does, a skill file
+    the read refuses, front matter still open at :data:`_FRONTMATTER_BYTES` (KAS
+    reads the whole file), or front matter whose ``name`` only Crew's reader refuses.
+    """
+    from kiro_crew import skill_trust
+    from kiro_crew.hooks import safe_read_file_bytes_nolink
+
+    if not work_dir:
+        return frozenset()
+    if not skill_trust.project_skill_traversal_supported():
+        if _lists_no_kiro_dir(work_dir):
+            return frozenset()
+        raise WorkspaceSkillCensusIncomplete(_NO_SAFE_WALK)
+    # The cwd exactly as ACP sends it: ``skill_trust.canonical_key`` trims and
+    # expands, which can name a different checkout than the one KAS reads.
+    raw_dir = os.fspath(work_dir)
+    try:
+        key = os.path.realpath(raw_dir) if os.path.isabs(raw_dir) else ""
+        verified = bool(key) and os.path.isdir(key)
+    except (OSError, ValueError):
+        verified = False
+    if not verified:
+        raise WorkspaceSkillCensusIncomplete(
+            f"workspace {raw_dir!r} is not a directory Crew can verify"
+        )
+    names: set[str] = set()
+    for folder, path in _workspace_skill_files(Path(key)):
+        # One byte past the bound tells a file that fits from one that was cut.
+        raw = safe_read_file_bytes_nolink(
+            str(path),
+            within_root=key,
+            max_bytes=_FRONTMATTER_BYTES + 1,
+            allow_truncate=True,
+            within_root_is_canonical=True,
+        )
+        if raw is None:
+            raise WorkspaceSkillCensusIncomplete(f"workspace skill {folder!r} could not be read")
+        reading = _kas_reading(raw.decode("utf-8", errors="replace"))
+        if reading.unclosed and len(raw) > _FRONTMATTER_BYTES:
+            raise WorkspaceSkillCensusIncomplete(
+                f"workspace skill {folder!r} has front matter running past the "
+                f"{_FRONTMATTER_BYTES} bytes read"
+            )
+        # Only the name is denied by, so a name read cleanly beside another field
+        # of the wrong type still counts; a name Crew could not read does not.
+        if reading.unproven and reading.name is None:
+            raise WorkspaceSkillCensusIncomplete(
+                f"workspace skill {folder!r} has front matter Crew's reader refuses and KAS's may not"
+            )
+        if reading.name:
+            names.add(reading.name)
+    return frozenset(names)
 
 
 def _spec_globs(
@@ -272,13 +495,17 @@ def skill_scope_rules(
     *,
     work_dir: str | Path | None = None,
     also_allowed: frozenset[str] = frozenset(),
+    session_dir: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     """The ``permissions`` rules that hold a KAS session to the skills *globs* match.
 
     ``None`` (:func:`scope_globs`: a whole-catalog template, or a scope that is the
     default trees KAS already loads) adds nothing. An empty scope denies every skill.
     *also_allowed* are names in scope that *globs* do not show: the copies
-    :func:`refused_skill_copies` made.
+    :func:`refused_skill_copies` made. *session_dir* is the ``cwd`` the session
+    is created with, whose ``.kiro/skills`` KAS loads; *work_dir* when ``None``. A
+    sub-agent on its parent's runtime may run in another checkout than the
+    runtime's *work_dir*.
     """
     if globs is None:
         return []
@@ -290,9 +517,10 @@ def skill_scope_rules(
     in_scope = set(names)
     # Only literal names become ``match`` entries: KAS reads them as globs, so a
     # name like ``*`` would deny the in-scope skills too. Such a skill stays offered.
-    outside = sorted(
-        n for n in skill_names(_default_tree_globs(work_dir)) if n not in in_scope and _literal(n)
+    loaded = skill_names(_default_tree_globs(work_dir)) | _workspace_skill_names(
+        session_dir or work_dir
     )
+    outside = sorted(n for n in loaded if n not in in_scope and _literal(n))
     logger.info(
         "KAS skill scope maps %d skills, over the %d an exclude list may hold; "
         "denying the %d default-tree skills outside it by name instead",
@@ -437,9 +665,31 @@ def _load_one_yaml(matter: str) -> Any:
         loader.dispose()
 
 
+class _KasReading(NamedTuple):
+    """:func:`_kas_reading`'s answer for one skill file's text."""
+
+    front: dict[str, Any] | None
+    body: str
+    #: An opening fence with no closing one: KAS reads the whole file as front matter.
+    unclosed: bool
+    #: ``front`` is ``None`` from a step where Crew's reader is not KAS's: a language
+    #: whose name Crew trims differently, a YAML or JSON error, or a field of
+    #: another type. Such a ``None`` is no evidence that KAS refuses the skill.
+    unproven: bool
+    #: The front matter's ``name`` when the document read as a mapping whose ``name``
+    #: is a string, kept even when another field fails the schema, ``None`` otherwise.
+    name: str | None
+
+
 def _kas_front_matter(text: str) -> tuple[dict[str, Any] | None, str]:
     """KAS's reading of *text*: ``(front matter, body)``, the front matter ``None``
-    when KAS finds none or refuses it.
+    when KAS finds none or refuses it (:func:`_kas_reading`)."""
+    reading = _kas_reading(text)
+    return reading.front, reading.body
+
+
+def _kas_reading(text: str) -> _KasReading:
+    """KAS's reading of *text*, with what Crew cannot vouch for marked.
 
     Follows ``utils/front-matter`` (``extractFrontMatter`` and ``parseFrontMatter``
     with ``SkillFrontMatterSchema``): an opening ``---`` not followed by a fourth
@@ -452,7 +702,7 @@ def _kas_front_matter(text: str) -> tuple[dict[str, Any] | None, str]:
 
     text = text.removeprefix("\ufeff")
     if not text.startswith("---") or text[3:4] == "-":
-        return None, text
+        return _KasReading(None, text, False, False, None)
     rest = text[3:]
     newline = rest.find("\n")
     first = rest if newline == -1 else rest[:newline].removesuffix("\r")
@@ -460,32 +710,35 @@ def _kas_front_matter(text: str) -> tuple[dict[str, Any] | None, str]:
     if language:
         rest = rest[len(first) :]
     close = rest.find("\n---")
-    matter = rest if close == -1 else rest[:close]
+    unclosed = close == -1
+    matter = rest if unclosed else rest[:close]
     # No closing fence: KAS reads the whole text as front matter. The body is kept
     # whole for a copy, so a leading Markdown rule cannot erase the skill.
-    body = text if close == -1 else rest[close + 4 :].removeprefix("\r").removeprefix("\n")
+    body = text if unclosed else rest[close + 4 :].removeprefix("\r").removeprefix("\n")
     if _only_comments(matter):
-        return None, body
+        return _KasReading(None, body, unclosed, False, None)
     try:
         if language == "json":
             data = json.loads(matter)
         elif language in ("", "yaml", "yml"):
-            # shortcut: PyYAML reads YAML 1.1 (``yes`` is a bool) where js-yaml's
-            # CORE schema reads 1.2, and aliases are refused here; such a skill gets
-            # a copy KAS did not need. Swap in a 1.2 reader if one is reported.
+            # shortcut: PyYAML reads YAML 1.1 (``yes`` is a bool) where KAS's
+            # reader uses the 1.2 core schema, and aliases are refused here; such a
+            # skill gets a copy KAS did not need. Swap in a 1.2 reader if one is reported.
             data = _load_one_yaml(matter)
         else:
-            return None, body
+            # JavaScript's ``trim`` strips a U+FEFF that ``str.strip`` keeps.
+            return _KasReading(None, body, unclosed, True, None)
     except (ValueError, TypeError, RecursionError, yaml.YAMLError):
-        return None, body
+        return _KasReading(None, body, unclosed, True, None)
     if not isinstance(data, dict) or not data:
-        return None, body
+        return _KasReading(None, body, unclosed, False, None)
+    name = data["name"] if isinstance(data.get("name"), str) else None
     if any(
         k in data and not isinstance(data[k], str)
         for k in ("name", "description", "license", "compatibility")
     ) or ("metadata" in data and not isinstance(data["metadata"], dict)):
-        return None, body
-    return data, body
+        return _KasReading(None, body, unclosed, True, name)
+    return _KasReading(data, body, unclosed, False, name)
 
 
 def _utf16_len(text: str) -> int:
@@ -847,7 +1100,9 @@ def refused_skill_copies(
         if isinstance((front or {}).get("name"), str):
             authored.add(front["name"].strip())  # type: ignore[index]
         if _restricted_by_author(spec, authored):
-            logger.info("KAS skill %s is denied or asked under its own name; no copy", path)
+            logger.info(
+                "KAS skill %r is denied or asked under its own name; no copy", os.fspath(path)
+            )
             continue
         base = (
             _kas_name(str((front or {}).get("name") or ""))
@@ -874,7 +1129,9 @@ def refused_skill_copies(
                 weight=lambda _: len(str(target)) + len(written),
             )
         except OSError:
-            logger.warning("KAS skill copy of %s could not be written", path, exc_info=True)
+            logger.warning(
+                "KAS skill copy of %r could not be written", os.fspath(path), exc_info=True
+            )
             continue
         taken.add(name)
         copies.append(SkillCopy(name, f"skill://{target}"))
@@ -885,3 +1142,75 @@ def refused_skill_copies(
             ", ".join(c.name for c in copies),
         )
     return copies
+
+
+def _skill_scope(
+    agent: str,
+    spec: dict[str, Any],
+    spec_dir: Path,
+    work_dir: str | Path | None,
+    notices: list[str] | None = None,
+    *,
+    session_dir: str | Path | None = None,
+) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
+    """The ``skill`` deny rules and the extra ``skill://`` resources that give this
+    KAS session its kiro-cli skill set.
+
+    KAS loads ``~/.kiro/skills`` and the workspace's ``.kiro/skills`` for every
+    session on top of the agent's ``resources``; kiro-cli under Crew loads only the
+    scope Crew resolves (``acp/kas_skill_scope.py``). The resources are fixed
+    copies of in-scope skills KAS would drop (``refused_skill_copies``). A failure
+    here never costs the session, but it never widens the skill set either: when
+    the scope or its rules cannot be worked out, every skill is denied except the
+    copies already made, the error is logged, and *notices* gets one line.
+    *session_dir* is the session's own ``cwd``, whose workspace skills KAS loads
+    (``skill_scope_rules``); the scope itself is still read against *work_dir*.
+    """
+
+    def _failed(
+        copy_names: list[str], cause: Exception | None = None
+    ) -> tuple[dict[str, Any], ...]:
+        logger.warning(
+            "KAS skill scope for %r failed; the session gets no skill but its copies",
+            agent,
+            exc_info=True,
+        )
+        if notices is not None:
+            if str(cause) == _NO_SAFE_WALK:
+                advice = (
+                    "This platform cannot check this project's skills safely, "
+                    "so starting a new chat will not change that."
+                )
+            else:
+                advice = "Start a new chat to try again."
+            notices.append(
+                f"⚠ Crew could not work out which skills agent {agent} may use, "
+                f"so its skills are off for this session. {advice}"
+            )
+        rule: dict[str, Any] = {"capability": SKILL_CAPABILITY, "effect": "deny"}
+        # Only literal names can be ``exclude`` entries, and one rule holds a bounded
+        # list (``skill_scope_rules``); past it, the copies are denied too.
+        kept = sorted(n for n in copy_names if _literal(n))
+        if 0 < len(kept) <= _MAX_PATTERNS_PER_RULE:
+            rule["exclude"] = kept
+        return (rule,)
+
+    try:
+        globs = scope_globs(agent, spec, agents_dir=spec_dir, work_dir=work_dir)
+    except Exception:  # see the docstring: no scope, so no copies and no skill
+        return _failed([]), ()
+    try:
+        copies = refused_skill_copies(agent, spec, globs, agents_dir=spec_dir, work_dir=work_dir)
+    except Exception:  # see the docstring: the session runs without the copies
+        logger.warning("KAS skill copies for %r failed", agent, exc_info=True)
+        copies = []
+    try:
+        rules = skill_scope_rules(
+            globs,
+            work_dir=work_dir,
+            also_allowed=frozenset(c.name for c in copies),
+            session_dir=session_dir,
+        )
+    except Exception as exc:  # see the docstring: only the copies stay usable
+        return _failed([c.name for c in copies], exc), tuple(c.uri for c in copies)
+    return tuple(rules), tuple(c.uri for c in copies)
