@@ -55,6 +55,18 @@ def test_parse_reads_one_fact_per_line_and_drops_the_rest() -> None:
     assert skipped == 0
 
 
+def test_a_rule_underline_or_table_divider_is_not_a_fact() -> None:
+    text = "# Notes\n\n- likes strong tea\n***\n___\n* * *\n- - -\n=====\n|------|------|\n"
+    assert memory_import_text.parse_facts(text) == (["likes strong tea"], 0)
+
+
+def test_a_line_with_a_letter_or_digit_in_any_script_is_still_a_fact() -> None:
+    text = "- \u559c\u6b22\u559d\u8336\n- 1984\n- caf\u00e9 au lait\n- a | b\n"
+    facts, skipped = memory_import_text.parse_facts(text)
+    assert facts == ["\u559c\u6b22\u559d\u8336", "1984", "caf\u00e9 au lait", "a | b"]
+    assert skipped == 0
+
+
 def test_a_long_file_is_offered_in_runs_after_known_facts_are_left_out(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
