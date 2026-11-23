@@ -314,8 +314,12 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
         flags = {"recurse": False, "whatif": False, "force": False}
         operands: list[str] = []
         waiting = ""  # the role of a parameter whose value is the next word
+        done = False  # after ``--`` every word is a path, ``-WhatIf`` and ``-Exclude`` too
         for arg in args:
-            if waiting or arg[:1] != "-" or arg == "-":
+            if arg == "--" and not waiting and not done:
+                done = True
+                continue
+            if done or waiting or arg[:1] != "-" or arg == "-":
                 if waiting in ("", "path"):
                     operands.extend(arg.split(","))  # ``C:\,D:\`` is a list of two paths
                 waiting = ""
@@ -342,8 +346,11 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
 
 
 def _ps_previews(args: "list[str]") -> bool:
-    """A word of *args* binds ``-WhatIf`` (not ``-WhatIf:$false``): the delete only previews."""
+    """A word of *args* before ``--`` binds ``-WhatIf`` (not ``-WhatIf:$false``): the delete
+    only previews. After ``--`` both shells read it as a file name."""
     for arg in args:
+        if arg == "--":
+            return False
         param, glued, value = arg[1:].partition(":") if arg[:1] == "-" else ("", "", "")
         if _ps_param(param.lower()) == "whatif":
             return not glued or value.lower() not in ("$false", "0")

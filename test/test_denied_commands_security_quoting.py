@@ -1388,6 +1388,12 @@ class TestWindowsRespellings:
         r"rm -Recurse -Force ~",
         r"RM -rec -FO D:/",
         r"rm -rf C:/ -WhatIf:$false",
+        r"rm -rf -- ~ -WhatIf",  # after -- a -WhatIf is a file name, not a preview
+        r"rm.exe -rf -- C:/ -wi",
+        r"bash -c 'rm.exe -r -f -- -WhatIf ~'",
+        r"Remove-Item -Recurse -Force C:/ -- -WhatIf",  # PowerShell binds it as a path
+        r"Remove-Item -Recurse -Force ./build -- -Exclude ~",
+        r"rm -Recurse -Force ~ -- -WhatIf",
         r"rmdir /s /q C:\ ",
         r"rd /S/Q C:\ ",
         r"del /s /q C:\* ",
