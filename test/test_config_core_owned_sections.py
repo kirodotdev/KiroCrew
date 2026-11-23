@@ -129,6 +129,36 @@ class TestCoreOwnedSectionsAreNotUnrecognized:
         warnings = _unrecognized_warnings(caplog)
         assert warnings and "connections" in warnings[0]
 
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    def test_channel_presets_list_is_not_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        data = {
+            "agent": {"provider": "acp"},
+            "channel_presets": [{"name": "ship-update", "text": "shipped"}],
+        }
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data(data)
+        assert _unrecognized_warnings(caplog) == []
+
+    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
+    @pytest.mark.parametrize("malformed", ["preset", {"name": "x"}, 7, None])
+    def test_a_non_list_channel_presets_value_still_warns(
+        self, malformed: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The exclusion covers the shape the reader keeps -- a list, not a dict.
+
+        ``_load_presets`` keeps only a list and falls back to built-in presets on
+        anything else (a dict included), so a non-list written by hand must keep
+        the one warning that says it is being ignored.
+        """
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            validation.validate_config_data(
+                {"agent": {"provider": "acp"}, "channel_presets": malformed}
+            )
+        warnings = _unrecognized_warnings(caplog)
+        assert warnings and "channel_presets" in warnings[0]
+
 
 class TestCoreOwnedSectionsRoundTrip:
     def test_voice_reply_section_survives_load_and_to_dict(self, tmp_path, monkeypatch) -> None:
@@ -144,20 +174,36 @@ class TestCoreOwnedSectionsRoundTrip:
         assert cfg._extra_sections.get("voice_reply") == vr
         assert cfg.to_dict().get("voice_reply") == vr
 
+    def test_channel_presets_list_survives_load_and_to_dict(self, tmp_path, monkeypatch) -> None:
+        """A list-shaped core-owned section must also round-trip, not be dropped."""
+        presets = [{"name": "ship-update", "text": "shipped"}]
+        cfgp = tmp_path / "config.json"
+        cfgp.write_text(json.dumps({"agent": {"provider": "acp"}, "channel_presets": presets}))
+        monkeypatch.setattr(L, "config_path", lambda: cfgp)
+        monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(L, "config_local_path", lambda: tmp_path / "config.local.json")
+
+        cfg = KiroCrewConfig.load()
+        assert cfg._extra_sections.get("channel_presets") == presets
+        assert cfg.to_dict().get("channel_presets") == presets
+
     def test_set_is_disjoint_from_known_reserved_and_app_owned(self) -> None:
         """A key in two sets would be classified two ways by the same loader."""
-        assert not (validation._CORE_OWNED_TOP_KEYS & set(_KNOWN_CONFIG_SECTIONS))
-        assert not (validation._CORE_OWNED_TOP_KEYS & CONFIG_RESERVED_TOP_KEYS)
-        assert not (validation._CORE_OWNED_TOP_KEYS & validation._APP_OWNED_TOP_KEYS)
+        for owned in (validation._CORE_OWNED_TOP_KEYS, validation._CORE_OWNED_TOP_LIST_KEYS):
+            assert not (owned & set(_KNOWN_CONFIG_SECTIONS))
+            assert not (owned & CONFIG_RESERVED_TOP_KEYS)
+            assert not (owned & validation._APP_OWNED_TOP_KEYS)
+        assert not (validation._CORE_OWNED_TOP_KEYS & validation._CORE_OWNED_TOP_LIST_KEYS)
 
 
 class TestEveryCoreOwnedKeyHasAReader:
     """The set is a claim that core reads the key; pin the claim to the reader."""
 
     def test_members_are_exactly_the_documented_readers(self) -> None:
-        # Extend this tuple together with validation._CORE_OWNED_TOP_KEYS and
-        # add a reader test below; a member with no reader test is a silenced typo.
+        # Extend these together with the validation sets and add a reader test
+        # below; a member with no reader test is a silenced typo.
         assert validation._CORE_OWNED_TOP_KEYS == frozenset({"voice_reply", "connections", "sel"})
+        assert validation._CORE_OWNED_TOP_LIST_KEYS == frozenset({"channel_presets"})
 
     def test_sel_keep_is_read_by_the_segment_retention(self, tmp_path) -> None:
         from kiro_crew.sel_rotation import _read_operator_keep
@@ -201,3 +247,13 @@ class TestEveryCoreOwnedKeyHasAReader:
         load_voice_reply_config(cfg)
         assert fresh_vc.global_enabled is True
         assert fresh_vc.default_voice == "Matthew"
+
+    def test_channel_presets_is_read_by_load_presets(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.dashboard import handlers_channel
+
+        presets = [{"name": "ship-update", "text": "shipped"}]
+        cfgp = tmp_path / "config.json"
+        cfgp.write_text(json.dumps({"agent": {"provider": "acp"}, "channel_presets": presets}))
+        monkeypatch.setattr(handlers_channel, "config_path", lambda: cfgp)
+        monkeypatch.setattr(handlers_channel, "_presets_cache", None, raising=False)
+        assert handlers_channel._load_presets() == presets
