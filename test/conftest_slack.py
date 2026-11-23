@@ -65,6 +65,29 @@ def _reset_code_channel_audience():
 
 
 @per_test_guard
+def _reset_thread_board():
+    """Forget the Conductor-thread board's refresh state (its running refreshes, the
+    rooms asked to run again and the newest binding each trigger carried).
+
+    ``kiro_crew.slack.code_channels.board.thread_board`` keeps them process-global,
+    keyed by room, and tests reuse channel and anchor ids, so one left over would
+    coalesce the next test's refresh into a finished one. Looked up in
+    ``sys.modules`` so a run that never imported it pays nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.code_channels.board.thread_board")
+        if module is not None:
+            module.reset_for_tests()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _enterprise_bypass(_floor_monkeypatch) -> None:
     """Set a default validated team_id so _route_message doesn't reject messages."""
     _floor_monkeypatch.setattr("kiro_crew.slack.enterprise._validated_team_id", "TTEST")

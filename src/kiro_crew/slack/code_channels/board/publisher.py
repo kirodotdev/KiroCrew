@@ -46,7 +46,7 @@ from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import surface
 from kiro_crew.slack.code_channels.board import model, render
 from kiro_crew.slack.code_channels.store import Binding
-from kiro_crew.slack.code_channels.surface_store import get_async, update_async
+from kiro_crew.slack.code_channels.surface_store import get_async, room_key, update_async
 from kiro_crew.slack.retry import _retry_after_secs, is_retryable_slack_error
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,7 @@ def digest(
     links: dict[str, str],
     look: str = "plan",
     tabs: render.Tabs | None = None,
+    brief: bool = False,
 ) -> str:
     """What the board SHOWS, hashed: its rendered blocks, without the "Updated" stamp.
 
@@ -90,6 +91,7 @@ def digest(
         updated="",
         look=look,
         tabs=tabs,
+        brief=brief,
     )
     payload = {"blocks": blocks, "text": render.fallback_text(snapshot)}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
@@ -139,16 +141,22 @@ async def publish(
     slack = surface.slack()
     if slack is None:
         return "no_slack"
-    channel = binding.channel_id
+    channel = binding.channel_id  # Slack's id, for every call to Slack
+    room = room_key(binding)  # the key every per-board record is kept under
+    thread = getattr(binding, "thread", False) is True
+    anchor = binding.anchor_ts if thread else ""
     if await surface.is_archived(binding):
         return "archived"
-    if surface.channel_stopped(channel):
+    if surface.channel_stopped(room):
         return "stopped"
     if not await surface.outbound_permitted():
         surface.audit(
-            "slack", "slack.code_channel.board", "denied", f"channel={channel}", "channels policy"
+            "slack", "slack.code_channel.board", "denied", f"channel={room}", "channels policy"
         )
         return "denied"
+    if thread:
+        # Read by whoever reads the thread: what a worker said or ran goes no further.
+        snapshot = render.brief_snapshot(snapshot)
     links = {r.session_key: link_for(r.session_key) for r in snapshot.rows if r.session_key}
     conductor_link = link_for(binding.session_key) if binding.session_key else ""
     links["@conductor"] = conductor_link
@@ -156,29 +164,29 @@ async def publish(
     def _link(key: str) -> str:
         return links.get(key, "")
 
-    record = await get_async(channel)
+    record = await get_async(room)
     from kiro_crew.slack.code_channels.board import stops
 
     # The last await before rendering: a worker that moved to a newer turn
     # meanwhile is not shown as stopped.
     snapshot = stops.reconcile(snapshot)
-    ts = _unsaved_ts.get(channel) or (record.board_ts if record else "")
+    ts = _unsaved_ts.get(room) or (record.board_ts if record else "")
     pinned = bool(record.board_pinned) if record else False
     done = ""
     now = _clock()
-    hold = _not_before.get(channel, now) - now
+    hold = _not_before.get(room, now) - now
     if hold > 0:
         # A failure's backoff or Slack's Retry-After is not over: nothing is sent,
         # and the refresh is armed again for when it is.
-        _retry_at[channel] = max(_retry_at.get(channel, 0.0), hold)
+        _retry_at[room] = max(_retry_at.get(room, 0.0), hold)
         return "deferred"
-    look = "rows" if channel in _plan_refused else "plan"
-    if channel in _tabs_refused:
+    look = "rows" if room in _plan_refused else "plan"
+    if room in _tabs_refused:
         tabs = None
-    new_digest = digest(snapshot, links, look, tabs)
+    new_digest = digest(snapshot, links, look, tabs, thread)
     changed = not ts or record is None or record.board_digest != new_digest
     active = any(row.state in model.ACTIVE_STATES for row in snapshot.rows)
-    last = _last_edit.get(channel)
+    last = _last_edit.get(room)
     # A live board whose "Updated" stamp went stale is edited even unchanged.
     stale = bool(ts) and active and (last is None or now - last >= STALE_SECS)
     if (
@@ -189,7 +197,7 @@ async def publish(
         and now - last < MIN_EDIT_GAP_SECS
     ):
         # A busy board is edited at most once per gap: the latest state then.
-        _retry_at[channel] = MIN_EDIT_GAP_SECS - (now - last)
+        _retry_at[room] = MIN_EDIT_GAP_SECS - (now - last)
         changed = stale = False
         done = "deferred"
     if changed or stale:
@@ -207,9 +215,12 @@ async def publish(
                 look=look,
                 block_seed=uuid.uuid4().hex[:12],
                 tabs=tabs,
+                brief=thread,
             )
             try:
-                sent = await _send(slack, channel, ts, text, blocks, admits)
+                sent = await _send(
+                    slack, channel, ts, text, blocks, admits, room=room, thread_ts=anchor
+                )
                 if sent is None:
                     # The send gate refused it after the awaits above.
                     return "out_of_scope" if not _still(admits) else "stopped"
@@ -229,93 +240,108 @@ async def publish(
                     logger.warning(
                         "code channel %s: Slack refused the board with tab links (%s); "
                         "sending it without them",
-                        channel,
+                        room,
                         code,
                     )
                     tabs = None
-                    new_digest = digest(snapshot, links, look, tabs)
+                    new_digest = digest(snapshot, links, look, tabs, thread)
                     continue
                 if look == "plan" and code in _PLAN_REFUSED:
                     # This client or workspace takes no plan block: the mrkdwn
                     # rows from now on, sent at once, so the board never goes stale.
                     if len(_plan_refused) > _MAX_TRACKED:
                         _plan_refused.clear()
-                    _plan_refused.add(channel)
+                    _plan_refused.add(room)
                     logger.warning(
                         "code channel %s: Slack refused the plan block (%s); "
                         "the board falls back to plain rows",
-                        channel,
+                        room,
                         code,
                     )
                     look = "rows"
-                    new_digest = digest(snapshot, links, look, tabs)
+                    new_digest = digest(snapshot, links, look, tabs, thread)
                     continue
                 if ts and code in _GONE:
                     ts, pinned = "", False
                     continue
-                return _failed(channel, "update" if ts else "post", exc)
+                return _failed(room, "update" if ts else "post", exc)
         if dropped_tabs and look == "plan":
-            _tabs_refused.add(channel)
+            _tabs_refused.add(room)
         if not ts or done != "updated":
             if not ts:
-                return _failed(channel, "post", None)
+                return _failed(room, "post", None)
             done = "reposted" if record and record.board_ts else "posted"
-            surface.audit(
-                "slack", "slack.code_channel.board", "allowed", f"channel={channel} ts={ts}"
-            )
-        _succeeded(channel, now)
-        if stops.reconcile(snapshot) != snapshot and surface.commit_if_not_stopped(channel):
+            surface.audit("slack", "slack.code_channel.board", "allowed", f"channel={room} ts={ts}")
+        _succeeded(room, now)
+        if stops.reconcile(snapshot) != snapshot and surface.commit_if_not_stopped(room):
             # A stopped worker started its next turn while the board went out, so
             # it still says "Stopped by": the pass armed here edits it again.
             new_digest = ""
-            _retry_at[channel] = max(_retry_at.get(channel, 0.0), MIN_EDIT_GAP_SECS)
+            _retry_at[room] = max(_retry_at.get(room, 0.0), MIN_EDIT_GAP_SECS)
         try:
-            await update_async(channel, board_ts=ts, board_digest=new_digest, board_pinned=pinned)
-            _unsaved_ts.pop(channel, None)
+            await update_async(room, board_ts=ts, board_digest=new_digest, board_pinned=pinned)
+            _unsaved_ts.pop(room, None)
         except Exception:
             # Slack holds this message: the next publish edits it, not a new one.
             if len(_unsaved_ts) > _MAX_TRACKED:
                 _unsaved_ts.clear()
-            _unsaved_ts[channel] = ts
-            logger.warning("code channel %s: board pointer not stored", channel, exc_info=True)
-    checked = _pin_checked.get(channel)
-    pin_due = checked is None or now - checked >= REPIN_SECS or _pin_newly_granted(channel)
-    if ts and pinned and active and pin_due:
-        # Someone may have unpinned it; pinning again is idempotent (already_pinned).
-        pinned = False
-    # A board just posted is pinned at once. One whose pin failed (an install
-    # that has not re-approved the manifest's ``pins:write``) is tried again
-    # only every REPIN_SECS, not on each publish -- or at once when the scope
-    # has been granted since.
-    fresh = done in ("posted", "reposted")
-    if ts and not pinned and (fresh or pin_due):
-        outcome = await _pin(slack, channel, ts, admits) if _writable(channel, admits) else None
-        if outcome is None:
-            # Refused at a send gate (a passing scope refusal, a Stop): nothing was
-            # tried, so the pin is due again on the next pass, not REPIN_SECS later.
-            _pin_checked.pop(channel, None)
-        else:
-            if len(_pin_checked) > _MAX_TRACKED:
-                _pin_checked.clear()
-            _pin_checked[channel] = now
-            pinned = outcome
-            _note_pin(channel, pinned)
-        if pinned:
-            try:
-                await update_async(channel, board_pinned=True)
-            except Exception:
-                logger.debug("code channel %s: pin flag not stored", channel, exc_info=True)
+            _unsaved_ts[room] = ts
+            logger.warning("code channel %s: board pointer not stored", room, exc_info=True)
+    if not thread:
+        # A thread's board is not pinned: ``pins:write`` is a code-channel scope, and
+        # a pin on a thread reply would surface in the whole channel.
+        checked = _pin_checked.get(room)
+        pin_due = checked is None or now - checked >= REPIN_SECS or _pin_newly_granted(room)
+        if ts and pinned and active and pin_due:
+            # Someone may have unpinned it; pinning again is idempotent (already_pinned).
+            pinned = False
+        # A board just posted is pinned at once. One whose pin failed (an install
+        # that has not re-approved the manifest's ``pins:write``) is tried again
+        # only every REPIN_SECS, not on each publish -- or at once when the scope
+        # has been granted since.
+        fresh = done in ("posted", "reposted")
+        if ts and not pinned and (fresh or pin_due):
+            outcome = await _pin(slack, channel, ts, admits) if _writable(channel, admits) else None
+            if outcome is None:
+                # Refused at a send gate (a passing scope refusal, a Stop): nothing was
+                # tried, so the pin is due again on the next pass, not REPIN_SECS later.
+                _pin_checked.pop(room, None)
+            else:
+                if len(_pin_checked) > _MAX_TRACKED:
+                    _pin_checked.clear()
+                _pin_checked[room] = now
+                pinned = outcome
+                _note_pin(room, pinned)
+            if pinned:
+                try:
+                    await update_async(room, board_pinned=True)
+                except Exception:
+                    logger.debug("code channel %s: pin flag not stored", room, exc_info=True)
     if ts:
-        await _record_link(slack, channel, ts)
-        await _record_summary(binding, ts, admits)
-        await _alert(slack, channel, ts, snapshot, _link, owner_id, admits, now=now)
+        if not thread:
+            # The permalink and the live summary are the context bar's and the
+            # channel's own (``agents.conversations.*``): a thread has neither.
+            await _record_link(slack, channel, ts)
+            await _record_summary(binding, ts, admits)
+        await _alert(
+            slack,
+            channel,
+            ts,
+            snapshot,
+            _link,
+            owner_id,
+            admits,
+            now=now,
+            room=room,
+            thread_ts=anchor,
+        )
     if ts and active:
         # The stamp's own deadline, from the last EDIT: the caller re-arms the
         # refresh for then, so a live board that nothing else moves is still
         # re-stamped about once a minute (a sooner gap or retry wins).
-        since = now - _last_edit.get(channel, now)
-        _retry_at.setdefault(channel, max(1.0, STALE_SECS - since))
-    if not surface.commit_if_not_stopped(channel):
+        since = now - _last_edit.get(room, now)
+        _retry_at.setdefault(room, max(1.0, STALE_SECS - since))
+    if not surface.commit_if_not_stopped(room):
         # Fenced after the board went out: its pin or pages wait for the pass
         # the refresh re-arms (``board.settle``), which finds them still owed.
         return "stopped"
@@ -594,8 +620,12 @@ def _writable(
     *,
     ts: str | None = None,
     thread_ts: str | None = None,
+    room: str | None = None,
 ) -> bool:
     """THE send gate of every board write (post, edit, pin, page): scope, then Stop.
+
+    *room* is the board's own key when it is not the channel (a Conductor thread):
+    the Stop fence is read under it, Slack's native Stop under the channel.
 
     Asked synchronously right before the raw send, with no await between: the
     raw client awaits nothing before its HTTP call, so what is checked here is
@@ -607,7 +637,7 @@ def _writable(
 
     return (
         _still(admits)
-        and surface.commit_if_not_stopped(channel)
+        and surface.commit_if_not_stopped(room or channel)
         and not fence.turn_muted(channel, thread_ts, ts=ts)
     )
 
@@ -619,19 +649,26 @@ async def _send(
     text: str,
     blocks: list,
     admits: Callable[[], bool] | None,
+    *,
+    room: str | None = None,
+    thread_ts: str = "",
 ) -> str | None:
     """Edit the board *ts* (or post it when ``""``); the posted ts, ``ts`` once edited.
 
+    A Conductor thread's board is posted into its thread (*thread_ts*, the anchor).
     ``None`` when the send gate (:func:`_writable`) refused it.
     """
+    # Only a Conductor thread names a room and a thread: a channel's calls are as before.
+    gate: dict[str, str] = {"room": room} if room and room != channel else {}
+    into: dict[str, str] = {"thread_ts": thread_ts} if thread_ts else {}
     if ts:
-        if not _writable(channel, admits, ts=ts):
+        if not _writable(channel, admits, ts=ts, **gate):
             return None
         await slack.update_message(channel, ts, text, blocks)
         return ts
-    if not _writable(channel, admits):
+    if not _writable(channel, admits, **into, **gate):
         return None
-    return str(await slack.post_blocks(channel, blocks, text) or "")
+    return str(await slack.post_blocks(channel, blocks, text, **into) or "")
 
 
 async def _pin(slack: Any, channel: str, ts: str, admits: Callable[[], bool] | None) -> bool | None:
@@ -658,11 +695,18 @@ async def _alert(
     admits: Callable[[], bool] | None = None,
     *,
     now: float,
+    room: str | None = None,
+    thread_ts: str = "",
 ) -> None:
-    """Thread one owner mention per waiting spell of an item (see :func:`alert_token`)."""
+    """Thread one owner mention per waiting spell of an item (see :func:`alert_token`).
+
+    Under the board message in a channel; in a Conductor thread (*thread_ts*, the
+    anchor) the reply goes into that thread, in its brief wording.
+    """
+    key = room or channel
     waiting = [row for row in snapshot.rows if row.needs_owner]
-    record = await get_async(channel)
-    unsaved = _unsaved_alerts.get(channel)
+    record = await get_async(key)
+    unsaved = _unsaved_alerts.get(key)
     if unsaved is not None:
         sent = list(unsaved)
     elif record:
@@ -678,7 +722,7 @@ async def _alert(
     fresh = [row for row in waiting if alert_token(row) not in sent]
     if len(_paged) > _MAX_TRACKED:
         _paged.clear()
-    paged = _paged.setdefault(channel, {})
+    paged = _paged.setdefault(key, {})
     # Only a page inside the gap still matters: older ones are let go, so the
     # map holds the items paged in the last minute, never the board's history.
     for item in [i for i, at in paged.items() if now - at >= PAGE_GAP_SECS]:
@@ -687,16 +731,23 @@ async def _alert(
         gap = PAGE_GAP_SECS - (now - paged.get(row.item_id, now - PAGE_GAP_SECS))
         if gap > 0:
             # Too soon after this item's last page: the next pass sends it.
-            _retry_at[channel] = min(_retry_at.get(channel, gap), gap)
+            _retry_at[key] = min(_retry_at.get(key, gap), gap)
             continue
-        if not _writable(channel, admits, thread_ts=board_ts):
+        if not _writable(
+            channel,
+            admits,
+            thread_ts=thread_ts or board_ts,
+            **({"room": room} if room and room != channel else {}),
+        ):
             break  # the channel stopped admitting the board, or was stopped: no more mentions
         try:
             await slack.post_message(
-                channel, render.needs_you_text(row, owner_id, link_for), thread_ts=board_ts
+                channel,
+                render.needs_you_text(row, owner_id, link_for, brief=bool(thread_ts)),
+                thread_ts=thread_ts or board_ts,
             )
         except Exception as exc:
-            logger.info("code channel %s: needs-you reply failed: %s", channel, _code(exc) or exc)
+            logger.info("code channel %s: needs-you reply failed: %s", key, _code(exc) or exc)
             continue
         sent.append(alert_token(row))
         paged[row.item_id] = _page_time()  # the gap runs from when Slack took the page
@@ -704,15 +755,15 @@ async def _alert(
             "slack",
             "slack.code_channel.board_alert",
             "allowed",
-            f"channel={channel} item={row.item_id}",
+            f"channel={key} item={row.item_id}",
         )
     if fresh or cleared:
         try:
-            await update_async(channel, board_alerts=sent[-MAX_ALERTS:])
-            _unsaved_alerts.pop(channel, None)
+            await update_async(key, board_alerts=sent[-MAX_ALERTS:])
+            _unsaved_alerts.pop(key, None)
         except Exception:
             # The mentions were sent: the next publish must not send them again.
             if len(_unsaved_alerts) > _MAX_TRACKED:
                 _unsaved_alerts.clear()
-            _unsaved_alerts[channel] = sent[-MAX_ALERTS:]
-            logger.debug("code channel %s: alert tokens not stored", channel, exc_info=True)
+            _unsaved_alerts[key] = sent[-MAX_ALERTS:]
+            logger.debug("code channel %s: alert tokens not stored", key, exc_info=True)
