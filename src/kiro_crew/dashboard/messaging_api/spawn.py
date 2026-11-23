@@ -244,22 +244,11 @@ def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
 
 
 def _kiro_cli_pick(backend: str | None, available: list[str]) -> str | None:
-    """*backend*, or the KAS id when it is the Kiro CLI id and a Kiro CLI pick loads as KAS.
+    """*backend*, moved onto KAS where a Kiro CLI pick runs there (one rule for every
+    requested backend: :func:`~kiro_crew.agent_sdk.backends.requested_kiro_pick`)."""
+    from kiro_crew.agent_sdk.backends import requested_kiro_pick
 
-    A requested ``"kiro"`` follows the rule a stored Kiro CLI pick follows
-    (:func:`~kiro_crew.agent_sdk.backends.kiro_cli_pick_backend`): it runs kiro-cli's
-    v3 engine through KAS once this host confirmed kiro-cli offers it and KAS is
-    selectable, and it keeps the v2 launch otherwise. KAS must also be able to start
-    here (*available*), so a KAS this machine cannot run never replaces a Kiro CLI
-    that can.
-    """
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO, kiro_cli_pick_backend
-
-    if backend == ACP_BACKEND_KIRO:
-        picked = kiro_cli_pick_backend()
-        if picked in available:
-            return picked
-    return backend
+    return requested_kiro_pick(backend, available)
 
 
 async def _requested_backend(

@@ -104,7 +104,7 @@ def opted_out(spec: dict[str, Any], server: str) -> bool:
 
     Each of these says so: ``managedToolPolicy.excludeServers`` naming it;
     ``excludedTools`` naming ``@<server>``, ``@<server>/*``, or the wildcards ``@*``
-    (every MCP server) and ``*`` (every tool); or a ``permissions`` rule that denies
+    and ``@mcp`` (every MCP server) and ``*`` (every tool); or a ``permissions`` rule that denies
     the ``mcp`` (or ``all``) capability with no ``exclude`` carve-out, for every
     resource or for ``<server>/*``. A per-tool exclusion or deny
     (``@kirocrew-core/spawn_run``) is not an opt-out: the server mounts and the
@@ -121,7 +121,8 @@ def opted_out(spec: dict[str, Any], server: str) -> bool:
             return True
     excluded = spec.get("excludedTools")
     if isinstance(excluded, list):
-        if any(e in excluded for e in ("@*", "*", f"@{server}", f"@{server}/*")):
+        # ``@mcp`` is KAS's own name for every MCP tool, which a v3 agent file may use.
+        if any(e in excluded for e in ("@*", "@mcp", "*", f"@{server}", f"@{server}/*")):
             return True
     return _permissions_deny_server(spec.get("permissions"), server)
 

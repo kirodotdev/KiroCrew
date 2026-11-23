@@ -424,7 +424,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import FrozenSet, Set
+from typing import FrozenSet, Iterable, Set
 
 logger = logging.getLogger(__name__)
 
@@ -1306,6 +1306,23 @@ def kiro_cli_pick_backend() -> str:
     if _kiro_cli_offers_kas and KIRO_SELECTION_BACKEND in selectable_backends():
         return KIRO_SELECTION_BACKEND
     return ACP_BACKEND_KIRO
+
+
+def requested_kiro_pick(backend: str | None, available: Iterable[str]) -> str | None:
+    """*backend*, or the id a Kiro CLI pick loads as when *backend* is the Kiro CLI id.
+
+    For a backend a caller names for one run (``spawn_run(backend=...)``, a
+    workflow step's ``backend=``): a requested ``"kiro"`` follows the rule a stored
+    pick follows (:func:`kiro_cli_pick_backend`), so it runs kiro-cli's v3 engine
+    through KAS where a saved Kiro CLI choice would. The answer must also be in
+    *available* (what can start here), so a KAS this host cannot run never
+    replaces a Kiro CLI that can.
+    """
+    if backend == ACP_BACKEND_KIRO:
+        picked = kiro_cli_pick_backend()
+        if picked in available:
+            return picked
+    return backend
 
 
 # ── Capability membership (harness-parity H6, H7) ──
