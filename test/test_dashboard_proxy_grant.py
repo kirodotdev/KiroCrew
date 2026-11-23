@@ -136,6 +136,39 @@ def test_revoke_removes_the_record_and_the_stand_in_source(records, installed):
     assert not list((records / "member-records/app-dashboard-proxy").iterdir())
 
 
+def test_a_revoke_with_no_grant_on_disk_writes_nothing(records, installed, monkeypatch):
+    """Disabling an app that never held the grant (every built-in, at each boot) touches no
+    disk: no tombstone is written or fsynced, and the revoke still answers ``True``."""
+    writes: list[str] = []
+    real = dashboard_proxy._put_grant_tombstone
+
+    def _spy(app_name, **kwargs):
+        writes.append(app_name)
+        return real(app_name, **kwargs)
+
+    monkeypatch.setattr(dashboard_proxy, "_put_grant_tombstone", _spy)
+    assert dashboard_proxy.revoke(_APP) is True
+    assert writes == []
+    assert not dashboard_proxy._tombstone_path(_APP, ".grant").exists()
+    assert dashboard_proxy.granted(_APP) is False
+
+
+def test_a_revoke_with_a_grant_on_disk_still_writes_its_tombstone(records, installed, monkeypatch):
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
+    assert dashboard_proxy.grant(_APP)[0] is True
+    writes: list[str] = []
+    real = dashboard_proxy._put_grant_tombstone
+
+    def _spy(app_name, **kwargs):
+        writes.append(app_name)
+        return real(app_name, **kwargs)
+
+    monkeypatch.setattr(dashboard_proxy, "_put_grant_tombstone", _spy)
+    assert dashboard_proxy.revoke(_APP) is True
+    assert writes == [_APP]
+    assert dashboard_proxy._tombstone_path(_APP, ".grant").exists()
+
+
 @pytest.fixture
 def forged_apps(records, tmp_path, monkeypatch):
     """An app tree whose ``installed.json`` claims a registry install the gateway never made."""
@@ -462,16 +495,20 @@ def test_a_grant_whose_tombstone_cannot_be_cleared_is_refused_and_stays_off(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits do not exist on Windows")
 def test_the_tombstone_leaf_is_private_to_the_owner_user(records, installed):
-    """A first revoke on a fresh home makes the leaf 0o700, as ``sandbox_precreate`` does."""
+    """A first revoke of a held grant on a fresh home makes the leaf 0o700, as
+    ``sandbox_precreate`` does."""
     import os
     import stat
 
     leaf = records.resolve() / dashboard_proxy._TOMBSTONE_LEAF
+    dashboard_proxy.set_gateway_secret("gateway-secret-in-words")
     old = os.umask(0o022)  # the gateway may run with a looser umask than a worker shell
     try:
+        assert dashboard_proxy.grant(_APP)[0] is True
         assert dashboard_proxy.revoke(_APP) is True
         assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
         leaf.chmod(0o755)  # a leaf an older gateway made wider
+        assert dashboard_proxy.grant(_APP)[0] is True
         assert dashboard_proxy.revoke(_APP) is True
         assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
     finally:

@@ -541,6 +541,23 @@ def grant(app_name: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _grant_on_disk(app_name: str) -> bool:
+    """Whether a grant record or its stand-in source may exist for *app_name*.
+
+    An error reading either path counts as present, so a revoke then writes its tombstone
+    (fail closed).
+    """
+    for suffix in (".json", _STAND_IN_SUFFIX):
+        try:
+            os.lstat(_path(app_name, suffix))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return True
+        return True
+    return False
+
+
 def revoke(app_name: str) -> bool:
     """End the grant. ``False`` when the tombstone could not be written.
 
@@ -552,6 +569,9 @@ def revoke(app_name: str) -> bool:
     ``False``. A no-op when none exists.
     """
     _mark(_ended_grants, app_name, True)
+    if not _grant_on_disk(app_name):
+        # Nothing stands that a restart could bring back, so nothing to write or fsync.
+        return True
     tombstoned = _put_grant_tombstone(
         app_name, active=True, ended_id=_stored_grant_id(app_name) or ""
     )
