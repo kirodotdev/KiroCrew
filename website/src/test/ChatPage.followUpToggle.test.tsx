@@ -525,6 +525,19 @@ describe('ChatPage discussion-card sends (a deliberate press: sent whatever Quic
     expect(composer().value).toBe('')
   })
 
+  it('leaves a file staged in the chat box out of the card\'s send, and staged', async () => {
+    ;(api.uploadFiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ paths: ['/up/staged.png'] })
+    await renderPage()
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [new File(['x'], 'staged.png', { type: 'image/png' })] } })
+    await waitFor(() => expect(screen.getByRole('group', { name: '/up/staged.png' })).toBeTruthy())
+    expect(cardSend('Start the discussion\nQuestion: x', 'chat-1', ['/up/a.png'])).toBe('pending')
+    await waitFor(() => expect(cardOutcomes).toEqual(['sent']))
+    const calls = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls[0][0]).toContain('![image](/up/a.png)')
+    expect(JSON.stringify(calls)).not.toContain('staged.png')
+    expect(screen.getByRole('group', { name: '/up/staged.png' })).toBeTruthy()
+  })
+
   it('stages the card\'s pictures beside its text while offline', async () => {
     const store = await renderPage()
     act(() => { store.dispatch(sseDisconnected(null)) })

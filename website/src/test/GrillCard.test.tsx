@@ -75,6 +75,15 @@ describe('GrillCard', () => {
     expect(screen.getByTestId('grill-card-sent').textContent).toBe('Sent.')
   })
 
+  it('drops the resize handle from a locked field', () => {
+    render(<GrillCard grill={GRILL} slotKey="s1" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }))
+    for (const name of ['Question', 'Must', 'Not discussing']) {
+      expect(screen.getByLabelText(name)).toBeDisabled()
+      expect(screen.getByLabelText(name)).toHaveClass('disabled:resize-none')
+    }
+  })
+
   it('sends the decline text, locks on this page only, and writes nothing to storage', () => {
     const { unmount } = render(<GrillCard grill={GRILL} slotKey="s1" />)
     fireEvent.click(screen.getByRole('button', { name: 'No thanks' }))
