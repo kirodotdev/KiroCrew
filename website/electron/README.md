@@ -478,16 +478,18 @@ left as the user set it.
   (`chromium-sandbox-notice.js`).
 - External links open in your default browser
 - **`kirocrew://` links.** The installer registers the scheme, and `deep-link.js`
-  accepts exactly five shapes, refusing everything else with a logged reason:
+  accepts exactly six shapes, refusing everything else with a logged reason:
   `kirocrew://` (bring the window forward), `kirocrew://chat?sid=<slot key>`
   (open that session; what `kirocrew open` builds),
   `kirocrew://chat?crew=<crew id>&sid=<slot key>` (open that session on a
   remote crew), `kirocrew://apps/detail/<name>` (show that app's detail page,
   so a companion program can send the user to its app without a walk through
-  the store) and
+  the store),
   `kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]`
   (open Settings → Remote Crew with its add form filled in, so a page listing
-  the user's machines can hand one over). The
+  the user's machines can hand one over) and
+  `kirocrew://members[?member=<name>]` (open the Bots page, on the Bot whose
+  roster `name`, its config key, is `<name>` when one is given). The
   route is rebuilt from the validated pieces, never copied from the URL, and a
   link only navigates: the detail page takes its install, update and enable
   trigger from router state, never from a URL, and the add link's values reach
@@ -495,7 +497,13 @@ left as the user set it.
   user's. The add link is capped at 8192 characters, takes each of its four keys
   once and no other, checks the host with a copy of the gateway's
   `validate_ssh_host` (`test/fixtures/ssh-host-samples.json` keeps the two
-  agreeing), and fills in fields only: saving is the user's Add click.
+  agreeing), and fills in fields only: saving is the user's Add click. A members
+  link takes one `member` key, percent-encoded, and opens the Bot as a roster
+  click does, including the first greeting a new Bot still owes. Its name
+  check admits every name the gateway can hold. It refuses control and
+  line-break characters and every format character except four shaping marks
+  (ZWNJ, ZWJ, LRM, RLM), which pass only where the gateway keeps them, beside
+  non-ASCII text (`test/fixtures/member-name-samples.json`).
   `deep-link-handler.js` holds a link until the dashboard document reports
   `navigate-ready`, and `main.js` sends it through the same `navigate` IPC as
   the native menu's Settings and About.

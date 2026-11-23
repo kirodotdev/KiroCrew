@@ -39,6 +39,7 @@ vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => null }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
 vi.mock('../pages/AppDetailPage', () => ({ default: () => <div data-testid="app-detail-page">AppDetailPage</div> }))
+vi.mock('../pages/members/MembersPage', () => ({ default: () => <div data-testid="members-page">MembersPage</div> }))
 vi.mock('../pages/SettingsPage', () => ({ default: () => <div data-testid="settings-page">SettingsPage</div> }))
 // The page at risk, with the REAL SidePanelLayout inside it: the pane is mounted
 // conditionally on `?tab=`, which is what makes a dropped query string an
@@ -167,6 +168,7 @@ const typeDraft = (value: string) =>
   fireEvent.change(screen.getByLabelText('draft'), { target: { value } })
 const draftValue = () => (screen.getByLabelText('draft') as HTMLInputElement).value
 const paneReady = () => waitFor(() => expect(screen.getByLabelText('draft')).toBeInTheDocument())
+const LAZY_PAGE_TIMEOUT_MS = 5000
 
 describe('sidebar navigation leave guard', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
@@ -550,6 +552,40 @@ describe('native app-menu navigation leave guard', () => {
     typeDraft('half-written prompt')
     await waitFor(() => expect(nativeHandler).not.toBeNull())
     act(() => { nativeHandler!('/apps/detail/demo-app') })
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(screen.getByTestId('router-location').textContent).toBe('/capabilities?tab=drafts')
+    expect(draftValue()).toBe('half-written prompt')
+  })
+
+  it('brings the local Crew forward over a Remote Crew pane for a Bots page link', async () => {
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!('/members?member=code-reviewer') })
+    expect(store.getState().instances.activeId).toBeNull()
+    await waitFor(() => expect(screen.getByTestId('router-location').textContent).toBe('/members?member=code-reviewer'))
+    // The /members route renders MembersPage through React.lazy behind Suspense.
+    expect(await screen.findByTestId('members-page', undefined, { timeout: LAZY_PAGE_TIMEOUT_MS })).toBeInTheDocument()
+  })
+
+  it('shows a Bots page link\'s leave prompt on the local Crew and keeps the page when declined', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    typeDraft('half-written prompt')
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!('/members?member=fixer') })
     expect(confirmSpy).toHaveBeenCalled()
     expect(store.getState().instances.activeId).toBeNull()
     expect(screen.getByTestId('router-location').textContent).toBe('/capabilities?tab=drafts')

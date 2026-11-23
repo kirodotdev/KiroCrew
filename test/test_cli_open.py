@@ -6,8 +6,9 @@ The slot-key grammar lives twice -- here in Python and in
 can import the other. The pin test at the bottom reads the JavaScript source and
 asserts the two regexes are byte-identical, so a change to one without the other
 goes red here. The same class pins the resolver's other copies of a Python rule:
-the app-name grammar, and the SSH host and crew-name rules its
-``kirocrew://remote-crew/add`` shape checks.
+the app-name grammar, the SSH host and crew-name rules its
+``kirocrew://remote-crew/add`` shape checks, and the Bot name cap and samples
+its ``kirocrew://members`` shape checks.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import cli_open
+from kiro_crew import cli_open, members
 from kiro_crew.apps import manifest_names
 from kiro_crew.cli_open import DeepLinkError, build_deep_link, open_url
 from kiro_crew.instances import registry as instances_registry
@@ -33,6 +34,9 @@ _APP_NAME_SAMPLES = (
 )
 _SSH_HOST_SAMPLES = (
     _REPO_ROOT / "website" / "electron" / "test" / "fixtures" / "ssh-host-samples.json"
+)
+_MEMBER_NAME_SAMPLES = (
+    _REPO_ROOT / "website" / "electron" / "test" / "fixtures" / "member-name-samples.json"
 )
 
 
@@ -239,3 +243,17 @@ class TestGrammarAgreesWithTheElectronResolver:
         # A crew link names a crew by its registry id; a drifted copy would turn a
         # valid crew into an "unknown crew" error. JS `$` stands for Python `\Z`.
         assert _js_regex("CREW_ID_RE") == _ID_RE.pattern.replace("\\Z", "$")
+
+    def test_member_name_samples_agree_with_the_readable_member_rule(self):
+        # deep-link.js checks a members link's name with ``isMemberName``, which
+        # must admit every name the gateway can hold; deep-link.test.js runs the
+        # same samples through it.
+        samples = json.loads(_MEMBER_NAME_SAMPLES.read_text(encoding="utf-8"))
+        assert samples["readable"] and samples["refused"]
+        for name in samples["readable"]:
+            assert members.is_readable_member_name(name), repr(name)
+        for name in samples["refused"]:
+            assert not members.is_readable_member_name(name), repr(name)
+
+    def test_member_name_length_cap_is_the_gateway_cap(self):
+        assert _js_int("MEMBER_NAME_MAX_LENGTH") == members.MEMBER_NAME_MAX_CHARS
