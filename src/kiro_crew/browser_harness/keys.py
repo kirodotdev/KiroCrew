@@ -1,8 +1,9 @@
 """The keys and modifiers the ``browser`` tool may press.
 
-``press_key``, ``type {steps}`` and ``reflex {keys}`` all check a key against
-:data:`NAMED_KEYS` (or a single character), and ``press_key`` and ``click`` turn
-``modifiers`` into CDP's bitmask with :func:`modifier_mask`.
+``press_key``, ``dispatch_key``, ``type {steps}`` and ``reflex {keys}`` all check a key
+against :data:`NAMED_KEYS` (or a single character) and refuse any other with
+:func:`unknown_key_error`, and ``press_key`` and ``click`` turn ``modifiers`` into
+CDP's bitmask with :func:`modifier_mask`.
 """
 
 from __future__ import annotations
@@ -58,3 +59,13 @@ def modifier_mask(modifiers: Any) -> int:
 def known_key(key: Any) -> bool:
     """A named key or a single character: what ``press_key`` accepts."""
     return isinstance(key, str) and (key == "Space" or key in NAMED_KEYS or len(key) == 1)
+
+
+def unknown_key_error(key: Any) -> str:
+    """The error for a key that is neither a named key nor one character: the forms it takes."""
+    return (
+        f"unknown key: {key!r}; a key is one character (such as '[', not a code name "
+        "like 'BracketLeft') or a named key: Enter, Tab, Backspace, Escape, Delete, Space, "
+        "ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, "
+        "ContextMenu, F1-F12"
+    )
