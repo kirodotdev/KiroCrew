@@ -1,5 +1,7 @@
 # Self-Learning, Cron & Dashboard Modules
 
+<!-- docs-lint: defines member_mode, sentinel_path_sensitive -->
+
 ## Overview
 
 This module covers self-learning from corrections, scheduled cron jobs, and the web dashboard.

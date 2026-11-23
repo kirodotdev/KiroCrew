@@ -1,5 +1,8 @@
 # Testing Conventions
 
+<!-- docs-lint: defines soft_deadline_secs, grace_period_s, log_budget_ms, test_bad_spec_does_not_disable_memory_tools_for_other_agents, trace_home, ExpiresAt -->
+<!-- docs-lint: wrong-on-purpose test_policy -->
+
 ## Framework
 
 - `pytest` with `pytest-asyncio` for async tests

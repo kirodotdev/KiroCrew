@@ -1,5 +1,7 @@
 # Knowledge Module
 
+<!-- docs-lint: wrong-on-purpose use_config_pool_size -->
+
 ## Overview
 
 The Knowledge Library is Kiro Crew's personal knowledge graph: a local, SQLite-backed corpus that ingests documents (folders, uploads, artifacts, fetched URLs), chunks and entity-extracts them via a bounded LLM worker pool, and serves hybrid retrieval (FTS5 keyword + graph traversal + optional vector) to the LLM through the `local_knowledge_search` MCP tool. All ingestion and search stay on-host; the only external calls are the extraction worker's ACP LLM turns and the gateway's own fetch of a web-page source from a listed host (`url_fetch.py`). Embedding runs in-process against a vendored runtime — the shared `EmbeddingBackend` singleton — so there is no inference endpoint of any kind.
