@@ -18268,6 +18268,8 @@
         "scope_builtin": "{{label}}: attivo (integrato in {{productName}}; non si può disattivare)",
         "scope_switch_pending_on": "{{label}}: si attiverà quando premi Applica (fai clic per annullare)",
         "scope_switch_pending_off": "{{label}}: si disattiverà quando premi Applica (fai clic per annullare)",
+        "all_off": "Disattiva tutti",
+        "all_off_help": "Disattiva l’interruttore di {{productName}} di ogni server elencato, poi fai clic su Applica. I server integrati in {{productName}} restano attivi.",
         "disabled_count_one": "{{count}} disattivato",
         "disabled_count_many": "{{count}} disattivati",
         "disabled_count_other": "{{count}} disattivati",

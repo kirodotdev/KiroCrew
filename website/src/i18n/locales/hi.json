@@ -17804,6 +17804,8 @@
         "scope_builtin": "{{label}}: चालू ({{productName}} में अंतर्निहित; बंद नहीं किया जा सकता)",
         "scope_switch_pending_on": "{{label}}: लागू करने पर चालू होगा (वापस लेने के लिए क्लिक करो)",
         "scope_switch_pending_off": "{{label}}: लागू करने पर बंद होगा (वापस लेने के लिए क्लिक करो)",
+        "all_off": "सब बंद करो",
+        "all_off_help": "सूची के हर सर्वर का {{productName}} स्विच बंद करो, फिर लागू करो। {{productName}} में अंतर्निहित सर्वर चालू रहते हैं।",
         "disabled_count_one": "{{count}} अक्षम",
         "disabled_count_other": "{{count}} अक्षम",
         "sign_in": "साइन इन करें",

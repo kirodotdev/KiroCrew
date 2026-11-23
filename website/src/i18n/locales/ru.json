@@ -18732,6 +18732,8 @@
         "scope_builtin": "{{label}}: вкл. (встроен в {{productName}}; выключить нельзя)",
         "scope_switch_pending_on": "{{label}}: включится после «Применить» (нажми, чтобы отменить)",
         "scope_switch_pending_off": "{{label}}: выключится после «Применить» (нажми, чтобы отменить)",
+        "all_off": "Выключить все",
+        "all_off_help": "Выключи переключатель {{productName}} у каждого сервера в списке, затем нажми «Применить». Серверы, встроенные в {{productName}}, остаются включёнными.",
         "disabled_count_one": "{{count}} отключён",
         "disabled_count_few": "{{count}} отключено",
         "disabled_count_many": "{{count}} отключено",

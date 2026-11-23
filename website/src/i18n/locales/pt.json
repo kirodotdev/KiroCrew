@@ -18268,6 +18268,8 @@
         "scope_builtin": "{{label}}: ligado (integrado ao {{productName}}; não pode ser desligado)",
         "scope_switch_pending_on": "{{label}}: será ligado ao pressionar Aplicar (clique para reverter)",
         "scope_switch_pending_off": "{{label}}: será desligado ao pressionar Aplicar (clique para reverter)",
+        "all_off": "Desligar todos",
+        "all_off_help": "Desligue a chave do {{productName}} de cada servidor da lista e depois clique em Aplicar. Os servidores integrados ao {{productName}} continuam ligados.",
         "disabled_count_one": "{{count}} desativado",
         "disabled_count_many": "{{count}} desativados",
         "disabled_count_other": "{{count}} desativados",

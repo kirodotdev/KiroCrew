@@ -8397,6 +8397,8 @@
         "scope_builtin": "{{label}}: on (built into {{productName}}; it cannot be turned off)",
         "scope_switch_pending_on": "{{label}}: turns on when you press Apply (click to revert)",
         "scope_switch_pending_off": "{{label}}: turns off when you press Apply (click to revert)",
+        "all_off": "All off",
+        "all_off_help": "Turn off the {{productName}} switch of every server listed, then Apply. Servers built into {{productName}} stay on.",
         "disabled_count_one": "{{count}} disabled",
         "disabled_count_other": "{{count}} disabled",
         "temp_refusal_sealed": "Declared {{key}}={{path}} was ignored because it is inside the read-only runtime folder. The probe used the managed temp folder instead.",

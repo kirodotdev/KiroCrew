@@ -17340,6 +17340,8 @@
         "scope_builtin": "{{label}}: オン（{{productName}} に組み込み。オフにはできません）",
         "scope_switch_pending_on": "{{label}}: 「適用」を押すとオンになります（クリックで取り消し）",
         "scope_switch_pending_off": "{{label}}: 「適用」を押すとオフになります（クリックで取り消し）",
+        "all_off": "すべてオフ",
+        "all_off_help": "一覧の各サーバーの {{productName}} スイッチをオフにし、「適用」を押します。{{productName}} に組み込みのサーバーはオンのままです。",
         "disabled_count_other": "{{count}} 件が無効",
         "sign_in": "サインイン",
         "sign_in_authorize": "{{name}} を承認",

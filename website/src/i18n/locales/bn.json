@@ -17804,6 +17804,8 @@
         "scope_builtin": "{{label}}: চালু ({{productName}}-এ অন্তর্নির্মিত; বন্ধ করা যায় না)",
         "scope_switch_pending_on": "{{label}}: প্রয়োগ করলে চালু হবে (ফিরিয়ে নিতে ক্লিক করো)",
         "scope_switch_pending_off": "{{label}}: প্রয়োগ করলে বন্ধ হবে (ফিরিয়ে নিতে ক্লিক করো)",
+        "all_off": "সব বন্ধ করো",
+        "all_off_help": "তালিকার প্রতিটি সার্ভারের {{productName}} সুইচ বন্ধ করো, তারপর প্রয়োগ করো। {{productName}}-এ অন্তর্নির্মিত সার্ভারগুলো চালু থাকে।",
         "disabled_count_one": "{{count}}টি নিষ্ক্রিয়",
         "disabled_count_other": "{{count}}টি নিষ্ক্রিয়",
         "sign_in": "সাইন ইন করুন",
