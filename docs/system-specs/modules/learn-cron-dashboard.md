@@ -6678,7 +6678,8 @@ lanes are in [decisions.md §14](decisions.md#14-the-wake-judges-second-lane-nud
   subject is quiet; `judge: false` in the brief is an owner who wants observation
   gating and no judge. Both bypass it. A gated loop with no criteria of its own runs
   under `autonudge_judge.default_spec()`, but only where the owner granted the
-  point's evidence scope.
+  point's evidence scope. Under that default, a loop naming no target, or only
+  sessions whose slots are gone (`_worker_closed`), gets no judge either.
 - **Judge first, then the probe.** The judge runs before the probe guard, because a
   conductor watching sibling sessions has no `MonitorState`.
 - **Only QUIET skips a turn.** WAKE, TERMINAL and FALLBACK all spend the tick, so a
