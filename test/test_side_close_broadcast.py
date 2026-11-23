@@ -9,6 +9,7 @@ one is not the run's.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,6 +24,7 @@ from side_helpers import (  # noqa: F401 -- the autouse fixture registers by imp
 )
 
 from kiro_crew.dashboard.handlers.side import (
+    _dispatch_side_turn,
     _requeue_unconsumed_side_steers,
     _run_side_turn,
 )
@@ -213,3 +215,53 @@ async def test_a_run_whose_conversation_stayed_open_still_sends_its_answer(tmp_p
         ("the ", False),
         ("the answer", True),
     ]
+
+
+def _held_admission(monkeypatch, *, refuse: bool = False) -> asyncio.Event:
+    """Hold every side turn in admission until the returned event is set.
+
+    Once released, the turn is admitted, or refused when *refuse* is True.
+    """
+    release = asyncio.Event()
+
+    async def _held(work, *, refused, **kwargs):
+        await release.wait()
+        if refuse:
+            work.close()
+            refused("busy")
+            return None
+        return await work
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.run_admitted", _held)
+    return release
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refuse", [False, True], ids=["admitted", "refused"])
+async def test_a_turn_still_waiting_for_admission_when_closed_leaves_the_reopened_side_alone(
+    tmp_path, monkeypatch, refuse
+):
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent.agent = "kirocrew"
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    state.sessions.release = MagicMock()
+    stream = AsyncMock(return_value="the old answer")
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", stream)
+    release = _held_admission(monkeypatch, refuse=refuse)
+
+    old_run = _dispatch_side_turn(state, parent, "old question")
+    parent._side = None  # close
+    reopened = SideState(open=True, created_at="2026-01-01T00:01:00Z")
+    parent._side = reopened  # reopen
+    events.clear()
+    release.set()
+    await asyncio.gather(*list(state._background_tasks))
+
+    assert _side_frames(events) == []
+    assert reopened.messages == [] and reopened.binding is None
+    assert reopened.last_run_id != old_run and reopened.task is None
+    state.sessions.get_or_create.assert_not_awaited()
+    stream.assert_not_awaited()

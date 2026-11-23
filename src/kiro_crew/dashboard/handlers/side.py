@@ -130,6 +130,10 @@ def _dispatch_side_turn(
             side.is_complete = True
             if side.task is task:
                 side.task = None
+        if slot._side is not side:
+            # Closed (and maybe reopened) while queued: every tab cleared this
+            # conversation, and a reopened one never started this run.
+            return
         broadcast_side_result(
             state,
             slot_key=slot.key,
@@ -140,18 +144,31 @@ def _dispatch_side_turn(
             final=True,
         )
 
+    async def _turn_on_this_sidecar() -> None:
+        # Admission can hold the turn; a close+reopen meanwhile leaves a NEW
+        # sidecar on the slot, and the turn reads ``slot._side`` at body start,
+        # so it would adopt that sidecar's session, binding and transcript.
+        if slot._side is not side:
+            logger.info(
+                "Side turn dropped: its sidecar closed before it started slot=%s run_id=%s",
+                slot.key,
+                run_id,
+            )
+            return
+        await _run_side_turn(
+            state,
+            slot,
+            run_id,
+            question,
+            is_first_turn=is_first_turn,
+            start_priority=start_priority,
+        )
+
     # Shared Crew fair admission, charged to the asker (``initiated_by`` at the
     # handler); a queued question drained later runs as the bounded Unknown.
     task = asyncio.create_task(
         run_admitted(
-            _run_side_turn(
-                state,
-                slot,
-                run_id,
-                question,
-                is_first_turn=is_first_turn,
-                start_priority=start_priority,
-            ),
+            _turn_on_this_sidecar(),
             session_key=_side_session_key(slot.key),
             text=question,
             refused=_refused,
