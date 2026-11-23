@@ -223,14 +223,15 @@ def unavailable_mode_explanation(agent: str, *, kiro_cli_engine: bool = False) -
 _ALIASED_SPEC_KEYS = (("includeMcpJson", "useLegacyMcpJson"),)
 
 #: Fields of the agent format kiro-cli's v3 engine reads, and the two of the older
-#: format. A file that sets one of the first and neither of the second is one
+#: format. A file with a key among the first (an empty value counts, as it does to
+#: kiro-cli) and none of the second is one
 #: kiro-cli may list as "(v3 format)"; the check only decides when the refusal
 #: points at that listing, never states kiro-cli's rule as the cause.
 _V3_FORMAT_FIELDS = ("permissions", "excludedTools", "includePowers")
 _V2_FORMAT_FIELDS = ("allowedTools", "toolsSettings")
 
 
-def _kas_offered() -> bool:
+def kas_offered() -> bool:
     """Whether a spawn naming backend ``kas`` would be admitted here now. Wording only."""
     from kiro_crew.kiro_on_kas_notice import kas_backend_offered
 
@@ -315,7 +316,7 @@ def _ordinary_mode_explanation(agent: str, *, kiro_cli_engine: bool = False) -> 
                 )
         if (
             kiro_cli_engine
-            and any(data.get(k) for k in _V3_FORMAT_FIELDS)
+            and any(k in data for k in _V3_FORMAT_FIELDS)
             and not any(k in data for k in _V2_FORMAT_FIELDS)
         ):
             return (
@@ -324,7 +325,7 @@ def _ordinary_mode_explanation(agent: str, *, kiro_cli_engine: bool = False) -> 
                 "engine, and Kiro Crew's Kiro CLI backend runs kiro-cli's v2 engine.",
                 (
                     "Spawn it with backend 'kas', which runs kiro-cli's v3 engine."
-                    if _kas_offered()
+                    if kas_offered()
                     else "No backend offered on this host runs kiro-cli's v3 engine."
                 ),
             )
