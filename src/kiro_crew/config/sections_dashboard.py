@@ -672,6 +672,15 @@ class DashboardConfig:
             "for long tasks.",
         ),
     )
+    warm_task_brief: bool = field(
+        default=True,
+        metadata=_meta(
+            "Since You Left Briefs",
+            "When you return to a conductor mode chat or a bot thread after 30 minutes "
+            "away, post a catch-up brief of its work. Off: a return posts no brief. "
+            "Takes effect on the next return; no restart.",
+        ),
+    )
     quick_send: bool = field(
         default=False,
         metadata=_meta(
