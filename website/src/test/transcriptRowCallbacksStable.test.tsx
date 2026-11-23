@@ -150,6 +150,30 @@ describe('row callbacks keep their identity across streamed frames', () => {
     expect(calls.regenerateSlot).toHaveBeenCalledWith('slot-a')
   })
 
+  it('useRegenerate: offers Regenerate only on a reply in the turn a press re-runs', () => {
+    const base = {
+      activeSlot: 'slot-a', slotRunning: false, activeSlotRemoteBound: false,
+      isStreaming: false, setRefusedPress: vi.fn(), showRefusedPress: vi.fn(),
+    }
+    const hidden = (ts: string): ChatMessage => ({ ...msg('assistant', ts), content: '\u200b' })
+    const workflow: ChatMessage = { ...msg('inject', 't3'), meta: { injectKind: 'workflow' } }
+    const ref = { current: first }
+    const { result, rerender } = renderHook((p: { messages: ChatMessage[] }) => useRegenerate({ ...base, ...p, messagesRef: latest(ref, p.messages) }), {
+      initialProps: { messages: [...first, msg('user', 't3'), hidden('t4')] },
+    })
+    // The newest turn's only reply is hidden: the press re-runs that turn, so the
+    // reply drawn above it must not carry the button.
+    expect(result.current.lastTextIdx).toBe(1)
+    expect(result.current.regenerateIdx).toBe(-1)
+    rerender({ messages: [...first, workflow, hidden('t4')] })
+    expect(result.current.lastTextIdx).toBe(1)
+    expect(result.current.regenerateIdx).toBe(-1)
+    // A quiet monitor cycle's nudge opens no turn the press stops at.
+    rerender({ messages: [...first, msg('nudge', 't3'), hidden('t4')] })
+    expect(result.current.lastTextIdx).toBe(1)
+    expect(result.current.regenerateIdx).toBe(1)
+  })
+
   it('useTranscriptPins: handleJumpToQuote is stable and finds a row only the newest frame holds', () => {
     const navToMessage = vi.fn(() => true)
     const ref = { current: first }

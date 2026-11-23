@@ -13,9 +13,11 @@ when it is: the dashboard runner (``stream_chunks._on_text_chunk``), the channel
 turn driver (``messaging.driver.TurnDriver``), the shared collector
 (``llm_helpers.stream_and_collect``) and the native Slack turn
 (``slack/handler_runtime/stream.py``) alike. A turn whose only text was the
-placeholder then gets the usual empty-reply handling. Rows an older build already
-stored with only that text are left as they are. The model's own history is
-untouched: the backend keeps its placeholder.
+placeholder then gets the usual empty-reply handling. A row an older build
+stored with only that text (``is_stored_echo_row``) stays where it is on
+disk; the dashboard sends it as the say-nothing reply and the scans that pick
+what a person sees pass over it. The model's own history is untouched: the
+backend keeps its placeholder.
 """
 
 from __future__ import annotations
@@ -58,3 +60,17 @@ def could_be_echo(text: str) -> bool:
     if not t.startswith(OPENER):
         return False
     return "(" not in t[len(OPENER) :] and ")" not in t[len(OPENER) :]
+
+
+def is_stored_echo_row(row: dict) -> bool:
+    """Whether *row* is an assistant row of only the placeholder, with no variants or file changes."""
+    content = row.get("content")
+    meta = row.get("meta")
+    file_changes = meta.get("file_changes") if isinstance(meta, dict) else None
+    return (
+        row.get("role") == "assistant"
+        and isinstance(content, str)
+        and is_echo(content)
+        and not row.get("variants")
+        and not (isinstance(file_changes, list) and file_changes)
+    )

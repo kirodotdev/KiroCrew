@@ -54,6 +54,10 @@ describe('modelChipMarker', () => {
     expect(chip('', '', null, 'claude-opus-4.8', 'claude-opus-4.8', true)).toBeNull()
   })
 
+  it('puts no marker on an agent-pinned slot the engine moved onto the default', () => {
+    expect(modelChipMarker('', 'claude-opus-4.8', 'claude-sonnet-5', 'claude-opus-4.8', true)).toBeNull()
+  })
+
   it('puts no marker on a fresh slot whose agent names its own model', () => {
     expect(chip('', '', null, 'claude-opus-4.8', 'claude-sonnet-5')).toBeNull()
   })

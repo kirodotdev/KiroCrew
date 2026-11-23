@@ -976,6 +976,36 @@ class TestOldGlibcRefusal:
             installed = _install(source_dir, root)
         assert installed.version == "0.66.33"
 
+    @pytest.mark.parametrize("glibc", [(2, 25), (2, 26), (2, 27), (2, 28)], ids=str)
+    @pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+    @pytest.mark.parametrize("pin_floor", ["stock", "al2"])
+    def test_floor_per_arch_follows_the_pin(self, monkeypatch, glibc, machine, pin_floor):
+        """The stock pin needs 2.28 on both arches. A pin naming an AL2 release
+        lowers linux-x64 alone to 2.26; arm64 has no AL2 build and stays at 2.28."""
+        if pin_floor == "al2":
+            monkeypatch.setitem(kas_bundle.KAS_PIN_LINUX_GLIBC_FLOOR, "linux-x64", (2, 26))
+        floor = (2, 26) if pin_floor == "al2" and machine == "x86_64" else (2, 28)
+        with _patch_glibc(glibc):
+            if glibc >= floor:
+                kas_bundle._require_loadable_glibc("Linux", machine)
+                kas_bundle._require_loadable_glibc("Linux", machine, kas_bundle.KAS_PIN_VERSION)
+            else:
+                key = "linux-x64" if machine == "x86_64" else "linux-arm64"
+                with pytest.raises(kas_bundle.KasHostUnsupported) as exc:
+                    kas_bundle._require_loadable_glibc("Linux", machine)
+                msg = str(exc.value)
+                assert f"glibc ({glibc[0]}.{glibc[1]})" in msg and key in msg
+                assert f"glibc {floor[0]}.{floor[1]}+" in msg
+
+    def test_an_al2_floor_does_not_reach_another_version(self, monkeypatch):
+        """The lowered floor describes the pinned bytes only: any other version
+        (``--unpinned``, ``--from``) is held to the nodejs.org floor."""
+        monkeypatch.setitem(kas_bundle.KAS_PIN_LINUX_GLIBC_FLOOR, "linux-x64", (2, 26))
+        with _patch_glibc((2, 26)):
+            kas_bundle._require_loadable_glibc("Linux", "x86_64")
+            with pytest.raises(kas_bundle.KasHostUnsupported, match="onnxruntime"):
+                kas_bundle._require_loadable_glibc("Linux", "x86_64", "0.66.33")
+
     def test_non_linux_never_consults_glibc(self):
         # The refusal is Linux-only; a non-Linux host never reads glibc.
         with _patch_glibc((2, 26)) as reader:

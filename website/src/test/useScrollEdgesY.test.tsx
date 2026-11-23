@@ -9,8 +9,9 @@
  * jsdom does no layout, so scroll geometry is stubbed on the element — that stub
  * is what makes the derivation testable at all.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
+import { installInitialResizeObserver } from './initialResizeObserver'
 
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 
@@ -22,16 +23,29 @@ function stubGeometry(el: HTMLElement, { hidden, scrolled = 0 }: { hidden: numbe
 }
 
 describe('useScrollEdgesY', () => {
-  beforeEach(() => {
-    if (!window.ResizeObserver) {
-      window.ResizeObserver = class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver
-    }
+  beforeEach(() => { installInitialResizeObserver() })
+  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren() })
+
+  it('reads no layout when it attaches, only when the observer delivers', () => {
+    // The node usually attaches inside a commit, where a read forces a layout
+    // of the page; the observer's first delivery comes after the browser's own.
+    let delivered: (() => void) | undefined
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private cb: ResizeObserverCallback) {}
+      observe(target: Element) { delivered = () => this.cb([{ target } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver) }
+      unobserve() {}
+      disconnect() {}
+    })
+    const el = document.createElement('div')
+    document.body.appendChild(el)
+    stubGeometry(el, { hidden: 240 })
+    const reads = vi.spyOn(el, 'scrollHeight', 'get')
+    const { result } = renderHook(() => useScrollEdgesY<HTMLDivElement>())
+    act(() => result.current[0](el))
+    expect(reads).not.toHaveBeenCalled()
+    act(() => delivered!())
+    expect(result.current[1]).toEqual({ top: false, bottom: true })
   })
-  afterEach(() => { document.body.replaceChildren() })
 
   it('shows no cue when the column fits', () => {
     const el = document.createElement('div')

@@ -12,7 +12,7 @@ import { answersAsText, questionName } from '../../../utils/questionAnswers'
 import { restoreToComposer } from '../../../utils/composerRestore'
 import { viewSubagentSlots } from '../../../lib/subagentReplayScope'
 import type { SubagentActivity } from '../../../types'
-import { buildCommandCenter, crewWaitingApprovals, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
+import { buildCommandCenter, crewWaitingApprovals, effectiveApprovalMode, mateWaitingThreads, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
 
 /** The work board as its route serves it: the folded value plus its revision. */
 // `published_revision` is the read's delta base: the revision of the gateway's last
@@ -84,6 +84,8 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   // of a worker waiting on approval reads as needing a tool decision (R3 Z2).
   // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode stands for the conductor mode read crewWaitingApprovals makes
   const crewWaiting = useMemo(() => fleet ? crewWaitingApprovals(slots) : undefined, [slots, fleet, crewMode])
+  // A Bot's session the page leaves out still waits on the person: the Bot's row carries it.
+  const mateWaiting = useMemo(() => fleet ? mateWaitingThreads(slots) : undefined, [slots, fleet])
   // These slots' subagent runs are drawn here, finished ones included, so the
   // gateway's durable replay is asked for them (it covers only named slots).
   const scopedKeys = useMemo(() => scoped.map(s => s.key).join('\n'), [scoped])
@@ -225,8 +227,8 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
         session_key: r.sessionKey || runs.get(r.run_id)?.session_key || '', error: r.error })
     }
     return buildCommandCenter({ root: fleet ? null : root, slots: scoped, subagents, approvalMode, workflows: [...runs.values()],
-      questions: visibleQuestions, approvals: approvals.data || [], work: work.isEnabled ? work.data?.value : undefined, crewWaiting })
-  }, [crewWaiting, root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, work.isEnabled, approvalMode, fleet])
+      questions: visibleQuestions, approvals: approvals.data || [], work: work.isEnabled ? work.data?.value : undefined, crewWaiting, mateWaiting })
+  }, [crewWaiting, mateWaiting, root, scoped, activeSlot, liveAgents, background, liveWorkflows, workflows.data, visibleQuestions, approvals.data, work.data, work.isEnabled, approvalMode, fleet])
   // A pick in a trailing `[OPTIONS:]` ask is unsent text only while that ask is
   // offered; once the session moves on the card is gone and so is its draft,
   // never restored to the composer (the labels are the agent's, not typed text).

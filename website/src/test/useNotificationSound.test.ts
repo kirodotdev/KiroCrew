@@ -5,6 +5,7 @@ import {
   saveSoundSettings,
   playPreset,
   presetForKind,
+  isSoundMuted,
   useNotificationSound,
   SOUND_PRESETS,
   __resetForTests,
@@ -99,6 +100,27 @@ describe('loadSoundSettings', () => {
     const s = loadSoundSettings()
     expect(s.perCategory.all).toBe('ding')
     expect((s.perCategory as Record<string, unknown>).bogusCategory).toBeUndefined()
+  })
+
+  it('keeps a valid sound schedule, switched off or on, and drops one that is not', () => {
+    const days = [{ from: 480, to: 1080 }, null, null, null, null, null, { from: 0, to: 1440 }]
+    const load = (schedule: unknown) => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ schedule }))
+      return loadSoundSettings().schedule
+    }
+    expect(load({ on: true, days })).toEqual({ on: true, days })
+    expect(load({ on: false, days })).toEqual({ on: false, days })
+    // Switched off, a Tuesday 3:00 outside its hours still sounds.
+    expect(isSoundMuted({ enabled: true, volume: 0.35, perCategory: {}, schedule: { on: false, days } }, new Date(2026, 10, 24, 3, 0).getTime())).toBe(false)
+    for (const bad of [
+      { on: true, days: days.slice(1) },
+      { on: true, days: [{ from: 600, to: 600 }, ...days.slice(1)] },
+      { on: true, days: [{ from: 480, to: 1441 }, ...days.slice(1)] },
+      { on: true, days: [{ from: 7.5, to: 1080 }, ...days.slice(1)] },
+      { on: 'yes', days },
+    ]) {
+      expect(load(bad)).toBeUndefined()
+    }
   })
 
   it('ignores non-string preset values', () => {
@@ -399,6 +421,32 @@ describe('useNotificationSound', () => {
     vi.setSystemTime(start + 60_000)
     dispatch()
     expect(mockCtx.createOscillator.mock.calls.length).toBeGreaterThan(before)
+    unmount()
+  })
+
+  it('weekly sound hours silence notifications outside the day\'s hours, approvals included', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    onTestFinished(() => { vi.useRealTimers() })
+    // Clear of the 300 ms cooldown, which reads performance.now(), not Date.
+    vi.spyOn(performance, 'now').mockReturnValue(10_000)
+    const workday = { from: 8 * 60, to: 18 * 60 }
+    // Monday first: Monday to Friday 8:00-18:00, no sound at the weekend.
+    saveSoundSettings({ enabled: true, volume: 0.35, perCategory: { all: 'chime' }, schedule: { on: true, days: [workday, workday, workday, workday, workday, null, null] } })
+    const { unmount } = renderHook(() => useNotificationSound())
+    const plays = () => mockCtx.createOscillator.mock.calls.length
+    const dispatchAt = (at: Date) => {
+      vi.setSystemTime(at)
+      window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail: { kind: 'approval' } }))
+    }
+    const before = plays()
+
+    dispatchAt(new Date(2026, 10, 28, 10, 0)) // Saturday 10:00
+    dispatchAt(new Date(2026, 10, 24, 19, 0)) // Tuesday 19:00
+    dispatchAt(new Date(2026, 10, 24, 18, 0)) // Tuesday 18:00, the end is not included
+    expect(plays()).toBe(before)
+
+    dispatchAt(new Date(2026, 10, 24, 10, 0)) // Tuesday 10:00
+    expect(plays()).toBeGreaterThan(before)
     unmount()
   })
 

@@ -2982,6 +2982,7 @@
       "profile_lookup_failed_body": "We couldn't look up your Kiro profile. Start over to try again.",
       "connection_lost_body": "We lost the connection to {{productName}}, which may have restarted. Start over to sign in again.",
       "sign_in_status_unavailable": "We could not check sign-in status",
+      "owner_only": "Only the dashboard owner can manage Kiro sign-in.",
       "sign_in_to_kiro": "Sign in to Kiro",
       "skip_for_now": "Skip for now",
       "signing_in_with": "Signing in with {{provider}}",
@@ -3961,10 +3962,10 @@
       "cannot_star_widget_has_no_slug_or_message_contex": "Cannot star: widget has no slug or message context",
       "expand": "Expand",
       "minimize": "Minimize",
+      "popout_blocked": "Couldn't open this widget in a new tab. The window was blocked.",
       "remove_artifact_from_library": "Remove artifact {{name}} from library",
       "rendering": "Rendering…",
-      "star_as_artifact": "Star as artifact",
-      "starred_as_click_to_remove": "Starred as \"{{name}}\" — click to remove"
+      "star_as_artifact": "Star as artifact"
     },
     "workspacePicker": {
       "create": "Create",
@@ -7352,7 +7353,12 @@
       "kind_section_mate": "From bots",
       "filter_crew_description": "Show only conductor mode chats",
       "reclick_toggles_side_panel": "Click again to show or hide the side panel",
-      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})",
+      "show_linked_items_one": "Show {{count}} linked item",
+      "show_linked_items_other": "Show {{count}} linked items",
+      "hide_linked_items": "Hide linked items",
+      "show_linked_items_failed_one": "Show {{count}} linked item, a check failed",
+      "show_linked_items_failed_other": "Show {{count}} linked items, a check failed"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",
@@ -8391,6 +8397,8 @@
         "scope_builtin": "{{label}}: on (built into {{productName}}; it cannot be turned off)",
         "scope_switch_pending_on": "{{label}}: turns on when you press Apply (click to revert)",
         "scope_switch_pending_off": "{{label}}: turns off when you press Apply (click to revert)",
+        "all_off": "All off",
+        "all_off_help": "Turn off the {{productName}} switch of every server listed, then Apply. Servers built into {{productName}} stay on.",
         "disabled_count_one": "{{count}} disabled",
         "disabled_count_other": "{{count}} disabled",
         "temp_refusal_sealed": "Declared {{key}}={{path}} was ignored because it is inside the read-only runtime folder. The probe used the managed temp folder instead.",
@@ -9608,7 +9616,7 @@
         "create_body": "Pick a short name, usually your username. The Slack app and its slash command are named after it, so they do not clash with anyone else's.",
         "alias_label": "App name",
         "alias_placeholder": "your-alias",
-        "alias_invalid": "Use 1 to 32 letters, digits, - or _.",
+        "alias_invalid": "Use 1 to 22 letters, digits, - or _.",
         "app_name_will_be": "Slack app name: {{name}}",
         "create_app": "Create Slack app",
         "pick_workspace": "Slack opens in a new tab. Choose the workspace from step 1 there, then click Create. If it is not in the list, sign in to it first.",
@@ -9631,6 +9639,7 @@
         "connect": "Connect",
         "connecting": "Connecting…",
         "reconnect_failed": "Could not connect: {{reason}}",
+        "reconnect_invalid_auth": "Slack rejected the saved tokens (invalid_auth). Go Back to step {{step}} and paste them again.",
         "test_body": "Open the bot's direct message in Slack and send it any message. Setup is done when you see a reply.",
         "open_dm": "Open the bot DM in Slack",
         "clients_hint": "The Slack desktop and mobile apps show this DM only after you sign in to this workspace there: click your profile picture, then Add a workspace.",
@@ -11132,6 +11141,7 @@
         "decisions_status_judged_by_small_model": "Judged by the small model",
         "decisions_status_needs_scope": "Needs your OK",
         "decisions_status_off": "Off",
+        "decisions_point_status_sentence": "{{what}} {{status}}",
         "decisions_global": "Shared settings",
         "decisions_api_key_label": "Jev API key",
         "decisions_api_key_desc": "Kept in this dashboard's secret store on the machine that runs {{productName}}, never in config.json, and never shown again once you save it.",

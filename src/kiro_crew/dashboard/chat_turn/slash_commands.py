@@ -657,6 +657,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
                     _card_origin=turn._card_origin,
                     _prompt_on_channel=turn._prompt_on_channel,
+                    _slack_voice=turn._slack_voice,
                     _turn_actor=_turn_actor,
                 )
             elif status == "blocked":

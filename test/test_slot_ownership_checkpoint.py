@@ -1245,21 +1245,24 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         log = state.conversation_log
         cleared: list[str] = []
         reads: list[str] = []
-        real_clear, real_get = log.clear_closed, log.get_metadata
+        real_clear, real_status = log.clear_closed, log.get_metadata_status
+        loop_thread = threading.get_ident()
 
         def clear_closed(key, **kw):
             cleared.append(key)
             return real_clear(key, **kw)
 
-        def get_metadata(key):
+        def get_metadata_status(key):
+            meta, readable = real_status(key)
+            if threading.get_ident() != loop_thread:
+                return meta, readable
             reads.append(key)
-            meta = real_get(key)
-            # Every snapshot after the first records no app: the post-read
-            # snapshot is not the app's.
-            return {k: v for k, v in meta.items() if k != "app"} if len(reads) > 1 else meta
+            # The re-reads on the loop, after the off-loop ownership reads, record
+            # no app: the post-read snapshot is not the app's.
+            return {k: v for k, v in meta.items() if k != "app"}, readable
 
         monkeypatch.setattr(log, "clear_closed", clear_closed)
-        monkeypatch.setattr(log, "get_metadata", get_metadata)
+        monkeypatch.setattr(log, "get_metadata_status", get_metadata_status)
         async with _client(state, APP) as client:
             resp = await client.post("/api/chat/slots/a1/resume", json={"key": "dashboard:a1"})
             assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
@@ -1267,7 +1270,7 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         assert cleared == []
         assert "a1" not in state._slots
         assert "a1" not in state._slots_under_construction
-        meta, readable = log.get_metadata_status("dashboard:a1")
+        meta, readable = real_status("dashboard:a1")
         assert readable and meta.get("closed")
 
     @pytest.mark.asyncio

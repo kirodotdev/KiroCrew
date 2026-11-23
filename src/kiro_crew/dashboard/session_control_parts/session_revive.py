@@ -281,6 +281,42 @@ def _revived_slot_refusal(slot: "_ChatSlot", caller_slot: "_ChatSlot") -> tuple[
 #: contains ``:``, so no slot key and no caller key can ever equal it.
 UNVERIFIED_CREATOR = "unverified:creator"
 
+
+def reconfirm_restored_creators(state: Any) -> int:
+    """Lift the restore fence from live slots whose creator the crew log now confirms.
+
+    On the loop, no I/O. A restart's restore judges each ``created_by`` claim once,
+    against the session tree as it stands then (``metadata_codec._read_created_by``).
+    When the tree does not hold the creation record yet, the worker is fenced as
+    :data:`UNVERIFIED_CREATOR`, and before this nothing judged it again: the Bot that
+    made it could not list, bind or revive it until the next restart. This re-asks the
+    same question on each tree change, with the same evidence (the crew log's creation
+    records, which no sandboxed process can write), so it widens nothing: a claim the
+    tree does not confirm, or names another creator for, stays fenced.
+
+    Only a slot the restore fenced carries a claim (``_unconfirmed_creator``). A slot
+    whose ``_created_by`` was set some other way since is left alone and loses the
+    claim. Returns how many fences were lifted.
+    """
+    lifted = 0
+    for slot in list(getattr(state, "_slots", {}).values()):
+        claimed = str(getattr(slot, "_unconfirmed_creator", "") or "")
+        if not claimed:
+            continue
+        if getattr(slot, "_created_by", "") != UNVERIFIED_CREATOR:
+            slot._unconfirmed_creator = ""
+            continue
+        if _creation_parent(slot.key) != claimed:
+            continue
+        slot._created_by = claimed
+        slot._unconfirmed_creator = ""
+        lifted += 1
+        logger.info(
+            "session %s: creator %s confirmed by the session tree after restore", slot.key, claimed
+        )
+    return lifted
+
+
 #: Rebinds started on a cancelled revive, held so the loop does not drop them.
 _PENDING_REBINDS: "set[asyncio.Task[None]]" = set()
 
@@ -292,6 +328,11 @@ def _rebind_in_background(slot: Any, meta: "Mapping[str, Any]") -> None:
     )
     _PENDING_REBINDS.add(task)
     task.add_done_callback(_PENDING_REBINDS.discard)
+
+
+#: The archived fence's ``not_creator`` wording; :func:`revive_session` puts the caller's
+#: own (:func:`_not_creator_reason`) in its place.
+_ARCHIVED_NOT_CREATOR = "target session was created by another session"
 
 
 def _archived_target_refusal(
@@ -336,8 +377,22 @@ def _archived_target_refusal(
         # be republishing to a channel the moment it is reopened. Unknown reads
         # as mirrored, the refusal paths' fail-closed direction.
         return "sessions mirrored to a channel are not addressable", "mirrored_target"
+    fence = _archived_fence_refusal(
+        slot_key, meta, caller_key=caller_key, ownership_fenced=ownership_fenced
+    )
     if str(meta.get("workspace") or "default") != caller_workspace:
-        return "target session belongs to a different workspace", "workspace_mismatch"
+        # One refusal names both walls: a workspace fix cannot clear the fence.
+        reason = "target session belongs to a different workspace"
+        if fence is not None:
+            reason += "; also, " + fence[0]
+        return reason, "workspace_mismatch"
+    return fence
+
+
+def _archived_fence_refusal(
+    slot_key: str, meta: "Mapping[str, Any]", *, caller_key: str, ownership_fenced: bool
+) -> tuple[str, str] | None:
+    """The ownership-fence half of :func:`_archived_target_refusal`, or None."""
     if ownership_fenced:
         if session_managers.recorded_manager(slot_key, str(meta.get("tab_id") or "")) == (
             caller_key
@@ -347,7 +402,7 @@ def _archived_target_refusal(
             # and it is the record the send fence reads for the live session.
             return None
         if str(meta.get("created_by") or "") != caller_key:
-            return "target session was created by another session", "not_creator"
+            return _ARCHIVED_NOT_CREATOR, "not_creator"
         # The metadata line is a file a sandboxed shell can write
         # (``metadata_codec._read_created_by`` says so where it restores it), so for a
         # FENCED caller the claim above is only a claim: a caller that rewrote
@@ -467,9 +522,16 @@ async def revive_session(
             if live.key == caller_key:
                 raise deny("a session cannot control itself", "self_target")
             live_caller = _check_caller_slot_fields(state, caller_key, deny)
+            fenced_out = ownership_fenced and _created_by_other(live, caller_key)
             if (refusal := _revived_slot_refusal(live, live_caller)) is not None:
-                raise deny(refusal[0], refusal[1])
-            if ownership_fenced and _created_by_other(live, caller_key):
+                reason, code = refusal
+                if fenced_out and code == "workspace_mismatch":
+                    # As authorize_target: a workspace fix cannot clear the fence.
+                    reason += "; also, " + _not_creator_reason(
+                        state, caller_key, live_caller, caller_fenced
+                    )
+                raise deny(reason, code)
+            if fenced_out:
                 raise deny(
                     _not_creator_reason(state, caller_key, live_caller, caller_fenced),
                     "not_creator",
@@ -508,8 +570,12 @@ async def revive_session(
     )
     if refusal is not None:
         reason, code = refusal
-        if code == "not_creator":
-            reason = _not_creator_reason(state, caller_key, caller_slot, caller_fenced)
+        if _ARCHIVED_NOT_CREATOR in reason:
+            # The caller's own wording, whether the fence refuses alone or after the workspace.
+            reason = reason.replace(
+                _ARCHIVED_NOT_CREATOR,
+                _not_creator_reason(state, caller_key, caller_slot, caller_fenced),
+            )
         raise deny(reason, code)
 
     if folder_id:

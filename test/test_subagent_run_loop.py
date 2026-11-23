@@ -38,6 +38,7 @@ class TestSubagentPostToolUseHook:
     """
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("close_subagent_managers")
     async def test_post_tool_use_fires_on_tool_result(self) -> None:
         """PostToolUse hook is called with tool_name + tool_response after EVENT_TOOL_RESULT."""
         from kiro_crew.providers.base import (
@@ -104,23 +105,32 @@ class TestSubagentPostToolUseHook:
             f"PostToolUse should receive cached tool_name with 'Running: ' "
             f"stripped, got {kwargs['tool_name']!r}"
         )
-        assert kwargs["tool_response"] == {"output": "hello world"}
+        assert kwargs["tool_response"] == {
+            "output": "hello world",
+            "truncated": False,
+            "output_length": len("hello world"),
+        }
         # The child's own key, for per-session attribution, beside the
         # parent's key that marks the event as a subagent's.
         assert kwargs["session_key"] == "subagent:t01"
         assert kwargs["parent_session_key"] == "slack:C:T"
 
     @pytest.mark.asyncio
-    async def test_post_tool_use_truncates_long_output(self) -> None:
-        """PostToolUse output is capped at 2000 chars to bound hook payload size."""
+    @pytest.mark.usefixtures("close_subagent_managers")
+    @pytest.mark.parametrize("head", ["", "key: {secret}\n"])
+    async def test_post_tool_use_truncates_long_output(self, head: str) -> None:
+        """PostToolUse output is capped at 2000 chars of the redacted output, whose length it reports."""
+        from redaction_structured_cases import github_classic
+
         from kiro_crew.providers.base import (
             EVENT_TOOL_CALL,
             EVENT_TOOL_RESULT,
             LLMEvent,
         )
-        from kiro_crew.subagent import SubagentInfo, SubagentManager
+        from kiro_crew.subagent import SubagentInfo, SubagentManager, _redact
 
-        long_output = "x" * 5000
+        long_output = head.format(secret=github_classic(seed=38)) + "x" * 5000
+        redacted = _redact(long_output)
 
         async def _stream(*_a, **_kw):  # type: ignore[no-untyped-def]
             yield LLMEvent(
@@ -168,9 +178,12 @@ class TestSubagentPostToolUseHook:
             if c.args and c.args[0] == "PostToolUse"
         ]
         assert len(post_calls) == 1
-        output = post_calls[0].kwargs["tool_response"]["output"]
+        response = post_calls[0].kwargs["tool_response"]
+        output = response["output"]
         assert len(output) == 2000
-        assert output == "x" * 2000
+        assert output == redacted[:2000]
+        assert response["truncated"] is True
+        assert response["output_length"] == len(redacted)
 
     @pytest.mark.asyncio
     async def test_post_tool_use_no_hook_store_is_noop(self) -> None:

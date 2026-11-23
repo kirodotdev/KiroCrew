@@ -491,6 +491,8 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
     "issue_search": (),
     # Likewise; importing it installs Linear into issue search and the issue read.
     "linear": (),
+    # Likewise for ServiceNow.
+    "servicenow": (),
     "review": (
         "_branch_pattern_matches",
         "_flatten_paginated",

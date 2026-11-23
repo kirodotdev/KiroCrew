@@ -8,6 +8,8 @@ see the import block there. Plain module, never collected.
 
 from __future__ import annotations
 
+import sys
+
 from conftest_guards import per_test_guard
 
 from kiro_crew.slack.client import SlackClientOps
@@ -37,6 +39,29 @@ def _reset_options_control_state():
     outbound._ANSWERED.clear()
     outbound._EDIT_LOCKS.clear()
     outbound._LOCK_USERS.clear()
+
+
+@per_test_guard
+def _reset_code_channel_audience():
+    """Forget every ``conversations.info`` reading the code-channel audience holds.
+
+    ``kiro_crew.slack.code_channels.audience`` keeps process-global share, archive and
+    privacy readings keyed by channel id. A Conductor thread's dispatch is admitted or
+    refused on the privacy reading, and tests reuse channel ids, so a reading one test
+    left would decide the next one's verdict. Looked up in ``sys.modules`` so a run
+    that never imported it pays nothing.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("kiro_crew.slack.code_channels.audience")
+        if module is not None:
+            module.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
 
 
 @per_test_guard

@@ -1207,6 +1207,13 @@
       "hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it."
     },
     {
+      "id": "chat.swipe-to-open-and-close-side-panel",
+      "label": "Swipe to Open and Close Side Panel",
+      "tab": "chat",
+      "route": "/settings/chat/sidepanel?highlight=chat.swipe-to-open-and-close-side-panel",
+      "hint": "On a desktop, a two-finger sideways trackpad swipe over a chat or the Bots page opens and closes the side panel. Turn this off to stop it; the panel button and keyboard shortcut still work. This setting does not apply on a phone."
+    },
+    {
       "id": "chat.tail-only-fork",
       "label": "Tail-only Fork",
       "tab": "chat",
@@ -2031,6 +2038,13 @@
       "label": "Play sound on new notifications",
       "tab": "notifications",
       "route": "/settings/notifications/sound?highlight=notifications.play-sound-on-new-notifications"
+    },
+    {
+      "id": "notifications.play-sounds-only-during-set-hours",
+      "label": "Play sounds only during set hours",
+      "tab": "notifications",
+      "route": "/settings/notifications/sound?highlight=notifications.play-sounds-only-during-set-hours",
+      "hint": "Choose, for each day of the week, the hours notifications may make a sound. Outside them, notifications still arrive, without sound."
     },
     {
       "id": "notifications.sound-category-agent",

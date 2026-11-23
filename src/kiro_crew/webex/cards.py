@@ -94,7 +94,7 @@ def _text(value: str, *, wrap: bool = True, weight: str = "") -> dict[str, Any]:
     return block
 
 
-def approval_card(tool: str, *, nonce: str, request_id: str) -> dict[str, Any]:
+def approval_card(tool: str, *, nonce: str, request_id: str, identity: str = "") -> dict[str, Any]:
     """An Approve / Deny card for a tool-permission request.
 
     *tool* must already be neutralized by the renderer's ``_safe_tool_label``.
@@ -103,12 +103,17 @@ def approval_card(tool: str, *, nonce: str, request_id: str) -> dict[str, Any]:
     in a TextBlock" is NOT the safety property here; the sanitized input is. A tool
     title is model-influenced text, and this card is the one message the user is
     being asked to trust.
+
+    *identity* is the MCP server and tool line, neutralized the same way. Webex
+    treats a card message's text as the fallback for a client that cannot render
+    the card, so a client that can may show the card alone, and the card carries
+    the line too. ``""`` adds no block.
     """
+    body = [_text("Approve this tool?", weight="Bolder"), _text(tool or "this tool")]
+    if identity:
+        body.append(_text(identity))
     return _card(
-        [
-            _text("Approve this tool?", weight="Bolder"),
-            _text(tool or "this tool"),
-        ],
+        body,
         [
             _submit("✅ Approve", KIND_APPROVAL, "approve", nonce, request_id),
             _submit("🚫 Deny", KIND_APPROVAL, "deny", nonce, request_id),

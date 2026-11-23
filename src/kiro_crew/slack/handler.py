@@ -177,6 +177,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.messaging.renderer import (  # noqa: F401 - read by the owners
     count_redaction_tags,
+    mcp_identity_line,
     redaction_notice,
     trusted_mcp_identity,
 )
@@ -247,7 +248,11 @@ from kiro_crew.slack.blocks import (  # noqa: F401 - read by the owners
     deprecation_warning_block,
 )
 from kiro_crew.slack.channel_crew import (  # noqa: F401 - read by the owners
+    bind_bot_memory,
+    bots_text,
     context_template,
+    crew_bots,
+    resolve_bot_name,
     resolve_channel_crew,
 )
 from kiro_crew.slack.channel_policy import channel_refusal
@@ -328,6 +333,7 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
 from kiro_crew.slack.handler_runtime.commands import (  # noqa: F401
     _bang_agent,
     _bang_allowlist,
+    _bang_bot,
     _bang_channel,
     _bang_dashboard,
     _bang_link_to_dashboard,
@@ -504,6 +510,10 @@ def _display_redactor(text: str) -> str:
     return redact_credentials(text)[0]
 
 
+# Bang commands with no slash equivalent that the native router still answers in a thread
+# linked to a dashboard chat, so they are never delivered to it as a chat message.
+_NATIVE_BANG_COMMANDS: frozenset[str] = frozenset({"!bot"})
+
 # Mapping of bang commands to their /kirocrew slash equivalents.
 _BANG_TO_SLASH: dict[str, str] = {
     "!yolo": "/kirocrew yolo",
@@ -542,11 +552,6 @@ _SLACK_SECTION_TEXT_LIMIT = 2900
 
 # Truncation marker appended when tool_input exceeds the limit
 _TRUNCATION_MARKER = "\n… [truncated]"
-
-# Bound on each name an approval card's MCP identity line shows, taken before
-# escaping: a kept name runs to 512 characters and escaping can grow it fourfold,
-# so two unbounded names could pass the 3000 characters Slack allows one text.
-_IDENTITY_NAME_MAX = 200
 
 # Slack UX strings
 _THINKING = "_Thinking…_"

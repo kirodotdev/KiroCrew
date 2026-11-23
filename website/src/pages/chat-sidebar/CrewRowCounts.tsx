@@ -95,7 +95,7 @@ export function CrewRowAttention({ needsYou, stalled, running, done, paused, sta
   if (needsYou <= 0 && stalled <= 0 && running <= 0) {
     if (!done) return null
     return (
-      <span className={`${PART_CLS} crew-tone-ok`} data-testid="crew-root-done" title={title}>
+      <span className={`${PART_CLS} crew-tone-muted`} data-testid="crew-root-done" title={title}>
         <Check size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('commandCenter.worker_group_done')}
       </span>
     )
@@ -120,7 +120,7 @@ export function CrewRowAttention({ needsYou, stalled, running, done, paused, sta
           </span>
         )}
         {running > 0 && (
-          <span className={`${PART_CLS} text-[var(--ok)]`} data-testid="crew-root-count" data-bucket="running">
+          <span className={`${PART_CLS} crew-tone-muted`} data-testid="crew-root-count" data-bucket="running">
             <Circle size={ICON_PX} aria-hidden="true" fill="currentColor" className="inline-block shrink-0" />{i18nT('components.crewMode.conductor_mode_row_count_running', { count: running })}
           </span>
         )}

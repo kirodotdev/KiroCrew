@@ -168,6 +168,10 @@ export interface LaunchJob {
    *  choice, not a failure: such a crew is not badged "Needs sign-in". */
   signin_skipped?: boolean
   error?: string
+  /** True only when a failed provision's rollback found no stack or task for
+   *  the launch's tag and its delete confirmed. False or absent (an older
+   *  gateway) says nothing either way. */
+  never_created?: boolean
   created_at: number
   updated_at: number
 }

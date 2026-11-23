@@ -86,18 +86,23 @@ def failing_test_files(failures: dict[str, str]) -> list[str]:
 
 
 def judge(
-    name_status: str, test_map: dict[str, Any], tier: list[str], failing: list[str] | None = None
+    name_status: str,
+    test_map: dict[str, Any],
+    tier: list[str],
+    failing: list[str] | None = None,
+    functions: dict[str, set[str] | None] | None = None,
 ) -> dict[str, Any]:
     """One sample's verdict: full or not, share, and (for a red run) what was missed.
 
     `map_share` and `missed_by_map` leave the guard tier out, to show what the map
-    alone picks and what only the tier caught.
+    alone picks and what only the tier caught. `functions` is
+    `ci_test_map.changed_functions` of the sample, so a function-level miss counts.
     """
     changes = ctm.parse_name_status(name_status)
-    result = ctm.select(changes, test_map, tier)
+    result = ctm.select(changes, test_map, tier, functions)
     # The same selection with a stand-in tier, which select needs non-empty: keeps a
     # changed test file that is also in the tier, drops only what the tier added.
-    by_map = ctm.select(changes, test_map, [_NO_TIER])
+    by_map = ctm.select(changes, test_map, [_NO_TIER], functions)
     by_map = by_map._replace(tests=[t for t in by_map.tests if t != _NO_TIER])
     row: dict[str, Any] = {
         "full": result.full,
@@ -289,7 +294,9 @@ def evaluate(
             row.get("base") or _run(["git", "merge-base", "origin/main", row["head"]], root).strip()
         )
         name_status = ctm.git_name_status(base, row["head"], root)
-        out.append({**row, **judge(name_status, test_map, tier, row.get("failing"))})
+        changes = ctm.parse_name_status(name_status)
+        functions = ctm.changed_functions(base, row["head"], changes, test_map, root)
+        out.append({**row, **judge(name_status, test_map, tier, row.get("failing"), functions)})
     for row in out:
         if row.get("missed"):
             others = {

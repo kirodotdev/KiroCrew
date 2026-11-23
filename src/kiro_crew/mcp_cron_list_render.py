@@ -18,7 +18,7 @@ import urllib.request
 from datetime import datetime
 from typing import Any, Iterable
 
-from kiro_crew.config.loader import read_local_secret
+from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.cron import (
     compute_next_run_ts,
     format_schedule,
@@ -27,6 +27,7 @@ from kiro_crew.cron import (
     load_cron_folders,
 )
 from kiro_crew.cron_history import keep_ends
+from kiro_crew.cron_inflight import running_note, running_since_by_job
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -392,6 +393,7 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
     lines: list[str] = [header]
     now = time.time()
     tz_name, local_tz = get_local_tz()
+    running = running_since_by_job(config_dir())
     for j in jobs:
         status = "active" if j.enabled else "paused"
         sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
@@ -449,8 +451,10 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
             extras.append(f"result={res_short}")
         extras_line = f"\n  {' | '.join(extras)}" if extras else ""
         msg_line = f"\n  → {san_msg_preview}" if san_msg_preview else ""
+        started = running.get(j.id)
+        run_note = f" {running_note(started)}" if started else ""
         lines.append(
-            f"• {san_name} {status} [{kind}]\n  ID: {j.id} | {san_sched}"
+            f"• {san_name} {status} [{kind}]{run_note}\n  ID: {j.id} | {san_sched}"
             f"{next_line}{extras_line}{msg_line}"
         )
     return "\n".join(lines)

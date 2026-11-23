@@ -16,6 +16,7 @@ from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard.chat import api_chat_slot_continue, api_chat_slot_project
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.testing.wait import async_wait_until
 
 _SLOT = "s1"
 _OLD_PROJECT = "/old/project"
@@ -138,9 +139,12 @@ async def _race_recreate_while_queued(
     async with TestClient(TestServer(_make_app(state))) as client:
         async with held_lock:
             task = asyncio.create_task(client.post(route, json=body))
-            assert await _yield_until(
-                lambda: bool(held_lock._waiters)
-            ), "handler never waited on the lock"
+            # Wait on the waiter itself, not a turn budget: Project reaches the
+            # lock only after its off-loop path probes, which take wall time.
+            await async_wait_until(
+                lambda: bool(held_lock._waiters),
+                describe=lambda: "handler never waited on the lock",
+            )
             # Same shape a delete-then-recreate under one name produces.
             state._slots[_SLOT] = replacement
         try:

@@ -40,8 +40,9 @@ export function stackKeyOf(n: Notification): string | null {
 
 /**
  * The name an expanded stack's header row shows, like the app name macOS puts
- * above a stack: the crewmate who sent it, else the app that sent it, else the
- * kind of note ("Cron Job", "Agent"). The cards under it carry the specifics.
+ * above a stack: the crewmate who sent it (its exact name, until the feed has
+ * its roster display label), else the app that sent it, else the kind of note
+ * ("Cron Job", "Agent"). The cards under it carry the specifics.
  */
 export function stackLabelOf(n: Notification): string {
   const member = noteMember(n)

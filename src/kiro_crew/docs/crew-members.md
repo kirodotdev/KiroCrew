@@ -21,6 +21,13 @@ markdown specs a Bot boots from.
 The **Bots** row sits in the left rail, under Sessions, and opens
 `/members`.
 
+On the desktop app, another program can open the page with
+`kirocrew://members`, or one Bot with `kirocrew://members?member=<name>`, where
+`<name>` is the Bot's `name` as `GET /api/members` lists it, next to its
+`slot_key`, percent-encoded. That is the Bot's config key (an id such as
+`code-reviewer` for a Bot made today), not the label the page shows. The link
+opens the Bot as clicking its roster row does.
+
 ## What a Bot is made of
 
 | Part | What it does | Empty means |
@@ -355,10 +362,12 @@ From a Discord DM, `!bot` connects the conversation to the bot's own thread
 instead of opening a new chat, so the bot keeps its worker there
 ([discord-integration.md](discord-integration.md)).
 
-Slack is the exception worth knowing. Its per-thread `!ta <name>` (`!ta off`
-clears it) resolves the name against the agent spec files in `~/.kiro/agents/`,
-not against your roster, so it picks a **template**. A Bot whose name has no
-spec file of its own comes back as `Unknown agent`.
+In Slack, send `!bot <name>` as a thread's first message to run that thread as
+the Bot, as a channel bound to it does (`!bot off` goes back;
+[slack-integration.md](slack-integration.md)). Slack's other per-thread command,
+`!ta <name>` (`!ta off` clears it), resolves the name against the agent spec
+files in `~/.kiro/agents/`, not against your roster, so it picks a **template**.
+A Bot whose name has no spec file of its own comes back as `Unknown agent`.
 
 ## Routing work to a Bot
 

@@ -587,6 +587,14 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('shows Swipe to Open and Close Side Panel on by default and stores turning it off locally', async () => {
+    wrap('sidepanel')
+    const sw = await screen.findByRole('switch', { name: 'Swipe to Open and Close Side Panel' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() => expect(storedChat().sidePanelSwipe).toBe(false))
+  })
+
   it('offers Start New Chats in conductor mode with no preview turned on, and persists it', async () => {
     const label = 'Start New Chats in conductor mode'
     wrap('sessions')

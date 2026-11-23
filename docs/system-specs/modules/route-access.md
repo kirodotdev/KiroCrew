@@ -7,9 +7,9 @@ name**, such as `widgets.reset`) and how long its request and response shape is
 promised (a **tier**). This spec says where a label is recorded and how to pick its
 two parts.
 
-**No route is labelled yet.** The table is empty, and every route registered today is
-listed in a baseline instead. What exists is the mechanism: a new route must come
-with a label, and the baseline may only shrink.
+**Few routes are labelled yet.** The routes that were registered when the table
+arrived are listed in a baseline instead. A new route must come with a label, and
+the baseline may only shrink.
 
 The labels are a record. No request reads them, and they do not decide which caller
 may call a route: each route's own checks do that, unchanged.
@@ -75,6 +75,12 @@ The baseline only shrinks:
 - A listed route that gains an entry loses its line in the same change;
   `test_a_labelled_route_has_no_baseline_row` fails otherwise.
 - A listed route that is removed loses its line too.
+- A change that generates a snapshot like this one from the live route table
+  regenerates it on current `main` right before it merges.
+  [#40990](https://github.com/kirodotdev/KiroCrew/pull/40990) built the baseline
+  at an older base, four routes that landed in between were in neither the table
+  nor the baseline, and `main` went red
+  ([Merge-safe ratchets and counts](../common/testing-conventions.md#merge-safe-ratchets-and-counts)).
 
 ## What the test checks
 

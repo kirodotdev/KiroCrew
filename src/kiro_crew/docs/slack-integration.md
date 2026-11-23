@@ -84,6 +84,7 @@ Available to all allowed users (no `!` prefix needed):
 |---------|-------------|
 | `/kirocrew dashboard` | Same as `!dashboard` |
 | `/kirocrew agent` | Switch the active agent |
+| `/kirocrew bot` | List Crew Bots. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
 | `/kirocrew voice` | Configure TTS voice settings |
 | `/kirocrew yolo` | Toggle auto-approve for all tool calls |
 | `/kirocrew config` | Edit the tracked-channel list (owner only); its user half is inert |
@@ -289,12 +290,19 @@ confirmed by Slack: remove them, or fix what their row says, first.
   to have each ID checked with Slack (`users.info`, which needs `users:read`)
   before it is used: same workspace as the bot (`auth.test`), a person rather than
   a bot or app, not deactivated, and not the owner. The page then refuses an ID
-  that fails, and shows each person's name next to their ID. An ID added with
+  that fails, and shows each person's name next to their ID. A confirmation is
+  re-checked every 10 minutes, and a refusal after a minute: an ID that stays on
+  the list gets access as soon as Slack confirms it, so remove an ID to keep that
+  person out. A failed check logs Slack's error code (for example `missing_scope`).
+- **Adding people.** You can add a person by their email instead of their ID: the
+  page looks it up with `users.lookupByEmail` (bot scope `users:read.email`, in the
+  shipped manifest; an older install needs a reinstall) and keeps the member ID,
+  and the audit log records the ID, never the email. Pasting a Slack profile link
+  (`https://<workspace>.slack.com/team/U…`) works too. Nobody can be added until
+  the Owner Slack member ID is saved, and an ID that becomes the owner's is shown
+  as the owner's own row and left out of the switch's confirm. An ID added with
   `kirocrew config` gets the same check from the gateway before its first message
-  counts. A confirmation is re-checked every 10 minutes, and a refusal after a
-  minute: an ID that stays on the list gets access as soon as Slack confirms it,
-  so remove an ID to keep that person out. A failed check logs Slack's error code
-  (for example `missing_scope`).
+  counts.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
   `!title`, `!compact`, answer question cards, answer the tool-approval
   prompts their own turns post, and send or edit the review-mode draft of their
@@ -314,9 +322,16 @@ confirmed by Slack: remove them, or fix what their row says, first.
   that."
 - **Changes apply to the next event.** Removing someone, or turning the switch
   off, stops their next message, including one already waiting in the Slack
-  queue (one already queued on a linked dashboard chat still runs). A
-  `kirocrew config` edit applies once the gateway reads it, within a couple of
-  seconds. If another `slack.*` setting in `config.json` is broken the gateway
+  queue (one already queued on a linked dashboard chat still runs). No restart
+  is needed. Edit the list with `kirocrew config set` or `kirocrew config edit`,
+  and the gateway applies it within a couple of seconds. On Linux, a hand edit of
+  `config.json` (any other editor) is held for review and is **not** in effect
+  until you apply it. When the edit changes Slack settings, the gateway logs a
+  warning and the bell shows a note listing the changed keys. Run
+  `kirocrew config pending` to review every change; it prints the
+  `kirocrew config pending apply config.json <signature>` command that applies
+  them. A restart does not apply a held edit.
+  If another `slack.*` setting in `config.json` is broken the gateway
   cannot apply the change, and the settings page says so instead of reporting it
   done.
 - **Audit.** Every admission and refusal is written to the security event log
@@ -369,7 +384,8 @@ The steps below are the manual path.
 2. **Add a bot user** with these Bot Token Scopes:
    `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`,
    `commands`, `files:read`, `files:write`, `groups:history`, `groups:read`,
-   `im:history`, `im:read`, `im:write`, `reactions:write`, and `users:read`.
+   `im:history`, `im:read`, `im:write`, `reactions:write`, `users:read`, and
+   `users:read.email`.
 3. **Add User Token Scopes** if the same app supplies a user token to a
    separately configured Slack MCP/search integration: `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
@@ -549,7 +565,7 @@ can name, create or archive a channel.
 |---|---|
 | `code_channel_rename` | Renames the channel and its session (1-200 characters). |
 | `code_channel_set_status` | Sets the session status: `processing`, `active` or `suspended`. `suspended` means the agent asked the people in the channel something and waits for the answer; it stays after the turn ends, and the next turn clears it. |
-| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
+| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads; ask for a preview of a page or site and the agent sends it here as one) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
 | `code_channel_publish_plan_canvas` | Creates or replaces the channel's plan canvas from markdown and shows it as the **Plan** tab. Members can comment on it. |
 | `code_channel_read_plan_canvas` | Reads the plan canvas back: its current markdown and the open comments on it. Use it after a restart or when the plan is no longer in the agent's context. |
 | `code_channel_set_context_bar` | Sets the agent's own items on the context bar, after the repo, branch, PR and CI items Kiro Crew keeps there (five items in all; the keys `repo`, `folder`, `branch`, `pr` and `ci` are taken). Each item has a key, a label, an optional icon and an optional `https` link. An empty list clears them. |

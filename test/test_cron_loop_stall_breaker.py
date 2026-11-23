@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 from stall_dump_helpers import CHAT_STACK, CRON_STACK, write_dump
 
+from kiro_crew import cron as cron_module
 from kiro_crew import cron_inflight
 from kiro_crew.cron import CronJob, CronService, CronStoreUnreadable
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
@@ -40,21 +41,27 @@ def dead_pids(monkeypatch: pytest.MonkeyPatch) -> set[int]:
 
 
 def _abandoned_marker(
-    base: Path, job_id: str, name: str, pid: int, started_at: float, run: str | None = None
+    base: Path,
+    job_id: str,
+    name: str,
+    pid: int,
+    started_at: float,
+    run: str | None = None,
+    phase: str | None = None,
 ) -> None:
     d = cron_inflight.running_dir(base)
     d.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "job_id": job_id,
+        "name": name,
+        "started_at": started_at,
+        "pid": pid,
+        "pid_domain": crash_dump_store._pid_domain(),
+    }
+    if phase is not None:
+        payload["phase"] = phase
     (d / (f"{job_id}.json" if run is None else f"{job_id}.{run}.json")).write_text(
-        json.dumps(
-            {
-                "job_id": job_id,
-                "name": name,
-                "started_at": started_at,
-                "pid": pid,
-                "pid_domain": crash_dump_store._pid_domain(),
-            }
-        ),
-        encoding="utf-8",
+        json.dumps(payload), encoding="utf-8"
     )
 
 
@@ -190,6 +197,35 @@ class TestBreaker:
         finally:
             await svc.stop()
 
+    async def test_a_run_in_its_jitter_wait_is_not_a_second_candidate(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """A run still sleeping out its jitter has run nothing, so it cannot
+        have stalled the loop: the stalled job is still the one paused, and the
+        waiting run is filed as one that never started."""
+        seed = CronService(base_dir=tmp_path)
+        stalled = seed.add_job(name="stalled", message="m", every_secs=3600)
+        waiting = seed.add_job(name="waiting", message="m", cron_expr="0 9 * * *", timezone="UTC")
+        now = time.time()
+        write_dump(tmp_path / "dumps", 4_100_015, CRON_STACK, mtime=now - 30)
+        _abandoned_marker(tmp_path, stalled.id, stalled.name, 4_100_015, now - 60)
+        _abandoned_marker(
+            tmp_path, waiting.id, waiting.name, 4_100_015, now - 50, run="waitrun", phase="jitter"
+        )
+        svc = await _started_service(tmp_path, tmp_path / "dumps")
+        try:
+            assert svc.get_job(stalled.id).auto_paused is True  # type: ignore[union-attr]
+            assert svc.get_job(waiting.id).auto_paused is False  # type: ignore[union-attr]
+            rows, total = await svc._history.get_job_history(waiting.id)
+            assert total == 1, "the run cut in its jitter wait left no history row"
+            assert (rows[0]["status"], rows[0]["error"]) == (
+                "cancelled",
+                interruption_note(dispatched=False),
+            )
+            assert cron_inflight.abandoned_markers(tmp_path) == []
+        finally:
+            await svc.stop()
+
     async def test_a_marker_no_dump_explains_is_swept(
         self, tmp_path: Path, dead_pids: set[int]
     ) -> None:
@@ -241,6 +277,41 @@ class TestBreaker:
             assert cron_inflight.read_markers(tmp_path) == []
             filed = CronService(base_dir=tmp_path).get_job(job.id)
             assert filed is not None and filed.last_run_ts == started_at
+        finally:
+            await svc.stop()
+        assert notices == [(job.id, note)]
+
+    async def test_a_run_cut_in_its_jitter_wait_is_filed_as_never_started(
+        self, tmp_path: Path, dead_pids: set[int]
+    ) -> None:
+        """A hard exit in the jitter wait leaves the marker written before the
+        wait. The run executed nothing, so its row and notice say it never
+        started, as a graceful stop at the same point says."""
+        seed = CronService(base_dir=tmp_path)
+        job = seed.add_job(name="daily", message="m", cron_expr="0 9 * * *", timezone="UTC")
+        claimed_at = time.time() - 600
+        _abandoned_marker(
+            tmp_path, job.id, job.name, 4_100_014, claimed_at, run="waitrun", phase="jitter"
+        )
+        notices: list[tuple[str, str]] = []
+
+        async def notice(j: CronJob, detail: str) -> None:
+            notices.append((j.id, detail))
+
+        svc = await CronService.create(base_dir=tmp_path)
+        svc._dumps_dir = tmp_path / "no-dumps"
+        svc.set_interrupt_alert(notice)
+        await svc.start()
+        try:
+            rows, total = await svc._history.get_job_history(job.id)
+            assert total == 1, "the run cut in its jitter wait left no history row"
+            note = interruption_note(dispatched=False)
+            assert (rows[0]["status"], rows[0]["started_at"], rows[0]["error"]) == (
+                "cancelled",
+                claimed_at,
+                note,
+            )
+            assert cron_inflight.abandoned_markers(tmp_path) == []
         finally:
             await svc.stop()
         assert notices == [(job.id, note)]
@@ -597,6 +668,47 @@ class TestRunMarker:
         (marker,) = seen[0]
         assert marker.job_id == job.id and marker.name == "probe" and marker.pid == os.getpid()
         assert cron_inflight.read_markers(tmp_path) == []
+
+    async def test_a_run_in_its_jitter_wait_is_on_disk_before_the_wait(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hard exit in the jitter wait runs no ``finally``, so the claimed run
+        is on disk before the wait begins, under its claim time, as a run that
+        has not started; it reads as running only once it executes."""
+        on_disk: list[list[dict[str, object]]] = []
+        executing: list[list[cron_inflight.RunningMarker]] = []
+
+        async def wait_out(_seconds: float) -> None:
+            on_disk.append(
+                [
+                    json.loads(p.read_text(encoding="utf-8"))
+                    for p in cron_inflight.running_dir(tmp_path).glob("*.json")
+                ]
+            )
+            executing.append(cron_inflight.read_markers(tmp_path))
+
+        async def on_job(job: CronJob) -> str | None:
+            executing.append(cron_inflight.read_markers(tmp_path))
+            return None
+
+        monkeypatch.setattr(cron_module, "_sleep_out_jitter", wait_out)
+        svc = await CronService.create(base_dir=tmp_path, on_job=on_job)
+        job = svc.add_job(name="daily", message="m", cron_expr="0 9 * * *", timezone="UTC")
+        monkeypatch.setattr(svc, "_compute_jitter", lambda _job: 30.0)
+        svc._running = True
+        claim = svc._claim_run(job.id, "scheduled")
+        await svc._run_job_isolated(job, claim)
+        assert [len(markers) for markers in on_disk] == [1], "no marker before the jitter wait"
+        ((waiting,),) = on_disk
+        assert (waiting["job_id"], waiting["phase"], waiting["started_at"]) == (
+            job.id,
+            "jitter",
+            claim.claimed_at,
+        )
+        in_wait, in_run = executing
+        assert in_wait == []
+        assert [(m.job_id, m.phase) for m in in_run] == [(job.id, "running")]
+        assert list(cron_inflight.running_dir(tmp_path).glob("*.json")) == []
 
     async def test_marker_is_cleared_when_the_callback_raises(self, tmp_path: Path) -> None:
         async def on_job(job: CronJob) -> str | None:

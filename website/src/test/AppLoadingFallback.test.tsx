@@ -7,7 +7,7 @@
  * `AppHostLoading.test.tsx`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import AppLoadingFallback, {
   APP_LOADING_DELAY_MS,
   APP_LOADING_LAYOUTS,
@@ -190,5 +190,51 @@ describe('AppLoadingFallback — layouts', () => {
       expect(exposed, layout).toHaveLength(0)
       unmount()
     }
+  })
+})
+
+describe('AppLoadingFallback — logo', () => {
+  function shown(loading: unknown, appId = 'ledger-lens') {
+    render(<AppLoadingFallback appName="Ledger Lens" appId={appId} loading={loading} delayMs={0} />)
+    return screen.getByTestId('app-loading-fallback')
+  }
+
+  it.each(APP_LOADING_LAYOUTS)('%s draws the declared logo above the label', (layout) => {
+    const el = shown({ layout, logo: './img/logo.png' })
+    const img = screen.getByTestId('app-loading-logo')
+    expect(img.getAttribute('src')).toBe('/apps/ledger-lens/ui/img/logo.png')
+    expect(img.getAttribute('alt')).toBe('')
+    expect(img.className.split(' ')).toEqual(expect.arrayContaining(['h-12', 'w-12']))
+    const label = [...el.querySelectorAll('p')].find(p => p.textContent?.includes('Loading Ledger Lens'))!
+    expect(img.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('an app that declares no logo renders no image and the label exactly as before', () => {
+    const el = shown({ layout: 'page' })
+    expect(el.querySelector('img')).toBeNull()
+    expect(screen.getByTestId('app-loading-shape-page').querySelector('p')?.className).toBe('text-[12px] text-muted mt-4')
+  })
+
+  it.each([
+    ['a traversal', '../secret.png'],
+    ['an absolute URL', 'https://tracker.example/logo.png'],
+    ['a protocol-relative URL', '//tracker.example/logo.png'],
+    ['a data URL', 'data:image/png;base64,AAAA'],
+    ['a non-string', 7],
+    ['an empty string', ''],
+  ])('%s draws no image', (_label, logo) => {
+    expect(shown({ logo }).querySelector('img')).toBeNull()
+  })
+
+  it('a logo only on the prototype is not one the manifest declared', () => {
+    expect(shown(Object.create({ logo: 'logo.png' })).querySelector('img')).toBeNull()
+  })
+
+  it('an image that fails to load is hidden in place, keeping its box', () => {
+    shown({ logo: 'missing.png' })
+    const img = screen.getByTestId('app-loading-logo')
+    fireEvent.error(img)
+    expect(img.style.visibility).toBe('hidden')
+    expect(img.isConnected).toBe(true)
   })
 })

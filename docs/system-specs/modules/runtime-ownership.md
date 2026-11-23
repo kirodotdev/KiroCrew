@@ -466,7 +466,10 @@ Tenants PULL the record rather than being pushed it. A tenant learns of the deat
 the way it already does — its poisoned session queue raises into whatever turn it
 had — and reads the record while handling it. A tenant with no turn in flight has
 nothing to recover and re-acquires on its next turn, which drops a dead runtime on
-the way past. There is deliberately no observer registry: a notification channel
+the way past. A sub-agent run parked on a wait cannot: nothing restarts an `AcpRuntime`
+under it, so the sub-agent reaper asks that run's own handle each sweep and ends the run
+([subagent.md](subagent.md), *Transient Retry (mid-stream 5xx) and dependency waits*).
+There is deliberately no observer registry: a notification channel
 with no subscriber is a mechanism whose first real consumer would have to redesign
 it.
 
@@ -569,7 +572,7 @@ backend another process on this data home spawned are not in it.
 
 ### Leaked untracked runtimes: read every pass, reclaimed only on a user confirm
 
-`session_pid`'s report-only arm finds a managed runtime reparented to init with our marker and in neither pid file. Every pass copies its current hits into the reading as `leaked_untracked`, `leaked_rss_bytes` (each root counted with its descendants) and `leaked`, Linux only. No scheduled arm acts on them.
+`session_pid`'s report-only arm finds a managed runtime reparented to init with our marker and in neither pid file. For a `claude` argv0 it also needs a runtime flag in argv (`-p`, `--print`, `--output-format` or `--input-format`, `_CLAUDE_RUNTIME_FLAGS`), so a helper the Claude CLI starts for itself, such as `claude __otel-server`, is not reported, counted or offered for reclaim. Every pass copies its current hits into the reading as `leaked_untracked`, `leaked_rss_bytes` (each root counted with its descendants) and `leaked`, Linux only. No scheduled arm acts on them.
 
 `RuntimeReconciler.reclaim_untracked` is the one path that may, and its only caller is the owner-only `POST /api/system/leaked-runtimes/reclaim` with `{"confirm": true}`. A candidate must have been reported by a sweep and be detected again on a complete tracked snapshot. Each condition can only withhold: tracked, protected, leased or claimed; not a managed harness; no spawn marker; younger than the age floor; a `KIROCREW_SPAWN_HOME` that is absent or names another data home (the marker is shared by every install on this uid, and a sibling's runtime is tracked only in its own pid files); a live session leader or group leader other than itself (the session id comes from `platform_compat.read_proc_stat`, so a leader whose name is not UTF-8 still reads as live); no readable `KIROCREW_SPAWN_INSTANCE`; or any live process outside its own tree carrying the same instance. The last one is what keeps a live runtime's descendant safe: the stamps are inherited, so that runtime itself holds the instance. The start identity is re-read before `authorize_runtime_kill` and pinned into `_kill_pid_tree`, under the tenancy barrier, at most `min(session.reconcile_max_kills, DEFAULT_MAX_KILLS)` trees per call. At a budget of `0` every candidate is refused "kill budget spent" and audited `refused`.
 

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   clearSlotSuccession,
+  commitSlotSuccession,
   forgetSlotSuccession,
   recordSlotSuccession,
   resolveSlotSuccession,
@@ -79,5 +80,40 @@ describe('a succession is revoked when the deletion it anticipated fails', () =>
     recordSlotSuccession('a', 'b')
     forgetSlotSuccession('')
     expect(resolveSlotSuccession('a')).toBe('b')
+  })
+})
+
+describe('a pending succession is followed only once it commits', () => {
+  beforeEach(() => clearSlotSuccession())
+
+  it('stops a committed-only resolve at an uncommitted edge, and follows it once committed', () => {
+    recordSlotSuccession('slot-a', 'slot-a2', { pending: true })
+    // Every other reader (the tab strip, an embedded panel) follows it at once.
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-a2')
+    expect(resolveSlotSuccession('slot-a', { committedOnly: true })).toBe('slot-a')
+    commitSlotSuccession('slot-a')
+    expect(resolveSlotSuccession('slot-a', { committedOnly: true })).toBe('slot-a2')
+  })
+
+  it('walks the committed part of a chain and stops at its pending tail', () => {
+    recordSlotSuccession('a', 'b')
+    recordSlotSuccession('b', 'c', { pending: true })
+    expect(resolveSlotSuccession('a', { committedOnly: true })).toBe('b')
+    expect(resolveSlotSuccession('a')).toBe('c')
+  })
+
+  it('drops the pending mark with a forgotten edge', () => {
+    recordSlotSuccession('slot-a', 'slot-a2', { pending: true })
+    forgetSlotSuccession('slot-a')
+    // Recorded again, committed, the edge carries no stale mark.
+    recordSlotSuccession('slot-a', 'slot-a3')
+    expect(resolveSlotSuccession('slot-a', { committedOnly: true })).toBe('slot-a3')
+  })
+
+  it('does not carry the mark onto a later edge from the same slot after a forget', () => {
+    recordSlotSuccession('slot-a', 'slot-a2', { pending: true })
+    forgetSlotSuccession('slot-a')
+    expect(resolveSlotSuccession('slot-a', { committedOnly: true })).toBe('slot-a')
+    expect(resolveSlotSuccession('slot-a')).toBe('slot-a')
   })
 })

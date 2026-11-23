@@ -2603,8 +2603,12 @@ The snapshot is only ever rebuilt off-loop:
   spec it skipped did not parse, in either directory: the same bytes fail the
   same way, while a failed read or listing can pass a moment later. So one
   unparseable spec keeps the memo on, and a transient failure is read again. A
-  key `agents_dir_revision` cannot prove (Windows by default, a symlinked spec,
-  more than 64 entries younger than 2 s) scans every time. Callers whose inputs
+  key `agents_dir_revision` cannot prove (a symlinked spec, more than 64 entries
+  or 8 MiB younger than 2 s, on Windows more than 256 MiB of specs, since there
+  every entry is pinned on a digest of its bytes) scans every time. An entry it
+  must hash but cannot is logged at WARNING, naming the folder and the
+  entry, once until that folder next yields a revision; a spent byte budget is
+  not logged. Callers whose inputs
   keep moving scan one after another; readers of the snapshot never wait on the
   flight lock. A reuse heals like a scan, outside the lock, and the agent-catalog
   fetch (`dashboard/handlers/agent_catalog.py`) calls the refresh once and then
@@ -3640,7 +3644,14 @@ platform the effective deadline is floored to 30 s by
 right after a daemon restart several backends cold-start at once and take 13-15 s, and a
 Windows cold start can overrun 10 s alone, so a 10 s deadline reaps backends that were
 about to answer; a configured value already above the floor is unchanged, and the spawn
-gate's initialize watcher and its slow-init fraction read the same effective value);
+gate's initialize watcher and its slow-init fraction read the same effective value;
+a pool key whose spawns were reaped at that deadline gets a longer one on its next
+spawn, because a reaped backend is killed and its respawn starts cold again:
+`Admission.initialize_timeout_for` doubles the effective deadline for each reap in a
+row, up to `INIT_DEADLINE_STRETCH_CAP_SECS` (120 s), never lowers a configured value
+above that cap, and clears the count once a handshake for that key completes; the
+count is kept per SHA-256 digest of the key for at most `INIT_DEADLINE_REAP_KEYS_MAX`
+(256) keys, the key reaped longest ago forgotten first);
 `host_budget_max_procs` / `host_budget_max_rss_mb` / `host_budget_max_fds` (all
 0) cap what the host budget admits across pooled, private and fallback
 backends, where `0` means derive from the available-memory sample the gateway

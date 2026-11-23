@@ -512,7 +512,7 @@ class WhatsAppRenderer(Renderer):
             # and start a group cooldown for an answer nobody has given yet.
             self._prompt_id = await self._transport.send_message(
                 self._chat,
-                display_safe_text(build_approval_prompt(title, purpose)),
+                display_safe_text(build_approval_prompt(title, purpose, self.prompt_mcp_identity)),
             )
         except Exception:
             # The entry is opened before the send because the send is what can

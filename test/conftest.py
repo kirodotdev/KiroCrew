@@ -320,6 +320,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _fresh_hardlink_spec_warnings,
     _fresh_reexec_environment,
     _fresh_released_sessions_warning,
+    _fresh_unhashable_agents_dir_warnings,
     _history_cleanup_throttle_closed,
     _inline_taskq_pump,
     _isolate_advertised_model_cache,
@@ -374,6 +375,9 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
 from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_kas_agent_config_error_reports,
 )
+from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
+    _fresh_decision_provider_error_warnings,
+)
 
 # The in-memory Slack client and the Slack state resets.
 from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importers
@@ -381,6 +385,7 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _clean_emojis,
     _clean_slack_thread_state,
     _enterprise_bypass,
+    _reset_code_channel_audience,
     _reset_options_control_state,
 )
 

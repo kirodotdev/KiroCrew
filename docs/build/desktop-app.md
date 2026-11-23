@@ -1031,7 +1031,7 @@ that each is a whole port in 1..65535 other than the launch port, takes at most
 32 per window, and forwards each from this machine's `127.0.0.1` to the same
 port on the crew host's loopback, the forward the pane's own `ssh -L` hint asks
 the user to run by hand.
-The Windows titlebar menu rides the same ownership boundary, per action rather
+The in-app titlebar menu (Windows, and frameless Linux) rides the same ownership boundary, per action rather
 than per channel. `app-menu:items` and `app-menu:execute` in
 [`ipc-registrar.js`](../../website/electron/ipc-registrar.js) resolve whether the
 sender is the local dashboard through the three checks above — the fixed primary
@@ -1428,7 +1428,11 @@ search affordance — and the palette remains reachable through its keyboard
 shortcut even while hidden.
 The command-palette trigger is positioned from the window midpoint rather than
 the remaining flex space, so asymmetric menu and status controls do not shift it.
-Linux retains the window manager's native frame and menu bar.
+A framed Linux window retains the window manager's native frame and menu bar. A
+frameless Linux window (a Wayland compositor that prefers client-side
+decorations) has no menu bar, so it shows the same hamburger menu, but only when
+the shell's preload sets `linuxAppMenu`; an older shell omits the flag and the
+trigger stays off.
 
 In macOS native fullscreen AppKit owns the top strip (pointing at it slides the
 menu bar down), so the dashboard pads the app frame (`data-testid="app-frame"`)
@@ -2187,7 +2191,17 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   requested before the quit, so a quit-time apply that is refused (governance,
   a newer feed, a gateway still running) still brings the app back; the feed
   lane asks for it explicitly on each of those stand-downs, because only
-  `quitAndInstall` honors its relaunch flag.
+  `quitAndInstall` honors its relaunch flag. The update modal and Settings →
+  About show Restart now only where that IPC would accept the window:
+  `updateAPI.canRelaunch()` (the `update:can-relaunch` IPC) runs the same
+  `assertLocalDashboard` check and answers a boolean, like
+  `gateway:can-restart`. `useInstallDispatch` asks it when the update arms and
+  again whenever the window regains focus or becomes visible, and only the
+  newest answer counts, so one transient `false` does not hide the action for
+  the rest of the session. Where it answers `false` (a gateway reached through
+  a port another process forwards, say), only "Install when I quit" is
+  offered. A shell without `canRelaunch` offers Restart now whenever
+  `relaunch` exists.
 - **Every apply is logged to `gateway-launch.log`.** `updateCommand` writes
   `[update] managed update command started (pid N)` when it spawns and
   `... ended: <outcome>, ran N ms, N bytes of output` when it ends, on quit and

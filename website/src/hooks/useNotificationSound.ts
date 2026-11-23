@@ -180,11 +180,56 @@ export interface SoundSettings {
   /** Epoch ms a timed mute ends at. Read against the clock at play time, so
    *  sound comes back on its own with nothing left to clear. */
   mutedUntil?: number
+  /** The weekly sound hours; absent until the user first turns them on. */
+  schedule?: SoundSchedule
 }
 
+/** One day's sound hours in minutes after local midnight: sound plays from
+ *  `from` up to, not including, `to`. */
+export interface SoundHours { from: number; to: number }
+
+/** Seven days, Monday first; `null` is a day with no sound. The days are kept
+ *  while `on` is false, so turning the schedule back on restores them. */
+export interface SoundSchedule { on: boolean; days: Array<SoundHours | null> }
+
+export const MINUTES_PER_DAY = 24 * 60
+
 /** True while a timed mute has not run out. */
-export const isSoundMuted = (s: SoundSettings, now = Date.now()): boolean =>
+export const isTimedMuteRunning = (s: SoundSettings, now = Date.now()): boolean =>
   s.mutedUntil !== undefined && s.mutedUntil > now
+
+/** True while the schedule is on and `now` falls outside that day's hours. */
+function isOutsideSoundHours(s: SoundSettings, now: number): boolean {
+  if (!s.schedule?.on) return false
+  const at = new Date(now)
+  const hours = s.schedule.days[(at.getDay() + 6) % 7]
+  const minute = at.getHours() * 60 + at.getMinutes()
+  return !hours || minute < hours.from || minute >= hours.to
+}
+
+/** True while no notification sound may play: a timed mute is running, or the
+ *  local time is outside the weekly sound hours. */
+export const isSoundMuted = (s: SoundSettings, now = Date.now()): boolean =>
+  isTimedMuteRunning(s, now) || isOutsideSoundHours(s, now)
+
+/** A stored schedule, or undefined for anything that is not one: seven days,
+ *  each `null` or whole minutes with `0 <= from < to <= MINUTES_PER_DAY`. A
+ *  schedule that fails is dropped whole, so sound plays as with none set. */
+function loadSchedule(raw: unknown): SoundSchedule | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const { on, days } = raw as { on?: unknown; days?: unknown }
+  if (typeof on !== 'boolean' || !Array.isArray(days) || days.length !== 7) return undefined
+  const out: Array<SoundHours | null> = []
+  for (const day of days) {
+    if (day === null) { out.push(null); continue }
+    const { from, to } = (typeof day === 'object' ? day : {}) as { from?: unknown; to?: unknown }
+    if (!Number.isInteger(from) || !Number.isInteger(to)) return undefined
+    const hours = { from: from as number, to: to as number }
+    if (hours.from < 0 || hours.from >= hours.to || hours.to > MINUTES_PER_DAY) return undefined
+    out.push(hours)
+  }
+  return { on, days: out }
+}
 
 const STORAGE_KEY = 'mc-notification-sound'
 
@@ -224,6 +269,8 @@ export function loadSoundSettings(): SoundSettings {
     if (Object.keys(customTones).length > 0) out.customTones = customTones
     if (Object.keys(customFiles).length > 0) out.customFiles = customFiles
     if (typeof parsed.mutedUntil === 'number') out.mutedUntil = parsed.mutedUntil
+    const schedule = loadSchedule(parsed.schedule)
+    if (schedule) out.schedule = schedule
     return out
   } catch {
     return { ...DEFAULTS, perCategory: { ...DEFAULTS.perCategory } }

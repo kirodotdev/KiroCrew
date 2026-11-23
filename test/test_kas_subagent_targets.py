@@ -154,6 +154,28 @@ async def test_a_pattern_registers_every_agent_it_matches(agents_dir):
             },
             id="write-denied-paths",
         ),
+        pytest.param(
+            # A path-scoped entry KAS has no host deny for: only the gate refuses it.
+            {
+                "tools": ["web_fetch"],
+                "allowedTools": ["web_fetch"],
+                "toolsSettings": {"web_fetch": {"blocked": ["https://example\\.com/private/.*"]}},
+            },
+            id="web-fetch-blocked",
+        ),
+        pytest.param(
+            {
+                "tools": ["web_fetch"],
+                "allowedTools": ["web_fetch"],
+                "toolsSettings": {
+                    "web_fetch": {
+                        "trusted": ["https://example\\.com/docs.*"],
+                        "blocked": ["https://example\\.com/private/.*"],
+                    }
+                },
+            },
+            id="web-fetch-blocked-beside-trusted",
+        ),
     ],
 )
 async def test_a_target_whose_limits_only_the_gate_applies_is_not_registered(agents_dir, limits):
@@ -250,12 +272,12 @@ async def test_the_targets_past_the_cap_are_named(agents_dir, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_target_whose_deny_record_only_grants_a_fetch_is_registered(agents_dir):
-    # The gate never refuses a fetch by the record's web_fetch lists, it only grants
-    # a trusted one, so the sub-agent's fetch without the record asks instead.
+    # KAS carries the host entry as its own deny, so the record's web_fetch lists
+    # only grant a trusted fetch: without the record the sub-agent's fetch asks.
     fetch = {
         "web_fetch": {
             "trusted": ["https://example\\.com/docs.*"],
-            "blocked": ["https://example\\.com/private.*"],
+            "blocked": ["private\\.example\\.com"],
         }
     }
     _write(agents_dir, _delegator("fetcher"))

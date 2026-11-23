@@ -10,6 +10,7 @@ covers is approved as before (each case has that control).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,7 +25,7 @@ from kiro_crew.cron_service.fields import auto_job_approver
 from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 
-pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "ample_host_free_memory")
 
 BASE = {
     "name": "kirocrew-mate-worker",
@@ -1049,3 +1050,304 @@ def test_a_record_read_error_leaves_the_child_spec_as_the_gate_reads_it(ledger, 
     spec = {"allowedTools": ["fs_read"]}
     assert mate_held_rules.held_child_spec(spec, "k") is spec
     assert mate_held_rules.held_for(_event("read"), session_key="k") == []
+
+
+# --- Crew's own spawn admission under a held ``subagent`` limit ---------------------
+
+_PARENT = "dashboard:chat-bot-worker"
+
+
+def _hold_for_member(ledger: Path, capability: str) -> None:
+    rules = [{"text": f"its {capability} limit", "capability": capability}]
+    ledger.write_text(json.dumps({"held_rules": {"zxc": {"member_id": "m1", "rules": rules}}}))
+
+
+@pytest.fixture
+def bot_parent(ledger, monkeypatch) -> Path:
+    """``_PARENT`` is a session of Bot ``zxc`` (member ``m1``), vouched by this process."""
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+
+    monkeypatch.setattr(
+        execution_context,
+        "read_vouched_session_execution",
+        lambda key: SimpleNamespace(member_id="m1") if key == _PARENT else None,
+    )
+    return ledger
+
+
+class _AskedPerson:
+    """An approval callback a person answers with *answer* once ``gate`` is set;
+    ``held`` records whether each prompt was marked held for its approver."""
+
+    def __init__(self, answer: bool = False) -> None:
+        self.gate = asyncio.Event()
+        self.answer = answer
+        self.request_ids: list[str] = []
+        self.held: list[bool] = []
+
+    async def __call__(self, request_id: str, _desc: str, _parent: str = "") -> bool:
+        self.request_ids.append(request_id)
+        self.held.append(mate_held_rules.call_is_held())
+        await self.gate.wait()
+        return self.answer
+
+
+def _spawn_manager(rung: str, approval, agent: str = "", **kw):  # type: ignore[no-untyped-def]
+    """A manager whose one auto-approve *rung* is on and whose parent session runs
+    *agent*; ``_run`` records each start."""
+    from kiro_crew.subagent import SubagentManager
+
+    sessions = MagicMock()
+    sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent = MagicMock(return_value=agent)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
+    sessions.get_approval_policy = MagicMock(return_value="auto" if rung == "trust" else "ask")
+    ctx = MagicMock()
+    ctx.build_message = MagicMock(return_value=("built_message", None))
+    ctx.hooks.auto_approve_subagent_spawn = rung == "hook"
+    mgr = SubagentManager(
+        sessions=sessions,
+        ctx_builder=ctx,
+        on_spawn_approval=approval,
+        is_yolo=lambda: rung == "yolo",
+        **kw,
+    )
+    mgr._run = MagicMock(side_effect=lambda info: _a_run())  # type: ignore[method-assign]
+    return mgr
+
+
+async def _a_run() -> None:
+    """The started run: recorded by ``_run``'s call, nothing to do."""
+
+
+_RUNGS = ["yolo", "auto", "trust", "hook"]
+
+
+async def _spawn_on(mgr, rung: str, entry: str):  # type: ignore[no-untyped-def]
+    kwargs = {"parent_session_key": _PARENT}
+    if rung == "auto":
+        kwargs["approval_mode"] = "auto"
+    if entry in ("async", "durable"):
+        await mgr.wait_taskq_ready()
+    if entry == "async":
+        # The in-memory path: no task store.
+        mgr._taskq = None
+    if entry == "durable":
+        # The task store's path: the row is written, claimed and registered.
+        assert mgr._admission.taskq_store() is not None
+    if entry in ("async", "durable"):
+        return await mgr.spawn_async("Return only the result of 1+1", **kwargs)
+    return mgr.spawn("Return only the result of 1+1", **kwargs)
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["sync", "async", "durable"])
+@pytest.mark.parametrize("rung", _RUNGS)
+async def test_a_held_subagent_limit_sends_every_auto_rung_spawn_to_a_person(
+    bot_parent, rung, entry
+):
+    """YOLO, a spawn's ``approval_mode="auto"``, the parent's Trust and the hook grant
+    each start a sub-agent on their own; under the Bot's held ``subagent`` limit the
+    spawn goes to the approval callback instead, and nothing starts."""
+    from kiro_crew.testing.wait import async_wait_until
+
+    _hold_for_member(bot_parent, "subagent")
+    asked = _AskedPerson()
+    mgr = _spawn_manager(rung, asked)
+
+    info = await _spawn_on(mgr, rung, entry)
+
+    assert info is not None and not info.done
+    assert mgr._run.call_count == 0
+    await async_wait_until(lambda: asked.request_ids, describe=lambda: asked.request_ids)
+    assert asked.request_ids == [f"spawn:{info.id}"]
+    assert asked.held == [True]
+    assert mgr._run.call_count == 0
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+@pytest.mark.asyncio
+async def test_a_spawn_with_no_held_limit_still_reaches_its_prompt_unmarked(bot_parent):
+    """Control: with no auto-approve rung on, a Bot holding only a ``shell`` limit
+    still gets its approval prompt, not marked held, and nothing starts before it."""
+    from kiro_crew.testing.wait import async_wait_until
+
+    _hold_for_member(bot_parent, "shell")
+    asked = _AskedPerson()
+    mgr = _spawn_manager("none", asked)
+
+    info = await _spawn_on(mgr, "none", "sync")
+
+    assert info is not None and not info.done
+    await async_wait_until(lambda: asked.request_ids, describe=lambda: (info.done, info.error))
+    assert asked.request_ids == [f"spawn:{info.id}"]
+    assert asked.held == [False]
+    assert mgr._run.call_count == 0
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+@pytest.mark.asyncio
+async def test_a_held_spawn_a_person_approves_starts_a_run_that_is_not_held(bot_parent):
+    """Only the prompt is marked held: its approver sees the mark, the run it starts
+    (whose own calls go to the tool gates) does not."""
+    from kiro_crew.testing.wait import async_wait_until
+
+    _hold_for_member(bot_parent, "subagent")
+    asked = _AskedPerson(answer=True)
+    mgr = _spawn_manager("yolo", asked)
+    in_run: list[bool] = []
+    mgr._run = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda info: in_run.append(mate_held_rules.call_is_held()) or _a_run()
+    )
+
+    info = await _spawn_on(mgr, "yolo", "sync")
+    await async_wait_until(lambda: asked.request_ids, describe=lambda: asked.request_ids)
+    asked.gate.set()
+    await async_wait_until(lambda: in_run, describe=lambda: (info.done, info.error))
+
+    assert asked.held == [True]
+    assert in_run == [False]
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["sync", "async"])
+@pytest.mark.parametrize("rung", _RUNGS)
+async def test_a_parent_without_a_held_subagent_limit_still_starts_on_its_rung(
+    bot_parent, rung, entry
+):
+    """Control: a Bot holding only a ``shell`` limit starts the sub-agent on the auto
+    rung as before, with nobody asked."""
+    _hold_for_member(bot_parent, "shell")
+    asked = _AskedPerson()
+    mgr = _spawn_manager(rung, asked)
+
+    info = await _spawn_on(mgr, rung, entry)
+
+    assert info is not None and not info.done
+    assert mgr._run.call_count == 1
+    assert asked.request_ids == []
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rung", _RUNGS)
+async def test_a_held_spawn_with_no_approval_callback_is_rejected_not_started(bot_parent, rung):
+    """With no approval mechanism the held spawn takes the existing rejection."""
+    _hold_for_member(bot_parent, "subagent")
+    mgr = _spawn_manager(rung, None)
+
+    info = await _spawn_on(mgr, rung, "sync")
+
+    assert info is not None and info.done
+    assert info.error == "spawn rejected: no approval mechanism configured"
+    assert mgr._run.call_count == 0
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["async", "durable"])
+async def test_the_event_loop_spawn_reads_the_held_limits_off_the_loop(
+    bot_parent, monkeypatch, entry
+):
+    """``spawn_async`` hands the gate its off-loop read; the gate reads nothing on the loop."""
+    import threading
+
+    _hold_for_member(bot_parent, "subagent")
+    real = mate_held_rules.held_spawn_limits
+    on_loop: list[bool] = []
+
+    def recorded(session_key: str, agent: str = "") -> list[str]:
+        on_loop.append(threading.current_thread() is threading.main_thread())
+        return real(session_key, agent)
+
+    monkeypatch.setattr(mate_held_rules, "held_spawn_limits", recorded)
+    mgr = _spawn_manager("auto", _AskedPerson())
+
+    info = await _spawn_on(mgr, "auto", entry)
+
+    assert info is not None
+    assert mgr._run.call_count == 0
+    assert on_loop and not any(on_loop), on_loop
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["sync", "async"])
+@pytest.mark.parametrize("agent, held", [("zxc", True), ("other", False)])
+async def test_a_session_that_names_its_bot_only_by_agent_asks_at_spawn(
+    ledger, monkeypatch, entry, agent, held
+):
+    """A channel's session records no Bot; its live agent names Bot ``zxc``, as at the
+    tool gates, so its YOLO spawn asks too. Control: an agent naming no held Bot starts."""
+    from kiro_crew.testing.wait import async_wait_until
+
+    _hold_for_member(ledger, "subagent")
+    monkeypatch.setattr(mate_held_rules, "_member_of", lambda a: "m1" if a == "zxc" else "")
+    asked = _AskedPerson()
+    mgr = _spawn_manager("yolo", asked, agent=agent)
+
+    info = await _spawn_on(mgr, "yolo", entry)
+
+    assert info is not None and not info.done
+    if held:
+        await async_wait_until(lambda: asked.request_ids, describe=lambda: asked.request_ids)
+        assert asked.request_ids == [f"spawn:{info.id}"]
+        assert asked.held == [True]
+    assert mgr._run.call_count == (0 if held else 1)
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+@pytest.mark.asyncio
+async def test_a_queued_spawn_drained_after_its_session_left_is_still_held(ledger, monkeypatch):
+    """A spawn queued behind the cap keeps the agent its parent ran at accept time, on
+    its durable row too, so its drain after a channel session left the session map
+    still finds Bot ``zxc`` and asks."""
+    from kiro_crew.testing.wait import async_wait_until
+
+    _hold_for_member(ledger, "subagent")
+    monkeypatch.setattr(mate_held_rules, "_member_of", lambda a: "m1" if a == "zxc" else "")
+    live = {_PARENT: "zxc"}
+    asked = _AskedPerson()
+    mgr = _spawn_manager("yolo", asked, max_concurrent=1)
+    mgr._sessions.get_agent = MagicMock(side_effect=lambda key: live.get(key, ""))
+    await mgr.wait_taskq_ready()
+    mgr._spawn_stagger_secs = 0.0
+    assert mgr.spawn("occupy", parent_session_key="dashboard:other") is not None
+    queued = mgr.spawn("waiting", parent_session_key=_PARENT)
+    assert queued is not None and queued.queued and not queued.done
+    params = mgr._queue[0]
+    record = mgr._admission.taskq_build_record(
+        "x",
+        params,
+        parent_session_key=_PARENT,
+        memory_store="",
+        app="",
+        model=None,
+        allowed_tools=None,
+        approval_mode=None,
+    )
+    assert params["_parent_live_agent"] == record.params["_parent_live_agent"] == "zxc"
+
+    live.clear()
+    mgr._max_concurrent = 3
+    await mgr._drain_queue_async()
+
+    await async_wait_until(lambda: asked.request_ids, describe=lambda: (queued.done, queued.error))
+    assert asked.request_ids == [f"spawn:{queued.id}"]
+    assert asked.held == [True]
+    assert mgr._run.call_count == 1  # the occupying spawn only
+
+
+def test_only_a_held_subagent_limit_is_a_held_spawn(bot_parent):
+    """The spawn gate's read answers the ``subagent`` texts alone; a limit of unknown
+    capability already asks at the tool gate, so it is not asked about twice."""
+    _hold_for_member(bot_parent, "subagent")
+    assert mate_held_rules.held_spawn_limits(_PARENT) == ["its subagent limit"]
+    assert mate_held_rules.held_spawn_limits("dashboard:another") == []
+    for capability in ("shell", mate_held_rules.ANY):
+        _hold_for_member(bot_parent, capability)
+        assert mate_held_rules.held_spawn_limits(_PARENT) == []

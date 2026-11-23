@@ -902,7 +902,7 @@ class TestDemotionKeepsBackendIndependentServers:
 
         src = inspect.getsource(brmod._register_mcp_servers)
         assert "servers.pop(namespaced, None)" in src
-        assert "if is_http and not resolved_port and manifest.backend.entryPoint:" in src
+        assert "if on_backend and not resolved_port and manifest.backend.entryPoint:" in src
 
 
 class TestScrubFallsBackWhenTheManifestCannotSay:

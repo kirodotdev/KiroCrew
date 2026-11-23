@@ -140,6 +140,23 @@ def _is_plain_file(info: zipfile.ZipInfo) -> bool:
     return not stat.S_IFMT(mode) or stat.S_ISREG(mode)
 
 
+def _is_folder_marker(info: zipfile.ZipInfo) -> bool:
+    """Whether *info* is the empty entry an archiver writes for an allowed folder.
+
+    It is skipped, never read; a folder entry that declares bytes is judged as any entry,
+    and ``skills/<name>/`` with a name the reader refuses is refused here.
+    """
+    if not info.filename.endswith("/") or info.file_size:
+        return False
+    parts = info.filename.split("/")[:-1]
+    if parts in (["skills"], ["crons"]):
+        return True
+    if len(parts) == 2 and parts[0] == "skills":
+        _part_name(parts[1], "skill")
+        return True
+    return False
+
+
 def _read_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo, cap: int) -> bytes:
     # The header's size is the sender's word; the read itself is what is bounded.
     if info.file_size > cap:
@@ -198,6 +215,9 @@ def read_crewmate_file(data: bytes) -> CrewmateFile:
             raise _refuse("invalid_bundle", "the file names one entry twice")
         total = 0
         for info in infos:
+            if _is_folder_marker(info):
+                # zip, tar.exe, 7-Zip and shutil write one per folder.
+                continue
             kind, where = _entry_kind(info.filename)
             if not _is_plain_file(info):
                 raise _refuse("invalid_entry", f"'{info.filename[:64]}' is not a plain file")

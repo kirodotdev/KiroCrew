@@ -238,6 +238,7 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: ``user_meta`` on ``maybe_route_linked_thread`` (the user row's meta a code
 #: channel passes), ``turn_context`` on it too (a pinned action answer's payload),
 #: ``interpret_commands`` on it too (an OPTIONS answer's label reaches the slot),
+#: ``had_voice_input`` on it too (the turn a Slack message starts speaks its answer),
 #: ``post_linked_approval``'s ``thread_ts`` widened to ``str | None`` (a code
 #: channel's own session posts its approval card top-level), its keyword-only
 #: ``mcp_server_name`` / ``tool_name`` / ``mcp_identity_trusted`` (the mirrored card
@@ -245,9 +246,11 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: ``slot_key`` / ``future`` (a click settles the slot and future that asked),
 #: its ``channel_trust`` (a code channel's card adds "Trust this channel"),
 #: ``requester`` on ``_request_approval`` (the one shared Slack user who may answer),
-#: and ``line_start`` on ``_filter_options_brackets`` (whether the text already sent
-#: ends a line, so a marker line is held from its start).
-_BASE_SHAPE_DIGEST = "5e283401a281757a2ec797dfc3c5b7eb6025783b3d7a99d6841c2bd04995f9cb"
+#: ``line_start`` on ``_filter_options_brackets`` (whether the text already sent
+#: ends a line, so a marker line is held from its start), and the keyword-only
+#: ``requester`` on ``post_linked_approval`` (the shared user whose message opened
+#: the linked slot's turn may answer its card).
+_BASE_SHAPE_DIGEST = "d6e87e1f52186fff15748ad776850b08a7da656862364e4501cdac468ec4a59a"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

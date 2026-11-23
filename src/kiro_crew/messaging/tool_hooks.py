@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.hook_output import bounded_hook_output
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
     fire_tool_hooks,
@@ -57,9 +58,6 @@ if TYPE_CHECKING:
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, TurnSpecHooks
 
 logger = logging.getLogger(__name__)
-
-#: The longest tool output a PostToolUse hook is handed, as on the dashboard.
-_POST_TOOL_OUTPUT_CHARS = 2000
 
 #: The ``spec_origin`` of a hook from the user's standalone ``~/.kiro/hooks``
 #: files (:func:`kiro_crew.agent_sdk.spec_hooks.user_hook_files`).
@@ -268,7 +266,7 @@ class ChannelTurnHooks:
             await store.fire(
                 HOOK_EVENT_POST_TOOL_USE,
                 tool_name=title,
-                tool_response={"output": output[:_POST_TOOL_OUTPUT_CHARS]},
+                tool_response=bounded_hook_output(output),
                 session_key=self.turn.session_key,
                 tool_match_names=match_names,
                 extra_hooks_tool_names=spec_names if self.observed.hooks else None,

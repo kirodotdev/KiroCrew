@@ -27,6 +27,7 @@ import pytest
 from taskrunner_switch_helpers import turn_task_runner_off
 
 import kiro_crew.messaging.commands as commands
+from kiro_crew import cron_inflight
 from kiro_crew.cron import CronJob, CronSchedule, CronStoreBusy
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.messaging.commands import (
@@ -785,6 +786,20 @@ class TestCron:
         svc = MagicMock()
         svc.list_jobs.return_value = [_job("j1", message=f"post {_TOKEN}")]
         assert _TOKEN not in (await cron_command_reply("cron list", svc) or "")
+
+    @pytest.mark.asyncio
+    async def test_a_job_with_a_live_run_marker_is_listed_as_running(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cron_inflight.write_marker(tmp_path, "j1", "nightly digest", 1_700_000_000.0, run="r1")
+        svc = MagicMock()
+        svc.list_jobs.return_value = [_job("j1"), _job("j2")]
+        lines = (await cron_command_reply("cron list", svc) or "").splitlines()
+        busy = next(line for line in lines if "`j1`" in line)
+        idle = next(line for line in lines if "`j2`" in line)
+        assert "✓ [running since 22:13 UTC] | ⏭" in busy
+        assert "running since" not in idle
 
     @pytest.mark.parametrize(
         "verb,enabled,mark",

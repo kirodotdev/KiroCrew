@@ -1036,6 +1036,8 @@ class AcpEvent:
     synthetic_completion: bool = False
     request_id: str | int = ""
     options: list[dict[str, str]] = field(default_factory=list)
+    #: The offered allow ids by kind (``"once"``/``"always"``), as the builder classified them.
+    offered_allow: dict[str, str] = field(default_factory=dict)
     tool_input: str = ""
     #: True when the provider-facing tool input had secret/exfiltration bytes
     #: removed before it was placed in ``tool_input``.  This is provenance only:

@@ -5,7 +5,8 @@ and jevk5, which Kiro Crew does not depend on. The weights are a directory the
 gateway already downloaded and verified, so nothing here reaches the network.
 
 The model loads on the Apple Silicon GPU (``mps``) when this torch can use it,
-and on the CPU otherwise or when loading on the GPU fails.
+and on the CPU otherwise or when loading on the GPU fails. It loads as
+bfloat16, except as float32 on a CPU without native bf16 that has the memory.
 """
 
 import argparse
@@ -45,6 +46,13 @@ BODY_WAIT_SECS = 10.0
 # The gateway counts this server ready only once it echoes this secret, so a
 # program that took the port while the weights loaded is never mistaken for it.
 ATTEST = os.environ.pop("KIROCREW_LOCAL_ATTEST", "").encode()
+# What a float32 load holds at its peak, reached while the bfloat16 weights are
+# converted: measured on an x86 CPU without native bf16.
+FLOAT32_PEAK_BYTES = 24 << 30
+# float32 only on a machine with this many times that peak, so the model still
+# takes at most a quarter of it. It is local_models.RECOMMEND_RAM_FACTOR, which
+# this environment cannot import; a test keeps the two equal.
+FLOAT32_RAM_FACTOR = 4
 
 
 def _wait_for_end_of_input() -> None:
@@ -184,20 +192,86 @@ def _model_device() -> str:
     return "cpu"
 
 
+def _cpu_lacks_native_bf16() -> bool:
+    """Whether this is an x86 CPU whose flags name neither avx512_bf16 nor amx_bf16.
+
+    torch computes bfloat16 there by conversion, and float32 gives the same
+    answers several times faster; torch's own mkldnn bf16 probe still says yes,
+    so the flags decide. Read as ``embeddings_native._linux_x86_64_cpu_flags``
+    reads them, which this environment cannot import. No x86 flags line
+    (aarch64, macOS, Windows) answers False.
+    """
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+            cpus = [
+                set(value.split())
+                for key, _, value in (line.partition(":") for line in f)
+                if key.strip() == "flags"
+            ]
+    except OSError:
+        return False
+    return bool(cpus) and not any(cpu & {"avx512_bf16", "amx_bf16"} for cpu in cpus)
+
+
+def _float32_fits() -> bool:
+    """Whether the machine, and every cgroup this process is in, holds a float32 load.
+
+    The machine needs ``FLOAT32_RAM_FACTOR`` float32 peaks, and each cgroup v2
+    ``memory.max`` and ``memory.high`` from this process's cgroup up to the root
+    at least one, so a limit that fits bfloat16 never kills or throttles a float32
+    load. A level without the file has no memory controller, so no limit there.
+    Anything else unread (cgroup v1, a hidden file, Windows) answers False.
+    """
+    try:
+        if os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") < (
+            FLOAT32_RAM_FACTOR * FLOAT32_PEAK_BYTES
+        ):
+            return False
+        with open("/proc/self/cgroup", encoding="utf-8") as f:
+            cgroup = "/sys/fs/cgroup" + next(
+                line[3:].strip() for line in f if line.startswith("0::")
+            ).rstrip("/")
+        with open(cgroup + "/cgroup.controllers", encoding="utf-8"):
+            pass
+        while True:
+            for name in ("memory.max", "memory.high"):
+                try:
+                    with open(f"{cgroup}/{name}", encoding="utf-8") as f:
+                        limit = f.read().strip()
+                except FileNotFoundError:
+                    continue
+                if limit != "max" and int(limit) < FLOAT32_PEAK_BYTES:
+                    return False
+            if cgroup == "/sys/fs/cgroup":
+                return True
+            cgroup = cgroup.rsplit("/", 1)[0]
+    except (AttributeError, OSError, StopIteration, ValueError):
+        return False
+
+
+def _dtype(device: str) -> str:
+    """``bfloat16``, or ``float32`` on a CPU without native bf16 that has the memory."""
+    if device == "cpu" and _cpu_lacks_native_bf16() and _float32_fits():
+        return "float32"
+    return "bfloat16"
+
+
 def _load_model(weights: str):
     # jevk5's graph path is CUDA-only, so graphs stay off on every device. A GPU
     # load that fails (a sandbox hiding the device, too little memory) loads on
     # the CPU instead of failing the server.
     device = _model_device()
+    dtype = _dtype(device)
     try:
-        model = JevK5(weights, device=device, dtype=torch.bfloat16, graphs=False)
+        model = JevK5(weights, device=device, dtype=getattr(torch, dtype), graphs=False)
     except Exception as exc:
         if device == "cpu":
             raise
         print(f"plumb-4b: loading on {device} failed ({exc!r})", file=sys.stderr, flush=True)
         device = "cpu"
-        model = JevK5(weights, device=device, dtype=torch.bfloat16, graphs=False)
-    print(f"plumb-4b device={device}", file=sys.stderr, flush=True)
+        dtype = _dtype(device)
+        model = JevK5(weights, device=device, dtype=getattr(torch, dtype), graphs=False)
+    print(f"plumb-4b device={device} dtype={dtype}", file=sys.stderr, flush=True)
     return model
 
 

@@ -13,7 +13,9 @@ it speaks about, and:
   sends every such call to Crew instead of answering it from ``allowedTools``;
 - Crew's own approval gates never approve such a call without a person
   (:func:`held_for`): an ``auto`` cron, Trust, YOLO, a trusted pattern or a hook
-  grant sends it to the approval card instead, and a surface with no card refuses it.
+  grant sends it to the approval card instead, and a surface with no card refuses it;
+- under a held ``subagent`` limit, Crew's own spawn admission starts none of the
+  Bot's sub-agents on its own either (:func:`held_spawn_limits`).
 
 Nothing clears a hold: picking the Bot's approval mode does not, since an ``auto``
 cron's approval does not depend on that mode. Every other call behaves as before.
@@ -802,6 +804,32 @@ def held_for(event: Any, *, session_key: str = "", agent: str = "") -> list[str]
             if not (isinstance(r, dict) and r.get("capability") == NO_CALL)
         ]
         return held or [UNREADABLE]
+
+
+def held_spawn_limits(session_key: str, agent: str = "") -> list[str]:
+    """The held ``subagent`` limits of the Bot behind *session_key*, as their texts.
+
+    *agent* is the session's live agent, which names the Bot of a session that
+    records none (a channel's), as at the tool gates. Crew's own spawn admission
+    reads it for the PARENT session: under one, no auto-approve rung starts a
+    sub-agent on its own, and the spawn's prompt is marked held (:func:`held_call`)
+    so only a person answers it. Only capability
+    ``subagent``: a limit of unknown capability, and a ledger that cannot be
+    read, already strip every pre-approval from the worker spec built under
+    them, so a spawn tool asks at the tool gate. Blocking file I/O; never raises.
+    """
+    if not session_key:
+        return []
+    try:
+        rules = _bot_rules(session_key, agent)
+    except Exception:  # noqa: BLE001 - the gate never breaks on this record
+        logger.warning("held Bot rules: could not be read for a spawn", exc_info=True)
+        return []
+    return [
+        str(r.get("text") or "")
+        for r in rules
+        if isinstance(r, dict) and r.get("capability") == "subagent"
+    ]
 
 
 def held_sentence(held: list[dict[str, str]], *, kiro_cli: bool = False) -> str:

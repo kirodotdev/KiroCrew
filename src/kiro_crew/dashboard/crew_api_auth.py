@@ -11,7 +11,8 @@ it for every ``/v1/`` request that sends the header, then runs the same pin chec
 app-scope check and audit as for a cookie. A new credential kind is added here.
 
 :func:`refuse_app_credential` recognises the second kind, the access token local
-authorization issues to an app, and refuses it by tier: no route serves an app yet.
+authorization issues to an app, and refuses it from the matched route's row in
+:mod:`kiro_crew.dashboard.crew_api_scopes`: no route serves an app yet.
 
 :data:`OWNER_ONLY_PUBLIC_ROUTES` names the Public routes (``/v1/models``) that serve
 the owner alone, through :func:`kiro_crew.dashboard.crew_api_owner.owner_route`.
@@ -27,8 +28,8 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard import local_authorization
-from kiro_crew.dashboard.crew_api_errors import contract_error, is_crew_api_path, request_id_for
+from kiro_crew.dashboard import crew_api_scopes, local_authorization
+from kiro_crew.dashboard.crew_api_errors import is_crew_api_path
 from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request
 from kiro_crew.dashboard.token_auth_tokens import validate_token_with_app_off_loop
@@ -44,7 +45,9 @@ _SCHEME = "bearer"
 APP_CREDENTIAL_USER_PREFIX = "app:"
 APP_CREDENTIAL_APP_PREFIX = "local-grant:"
 APP_CREDENTIAL_OPERATION = "crew_api.app_credential"
-APP_CREDENTIAL_REFUSED = "an app credential may not call this endpoint"
+APP_CREDENTIAL_REFUSED = crew_api_scopes.APP_REFUSED
+#: The audit word for a route whose row admits the credential while no route serves apps.
+NO_APP_ROUTE = "no-app-route"
 _AUDIT_TEXT_MAX = 64
 
 #: The refusal a ``?token=`` gets on a Crew API path.
@@ -131,9 +134,11 @@ async def refuse_app_credential(request: web.Request, credential: str) -> web.Re
     there: signature, expiry, and that its grant is still active. A credential that
     fails is not an app credential, so the caller's own 401 answers it.
 
-    A verified one is a known caller, and no Crew API route serves that caller yet. So
-    it is refused by tier, ``403 owner_only``, on every Crew API path, and the request
-    never reaches a handler. It is accepted only from this machine, like the routes
+    A verified one is a known caller, and :func:`crew_api_scopes.refusal_for` says why it may
+    not call the route it matched: the tier, the entitlement or the scope. No Crew API
+    route serves that caller yet, so a route whose row admits it is refused too,
+    ``403 owner_only`` with :data:`NO_APP_ROUTE` on the audit row, and the request never
+    reaches a handler. It is accepted only from this machine, like the routes
     that issued it: through any forwarder this returns ``None`` as well, so the answer
     is byte for byte the 401 of a credential that does not verify.
 
@@ -162,11 +167,13 @@ async def refuse_app_credential(request: web.Request, credential: str) -> web.Re
     request["user"] = caller
     request["app"] = f"{APP_CREDENTIAL_APP_PREFIX}{found.grant_id}"
     request["is_dashboard_user"] = False
-    await _audit_app_credential(request, caller, "owner_only", resources)
-    return contract_error(
-        403,
-        "owner_only",
-        APP_CREDENTIAL_REFUSED,
-        request_id_for(request),
-        {"X-Auth-Required": "true"},
+    request[crew_api_scopes.CREDENTIAL_KEY] = found
+    refusal = crew_api_scopes.refusal_for(
+        crew_api_scopes.route_key(request), found.scopes, OWNER_ONLY_PUBLIC_ROUTES
+    ) or crew_api_scopes.Refusal("owner_only", APP_CREDENTIAL_REFUSED, NO_APP_ROUTE)
+    await _audit_app_credential(request, caller, refusal.audit, resources)
+    # Signing in again cures no missing scope or entitlement, so only the tier
+    # refusal carries the header every other token auth refusal has.
+    return refusal.response(
+        request, {"X-Auth-Required": "true"} if refusal.code == "owner_only" else None
     )

@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import zipfile
 import zlib
@@ -193,6 +194,34 @@ def test_a_whole_file_reads_into_one_card_of_every_part():
             ],
             ids=["file-cap", "skill-folder-cap", "avatar-cap", "json-cap", "entry-cap"],
         ),
+        *named_cases(
+            "test_a_folder_entry_is_refused",
+            ("entries", "code"),
+            [
+                # Only an empty skills/, crons/ or skills/<name>/ folder entry is skipped.
+                ({"other/": b""}, "invalid_path"),
+                ({"Skills/": b""}, "invalid_path"),
+                ({"skills/notes/extra/": b""}, "invalid_path"),
+                ({"crons/sub/": b""}, "invalid_path"),
+                ({"skills/con/": b""}, "invalid_path"),
+                ({"skills/": b"x"}, "invalid_path"),
+                ({"skills/a/": b"", "skills/A/": b""}, "invalid_bundle"),
+                (
+                    {f"skills/s{i}/": b"" for i in range(crewmate_bundle.ENTRY_MAX - 4)},
+                    "too_many_entries",
+                ),
+            ],
+            ids=[
+                "other",
+                "case",
+                "nested",
+                "cron-sub",
+                "device",
+                "carries-bytes",
+                "twice",
+                "entry-cap",
+            ],
+        ),
     ],
 )
 def test_a_bad_bundle_is_refused(entries, code):
@@ -204,8 +233,27 @@ def test_a_symlink_entry_is_refused():
     assert _refused(data) == "invalid_entry"
 
 
-def test_a_folder_entry_is_refused():
-    assert _refused(_zip({**_bundle(), "skills/": b""})) == "invalid_path"
+def test_the_empty_folder_entries_an_archiver_writes_are_skipped(tmp_path):
+    """zip, tar.exe, 7-Zip and shutil.make_archive add one per folder; the file still imports."""
+    tree = tmp_path / "bot"
+    for name, data in _carrying().items():
+        (tree / name).parent.mkdir(parents=True, exist_ok=True)
+        (tree / name).write_bytes(data if isinstance(data, bytes) else data.encode())
+    made = Path(shutil.make_archive(str(tmp_path / "bot"), "zip", tree)).read_bytes()
+    assert {"skills/", "skills/notes/", "crons/"} <= set(
+        zipfile.ZipFile(io.BytesIO(made)).namelist()
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, data in {"skills/": b"", **_carrying()}.items():
+            zf.writestr(name, data)  # an empty deflated entry still stores two bytes
+    control = {**_params(_zip(_carrying())), "bundle_sha256": ""}
+    for data in (made, buf.getvalue()):
+        try:
+            params = _params(data)
+        except catalog.CardCatalogError as exc:
+            pytest.fail(f"a file with folder entries was refused: {exc}")
+        assert {**params, "bundle_sha256": ""} == control
 
 
 def test_one_name_twice_is_refused_even_by_case():

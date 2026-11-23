@@ -99,6 +99,44 @@ _SYMLINK_REFUSALS = frozenset({errno.ELOOP, errno.EMLINK, errno.ENOTDIR})
 _LINK_IN_DIRECTORY = os.link in os.supports_dir_fd
 _LINK_NOFOLLOW = os.link in os.supports_follow_symlinks
 
+#: Errors that mean the FILESYSTEM has no hard links, as opposed to a link that
+#: failed for a reason retrying could fix. A caller with a stage-then-link publish
+#: sends only these to its non-link fallback, because that fallback gives up the
+#: no-clobber link: a transient refusal must never be mistaken for a missing
+#: filesystem feature. POSIX specifies EPERM for "the filesystem does not support
+#: links"; the *NOTSUP pair and ENOSYS are the explicit spellings.
+#:
+#: Deliberately EXCLUDED: EACCES (a Windows sharing violation while another
+#: handle holds the path -- transient, and the one this most needs to keep out),
+#: ENOSPC, EDQUOT, EIO and EROFS, which a caller retries within its budget. EXDEV
+#: is excluded too: the callers stage beside, or one directory below, the
+#: destination, so the two are always on one filesystem and a cross-device link
+#: cannot arise.
+_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    {
+        getattr(errno, name)
+        for name in ("EPERM", "EOPNOTSUPP", "ENOTSUP", "ENOSYS")
+        if hasattr(errno, name)
+    }
+)
+
+#: Windows reports a hard link on FAT/exFAT through a Win32 code whose errno
+#: translation is not one of the POSIX names above, so match it directly:
+#: ERROR_INVALID_FUNCTION (1) and ERROR_NOT_SUPPORTED (50).
+_LINK_UNSUPPORTED_WINERRORS = frozenset({1, 50})
+
+
+def _is_link_unsupported(exc: OSError) -> bool:
+    """Whether *exc* says this filesystem cannot hard-link at all.
+
+    False for anything a retry might clear -- see :data:`_LINK_UNSUPPORTED_ERRNOS`
+    for why that distinction is the whole point. Shared by the stage-then-link
+    publishes of ``dashboard.token_secret`` and ``sel_trust_root``.
+    """
+    if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
+        return True
+    return getattr(exc, "winerror", None) in _LINK_UNSUPPORTED_WINERRORS
+
 
 def owner_only_opener(path: str, flags: int) -> int:
     """An ``opener=`` for :func:`open` that creates the file ``0600``.

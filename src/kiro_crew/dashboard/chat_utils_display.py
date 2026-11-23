@@ -27,6 +27,7 @@ from kiro_crew.dashboard import display_verdicts as _display_verdicts
 from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.display_battery import display_battery
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, parse_cls_meta
+from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
     oauth_url_contains_credential,
@@ -121,10 +122,17 @@ def variant_from_row(row: dict) -> dict:
     explanation for good, and the reader switching back would be handed a bare
     placeholder with no way to learn what was removed. The turn stats (model,
     credits, time) are that reply's own too, and nothing can measure them again.
+    So is the ``mid`` of a row with no version list: it names this version
+    wherever the list moves it, and a discussion card keys its sends on it. A
+    row that has a list shows one of its versions, and its ``mid`` names only
+    the newest, so a stash of it takes no id.
     """
     entry = {"content": row.get("content", ""), "ts": row.get("ts", "")}
     meta = row.get("meta")
     if isinstance(meta, dict):
+        mid = meta.get("mid")
+        if isinstance(mid, str) and mid and not row.get("variants"):
+            entry["mid"] = mid
         # Bounded here, at retention: the row's meta was read off a transcript
         # line, and a variant list outlives the render that would bound it later.
         for key, (bound, _tags) in REDACTION_RECORD_FIELDS.items():
@@ -1316,6 +1324,9 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
                     row["meta"] = shown
                 out.append(row)
             continue
+        # Sent as the say-nothing reply, in its place, so row indexes still match.
+        if is_stored_echo_row(m):
+            m = {**m, "content": "\u200b"}
         text = m.get("content", "")
         # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
         # display-time redaction boundary for everything the slot detail

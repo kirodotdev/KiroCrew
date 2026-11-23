@@ -597,6 +597,10 @@ returned tail and its `running`, `stopping`, `turn`, and `turn_gen` status field
 come from the same newest edge. When the cap is spent, or the held rows carry no
 `meta.mid` to anchor on, the replacing reducer keeps no head: the rows above the
 walked window leave the tab and are one page-back away.
+In a dev build `refreshSlot` and `warmSlotCache` count, per slot, each read and
+each walk that fetched older pages (with the pages and the reason), readable in
+devtools as `window.__kcSlotReads()` (`website/src/dev/slotReadCounts.ts`); a
+production build records nothing.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands
@@ -810,6 +814,7 @@ order, and pins that no owner imports the facade:
 | `chrome.tsx` | the sidebar's shared drawing atoms, used by the row and the render owners: the open-in-tab click predicate, the open chat row's side-panel re-click (`reclickTogglesPanel` and `reclickDoubleClick`, re-exported from `lib/reclickPanelToggle.ts`) and its tooltip (`reclickPanelTitle`, naming the live side-panel shortcut), `DisclosureChevron` (the sidebar's one disclosure grammar), the folder and divider chrome (the pinned-section divider, the folder body geometry and the text-control classes), and `dateSegment`, the date-segment label the flat lane and the Older Sessions pane head their groups with |
 | `CrewGroups.tsx` | the per-machine group chrome: the `Local` header, each crew group's header, badge, offline note and tunnel-error notice, and the collapsed-crew set |
 | `rows.ts` | the row model: the one declaration of every filter dimension and what each consumer derives from it (`filteredSlots`, `listNarrowed`, the reveal registry), the status-chip predicates and badge counts, the one lane order, the drag freeze, the split of the filtered rows between the `Local` lanes and the crew groups (each crew group's rows, the folder hide applied), the flat lane, the tree's ungrouped rows and per-folder rows, the board's pool (local rows the folder filter does not conceal), the dormant split's gates, and each rendered row's `SessionRowView` and window |
+| `rowStatus.ts` | the row-status store: the open session, the crew window, the crew-parent mark, Split View, a failed open and the unread keys, which each row selects its own answers from (`useRowStatus`: active, reclick, crew parent, unread, and whether the row below is active, for its divider), and the narrow reads the body takes of it (`useRowStatusSelect`, `useActiveRowAmong`) |
 | `search.ts` | the debounced backend session search, and the folder-name matches the search box adds |
 | `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer test on local folder state for the owners that hold their own lists |
 | `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, collapsed crews, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`, and two keys declared beside their own logic (`mc-pinned-session-order` in `utils/pinnedSessionOrder.ts`, `kc-board-folder-collapsed:*` in `utils/boardFolderCollapse.ts`); the session sort is not among them, being gateway config (`dashboard.session_sort`, see `sessionSort.ts`); and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips, the folders-shelved flag, the folders-unread-first flag (`mc-sidebar-folders-unread-first`) and the group-by-kind flag (`filters.tsx`); and the model filter's one key (`mc-session-model-filter`, its selection and direction) |
@@ -891,6 +896,22 @@ row and UI-location pins join the facade with the owner files; the switchSlot
 call-site table, the hover-state rows and the restyle ratchet name each owner file;
 `useInteractiveModels.test.ts` reads `bulkModelSwitch.tsx`; and
 `hoverVariantPolicy.test.ts` reads the row shell's touch flag here.
+
+**A chat switch.** The default export is a thin outer layer over the body
+(`ChatSidebarBody`, memoized). The outer layer takes `activeSlot`, `unreadSlots`,
+`canStageSessionRef` and `chatDropTarget`, the props a chat switch or the first open
+changes, and keeps them out of the body's props: the first two in the row-status
+store (the unread set keeps its identity while its members hold, because the chat
+page hands a new array on every switch), the other two in contexts. A switch
+therefore re-renders the rows whose highlight or divider changes and the window
+wrapper that keeps the open row mounted, not the body. The body reads the open
+session only where it changes the list's structure, each through a selector that
+answers null for every other session: a row the Slack setting hides
+(`crewModeView`), an aged unpinned row the dormant collapse would fold (and the
+just-left entry it records), a code-channel worker that must not fold, the cleanup
+panel while it is open, and a session drag (the drop zone's refusal; the drop
+re-reads the store). An unread change still re-renders the body, since the Unread
+chip, its count and the unread-first folder order depend on it.
 
 New sidebar code goes to the owner whose row above names its responsibility, not
 to `ChatSidebar.tsx`: a new filter dimension is one entry in `rows.ts`, and a new
@@ -1266,9 +1287,13 @@ the import moves saved folder paths from either archive home to this home. This
 covers each chat header's `project`, `workspace_dir`, `project_dir`, and
 `dashboard.default_project` in `config.json` and `config.local.json`. A path
 outside both archive homes stays only if that folder exists here. Otherwise the
-import drops it, so the chat opens in the default workspace. Older archives
-without `home` infer it from saved paths and the manifest's `user` only when the
-inferred home is absent here; extraction uses the gateway-only, sandbox-masked
+import drops it, so the chat opens in the default workspace. The manifest's
+`user` is the exporting account: `USER`, then `USERNAME` (which Windows sets),
+then the login the OS reports, else `unknown` (`snapshot_build._caller_name`).
+An archive whose manifest has a `home` or `home_real` key but no POSIX home in
+it (an export from Windows) is left as it is. Only an older archive whose
+manifest has neither key infers its home from saved paths and the manifest's
+`user`, and only when the inferred home is absent here; extraction uses the gateway-only, sandbox-masked
 `import-staging` leaf on the data home's filesystem. Same-home
 imports change nothing. Home relocation supports POSIX homes only. The summary
 may also carry `home_paths_moved` and `sessions_project_cleared`. The latter counts
@@ -2020,7 +2045,12 @@ no longer destroy older turns.
   when the turn produced a reply, through one rewrite pinned to the transcript
   and slot the Regenerate was authorized against that names the rows it removes
   (`retired_rows`). The variants stashed at the press keep the endpoint's
-  existing cap (`_MAX_VARIANTS`, the newest kept). They stay stashed while
+  existing cap (`_MAX_VARIANTS`, the newest kept). Each keeps the `mid` of the
+  row it was written as (`variant_from_row`), so that id names the same version
+  after the swap moves it into the new reply's list; the discussion card keys
+  its sends on it (`grillKey`). A stash of a row that already has versions
+  takes no id: that row's `mid` names its newest version, not always the one it
+  shows. They stay stashed while
   the turn runs: the segment flush attaches none to a reply of a turn that owns
   the target, and the reply gets them only from the committed rewrite, so a
   declined swap (refused or failed write, a reply trimmed into the frozen
@@ -2631,6 +2661,22 @@ archived instead of being permanently deleted:
   where the separator is `ARCHIVE_SEGMENT_DELIMITER`. It is `__` rather than a dot
   because session keys legitimately contain dots (a Slack `thread_ts`), which a
   right-most-dot parse would attribute to the wrong session.
+- **A segment belongs to the whole stem before its LAST delimiter**
+  (`history_files.archive_segment_stem`). `_safe_key` keeps underscores, so a
+  chat whose stem is `<stem>__more` also has segments starting with `<stem>__`.
+  Readers that list the archive with `scandir`/`iterdir` (the session digest,
+  for every stem it is handed, canonical and legacy; the person-message check
+  in `transcript_person_rows.py`; the crewmate prune pass) compare the parsed
+  stem to their own exactly, with the name's case kept. Readers that
+  glob (the rotated read `read_rotated_messages`, `chain_mid_rotation`, the
+  transient-session delete `delete_memory_consolidation_session` and
+  `GET /api/session/archive?key=`) go through
+  `history_files.archive_segments_of(adir, stem)`: it keeps the glob's own case
+  and suffix rule and refuses a file whose last delimiter is not right after
+  the stem. The milestone chat count and the unkeyed `GET /api/session/archive`
+  group by the parsed stem; the list reports it as `key` and the rest as
+  `stamp`, and a file with no delimiter keeps `key` = its stem and
+  `stamp` = "". A live transcript's stem is its whole file name.
 - **Triggers**: `_maybe_rotate()` (>10MB), `rewrite_session()` (compact), and the
   dashboard rewrite path (`_save_slot_to_history` with a snapshot /
   `rewrite=True` / `_pending_rewrite` → `_archive_dropped_lines`). The default
@@ -2853,7 +2899,13 @@ writer:
   `read_session_execution` names the two refusals apart: a CORRUPT line answers
   "session record is unreadable (its first line is damaged); start a new chat
   (memory is intact) or archive this one", because no retry reads it, and a
-  TRANSIENT one keeps the plain "session record is unreadable".
+  TRANSIENT one keeps the plain "session record is unreadable". History resume's
+  last metadata read before it builds the slot runs on the event loop, where the
+  bounded retries cannot pause: a TRANSIENT answer there refuses the resume with a
+  retryable `resume_conflict` (409; an app gets its uniform 404) instead of
+  building the slot from an empty line, and a CORRUPT line resumes as an empty
+  one, because no retry would ever open it and the resumed slot's next save
+  rewrites it.
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and
@@ -3621,9 +3673,11 @@ sidecar whose bytes are not a thread map raises `ThreadStoreUnreadable` and is
 NEVER overwritten (the three routes answer 503 `threads_unavailable`; a turn
 publishes a plain failure frame); rows of the wrong shape drop one by one, and
 a retained row is reduced to the reply schema (`id`, `role`, `content`, `ts`,
-strings) -- the file sits beside the transcript under the data home, so a field
-an agent put there never reaches the dashboard through the detail response,
-whose `_redacted_reply` likewise emits only those four fields. One
+strings, and on a Bot's row the `redactions` credential records that
+`credential_sources.bounded_credential_records` accepts) -- the file sits beside
+the transcript under the data home, so a field an agent put there never reaches
+the dashboard through the detail response, whose `_redacted_reply` likewise
+emits only those fields, the records bounded again. One
 thread holds at most 500 replies (`thread_full`), one chat's sidecar at most
 5 000 across every thread (`threads_full` -- the whole-file bound, since the
 panel reads the file whole), and the Bot's stored reply is clipped at
@@ -3686,7 +3740,8 @@ slot that is not a Bot's chat.
   `GET /api/chat/slots/{slot}`: the transcript read path stays unchanged and the
   payload is small enough to fetch beside it.
 - `GET /api/chat/threads/{mid}?slot=<key>` -- `{"parent": {mid, role, content,
-  ts}, "replies": [...], "in_flight": bool}`. 404 `parent_not_found` when the
+  ts}, "replies": [...], "in_flight": bool}`; the Bot's text, parent or reply,
+  also carries its `link_blocks` and `redactions` records when it has any. 404 `parent_not_found` when the
   mid is no longer in the chat (the frozen disk prefix plus the memory window,
   after `chat_handlers._reconcile_slot_window` -- the same reconciliation the
   detail and resume handlers run, not a copy of it). Reading finds a parent the
@@ -3756,7 +3811,32 @@ served by a session bound to the old ones. The parent lookup reads the
 transcript by `api_chat_slot_detail`'s rule -- `_reconcile_slot_window` first,
 then disk prefix plus window -- so a parent only disk holds is found. The Bot's memory is not injected into a thread turn (not done;
 the Bot's agent spec is). The answer is redacted, clipped, appended to the sidecar as
-an `assistant` reply and broadcast; an empty answer becomes the same visible
+an `assistant` reply and broadcast; it goes through the main chat's credential
+pass (`segment_flush._redact_segment_text`, as a Side Chat answer does), so its
+text stays `redact(raw)` byte for byte and the row keeps the `redactions` records
+its placeholders need, and the removed values are kept for the owner's reveal
+(`_commit_reveals`, in the chat's slot) only once the sidecar holds the row; the
+interrupted partial answer below is stored the same way. The thread read
+(`GET .../threads/{mid}`) carries each Bot reply's records, and the parent's from
+its main chat row's `meta`, bounded, beside `link_blocks`, and the final frame's
+`reply` carries the stored row's. `ThreadPanel` hands them to `MarkdownRenderer`
+with the thread's slot as `redactionSlot` (a thread is always this gateway's own
+slot, as the Bot's main chat passes `revealSlot`), so a removed credential draws as
+its lock tag with the owner's reveal and the Blocked link card offers Allow; an
+Allow or Undo on that slot (`mc:redaction-hosts-changed`) reads the thread again.
+Records whose text holds no placeholder (a clip cut it off, or the "not answered"
+line) are dropped by the main chat's rule (`drop_records_without_placeholders`)
+before the row is stored, so no value is kept for them. The commit marks a value
+the reveal store refuses on a copy of the records, so the final frame names the
+same handle the sidecar holds and both answer 410 for it. The panel passes no
+`messageTs`, so a card's allow hold in a thread is its own bubble's and is not
+shared with the main chat row; it does not keep the card open once the re-read
+drops that host's `link_blocks`, so its Undo is reached from Settings -> Security ->
+Redaction (no test pins this). Pinned by
+`test/test_thread_redaction_records.py`,
+`website/src/pages/members/ThreadPanel.redactionRecords.test.tsx` and
+`website/src/pages/members/ThreadPanel.blockedLink.test.tsx`.
+An empty answer becomes the same visible
 read-only boundary line the side chat shows. A refused read-only spec is audited as a
 denied SEL API access (`operation=thread_reply`, `source=read_only_spec`),
 like the app-isolation refusal. A turn cancelled mid-stream (a gateway

@@ -9,7 +9,7 @@
  */
 import { Suspense } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, useLocation, useSearchParams } from 'react-router-dom'
@@ -21,15 +21,21 @@ import CrewDashboardTab from '../pages/members/CrewDashboardTab'
 import { isDashboardPreview, withoutDashboardPreview } from '../pages/members/dashboardPreview'
 
 /** The mint, held: `hold` keeps the last url on screen and reports a pending mint,
- *  which is what the real hook does while a newer document is being minted. */
-const mint = vi.hoisted(() => ({ hold: false, last: null as string | null }))
+ *  which is what the real hook does while a newer document is being minted.
+ *  `asked` is the last document the page asked for, so a test can wait for a read
+ *  to reach the page before it releases the hold. */
+const mint = vi.hoisted(() => ({ hold: false, last: null as string | null, asked: null as string | null }))
 
 vi.mock('../hooks/useSandboxDoc', () => ({
   useSandboxDoc: (srcdoc: string | null) => {
+    // The dashboard calls this hook twice per render: for its page, then for the
+    // probation candidate, which is null here. That null call must not write `last`,
+    // or a held mint hands the page a null url and the frame unmounts instead of
+    // keeping the earlier document on screen.
+    if (!srcdoc) return { url: null, pending: false, failed: false, stalled: false, retry: vi.fn() }
+    mint.asked = srcdoc
     if (mint.hold) return { url: mint.last, pending: true, failed: false, stalled: false, retry: vi.fn() }
-    const url = srcdoc
-      ? '/sandbox-doc/' + (srcdoc.includes('kept') ? 'kept' : srcdoc.includes('restaged') ? 'restaged' : 'staged')
-      : null
+    const url = '/sandbox-doc/' + (srcdoc.includes('kept') ? 'kept' : srcdoc.includes('restaged') ? 'restaged' : 'staged')
     mint.last = url
     return { url, pending: false, failed: false, stalled: false, retry: vi.fn() }
   },
@@ -85,6 +91,23 @@ async function drawFrame() {
   window.dispatchEvent(new MessageEvent('message', { data: { type: 'kirocrew-dashboard:ready' }, source: frame.contentWindow }))
 }
 
+/** A newer document loads in the OFF-SCREEN frame and replaces the one on screen
+ *  only once it has loaded and sent its ready beacon (or after the component's
+ *  `READY_TIMEOUT_MS` wait, longer than `LAZY`), so a test that waits for it on
+ *  screen draws it there first. The frame is in the DOM in the same commit that
+ *  attaches its listeners. */
+async function drawSwap(src: string) {
+  const swap = await waitFor(() => {
+    const el = document.querySelector('[data-testid="crew-dashboard-swap"]')
+    expect(el?.getAttribute('src')).toBe(src)
+    return el as HTMLIFrameElement
+  }, LAZY)
+  fireEvent.load(swap)
+  act(() => {
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'kirocrew-dashboard:ready' }, source: swap.contentWindow }))
+  })
+}
+
 const NO_PREVIEW = () => new ApiError(404, 'nothing is staged to preview', JSON.stringify({ error: 'nothing is staged to preview', code: 'no_preview' }))
 
 /** The tab as MembersPage drives it: `preview` from the URL, `onLeavePreview` dropping it. */
@@ -135,6 +158,7 @@ describe('CrewDashboardTab on a preview link', () => {
     vi.restoreAllMocks()
     mint.hold = false
     mint.last = null
+    mint.asked = null
     nav.hold = null
   })
 
@@ -151,13 +175,18 @@ describe('CrewDashboardTab on a preview link', () => {
     mint.hold = true
     restaged = true
     await queryClient.invalidateQueries({ queryKey: ['member-dashboard', 'atlas'] })
+    // B has reached the page: its document is what the page asks the mint for. A
+    // disabled Keep alone does not say so, since any held render disables it.
+    await waitFor(() => expect(mint.asked).toContain('restaged'), LAZY)
     await waitFor(() => expect(keep).toBeDisabled(), LAZY)
+    expect(frameSrc()).toBe('/sandbox-doc/staged')
     expect(screen.getByTestId('dashboard-preview-discard')).toBeDisabled()
     fireEvent.click(keep)
     expect(apply).not.toHaveBeenCalled()
-    // B lands in the frame: now Keep names B.
+    // B is minted, loads off screen and replaces A: now Keep names B.
     mint.hold = false
     await queryClient.invalidateQueries({ queryKey: ['member-dashboard', 'atlas'] })
+    await drawSwap('/sandbox-doc/restaged')
     await waitFor(() => expect(frameSrc()).toBe('/sandbox-doc/restaged'), LAZY)
     await waitFor(async () => { await drawFrame(); expect(keep).not.toBeDisabled() }, LAZY)
     fireEvent.click(keep)

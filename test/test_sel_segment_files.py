@@ -30,6 +30,7 @@ from sel_helpers import (  # noqa: F401 -- fixtures are requested by name
 )
 
 import kiro_crew.sel as sel_mod
+import kiro_crew.sel_append as sel_append
 from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.sel import SecurityEventLog
@@ -963,6 +964,21 @@ class TestLiveLogMovedOnHelper:
             assert sel_mod._identity_changed(previous, _St(dev, ino, size)) is (
                 sel_mod._live_log_moved_on(previous, (dev, ino, size))
             )
+
+    @pytest.mark.parametrize(
+        ("previous", "current", "expected"),
+        [
+            ((1, 10, 500), (1, 10, 900), False),  # a foreign append
+            ((1, 10, 500), (1, 11, 900), True),  # new inode that already grew
+            ((1, 10, 500), (2, 10, 900), True),  # same ino, different device
+            ((1, 10, 500), (1, 10, 40), True),  # shrank
+            ((1, 0, 500), (1, 0, 900), False),  # no inode available, grew
+            ((0, 0, 0), (1, 7, 512), False),  # anchored absent, somebody wrote
+        ],
+    )
+    def test_only_a_replaced_file_counts_as_replaced(self, previous, current, expected):
+        """Picks the log line only: a foreign append is routine, a replacement is not."""
+        assert sel_append._live_log_replaced(previous, current) is expected
 
 
 class TestTimeWindowRead:

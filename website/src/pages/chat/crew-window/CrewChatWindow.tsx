@@ -58,6 +58,7 @@ import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { isRetractedSteerRow } from '../../../utils/invisibleText'
 import { isHiddenReplyAt } from '../../../app-sdk/turnPolicyBlock'
 import { isSystemNoticeRow } from '../CompactionCard'
+import { injectOpensTurn } from '../RecoveryCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { clearDictated, isDictated, markDictated, noteComposerEdit, takeDictated, wantsDictationNote, withDictationNote } from '../../../chat-core/composer/dictationProvenance'
@@ -410,11 +411,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       action: decision, request_id: id, request_mid: mid, origin: 'native',
     }).finally(settle)
   }, [nativeApproval, instanceId, slotPath, settle, name])
-  // The newest turn row the transcript draws as a bubble: a system notice
-  // (compaction, reload) and a say-nothing reply (`isHiddenReplyAt`) are not one.
+  // The newest turn row: an opener the regenerate scan stops at (a user row, a
+  // turn-opening inject) or a reply drawn as a bubble, which a system notice and
+  // a say-nothing reply (`isHiddenReplyAt`) are not. A press re-runs that turn.
   const lastTurnIdx = messages.findLastIndex((m, i) =>
     !isRetractedSteerRow(m) && (
-      m.role === 'user' ||
+      m.role === 'user' || injectOpensTurn(m) ||
       (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenReplyAt(m, messages, i))
     ),
   )
