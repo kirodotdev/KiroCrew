@@ -73,6 +73,7 @@ from kiro_crew.autonudge_service import monitor_records as _monitor_records
 from kiro_crew.autonudge_service import mutations as _mutations
 from kiro_crew.autonudge_service import store_loader as _store_loader
 from kiro_crew.autonudge_service import timers as _timers
+from kiro_crew.autonudge_service.boot_pacer import BootPacer
 from kiro_crew.autonudge_service.gate import (  # noqa: F401 -- re-exported
     _JUDGE_QUIET_STREAK_FLOOR_DEFAULT,
     _MAX_QUIET_STREAK,
@@ -175,7 +176,6 @@ from kiro_crew.autonudge_service.subject import (  # noqa: F401 -- re-exported
     read_session_texts,
 )
 from kiro_crew.autonudge_service.timers import (  # noqa: F401 -- re-exported
-    _BOOT_WAKE_STAGGER_SECS,
     _MONITOR_RETRY_BACKOFF_SECS,
     _MONITOR_RETRY_MAX_BACKOFF_SECS,
     _OVERDUE_REARM_SECS,
@@ -510,9 +510,13 @@ class AutoNudgeService:
         #: other arm, so it always describes the timer actually armed. A push landing
         #: while it is set buys nothing new: the armed tick has not read the ledger yet.
         self._pushed_ticks: set[str] = set()
-        # Loop id -> seconds its next timer naps before its countdown: set only by
-        # ``start()`` to spread the loops due at boot (``_BOOT_WAKE_STAGGER_SECS``).
-        self._boot_holds: dict[str, float] = {}
+        #: The loops due at boot, released one at a time as the host allows. Built
+        #: by ``start()``; a timer waits its turn here before its countdown.
+        self._boot_pacer = BootPacer()
+        #: Work-ledger loops whose boot replay has not run yet. Any re-arm before that
+        #: tick (a turn's end, a settings update) replays at delay zero instead of at
+        #: the deadline (``_arm_from_deadline``); the tick drops it.
+        self._boot_replays: set[str] = set()
         #: Loop ids whose RUNNING tick was armed by a worker's push. Such a tick goes
         #: through the probe gate rather than spending the post-wake follow-up (the
         #: free follow-up belongs to the loop's own cadence), and a quiet answer keeps
@@ -917,12 +921,12 @@ class AutoNudgeService:
                     logger.warning(
                         "AutoNudge: could not persist loaded-state repair", exc_info=True
                     )
-            # Loops overdue at boot are held _BOOT_WAKE_STAGGER_SECS apart, so the
-            # sessions they wake cold-start one at a time instead of together.
-            due_at_boot = 0
+            # Loops due at boot are released one at a time through a fresh pacer,
+            # as fast as the host posture allows (``boot_pacer``), so the sessions
+            # they wake cold-start in turn instead of together.
+            self._boot_pacer = BootPacer()
             for loop in self._loops.values():
                 if loop.active:
-                    offset = float(due_at_boot * _BOOT_WAKE_STAGGER_SECS)
                     # A work-ledger loop resumes at delay ZERO instead of toward its
                     # persisted deadline, and only this kind does. The crew-log wake is a
                     # push off an in-process queue, so every push in flight when this
@@ -943,20 +947,24 @@ class AutoNudgeService:
                         # turn without reading the ledger -- the opposite of why the
                         # replay exists. A pushed tick always goes through the probe.
                         # Marked AFTER arming: _arm_timer clears the mark it replaces.
-                        # Never held: a user turn cancels a held timer, and the
-                        # re-arm goes to the deadline, which would lose this replay.
+                        # Paced like an overdue loop: each replay can wake a conductor
+                        # that dispatches workers, and all of them at once start every
+                        # session and its MCP servers together. A turn or an update
+                        # that cancels the waiting timer re-arms it at delay zero
+                        # (``_boot_replays``), so the replay is kept.
                         self._arm_timer(loop, delay=0.0)
                         self._pushed_ticks.add(loop.id)
+                        if loop.id in self._timers:
+                            self._boot_replays.add(loop.id)
+                            self._boot_pacer.queue([loop.id])
                     else:
                         overdue = 0 < loop.next_due_ts <= time.time()
                         self._arm_from_deadline(loop)
-                        # Set after arming: an arm drops the hold of the timer it
-                        # replaces. A user turn that cancels a held timer loses
+                        # Queued after arming: an arm drops the turn of the timer it
+                        # replaces. A user turn that cancels a waiting timer loses
                         # nothing: the re-arm finds the loop overdue again.
-                        if overdue:
-                            if offset > 0 and loop.id in self._timers:
-                                self._boot_holds[loop.id] = offset
-                            due_at_boot += 1
+                        if overdue and loop.id in self._timers:
+                            self._boot_pacer.queue([loop.id])
             global _INSTANCE
             _INSTANCE = self
         # The crew-log bus subscriptions that pull a work-ledger loop forward when its

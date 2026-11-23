@@ -98,12 +98,10 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # not retain that chain or count its writes toward that transaction.
     self._admitted_transaction_owner.set(None)
     self._admitted_transaction_submissions.set(None)
-    # A boot hold is a plain nap ahead of the countdown: the countdown itself can
-    # end early on a subject read, which would undo the boot spacing.
-    hold = self._boot_holds.pop(loop.id, 0.0)
+    # A loop due at boot waits its turn ahead of the countdown: the countdown itself
+    # can end early on a subject read, which would undo the boot pacing.
     try:
-        if hold > 0:
-            await asyncio.sleep(hold)
+        await self._boot_pacer.wait_turn(loop.id)
         await sleep_until_cycle(self, loop, loop.idle_secs if delay is None else delay)
     except asyncio.CancelledError:
         return
@@ -147,6 +145,8 @@ async def _run_timer_callback(self: AutoNudgeService, loop: NudgeLoop) -> None:
         self._pushed_running.add(loop.id)
     else:
         self._pushed_running.discard(loop.id)
+    # A tick has started: it settles any boot replay this loop owed.
+    self._boot_replays.discard(loop.id)
     # Reached before either dispatch: a fire settles through the same refused writer,
     # so an unattended turn would go out with no restart able to tell that it had.
     if self._store.load_refused:

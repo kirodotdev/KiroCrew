@@ -35,6 +35,24 @@ def _ledger_create_ignores_live_memory(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _boot_pacer_reads_an_ample_host(_floor_monkeypatch):
+    """The autonudge boot pacer never waits on this runner's memory.
+
+    ``AutoNudgeService.start()`` releases the loops due at boot through
+    ``boot_pacer.BootPacer``, which reads the live host posture and holds the queue
+    while it is critical. A runner short of memory would then stall every test that
+    starts a service with an overdue loop. Pinned to ``ample`` here; a test about the
+    pacing passes its own reader to ``BootPacer``.
+    """
+    from kiro_crew.autonudge_service import boot_pacer
+
+    async def _ample() -> str:
+        return "ample"
+
+    _floor_monkeypatch.setattr(boot_pacer, "read_host_posture", _ample)
+
+
+@pytest.fixture(autouse=True)
 def _small_default_host(_floor_monkeypatch):
     """Size every ``"auto"`` start limit from a fixed small host, not this machine.
 
