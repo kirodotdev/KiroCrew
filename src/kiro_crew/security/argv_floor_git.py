@@ -188,7 +188,9 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     # ``\git`` (``Get-ChildItem C:\src\git push``) is data, not git.
     from kiro_crew import platform_compat
 
-    if not platform_compat.IS_WINDOWS:
+    # Without a ``\`` the escaped view lost no separator, so the walk is skipped and
+    # the common path costs what it did.
+    if not platform_compat.IS_WINDOWS or "\\" not in text_lower:
         return False
     try:
         for segment in _split_push_command_segments(text_lower):
