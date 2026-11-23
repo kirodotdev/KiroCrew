@@ -1365,7 +1365,8 @@ a server the copy mounts and `kirocrew.json` refs whole gains `@name` in the cop
 starts with every server already offered to `kirocrew.json` recorded, so it keeps
 the refs as you left them there; a copy that predates the record is offered each
 server once. A ref you remove from the copy afterwards stays removed, and a fork of
-a custom template or a spec you wrote yourself gains nothing.
+a custom template or a spec you wrote yourself gains nothing. A server whose name
+has a `/` is not added to a copy: its alias can be one of your own servers' names.
 A same-named entry in `~/.kiro/settings/mcp.json` never replaces such a server's
 `command`, `args` or `env`; only its `timeout` and `disabled` reach the spec.
 A same-named entry in `~/.kiro/crew/mcp.json` never replaces its `command` or

@@ -177,6 +177,17 @@ def test_a_fork_of_a_custom_template_and_a_custom_agent_stay_as_written(
     assert EXTRA_REF not in _read(rebuildable, FORK)["tools"]
 
 
+def test_a_slashed_edition_server_is_not_matched_by_its_alias_on_a_fork(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fork's ``ns-service`` is the user's own server; the edition's ``ns/service``
+    # shares that alias, so the user's removed ref must not come back.
+    _supply(monkeypatch, {"ns/service": {"command": "x"}})
+    config: dict[str, Any] = {"tools": ["fs_read"], "mcpServers": {"ns-service": {}}}
+    assert guide_platform.grant_fork_edition_refs_once(config, FORK, ["@ns-service"]) == []
+    assert config["tools"] == ["fs_read"]
+
+
 def test_a_fork_with_a_wildcard_or_no_tools_list_is_left_alone() -> None:
     for tools in ("*", None):
         config: dict[str, Any] = {"mcpServers": {EXTRA: {}}}

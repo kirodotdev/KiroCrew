@@ -175,10 +175,18 @@ def grant_edition_refs_once(
     ]
     if fresh_install:
         return pending
-    # A server the user still refs, whole or as ``@name/<tool>``, keeps its refs.
+    _append_missing_refs(tools, [mounted_aliases.get(name, name) for name in pending], "tools")
+    return pending
+
+
+def _append_missing_refs(tools: list, aliases: list[str], where: str) -> None:
+    """Append ``@<alias>`` to *tools* for each alias it does not ref yet, with one audit record.
+
+    A server the spec still refs, whole or as ``@name/<tool>``, keeps its refs.
+    """
     added = [
         f"@{alias}"
-        for alias in (mounted_aliases.get(name, name) for name in pending)
+        for alias in aliases
         if not any(
             isinstance(t, str) and (t == f"@{alias}" or t.startswith(f"@{alias}/")) for t in tools
         )
@@ -190,9 +198,8 @@ def grant_edition_refs_once(
             operation="mcp_tools_added",
             outcome="ok",
             source="install_agent",
-            resources=f"{', '.join(added)} added to tools (edition server newly supplied)",
+            resources=f"{', '.join(added)} added to {where} (edition server newly supplied)",
         )
-    return pending
 
 
 def mark_edition_refs_offered(names: list[str]) -> None:
@@ -249,7 +256,6 @@ def grant_fork_edition_refs_once(
     so a ref the user removes afterwards stays removed.
     """
     from kiro_crew import agent_state
-    from kiro_crew.mcp_utils import mcp_server_alias
 
     tools = config.get("tools")
     if not isinstance(tools, list):
@@ -259,25 +265,17 @@ def grant_fork_edition_refs_once(
     except (OSError, ValueError):
         return []
     mounted = config.get("mcpServers") or {}
-    pending: list[str] = []
-    added: list[str] = []
-    for name in agent_mod._extra_mcp_servers():
-        # shortcut: a slashed name is matched only under its alias, the key the
-        # default spec mounts it by; a copy that kept the raw key gains nothing.
-        alias = mcp_server_alias(name)
-        ref = f"@{alias}"
-        if name in offered or alias not in mounted or ref not in default_tools:
-            continue
-        pending.append(name)
-        if not any(isinstance(t, str) and (t == ref or t.startswith(f"{ref}/")) for t in tools):
-            tools.append(ref)
-            added.append(ref)
-    if added:
-        agent_mod.sel().log_api_access(
-            caller="system",
-            operation="mcp_tools_added",
-            outcome="ok",
-            source="install_agent",
-            resources=f"{', '.join(added)} added to {fork} tools (edition server newly supplied)",
-        )
+    # shortcut: a name with a ``/`` is mounted under an alias that can collide
+    # with a server of the user's own (the default spec then picks a suffixed
+    # alias this pass cannot see), so it gains nothing here; upgrade when the
+    # fork refresh carries the copy's own alias map.
+    pending = [
+        name
+        for name in agent_mod._extra_mcp_servers()
+        if "/" not in name
+        and name not in offered
+        and name in mounted
+        and f"@{name}" in default_tools
+    ]
+    _append_missing_refs(tools, pending, f"{fork} tools")
     return pending

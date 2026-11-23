@@ -375,6 +375,9 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
 
     agents_dir = agent_mod.kiro_agents_dir_path()
     failures: set[str] = set()
+    # Read once per pass. A rebuild writes ``kirocrew.json`` before it refreshes
+    # the forks (``spec_rebuild``), so this is the default spec it just granted;
+    # pinned by ``test_fork_edition_refs``.
     default_tools = guide_platform.default_spec_tools()
 
     for fork_name in sorted(forks):
