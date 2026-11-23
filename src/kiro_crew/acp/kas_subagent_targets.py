@@ -69,6 +69,7 @@ from kiro_crew.acp.kas_permissions import (
     withhold_hook_gated_auto_approval,
 )
 from kiro_crew.acp.kas_prompt import prompt_unread_notice
+from kiro_crew.acp.kas_spec_denies import gate_refused_blocked
 from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
 from kiro_crew.agent_files import is_mate_service_agent, kas_wire_agent_id
 from kiro_crew.platform.tool_names import KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME
@@ -107,8 +108,8 @@ _CLI_ONLY = (
     "this backend does not load it unless toolsSettings.subagent.availableAgents names it"
 )
 _GATE_ONLY = (
-    "Kiro Crew applies its shell or file-write limits and its preToolUse hooks "
-    "only to the agent a chat runs"
+    "Kiro Crew applies its shell or file-write limits, its blocked web addresses "
+    "and its preToolUse hooks only to the agent a chat runs"
 )
 _UNATTESTED = "it uses {servers}, which this chat's own agent does not load"
 _WIDER_TOOLS = "a built-in agent with more built-in tools than this agent has"
@@ -129,8 +130,8 @@ _SHARED = (
 
 #: The :data:`CREW_SPEC_DENIES_KEY` fields the gate refuses a call by
 #: (``spec_denied_gate.spec_denies_refusal``) that only the gate applies. Its
-#: ``web_fetch`` fields are not among them: the projection's KAS ``ask`` on each
-#: blocked host keeps a target's fetch there at the prompt.
+#: ``webFetchBlocked`` list is read by :func:`_gate_only_limits` on its own: only
+#: the entries KAS cannot carry as a host deny count.
 _DENY_RECORD_LIMITS = ("deniedCommands", "deniedPaths")
 
 #: Server-entry keys that never change which process a server launches or which
@@ -656,11 +657,20 @@ def _gate_only_limits(entry: dict[str, Any]) -> bool:
     The gate applies them only to the agent the session runs:
     ``session_handle_permissions._build_permission_event`` hands a native
     sub-agent's request the session agent's limits, never the target's own.
+    A ``web_fetch.blocked`` entry KAS carries as a host deny binds the target
+    itself; one only the gate refuses (``gate_refused_blocked``) does not.
     """
     if CREW_SHELL_ALLOWLIST_KEY in entry or CREW_WRITE_ALLOWLIST_KEY in entry:
         return True
     record = entry.get(CREW_SPEC_DENIES_KEY)
-    return isinstance(record, dict) and any(record.get(k) for k in _DENY_RECORD_LIMITS)
+    if not isinstance(record, dict):
+        return False
+    if any(record.get(k) for k in _DENY_RECORD_LIMITS):
+        return True
+    blocked = record.get("webFetchBlocked")
+    return isinstance(blocked, list) and bool(
+        gate_refused_blocked({"web_fetch": {"blocked": blocked}})
+    )
 
 
 def _spec_pre_tool_matchers(agent_id: str, spec: dict[str, Any]) -> tuple[str, ...]:
