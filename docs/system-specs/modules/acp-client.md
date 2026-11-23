@@ -5669,11 +5669,12 @@ refuses up front, before any download, naming the found glibc, the minimum, the
 Node key and why; nothing is published. The floor (`kas_bundle._glibc_floor`) is
 `kas_pin.KAS_PIN_LINUX_GLIBC_FLOOR[<node key>]` for the pinned version and the
 official nodejs.org floor (`constants._OFFICIAL_NODE_GLIBC_FLOOR`, 2.28, the one
-doctor's Node remedy also uses) for any other version or key. Today both keys pin
-2.28: the nodejs.org Node needs 2.28 and the engine's npm onnxruntime library 2.27,
-so Amazon Linux 2 (2.26) is refused. A release republished from Amazon Linux 2
-builds (`packaging/kas-al2/`) runs on 2.26 and lowers `linux-x64` in the same
-commit that moves the pin to it; `linux-arm64` has no such build and stays at 2.28.
+doctor's Node remedy also uses) for any other version or key. A release on the
+nodejs.org Node needs 2.28 (and the engine's npm onnxruntime library 2.27). The pin
+is a release republished from Amazon Linux 2 builds (`packaging/kas-al2/`, a `-al2`
+version), so `linux-x64` pins 2.26 and Amazon Linux 2 installs it; `linux-arm64`
+has no such build and pins 2.28. The floor moves only in the commit that moves the
+pin.
 The glibc reader is `constants._host_glibc_version`. The gateway's install (`install_pinned`) runs the same local host checks
 (the glibc floor and the OS and architecture keys) before it fetches the manifest, so
 the refusal names its cause on an offline host too and a spawn that asks again makes
