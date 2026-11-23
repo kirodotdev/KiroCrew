@@ -709,3 +709,91 @@ class TestStreamingDone:
 
         assert all("[OPTIONS:" not in f for f in card.frames)
         assert card.final is not None and "a" in card.final
+
+
+class TestStreamingWithImages:
+    """A streamed answer that references a local image: card first, then the image."""
+
+    @staticmethod
+    def _renderer(c: FakeClient, monkeypatch: object, card: FakeCard, root: Path) -> FeishuRenderer:
+        import kiro_crew.feishu.renderer as mod
+        from kiro_crew.feishu.transport import FEISHU_STREAMING_CAPABILITIES
+
+        monkeypatch.setattr(  # type: ignore[attr-defined]
+            mod, "StreamingCardSession", lambda cl, mid, **_kw: card
+        )
+        r = FeishuRenderer(
+            c, "msg1", FEISHU_STREAMING_CAPABILITIES, uploads_allowed=True, streaming=True
+        )
+        r.authorize_upload_root(str(root))
+        return r
+
+    @pytest.mark.asyncio
+    async def test_the_card_ends_without_the_path_and_the_image_follows(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        r = self._renderer(c, monkeypatch, card, tmp_path)
+
+        await r.on_turn_start()
+        await r.on_text_chunk(f"Here is the chart.\n\n![chart]({chart})")
+        await r.on_done()
+
+        assert card.final == "Here is the chart."
+        assert c.replies == []
+        assert c.images == [("msg1", _PNG)]
+
+    @pytest.mark.asyncio
+    async def test_an_image_only_answer_still_closes_the_card(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        r = self._renderer(c, monkeypatch, card, tmp_path)
+
+        await r.on_turn_start()
+        await r.on_text_chunk(f"![chart]({chart})")
+        await r.on_done()
+
+        assert card.final == "…"
+        assert c.images == [("msg1", _PNG)]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_upload_after_a_delivered_card_is_named_not_raised(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        c.image_ok = False
+        card = FakeCard(c, "msg1")
+        r = self._renderer(c, monkeypatch, card, tmp_path)
+
+        await r.on_turn_start()
+        await r.on_text_chunk(f"![chart]({chart})")
+        await r.on_done()  # the card landed, so a failed picture is not a failed turn
+
+        assert c.replies == [("msg1", f"⚠️ Couldn't upload:\n{chart}")]
+
+    @pytest.mark.asyncio
+    async def test_a_card_that_delivered_nothing_falls_back_with_the_image(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        chart = tmp_path / "chart.png"
+        chart.write_bytes(_PNG)
+        c = FakeClient()
+        card = FakeCard(c, "msg1")
+        card.delivered_final = False
+        r = self._renderer(c, monkeypatch, card, tmp_path)
+
+        await r.on_turn_start()
+        await r.on_text_chunk(f"Done.\n\n![chart]({chart})")
+        await r.on_done()
+
+        assert c.replies == [("msg1", "Done.")]
+        assert c.images == [("msg1", _PNG)]
