@@ -481,6 +481,15 @@
       "tab_gone": "La scheda del Bot è chiusa, quindi non c'è una pagina dal vivo da mostrare.",
       "app_off": "Questa app è disattivata, quindi non può mostrare il browser. Attivala in App per rivedere la pagina.",
       "actions": "Cosa ha fatto il Bot"
+    },
+    "browserSites": {
+      "add_title": "Permettere un nuovo sito?",
+      "add_asked_by": "{{app}} chiede di aggiungere il sito qui sotto alle pagine su cui il suo agente può navigare.",
+      "add_app_details": "Di {{author}} · ID dell'app {{id}}",
+      "add_app_id": "ID dell'app {{id}}",
+      "add_star": "Ogni * corrisponde a qualsiasi testo, quindi copre ogni pagina il cui indirizzo corrisponde.",
+      "add_risk": "Una volta permesso, l'agente dell'app può aprire, leggere, digitare e fare clic su queste pagine nel tuo browser, con il tuo accesso, senza chiedere ogni volta. Permetti solo un sito di cui ti fidi. Puoi rimuoverlo in seguito.",
+      "add_allow": "Permetti il sito"
     }
   },
   "apps": {
@@ -12670,7 +12679,23 @@
         "installed_needs_newer_host": "La versione installata di {{name}} richiede un {{productName}} più recente. Aggiorna {{productName}}; i tuoi dati restano invariati."
       },
       "grants_reconsent_composer_actions": "Pulsanti dell'editor: consente all'app di aggiungere questi pulsanti al menu + dell'editor. Un clic inserisce il testo dell'app nella tua bozza; l'app non può vedere la bozza né inviarla.",
-      "grants_reconsent_selection_actions": "Azioni sul testo selezionato: gli elementi dell'app ricevono il testo che selezioni nelle risposte della chat e possono offrire un risultato da Copiare o Aprire."
+      "grants_reconsent_selection_actions": "Azioni sul testo selezionato: gli elementi dell'app ricevono il testo che selezioni nelle risposte della chat e possono offrire un risultato da Copiare o Aprire.",
+      "browser_sites_list_title": "Siti di navigazione",
+      "browser_sites_list_hint": "Le pagine su cui l'agente di questa app può navigare. Un sito rimosso smette di valere al passo successivo dell'agente.",
+      "browser_sites_source_app": "Dall'app",
+      "browser_sites_source_owner": "Aggiunto da te",
+      "browser_sites_status_approved": "Permesso",
+      "browser_sites_status_pending": "In attesa di approvazione",
+      "browser_sites_status_disabled": "Disattivato",
+      "browser_sites_status_removed": "Rimosso",
+      "browser_sites_remove": "Rimuovi",
+      "browser_sites_turn_on": "Attiva",
+      "browser_sites_add_back": "Aggiungi di nuovo",
+      "browser_sites_remove_failed": "Impossibile rimuovere il sito: {{error}}",
+      "browser_sites_add_failed": "Impossibile aggiungere di nuovo il sito: {{error}}",
+      "browser_sites_turn_on_title": "Riattivare questo sito?",
+      "browser_sites_add_back_title": "Aggiungere di nuovo questo sito?",
+      "browser_sites_restore_risk": "Poi l'agente dell'app potrà aprire, leggere, digitare e fare clic su queste pagine nel tuo browser, con il tuo accesso, senza chiedere ogni volta. Permetti solo un sito di cui ti fidi."
     },
     "appPage": {
       "loading_app": "Caricamento dell'app…",

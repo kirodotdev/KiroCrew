@@ -289,6 +289,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "_jobs",
         "_sel",
         "bot-grants",
+        "browser-sites",
         "config",
         "dev",
         "disable",

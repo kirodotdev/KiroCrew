@@ -20,6 +20,10 @@ A third record is a choice of the owner's that the app must not undo:
   owner deleted. Registration skips them, so a deleted job stays deleted across
   gateway starts and app updates. The owner's disable of the app, and an uninstall,
   remove the record, so the next enable registers every declared job again.
+* ``app-browser-sites/<app>.json`` -- the owner's own edits of the pages the app's
+  agent may browse (``apps/browser_sites.py``): sites the owner added, sites the
+  owner turned off, and declared sites the owner removed. Only the owner's dashboard
+  route writes it, and an uninstall removes it.
 
 It also keeps one credential: ``app-secrets/<app>``, the app's gateway secret (the
 app-token exchange and the proxy signature both use it). Only the gateway writes it,
@@ -56,6 +60,7 @@ APP_GRANTS_KIND = "app-grants"
 APP_DISABLED_KIND = "app-disabled"
 APP_SECRETS_KIND = "app-secrets"
 APP_CRONS_DELETED_KIND = "app-crons-deleted"
+APP_BROWSER_SITES_KIND = "app-browser-sites"
 
 #: Written in ``app-grants/`` once every app's set has been carried over from the app
 #: tree. Once it exists a missing record means nothing is approved.
@@ -252,6 +257,70 @@ def forget_deleted_app_crons(app_name: str) -> None:
     """
     with _deleted_crons_lock(app_name):
         _deleted_crons_path(app_name).unlink(missing_ok=True)
+
+
+#: The keys of an ``app-browser-sites`` record, each a list of site entries.
+OWNER_SITE_KEYS = ("added", "disabled", "removed")
+
+
+def _owner_sites_path(app_name: str) -> Path:
+    return _record_path(APP_BROWSER_SITES_KIND, app_name, ".json")
+
+
+def read_owner_browser_sites(app_name: str, installed_at: str) -> dict[str, list[str]]:
+    """The owner's own edits of *app_name*'s browsing sites; empty lists when none.
+
+    The record names the install it belongs to (the install record's ``installedAt``).
+    That value comes from the app's own ``installed.json``, which the app's sandboxed
+    code can rewrite, so a mismatch only ever narrows: the record's ``added`` sites
+    are dropped, and its ``disabled`` and ``removed`` sites stay in force. A fresh
+    install and a new registration under the name delete the record outright.
+
+    Raises ``OSError``/``ValueError`` when the record cannot be read, so a reader
+    that grants from it fails closed instead of reading a damaged record as "no
+    site disabled".
+    """
+    empty: dict[str, list[str]] = {key: [] for key in OWNER_SITE_KEYS}
+    try:
+        data = json.loads(_owner_sites_path(app_name).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return empty
+    if not isinstance(data, dict):
+        raise ValueError("an app's browser sites record is not an object")
+    same_install = data.get("installedAt") == installed_at
+    out: dict[str, list[str]] = {}
+    for key in OWNER_SITE_KEYS:
+        entries = data.get(key, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"an app's browser sites record has a bad {key!r}")
+        out[key] = list(dict.fromkeys(e for e in entries if isinstance(e, str) and e))
+    if not same_install:
+        out["added"] = []
+    return out
+
+
+@contextlib.contextmanager
+def owner_browser_sites_update(app_name: str, installed_at: str) -> Iterator[dict[str, list[str]]]:
+    """Read, let the caller edit, then store *app_name*'s record, under one lock.
+
+    *installed_at* is the install the caller checked; the record is stored for it.
+    The caller edits the yielded mapping in place; it is written when the block
+    leaves without raising.
+    """
+    path = _owner_sites_path(app_name)
+    with _exclusive_lock(_record_path(APP_BROWSER_SITES_KIND, app_name, ".lock")):
+        record = read_owner_browser_sites(app_name, installed_at)
+        yield record
+        mkdirs_owner_only(path.parent)
+        body: dict[str, object] = {"installedAt": installed_at}
+        body.update({key: list(dict.fromkeys(record.get(key, []))) for key in OWNER_SITE_KEYS})
+        atomic_write(path, json.dumps(body, indent=2) + "\n")
+
+
+def forget_owner_browser_sites(app_name: str) -> None:
+    """Drop *app_name*'s record, for an uninstall: a later app under the name starts clean."""
+    with _exclusive_lock(_record_path(APP_BROWSER_SITES_KIND, app_name, ".lock")):
+        _owner_sites_path(app_name).unlink(missing_ok=True)
 
 
 def snapshot_app(app_name: str) -> tuple[str | None, bool]:

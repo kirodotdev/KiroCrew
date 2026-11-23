@@ -441,6 +441,15 @@
       "tab_gone": "Bot 的标签页已关闭，没有可显示的实时页面。",
       "app_off": "这个应用已关闭，所以无法显示浏览器。在“应用”里打开它，就能再看到页面。",
       "actions": "Bot 做了什么"
+    },
+    "browserSites": {
+      "add_title": "允许新的浏览网站吗？",
+      "add_asked_by": "{{app}} 请求把下面这个网站加入它自己的智能体可以浏览的页面。",
+      "add_app_details": "作者 {{author}} · 应用 ID {{id}}",
+      "add_app_id": "应用 ID {{id}}",
+      "add_star": "其中每个 * 可以匹配任意文字，所以所有地址相符的页面都包括在内。",
+      "add_risk": "允许后，应用自带智能体会用你的登录身份，在你浏览器里打开、阅读这些页面，并在上面输入和点击，不再每次询问。只允许可信网站，之后可以随时移除。",
+      "add_allow": "允许网站"
     }
   },
   "apps": {
@@ -12114,7 +12123,23 @@
         "installed_needs_newer_host": "已安装的 {{name}} 需要更新的 {{productName}}。请更新 {{productName}}；你的数据不受影响。"
       },
       "grants_reconsent_composer_actions": "输入框按钮：允许应用在输入框的 + 菜单中添加这些按钮。点击后会把应用的文字插入你的草稿；应用看不到草稿，也不能发送。",
-      "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。"
+      "grants_reconsent_selection_actions": "选中文字操作：允许应用的条目拿到你在聊天回复中选中的文字，并提供结果供复制或打开。",
+      "browser_sites_list_title": "浏览网站",
+      "browser_sites_list_hint": "这个应用自带的智能体可以浏览的页面。移除的网站在智能体下一步时失效。",
+      "browser_sites_source_app": "应用自带",
+      "browser_sites_source_owner": "你添加的",
+      "browser_sites_status_approved": "已允许",
+      "browser_sites_status_pending": "待批准",
+      "browser_sites_status_disabled": "已停用",
+      "browser_sites_status_removed": "已移除",
+      "browser_sites_remove": "移除",
+      "browser_sites_turn_on": "启用",
+      "browser_sites_add_back": "重新添加",
+      "browser_sites_remove_failed": "无法移除网站：{{error}}",
+      "browser_sites_add_failed": "无法重新添加该网站：{{error}}",
+      "browser_sites_turn_on_title": "重新启用这个浏览网站吗？",
+      "browser_sites_add_back_title": "把这个浏览网站加回来吗？",
+      "browser_sites_restore_risk": "之后应用自带智能体会用你的登录身份，在你浏览器里打开、阅读这些页面，并在上面输入和点击，不再每次询问。只允许可信网站。"
     },
     "appPage": {
       "loading_app": "加载应用…",

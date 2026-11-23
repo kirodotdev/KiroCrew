@@ -441,6 +441,15 @@
       "tab_gone": "Bot의 탭이 닫혀 있어 보여 줄 실시간 페이지가 없습니다.",
       "app_off": "이 앱이 꺼져 있어 브라우저를 표시할 수 없습니다. 앱 목록에서 켜면 페이지를 다시 볼 수 있습니다.",
       "actions": "Bot이 한 일"
+    },
+    "browserSites": {
+      "add_title": "새 탐색 사이트를 허용할까요?",
+      "add_asked_by": "{{app}}에서 자체 에이전트가 탐색할 수 있는 페이지에 아래 사이트를 추가하려고 합니다.",
+      "add_app_details": "만든 사람 {{author}} · 앱 ID {{id}}",
+      "add_app_id": "앱 ID {{id}}",
+      "add_star": "여기의 * 는 어떤 텍스트와도 일치하므로 주소가 맞는 모든 페이지가 포함됩니다.",
+      "add_risk": "허용하면 앱 자체 에이전트가 매번 묻지 않고 브라우저에서 내 로그인 상태로 이 페이지들을 열고, 읽고, 입력하고, 클릭할 수 있습니다. 신뢰하는 사이트만 허용하세요. 나중에 삭제할 수 있습니다.",
+      "add_allow": "사이트 허용"
     }
   },
   "apps": {
@@ -12114,7 +12123,23 @@
         "installed_needs_newer_host": "설치된 {{name}}에는 더 새로운 {{productName}}이(가) 필요합니다. {{productName}}을(를) 업데이트하세요. 데이터는 변경되지 않았습니다."
       },
       "grants_reconsent_composer_actions": "입력창 버튼: 앱이 입력창의 + 메뉴에 이 버튼들을 추가할 수 있습니다. 클릭하면 앱의 텍스트가 초안에 들어갑니다. 앱은 초안을 보거나 보낼 수 없습니다.",
-      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다."
+      "grants_reconsent_selection_actions": "선택한 텍스트 작업: 채팅 답변에서 선택한 텍스트가 앱 항목에 전달되며, 복사하거나 열 결과를 제공할 수 있습니다.",
+      "browser_sites_list_title": "탐색 사이트",
+      "browser_sites_list_hint": "이 앱 자체 에이전트가 탐색할 수 있는 페이지입니다. 삭제한 사이트는 에이전트의 다음 단계부터 적용되지 않습니다.",
+      "browser_sites_source_app": "앱에서",
+      "browser_sites_source_owner": "내가 추가함",
+      "browser_sites_status_approved": "허용됨",
+      "browser_sites_status_pending": "승인 대기",
+      "browser_sites_status_disabled": "꺼짐",
+      "browser_sites_status_removed": "삭제됨",
+      "browser_sites_remove": "삭제",
+      "browser_sites_turn_on": "켜기",
+      "browser_sites_add_back": "다시 추가",
+      "browser_sites_remove_failed": "사이트를 삭제할 수 없습니다: {{error}}",
+      "browser_sites_add_failed": "사이트를 다시 추가하지 못했습니다: {{error}}",
+      "browser_sites_turn_on_title": "이 탐색 사이트를 다시 켤까요?",
+      "browser_sites_add_back_title": "이 탐색 사이트를 다시 추가할까요?",
+      "browser_sites_restore_risk": "그러면 앱 자체 에이전트가 매번 묻지 않고 브라우저에서 내 로그인 상태로 이 페이지들을 열고, 읽고, 입력하고, 클릭할 수 있습니다. 신뢰하는 사이트만 허용하세요."
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",

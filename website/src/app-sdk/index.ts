@@ -668,6 +668,9 @@ export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecisio
 // app's declared `/api/browser/media` (level 10, see ./browserMedia).
 export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
 export type { BrowserMedia, BrowserMediaState } from './browserMedia'
+// The app's browsing list, and the owner's dialog before a site is added (level 13).
+export { useBrowserSites } from './browserSites'
+export type { BrowserSite, BrowserSiteResult, BrowserSites } from './browserSites'
 // The live view of an app's own slot, with take over and hand back, behind the
 // `app_browser_sdk` preview (RFC app-sdk-browser, section 5).
 export { default as BrowserView } from './BrowserView'

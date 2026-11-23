@@ -481,6 +481,15 @@
       "tab_gone": "La pestaña del Bot está cerrada, así que no hay una página en vivo que mostrar.",
       "app_off": "Esta app está desactivada, así que no puede mostrar el navegador. Actívala en Apps para volver a ver la página.",
       "actions": "Lo que hizo el Bot"
+    },
+    "browserSites": {
+      "add_title": "¿Permitir un sitio nuevo?",
+      "add_asked_by": "{{app}} pide añadir el sitio de abajo a las páginas por las que puede navegar su propio agente.",
+      "add_app_details": "De {{author}} · ID de la aplicación {{id}}",
+      "add_app_id": "ID de la aplicación {{id}}",
+      "add_star": "Cada * coincide con cualquier texto, así que cubre todas las páginas cuya dirección encaje.",
+      "add_risk": "Si lo permites, el agente propio de la aplicación podrá abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez. Permite solo un sitio en el que confíes. Puedes quitarlo más tarde.",
+      "add_allow": "Permitir sitio"
     }
   },
   "apps": {
@@ -12670,7 +12679,23 @@
         "installed_needs_newer_host": "La versión instalada de {{name}} necesita un {{productName}} más reciente. Actualiza {{productName}}; tus datos no cambian."
       },
       "grants_reconsent_composer_actions": "Botones del editor: permite que la app añada estos botones al menú + del editor. Un clic inserta el texto de la app en tu borrador; la app no puede ver el borrador ni enviarlo.",
-      "grants_reconsent_selection_actions": "Acciones sobre texto seleccionado: permite que los elementos de la app reciban el texto que seleccionas en las respuestas del chat y ofrezcan un resultado para Copiar o Abrir."
+      "grants_reconsent_selection_actions": "Acciones sobre texto seleccionado: permite que los elementos de la app reciban el texto que seleccionas en las respuestas del chat y ofrezcan un resultado para Copiar o Abrir.",
+      "browser_sites_list_title": "Sitios de navegación",
+      "browser_sites_list_hint": "Las páginas por las que puede navegar el agente propio de esta aplicación. Un sitio quitado deja de valer en el siguiente paso del agente.",
+      "browser_sites_source_app": "De la aplicación",
+      "browser_sites_source_owner": "Añadido por ti",
+      "browser_sites_status_approved": "Permitido",
+      "browser_sites_status_pending": "Pendiente de aprobación",
+      "browser_sites_status_disabled": "Desactivado",
+      "browser_sites_status_removed": "Quitado",
+      "browser_sites_remove": "Quitar",
+      "browser_sites_turn_on": "Activar",
+      "browser_sites_add_back": "Volver a añadir",
+      "browser_sites_remove_failed": "No se pudo quitar el sitio: {{error}}",
+      "browser_sites_add_failed": "No se pudo volver a añadir el sitio: {{error}}",
+      "browser_sites_turn_on_title": "¿Volver a activar este sitio?",
+      "browser_sites_add_back_title": "¿Volver a añadir este sitio?",
+      "browser_sites_restore_risk": "Después, el agente propio de la aplicación podrá abrir, leer, escribir y hacer clic en estas páginas en tu navegador, con tu sesión iniciada, sin preguntar cada vez. Permite solo un sitio en el que confíes."
     },
     "appPage": {
       "loading_app": "Cargando la app…",
