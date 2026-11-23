@@ -150,8 +150,13 @@ async def start(self: AcpProvider) -> None:
 async def shutdown(self: AcpProvider) -> None:
     session_id = self.session_id
     try:
-        if self.memory_mode != "persistent" and session_id and self.is_pi_backend:
-            await _delete_pi_session(self._client, session_id)
+        # Only pi or goose itself can remove its record, so the harness is asked to.
+        if (
+            self.memory_mode != "persistent"
+            and session_id
+            and (self.is_pi_backend or self.is_goose_backend)
+        ):
+            await _delete_harness_session(self._client, session_id)
     finally:
         try:
             await self._client.shutdown()
@@ -171,18 +176,19 @@ async def shutdown(self: AcpProvider) -> None:
                     await self._reclaim_work_dir()
 
 
-async def _delete_pi_session(client: AcpClient, session_id: str) -> None:
-    """Ask pi to delete its record of a disposable session, while it still runs.
+async def _delete_harness_session(client: AcpClient, session_id: str) -> None:
+    """Ask pi or goose to delete its record of a disposable session, while it runs.
 
     pi writes the session to a JSONL file whose folder its own settings choose, and
-    pi-acp keeps a map from the id to that file. pi-acp's ``session/delete`` removes
-    both, so pi's own answer is used rather than a second guess at its paths. Sent
-    only when the handshake advertised ``sessionCapabilities.delete`` and the
-    process is alive. The answer is awaited for ``_TERMINATE_TIMEOUT``, also while
-    the gateway shuts down; a failure is logged and the shutdown goes on.
+    pi-acp keeps a map from the id to that file; goose keeps the session in its own
+    session store. Each one's ``session/delete`` removes its record, so the harness's
+    own answer is used rather than a second guess at its paths. Sent only when the
+    handshake advertised ``sessionCapabilities.delete`` and the process is alive.
+    The answer is awaited for ``_TERMINATE_TIMEOUT``, also while the gateway shuts
+    down; a failure is logged and the shutdown goes on.
 
-    shortcut: a pi process that died before the shutdown keeps the file, since
-    nothing is left to ask. Upgrade by reading pi-acp's session map from disk.
+    shortcut: a process that died before the shutdown keeps its record, since
+    nothing is left to ask. Upgrade by reading the harness's store from disk.
     """
     from kiro_crew.acp.runtime import _TERMINATE_TIMEOUT
 
@@ -192,16 +198,16 @@ async def _delete_pi_session(client: AcpClient, session_id: str) -> None:
         capabilities.get("sessionCapabilities") if isinstance(capabilities, dict) else None
     )
     if not isinstance(session_caps, dict) or not isinstance(session_caps.get("delete"), dict):
-        logger.warning("pi session cleanup: the adapter offers no session/delete")
+        logger.warning("session cleanup: the adapter offers no session/delete")
         return
     if not client._is_process_alive():
-        logger.warning("pi session cleanup: the process ended before the delete")
+        logger.warning("session cleanup: the process ended before the delete")
         return
     try:
         req_id = await client._send_request(METHOD_SESSION_DELETE, {"sessionId": session_id})
         await _await_answer(client, req_id, _TERMINATE_TIMEOUT)
     except Exception:
-        logger.warning("pi session cleanup: session/delete failed", exc_info=True)
+        logger.warning("session cleanup: session/delete failed", exc_info=True)
 
 
 async def _await_answer(client: AcpClient, req_id: int, timeout: float) -> None:
@@ -218,9 +224,9 @@ async def _await_answer(client: AcpClient, req_id: int, timeout: float) -> None:
             msg = await client._read_message(timeout=min(remaining, 1.0), check_cancel=False)
             if msg is not None and msg.is_response_for(req_id):
                 if msg.error:
-                    logger.warning("pi session cleanup: session/delete was refused")
+                    logger.warning("session cleanup: session/delete was refused")
                 return
-        logger.warning("pi session cleanup: session/delete got no answer in time")
+        logger.warning("session cleanup: session/delete got no answer in time")
     finally:
         client._release_stdout()
 
@@ -302,9 +308,9 @@ async def cleanup_session(self: AcpProvider, session_id: str) -> None:
     child ran with, the client's or runtime's ``extra_env`` over the gateway's
     (``agent_sdk.codex_transcripts``). An OpenCode session's is its rows in
     OpenCode's SQLite store, found the same way (``agent_sdk.opencode_transcripts``).
-    Each is deleted off the loop, to completion even when cancelled. A pi session's
-    record went before its process ended (``_delete_pi_session``). A KAS session's
-    record is in the engine's own store, so the call goes to the
+    Each is deleted off the loop, to completion even when cancelled. A pi or goose
+    session's record went before its process ended (``_delete_harness_session``). A
+    KAS session's record is in the engine's own store, so the call goes to the
     ``AcpSessionProvider`` the runtime start put in ``_client``; its
     ``delete_native_record`` sends ``_kiro/session/delete``, or schedules it in
     ``released_sessions`` when this provider's runtime is already shut down.
