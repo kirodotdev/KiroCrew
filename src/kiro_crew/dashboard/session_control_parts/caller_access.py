@@ -1056,7 +1056,7 @@ def _bare_channel(value: Any) -> str:
 
 
 def code_channel_binding_of(state: "DashboardState | Any", slot: Any) -> Any | None:
-    """The code-channel binding whose session IS *slot*, or ``None``.
+    """The code-channel (or Conductor-thread) binding whose session IS *slot*, or ``None``.
 
     Synchronous with no disk access (callable inside a no-suspension window): the
     store's in-memory snapshot (``None`` before it is loaded, which reads as "not a
@@ -1070,7 +1070,10 @@ def code_channel_binding_of(state: "DashboardState | Any", slot: Any) -> Any | N
     try:
         from kiro_crew.slack.code_channels.store import store
 
-        bindings = store().loaded_bindings()
+        current = store()
+        # A Conductor thread's binding is the same record, kept in its own table
+        # (one channel can hold many); the cross-check below is the same.
+        bindings = [*(current.loaded_bindings() or ()), *(current.loaded_thread_bindings() or ())]
     except Exception:
         logger.debug("code-channel store unreadable", exc_info=True)
         return None
