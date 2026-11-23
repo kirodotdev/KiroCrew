@@ -30,6 +30,7 @@ async def run_admitted(
     **kwargs: Any,
 ) -> TurnOutcome:
     """Run one turn of *turns* for *asker* behind the fair-admission gate."""
+    from kiro_crew.shared_crew.admission import ReasonCode
     from kiro_crew.shared_crew.turn_gate import run_channel_turn
 
     monitor = kwargs.get("monitor")
@@ -37,7 +38,9 @@ async def run_admitted(
     async def _refused(reason: Any) -> TurnOutcome:
         if monitor is not None:
             return turns._outcome(Verdict.BUSY, monitor)
-        await note_capacity_refusal(turns.channel, source, kwargs.get("is_muted"), reason)
+        # A message its sender stopped while it waited is not a capacity refusal.
+        if reason is not ReasonCode.CANCELLED_BY_USER:
+            await note_capacity_refusal(turns.channel, source, kwargs.get("is_muted"), reason)
         return turns._outcome(Verdict.BUSY, None)
 
     # A plain nudge carries no monitor but runs inside ``generated_turn``;

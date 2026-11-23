@@ -1441,7 +1441,13 @@ cannot steer into it (`admission_entry.admission_pending`) and queues instead, s
 queued prompt is never delivered as a steer. A dashboard Stop or Interrupt pressed
 while a send waits there, before its runner starts, cancels the work
 (`admission_entry.cancel_waiting_send`), and the turn ends unstarted through its own
-hand-off.
+hand-off. A person's channel message waiting in `turn_gate.run_channel_turn` ends
+unstarted the same way, `cancelled_by_user` with no capacity note, when a channel
+Stop names its conversation during the wait (`turn_gate.stop_waiting_channel_turns`,
+called by `messaging.commands.note_user_stop` and WhatsApp's `_handle_stop`). That
+note is kept for the waiting message itself, since the session manager records a Stop
+only for a key with a live session and a chat's first message has none yet. A monitor
+wake is left out: a refused wake retries.
 
 Disabling admission affects new submissions immediately. Maintenance keeps running
 until accepted live work settles: queued work (including parked messages) ends

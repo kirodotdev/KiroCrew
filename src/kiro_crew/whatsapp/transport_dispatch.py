@@ -341,6 +341,12 @@ class WhatsAppDispatcher:
                 session_key, scope, lambda: self._say(scope, STOP_DECLINED_COMPACTING_TEXT)
             )
             return
+        # A message still waiting for fair admission holds no session, so
+        # ``stop_turn`` cannot reach it; noted here, it ends unstarted. Imported
+        # here: the gate module loads the admission service.
+        from kiro_crew.shared_crew.turn_gate import stop_waiting_channel_turns
+
+        stop_waiting_channel_turns(session_key)
         stopped = kind in ("soft", "hard")
         await self._say(scope, STOPPED_TEXT if stopped else STOP_NOTHING_RUNNING_TEXT)
 

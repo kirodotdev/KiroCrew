@@ -963,12 +963,15 @@ class TelegramDispatcher:
                 return
         # Shared Crew fair admission (``shared_crew.turn_gate``): a pass-through
         # when admission is off; a refused message is told so in its chat.
+        from kiro_crew.shared_crew.admission import ReasonCode
         from kiro_crew.shared_crew.turn_gate import capacity_note, run_channel_turn
 
         async def _refused(reason: Any) -> None:
             nonlocal drain
             drain = False
-            await self._notify(chat_id, capacity_note(reason), thread=reply_thread)
+            # A message its sender stopped while it waited is not a capacity refusal.
+            if reason is not ReasonCode.CANCELLED_BY_USER:
+                await self._notify(chat_id, capacity_note(reason), thread=reply_thread)
 
         reached_drain = await run_channel_turn(
             session_key=session_key,

@@ -26,7 +26,7 @@ import contextlib
 import contextvars
 import inspect
 import logging
-from typing import Any, Callable, Coroutine, Iterable, Iterator, Mapping, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, TypeVar
 
 from kiro_crew.metrics.feature_usage import record_channel_message
 from kiro_crew.metrics.usage_attrs import TRIGGER_MONITOR, TRIGGER_USER, set_current_trigger
@@ -97,6 +97,68 @@ def cancel_unadmitted(key: str) -> bool:
         return False
     task.cancel()
     return True
+
+
+class _ChannelWait:
+    """A person's channel turn waiting for admission; ``stopped`` once a Stop names its key."""
+
+    __slots__ = ("key", "stopped")
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.stopped = False
+
+
+#: Canonical session key -> the person's channel turns waiting for admission on
+#: it (:func:`run_admitted`'s *stop_key*). In memory: a wait ends with its turn.
+_CHANNEL_WAITS: dict[str, list[_ChannelWait]] = {}
+
+
+def _channel_wait_key(session_key: str) -> str:
+    # Imported here: this module loads no messaging module at import time.
+    from kiro_crew.messaging.link import canonical_key
+
+    return canonical_key(session_key)
+
+
+def _forget_channel_wait(wait: _ChannelWait) -> None:
+    waits = _CHANNEL_WAITS.get(wait.key, [])
+    if wait in waits:
+        waits.remove(wait)
+    if not waits:
+        _CHANNEL_WAITS.pop(wait.key, None)
+
+
+def _stoppable_wait(
+    stop_key: str,
+) -> tuple[_ChannelWait, Callable[[], Awaitable[ReasonCode | None]]]:
+    """Record a channel turn's wait under *stop_key*, and the revalidation reading its Stop."""
+    wait = _ChannelWait(_channel_wait_key(stop_key))
+    _CHANNEL_WAITS.setdefault(wait.key, []).append(wait)
+
+    async def _revalidate() -> ReasonCode | None:
+        # The wait is over: the turn starts unless a Stop was noted during it.
+        _forget_channel_wait(wait)
+        return ReasonCode.CANCELLED_BY_USER if wait.stopped else None
+
+    return wait, _revalidate
+
+
+def stop_waiting_channel_turns(session_key: str) -> bool:
+    """Note a person's Stop for every channel turn waiting for admission on *session_key*.
+
+    Each such turn ends unstarted, ``cancelled_by_user``, when its wait ends.
+    The note does not go through the session manager, which records a Stop
+    only for a key with a live session: a chat's first message has none while
+    it waits. True when a waiting turn was noted.
+    """
+    if not _CHANNEL_WAITS:
+        # The usual case: no channel turn waits, so there is no key to fold.
+        return False
+    waits = _CHANNEL_WAITS.get(_channel_wait_key(session_key), [])
+    for wait in waits:
+        wait.stopped = True
+    return bool(waits)
 
 
 @contextlib.contextmanager
@@ -441,6 +503,7 @@ async def run_admitted(
     automation: bool = False,
     operation: OperationKind = OperationKind.CHAT_TURN,
     refused: Callable[[ReasonCode | str | None], Any] | None = None,
+    stop_key: str = "",
 ) -> T | None:
     """Run *work* (model work that starts a runtime of its own) as one admitted turn.
 
@@ -451,6 +514,9 @@ async def run_admitted(
     the bounded Unknown bucket. Inside admitted work, or with fair admission
     off, *work* runs unchanged. A refused or unstarted turn never runs: *work*
     is closed, *refused* (sync or async) is told why, and this returns None.
+    A *stop_key* (a person's channel message) makes the wait stoppable: a Stop
+    noted for that key while the turn waits (:func:`stop_waiting_channel_turns`)
+    ends it unstarted, ``cancelled_by_user``.
     """
     budget = budget_key or _INITIATOR.get()
     if not budget:
@@ -493,11 +559,15 @@ async def run_admitted(
             _gate.TASK_STORE_UNAVAILABLE_CODE if admission.store_unavailable else admission.reason
         )
         return None
+    wait, revalidate = _stoppable_wait(stop_key) if stop_key else (None, None)
     try:
-        return await admission.run(work)
+        return await admission.run(work, revalidate=revalidate)
     except _gate.AdmissionEnded as ended:
         await _tell(ended.work.reason)
         return None
+    finally:
+        if wait is not None:
+            _forget_channel_wait(wait)
 
 
 class TurnRefused(RuntimeError):
@@ -544,12 +614,16 @@ async def run_channel_turn(
     automation: bool,
     run: Callable[[], Coroutine[Any, Any, T]],
     refused: Callable[[ReasonCode | str | None], Coroutine[Any, Any, T]],
+    stop_key: str = "",
 ) -> T:
     """Run one channel transport turn through admission.
 
     A channel sender has no Shared Crew principal, so a person's message is
     charged to the bounded Unknown bucket and a monitor wake to automation.
-    *refused* answers a turn that was refused or ended before it ran.
+    *refused* answers a turn that was refused or ended before it ran. A
+    person's message that waits ends unstarted, ``cancelled_by_user``, when a
+    Stop names *stop_key* (*session_key* when empty) during the wait; a
+    monitor wake does not.
     """
 
     async def _inside() -> T:
@@ -573,6 +647,7 @@ async def run_channel_turn(
         budget_key=_gate.AUTOMATION_PRINCIPAL.id if automation else Principal.unknown().id,
         operation=OperationKind.CHANNEL_TURN,
         refused=reasons.append,
+        stop_key="" if automation else stop_key or session_key,
     )
     if reasons:
         record_channel_message(session_key, admitted=False, automation=automation)
@@ -591,8 +666,12 @@ async def run_slack_message(
     slack = args["slack"]
     channel = args["channel"]
     reply_ts = args.get("thread_ts") or args["msg_ts"]
+    linked = getattr(args.get("sessions"), "get_session_for_thread", None)
 
     async def _refused(reason: ReasonCode | str | None) -> None:
+        if reason is ReasonCode.CANCELLED_BY_USER:
+            # Stopped by a person while it waited: not a capacity refusal.
+            return
         try:
             await slack.post_message(channel, capacity_note(reason), reply_ts)
         except Exception:  # noqa: BLE001 -- the note is best effort
@@ -604,6 +683,8 @@ async def run_slack_message(
         automation=False,
         run=lambda: handle_message(**args),
         refused=_refused,
+        # ``!stop`` names the session the thread is linked to, else the thread.
+        stop_key=(linked(reply_ts) if callable(linked) else None) or f"slack:{reply_ts}",
     )
 
 
@@ -627,6 +708,7 @@ __all__ = [
     "run_channel_turn",
     "run_slack_message",
     "session_stop_count",
+    "stop_waiting_channel_turns",
     "turn_budget",
     "turn_failure",
     "cancel_unadmitted",

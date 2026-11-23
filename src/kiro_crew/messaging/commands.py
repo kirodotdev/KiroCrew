@@ -106,7 +106,7 @@ STOP_REPLY_COMPACTING = STOP_DECLINED_COMPACTING_TEXT
 
 
 def note_user_stop(sessions: Any, session_key: str) -> None:
-    """Record a user Stop for *session_key* on the session manager.
+    """Record a user Stop for *session_key* on the session manager and on a waiting message.
 
     Every channel Stop path that cancels the provider directly (rather than
     through ``SessionManager.stop_turn``, which records on its own) calls this
@@ -116,12 +116,21 @@ def note_user_stop(sessions: Any, session_key: str) -> None:
     otherwise replay the very prompt this Stop was aimed at. The manager keeps
     the record only for keys that have a session or sit in such a replay gap.
 
+    A message still waiting for Shared Crew fair admission holds no session
+    either, so the Stop is also noted for it
+    (``turn_gate.stop_waiting_channel_turns``): it ends unstarted when its
+    wait ends, instead of running once capacity frees.
+
     Probed with ``getattr`` like the rest of this seam: ``sessions`` is typed
     ``Any`` and the focused doubles in the channel suites predate the method.
     """
     note = getattr(sessions, "note_stop", None)
     if callable(note):
         note(session_key)
+    # Imported here: the gate module loads the admission service.
+    from kiro_crew.shared_crew.turn_gate import stop_waiting_channel_turns
+
+    stop_waiting_channel_turns(session_key)
 
 
 async def stop_running_turn(
