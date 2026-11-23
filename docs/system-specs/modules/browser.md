@@ -30,7 +30,7 @@ agent turn ──MCP browser(op, args)──▶ ops ──▶ supervisor.call(<h
 
 | Part | Where |
 |---|---|
-| Driver install, environment fence, browser discovery, relay, supervisor, helper worker, status and install routes | the `browser_harness` package: `env.py`, `install.py`, `build_deps.py`, `chromium.py`, `discover.py`, `relay.py`, `supervisor.py`, `helper_worker.py`; `dashboard/handlers/browser_harness_status.py` |
+| Driver install, environment fence, browser discovery, relay, supervisor, helper worker, status and install routes | the `browser_harness` package: `env.py`, `install.py`, `build_deps.py`, `chromium.py`, `discover.py`, `relay.py`, `supervisor.py`, `chromium_stderr.py`, `helper_worker.py`; `dashboard/handlers/browser_harness_status.py` |
 | Screencast, adaptive ladder, takeover input, the live hub, the card's routes and the `browser_live` event | `screencast.py`, `takeover.py`, `live_hub.py` in that package; `dashboard/handlers/browser_live.py` |
 | The `browser` MCP tool's ops, the snapshot walker and the op route that also drives the card | `mcp_tools/browser.py`, `ops.py`, `snapshot_walker.js` in that package; `dashboard/handlers/browser_ops.py` |
 | An app page's media buttons on its own agent's tab | `media.py` in that package; `dashboard/handlers/browser_media.py` |
@@ -369,9 +369,23 @@ A Kiro's Chromium that exits before its debugging port opens, or before the
 daemon answers, fails the start at once
 with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
 to a pipe of the gateway's own, drained for the browser's whole life (only the
-newest 4 KiB kept, in memory), and its last stderr lines follow, redacted, so a
-missing shared library is named by the loader's own report rather than by a
-60 s `the Harness daemon did not start in time`. On Windows stderr is discarded.
+oldest 4 KiB and the newest 4 KiB kept, in memory; `chromium_stderr.py`), and
+its last stderr lines
+follow, redacted, so a missing shared library is named by the loader's own
+report rather than by a 60 s `the Harness daemon did not start in time`. When
+the newest bytes had to drop the start of the stream, the first `FATAL:` lines
+(else the first `ERROR:` lines) from the oldest bytes are quoted ahead of the
+tail, after a `...`, since Chromium writes its cause first and a register and
+stack dump longer than the tail buffer after it; every kept line, both buffers,
+is judged by the stderr publication policy (`acp/stderr_tail.py`) before any is
+quoted, so a credential anywhere in them withholds the whole excerpt. A quoted
+`No usable sandbox` (Chromium's zygote got no sandbox, typically on a host whose
+kernel restricts unprivileged user namespaces) carries a conditional remedy: an
+AppArmor profile the operator attaches to Kiro's Chromium's own executable path,
+as Chromium's documentation describes, rather than `--no-sandbox`; the
+user-facing steps are in
+[troubleshooting](../../../src/kiro_crew/docs/troubleshooting.md#kiros-chromium-exits-at-once-on-linux).
+On Windows stderr is discarded.
 
 Chrome 144+ asks "Allow remote debugging?" once per connection. The supervisor's
 `waiting_allow` state never times out that prompt; the live card shows the one

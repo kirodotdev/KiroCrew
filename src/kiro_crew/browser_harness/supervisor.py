@@ -50,9 +50,18 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.browser_harness import HARNESS_VERSION, budgets, credentials, discover
+from kiro_crew.browser_harness import (
+    HARNESS_VERSION,
+    budgets,
+    chromium_stderr,
+    credentials,
+    discover,
+)
 from kiro_crew.browser_harness import governance as browse_governance
-from kiro_crew.browser_harness import install, sign_in_guard
+from kiro_crew.browser_harness import (
+    install,
+    sign_in_guard,
+)
 from kiro_crew.browser_harness.earlier_chromium import held_profile_detail, prepare_profile
 from kiro_crew.browser_harness.env import daemon_env
 from kiro_crew.browser_harness.helper_table import HELPERS
@@ -118,12 +127,6 @@ _TAB_CLOSE_SECS = 3.0
 #: worker. The worker bounds its own replies below it
 #: (``helper_worker.REPLY_CAP_BYTES``), so a legitimate reply never reaches it.
 WORKER_LINE_LIMIT = 8 * 1024 * 1024
-
-#: How much of Kiro's Chromium's stderr is kept, newest bytes only, and how many of
-#: its lines a start failure quotes: room for the dynamic loader's report of a
-#: missing shared library (one line from ld.so, three from dyld).
-_CHROMIUM_STDERR_TAIL_BYTES = 4096
-_CHROMIUM_STDERR_TAIL_LINES = 3
 
 #: How long the re-pull before a navigation waits for a start in flight before it
 #: skips (a start can hold the lock without deadline on the person's Allow sheet),
@@ -275,8 +278,11 @@ class HarnessSupervisor:
         self._ensure_lock = LoopBoundLock()
         self._call_lock = LoopBoundLock()
         self._ensure_task: asyncio.Task[HarnessHandle] | None = None
-        #: The newest stderr bytes of the Kiro's Chromium launched last (POSIX).
+        #: The newest stderr bytes of the Kiro's Chromium launched last (POSIX),
+        #: and its oldest, which hold the cause when the browser dies after a dump
+        #: longer than the tail buffer (:func:`chromium_stderr.keep_ends`).
         self._chromium_stderr = bytearray()
+        self._chromium_stderr_head = bytearray()
         #: The stop a ``capabilities.browse`` deny started (:meth:`stop_soon`).
         self._stop_task: asyncio.Task[None] | None = None
         #: Set while a Redownload replaces Kiro's Chromium (:meth:`stop_for_chromium_replace`):
@@ -996,7 +1002,7 @@ class HarnessSupervisor:
         """POSIX: ``--remote-debugging-pipe`` over two pipes; no port is ever opened.
 
         Its stderr goes to a third pipe the gateway drains for the browser's whole
-        life (:func:`_keep_stderr_tail`). The pipe is the gateway's own, not
+        life (:func:`chromium_stderr.keep_ends`). The pipe is the gateway's own, not
         asyncio's: an asyncio pipe would make reaping the browser wait for every
         descendant that inherited it.
         """
@@ -1039,7 +1045,7 @@ class HarnessSupervisor:
             os.close(stderr_r)
             await _stop_unowned(proc)
             raise
-        self._chromium_stderr = _keep_stderr_tail(stderr_r)
+        self._chromium_stderr_head, self._chromium_stderr = chromium_stderr.keep_ends(stderr_r)
         return proc, upstream
 
     async def _launch_chromium_port(
@@ -1124,25 +1130,9 @@ class HarnessSupervisor:
             raise
 
     def _chromium_exit_detail(self, code: int) -> str:
-        """Kiro's Chromium's exit code and its last stderr lines.
-
-        Every kept line is judged first (:func:`agent_sdk.published_stderr_tail`),
-        so a credential anywhere in them, wrapped across lines or not, withholds
-        the whole tail instead of being published in pieces.
-        """
-        from kiro_crew.agent_sdk import published_stderr_tail
-        from kiro_crew.platform.context import redact_via_context
-
-        text = self._chromium_stderr.decode("utf-8", "replace")
-        if len(self._chromium_stderr) >= _CHROMIUM_STDERR_TAIL_BYTES:
-            # The byte cap cut the oldest line, maybe mid-secret: drop that piece.
-            text = text.partition("\n")[2]
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        tail = published_stderr_tail(
-            lines, " | ", _CHROMIUM_STDERR_TAIL_LINES, redact=redact_via_context
-        )
-        detail = f"Kiro's Chromium exited with code {code}"
-        return f"{detail}: {tail}" if tail else detail
+        """Kiro's Chromium's exit code and the redacted excerpt of its stderr
+        (:func:`chromium_stderr.exit_detail`)."""
+        return chromium_stderr.exit_detail(code, self._chromium_stderr_head, self._chromium_stderr)
 
     async def _start_worker(self, handle: HarnessHandle) -> asyncio.subprocess.Process:
         state = await asyncio.to_thread(install.install_state, self.home)
@@ -1367,35 +1357,6 @@ def _fd_at_or_above(fd: int, floor: int) -> int:
     os.close(fd)
     os.set_inheritable(higher, True)
     return higher
-
-
-def _keep_stderr_tail(fd: int) -> bytearray:
-    """Drain *fd* on the running loop until EOF; return the buffer of its newest bytes.
-
-    Read for as long as anything holds the write end, so a chatty browser never
-    blocks on a full pipe, and bounded to :data:`_CHROMIUM_STDERR_TAIL_BYTES`. One
-    read takes a whole pipe buffer, so what the browser wrote before it exited is
-    in the buffer by the time its exit is seen. *fd* is closed at EOF. POSIX only;
-    the pipe launcher is its one caller.
-    """
-    loop = asyncio.get_running_loop()
-    tail = bytearray()
-    os.set_blocking(fd, False)
-
-    def _read() -> None:
-        try:
-            chunk = os.read(fd, 65536)
-        except BlockingIOError:
-            return
-        if not chunk:
-            loop.remove_reader(fd)
-            os.close(fd)
-            return
-        tail.extend(chunk)
-        del tail[:-_CHROMIUM_STDERR_TAIL_BYTES]
-
-    loop.add_reader(fd, _read)
-    return tail
 
 
 def _clear_restored_session(profile: Path) -> None:

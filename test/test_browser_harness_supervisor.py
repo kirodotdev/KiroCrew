@@ -20,10 +20,10 @@ import pytest
 from tmpdir_helpers import SHORT_TMP_PREFIX
 
 from kiro_crew import sandbox_leaves, sandbox_precreate
-from kiro_crew.browser_harness import HARNESS_VERSION, helper_worker, supervisor
+from kiro_crew.browser_harness import HARNESS_VERSION, chromium_stderr, helper_worker, supervisor
 from kiro_crew.browser_harness.supervisor import HarnessSupervisor
 from kiro_crew.security import paths_lists
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture
@@ -850,22 +850,14 @@ class _Child:
     stdin = None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the pipe launcher is POSIX-only")
-@pytest.mark.asyncio
-async def test_a_chromium_missing_a_library_fails_the_start_naming_it(
-    short_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Kiro's Chromium exits 127 at load when a shared library is missing. The start
-    reports that at once with the loader's line, instead of waiting out the daemon's
-    deadline for "the Harness daemon did not start in time"."""
-    exe = tmp_path / "chrome"
-    exe.write_text(
-        "#!/bin/sh\n"
-        'echo "$0: error while loading shared libraries: libnss3.so:'
-        ' cannot open shared object file: No such file or directory" >&2\n'
-        "exit 127\n",
-        encoding="utf-8",
-    )
+async def _start_with_a_chromium_that_exits(
+    short_home: Path, exe: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> tuple[HarnessSupervisor, list[object]]:
+    """Run a start whose Kiro's Chromium is the script *exe*, which exits *code*.
+
+    The daemon is a fake that never pings, so the browser's exit is what fails the
+    start. Returns the supervisor and the children the start stopped.
+    """
     exe.chmod(0o755)
     monkeypatch.setattr(
         supervisor.install,
@@ -920,10 +912,196 @@ async def test_a_chromium_missing_a_library_fails_the_start_naming_it(
     monkeypatch.setattr(sup, "_spawn", spawn)
     monkeypatch.setattr(sup, "_ipc_ping", no_ping)
     monkeypatch.setattr(supervisor, "_stop_process", stop)
-    with pytest.raises(supervisor.BrowserUnavailable, match="exited with code 127"):
+    with pytest.raises(supervisor.BrowserUnavailable, match=f"exited with code {code}"):
         await sup.ensure()
-    assert "error while loading shared libraries: libnss3.so" in sup.status()["detail"]
     assert daemon in stopped
+    return sup, stopped
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the pipe launcher is POSIX-only")
+@pytest.mark.asyncio
+async def test_a_chromium_missing_a_library_fails_the_start_naming_it(
+    short_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kiro's Chromium exits 127 at load when a shared library is missing. The start
+    reports that at once with the loader's line, instead of waiting out the daemon's
+    deadline for "the Harness daemon did not start in time"."""
+    exe = tmp_path / "chrome"
+    exe.write_text(
+        "#!/bin/sh\n"
+        'echo "$0: error while loading shared libraries: libnss3.so:'
+        ' cannot open shared object file: No such file or directory" >&2\n'
+        "exit 127\n",
+        encoding="utf-8",
+    )
+    sup, _ = await _start_with_a_chromium_that_exits(short_home, exe, monkeypatch, 127)
+    assert "error while loading shared libraries: libnss3.so" in sup.status()["detail"]
+
+
+#: Chromium's zygote line on a host that refuses it a user namespace, as it writes
+#: it: its own text suggests ``--no-sandbox``, which the detail's hint answers.
+_NO_USABLE_SANDBOX = (
+    "[4242:4242:1123/141530.123456:FATAL:zygote_host_impl_linux.cc(129)] No usable sandbox!"
+    " If you are running on Ubuntu 23.10+ or another Linux distro that has disabled"
+    " unprivileged user namespaces with AppArmor, see"
+    " https://chromium.googlesource.com/chromium/src/+/main/docs/security/"
+    "apparmor-userns-restrictions.md. If you want to live dangerously and need an"
+    " immediate workaround, you can try using --no-sandbox."
+)
+#: The ``ERROR:`` lines every headless start writes before anything of interest.
+_BUS_ERROR = (
+    "[4242:4242:1123/141530.000001:ERROR:bus.cc(407)] Failed to connect to the bus:"
+    " Could not parse server address"
+)
+
+
+def _register_dump(lines: int) -> list[str]:
+    """*lines* of the register and stack dump Chromium writes after a FATAL, each
+    distinct, together longer than the tail buffer when *lines* is large."""
+    return [f"r{i:03d}: 0x{i * 7919:016x} | {i * 104729:016x} | r{i + 1:03d}" for i in range(lines)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the pipe launcher is POSIX-only")
+@pytest.mark.asyncio
+async def test_a_fatal_line_survives_the_dump_that_follows_it(
+    short_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kiro's Chromium writes the cause FIRST and then a register dump longer than
+    the tail buffer. The detail still names the cause, with the remedy, and still
+    ends with the newest lines."""
+    dump = _register_dump(200)
+    body = [_BUS_ERROR, _NO_USABLE_SANDBOX, *dump, "[end of stack trace]"]
+    assert sum(len(line) + 1 for line in body) > 2 * chromium_stderr.STDERR_TAIL_BYTES
+    exe = tmp_path / "chrome"
+    exe.write_text(
+        "#!/bin/sh\n" + "".join(f"echo '{line}' >&2\n" for line in body) + "exit 134\n",
+        encoding="utf-8",
+    )
+    sup, _ = await _start_with_a_chromium_that_exits(short_home, exe, monkeypatch, 134)
+    detail = sup.status()["detail"]
+    assert detail.startswith(f"Kiro's Chromium exited with code 134: {_NO_USABLE_SANDBOX} | ...")
+    assert f"{dump[-1]} | [end of stack trace]. {chromium_stderr.NO_SANDBOX_HINT}" in detail
+    assert _BUS_ERROR not in detail, "a FATAL line is quoted ahead of the bus ERROR lines"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the pipe launcher is POSIX-only")
+@pytest.mark.asyncio
+async def test_the_stderr_reader_keeps_the_oldest_and_the_newest_bytes() -> None:
+    """The head stops growing at its cap; the tail keeps only the newest bytes."""
+    head_cap = chromium_stderr.STDERR_HEAD_BYTES
+    tail_cap = chromium_stderr.STDERR_TAIL_BYTES
+    payload = b"".join(f"line {i:05d} {'x' * 40}\n".encode() for i in range(400))
+    assert len(payload) > head_cap + tail_cap
+    read_end, write_end = os.pipe()
+    stat = os.fstat(read_end)
+    pipe_identity = (stat.st_dev, stat.st_ino)
+    head, tail = chromium_stderr.keep_ends(read_end)
+
+    def write() -> None:
+        with open(write_end, "wb", buffering=0) as pipe:
+            for at in range(0, len(payload), 1500):
+                pipe.write(payload[at : at + 1500])
+
+    def reader_saw_eof() -> bool:
+        # The reader closes its end at EOF. A closed number can be reused by a
+        # later open, so the pipe's identity, not the number, is what is checked.
+        try:
+            now = os.fstat(read_end)
+        except OSError:
+            return True
+        return (now.st_dev, now.st_ino) != pipe_identity
+
+    await asyncio.to_thread(write)
+    await async_wait_until(reader_saw_eof)
+    assert bytes(head) == payload[:head_cap]
+    assert bytes(tail) == payload[-tail_cap:]
+
+
+def _overflowed(sup: HarnessSupervisor, text: str) -> None:
+    """Give *sup* the buffers the reader leaves after *text*, longer than the tail."""
+    data = text.encode()
+    assert len(data) > chromium_stderr.STDERR_TAIL_BYTES
+    sup._chromium_stderr_head = bytearray(data[: chromium_stderr.STDERR_HEAD_BYTES])
+    sup._chromium_stderr = bytearray(data[-chromium_stderr.STDERR_TAIL_BYTES :])
+
+
+def test_the_head_is_quoted_only_once_the_tail_has_dropped_bytes(short_home: Path) -> None:
+    """A short stderr fits the tail whole, so the head would only repeat it: the
+    detail is the last lines alone, as when there is no head buffer at all. On
+    Windows, where stderr is not captured, both buffers stay empty."""
+    sup = HarnessSupervisor(short_home, base_env={}, config_reader=lambda: {})
+    short = f"{_NO_USABLE_SANDBOX}\ntwo\nthree\nfour\n"
+    sup._chromium_stderr_head = bytearray(short.encode())
+    sup._chromium_stderr = bytearray(short.encode())
+    assert sup._chromium_exit_detail(1) == "Kiro's Chromium exited with code 1: two | three | four"
+    sup._chromium_stderr_head = bytearray()
+    sup._chromium_stderr = bytearray()
+    assert sup._chromium_exit_detail(21) == "Kiro's Chromium exited with code 21"
+
+
+def test_the_head_excerpt_prefers_fatal_lines_and_skips_what_the_tail_quotes(
+    short_home: Path,
+) -> None:
+    sup = HarnessSupervisor(short_home, base_env={}, config_reader=lambda: {})
+    dump = _register_dump(200)
+    # Two bus errors, then two FATAL lines: the FATAL lines are quoted, in order,
+    # and the bus errors are not, though they come first.
+    second_fatal = "[4242:4242:1123/141530.123457:FATAL:zygote_main_linux.cc(10)] giving up"
+    _overflowed(sup, "\n".join([_BUS_ERROR, _BUS_ERROR, _NO_USABLE_SANDBOX, second_fatal, *dump]))
+    detail = sup._chromium_exit_detail(-6)
+    assert detail.startswith(
+        f"Kiro's Chromium exited with code -6: {_NO_USABLE_SANDBOX} | {second_fatal} | ... |"
+    )
+    assert _BUS_ERROR not in detail
+    # With no FATAL line the first ERROR lines are quoted instead, capped.
+    third = _BUS_ERROR.replace("bus.cc(407)", "bus.cc(408)")
+    _overflowed(sup, "\n".join([_BUS_ERROR, third, _BUS_ERROR, *dump]))
+    detail = sup._chromium_exit_detail(-6)
+    assert detail.startswith(f"Kiro's Chromium exited with code -6: {_BUS_ERROR} | {third} | ... |")
+    assert chromium_stderr.NO_SANDBOX_HINT not in detail
+    # A head whose FATAL line is also among the tail's last three lines is not
+    # quoted twice: a filler, the FATAL line, then two lines that together take
+    # the stream past the tail's cap while leaving the FATAL line whole inside it.
+    long_two = ["a" * 1700, "b" * 1700]
+    stream = "\n".join(["z" * 400, _NO_USABLE_SANDBOX, *long_two])
+    tail_cap = chromium_stderr.STDERR_TAIL_BYTES
+    assert len(stream) > tail_cap > len("\n".join([_NO_USABLE_SANDBOX, *long_two]))
+    _overflowed(sup, stream)
+    detail = sup._chromium_exit_detail(-6)
+    assert detail.count(_NO_USABLE_SANDBOX) == 1
+    assert "| ... |" not in detail, "nothing is left to quote from the head"
+    # A head that filled its buffer ends mid-line; that piece is never quoted.
+    cut_at = chromium_stderr.STDERR_HEAD_BYTES
+    long_fatal = "[1:1:1123/1.1:FATAL:a.cc(1)] " + "z" * cut_at
+    _overflowed(sup, "\n".join([long_fatal, *dump]))
+    assert "FATAL:a.cc" not in sup._chromium_exit_detail(-6)
+
+
+def test_a_key_in_the_head_withholds_the_whole_excerpt(short_home: Path) -> None:
+    """The head is judged with the tail: a secret in the first bytes, wrapped across
+    two lines or not, withholds everything, though the quoted tail lines are clean;
+    and a secret the tail buffer holds outside its last lines still withholds them."""
+    from kiro_crew.acp.stderr_tail import STDERR_WITHHELD
+    from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
+
+    key = SAMPLE_AWS_SECRET
+    sup = HarnessSupervisor(short_home, base_env={}, config_reader=lambda: {})
+    dump = _register_dump(200)
+    wrapped = [
+        f"[1:1:1123/1.1:FATAL:a.cc(1)] aws_secret_access_key={key[:18]}",
+        f"{key[18:]} rejected",
+    ]
+    _overflowed(sup, "\n".join([*wrapped, *dump]))
+    assert (
+        sup._chromium_exit_detail(-6) == f"Kiro's Chromium exited with code -6: {STDERR_WITHHELD}"
+    )
+    _overflowed(
+        sup,
+        "\n".join([_NO_USABLE_SANDBOX, *dump[:150], f"aws_secret_access_key={key}", *dump[150:]]),
+    )
+    assert (
+        sup._chromium_exit_detail(-6) == f"Kiro's Chromium exited with code -6: {STDERR_WITHHELD}"
+    )
 
 
 def test_a_key_chromium_wrapped_across_lines_withholds_its_stderr(short_home: Path) -> None:
@@ -942,7 +1120,7 @@ def test_a_key_chromium_wrapped_across_lines_withholds_its_stderr(short_home: Pa
     sup._chromium_stderr = bytearray(b"one\ntwo\nthree\nfour\n")
     assert sup._chromium_exit_detail(1) == "Kiro's Chromium exited with code 1: two | three | four"
     # A full buffer starts mid-line where the cap cut it; that piece is never shown.
-    cut = b"x" * (supervisor._CHROMIUM_STDERR_TAIL_BYTES - 4) + b"\nok\n"
+    cut = b"x" * (chromium_stderr.STDERR_TAIL_BYTES - 4) + b"\nok\n"
     sup._chromium_stderr = bytearray(cut)
     assert sup._chromium_exit_detail(1) == "Kiro's Chromium exited with code 1: ok"
 
