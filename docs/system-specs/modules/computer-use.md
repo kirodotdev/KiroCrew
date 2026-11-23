@@ -451,9 +451,10 @@ Exactly what `validation.build_tool_response` emits:
 ```
 
 Text only, capped at `MAX_RESPONSE_LEN`. **There is no `isError` field and no
-image block** — an image block is not expressible on this transport, so
-"tree-first, relay the screenshot as a path" is a property of the transport
-rather than a policy someone can regress. An error is the literal string
+image block** — `build_tool_response` adds an image block only to an answer that
+is a `validation.TextWithImage`, and no computer-use handler returns one (the one
+producer is the browser `screenshot` op with `inline: true`), so "tree-first,
+relay the screenshot as a path" holds for every computer-use result. An error is the literal string
 `"Error: …"`; `mcp_shared.call_tool_with_logging` classifies that prefix as SEL
 `outcome="failed"`, so the prefix is load-bearing.
 

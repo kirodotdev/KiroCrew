@@ -6630,6 +6630,21 @@ canonical provider URL and is parsed against that kind before a directive is
 emitted. A later target-only update is revalidated against the retained kind by
 the authoritative session consumer.
 
+### A tool result can carry one image
+
+A handler that answers with a `validation.TextWithImage` (a `str` subclass holding
+`(base64 data, MIME type)`) gets one `{"type": "image", "data", "mimeType"}` block
+after its text block; every other answer is the text block alone. Because the answer
+is still a `str`, the `Error:` audit outcome, `refuse_if_markerless` and a parked
+call's settle read it unchanged, and only `build_tool_response` unpacks the image.
+Any string operation on it returns a plain `str`, so a handler attaches it last. The
+one producer is the browser `screenshot` op with `inline: true`
+([browser](../system-specs/modules/browser.md)); its image is already inside the
+inline-image budget (`imaging.downscale_image_block`), the same budget the MCP
+gateway's relay holds a brokered server's image blocks to (`mcp_gateway/image_budget.py`).
+The chat's tool row shows the text: when the harness reports the result as its raw MCP
+envelope, `acp/_dispatch_parts/tool_result_events._mcp_content_text` skips the image block.
+
 ### The one allowed exception: caller-agnostic process caches
 
 A module-level cache is fine when it is keyed on an **external** signature and is
