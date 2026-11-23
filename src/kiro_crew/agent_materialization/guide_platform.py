@@ -11,7 +11,9 @@ the first time it rebuilds on a build that ships it.
 
 An edition-supplied server (``extra_mcp_servers()``) gets the same treatment per
 server: one the edition starts supplying after the first install gains its
-``@name`` ref in ``tools`` once, recorded by name, and never again after.
+``@name`` ref in ``tools`` once, recorded by name, and never again after. A
+crew's private copy of an owned template gets the refs the default spec got,
+once per copy, recorded in that copy's ``agent_state`` entry.
 """
 
 from __future__ import annotations
@@ -200,3 +202,82 @@ def mark_edition_refs_offered(names: list[str]) -> None:
     offered = _offered_edition_servers() or set()
     doc = {"version": 1, "servers": sorted(offered | set(names))}
     atomic_write(_marker(EDITION_REFS_MARKER), json.dumps(doc) + "\n")
+
+
+def record_fork_edition_baseline(fork: str) -> None:
+    """Record on a new private copy the edition servers the default spec was already offered.
+
+    The copy carries the default spec's refs as the user kept them, so those
+    servers are never offered to it again; one supplied later is offered once
+    (:func:`grant_fork_edition_refs_once`). An unreadable record counts every
+    server supplied now as offered, so nothing is granted on a guess.
+    """
+    from kiro_crew import agent_state
+
+    offered = _offered_edition_servers()
+    if offered is None:
+        offered = set(agent_mod._extra_mcp_servers())
+    agent_state.add_edition_refs_offered(fork, offered)
+
+
+def default_spec_tools() -> list[str]:
+    """The ``tools`` of the default spec on disk, or ``[]`` when it cannot be read."""
+    from kiro_crew import user_json
+    from kiro_crew.agent_files import AGENT_FILENAME
+
+    try:
+        path = agent_mod.kiro_agents_dir_path() / AGENT_FILENAME
+        spec = user_json.loads_user_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    tools = spec.get("tools") if isinstance(spec, dict) else None
+    return [t for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
+
+
+def grant_fork_edition_refs_once(
+    config: dict[str, Any], fork: str, default_tools: list[str]
+) -> list[str]:
+    """Give a private copy of an owned template each edition ref the default spec got, once.
+
+    A copy made before an edition supplied a server mounts it on every fork
+    refresh (``_refresh_dynamic_fields``), and its tools are callable only once
+    ``tools`` names it. A server not yet offered to
+    *fork*, mounted on it, and referenced whole in *default_tools* gains
+    ``@<name>`` here, appended, never in ``allowedTools``. A ref the copy already
+    holds, whole or as ``@name/<tool>``, is left as it is. Returns the names to
+    record with ``agent_state.add_edition_refs_offered`` once the spec is written,
+    so a ref the user removes afterwards stays removed.
+    """
+    from kiro_crew import agent_state
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    tools = config.get("tools")
+    if not isinstance(tools, list):
+        return []
+    try:
+        offered = agent_state.get_edition_refs_offered(fork, strict=True)
+    except (OSError, ValueError):
+        return []
+    mounted = config.get("mcpServers") or {}
+    pending: list[str] = []
+    added: list[str] = []
+    for name in agent_mod._extra_mcp_servers():
+        # shortcut: a slashed name is matched only under its alias, the key the
+        # default spec mounts it by; a copy that kept the raw key gains nothing.
+        alias = mcp_server_alias(name)
+        ref = f"@{alias}"
+        if name in offered or alias not in mounted or ref not in default_tools:
+            continue
+        pending.append(name)
+        if not any(isinstance(t, str) and (t == ref or t.startswith(f"{ref}/")) for t in tools):
+            tools.append(ref)
+            added.append(ref)
+    if added:
+        agent_mod.sel().log_api_access(
+            caller="system",
+            operation="mcp_tools_added",
+            outcome="ok",
+            source="install_agent",
+            resources=f"{', '.join(added)} added to {fork} tools (edition server newly supplied)",
+        )
+    return pending

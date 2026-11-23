@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         kiro_agents_dir_path,
         logger,
         read_config_text,
+        record_fork_edition_baseline,
         update_config_locked,
     )
 
@@ -262,6 +263,9 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                         agent_state.set_fork_info(
                             copy_name, forked_from=source_name, private_to=crew  # type: ignore[arg-type]
                         )
+                        # The copy already holds the edition refs as the user
+                        # kept them; only a server supplied later is offered.
+                        record_fork_edition_baseline(copy_name)
                         managed = agent_state.get_model_managed(source_name, strict=True)
                         if managed is not None:
                             agent_state.set_model_managed(copy_name, managed)

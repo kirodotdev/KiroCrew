@@ -72,6 +72,7 @@ from kiro_crew.agent import (  # noqa: F401
     get_shipped_tools,
     install_agent,
     kiro_agents_dir_path,
+    record_fork_edition_baseline,
 )
 from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template  # noqa: F401
 from kiro_crew.agent_discovery import (  # noqa: F401
