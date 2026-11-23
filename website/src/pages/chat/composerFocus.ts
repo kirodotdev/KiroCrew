@@ -1,6 +1,7 @@
 import { isChatPageSurface } from '../../utils/channelOrigin'
 import { activeElementIsEditable } from '../../utils/editableTarget'
 import { isTouchDevice } from '../../utils/isTouchDevice'
+import { chromeClosest, chromeQueryAll } from './appChrome'
 
 /**
  * Putting the caret in the chat composer after creating a session.
@@ -171,21 +172,41 @@ export function focusComposerElement(el: HTMLElement): void {
  * every global chord that reaches into a pane has to agree about WHICH pane, and
  * two copies of that rule are two things to keep in step the next time the grid
  * changes how it marks the focused cell.
+ *
+ * Through `appChrome`: a message can carry `data-chat-pane` too, and a forged
+ * pane around a focused link would scope every chord to the message.
  */
 function focusedPane(): Element | null {
-  return document.activeElement?.closest('[data-chat-pane]') ??
-    document.querySelector('[data-chat-pane="focused"]')
+  const active = document.activeElement
+  return (active ? chromeClosest(active, '[data-chat-pane]') : null) ??
+    chromeQueryAll(document, '[data-chat-pane="focused"]')[0] ?? null
+}
+
+/** The approval action rows in *scope* that the app rendered. Rendered markdown
+ *  keeps data attributes, so a message can forge `data-approval-actions` (or
+ *  `data-approval-primary` on a `<summary>`) ahead of the real card; `appChrome`
+ *  drops those, and the chords never land on or answer through one. */
+function approvalRows(scope: ParentNode): HTMLElement[] {
+  return chromeQueryAll(scope, '[data-approval-actions]')
+}
+
+/** The row's enabled buttons, in order. */
+function enabledControls(row: Element): HTMLButtonElement[] {
+  return [...row.querySelectorAll('button')].filter(b => !b.disabled)
 }
 
 /**
  * The control a keyboard chord should land on when a tool call is waiting for a
  * decision, or null when nothing is waiting in the pane the user is working in.
  *
- * Returns the FIRST ENABLED button of the approval bar's own action row, so this
- * encodes no opinion about which decision is the default one: it lands where the
- * row already puts its first control, which is where a user tabbing backwards
- * from the composer arrives today. The chord removes keystrokes from a path that
- * already exists; it does not choose a verb.
+ * Returns the row's PRIMARY control when it marks one (`data-approval-primary`:
+ * Allow once, the row's last control and so where a user tabbing backwards from
+ * the composer arrives), else the first enabled button of the row (a
+ * security-rule override card marks none, and its first control opens a menu).
+ * The chord removes keystrokes from a path that already exists. A row whose
+ * primary is disabled answers null rather than falling through to a neighbour:
+ * a decision is in flight, and the chord must not land on the reject or trust
+ * menu in its place.
  *
  * NOTHING IS RESOLVED BY LOOKING THIS UP. The focus-approval chord focuses the
  * element and stops, so that keystroke cannot approve a prompt unread — the
@@ -213,11 +234,12 @@ function focusedPane(): Element | null {
  * eleven languages.
  */
 export function queryPendingApprovalAction(): HTMLElement | null {
-  const sel = '[data-approval-actions] button:not([disabled])'
-  const pane = focusedPane()
-  return pane
-    ? pane.querySelector<HTMLElement>(sel)
-    : document.querySelector<HTMLElement>(sel)
+  const rows = approvalRows(focusedPane() ?? document)
+  const primary = rows
+    .flatMap(row => [...row.querySelectorAll('[data-approval-primary]')])
+    .find((el): el is HTMLButtonElement => el instanceof HTMLButtonElement)
+  if (primary) return primary.disabled ? null : primary
+  return rows.flatMap(enabledControls)[0] ?? null
 }
 
 /** Sent to an approval row by `rejectPendingApproval`; `useToolApproval` answers it. */
@@ -226,14 +248,19 @@ export const REJECT_APPROVAL_EVENT = 'kc-reject-approval'
 /**
  * Reject the pending tool call ONCE (the reject-approval chord). A refused call
  * runs nothing, so a chord may give this answer unread where it may not approve.
- * The row comes from `queryPendingApprovalAction`, so the same pane rule and
- * in-flight skip apply; the pane's own `useToolApproval` makes the decision.
- * Typing in the side chat sends nothing: its own conversation has no approval
- * row, so the lookup would fall back to the main conversation's prompt.
+ * The row is found by its first enabled control, under the same pane rule as
+ * `queryPendingApprovalAction`, and not through the focus chord's primary: a
+ * card too cramped to show its request holds Allow once but keeps Reject, and
+ * a refusal must still reach it. A row whose every control is disabled has a
+ * decision in flight and gets nothing. The pane's own `useToolApproval` makes
+ * the decision. Typing in the side chat sends nothing: its own conversation has
+ * no approval row, so the lookup would fall back to the main conversation's prompt.
  */
 export function rejectPendingApproval(): void {
   if (document.activeElement?.closest('[data-side-chat-input]')) return
-  queryPendingApprovalAction()?.closest('[data-approval-actions]')?.dispatchEvent(new Event(REJECT_APPROVAL_EVENT))
+  approvalRows(focusedPane() ?? document)
+    .find(row => enabledControls(row).length > 0)
+    ?.dispatchEvent(new Event(REJECT_APPROVAL_EVENT))
 }
 
 /**
