@@ -3640,7 +3640,14 @@ platform the effective deadline is floored to 30 s by
 right after a daemon restart several backends cold-start at once and take 13-15 s, and a
 Windows cold start can overrun 10 s alone, so a 10 s deadline reaps backends that were
 about to answer; a configured value already above the floor is unchanged, and the spawn
-gate's initialize watcher and its slow-init fraction read the same effective value);
+gate's initialize watcher and its slow-init fraction read the same effective value;
+a pool key whose spawns were reaped at that deadline gets a longer one on its next
+spawn, because a reaped backend is killed and its respawn starts cold again:
+`Admission.initialize_timeout_for` doubles the effective deadline for each reap in a
+row, up to `INIT_DEADLINE_STRETCH_CAP_SECS` (120 s), never lowers a configured value
+above that cap, and clears the count once a handshake for that key completes; the
+count is kept per SHA-256 digest of the key for at most `INIT_DEADLINE_REAP_KEYS_MAX`
+(256) keys, the key reaped longest ago forgotten first);
 `host_budget_max_procs` / `host_budget_max_rss_mb` / `host_budget_max_fds` (all
 0) cap what the host budget admits across pooled, private and fallback
 backends, where `0` means derive from the available-memory sample the gateway
