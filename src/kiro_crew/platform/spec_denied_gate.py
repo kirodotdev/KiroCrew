@@ -6,8 +6,10 @@ those denies. :func:`spec_denies_refusal` backs the ``spec-denies`` deny row: it
 a call a deny names, on every approval policy. :func:`denied_grant_applies` is
 asked by the ``spec-builtin-grant`` row: it grants only a call a deny check
 cleared, and treats every unknown (a command it cannot split, a target it cannot
-read or resolve) as no grant, so the call asks. A ``web_fetch`` is granted by a
-plain ``web_fetch.trusted`` URL only, never refused here (:func:`url_literal`).
+read or resolve) as no grant, so the call asks. A ``web_fetch`` is refused only
+when a plain-URL ``web_fetch.blocked`` entry definitely matches it, and granted by
+a plain ``web_fetch.trusted`` URL, or by name when no blocked entry can reach it
+(:func:`url_literal`, :func:`web_fetch_blocked_match`).
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import re
 import string
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
+from urllib.parse import unquote, unquote_plus
 
 from kiro_crew.platform import allowed_commands, allowed_paths
 from kiro_crew.platform.tool_paths import edit_target_candidates, is_edit_call
@@ -126,6 +129,9 @@ def spec_denies_refusal(call: ToolCall, names: tuple[str, ...]) -> str | None:
     if grant.denied_write_paths and _is_write(call, names):
         if _write_denied(call, grant) is True:
             return prefix + "the write target is in its deniedPaths"
+    if grant.web_fetch_blocked and _WEB_FETCH in names:
+        if web_fetch_blocked_match(call, grant) is True:
+            return prefix + "the URL matches its web_fetch.blocked"
     return None
 
 
@@ -186,17 +192,25 @@ _DEFAULT_PORTS = {"http": "80", "https": "443"}
 _URL_SEP = "/"  # a URL path separator, never a file path one
 
 
-def canonical_url(text: str, *, prefix: bool = False) -> str | None:
+#: How a server may read a run of ``/`` in the path: kept, collapsed before dot
+#: segments are removed, or collapsed after (the fetch client removes them first).
+_COLLAPSE_MODES = ("", "before", "after")
+
+
+def canonical_url(text: str, *, prefix: bool = False, collapse: str = "") -> str | None:
     """*text* as an ``http(s)`` fetch resolves it, or ``None`` when that is unsure.
 
     Lower-case scheme and host, no trailing host dot, no default port, ``%XX`` of an
     unreserved character decoded (other escapes upper-cased), dot segments removed,
-    an empty path read as ``/``, no fragment. Refused: userinfo, non-ASCII, whitespace, a
-    backslash, a bad escape or port, a numeric host that is not a plain dotted quad,
-    and (outside *prefix*) a ``[...]`` address literal or an empty path segment.
-    With *prefix*, *text* is the start of a URL (a ``blocked`` entry before its
-    ``.*``); its form may only be wider, so a cut escape or a final ``.``/``..``
-    segment is refused rather than guessed.
+    an empty path read as ``/``, no fragment. With *collapse* ``"before"`` or
+    ``"after"``, runs of ``/`` in the path are read as one before or after dot
+    segments are removed, as a server that collapses them may read it. Refused:
+    userinfo, non-ASCII, whitespace, a backslash, a bad escape or port, a numeric
+    host that is not a plain dotted quad, and (outside *prefix*) a ``[...]`` address
+    literal. With *prefix*, *text* is the start of a URL (a ``blocked`` entry before
+    its ``.*``); its form may only be wider, so a cut escape or a final ``.``/``..``
+    segment is refused rather than guessed, and a cut decimal host (``http://10.``)
+    is kept as written.
     """
     if not text.isascii() or any(ch <= " " or ch in "\\\x7f" for ch in text):
         return None
@@ -230,7 +244,19 @@ def canonical_url(text: str, *, prefix: bool = False) -> str | None:
             # a short address spelling as well as the start of a longer one.
             whole = not prefix or cut < len(rest)
             if not whole and host.count(".") != 3:
-                return None
+                # The written start of a decimal dotted quad that ends on a dot
+                # (`http://10.`) still names every granted URL under it: a granted
+                # numeric host is a plain quad. Without the dot (`http://127.1`) it
+                # may be a whole short spelling; an octal or hex label names
+                # another address.
+                labels = authority.removesuffix(".").split(".")
+                if (
+                    port
+                    or not authority.endswith(".")
+                    or not all(lab.isdigit() and str(int(lab)) == lab for lab in labels)
+                ):
+                    return None
+                return f"{scheme}://{authority}"
             try:
                 if str(ipaddress.IPv4Address(host)) != host:
                     return None
@@ -257,8 +283,8 @@ def canonical_url(text: str, *, prefix: bool = False) -> str | None:
     tail = "".join(out)
     end = tail.find("?") if "?" in tail else len(tail)
     path, after = tail[:end], tail[end:]
-    if not prefix and "//" in path:
-        return None  # a server may or may not collapse an empty segment
+    if collapse == "before":
+        path = re.sub("/{2,}", "/", path)
     segments = path.split(_URL_SEP)[1:]
     if prefix and not after and segments and segments[-1] in (".", ".."):
         return None
@@ -273,22 +299,125 @@ def canonical_url(text: str, *, prefix: bool = False) -> str | None:
         kept.append("")
     if path or not prefix or after:
         path = "/" + "/".join(kept)
+    if collapse == "after":
+        path = re.sub("/{2,}", "/", path)
     return f"{scheme}://{netloc}{path}{after}"
 
 
-def _blocked_hits(entry: tuple[str, bool] | None, url: str, canonical: str) -> bool:
-    """Whether a ``blocked`` entry withholds the grant: unread, or matching the URL
-    as written or canonical, read as written or canonical."""
+def _blocked_hits(entry: tuple[str, bool] | None, urls: Sequence[str]) -> bool:
+    """Whether a ``blocked`` entry withholds the grant: unread, or matching any of
+    the URL's *urls* forms, read as written or canonical (with or without empty
+    path segments collapsed)."""
     if entry is None:
         return True
     literal, prefix = entry
     scheme, sep, _ = literal.partition("://")
     if sep and scheme.lower() not in _DEFAULT_PORTS:
         return False  # another scheme's entry never names an http(s) URL
-    form = canonical_url(literal, prefix=prefix)
-    if form is None:
+    forms = [canonical_url(literal, prefix=prefix, collapse=c) for c in _COLLAPSE_MODES]
+    read = [form for form in forms if form is not None]
+    if len(read) != len(_COLLAPSE_MODES):
         return True
-    return any(_url_matches((lit, prefix), u) for lit in (literal, form) for u in (url, canonical))
+    literals = [literal, *read, *(text for form in read for text in _query_decoded(form))]
+    return any(_url_matches((lit, prefix), u) for lit in literals for u in urls)
+
+
+def _escape_unsafe(canonical: str) -> bool:
+    """Whether a canonical URL keeps an escape a server may read as another URL:
+    any escape in the path (``%2F``), one of a non-ASCII byte anywhere, or an
+    escaped ``%`` (``%2573``, which a second decode reads as ``s``)."""
+    path = canonical.partition("?")[0]
+    codes = [int(code[:2], 16) for code in canonical.split("%")[1:]]
+    return "%" in path or any(code >= 0x80 or code == 0x25 for code in codes)
+
+
+def _query_decoded(canonical: str) -> tuple[str, ...]:
+    """*canonical* with its query fully unescaped, as a server's query parser reads
+    it (``+`` kept, and ``+`` read as a space); a URL and a ``blocked`` entry are both
+    compared in these forms too, so they can only withhold a grant."""
+    head, sep, query = canonical.partition("?")
+    if not sep:
+        return ()
+    return tuple(f"{head}{sep}{decode(query)}" for decode in (unquote, unquote_plus))
+
+
+def _fetch_url(call: ToolCall) -> str | None:
+    """The ``web_fetch`` call's ``url`` as written, or ``None`` when it is not a
+    non-empty string."""
+    url = call.raw_params.get("url") if isinstance(call.raw_params, dict) else None
+    return url if isinstance(url, str) and url else None
+
+
+def _clear_forms(url: str) -> tuple[list[str], list[str]] | None:
+    """``(canonical forms, every form)`` of *url* a ``blocked`` entry is compared
+    with, or ``None`` when the URL is unsure: a control character (Rust's ``.`` does
+    not match a newline), no canonical form in some collapse mode, or an escape
+    :func:`_escape_unsafe` names. *every form* is the URL as written, its canonical
+    forms and their query-decoded forms."""
+    if any(ch < " " or ch == "\x7f" for ch in url):
+        return None
+    canonicals = [canonical_url(url, collapse=c) for c in _COLLAPSE_MODES]
+    if any(form is None or _escape_unsafe(form) for form in canonicals):
+        return None
+    forms = [form for form in canonicals if form is not None]
+    return forms, [url, *forms, *(text for form in forms for text in _query_decoded(form))]
+
+
+def _kiro_cli_matches(entry: tuple[str, bool], url: str) -> bool:
+    """kiro-cli's own anchored, case-sensitive whole-URL test of one entry: a
+    prefix entry's ``.*`` does not cross a newline."""
+    literal, prefix = entry
+    if prefix:
+        return url.startswith(literal) and "\n" not in url[len(literal) :]
+    return url == literal
+
+
+def _definitely_blocked(entry: tuple[str, bool], url: str) -> bool:
+    """Whether the read ``blocked`` *entry* matches *url* as kiro-cli reads it, or in
+    the single canonical form of both with no ``/`` collapse. An entry with a ``#``,
+    or a prefix cut before its path (``https://evil\\..*``), is compared as written
+    only: its canonical form drops the fragment, a trailing host dot or a default
+    port, so it would name more URLs than the entry does."""
+    if _kiro_cli_matches(entry, url):
+        return True
+    literal, prefix = entry
+    if "#" in literal or (prefix and _URL_SEP not in literal.partition("://")[2]):
+        return False
+    form = canonical_url(literal, prefix=prefix, collapse="")
+    target = canonical_url(url, collapse="")
+    return form is not None and target is not None and _url_matches((form, prefix), target)
+
+
+def web_fetch_blocked_match(call: ToolCall, grant: SpecDeniedGrant) -> bool | None:
+    """The one judge of a ``web_fetch`` against the record's ``blocked`` entries.
+
+    ``True`` (the ``spec-denies`` row refuses): an entry :func:`url_literal` reads
+    matches the URL by :func:`_definitely_blocked`. ``False`` (clear, so the by-name
+    grant may answer): the URL has every :func:`_clear_forms` form and no entry hits
+    it in any of them (:func:`_blocked_hits`, which counts an unsure entry as a hit).
+    ``None`` otherwise: the call keeps asking. The collapse modes, the
+    query-decoded forms and an entry with no canonical form only ever withhold."""
+    url = _fetch_url(call)
+    if url is None:
+        return None
+    blocked = [url_literal(raw) for raw in grant.web_fetch_blocked]
+    if any(entry is not None and _definitely_blocked(entry, url) for entry in blocked):
+        return True
+    read = _clear_forms(url)
+    named = [entry for entry in blocked if entry is None or _may_start_http_url(entry)]
+    if read is None or any(_blocked_hits(entry, read[1]) for entry in named):
+        return None
+    return False
+
+
+def _may_start_http_url(entry: tuple[str, bool]) -> bool:
+    """Whether a read ``blocked`` entry can match an ``http(s)`` URL at all: one with
+    no ``://`` (a host entry KAS already denies) only when it is a prefix of one."""
+    literal, prefix = entry
+    if "://" in literal:
+        return True
+    low = literal.lower()
+    return prefix and ("http://".startswith(low) or "https://".startswith(low))
 
 
 def _web_fetch_granted(call: ToolCall, grant: SpecDeniedGrant) -> bool:
@@ -300,32 +429,43 @@ def _web_fetch_granted(call: ToolCall, grant: SpecDeniedGrant) -> bool:
 
     The URL is also compared in its :func:`canonical_url` form, so a spelling the
     fetch resolves elsewhere (an escape, a case, a default port, a dot segment,
-    userinfo) neither slips past ``blocked`` nor reaches out of ``trusted``. A URL
-    with no canonical form, or one left holding an escape, is never granted."""
+    userinfo) neither slips past ``blocked`` nor reaches out of ``trusted``. An empty
+    path segment is read each way a server may read it (kept, or collapsed before
+    or after dot segments), and the
+    query also fully unescaped for ``blocked``. A URL with no canonical form, or one
+    that keeps an escape :func:`_escape_unsafe` names, is never granted."""
     if not grant.web_fetch_blocked_complete or not grant.web_fetch_trusted:
         return False
-    url = call.raw_params.get("url") if isinstance(call.raw_params, dict) else None
-    if not isinstance(url, str) or not url or any(ch < " " or ch == "\x7f" for ch in url):
+    url = _fetch_url(call)
+    read = _clear_forms(url) if url is not None else None
+    if url is None or read is None:
         return False
-    canonical = canonical_url(url)
-    if canonical is None or "%" in canonical:
-        return False
+    forms, seen = read
     blocked = [url_literal(raw) for raw in grant.web_fetch_blocked]
     trusted = [url_literal(raw) for raw in grant.web_fetch_trusted]
-    if any(_blocked_hits(entry, url, canonical) for entry in blocked):
+    if any(_blocked_hits(entry, seen) for entry in blocked):
         return False
     return any(
         entry is not None
         and _url_matches(entry, url)
-        and (not entry[1] or _canonical_prefix_holds(entry[0], canonical))
+        and (
+            not entry[1]
+            or all(
+                _canonical_prefix_holds(entry[0], form, collapse)
+                for form, collapse in zip(forms, _COLLAPSE_MODES, strict=True)
+            )
+        )
         for entry in trusted
     )
 
 
-def _canonical_prefix_holds(literal: str, canonical: str) -> bool:
-    """Whether a ``trusted`` prefix still holds for the canonical URL; a prefix cut
-    before ``://`` (``.*``, ``http``) is compared as written."""
-    form = canonical_url(literal, prefix=True) if "://" in literal else literal
+def _canonical_prefix_holds(literal: str, canonical: str, collapse: str = "") -> bool:
+    """Whether a ``trusted`` prefix still holds for the canonical URL (read with the
+    same *collapse*); a prefix cut before ``://`` (``.*``, ``http``) is compared as
+    written."""
+    form = canonical_url(literal, prefix=True, collapse=collapse) if "://" in literal else literal
+    if form is not None and form.endswith(".") and "/" not in form.partition("://")[2]:
+        return False  # a cut host (`http://10.`) also starts a DNS name
     return form is not None and canonical.startswith(form)
 
 
@@ -339,7 +479,11 @@ def denied_grant_applies(call: ToolCall, names: tuple[str, ...]) -> bool:
     shell = call.is_shell and bool(_SHELL_NAMES.intersection(names))
     by_name = bool(grant.builtins.intersection(names))
     if _WEB_FETCH in names:
-        return _web_fetch_granted(call, grant)
+        # By name only when the URL is clear of every readable blocked entry; the
+        # projection lifts it only where its asks alone held the fetch back.
+        return _web_fetch_granted(call, grant) or (
+            _WEB_FETCH in grant.builtins and web_fetch_blocked_match(call, grant) is False
+        )
     by_command = (
         shell
         and allowed_commands.plain_command(call.command)

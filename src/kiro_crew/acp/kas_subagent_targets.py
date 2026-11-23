@@ -14,8 +14,14 @@ The gate applies the shell ``denyByDefault`` allowlist, the write
 ``fallbackAction: "deny"`` allowlist, the ``deniedCommands`` and write
 ``deniedPaths`` lists a deny record (``CREW_SPEC_DENIES_KEY``) carries, and the
 spec's own ``preToolUse`` hooks only to the agent the session runs: a native
-sub-agent's request reaches the gate with none of them, so the target would run
-without its own limits.
+sub-agent's request reaches the gate with that agent's limits, never its own, so
+the target would run without its own limits.
+
+With no ``availableAgents`` the engine's own roster answers. A parent that leaves
+out built-in tools then gets the engine's wide bundled agents
+(:data:`ENGINE_WIDE_AGENTS`) denied, as a refused target is
+(:func:`deny_refused_targets`): those run with their own tool list, not the
+parent's.
 
 Three more are not registered. A derived agent (``kirocrew-worker``,
 ``kirocrew-heartbeat``), because the check that its spec did not change while
@@ -63,9 +69,11 @@ from kiro_crew.acp.kas_permissions import (
     withhold_hook_gated_auto_approval,
 )
 from kiro_crew.acp.kas_prompt import prompt_unread_notice
+from kiro_crew.acp.kas_spec_denies import gate_refused_blocked
 from kiro_crew.acp.kas_tool_limits import with_switched_off_tools
 from kiro_crew.agent_files import is_mate_service_agent, kas_wire_agent_id
 from kiro_crew.platform.tool_names import KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -94,17 +102,30 @@ _CLI_ONLY = (
     "this backend does not load it unless toolsSettings.subagent.availableAgents names it"
 )
 _GATE_ONLY = (
-    "Kiro Crew applies its shell or file-write limits and its preToolUse hooks "
-    "only to the agent a chat runs"
+    "Kiro Crew applies its shell or file-write limits, its blocked web addresses "
+    "and its preToolUse hooks only to the agent a chat runs"
 )
 _UNATTESTED = "it uses {servers}, which this chat's own agent does not load"
+_WIDER_TOOLS = "a built-in agent with more built-in tools than this agent has"
+
+#: The engine's bundled sub-agents whose own tool list reaches past a narrowed
+#: parent's built-ins: ``general-task-execution`` mounts every tool (``"*"``) and
+#: ``custom-agent-creator`` reads and writes files. KAS runs a sub-agent inside its
+#: parent's permission rules but with the sub-agent's own tool list, so a parent's
+#: ``tools`` / ``excludedTools`` narrowing does not reach these two. The engine's
+#: other bundled agents only read. shortcut: the ids are the engine's own and are
+#: matched by name, so a renamed or added wide built-in is not denied; read the
+#: engine's bundled roster again when the pinned engine moves.
+ENGINE_WIDE_AGENTS = ("general-task-execution", "custom-agent-creator")
 _SHARED = (
     "it sets up its own {servers}, and every agent in this chat gets the copy this "
     "chat's own agent loads"
 )
 
 #: The :data:`CREW_SPEC_DENIES_KEY` fields the gate refuses a call by
-#: (``spec_denied_gate.spec_denies_refusal``). Its ``web_fetch`` fields only grant.
+#: (``spec_denied_gate.spec_denies_refusal``) that only the gate applies. Its
+#: ``webFetchBlocked`` list is read by :func:`_gate_only_limits` on its own: only
+#: the entries KAS cannot carry as a host deny count.
 _DENY_RECORD_LIMITS = ("deniedCommands", "deniedPaths")
 
 #: Server-entry keys that never change which process a server launches or which
@@ -156,6 +177,24 @@ def mounts_subagent_tool(entry: Any) -> bool:
     return isinstance(tools, list) and any(_selects_subagent_tool(t) for t in tools)
 
 
+def _narrows_tools(entry: dict[str, Any]) -> bool:
+    """Whether projected *entry* leaves out any built-in tool.
+
+    Its ``tools`` is neither ``"*"`` nor a list holding ``@builtin``, or an
+    ``excludedTools`` entry names a built-in (anything but an ``@server`` ref).
+    shortcut: a narrowing of MCP servers alone does not count, since every agent
+    of the batch reaches the session-level servers; count it if a bundled
+    sub-agent is ever found reaching a server its parent excludes.
+    """
+    tools = entry.get("tools")
+    if tools != "*" and not (isinstance(tools, list) and "@builtin" in tools):
+        return True
+    excluded = entry.get("excludedTools")
+    return isinstance(excluded, list) and any(
+        isinstance(t, str) and (not t.startswith("@") or t.startswith("@builtin")) for t in excluded
+    )
+
+
 def project_subagent_targets(
     parent: str,
     parent_spec: dict[str, Any],
@@ -169,8 +208,16 @@ def project_subagent_targets(
     settings_dir: str | Path | None = None,
     forward_ssh_auth_sock: bool = False,
     scope_muted: frozenset[str] | None = None,
+    refused_out: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """The entries to append to *parent*'s batch, and the notice for what is left out.
+
+    *refused_out* gains each named target Crew found and refused to register
+    (:data:`_DENIED_WHEN_REFUSED`). Leaving it out of the batch does not stop the
+    engine: its on-disk loader keeps a profile that carries a ``permissions``
+    block (AIM-installed specs carry one beside their kiro-cli keys), and runs
+    it inside this turn without the target's own hooks or gate-only limits. The
+    caller denies those names on *parent*'s entry (:func:`deny_refused_targets`).
 
     Nothing when *parent*'s entry does not mount the sub-agent tool. When its spec
     declares no ``availableAgents`` the engine's own roster answers, as before, and
@@ -191,7 +238,13 @@ def project_subagent_targets(
     globs = spawn_allowlist(parent_spec)
     if globs is None:
         # No list: the engine's own roster answers, and it skips a CLI-only profile.
-        return [], _notice(parent, _skipped_by_engine(parent, work_dir), 0)
+        skipped = _skipped_by_engine(parent, work_dir)
+        if entry is not None and _narrows_tools(entry):
+            wide = {name: _WIDER_TOOLS for name in ENGINE_WIDE_AGENTS}
+            if refused_out is not None:
+                refused_out.update(wide)
+            skipped = {**skipped, **wide}
+        return [], _notice(parent, skipped, 0)
     if not globs:
         # ``()`` is "spawn nothing": no list to register.
         return [], ""
@@ -230,9 +283,70 @@ def project_subagent_targets(
             projected = _UNUSABLE
         if isinstance(projected, str):
             missed[name] = projected
+            if refused_out is not None and _denied_when_refused(projected):
+                refused_out.add(name)
         else:
             entries.append(projected)
-    return entries, "\n\n".join(n for n in (*notices, _notice(parent, missed, overflow)) if n)
+    notice = _notice(parent, missed, overflow, names[MAX_SUBAGENT_TARGETS:])
+    return entries, "\n\n".join(n for n in (*notices, notice) if n)
+
+
+#: The refusals that leave a spec the engine's own loader may still run. A name
+#: Crew found no spec for, or a pattern, names no file; a reserved name is already
+#: denied by the parent's ``subagent`` rule.
+_NOT_DENIED_WHEN_REFUSED = frozenset({_NOT_FOUND, _NO_MATCH, _RESERVED})
+
+
+def _denied_when_refused(reason: str) -> bool:
+    """Whether a target refused for *reason* is denied to the sub-agent tool."""
+    return reason not in _NOT_DENIED_WHEN_REFUSED
+
+
+def deny_refused_targets(
+    custom_agents: list[dict[str, Any]], parent: str, names: Iterable[str]
+) -> list[dict[str, Any]]:
+    """*custom_agents* with *names* denied to *parent*'s sub-agent tool.
+
+    A deny only narrows, so it needs no pass through the governance ceiling, and
+    KAS resolves the most restrictive matching rule, so it holds against the
+    ``availableAgents`` exclude that names the same agent. Each deny is recorded
+    as a ``kas_subagent_target_denied`` security event, so the trail can rebuild
+    the session's permission policy.
+    """
+    denied = sorted(set(names))
+    if not denied:
+        return custom_agents
+    rule = {"capability": "subagent", "match": denied, "effect": "deny"}
+    out: list[dict[str, Any]] = []
+    for entry in custom_agents:
+        if isinstance(entry, dict) and entry.get("id") == parent:
+            held = entry.get("permissions")
+            block = dict(held) if isinstance(held, dict) else {}
+            block["rules"] = [*(block.get("rules") or []), rule]
+            entry = {**entry, "permissions": block}
+            logger.info(
+                "sub-agent tool of %r denied %d refused target(s): %s",
+                parent,
+                len(denied),
+                ", ".join(denied),
+            )
+            _audit_refused_deny(parent, denied)
+        out.append(entry)
+    return out
+
+
+def _audit_refused_deny(parent: str, denied: list[str]) -> None:
+    """Record a refused-target deny in the security event log; never fails the session."""
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="kas_subagent_target_denied",
+            outcome="ok",
+            source="kas_agent_projection",
+            resources=f"sub-agent tool denied {', '.join(denied)} for agent {parent or '?'}",
+        )
+    except Exception:  # noqa: BLE001 — audit must not break projection
+        logger.debug("SEL audit unavailable for refused sub-agent targets", exc_info=True)
 
 
 def _target_names(
@@ -499,12 +613,21 @@ def _gate_only_limits(entry: dict[str, Any]) -> bool:
 
     The gate applies them only to the agent the session runs:
     ``session_handle_permissions._build_permission_event`` hands a native
-    sub-agent's request none of the session's ``spec_*`` fields.
+    sub-agent's request the session agent's limits, never the target's own.
+    A ``web_fetch.blocked`` entry KAS carries as a host deny binds the target
+    itself; one only the gate refuses (``gate_refused_blocked``) does not.
     """
     if CREW_SHELL_ALLOWLIST_KEY in entry or CREW_WRITE_ALLOWLIST_KEY in entry:
         return True
     record = entry.get(CREW_SPEC_DENIES_KEY)
-    return isinstance(record, dict) and any(record.get(k) for k in _DENY_RECORD_LIMITS)
+    if not isinstance(record, dict):
+        return False
+    if any(record.get(k) for k in _DENY_RECORD_LIMITS):
+        return True
+    blocked = record.get("webFetchBlocked")
+    return isinstance(blocked, list) and bool(
+        gate_refused_blocked({"web_fetch": {"blocked": blocked}})
+    )
 
 
 def _spec_pre_tool_matchers(agent_id: str, spec: dict[str, Any]) -> tuple[str, ...]:
@@ -709,16 +832,19 @@ def _without_servers(entry: dict[str, Any], names: list[str]) -> dict[str, Any]:
     return out
 
 
-def _notice(parent: str, missed: dict[str, str], overflow: int) -> str:
+def _notice(parent: str, missed: dict[str, str], overflow: int, untried: Iterable[str] = ()) -> str:
     """The session-start line naming the targets the sub-agent tool cannot reach."""
     parts = [f"{name} ({reason})" for name, reason in missed.items()]
     if overflow:
+        named = ", ".join(untried)
         parts.append(
-            f"{overflow} more agents (only the first {MAX_SUBAGENT_TARGETS} it names are tried)"
+            f"{overflow} more agents{f' ({named})' if named else ''}"
+            f" (only the first {MAX_SUBAGENT_TARGETS} it names are tried)"
         )
     if not parts:
         return ""
     return (
         f"ℹ In this chat, agent {parent} cannot hand work to {'; '.join(parts)}. "
-        "Choose that agent for a chat of its own to use it."
+        "Choose that agent for a chat of its own, or start it with spawn_run, which "
+        "runs it with its own limits and hooks."
     )

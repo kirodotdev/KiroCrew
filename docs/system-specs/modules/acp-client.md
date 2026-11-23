@@ -3274,8 +3274,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   session's own snapshot; the overflow past the cap; an agent whose limits Crew
   applies only at its own gate (`denyByDefault`, `fallbackAction: "deny"`, a
   `_crewSpecDenies` record holding a `deniedCommands` or write `deniedPaths` list,
-  its own `preToolUse` hooks), because the gate reads those only on the session's
-  own agent's requests and a native sub-agent's request carries none of them
+  its own `preToolUse` hooks), because a native sub-agent's request carries the
+  session's own agent's gate limits, never the target's
   (`session_handle_permissions._build_permission_event`); an agent that
   declares a Crew server the session's own entry does not, whose copy would
   refuse every call as `identity_unattested`; and an agent that declares a pooled
@@ -3288,6 +3288,34 @@ spec the same way kiro-cli v2 does where the wire allows it:
   `kirocrew-panel`) reaches the target as the session's copy. A record holding
   only `web_fetch` lists does not keep a target out: the gate never refuses a
   fetch by it, it only grants a `trusted` one, so the sub-agent's fetch asks.
+  Leaving a refused target out of the batch does not stop the engine: its own
+  loader still finds the target's on-disk profile when that file carries a
+  `permissions` block, and would run it without the hooks Crew fires. So each
+  named target Crew found and refused (`project_subagent_targets(refused_out=)`;
+  not a name no spec declares, an unmatched pattern or a reserved id, which the
+  parent's rule already denies) is denied to the sub-agent tool on the parent's
+  entry (`deny_refused_targets`: `{"capability": "subagent", "match": [names],
+  "effect": "deny"}`); KAS applies the most restrictive matching rule, so the
+  deny holds over the `availableAgents` exclude. Each such deny records one
+  `kas_subagent_target_denied` security event (source `kas_agent_projection`)
+  naming the parent and the denied targets. The session-start notice names
+  the targets past the cap and points to `spawn_run`, which runs an agent with
+  its own limits. A target past the cap is not denied.
+  With no `availableAgents` nothing is registered and the engine's own roster
+  answers. When the session's own entry leaves out a built-in tool
+  (`_narrows_tools`: its `tools` is neither `"*"` nor a list holding `@builtin`,
+  or an `excludedTools` entry names a built-in), the engine's bundled agents
+  whose own tool list reaches further (`ENGINE_WIDE_AGENTS`:
+  `general-task-execution`, `custom-agent-creator`) are denied the same way and
+  named in the notice: KAS runs a sub-agent inside its parent's permission rules
+  but with its own tool list. A parent that sets `availableAgents`, or mounts
+  every built-in, keeps them.
+  A native KAS sub-agent's request carries the session's own agent's gate limits
+  (`_build_permission_event`: the shell and write allowlists, the deny record with
+  its grants emptied, the unjudged denies), as a native claude sub-agent's does,
+  so `spec-shell-allowlist`, `spec-write-allowlist`, `spec-denies` and
+  `spec-unjudged-denies` refuse its calls on every approval policy; it carries
+  none of that agent's grants.
   Everything that reads the batch for the session's own agent matches it by id.
   A sub-agent's call the session cannot tell from its own is answered with the
   session agent's gate grants (`allowedTools` built-ins, `allowedCommands`, write

@@ -87,7 +87,7 @@ def _over_limit_items(tools_settings: Any, limit: int) -> list[str]:
     return items
 
 
-def over_limit_notice(agent: str, keys: list[str]) -> tuple[str, list[str]]:
+def _commands_over_limit_notice(agent: str, keys: list[str]) -> tuple[str, list[str]]:
     """The session-start sentence for the :data:`OVER_LIMIT_HEAD` items among *keys*,
     and *keys* without them.
 
@@ -200,7 +200,8 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
     applies), in the spec's order, so the notice names the entry and not only the
     key. kiro-cli refuses every URL such an entry matches; on KAS it refuses
     nothing unless :func:`fails_closed_on_uncarried_blocked` is on, when the
-    translation denies every fetch."""
+    translation denies every fetch. An entry Crew's gate refuses itself
+    (``kas_spec_denies.gate_refused_blocked``) is not named."""
     from kiro_crew.acp.kas_permissions import (
         _MAX_PATTERN_LENGTH,
         _patterns,
@@ -208,13 +209,17 @@ def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
         _url_glob,
     )
 
+    # circular import: kas_spec_denies imports kas_permissions, which imports this.
+    from kiro_crew.acp.kas_spec_denies import gate_refused_blocked
+
     settings = tools_settings.get("web_fetch") if isinstance(tools_settings, dict) else None
     if not isinstance(settings, dict):
         return []
+    refused = {raw.strip() for raw in gate_refused_blocked(tools_settings)}
     out = []
     for raw in _patterns(settings.get("blocked")):
         glob = _url_glob(raw)
-        if glob is not None and len(glob) <= _MAX_PATTERN_LENGTH:
+        if (glob is not None and len(glob) <= _MAX_PATTERN_LENGTH) or raw in refused:
             continue
         if _regex_to_glob(raw) is None:
             reason = "regex syntax KAS cannot express"
@@ -247,3 +252,55 @@ def fails_closed_on_uncarried_blocked() -> bool:
         return KiroCrewConfig.load().agent.kas_fail_closed_web_fetch_blocked is True
     except Exception:
         return False
+
+
+#: What follows ``<key>`` in the one session-start notice item that names the
+#: ``web_fetch.trusted`` entries past the bound Crew's gate grants from.
+TRUSTED_OVER_LIMIT_HEAD = ".trusted past the limit"
+
+
+def trusted_over_limit_items(tools_settings: Any) -> list[str]:
+    """``web_fetch.trusted past the limit: entry 65: <entry>; ...`` naming each
+    trusted entry past the bound by position and text (:func:`_shown`), the first
+    :data:`_NAMED_OVER_LIMIT` of them, then how many more follow; ``[]`` when none
+    is (``kas_spec_denies.trusted_past_bound``)."""
+    # circular import: kas_spec_denies imports kas_permissions, which imports this.
+    from kiro_crew.acp.kas_spec_denies import trusted_past_bound
+
+    cut = trusted_past_bound(tools_settings)
+    if not cut:
+        return []
+    named = cut[:_NAMED_OVER_LIMIT]
+    parts = [f"entry {at}: {_shown(entry)}" for at, entry in named]
+    if len(cut) > len(named):
+        parts.append(f"and {len(cut) - len(named)} more after entry {named[-1][0]}")
+    return [f"web_fetch{TRUSTED_OVER_LIMIT_HEAD}: {'; '.join(parts)}"]
+
+
+def _trusted_over_limit_notice(agent: str, keys: list[str]) -> tuple[str, list[str]]:
+    """The session-start sentence for a :func:`trusted_over_limit_items` item among
+    *keys*, and *keys* without it. It says the first entries apply, so it is only
+    made when the gate grants from the list (``kas_agents`` adds the item then)."""
+    from kiro_crew.acp.kas_spec_denies import _MAX_DENIES as limit
+
+    over = [key for key in keys if key.partition(": ")[0].endswith(TRUSTED_OVER_LIMIT_HEAD)]
+    if not over:
+        return "", keys
+    key, _, cut = over[0].partition(": ")
+    return (
+        f"Agent {agent} sets more {key.removesuffix(' past the limit')} entries than the "
+        f"{limit} Kiro Crew applies. Its first {limit} entries apply. These do not: {cut}. "
+        "A fetch only one of them names asks for approval. To apply them, shorten the "
+        f"list in the agent's file to {limit} entries or fewer.",
+        [k for k in keys if k not in over],
+    )
+
+
+def over_limit_notice(agent: str, keys: list[str]) -> tuple[str, list[str]]:
+    """The session-start sentences for the entries past the bound Kiro Crew applies
+    among *keys*, and *keys* without them: ``allowedCommands``
+    (:func:`_commands_over_limit_notice`) and ``web_fetch.trusted``
+    (:func:`_trusted_over_limit_notice`)."""
+    trusted, keys = _trusted_over_limit_notice(agent, keys)
+    commands, keys = _commands_over_limit_notice(agent, keys)
+    return " ".join(text for text in (commands, trusted) if text), keys

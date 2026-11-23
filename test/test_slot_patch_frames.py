@@ -547,7 +547,7 @@ async def test_pin_reaches_a_capable_tab_as_a_patch_and_an_old_tab_as_a_list(
     # The connect snapshot now reads the live declarations after the shared
     # pass, so the real reader must see the same enabled app.
     monkeypatch.setattr(
-        "kiro_crew.dashboard.ws_event_scope._read_declared_events",
+        "kiro_crew.dashboard.ws_event_scope._read_declared_events_checked",
         lambda _app: (True, frozenset()),
     )
     # A reading another test cached for this app must not outlive into the hub.
