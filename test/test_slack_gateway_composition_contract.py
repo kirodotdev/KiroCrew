@@ -484,7 +484,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_interactive_approval",
             "method",
-            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False, requester: 'str' = '', on_host_decision: 'Callable[[str, str], None] | None' = None, follows_approval_mode: 'bool' = False) -> 'ToolApprovalCallback'",
+            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False, requester: 'str' = '', on_host_decision: 'Callable[[str, str], None] | None' = None, follows_approval_mode: 'bool' = False, parent_slot_of: 'Callable[[str], str] | None' = None) -> 'ToolApprovalCallback'",
         ),
         (
             "_heartbeat_approval",
