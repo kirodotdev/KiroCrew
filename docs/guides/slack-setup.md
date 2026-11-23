@@ -233,16 +233,18 @@ installed app was already granted stay on it until the app is reinstalled.
 
 | Field | Value |
 |-------|-------|
-| Command | `/kirocrew` |
+| Command | `/kirocrew-<alias>` (for example `/kirocrew-jdoe`) |
 | Short Description | Dashboard access, agent, session, and channel controls |
 | Usage Hint | `dashboard [duration] \| agent [name] \| sessions \| #channel` |
+
+Use your own alias in the name. In an Enterprise Grid org, many people's apps can register the same plain `/kirocrew`. There, Slack answers it with `invalid_service` and never delivers it, even though DMs to the bot work. Path A and the setup wizard already name the command `/kirocrew-<alias>` for this reason.
 
 The gateway answers `/kirocrew` and any `/kirocrew-<alias>` without a restart. Save the name you register as `slack.command` (manifest updates are rendered from it); for any other name, set it as `slack.command` in `~/.kiro/crew/config.json` (default: `kirocrew`); it applies without a restart and is also the name help text shows:
 
 ```json
 {
   "slack": {
-    "command": "kirocrew"
+    "command": "kirocrew-jdoe"
   }
 }
 ```
@@ -838,6 +840,8 @@ to end just one browser's session, sign out in that browser
 | Home tab is blank | Add `app_home_opened` event, enable Home Tab, reinstall app |
 | `missing_scope` error | Add the scope in OAuth & Permissions, reinstall app, re-run `kirocrew setup --slack` |
 | Bot doesn't respond | Check `kirocrew doctor` output. Ensure gateway is running (`kirocrew gateway`) |
+| Slash command fails with `invalid_service` while DMs to the bot work | Another app in your org likely registers the same command name. Rename the command to `/kirocrew-<alias>` under **Features → Slash Commands**, reinstall the app, then run `kirocrew config set slack.command kirocrew-<alias>` |
+| Slash command fails with `invalid_service` and DMs get no reply either | No gateway holds the Socket Mode connection. Start exactly one `kirocrew gateway` and check `kirocrew doctor` |
 | Install needs approval | Your workspace restricts app installs, so a workspace admin must approve, or use a workspace you own |
 | Dashboard shows 403 | Token expired, IP changed, or the link was opened more than 5 minutes after it was issued. Run `!dashboard` for a new link |
 
