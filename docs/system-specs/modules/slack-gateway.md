@@ -3165,6 +3165,28 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   other arguments as JSON only when there are any, and no command in the lock line).
   SEL: `slack.code_channel.worker_approval`.
 
+  **Conductor threads** (the thread-conductor RFC, part D). The same runtime serves a Conductor
+  thread (a binding in the store's `thread_bindings`) with no code-channel scope: every site
+  that holds a binding asks `thread_runtime.room_runtime_on` (the code-channel gate for a
+  channel binding, `slack.thread_conductor` for a thread binding) instead of `code_channels_on`.
+  A worker's card is posted INTO the thread (`thread_ts` is the anchor) with "Trust this
+  thread", only while the thread is open (`thread_runtime.thread_open`: switch on, stored row
+  still this session's and not ended, room still private or opted in and not shared out); a
+  card answers only for the room it was posted for (`WorkerCard.room`). Approve, Reject and
+  Trust are owner-only by identity (`approval_picker.authorize`), so a shared user or another
+  member changes nothing, and the Trust mutation is the same `set_channel_mode` on the
+  conductor's slot (its lock and intent are keyed by room id), so a worker never runs above
+  the thread. `!stop` in the thread is decided in `routing._inbound_gate` before the
+  code-channel gate: the owner stops the conductor, its recorded workers and their sub-agents
+  (`stop_helpers.stop_channel`, replying in the thread); anyone else gets nothing, and with the
+  switch off it still stops a conductor that is running. `resume.resume_after_restart` walks
+  live thread bindings too, keyed by room id (`channel:anchor`): one automatic resume per
+  interrupted turn, then a held notice with an owner-only Resume, both posted in the thread;
+  an ended thread is not resumed. The Workers-tab Stop (`worker_stop`) stays code-channel only
+  (a thread has no Workers tab). Not done for a thread: the channel-wide Stop fence and status
+  settle (both keyed by channel, which holds other threads), and the "other sessions still
+  running" count.
+
 ## Dependencies
 
 Versions are owned by `setup.cfg` `install_requires`.
