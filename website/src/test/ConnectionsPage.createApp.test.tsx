@@ -136,7 +136,8 @@ describe('Create the Slack app', () => {
     await within(tip).findByRole('link', { name: /Create the Slack app/ }, CHAIN_WAIT)
     const hint = 'Start by creating the Slack app: Slack opens with it filled in, and nothing changes in your workspace until you click Create. Then click Set up Slack on this card and paste the app’s Client ID and Client Secret into its form.'
     expect(tip.textContent).toContain(hint)
-    expect(tip.textContent!.indexOf(hint)).toBeLessThan(tip.textContent!.indexOf('needs a one-time setup'))
+    // One set of instructions: the generic setup text is not repeated beside it.
+    expect(tip.textContent).not.toContain('needs a one-time setup')
   })
 
   it('copies the same manifest text the link carries', async () => {

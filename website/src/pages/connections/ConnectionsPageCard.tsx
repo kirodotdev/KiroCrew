@@ -1209,7 +1209,9 @@ function ConnectionCard({
                 <PrerequisiteTip
                   label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
                   heading={t('pages.connectionsPage.before_you_connect')}
-                  text={t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
+                  // With an app to create, its line already says what Set up {provider}
+                  // does; the generic setup text would describe a second way.
+                  text={createApp ? '' : t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
                   app={createApp}
                 />
               )}
