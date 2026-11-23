@@ -322,6 +322,7 @@ def _should_reconcile_launchd_launcher() -> bool:
 async def _gateway(
     *,
     no_dashboard: bool = False,
+    headless: bool = False,
     no_crons: bool = False,
     no_tunnel: bool = False,
     no_open: bool = False,
@@ -405,6 +406,7 @@ async def _gateway(
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
+        headless=headless,
         no_crons=no_crons,
         no_tunnel=no_tunnel,
         no_open=no_open,

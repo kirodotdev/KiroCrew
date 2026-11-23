@@ -199,6 +199,9 @@ def _token(args: argparse.Namespace) -> None:
     # send gate is needed here; the live connected-peer verdict is the single
     # authority.
     url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={args.ttl}" + _embed_query(args)
+    bearer = bool(getattr(args, "bearer", False))
+    if bearer:
+        url += "&kind=session"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
         with _owner_verified_secret_urlopen(
@@ -248,6 +251,10 @@ def _token(args: argparse.Namespace) -> None:
     if not token:
         print("❌ Gateway returned empty token", file=sys.stderr)
         sys.exit(1)
+    if bearer:
+        # The credential alone: a Crew API client sends it in ``Authorization: Bearer``.
+        print(token)
+        return
     _probe_dashboard_health(port)
 
     _emit_session_urls(port, token)
