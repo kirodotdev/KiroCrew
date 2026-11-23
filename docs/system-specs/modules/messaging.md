@@ -3963,7 +3963,16 @@ dashboard token auth.
   once (`events_queue.notify_slack_undelivered`). A background result bound
   for Slack (`_deliver_result`) waits for the attempt the same way and posts
   with the client it publishes; when it fails, a Slack-only (`slack`) result
-  is kept as a dashboard notification rather than dropped. A reconnect that
+  is kept as a dashboard notification rather than dropped. A Slack-linked
+  dashboard turn waits the same way, through `DashboardState.slack_reconnect_wait`
+  (published beside `slack_reconnect`; `dashboard.slack_reconnect_wait`): one
+  that starts in the window mirrors through the client the attempt publishes
+  (when the attempt fails, it runs unmirrored, as with no client at all), and a
+  reply that finishes in it posts with that client, or, when the attempt fails,
+  ends in one `Slack: reply not delivered` dashboard notification; a reply
+  whose wait ends with the link paused gets neither the post nor the
+  notification. A turn
+  in a session with no Slack link, or a paused one, does not wait. A reconnect that
   retires a published client and fails keeps that hold for the next
   reconnect (the retry) for `HELD_WORK_GIVE_UP_SECS` (300 s); when that
   window ends with no client, each held message leaves its queue and the
