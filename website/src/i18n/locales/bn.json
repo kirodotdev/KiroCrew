@@ -23787,7 +23787,7 @@
       "wakatime_api_key_description": "WakaTime সক্রিয় থাকলে কোডিং কার্যকলাপ সিঙ্ক প্রমাণীকরণ করে।",
       "custom_title": "কাস্টম সিক্রেট",
       "managed_config_error": "$KIROCREW_HOME/config.json (ডিফল্ট ~/.kiro/crew/config.json) পড়া যায়নি বলে কিছু স্বয়ংক্রিয় ক্রেডেনশিয়াল লুকানো আছে।",
-      "managed_name_hint": "এখানে সংরক্ষণ করলে স্বয়ংক্রিয় শংসাপত্র বিভাগে {{name}} আপডেট হবে। — {{productName}}",
+      "managed_name_hint": "এখানে সংরক্ষণ করলে “{{productName}} স্বয়ংক্রিয়ভাবে ব্যবহার করে” বিভাগে {{name}} আপডেট হবে।",
       "delete_managed_confirm": "“{{name}}” স্থায়ীভাবে মুছবেন? বর্তমান মানটি পুনরুদ্ধার করা যাবে না।",
       "delete_managed_name": "{{name}} মুছুন",
       "save_managed_name": "{{name}} সংরক্ষণ করুন",

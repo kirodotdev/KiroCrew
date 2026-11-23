@@ -23787,7 +23787,7 @@
       "wakatime_api_key_description": "WakaTime सक्षम होने पर कोडिंग गतिविधि सिंक को प्रमाणित करती है।",
       "custom_title": "कस्टम सीक्रेट",
       "managed_config_error": "$KIROCREW_HOME/config.json (डिफ़ॉल्ट: ~/.kiro/crew/config.json) पढ़ा नहीं जा सका, इसलिए कुछ स्वचालित क्रेडेंशियल छिपे हैं।",
-      "managed_name_hint": "यहाँ सहेजने पर स्वचालित क्रेडेंशियल अनुभाग में {{name}} अपडेट होता है। — {{productName}}",
+      "managed_name_hint": "यहाँ सहेजने पर “{{productName}} द्वारा अपने आप उपयोग किए जाते हैं” अनुभाग में {{name}} अपडेट होता है।",
       "delete_managed_confirm": "“{{name}}” को स्थायी रूप से हटाएँ? मौजूदा मान वापस नहीं पाया जा सकता।",
       "delete_managed_name": "{{name}} हटाएँ",
       "save_managed_name": "{{name}} सहेजें",

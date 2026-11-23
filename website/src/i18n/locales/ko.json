@@ -23199,7 +23199,7 @@
       "wakatime_api_key_description": "WakaTime이 활성화된 경우 코딩 활동 동기화를 인증합니다.",
       "custom_title": "사용자 지정 보안 비밀",
       "managed_config_error": "$KIROCREW_HOME/config.json(기본값: ~/.kiro/crew/config.json)을 읽을 수 없어 일부 자동 자격 증명이 숨겨졌습니다.",
-      "managed_name_hint": "여기에 저장하면 자동 자격 증명 섹션의 {{name}} 항목이 업데이트됩니다. — {{productName}}",
+      "managed_name_hint": "여기에 저장하면 ‘{{productName}}에서 자동 사용’ 섹션의 {{name}} 항목이 업데이트됩니다.",
       "delete_managed_confirm": "‘{{name}}’을(를) 영구 삭제하시겠습니까? 현재 값은 복구할 수 없습니다.",
       "delete_managed_name": "{{name}} 삭제",
       "save_managed_name": "{{name}} 저장",
