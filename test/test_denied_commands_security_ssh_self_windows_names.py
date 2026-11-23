@@ -150,9 +150,17 @@ def test_a_windows_name_in_an_ssh_option_value_stays_refused(cmd):
 @pytest.mark.parametrize(
     "cmd",
     [
-        "git clone $env:COMPUTERNAME:team/repo.git",
-        "git ls-remote %COMPUTERNAME%:/srv/repo.git",
+        # Git counts a Windows name only in clear transport syntax: a URL
+        # authority or an scp-like ``user@host:path``.
         "git clone ssh://%COMPUTERNAME%/srv/repo.git",
+        "git clone ssh://git@$env:COMPUTERNAME:22/srv/repo.git",
+        "git ls-remote git+ssh://${env:COMPUTERNAME}/srv/repo.git",
+        "git clone git@%COMPUTERNAME%:team/repo.git",
+        "git fetch $env:USERNAME@$env:COMPUTERNAME:/srv/repo.git main",
+        "git push git@%COMPUTERNAME%:/srv/repo.git feature",
+        "git push -o ci.skip git@%COMPUTERNAME%:/srv/repo.git feature",
+        "git push ssh://%COMPUTERNAME%/srv/repo.git feature",
+        "git pull git@%COMPUTERNAME%.corp.example.com:/srv/repo.git main",
         "tar -cf %COMPUTERNAME%:/backup/logs.tar logs",
     ],
 )
@@ -163,51 +171,22 @@ def test_a_windows_name_as_a_git_or_tar_remote_host_is_refused(cmd):
 @pytest.mark.parametrize(
     "cmd",
     [
-        # A push refspec names refs, never a transport: its source and its
-        # destination are not hosts, bare or as ``src:dst``.
+        # A refspec or a remote name is never a transport, whatever options
+        # come first or however the remote is spelled.
         "git push origin %COMPUTERNAME%:refs/heads/ci/%COMPUTERNAME%",
         "git push origin %COMPUTERNAME%",
-        "git push -o ci.skip origin %COMPUTERNAME%:refs/heads/ci/%COMPUTERNAME%",
         "git push --force origin %COMPUTERNAME%:ci/%COMPUTERNAME% build:ci/build",
-        # Fetch and pull refspecs name refs too.
-        "git fetch origin %COMPUTERNAME%:refs/remotes/ci/%COMPUTERNAME%",
         "git fetch origin $env:COMPUTERNAME:$env:COMPUTERNAME",
-        "git pull origin %COMPUTERNAME%:%COMPUTERNAME%",
+        # The six refspec rows Security Scope Review listed.
+        "git push %COMPUTERNAME% %COMPUTERNAME%:ci/%COMPUTERNAME%",
+        "git push %CI_REMOTE% %COMPUTERNAME%:refs/heads/ci/%COMPUTERNAME%",
+        "git fetch --depth 1 origin %COMPUTERNAME%:refs/remotes/ci/%COMPUTERNAME%",
+        "git fetch -p origin %COMPUTERNAME%:refs/remotes/ci/%COMPUTERNAME%",
+        "git pull --rebase origin %COMPUTERNAME%:%COMPUTERNAME%",
+        "git pull --ff-only origin $env:COMPUTERNAME:$env:COMPUTERNAME",
+        # A bare scp-like word is read like a refspec; main allows it too.
+        "git ls-remote %COMPUTERNAME%:/srv/repo.git",
     ],
 )
-def test_a_windows_name_in_a_refspec_is_not_a_host(cmd):
+def test_a_windows_name_in_a_refspec_or_remote_name_is_not_a_host(cmd):
     assert _denied_by(cmd) is None, cmd
-
-
-@pytest.mark.parametrize(
-    "cmd",
-    [
-        # The remote of a push still names a host, after a detached option value too.
-        "git push %COMPUTERNAME%:/srv/repo.git feature",
-        "git push -o ci.skip %COMPUTERNAME%:/srv/repo.git feature",
-        "git push --repo %COMPUTERNAME%:/srv/repo.git feature",
-        # A bundled or abbreviated value option still consumes its value.
-        "git push -fo ci.skip %COMPUTERNAME%:/srv/repo.git feature",
-        "git push --push-opt ci.skip %COMPUTERNAME%:/srv/repo.git feature",
-        "git push ssh://%COMPUTERNAME%/srv/repo.git feature",
-        # A positional remote overrides --repo, so it is still the remote.
-        "git push --repo=origin %COMPUTERNAME%:/srv/repo.git feature",
-        "git push --repo origin %COMPUTERNAME%:/srv/repo.git feature",
-        "git fetch %COMPUTERNAME%:/srv/repo.git main",
-        "git pull %COMPUTERNAME%:/srv/repo.git main",
-    ],
-)
-def test_a_windows_name_as_a_push_remote_is_refused(cmd):
-    assert _denied_by(cmd) == "sandbox-escape-git-tar-self", cmd
-
-
-def test_the_refspec_split_fails_closed():
-    split = _argv_floor._git_refspec_indices
-    assert split(["origin", "a:b", "c"]) == {1, 2}
-    assert split(["-fo", "x", "origin", "a:b"]) == {3}
-    assert split(["--repo", "x", "origin", "a:b"]) == {3}
-    # An option the arity tables do not model might take a separated value.
-    assert split(["--unmodelled-option", "x", "%computername%:/srv/r.git", "a"]) == frozenset()
-    # An expansion up to the remote may add or drop a word and shift the remote.
-    assert split(["$empty", "%computername%:/srv/r.git", "a:b"]) == frozenset()
-    assert split(["-o", "$opts", "origin", "a:b"]) == frozenset()

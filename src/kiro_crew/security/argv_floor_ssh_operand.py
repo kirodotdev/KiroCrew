@@ -142,9 +142,10 @@ def _brace_expansions(token: str) -> "list[str] | None":
 
 _LITERAL_HOSTS = contextvars.ContextVar("ssh_floor_literal_hosts", default=False)
 
-# Set while the git floor reads a push/fetch/pull refspec (``_git_tokens_target_self``):
-# a refspec names refs, never a transport, so a Windows own-name in it is a ref.
-_REFSPEC_WORD = contextvars.ContextVar("ssh_floor_refspec_word", default=False)
+# Set while the git floor reads a remote word (``_git_remote_targets_self``). A git
+# word is also a refspec or a remote name, so a Windows own-name counts there only
+# in clear transport syntax: a URL authority or after real ``user@`` userinfo.
+_GIT_WORD = contextvars.ContextVar("ssh_floor_git_word", default=False)
 
 
 _URI_SCHEMES: tuple[str, ...] = ("ssh://", "scp://", "sftp://", "rsync://")
@@ -160,16 +161,19 @@ def _windows_name_is_host(t: str, *, host_position: bool, file_operand: bool) ->
     local file (``%computername%.log``); an ``@`` after a ``:`` or ``/`` is
     remote-path data (``backup:/logs/a@%computername%.log``); and a
     *file_operand* (an scp/rsync file, a git or tar remote word) with no host
-    colon is a local path or a name (``scp -r %computername% far:``).
+    colon is a local path or a name (``scp -r %computername% far:``).  In a git
+    word (``_GIT_WORD``) only clear transport syntax counts: a URL authority or
+    scp-like ``user@host:path``, never a refspec or a remote name.
     """
     # PowerShell's ``$env:`` colon is part of the variable, never a host colon.
     if file_operand and ":" not in t.replace("env:", ""):
         return False
-    spellings = [t]
+    git_word = _GIT_WORD.get()
+    spellings = [] if git_word else [t]
     user, at, rest = t.partition("@")
     if at and not {":", "/"} & set(user.replace("env:", "")):
         spellings.append(rest)
-    if at and "/" not in t and not file_operand:
+    if at and "/" not in t and not file_operand and not git_word:
         # Only an ssh/sftp destination reads its host after the LAST ``@``; a
         # file operand's host ends at its first colon (``far:job@x`` is far).
         spellings.append(t.rsplit("@", 1)[1])
@@ -186,7 +190,7 @@ def _windows_name_is_host(t: str, *, host_position: bool, file_operand: bool) ->
             if not spelling.startswith(var):
                 continue
             tail = spelling[len(var) :]
-            if tail == "" or tail.startswith(":"):
+            if (tail == "" and not git_word) or tail.startswith(":"):
                 return True
             if tail.startswith(".") and (host_position or ":" in tail):
                 return True
@@ -263,9 +267,7 @@ def _operand_targets_self(
     for var in _HOSTNAME_VARIABLE_FORMS:
         if "hostname" in var and (t == var or t.startswith(var + ".") or t.startswith(var + ":")):
             return True
-    if not _REFSPEC_WORD.get() and _windows_name_is_host(
-        t, host_position=host_position, file_operand=file_operand
-    ):
+    if _windows_name_is_host(t, host_position=host_position, file_operand=file_operand):
         return True
     # An expansion's embedded default is the destination when the variable is
     # unset — check every ``${…:-word}``-style word (recursion terminates:

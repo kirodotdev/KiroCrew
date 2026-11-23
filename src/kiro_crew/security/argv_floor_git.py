@@ -320,52 +320,6 @@ _AMBIGUOUS_REFS = {"head", "@", "fetch_head"}
 _AMBIGUOUS_REFSPEC_RE = re.compile(r"@\{")
 
 
-def _git_refspec_indices(words: list[str]) -> frozenset[int]:
-    """Indices of the refspec words of a git push, fetch or pull: every positional
-    after the remote.
-
-    Options are read with the arity tables ``_push_segment_targets_protected``
-    reads them with (abbreviations, bundled shorts).  An option those tables do
-    not model, or an expansion up to the remote that could add or drop a word,
-    returns no index, so every word keeps the full reading.  The first
-    positional is the remote even after ``--repo``: git lets it override that.
-    """
-    refspecs: set[int] = set()
-    remote_seen = skip_next = positional_only = False
-    for idx, word in enumerate(words):
-        if skip_next:
-            skip_next = False
-        elif positional_only or word == "-" or not word.startswith("-"):
-            if remote_seen:
-                refspecs.add(idx)
-            elif any(ch in w for w in words[: idx + 1] for ch in "$%`"):
-                return frozenset()
-            remote_seen = True
-        elif word == "--":
-            positional_only = True
-        elif _push_option_matches(word, _PUSH_REPO_OPTS):
-            skip_next = "=" not in word
-        elif "=" in word:
-            continue
-        elif word.startswith("--"):
-            if _push_option_matches(word, _PUSH_VALUE_OPTS):
-                skip_next = True
-            elif not (
-                word.startswith("--no-")
-                or _push_option_matches(word, _PUSH_NO_VALUE_OPTS)
-                or _push_option_matches(word, _PUSH_ALL_BRANCHES_OPTS)
-            ):
-                return frozenset()
-        else:
-            for i, ch in enumerate(word[1:]):
-                if ch in _PUSH_VALUE_SHORTS:
-                    skip_next = i == len(word) - 2
-                    break
-                if ch not in _PUSH_NO_VALUE_SHORTS:
-                    return frozenset()
-    return frozenset(refspecs)
-
-
 def _git_push_args(segment: str) -> list[str] | None:
     """Return the tokens AFTER the ``push`` subcommand if *segment* is a git push.
 

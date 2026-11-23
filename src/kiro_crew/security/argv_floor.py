@@ -82,9 +82,8 @@ logger = logging.getLogger(__name__)
 #   ``argv_floor_ssh`` -- the ssh self-target floor
 #   ``argv_floor_ssh_bodies`` -- the ssh floor's reading of substitution bodies
 #   ``argv_floor_tar`` -- the tar grammar the git/tar floor reads a tar argv with
-#   ``argv_floor_git`` -- release detection, the protected-branch push target and the
-#   push remote/refspec split the git/tar floor reads refspecs with
 #   ``argv_floor_git_tar`` -- the git/tar self-target floor
+#   ``argv_floor_git`` -- release detection and the protected-branch push target
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.security.argv_floor_self",
@@ -94,8 +93,8 @@ _OWNERS = (
     "kiro_crew.security.argv_floor_ssh",
     "kiro_crew.security.argv_floor_ssh_bodies",
     "kiro_crew.security.argv_floor_tar",
-    "kiro_crew.security.argv_floor_git",
     "kiro_crew.security.argv_floor_git_tar",
+    "kiro_crew.security.argv_floor_git",
 )  # the loop below imports them in this order
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -125,7 +124,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SHELL_RESERVED_WORDS,
         _git_publish_floor_tags,
         _git_push_args,
-        _git_refspec_indices,
         _is_git_publish,
         _is_git_push_via_normalizer,
         _is_push_to_protected_branch,
@@ -172,6 +170,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _git_options_before_terminator,
         _git_remote_candidates,
         _git_remote_targets_self,
+        _git_remote_word_dials_self,
         _git_rewritten_remotes_dial_self,
         _git_tar_read,
         _git_tar_verbs,
@@ -388,10 +387,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _BRACE_GROUP_RE,
         _BRACE_RANGE_RE,
         _EXPANSION_DEFAULT_RE,
+        _GIT_WORD,
         _HOSTNAME_SUBSTITUTION_HINTS,
         _HOSTNAME_VARIABLE_FORMS,
         _LITERAL_HOSTS,
-        _REFSPEC_WORD,
         _URI_SCHEMES,
         _arith_int_literal_repl,
         _brace_alternatives,
