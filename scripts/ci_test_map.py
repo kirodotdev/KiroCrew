@@ -14,9 +14,11 @@ which files it really executed (`scripts/ci_test_file_map.py`) links a change
 to the test files that touched it.
 
     build   merge the plugin's `part-*.json` files into the map
+    bundle  add the co-change history and the guard tier to a map and write
+            the gzip selection file the scorer reads (below)
     select  given a diff (`--base B --head H`, or `--name-status FILE`) and a
-            map, print the test files it would run, or fall back to the full
-            suite and say why
+            map or bundle, print the test files it would run, or fall back to
+            the full suite and say why
     guard-tier
             print the guard tier, one test file per line, so the tier runs as
             one pytest invocation:
@@ -31,6 +33,19 @@ The map
 
 Paths are repository-relative POSIX paths. Files are the unit CI shards and
 runs, so a node id counts for its test FILE.
+
+The bundle (gzip JSON)
+----------------------
+The map, with the two tables `scripts/ci_test_selection.py` reads beside it:
+
+    "cochange": {src file: [test file, ...]},  # changed together in one of the
+                                               # last N first-parent commits
+    "guard": [test file, ...]                  # leaf_test_scope.corpus_gates
+
+A table that cannot be built, or that comes out empty, is left out of the file,
+never written empty, so a reader can tell "no data" from "no links". A shallow
+clone cannot build `cochange` unless it holds `--commits` commits and the one
+before them: a part of the window would read as the whole of it.
 
 What the selector falls back on (prints nothing, exit 3)
 --------------------------------------------------------
@@ -55,16 +70,22 @@ Exit codes: 0 selection printed, 3 full suite (reason on stderr), 2 usage.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import subprocess
 import sys
-from collections.abc import Iterable, Mapping
+import zlib
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = 1
 FULL = 3
+CO_CHANGE_COMMITS = 2000
+GIT_LOG_TIMEOUT_SECS = 600.0
+BUNDLE_TABLES = ("cochange", "guard")
+NO_GUARD = "corpus_gates found no guard test"
 
 # Where pytest collects (setup.cfg `testpaths`). A changed test file outside
 # these is not a test pytest would run, so it falls back like any other file.
@@ -105,9 +126,23 @@ def read_parts(directory: Path) -> list[dict[str, Any]]:
     return [json.loads(p.read_text(encoding="utf-8")) for p in paths]
 
 
+def read_json(path: Path) -> Any:
+    """The JSON in a plain or gzip file; damaged gzip data is a `ValueError`."""
+    raw = path.read_bytes()
+    if raw[:2] == b"\x1f\x8b":
+        try:
+            raw = gzip.decompress(raw)
+        except (EOFError, zlib.error) as exc:
+            raise ValueError(f"{path}: damaged gzip data: {exc}") from exc
+    return json.loads(raw.decode("utf-8"))
+
+
 def load_map(path: Path) -> dict[str, Any]:
-    """Read and check a map file; a wrong schema is a usage error, not a guess."""
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    """Read and check a map file, plain or gzip; a wrong schema is a usage error."""
+    return _check_map(read_json(path), path)
+
+
+def _check_map(doc: Any, path: Path) -> dict[str, Any]:
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
         raise ValueError(f"{path}: not a schema-{SCHEMA} test map")
     if not isinstance(doc.get("tests"), dict) or not isinstance(doc.get("files"), dict):
@@ -216,6 +251,130 @@ def share(selection: Selection, test_map: Mapping[str, Any]) -> float:
     return sum(counts.get(t, 0) for t in selection.tests) / total
 
 
+def git_first_parent_files(
+    root: Path, ref: str, commits: int, timeout: float | None = None
+) -> list[list[str]]:
+    """The paths each of the last `commits` first-parent commits of `ref` touched.
+
+    `-z` prints every path raw and NUL-terminated: without it git quotes a path
+    with non-ASCII or special characters, which would then miss the `src/` prefix.
+    A root commit, and the boundary commit of a shallow clone, lists no paths:
+    diffed against the empty tree it would pair every `src/` file with every test.
+    `timeout` defaults to `GIT_LOG_TIMEOUT_SECS`, read at call time.
+    """
+    out = subprocess.run(
+        ["git", "-c", "log.showRoot=false", "log", "-z", f"-n{commits}"]
+        + ["--first-parent", "--diff-merges=first-parent"]
+        + ["--format=%x01", "--name-only", ref],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=GIT_LOG_TIMEOUT_SECS if timeout is None else timeout,
+    ).stdout
+    found: list[list[str]] = []
+    for token in out.split("\x00"):
+        # A commit's header token is the marker, then its first path after a newline.
+        if token.lstrip("\n").startswith("\x01"):
+            found.append([])
+            token = token.lstrip("\n")[1:].lstrip("\n")
+        elif token.startswith("\n"):
+            token = token[1:]
+        if token and found:
+            found[-1].append(token)
+    return found
+
+
+def co_change(commits: Iterable[list[str]]) -> dict[str, list[str]]:
+    """`src/` file -> the test files some commit changed together with it."""
+    links: dict[str, set[str]] = {}
+    for paths in commits:
+        tests = {p for p in paths if is_test_file(p)}
+        if not tests:
+            continue
+        for src in paths:
+            if src.startswith("src/") and not is_test_file(src):
+                links.setdefault(src, set()).update(tests)
+    return {src: sorted(tests) for src, tests in sorted(links.items())}
+
+
+def is_shallow(root: Path, timeout: float | None = None) -> bool:
+    """Whether the clone at `root` lacks the older part of its history."""
+    out = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=GIT_LOG_TIMEOUT_SECS if timeout is None else timeout,
+    ).stdout
+    return out.strip() == "true"
+
+
+def co_change_window(
+    root: Path, ref: str, commits: int, timeout: float | None = None
+) -> dict[str, list[str]]:
+    """`co_change` over the last `commits` first-parent commits of `ref`.
+
+    Raises when a shallow clone does not also hold the commit before the window:
+    the window's oldest commit would then have no parent to be compared with.
+    """
+    held = git_first_parent_files(root, ref, commits + 1, timeout)
+    if len(held) <= commits and is_shallow(root, timeout):
+        raise ValueError(f"shallow clone holds {len(held)} of the {commits + 1} commits needed")
+    return co_change(held[:commits])
+
+
+def bundle(
+    test_map: dict[str, Any],
+    root: Path,
+    ref: str = "HEAD",
+    commits: int = CO_CHANGE_COMMITS,
+    timeout: float | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """The map with the tables that could be built, and why each other one could not.
+
+    A table the map already carries is not kept: it is built here or left out.
+    """
+    doc: dict[str, Any] = {k: v for k, v in test_map.items() if k not in BUNDLE_TABLES}
+    absent: dict[str, str] = {}
+    tables: tuple[tuple[str, Callable[[], Any], str, str], ...] = (
+        (
+            "cochange",
+            lambda: co_change_window(root, ref, commits, timeout),
+            "history read failed",
+            "no commit in the window changed a src file and a test file together",
+        ),
+        ("guard", lambda: guard_tier(root), "corpus_gates failed", NO_GUARD),
+    )
+    for name, build, failed, empty in tables:
+        try:
+            table = build()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            absent[name] = f"{failed}: {exc}"
+            continue
+        if table:
+            doc[name] = table
+        else:
+            absent[name] = empty
+    return doc, absent
+
+
+def _cmd_bundle(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    doc, absent = bundle(load_map(Path(args.map)), root, args.ref, args.commits)
+    text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
+    data = gzip.compress(text.encode("utf-8"), mtime=0)
+    Path(args.out).write_bytes(data)
+    tables = [t for t in BUNDLE_TABLES if t in doc]
+    print(f"bundle: tables {', '.join(tables) or 'none'}, {len(data) / 1e6:.2f} MB gzip")
+    for table, why in sorted(absent.items()):
+        print(f"::warning::{table} left out: {why}")
+    return 0
+
+
 def _cmd_build(args: argparse.Namespace) -> int:
     doc = merge_parts(read_parts(Path(args.parts)), args.commit)
     text = json.dumps(doc, separators=(",", ":"), sort_keys=True)
@@ -267,15 +426,27 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--parts", required=True, help="directory holding part-*.json")
     build.add_argument("--out", required=True, help="map JSON to write")
     build.add_argument("--commit", default="", help="commit the parts were recorded on")
+    pack = sub.add_parser("bundle", help="map JSON -> gzip selection bundle")
+    pack.add_argument("--map", required=True, help="map to add the tables to")
+    pack.add_argument("--out", required=True, help="gzip JSON bundle to write")
+    pack.add_argument("--ref", default="HEAD", help="branch whose first parents feed cochange")
+    pack.add_argument(
+        "--commits", type=int, default=CO_CHANGE_COMMITS, help="first-parent commits to read"
+    )
     pick = sub.add_parser("select", help="print the test files a diff would run")
-    pick.add_argument("--map", required=True)
+    pick.add_argument("--map", required=True, help="map or bundle, plain or gzip")
     pick.add_argument("--base")
     pick.add_argument("--head")
     pick.add_argument("--name-status", help="file holding `git diff --name-status -M` output")
     pick.add_argument("--json", action="store_true", help="print one JSON verdict line")
     sub.add_parser("guard-tier", help="print the guard tier, one test file per line")
     args = parser.parse_args(argv)
-    commands = {"build": _cmd_build, "select": _cmd_select, "guard-tier": _cmd_guard_tier}
+    commands = {
+        "build": _cmd_build,
+        "bundle": _cmd_bundle,
+        "select": _cmd_select,
+        "guard-tier": _cmd_guard_tier,
+    }
     try:
         return commands[args.cmd](args)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:

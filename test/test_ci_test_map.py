@@ -6,7 +6,9 @@ Four properties are pinned:
 
 * RECORD -- the plugin, in a real pytest session, links each test file to the
   repository files its tests executed, and to nothing another test ran.
-* BUILD -- plugin parts merge into the file -> test-file map.
+* BUILD -- plugin parts merge into the file -> test-file map, and `bundle`
+  adds the co-change and guard tables to it, leaving out a table it cannot
+  build.
 * SELECT -- every fall-back rule in the module docstring yields the full suite,
   and a mapped edit yields its tests plus the guard tier.
 * SHADOW -- the workflow is scheduled/dispatch only, never cancelled by a push,
@@ -15,11 +17,13 @@ Four properties are pinned:
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -80,6 +84,155 @@ def test_load_map_refuses_another_schema(tmp_path: Path) -> None:
     path.write_text(json.dumps({"schema": 99, "tests": {}, "files": {}}), encoding="utf-8")
     with pytest.raises(ValueError):
         ctm.load_map(path)
+
+
+def _git(repo: Path, *argv: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        + ["-c", "commit.gpgsign=false", *argv],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
+
+
+def _write(repo: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
+
+
+def _fixture_repo(tmp_path: Path) -> Path:
+    """Four commits: a root, two that change `a.py` with `test_a.py`, one with non-ASCII paths."""
+    repo = tmp_path / "repo"
+    _write(repo, {"src/kiro_crew/a.py": "", "test/test_a.py": "", "docs/x.md": ""})
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "one")
+    for n in ("two", "three"):
+        _write(repo, {"src/kiro_crew/a.py": f"# {n}\n", "test/test_a.py": f"# {n}\n"})
+        _git(repo, "commit", "-q", "-am", n)
+    # Non-ASCII paths, which git quotes in its default (non `-z`) output.
+    _write(repo, {"src/kiro_crew/café.py": "", "test/test_café.py": ""})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "four")
+    return repo
+
+
+def _shallow_clone(repo: Path, depth: int) -> Path:
+    clone = repo.parent / f"shallow-{depth}"
+    _git(repo.parent, "clone", "-q", "--depth", str(depth), f"file://{repo}", clone.name)
+    return clone
+
+
+def test_co_change_links_what_a_first_parent_commit_changed_together(tmp_path: Path) -> None:
+    repo = _fixture_repo(tmp_path)
+    commits = ctm.git_first_parent_files(repo, "HEAD", 3, FALLBACK_TIMEOUT_SECS)
+    assert commits == [
+        ["src/kiro_crew/café.py", "test/test_café.py"],
+        *[["src/kiro_crew/a.py", "test/test_a.py"]] * 2,
+    ]
+    whole = {
+        "src/kiro_crew/a.py": ["test/test_a.py"],
+        "src/kiro_crew/café.py": ["test/test_café.py"],
+    }
+    # The root commit lists no paths, so it pairs nothing; nor does a commit with no test.
+    assert ctm.co_change_window(repo, "HEAD", 10, FALLBACK_TIMEOUT_SECS) == whole
+    assert ctm.co_change([["src/kiro_crew/a.py", "docs/x.md"]]) == {}
+    # A shallow clone answers as the full one does for a window whose every commit
+    # has its parent, and for no wider one: its boundary commit lists no paths, so
+    # that commit's pairs would read as no links.
+    for depth in (1, 2, 3):
+        clone = _shallow_clone(repo, depth)
+        for commits in range(depth):
+            full = ctm.co_change_window(repo, "HEAD", commits, FALLBACK_TIMEOUT_SECS)
+            assert ctm.co_change_window(clone, "HEAD", commits, FALLBACK_TIMEOUT_SECS) == full
+        with pytest.raises(ValueError, match=f"holds {depth} of the {depth + 1} commits"):
+            ctm.co_change_window(clone, "HEAD", depth, FALLBACK_TIMEOUT_SECS)
+
+
+def test_bundle_cli_writes_one_gzip_file_select_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _fixture_repo(tmp_path)
+    monkeypatch.setattr(ctm, "guard_tier", lambda root: TIER)
+    # The CLI's git log deadline stays inside the test's own timeout.
+    monkeypatch.setattr(ctm, "GIT_LOG_TIMEOUT_SECS", FALLBACK_TIMEOUT_SECS)
+    map_path = tmp_path / "map.json"
+    map_path.write_text(json.dumps(MAP), encoding="utf-8")
+    out = tmp_path / "bundle.json.gz"
+    argv = ["--root", str(repo), "bundle", "--map", str(map_path), "--out", str(out)]
+    assert ctm.main(argv) == 0
+    doc = json.loads(gzip.decompress(out.read_bytes()))
+    # The map as it was, with the two tables beside it.
+    assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
+    assert doc["guard"] == TIER
+    assert doc["cochange"]["src/kiro_crew/a.py"] == ["test/test_a.py"]
+    assert ctm.load_map(out) == doc
+    # select reads the bundle as it reads a schema-1 map.
+    diff = tmp_path / "diff.txt"
+    diff.write_text("M\tsrc/kiro_crew/b.py\n", encoding="utf-8")
+    capsys.readouterr()
+    for path in (out, map_path):
+        assert ctm.main(["select", "--map", str(path), "--name-status", str(diff)]) == 0
+        assert capsys.readouterr().out.split() == ["test/test_b.py", "test/test_gate.py"]
+    # A file cut short anywhere is a usage error, not a traceback.
+    whole = out.read_bytes()
+    for size in range(2, len(whole)):
+        out.write_bytes(whole[:size])
+        assert ctm.main(["select", "--map", str(out), "--name-status", str(diff)]) == 2
+
+
+def test_a_table_that_cannot_be_built_is_absent_not_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _fixture_repo(tmp_path)
+
+    def scan_fails(root: Path) -> list[str]:
+        raise OSError("unreadable test tree")
+
+    def build(root: Path, guard: Any, **kwargs: Any) -> tuple[dict[str, Any], dict[str, str]]:
+        monkeypatch.setattr(ctm, "guard_tier", guard)
+        return ctm.bundle(MAP, root, timeout=FALLBACK_TIMEOUT_SECS, **kwargs)
+
+    cases: list[tuple[tuple[dict[str, Any], dict[str, str]], dict[str, str]]] = [
+        (build(repo, lambda root: TIER), {}),
+        (build(repo, lambda root: []), {"guard": ctm.NO_GUARD}),
+        (build(repo, scan_fails), {"guard": "corpus_gates failed: unreadable test tree"}),
+        (build(repo, lambda root: TIER, ref="no-such-ref"), {"cochange": "history read failed"}),
+        # A window with no pair, and a clone holding a part of the window: no data, not no links.
+        (build(repo, lambda root: TIER, commits=0), {"cochange": "no commit in the window"}),
+        (
+            build(_shallow_clone(repo, 1), scan_fails),
+            {"cochange": "1 of the 2001", "guard": "failed"},
+        ),
+    ]
+    for (doc, absent), reasons in cases:
+        assert sorted(absent) == sorted(reasons)
+        assert all(why in absent[table] for table, why in reasons.items())
+        # Every table is in the file with rows, or named as left out: never both, never empty.
+        assert {t for t in ctm.BUNDLE_TABLES if t in doc} == set(ctm.BUNDLE_TABLES) - set(absent)
+        assert all(doc[t] for t in ctm.BUNDLE_TABLES if t in doc)
+        assert {k: v for k, v in doc.items() if k not in ctm.BUNDLE_TABLES} == MAP
+    # A table the map already carries is rebuilt or left out, never carried over.
+    stale = {**MAP, "cochange": {"src/kiro_crew/a.py": ["test/test_stale.py"]}, "guard": ["x"]}
+    monkeypatch.setattr(ctm, "guard_tier", scan_fails)
+    doc, absent = ctm.bundle(stale, _shallow_clone(repo, 3), timeout=FALLBACK_TIMEOUT_SECS)
+    assert doc == MAP and sorted(absent) == sorted(ctm.BUNDLE_TABLES)
+    # The CLI names each table it left out, and still writes the map.
+    map_path = tmp_path / "map.json"
+    map_path.write_text(json.dumps(MAP), encoding="utf-8")
+    out = tmp_path / "bundle.json.gz"
+    monkeypatch.setattr(ctm, "GIT_LOG_TIMEOUT_SECS", FALLBACK_TIMEOUT_SECS)
+    argv = ["--root", str(_shallow_clone(repo, 2)), "bundle", "--map", str(map_path)]
+    assert ctm.main([*argv, "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "bundle: tables none" in printed
+    assert all(f"::warning::{table} left out" in printed for table in ctm.BUNDLE_TABLES)
+    assert ctm.load_map(out) == MAP
 
 
 def _run_pytest_with_recorder(project: Path, out: Path) -> subprocess.CompletedProcess[str]:
