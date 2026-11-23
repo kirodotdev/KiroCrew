@@ -1,5 +1,5 @@
 """Every Discord interaction: a button press (a tool approval, a session pick, a model
-pick or an ``[OPTIONS:]`` choice) and a registered slash command.
+pick, an ``[OPTIONS:]`` choice or a reply's Stop) and a registered slash command.
 
 ``on_interaction`` authorizes, acknowledges and routes each press, and re-reads the
 governance ceiling and the rosters before anything but an explicit reject resolves;
@@ -15,7 +15,7 @@ state on the instance, and a patch of the method on the class or on an instance
 reaches every caller.
 
 Instance fields read (a call on one included): ``_allowed_threads``, ``_model_pickers``,
-``_session_resume``, ``client``, ``transport``.
+``_session_resume``, ``client``, ``sessions``, ``transport``.
 
 Instance fields assigned, or whose mapping is changed: ``_model_pickers``.
 """
@@ -28,9 +28,11 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.discord.commands import build_help_text
 from kiro_crew.discord.renderer import (
+    STOP_PREFIX,
     DiscordApprovalDecider,
     _redact_transformed,
     full_choice_text,
+    stop_turn_target,
 )
 from kiro_crew.discord.transport_dispatch_commands import _REPLY_COMMANDS
 from kiro_crew.discord.transport_dispatch_model_picker import _MODEL_PICKER_TTL_SECS
@@ -55,6 +57,11 @@ _UNTAGGED_OPTIONS_REFUSAL = (
     "they belong to can no longer be verified and your choice was NOT applied. "
     "Type it as a message instead."
 )
+
+#: Private answer to a Stop press whose turn already ended: nothing was stopped.
+_STOP_FINISHED_NOTICE = "⏹ This reply already finished, so nothing was stopped."
+#: Discord's EPHEMERAL message flag: only the presser sees the follow-up.
+_EPHEMERAL_FLAG = 1 << 6
 
 
 async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> None:
@@ -158,6 +165,10 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
     # kiro-cli approval until timeout, ~300s). Approve presses and [OPTIONS:]
     # turns stay blocked.
     _is_reject_press = data.startswith("a:") and data.rpartition(":")[2] == "0"
+    # A Stop press ("x:<nonce>") is a pure cancellation, so it claims `!stop`'s
+    # exemption from the CEILING only: a denied channel can still halt a turn it
+    # started, and the roster re-read below still applies to it.
+    _is_stop_press = data.startswith(STOP_PREFIX)
     if not _is_reject_press:
         # The rosters are read ONCE before the ack, and the ack itself serves the
         # REST ladder's waits while the governance read is deliberately off-loop,
@@ -172,7 +183,11 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
         # it describes a state that can have changed by the time anything
         # resolves; reading the rosters last makes them the final word, which is
         # the same contract the client's own mid-send predicate states.
-        if not await channel_inbound_permitted("discord"):
+        if not await (
+            inbound_permitted("discord", text="!stop")
+            if _is_stop_press and stop_turn_target(data[len(STOP_PREFIX) :]) is not None
+            else channel_inbound_permitted("discord")
+        ):
             logger.info("discord interaction dropped: denied by channels governance policy")
             return
         if not self._authorized(itx.user_id) or (
@@ -182,6 +197,37 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
                 "discord interaction dropped: authorization withdrawn during the " "acknowledgement"
             )
             return
+
+    # Stop press: "x:<nonce>" on a streaming reply. The nonce names the turn that
+    # posted it, in this channel, and is retired when that turn finalizes -- before
+    # its session is released -- so a button Discord replays later (a missed
+    # retirement edit, or any press after a restart) stops nothing. A nonce whose
+    # turn has not finalized yet is still refused unless that turn's task holds the
+    # session: a hard reset drops a session without waiting for its turn, and the
+    # next turn on the key then holds it. A live one runs `!stop` itself, for the
+    # session that posted the button, with the presser as the queue owner. The
+    # checks and the cancel run with no await between them.
+    if _is_stop_press:
+        target = stop_turn_target(data[len(STOP_PREFIX) :])
+        holder = getattr(self.sessions, "turn_holder", None)
+        if (
+            target is not None
+            and target[1] == itx.channel_id
+            and callable(holder)
+            and holder(target[0]) is target[2]
+        ):
+            await self._handle_stop(itx.user_id, itx.channel_id, thread_id, target[0])
+            return
+        # Private, through the press's own follow-up route: the presser is the
+        # only one who needs to know their press did nothing.
+        if self.client.application_id:
+            await self.client.api_json(
+                "POST",
+                f"/webhooks/{self.client.application_id}/{itx.interaction_token}",
+                {"content": _STOP_FINISHED_NOTICE, "flags": _EPHEMERAL_FLAG},
+                destination=itx.channel_id,
+            )
+        return
 
     # Session picker: "s:<nonce>:<index>". The controller binds the nonce
     # to the owner, channel, message, TTL, and exact server-side choice list.
