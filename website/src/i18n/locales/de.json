@@ -7499,7 +7499,9 @@
       "searching": "Wird gesucht…",
       "searching_2": "Wird gesucht: {{name}}",
       "type_at_least_2_characters_to_search": "Geben Sie mindestens 2 Zeichen ein, um zu suchen",
-      "type_to_search_for_more": "Tippe, um nach mehr zu suchen"
+      "type_to_search_for_more": "Tippe, um nach mehr zu suchen",
+      "provider_could_not_search": "Suche in {{provider}} nicht möglich: {{reason}}",
+      "provider_did_not_answer": "{{provider}} hat nicht geantwortet."
     },
     "embedTabStrip": {
       "close_tab": "Tab schließen",
@@ -8595,7 +8597,6 @@
       "open_app_full_screen": "App im Vollbild öffnen"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{failed}} von {{total}} Anbietern haben nicht geantwortet — die Ergebnisse sind möglicherweise unvollständig.",
       "retry": "Wiederholen",
       "a_server_named_already_exists": "Ein Server mit dem Namen „{{name}}“ existiert bereits mit einer anderen Konfiguration.\n          Verwalten Sie ihn in der Tabelle der installierten Server.",
       "add_server": "Server hinzufügen",
@@ -9628,8 +9629,6 @@
       "reinstalled": "Neu installiert",
       "reinstalled_files_one": "{{count}} Datei neu installiert",
       "reinstalled_files_other": "{{count}} Dateien neu installiert",
-      "provider_could_not_search": "Suche in {{provider}} nicht möglich: {{reason}}",
-      "provider_did_not_answer": "{{provider}} hat nicht geantwortet.",
       "select_a_skill_to_preview": "Wählen Sie einen Skill für die Vorschau",
       "skill_search_results": "Skill-Suchergebnisse",
       "source": "Quelle",
@@ -17939,6 +17938,8 @@
         "probe_failing_help": "{{failures}} Prüfungen in Folge sind fehlgeschlagen, daher prüft {{productName}} diesen Server nicht mehr. Ein Neustart hebt das nicht auf. Chat-Sitzungen können ihn weiterhin verwenden. Behebe zuerst die Ursache.",
         "agent_dropped_not_found": "Das Programm '{{command}}' wurde auf diesem Computer nicht gefunden, daher kann dein Agent die Tools dieses Servers nicht nutzen.",
         "agent_dropped_fix": "Installiere es oder trage unter {{page}} den vollständigen Pfad zum Programm im Befehl dieses Servers ein. Starte danach das Gateway neu (Einstellungen → Über → Gateway neu starten).",
+        "own_entry_unused": "Dein eigener Server unter diesem Namen in {{file}} ('{{command}}') wird nicht verwendet: {{productName}} bringt einen Server mit demselben Namen mit, und dein Agent bekommt diesen.",
+        "own_entry_unused_fix": "Damit deiner auch läuft, gib ihm in dieser Datei einen anderen Namen.",
         "reset_failures": "Server erneut versuchen",
         "test_server": "Testen",
         "testing_server": "Wird getestet…",

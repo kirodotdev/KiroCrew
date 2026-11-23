@@ -7697,7 +7697,9 @@
       "searching": "Recherche...",
       "searching_2": "Recherche en cours : {{name}}",
       "type_at_least_2_characters_to_search": "Saisissez au moins 2 caractères pour rechercher",
-      "type_to_search_for_more": "Tape du texte pour en trouver plus"
+      "type_to_search_for_more": "Tape du texte pour en trouver plus",
+      "provider_could_not_search": "Impossible de chercher dans {{provider}} : {{reason}}",
+      "provider_did_not_answer": "{{provider}} n'a pas répondu."
     },
     "embedTabStrip": {
       "close_tab": "Fermer l'onglet",
@@ -8807,7 +8809,6 @@
       "open_app_full_screen": "Ouvrir l'application en plein écran"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{failed}} fournisseurs sur {{total}} n’ont pas répondu — les résultats sont peut-être incomplets.",
       "retry": "Réessayer",
       "a_server_named_already_exists": "Un serveur nommé «{{name}}» existe déjà avec une configuration différente.\n          Gérez-le depuis le tableau des serveurs installés.",
       "add_server": "Ajouter un serveur",
@@ -9867,8 +9868,6 @@
       "reinstalled_files_one": "{{count}} fichier réinstallé",
       "reinstalled_files_many": "{{count}} fichiers réinstallés",
       "reinstalled_files_other": "{{count}} fichiers réinstallés",
-      "provider_could_not_search": "Impossible de chercher dans {{provider}} : {{reason}}",
-      "provider_did_not_answer": "{{provider}} n'a pas répondu.",
       "select_a_skill_to_preview": "Sélectionnez une compétence pour l'aperçu",
       "skill_search_results": "Résultats de recherche de compétences",
       "source": "Source",
@@ -18405,6 +18404,8 @@
         "probe_failing_help": "{{failures}} sondages d'affilée ont échoué, donc {{productName}} a cessé de sonder ce serveur. Un redémarrage n'y change rien. Les sessions de chat peuvent toujours l'utiliser. Corrige d'abord la cause.",
         "agent_dropped_not_found": "Le programme '{{command}}' est introuvable sur cet ordinateur, donc ton agent ne peut pas utiliser les outils de ce serveur.",
         "agent_dropped_fix": "Installe-le, ou indique le chemin complet du programme dans la commande de ce serveur, dans {{page}}. Redémarre ensuite le gateway (Paramètres → À propos → Redémarrer la passerelle).",
+        "own_entry_unused": "Ton propre serveur sous ce nom dans {{file}} ('{{command}}') n'est pas utilisé : {{productName}} fournit un serveur du même nom, et c'est celui-là que ton agent reçoit.",
+        "own_entry_unused_fix": "Pour lancer aussi le tien, donne-lui un autre nom dans ce fichier.",
         "reset_failures": "Réessayer le serveur",
         "test_server": "Tester",
         "testing_server": "Test en cours…",

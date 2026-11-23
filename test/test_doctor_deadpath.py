@@ -490,6 +490,80 @@ class TestIdentifierOperandIgnored:
         assert [d.path for d in report.foreign_dead[0].dead] == [dead]
 
 
+# ── WSL launcher args ignored ────────────────────────────────────────────────
+
+
+class TestWslLauncherArgsIgnored:
+    """``wsl.exe -d <distro> -- /home/...`` names paths inside the Linux distro.
+
+    They are absent from the Windows filesystem by design, so a host stat would report
+    every server launched this way as dead.
+    """
+
+    @pytest.mark.parametrize("command", ["wsl.EXE", "wsl", r"C:\Windows\System32\wsl.exe"])
+    def test_wsl_launcher_args_are_never_stat_ed(
+        self, agents_dir: Path, monkeypatch, command: str
+    ) -> None:
+        # Absolute on this host and absent, so any other command would report it.
+        inside_distro = str(agents_dir / "tools" / "bin" / "notes-mcp")
+        probed: list[str] = []
+        real = dp._path_is_dead
+
+        def spy(path: str) -> bool:
+            probed.append(path)
+            return real(path)
+
+        monkeypatch.setattr(dp, "_path_is_dead", spy)
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"notes-mcp": {"command": command, "args": ["-d", "Ubuntu", "--", inside_distro]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert inside_distro not in probed
+        # The absolute spelling's own command is a host path and may be checked.
+        assert [d.where for r in report.foreign_dead for d in r.dead if d.where != "command"] == []
+
+    @pytest.mark.parametrize("command", ["node", "wslg.exe"])
+    def test_same_args_under_another_command_are_still_flagged(
+        self, agents_dir: Path, command: str
+    ) -> None:
+        dead = str(agents_dir / "tools" / "bin" / "notes-mcp")
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {"srv": {"command": command, "args": ["-d", "Ubuntu", "--", dead]}},
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert [(d.where, d.path) for d in report.foreign_dead[0].dead] == [("args[3]", dead)]
+
+    def test_dead_launcher_and_env_value_are_still_flagged(self, agents_dir: Path) -> None:
+        launcher = str(agents_dir / "System32" / "wsl.exe")
+        dead_env = str(agents_dir / "gone-config")
+        _write_spec(
+            agents_dir,
+            "foreign.json",
+            {
+                "srv": {
+                    "command": launcher,
+                    "args": ["-d", "Ubuntu", "--", str(agents_dir / "inside-distro")],
+                    "env": {"MCP_CONFIG": dead_env},
+                }
+            },
+        )
+
+        report = dp.check_dead_paths(repair=lambda: None)
+
+        assert {(d.where, d.path) for d in report.foreign_dead[0].dead} == {
+            ("command", launcher),
+            ("env[MCP_CONFIG]", dead_env),
+        }
+
+
 # ── malformed JSON tolerated ─────────────────────────────────────────────────
 
 

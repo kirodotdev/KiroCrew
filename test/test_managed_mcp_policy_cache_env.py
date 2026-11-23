@@ -1,9 +1,10 @@
 """Managed MCP children of a centrally governed gateway run in cache-only mode.
 
-KAS starts its managed MCP children with a minimal environment, so the gateway
-derives the cache-only markers itself (``_managed_mcp_env``) instead of
-forwarding the policy URL or its request headers. Without the marker, a governed
-child either tries a fetch it has no credential for or drops to a local ceiling.
+The gateway puts the cache-only markers on a managed child's entry itself
+(``_managed_mcp_env``), so the child holds them whatever its harness passes it,
+instead of forwarding the policy URL or its request headers. Without the marker,
+a governed child either tries a fetch it has no credential for or drops to a
+local ceiling.
 """
 
 from __future__ import annotations

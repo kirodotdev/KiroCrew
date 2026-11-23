@@ -406,6 +406,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "accepts a write that leaves the model unchanged, so it is a defect rather "
         "than a missing feature a user would choose a harness by"
     ),
+    "ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY": (
+        "whether a custom agent's session/new array gets Crew's own servers, as Crew's "
+        "default agent's does on every array host (the Crew-tools line). A non-member "
+        "runs that spec as written, a parity gap the agent-host contract names per "
+        "harness rather than a feature anyone picks a harness by"
+    ),
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
         "whether a server the user approved for a template Crew does not own reaches "
         "that template's sessions here. The approval card asks the same question for "

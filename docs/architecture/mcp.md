@@ -88,13 +88,27 @@ kirocrew`). Onto that base:
    since dropped is removed, so an edit to the source reaches the generated spec
    instead of losing to the value the first rebuild froze. `disabledTools` is
    reconciled the same way when the source entry declares the server (a `command`
-   or a `url`): a changed list replaces the copy, a removed one is removed, and the
-   worker agent file derived from this spec follows. A placeholder the dashboard
-   wrote for a server another file declares (`{"disabled": true}`,
-   `{"disabledTools": [...]}`) starts nothing, so it leaves the entry's list as it
-   is. A list the `~/.kiro/crew/mcp.json` store sets (the dashboard's Apply) still
-   wins in step 4. Every other key on the entry is the user's and survives by
-   omission, `autoApprove` included.
+   or a `url`, `mcp_cleanup.mcp_entry_names_launch`): a changed list replaces the
+   copy, a removed one is removed, and the worker agent file derived from this spec
+   follows. A placeholder the dashboard wrote for a server another file declares
+   (`{"disabled": true}`, `{"disabledTools": [...]}`) starts nothing, so it leaves
+   the entry's list as it is; sessions read its list from the Kiro global itself
+   (`session_mcp_disabled_tools`). It is not the user installing the server
+   either. An entry installs its server when it declares it or is a registry
+   pointer (`mcp_entry_installs_server`), and only such an entry earns the
+   `allowedTools` grant: the shared-server sync (`sync_shared_server_refs`) mounts
+   and mutes a placeholder's server as for any entry and never adds the grant for
+   it. A grant the spec already holds stays, since nothing tells the user's own,
+   or one another tool wrote, from one a rebuild added; deleting it from
+   `allowedTools` is the user's edit, which the rebuild keeps. The dashboard's
+   enable paths (one server, and Enable all, which reaches every entry of that
+   file) follow the same rule. For a server the spec already holds they lift its
+   mute and add `@server` to `tools` only; for one it does not hold, a placeholder
+   is nothing to copy and they leave the spec as it is. A same-named
+   `~/.kiro/crew/mcp.json` store entry that installs the server is granted as any
+   installed server. A list the store sets (the dashboard's Apply) still wins in
+   step 4. Every other key on the entry is the user's and survives by omission,
+   `autoApprove` included.
    Reconciling retires the name, so a lower-priority scope cannot reconcile it
    again. `url` and `headers` are NOT reconciled — see the fallback's as-a-unit
    rule below. A stdio entry's `command`, `args` and `env` ARE, as one unit: the
@@ -115,6 +129,8 @@ kirocrew`). Onto that base:
    puts back any `env` key the edition ships that the entry lacks, keeping the
    user's value for a key both set); only `timeout`, `disabled` and (from a
    declaring entry) `disabledTools` are reconciled onto it, here and in step 3.
+   A declaring entry under that name that runs another program or a `url` is
+   therefore never started; the rebuild records it (`ownEntryUnused`, below).
 3. **Seam-contributed provider globals**, so they can only fill gaps the Kiro
    global did not: a name step 1 or step 2 already claimed in this pass has been
    retired, so it is left alone. Empty in this build.
@@ -867,11 +883,15 @@ is stdio.
   the kiro-cli child gets, then the same secret, credential and scrub filters, so
   a variable set only in `agent.env` resolves for a pooled stub's env file, the
   KAS launcher snapshot and the probe as it does for a server kiro-cli starts,
-  and a secret-named `agent.env` key stays a literal there. Only servers the session
-  starts are judged: a spec server on kiro-cli (which reads the spec itself) when
-  the entry is not muted, a spec server elsewhere when the array as sent carries
-  it (a routed server rides there as a stub), and any other array element on its
-  own. A server the attempt pruned as unstartable is not judged, and neither is a
+  and a secret-named `agent.env` key stays a literal there. The KAS launcher
+  snapshot leaves out a key whose whole value is a reference to that key itself
+  (`K: ${K}`) when this view misses it, secret-named or not, so the server keeps
+  the engine's own `K`, if it has one (`acp.kas_env_launch._resolved_env`).
+  Only servers the session starts are judged: a spec server on kiro-cli (which
+  reads the spec itself) when the entry is not muted, a spec server elsewhere
+  when the array as sent carries it (a routed server rides there as a stub), and
+  any other array element on its own. A server the attempt pruned as
+  unstartable is not judged, and neither is a
   KAS spec server off the wire: KAS's projection withholds its env or hands it to
   Crew's launcher, whose expansion logs an unset name itself. Both composition
   sites call it, beside the remote-header `secret://` guard it mirrors.
@@ -1191,14 +1211,31 @@ changes and exposes Apply / Discard. Only Apply performs writes.
 
 **Add Server search reports every attempted provider.**
 `GET /api/mcp/discover` keeps its existing `results` and `providers` fields and
-adds `provider_outcomes: [{name, status}]`, where `status` is `ok`, `timeout`, or
-`error`. The additive field keeps older clients compatible. A short availability
-probe attempts no provider and returns an empty outcome list. The Add Server
-modal keeps results from responsive providers and shows one inline incomplete
-notice when any sibling provider fails. When every attempted provider fails, it
-shows the shared `ErrorNotice` instead of the zero-match empty state. Retry runs
-the whole search again; per-provider retry and provider-cache refresh are not
-part of this contract.
+adds `provider_outcomes: [{name, display_name, status, message?}]`, where `status`
+is `ok`, `timeout`, `error`, or `unavailable`. The additive field keeps older
+clients compatible. A short availability probe attempts no provider and returns
+an empty outcome list. The Add Server modal keeps results from responsive
+providers and names each provider that could not search on its own line, with
+its reason when it gave one. When every attempted provider fails, those lines
+replace the zero-match empty state. Retry runs the whole search again;
+per-provider retry and provider-cache refresh are not part of this contract.
+
+**Availability is asked on every search, never frozen.** The provider registry
+(`mcp_discover._registry`) is a process singleton, but it always holds the
+edition capability provider and `ProviderRegistry` asks each provider's
+`is_available()` per request. An edition whose package manager is installed or
+reachable only after the dialog first opened is searched from the next request,
+without a gateway restart. A registered provider that is not ready and says why
+(the optional, I/O-free `unavailable_reason()`, asked only after `is_available()`
+returned False, which `CapabilityProvider` reads from the manager's own optional
+op) gets an `unavailable` outcome carrying that reason, scrubbed and capped at 300
+characters, so the dialog says which catalog it skipped and how to fix it instead
+of "No servers found". A provider that says nothing is left out silently; the
+public `DefaultCapabilityManager` has no such op, so a public build never shows
+the edition provider at all. Because the provider is registered either way,
+`GET /api/mcp/discover/detail?provider=capability` on a build whose manager is
+unavailable answers 503 "not available", the same as install, never 400
+"unknown provider".
 
 **Add Server opens on a featured list.** `GET /api/mcp/discover?featured=1`
 with no query answers the bundled rows (`discovery_featured`) of every
@@ -1303,6 +1340,28 @@ recorded command now resolves on the resolver's search path without the server's
 `env.PATH`, so a program that appears on that path after the gateway started is
 mounted without a restart. The Node version directories on that path are listed
 once per process, so a program under a Node version installed later still needs one.
+
+The same record carries `unused_own`: each edition server name
+(`extra_mcp_servers()`) under which one of the user's files declares another
+server, which the edition's invocation outranks (steps 2 and 4 above), so the
+user's server never starts. `mcp_sources.unused_own_entries` reads it from the
+FINAL spec after resolution: when the edition's command does not resolve here,
+the fallback runs the user's entry, which is then not reported. Another server
+means another program (`_commands_diverged`) or a `url`; the same program with
+other `args` is not reported, because the edition's `args` choose its tools. The
+file named is the highest-priority one declaring the name (the store, then the
+Kiro global, then a provider global), home shown as `~`. Each response stamps
+`ownEntryUnused: {file, command}` on that server's row. The MCP tab renders it as
+a warning line with the one fix the page can name: give the user's entry a
+different name in that file, so both run. Turning the edition's server off so the
+user's runs in its place has no control on this page; how to do it is the
+edition's to document. The row is matched through `mcp_server_alias`, as
+`agentDropped` is, because a `/` name is recorded under its source key and listed
+under its alias. `kirocrew doctor` prints the same advisory line per entry in its
+MCP Tools section. A `url` is cut to its scheme and host (`asset_downloader.redact_url`)
+where the record is stored (`mcp_dropped_servers._shown_command`), because both
+`GET /api/mcp` and doctor output, which gets pasted into bug reports, show it as
+stored. It changes no precedence.
 
 No scope metadata is persisted. Apply does one-shot edits and forgets; state is
 re-read from disk on the next page load, so external edits (`kiro-cli mcp

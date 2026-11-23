@@ -185,10 +185,12 @@ def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
     AIM) is just as able to name a server nothing it is handed defines, and its
     sessions then run without that server's tools. Each agent is judged on the
     SELECTED backend only, through the same ``agent_spec_mcp_refs`` seam, with Kiro
-    Crew's default servers modelled as a spawn adds them, so an agent relying on
+    Crew's default servers modelled as a spawn adds them
+    (``acp.default_crew_servers.session_spec_on``), so an agent relying on
     ``@kirocrew-core`` is not reported where its spawn gets the server: on KAS
-    always, and on kiro-cli only while a spawn would project the skill view, the
-    one thing that carries it there. On kiro-cli the global settings file's servers are
+    always, on Claude Code and Codex in their ``session/new`` array, and on kiro-cli
+    only while a spawn would project the skill view, the one thing that carries it
+    there. On kiro-cli the global settings file's servers are
     counted too, for an agent that loads that file. Silent for a backend that
     runs no spec server at all (the selected-backend projection row says so) and
     for agents whose refs resolve.
@@ -202,7 +204,11 @@ def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
     printed through ``_safe_display``.
     """
     from kiro_crew import crew_mode
-    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, backend_delivers_spec_servers
+    from kiro_crew.agent_sdk.drivers.acp import (
+        agent_spec_mcp_refs,
+        backend_delivers_spec_servers,
+        default_crew_servers_pass,
+    )
 
     try:
         backend = cfg.agent.acp_backend
@@ -217,21 +223,23 @@ def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
         return
     label = agents._backend_policy_label(backend)
     reported = False
-    for name in names[:_AUTHORED_AGENT_REF_CHECK_CAP]:
-        try:
-            with _dry_projection():
-                _found, rows = agent_spec_mcp_refs(name, backends=(backend,))
-        except Exception:
-            continue
-        for _backend, unresolved, _has_mirror in rows:
-            if not unresolved:
+    # One read, for every agent, of the host state the default servers depend on.
+    with default_crew_servers_pass():
+        for name in names[:_AUTHORED_AGENT_REF_CHECK_CAP]:
+            try:
+                with _dry_projection():
+                    _found, rows = agent_spec_mcp_refs(name, backends=(backend,))
+            except Exception:
                 continue
-            refs = ", ".join(render._safe_display(ref) for ref in unresolved)
-            print(
-                f"  mcp tool refs: \u26a0 agent {render._safe_display(name)} on {label}: "
-                f"Kiro Crew's projection delivers none of {refs}"
-            )
-            reported = True
+            for _backend, unresolved, _has_mirror in rows:
+                if not unresolved:
+                    continue
+                refs = ", ".join(render._safe_display(ref) for ref in unresolved)
+                print(
+                    f"  mcp tool refs: \u26a0 agent {render._safe_display(name)} on {label}: "
+                    f"Kiro Crew's projection delivers none of {refs}"
+                )
+                reported = True
     unchecked = len(names) - _AUTHORED_AGENT_REF_CHECK_CAP
     if unchecked > 0:
         print(f"  mcp tool refs: \u23f9 {unchecked} more authored agent(s) not checked")

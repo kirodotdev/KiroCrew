@@ -15,16 +15,30 @@ escalation, so no string-import machinery exists here by design.
 A check may print to stderr or prompt the user.  ``SystemExit`` propagates so
 a check can abort the launch; every other exception is logged and swallowed
 per check so a broken check never blocks startup.
+
+``expired_host_credential`` is the same seam's check before unattended work: the
+cron callback asks it before a scheduled agent turn starts, and waits at most
+``_CREDENTIAL_FRESHNESS_TIMEOUT_SECS`` for the answer, less when the run's own
+budget is shorter.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 from kiro_crew.platform import current_context, safe_context_call
 
+if TYPE_CHECKING:
+    from kiro_crew.platform.interfaces import CredentialFreshness
+
 logger = logging.getLogger(__name__)
+
+#: How long the cron callback waits for the host sign-in reading. A probe that
+#: has not answered by then holds nothing, so a wedged probe cannot stall a
+#: scheduled run's start or spend its wake budget.
+_CREDENTIAL_FRESHNESS_TIMEOUT_SECS = 10.0
 
 
 def run_preflight_checks(checks: Optional[Sequence[Callable[[], None]]] = None) -> None:
@@ -60,3 +74,36 @@ def run_preflight_checks(checks: Optional[Sequence[Callable[[], None]]] = None) 
         except Exception:
             name = getattr(check, "__qualname__", repr(check))
             logger.warning("preflight check %s failed", name, exc_info=True)
+
+
+async def expired_host_credential(
+    budget: Optional[float] = None,
+) -> Optional["CredentialFreshness"]:
+    """The host sign-in reading when it says expired, else ``None``.
+
+    Read from ``current_context().identity.credential_freshness()`` on a worker
+    thread, since a companion's probe may run a subprocess. Through
+    ``safe_context_call`` (fallback ``None``): a probe that fails holds nothing,
+    while a ``PlatformCompositionError`` still propagates fail-closed. A probe
+    that does not answer within ``_CREDENTIAL_FRESHNESS_TIMEOUT_SECS``, or within
+    *budget* seconds when that is shorter, holds nothing either; its thread is
+    left to finish on its own.
+    """
+    probe = asyncio.to_thread(
+        safe_context_call,
+        lambda: current_context().identity.credential_freshness(),
+        fallback=None,
+        log_message="identity.credential_freshness unavailable; not holding the run",
+    )
+    timeout = _CREDENTIAL_FRESHNESS_TIMEOUT_SECS
+    if budget is not None:
+        timeout = min(timeout, budget)
+    try:
+        reading = await asyncio.wait_for(probe, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "the host sign-in check gave no answer within %ss; not holding the run",
+            timeout,
+        )
+        return None
+    return reading if reading is not None and reading.expired else None

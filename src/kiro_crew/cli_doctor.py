@@ -141,6 +141,7 @@ from kiro_crew.cli_doctor_parts.mcp_sections import (
     _doctor_gated_off_mcps,
     _doctor_mcp_governance,
     _doctor_mcp_tools,
+    _doctor_unused_own_entries,
     _doctor_whoami_governance,
     _spec_gate_closed,
 )
@@ -991,6 +992,7 @@ def _doctor(
         # _doctor_gated_off_mcps).
         gated_off = _doctor_gated_off_mcps()
         _doctor_mcp_tools(agent_path, issues, gated_off=gated_off)
+        _doctor_unused_own_entries()
         # After the probe, deliberately: the probe reporting green is the exact
         # condition this section exists to explain.
         _doctor_mcp_governance(agent_path, issues, gated_off=gated_off)

@@ -53,6 +53,29 @@ plain public build:
   (`agent_sdk.drivers.acp.forget_cached_resolution`), so the search runs once per
   install state and the "not found" message
   names exactly the directories that were searched.
+- The adapter is a Node.js program. An entry the ladder hands back alone (an
+  executable npm bin) runs as-is, so its `#!/usr/bin/env node` line picks the Node.
+  Before every launch, on both drivers, `_refuse_claude_without_node` asks
+  `pi_node.shebang_node_missing` whether that shebang finds any `node` on the PATH
+  the child gets, built as `acp.launch` builds it: the spawn's `extra_env` over the
+  gateway's `PATH`, `augmented_path`, then `append_mcp_path_dirs`, read at launch
+  rather than memoized. A relative or empty PATH entry, which `env` resolves against
+  the child's working directory, makes it answer "cannot tell" and the launch goes
+  ahead. When none is there the launch is refused before any process
+  starts or any settings are seeded, with a non-transient, `user_worded` `AcpError`
+  (`_claude_node_missing_message`) that says Node.js is missing, where to get it, and
+  which directories were searched, and the chat shows that line. Like the pi and
+  Strands Node refusals it is a plain `AcpError`, so `ensure_ready` tries the start
+  once more; no process is started either time. A child started without Node dies
+  at exec (`env: node: No such file or directory`, exit 127) before it answers
+  `initialize`, which the client can report only as `ACP process pipe broken`: the
+  chat would show `Connection lost — retrying…` and then `Session stuck`, naming no
+  cause. A Node the nodejs.org installers or Homebrew put in `/usr/local/bin` or
+  `/opt/homebrew/bin` is found by the next chat; one a version manager (nvm, fnm)
+  installs after the gateway started sits in a per-version directory that
+  `env.node_all_bin_dirs` scans once per process, so it is found after a restart.
+  Presence only: a Node that is too old is not detected here. Pinned by
+  `test/test_claude_node_missing.py`.
 - `_resolve_claude_code_executable()` finds the `claude` CLI and the adapter's
   `apply_spawn_env` exports it as `CLAUDE_CODE_EXECUTABLE` when the caller has not
   set one. The adapter
@@ -858,6 +881,21 @@ re-resolves the array after the handshake. A re-seed after the handshake uses th
 reported version. A handshake that reports a version below the floor on a session that
 took the exclusion stops that session (`_pin_claude_starting_mode`); the shared
 handshake gains no step.
+
+Each of those refusals records, beside its log line, why the session runs without
+Crew's tools and the one thing to do (`_claude_tools_withheld_reason`): upgrade
+claude-agent-acp with the tested-version notice's own command, choose another permission
+mode than the one it names, remove the file's `hooks` or `sandbox` settings, replace a
+link with a regular file, or work in another folder.
+`settings_withheld_reason` (client and provider, off the loop) answers `""` exactly when
+`settings_withheld_cause` does; another open session's seed and a decline that recorded
+nothing get one clause per cause, defined once beside `SETTINGS_WITHHELD_BY_*`. It
+returns the WHY alone, a fact a model may read; `with_fix=True` appends the remedy, and
+only the chat's seed-declined notice (`_notice_seed_declined`) asks for it, because a
+parent model told to strip a project's hooks could act on it. A sub-agent run records the
+clause as `SubagentInfo.crew_tools_withheld`, says it in its own prompt and on its result
+(subagent spec, "Claims, not proof"), and logs nothing more: the refusal's own warning is
+the one line per session. Pinned by `test/test_settings_withheld_reason.py`.
 
 **A session whose permission surface Crew does not govern gets no `mcpServers`
 array at all.** The array is the only channel Crew has onto the session's MCP

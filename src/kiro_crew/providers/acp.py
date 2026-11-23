@@ -453,6 +453,12 @@ class AcpProvider(LLMProvider):
         value = read()
         return value if isinstance(value, str) else ""
 
+    def settings_withheld_reason(self, *, with_fix: bool = False) -> str:
+        """Forward the client's answer (see ``LLMProvider.settings_withheld_reason``)."""
+        read = getattr(self._client, "settings_withheld_reason", None)
+        value = read(with_fix=with_fix) if callable(read) else ""
+        return value if isinstance(value, str) else ""
+
     @property
     def served_model(self) -> str:
         """Model id the live session resolved (public — see LLMProvider).

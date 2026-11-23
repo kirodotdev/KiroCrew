@@ -900,7 +900,8 @@ def rebuild_agent_config(
                     key: command
                     for key, command in resolved.unresolved_commands.items()
                     if mcp_server_alias(key) not in config["mcpServers"]
-                }
+                },
+                unused_own=mcp_sources.unused_own_entries(config, sources, mounted),
             )
         except _AgentSpecUnreadable as exc:
             # The commit re-reads the spec inside its write lock

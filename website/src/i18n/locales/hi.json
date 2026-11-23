@@ -7499,7 +7499,9 @@
       "searching": "खोज रहे हैं...",
       "searching_2": "खोज हो रही है: {{name}}",
       "type_at_least_2_characters_to_search": "खोजने के लिए कम से कम 2 अक्षर टाइप करें",
-      "type_to_search_for_more": "और खोजने के लिए टाइप करो"
+      "type_to_search_for_more": "और खोजने के लिए टाइप करो",
+      "provider_could_not_search": "{{provider}} में खोज नहीं हो सकी: {{reason}}",
+      "provider_did_not_answer": "{{provider}} ने जवाब नहीं दिया।"
     },
     "embedTabStrip": {
       "close_tab": "टैब बंद करें",
@@ -8595,7 +8597,6 @@
       "open_app_full_screen": "ऐप को पूर्ण स्क्रीन में खोलें"
     },
     "mcpBrowserModal": {
-      "provider_results_incomplete": "{{total}} में से {{failed}} प्रदाताओं ने जवाब नहीं दिया — परिणाम अधूरे हो सकते हैं।",
       "retry": "फिर कोशिश करें",
       "a_server_named_already_exists": "एक सर्वर जिसका नाम है “{{name}}” पहले से भिन्न कॉन्फ़िगरेशन के साथ मौजूद है।\n          इसे इंस्टॉल किए गए सर्वरों की तालिका से प्रबंधित करें।",
       "add_server": "सर्वर जोड़ें",
@@ -9628,8 +9629,6 @@
       "reinstalled": "फिर से इंस्टॉल किया गया",
       "reinstalled_files_one": "{{count}} फ़ाइल फिर से इंस्टॉल हुई",
       "reinstalled_files_other": "{{count}} फ़ाइलें फिर से इंस्टॉल हुईं",
-      "provider_could_not_search": "{{provider}} में खोज नहीं हो सकी: {{reason}}",
-      "provider_did_not_answer": "{{provider}} ने जवाब नहीं दिया।",
       "select_a_skill_to_preview": "पूर्वावलोकन के लिए कोई स्किल चुनें",
       "skill_search_results": "स्किल खोज परिणाम",
       "source": "स्रोत",
@@ -17939,6 +17938,8 @@
         "probe_failing_help": "लगातार {{failures}} जाँच विफल रहीं, इसलिए {{productName}} ने इस सर्वर की जाँच बंद कर दी। रीस्टार्ट से यह नहीं हटता। चैट सत्र अब भी इसका उपयोग कर सकते हैं। पहले कारण ठीक करो।",
         "agent_dropped_not_found": "प्रोग्राम '{{command}}' इस कंप्यूटर पर नहीं मिला, इसलिए तुम्हारा एजेंट इस सर्वर के टूल इस्तेमाल नहीं कर सकता।",
         "agent_dropped_fix": "इसे इंस्टॉल करो, या {{page}} में इस सर्वर के कमांड में प्रोग्राम का पूरा पाथ लिखो। फिर गेटवे पुनरारंभ करो (सेटिंग्स → परिचय में गेटवे पुनरारंभ वाला बटन)।",
+        "own_entry_unused": "{{file}} में इस नाम से तुम्हारा अपना सर्वर ('{{command}}') इस्तेमाल नहीं होता: {{productName}} के साथ इसी नाम का एक सर्वर आता है, और तुम्हारा एजेंट वही पाता है।",
+        "own_entry_unused_fix": "अपना सर्वर भी चलाने के लिए, उस फ़ाइल में उसे कोई दूसरा नाम दो।",
         "reset_failures": "सर्वर फिर से आज़माएँ",
         "test_server": "जाँचें",
         "testing_server": "जाँच हो रही है…",

@@ -400,22 +400,27 @@ def service_path(home: str) -> str:
     as they did in the installing shell, with ``~/.local/bin`` and the POSIX
     defaults prepended and duplicates removed in order.
 
-    On Linux the mise shims dir (:func:`_mise_shims_dir`) follows
-    ``~/.local/bin``, ahead of the system dirs: the unit keeps this PATH until
-    the next install, so a Node mise installs later is found only through the
-    shims; without them ``#!/usr/bin/env node`` runs the system Node. That is
-    also the order ``mise activate`` gives a shell. launchd's PATH is unchanged.
+    On Linux and macOS the mise shims dir (:func:`_mise_shims_dir`) follows
+    ``~/.local/bin``, ahead of the system dirs: the unit or plist keeps this
+    PATH until the next install, so a Node mise installs later is found only
+    through the shims; without them ``#!/usr/bin/env node`` runs the system
+    Node. That is also the order ``mise activate`` gives a shell.
 
     nvm bin dirs on the installer's ``$PATH`` (:func:`_nvm_bin_dirs`) follow the
     shims for the same reason: nvm has no shims, so the versioned bin dir the
     installing shell resolved ``node`` from is the only way the service finds
-    that Node instead of an older system one in ``/usr/bin``.
+    that Node instead of an older one in ``/usr/local/bin`` or ``/usr/bin``. On
+    macOS ``/opt/homebrew/bin`` follows them: the MCP search path
+    (:func:`kiro_crew.env.augmented_path`) puts a fixed guess this PATH lacks
+    right after the nearest higher-ranked one it lists, here the shims, which is
+    ahead of the nvm dir, so without that entry a Homebrew ``node`` still wins.
 
     Under ``sudo`` the installer's PATH is sudo's ``secure_path``: it names no
     nvm dir, and it may name root's own dirs. On Linux, entries under root's home
     are dropped when *home* is another account's (:func:`_without_root_home`),
     and when no nvm dir is left :func:`_sudo_user_nvm_bin_dirs` reads the
-    ``SUDO_USER`` account's nvm install from *home*.
+    ``SUDO_USER`` account's nvm install from *home*. A LaunchAgent belongs to the
+    account that installs it, so macOS has no such case.
 
     No entry names a versioned install tree, the rule ``ExecStart`` follows
     (:func:`_persistable_path_entry`): the next update replaces that tree.
@@ -424,11 +429,15 @@ def service_path(home: str) -> str:
         _persistable_path_entry(p, home) for p in os.environ.get("PATH", "").split(":") if p
     ]
     required = [f"{home}/.local/bin"]
-    if sys.platform.startswith("linux"):
+    linux, darwin = sys.platform.startswith("linux"), sys.platform == "darwin"
+    if linux:
         env_path = _without_root_home(env_path, home)
-        if shims := _mise_shims_dir(home):
-            required.append(shims)
+    if (linux or darwin) and (shims := _mise_shims_dir(home)):
+        required.append(shims)
+    if linux:
         required += _nvm_bin_dirs(env_path) or _sudo_user_nvm_bin_dirs(home)
+    elif darwin and (nvm_dirs := _nvm_bin_dirs(env_path)):
+        required += [*nvm_dirs, "/opt/homebrew/bin"]
     required += [
         "/usr/local/bin",
         "/usr/bin",

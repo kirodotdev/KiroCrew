@@ -19,6 +19,10 @@ Left exactly as it was, so the gate read-back still decides: Windows (the
 ``pi.cmd`` shim picks its own Node), a ``pi`` that is not a Node script, a shebang
 this module does not parse, and a Node whose version cannot be read.
 
+It also answers, for any Node script, whether its shebang finds a ``node`` at all
+(:func:`shebang_node_missing`): the Claude adapter's launch asks that before it
+spawns, so a host with no Node.js gets a refusal that says so.
+
 Blocking throughout (file reads and short ``node --version`` children); callers
 run it off the loop.
 """
@@ -41,6 +45,7 @@ __all__ = [
     "ProbeWrap",
     "choose_pi_node",
     "node_engine_floor",
+    "shebang_node_missing",
 ]
 
 # Wraps a probe argv for the life of its child: yields the argv to run and cleans
@@ -126,6 +131,34 @@ def _nodes_on_path(search_path: str) -> list[str]:
         if candidate and platform_compat.is_executable_file(candidate):
             found.append(candidate)
     return found
+
+
+def shebang_node_missing(script: str, search_path: str) -> bool:
+    """Whether *script* is a Node script whose shebang will find no ``node`` at all.
+
+    ``#!/usr/bin/env node`` looks ``node`` up on *search_path*, the PATH the child
+    inherits; ``#!/.../node`` names one file. Such a child can only die at exec
+    (``env: node: No such file or directory``, exit 127) before it reads a byte, so a
+    caller asks this first and names the missing runtime instead. Anything this
+    cannot tell -- not a Node shebang, an unreadable file, Windows, where a ``.cmd``
+    shim picks its own Node, or a relative or empty *search_path* entry, which
+    ``env`` resolves against the child's working directory, not this process's --
+    answers ``False`` and the launch goes ahead.
+    Presence only: the version is not read, so this starts no child.
+
+    Blocking (a short file read and PATH stats); callers run it off the loop.
+    """
+    if platform_compat.IS_WINDOWS:
+        return False
+    interpreter = _shebang_node(script)
+    if interpreter is None:
+        return False
+    name, looked_up = interpreter
+    if looked_up:
+        if not all(os.path.isabs(entry) for entry in search_path.split(os.pathsep)):
+            return False
+        return not _nodes_on_path(search_path)
+    return not platform_compat.is_executable_file(name)
 
 
 def _nodes_beside_pi(pi_bin: str) -> Iterator[str]:

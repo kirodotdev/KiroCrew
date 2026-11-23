@@ -66,7 +66,7 @@ from typing import Any, Mapping
 
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, session_mcp_projection
-from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX, ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
@@ -462,6 +462,7 @@ def codex_projection(
         work_dir=work_dir,  # type: ignore[arg-type]
         # A crewmate's worker reads its own spec by its session's record.
         session_key=session_key,
+        default_crew_servers=ACP_BACKEND_CODEX in ACP_BACKENDS_DEFAULT_CREW_SERVERS_IN_ARRAY,
     )
     withheld = codex_withheld_servers(projection.restricted)
     kept: list[dict[str, Any]] = []

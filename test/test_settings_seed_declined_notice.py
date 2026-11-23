@@ -9,7 +9,7 @@ Crew's MCP tools. Before this, only a gateway log line said why. These tests pin
    predicate that withholds the array) and names whose file holds the path.
 2. ``AcpProvider.settings_withheld_cause`` forwards it for the claude shape.
 3. ``chat_runner._notice_seed_declined`` appends one tagged ``notice`` row with
-   the text for that cause, and nothing when the tools are not withheld.
+   the client's words for that cause, and nothing when the tools are not withheld.
 """
 
 from __future__ import annotations
@@ -170,27 +170,44 @@ def _run_notice(client: object) -> None:
 
 
 def _answering(value: object) -> SimpleNamespace:
-    return SimpleNamespace(settings_withheld_cause=lambda: value)
+    return SimpleNamespace(settings_withheld_reason=lambda with_fix=False: value)
+
+
+def _sibling_with_another_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AcpClient:
+    monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": _SERVED_A})
+    _client(tmp_path, permission_mode="default")._write_claude_local_settings()
+    sibling = _client(tmp_path, permission_mode="acceptEdits")
+    sibling._write_claude_local_settings()
+    return sibling
 
 
 class TestNoticeEmitted:
-    def test_session_cause_names_the_other_session_and_the_fix(self, notices: list) -> None:
-        _run_notice(_answering("session"))
+    def test_session_cause_names_the_other_session_and_the_fix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, notices: list
+    ) -> None:
+        _run_notice(_sibling_with_another_mode(tmp_path, monkeypatch))
         [(role, text, meta)] = notices
         assert role == "notice"
         assert meta == {"kind": chat_runner.SEED_DECLINED_NOTICE_KIND}
         assert "tools are off" in text
-        assert "Another open Crew session" in text
+        assert "another open Crew session" in text
         assert "close that session, then start a new session here" in text
 
-    def test_project_cause_names_the_project_file(self, notices: list) -> None:
-        _run_notice(_answering("project"))
+    def test_project_cause_names_the_project_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, notices: list
+    ) -> None:
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": _SERVED_A})
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
+        client = _client(tmp_path, permission_mode="acceptEdits")
+        client._write_claude_local_settings()
+        _run_notice(client)
         [(_, text, meta)] = notices
         assert meta == {"kind": "seed_declined"}
-        assert "This folder's own .claude/settings.local.json" in text
-        assert "Another open Crew session" not in text
+        assert "the folder's .claude/settings.local.json" in text
+        assert "another open Crew session" not in text
 
-    @pytest.mark.parametrize("value", ["", "other", None, True])
+    @pytest.mark.parametrize("value", ["", None, True, 1])
     def test_no_row_when_not_withheld_or_unknown(self, notices: list, value: object) -> None:
         _run_notice(_answering(value))
         assert notices == []
@@ -200,18 +217,14 @@ class TestNoticeEmitted:
         assert notices == []
 
     def test_a_failing_read_never_fails_the_turn(self, notices: list) -> None:
-        def boom() -> str:
+        def boom(*, with_fix: bool = False) -> str:
             raise OSError("unreadable")
 
-        _run_notice(SimpleNamespace(settings_withheld_cause=boom))
+        _run_notice(SimpleNamespace(settings_withheld_reason=boom))
         assert notices == []
 
     def test_real_withheld_client_gets_one_row(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, notices: list
     ) -> None:
-        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": _SERVED_A})
-        _client(tmp_path, permission_mode="default")._write_claude_local_settings()
-        sibling = _client(tmp_path, permission_mode="acceptEdits")
-        sibling._write_claude_local_settings()
-        _run_notice(sibling)
+        _run_notice(_sibling_with_another_mode(tmp_path, monkeypatch))
         assert len(notices) == 1
