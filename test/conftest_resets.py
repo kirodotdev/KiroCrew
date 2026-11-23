@@ -248,6 +248,27 @@ def _reset_browser_media_watches():
 
 
 @per_test_guard
+def _reset_kas_machine_fence_config():
+    """Start each test with no reused config read behind the machine token fence.
+
+    ``agent_sdk.kas_machine.fenced_token_path`` keeps a ``config.json`` read for two
+    seconds where no watcher runs, and the agent file gate asks it on every path, so
+    one test's machine mode would fence (or miss) the next test's token file.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.agent_sdk.kas_machine")
+        if module is not None:
+            module._fence_config = None
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _forget_pending_trace_links():
     """Start each test with no pending worker-creation or patrol report links.
 
@@ -1214,6 +1235,30 @@ def _reset_subagent_not_due_memo():
         module = sys.modules.get("kiro_crew.subagent_persistence")
         if module is not None:
             module._NOT_DUE_MEMO.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
+def _reset_persisted_truncation_reports():
+    """Start each test with no truncated spawn listing already reported.
+
+    ``api_spawn_list`` remembers the truncation it last logged per audit identity,
+    and the owner's identity is ``<owner>`` in every test, so a report one test
+    left would turn the next test's WARNING into a DEBUG. A module without the
+    name is left alone, so ``prove.py``'s reverted tree still reaches the tests'
+    own assertions.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.dashboard.handlers.messaging")
+        reported = getattr(module, "_PERSISTED_TRUNCATION_REPORTED", None)
+        if reported is not None:
+            reported.clear()
 
     clear()
     try:

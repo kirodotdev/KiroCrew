@@ -145,3 +145,39 @@ test("electron-updater arms downloadUpdate() only from the event-emitting check"
       `gate never judged; ${reread}.`,
   );
 });
+
+test("electron-updater's feed read applies the check's own rule and emits no update event", (t) => {
+  const src = readAppUpdaterSource();
+  if (src === null) {
+    // Same contract as the identity canary above: fail in CI, skip visibly elsewhere.
+    assert.ok(!process.env.CI, "electron-updater is not installed, so the feed-read canary cannot run");
+    t.skip("electron-updater not installed here; nothing to check");
+    return;
+  }
+
+  // freshness-gate.js's pre-install gate asks isUpdaterActive(), then reads the feed
+  // with getUpdateInfoAndProvider() and judges it with isUpdateAvailable(), instead
+  // of running checkForUpdates(): no update event reaches the lane's handlers.
+  const reread = "re-read isUpdaterActive(), getUpdateInfoAndProvider(), isUpdateAvailable() and\n" +
+    "doCheckForUpdates() in node_modules/electron-updater/out/AppUpdater.js BEFORE shipping";
+  for (const name of ["isUpdaterActive", "getUpdateInfoAndProvider", "isUpdateAvailable"]) {
+    const body = methodBody(src, name);
+    assert.ok(body, `AppUpdater.${name}() not found -- the pre-install freshness read in\n` +
+      `website/electron/runtime/update/freshness-gate.js calls it; ${reread}.`);
+    assert.ok(
+      !/this\.emit\(/.test(body),
+      `AppUpdater.${name}() emits an event. The pre-install freshness read in\n` +
+        "website/electron/runtime/update/freshness-gate.js relies on it emitting none, or the lane's\n" +
+        `handlers act on the stage while the app quits; ${reread}.`,
+    );
+  }
+
+  const check = methodBody(src, "doCheckForUpdates");
+  assert.ok(check, `AppUpdater.doCheckForUpdates() not found -- ${reread}`);
+  assert.ok(
+    /this\.isUpdateAvailable\(/.test(check),
+    "AppUpdater.doCheckForUpdates() no longer decides with isUpdateAvailable(). The pre-install\n" +
+      "freshness read judges the feed with that method so that it agrees with a check (the version,\n" +
+      `the build's minimum OS version and the staged-rollout share); ${reread}.`,
+  );
+});

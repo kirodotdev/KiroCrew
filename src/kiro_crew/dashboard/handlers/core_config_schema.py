@@ -419,6 +419,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
     "dashboard.prevent_sleep": {"type": "bool"},
+    "dashboard.warm_task_brief": {"type": "bool"},
     # Reply threads on crewmate chat messages. Read live by
     # ``dashboard/chat_threads.py`` (routes) and ``dashboard/ws.py`` (the
     # thread frame); off by default, and the Settings toggle under Crewmates is

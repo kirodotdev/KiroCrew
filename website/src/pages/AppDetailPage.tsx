@@ -884,7 +884,7 @@ export default function AppDetailPage() {
       if (res.uninstall_log) setInstallLog(res.uninstall_log)
       recordEvent('app_uninstall', { app: app.name, version: app.installedVersion || app.version })
       window.dispatchEvent(new Event('mc:apps-changed'))
-      navigate('/apps')
+      navigate('/apps', { state: { appNotice: appActionNotice(appDisplayName(app), res, 'uninstall') } })
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to_uninstall'))
     } finally {

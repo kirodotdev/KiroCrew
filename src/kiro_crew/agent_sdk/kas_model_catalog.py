@@ -149,16 +149,33 @@ def catalog_rows_from_session(resp: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def vault_identity() -> str:
+#: :func:`vault_identity`'s default: the machine mode a NEW spawn would get.
+_CONFIGURED: Any = object()
+
+
+def vault_identity(machine: object = _CONFIGURED) -> str:
     """The vault identity fingerprint now; ``""`` when empty or unreadable.
 
     Blocking (reads the vault); call off the loop. Never raises. The one read
     both the KAS harness's stamp (``acp/harness/kas.py``, ``SessionExtras.vault_identity``)
     and the picker's match go through. On a workload-identity host it is the
     workload's own key, and the vault is not read.
+
+    In KAS machine mode (``agent_sdk/kas_machine.py``) the rows are keyed by the token
+    file, first, as the spawn gives machine mode precedence on any host. The
+    harness's stamp passes *machine*, the settings its process was started with
+    (``None`` for Crew's own sign-in), so a retained engine keeps recording under the
+    file it still reads after the configuration changes; the picker leaves it out
+    and matches the configured file.
     """
     from kiro_crew import workload_identity
+    from kiro_crew.agent_sdk.kas_machine import configured_machine_auth
 
+    if machine is _CONFIGURED:
+        machine = configured_machine_auth()
+    key = getattr(machine, "catalog_identity", "")
+    if isinstance(key, str) and key:
+        return key
     if workload_identity.active():
         return workload_identity.catalog_identity()
     # Deferred: kiro_crew.auth pulls the ``cryptography`` wheel, which must not

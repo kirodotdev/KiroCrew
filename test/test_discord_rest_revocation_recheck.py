@@ -30,6 +30,7 @@ from kiro_crew.discord.client import (
     DISCORD_BLOCKED,
     DISCORD_OK,
     DISCORD_TRANSIENT,
+    DiscordApiResult,
     DiscordClient,
     DiscordInbound,
     SendPermission,
@@ -976,22 +977,26 @@ class TestTransportPredicate:
         The predicate reads a pairing's presence as proof of a DM channel. Driven
         through ``receive`` because the gate is at the call site.
 
-        ``_api`` is stubbed: unstubbed it sends a live request with the bot token, and
-        turning promotion off would return before the pairing gate.
+        ``api_json`` is stubbed (``_api`` reads through it): unstubbed it sends a live
+        request with the bot token, and turning promotion off would return before
+        the pairing gate.
         """
         transport, client = _transport(allowed_user_ids=["u1"], allowed_channel_ids=["g-chan-1"])
         calls: list[tuple[str, str]] = []
 
-        async def _api(method: str, path: str, payload: Any = None, *_a: Any, **_k: Any) -> Any:
+        async def _api_json(
+            method: str, path: str, payload: Any = None, *_a: Any, **_k: Any
+        ) -> DiscordApiResult:
             calls.append((method, path))
+            body: dict[str, Any] = {}
             if method == "POST" and path.endswith("/threads"):
-                return {"id": "g-thread-1"}
-            if method == "GET" and path.startswith("/channels/"):
+                body = {"id": "g-thread-1"}
+            elif method == "GET" and path.startswith("/channels/"):
                 # A public thread, so the thread-type guard admits it.
-                return {"type": 11}
-            return {}
+                body = {"type": 11}
+            return DiscordApiResult(DISCORD_OK, body, status=200)
 
-        monkeypatch.setattr(client, "_api", _api)
+        monkeypatch.setattr(client, "api_json", _api_json)
         await transport.receive(
             DiscordInbound(
                 channel_id="g-chan-1",

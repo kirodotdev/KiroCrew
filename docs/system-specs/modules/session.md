@@ -180,6 +180,12 @@ history, and a too-recent result is cached in memory until it can expire, so
 repeated focus frames stay cheap. A return while the thread runs a turn
 waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
+`dashboard.warm_task_brief` (default on) turns the brief off: off, a return that
+would qualify schedules nothing (skip reason
+`turned_off`), while the on-screen stamps and the leave rule still run. Each
+such return reads it from the live config watcher's in-memory snapshot, never
+from `config.json` on the loop (no snapshot reads as on), so it takes effect on
+the next one; a brief already being prepared when it flips still finishes.
 
 A conductor mode root (a root chat running a conductor) is eligible on the same
 rules as a Bot thread, trigger included: a switch to another chat, from the

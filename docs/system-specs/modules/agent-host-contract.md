@@ -151,7 +151,8 @@ and injects that one set (architecture/mcp.md, "Bot overlays"); a server the
 gateway does not route is declared on the wire as before. claude and codex, the mirrored hosts in the
 set, build their `session/new` `mcpServers` array from `session_mcp_projection`,
 which reads the seam for a worker session by its key, so the worker's own servers
-reach it; a
+reach it; they look its gateway stubs up by that key too, and withhold that one
+set from the servers they translate; a
 worker whose base is absent or unreadable is refused there (`WorkerKitUnreadable`),
 as on KAS, rather than run on the control plane alone. pi, the one host in the set
 with no mirror, reads the same projection by the worker's key in Crew's own resolver

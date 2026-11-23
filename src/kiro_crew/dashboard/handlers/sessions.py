@@ -183,6 +183,7 @@ if TYPE_CHECKING:
         _SHUTDOWN_TIMEOUT_SECS,
         _reset_all_sessions,
         api_sessions_restart,
+        reset_sessions,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.memory_route import (  # noqa: F401
         _memory_sampler,
@@ -292,6 +293,7 @@ from kiro_crew import _facade_mirror
 from kiro_crew import workload_identity as _workload_identity
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.agent_sdk import kas_bundle as _kas_bundle
+from kiro_crew.agent_sdk.kas_machine import person_vault_fenced
 from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
@@ -800,6 +802,9 @@ async def _reading_not_servable(
     the reading but does not own usage now, so it is not the kiro-cli account's.
     """
     if vault_owned:
+        # A person's reading under an edition sign-in or machine mode is foreign too.
+        if _names_account(payload) and await asyncio.to_thread(person_vault_fenced):
+            return "foreign"
         return "foreign" if await _cached_reading_is_foreign(payload, payload_fp) else ""
     if _names_account(payload) and payload_fp:
         return "vault_unowned"
@@ -837,15 +842,11 @@ async def _refresh_from_vault() -> None:
     so it describes the credential the fingerprints bracket. The enterprise
     profile name rides in from the usage API as it does for the kiro-cli path.
     """
-    # Deferred: see _vault_owns_usage_sync.
-    from kiro_crew.auth.login.endpoints import stored_sign_in_registered
-
-    # Neither the workload identity (vault_holds_identity says yes for it alone) nor
-    # a sign-in on an edition's own start URL (``crew_client`` preview) has a person
-    # vault reading: no read, no refresh, no sign-in prompt.
-    if _workload_identity.active() or await asyncio.to_thread(stored_sign_in_registered):
+    # No person vault reading for the workload identity or an edition or machine sign-in.
+    if _workload_identity.active() or await asyncio.to_thread(person_vault_fenced):
         _publish_usage({"available": False})
         return
+    # Deferred: see _vault_owns_usage_sync.
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected

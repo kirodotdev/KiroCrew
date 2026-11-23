@@ -95,6 +95,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         warm_project_agent_names,
     )
     from kiro_crew.agent_discovery_parts.skill_scope import (  # noqa: F401
+        _COMPANION_SKILLS,
         MATE_CONDUCTOR_INHERITS_USER_SKILLS,
         WHOLE_CATALOG_TEMPLATES,
         SkillScopeResolutionError,
@@ -105,6 +106,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         served_provider_label,
         session_skill_globs,
         skill_search_refusal,
+        with_companion_skills,
     )
     from kiro_crew.agent_discovery_parts.spec_fields import (  # noqa: F401
         _DEFER_MODEL,

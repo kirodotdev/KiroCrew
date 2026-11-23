@@ -1,9 +1,10 @@
 /**
  * The one verdict on whether the stored Kiro sign-in still works, shared by the
- * sign-in card (Settings > Kiro account) and the app-level sign-in notice so the
- * two cannot disagree. A pure predicate over the token-free `/api/kas-login`
- * status, kept out of the card's module so the always-mounted notice does not
- * pull the card's component graph (the OIDC chooser) into its chunk.
+ * sign-in card (Settings > Kiro account), the app-level sign-in notice and
+ * Overview's health line so they cannot disagree. A pure predicate over the
+ * token-free `/api/kas-login` status, kept out of the card's module so the
+ * always-mounted notice does not pull the card's component graph (the OIDC
+ * chooser) into its chunk.
  */
 import type { KasLoginStatus } from '../../api/client'
 

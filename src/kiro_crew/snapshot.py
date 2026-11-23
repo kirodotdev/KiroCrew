@@ -118,6 +118,7 @@ from kiro_crew.snapshot_build import (  # noqa: F401 - facade re-exports
     _report_named_workspaces_left_out,
 )
 from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
+    _BOM_TOLERANT_JSON_OBJECTS,
     _CONFIG_SETTINGS_DOCUMENTS,
     _CORE_FILE_COMPONENTS,
     _DERIVED_INDEXES,

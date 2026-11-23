@@ -128,6 +128,32 @@ def test_common_heredoc_forms_are_data(cmd):
 @pytest.mark.parametrize(
     "cmd",
     [
+        # A body with an unbalanced apostrophe BEFORE a self/ssh line, written to a
+        # file or fed as a commit message. The reset ends the body's quote at the
+        # closing line only; the in-body line stays data, so these are allowed --
+        # bash writes the text, it runs nothing.
+        "cat > docs/ssh.md <<'EOF'\nIt's how the self check is tested:\n"
+        "ssh -p 22 localhost id\nEOF\ngit add docs/ssh.md",
+        "git commit -F - <<'EOF'\nIt's a self-check note:\nssh -p 22 localhost id\nEOF",
+    ],
+)
+def test_in_body_quote_then_ssh_line_stays_data(cmd):
+    """An unbalanced quote in a here-document body, followed by an ssh-to-self line
+    INSIDE that body, is data (a note written to a file, a commit message): bash
+    runs none of it, and these are allowed on origin/main. The quote reset closes
+    the body's quote at the closing line only, so the in-body line stays quoted and
+    is never read as a command. This was refused before the reset was scoped to
+    post-closing-line text (an earlier head), so it is red without that scoping.
+
+    (An in-body ``kirocrew restart`` after a body apostrophe is NOT in this list: a
+    separate self-restart path on origin/main already refuses it there, so head must
+    keep refusing it to hold the 0-newly-allowed bar; it is not this change's to move.)"""
+    assert _denied_by(cmd) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
         # A shell reads the body as its script.
         "bash <<'EOF'\nssh localhost id\nEOF",
         "sudo sh <<'EOF'\nssh localhost id\nEOF",
@@ -250,6 +276,112 @@ def test_line_the_reader_may_misread_keeps_bodies_as_argv(cmd):
     assert _denied_by(cmd) == _RULE
 
 
+@pytest.mark.parametrize(
+    "cmd,rule",
+    [
+        # A quoted-tag shell-run body holds the self command, then a comment line that
+        # opens a single quote. The floor refuses: the reset reading closes the body's
+        # open quote, so the comment's quote pairs with nothing and the restart on the
+        # line after the body stays visible rather than being buried in a quoted blob.
+        (
+            "bash <<'EOF'\n# '\nkirocrew restart\necho \"it's\"\nEOF",
+            "self-protection-restart",
+        ),
+        # The two readings are evaluated INDEPENDENTLY, so the protected-branch push
+        # the eval join carries is seen: a body whose own line is a single quote used
+        # to pair across the closing EOF and hide ``git push origin main``. No token
+        # stream is concatenated, so the push payload is walked at its own length.
+        (
+            "eval 'git' 'push origin main'\ncat <<EOF\n'\nEOF\n# '",
+            "git-publish-push-protected-branch-name",
+        ),
+        # A genuine here-document whose body leaves a quote open, then a self-ssh on the
+        # line after the closing tag. The reset reading reads that line unquoted, as bash
+        # runs it, so the ssh-to-self is denied.
+        (
+            "cat <<EOF\nit's\nEOF\nssh -p 22 localhost id\n# '",
+            _RULE,
+        ),
+        # A self-restart BETWEEN two here-documents. The apostrophe in body A and the
+        # one in body B pair across the closing line of A in the as-written reading, so
+        # the restart on the line between the two bodies is buried. The reset removes
+        # BOTH bodies, so the restart is read as the command bash runs.
+        (
+            "cat <<A\nit's\nA\nkirocrew restart\ncat <<B\nok'\nB",
+            "self-protection-restart",
+        ),
+        # The same two-body shape with a self-ssh between the bodies.
+        (
+            "cat <<A\nit's\nA\nssh -p 22 localhost id\ncat <<B\nok'\nB",
+            _RULE,
+        ),
+        # Three bodies: a self-restart sits between the first and second, and the third
+        # body's double quote would pair across its own closing line. Removing every
+        # body leaves the restart visible.
+        (
+            "cat <<A\nit's\nA\nkirocrew restart\ncat <<B\nok'\nB\necho hi\ncat <<C\nx\"\nC",
+            "self-protection-restart",
+        ),
+    ],
+)
+def test_heredoc_reset_is_additive_and_denies_buried_commands(cmd, rule):
+    """The quote-reset reading is a SECOND, independent pass of the floor: a command is
+    refused when the as-written reading OR the reset reading refuses. The as-written
+    reading is byte-identical to origin/main, so the reset can only ADD a denial -- here
+    it adds the restart, push or ssh-to-self a pairing quote would otherwise bury.
+
+    The self-restart and git-publish floors read their id from the verdict's diagnostic
+    line, not through the catalog pattern map, so the id substring is asserted directly."""
+    verdict = security.is_denied(cmd)
+    assert verdict is not None, cmd
+    assert f"rule={rule}" in verdict, verdict
+
+
+@pytest.mark.parametrize(
+    "cmd,rule",
+    [
+        # A shell-run here-document inside a ``bash -c`` payload. The reset reading
+        # removes the body, so only the as-written reading sees the restart in it. Both
+        # readings must descend into the nested payload: a dedup shared between them let
+        # the reset reading claim the payload first and the as-written reading skip it.
+        ("bash -c 'bash <<EOF\nkirocrew restart\nEOF'", "self-protection-restart"),
+        ('bash -c "bash <<EOF\nkirocrew restart\nEOF"', "self-protection-restart"),
+        # The same body in a command substitution and a process substitution.
+        ("$(bash <<EOF\nkirocrew restart\nEOF\n)", "self-protection-restart"),
+        ("cat <(bash <<EOF\nkirocrew restart\nEOF\n)", "self-protection-restart"),
+    ],
+)
+def test_both_readings_walk_every_nested_payload(cmd, rule):
+    """Each reading descends into every nested payload on its own, so a self command
+    in a nested shell-run body is still refused by the as-written reading."""
+    verdict = security.is_denied(cmd)
+    assert verdict is not None, cmd
+    assert f"rule={rule}" in verdict, verdict
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # ``: $((1 << 2`` NL ``))`` is a left SHIFT whose span closes on the next line,
+        # not a here-document. The text after it is a single-quoted echo argument bash
+        # merely prints, so the self command inside the quotes never runs: ALLOWED.
+        ": $((1 << 2\n))\necho 'Example:\n2\nkirocrew restart\n'",
+        ": $((1 << 2\n))\necho 'Example:\n2\nssh -p 22 localhost id\n'",
+        # The same shift with a ``;`` inside the quoted echo argument: still literal text
+        # bash prints, since the quote opened by ``echo '`` closes at the ``'`` on the
+        # final line. The arithmetic ``<<`` must not be read as a body whose quote reset
+        # would wrongly expose the quoted line as a command.
+        ": $(( 1 << 2\n))\necho '\n2\n; kirocrew restart\n# '",
+        ": $(( 1 << 2\n))\necho '\n2\n; ssh -p 22 localhost id\n# '",
+    ],
+)
+def test_arithmetic_shift_is_not_a_heredoc_and_is_allowed(cmd):
+    """A ``<<`` the reader holds inside an open ``$(( ))`` is a left shift, not a body.
+    The quote-reset skips such a fiction, so it does not reset the quote of a real
+    command after the arithmetic and does not over-refuse an echo that only prints."""
+    assert security.is_denied(cmd) is None, cmd
+
+
 def test_argv_floor_imports_in_a_fresh_interpreter():
     """The ssh floor imports the self floor's heredoc view, and the facade's mirror refuses
     a name two owners bind to different objects, so the facade must still import whole."""
@@ -265,3 +397,59 @@ def test_argv_floor_imports_in_a_fresh_interpreter():
         env=env,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # A ``#`` at the start of a line INSIDE a single-quoted argument is data, not a
+        # comment: the quote opened by ``echo 'Heading`` closes at ``# end'``. The reset
+        # reading must keep that quote, so the printed ``kirocrew restart`` example
+        # stays inside the second quoted argument, as bash reads it.
+        "cat <<EOF\nok\nEOF\necho 'Heading\n# end'\necho 'Example:\nkirocrew restart\n'",
+        "cat <<EOF\nok\nEOF\necho 'Heading\n# end'\necho 'Example:\nssh -p 22 localhost id\n'",
+        # A ``#`` inside a quoted argument next to a real here-document.
+        "cat <<'EOF'\nok\nEOF\necho '# not a comment'\necho 'Example:\nkirocrew restart\n'",
+        # bash closes a body only on the tag AS WRITTEN. An ``eof`` or ``Eof`` line in
+        # an ``EOF`` body is body text, so the body runs to the real ``EOF`` and the
+        # restart or ssh line inside it is data that cat prints.
+        "cat <<'EOF'\n\"\neof\nkirocrew restart\n# \"\nEOF\necho done",
+        "cat <<'EOF'\n\"\nEof\nkirocrew restart\n# \"\nEOF\necho done",
+        "cat <<'EOF'\n\"\neof\nssh -p 22 localhost id\n# \"\nEOF\necho done",
+        # The same body in a ``bash -c`` payload: the payload keeps the case it was
+        # written in, so its body also runs to the real ``EOF``.
+        "bash -c 'cat <<EOF\n\"\neof\nkirocrew restart\n# \"\nEOF\necho done'",
+        # A real comment after a closing tag: bash runs nothing from it, so the quote
+        # in it opens nothing and the self command in it is not a command.
+        "cat <<'EOF'\nit's\nEOF\necho hi # kirocrew restart '",
+        "cat <<'EOF'\nit's\nEOF\n# ssh -p 22 localhost id '",
+    ],
+)
+def test_reset_reads_quotes_comments_and_tag_case_as_bash(cmd):
+    """The reset reading runs on the command as written: closing tags match with
+    their case, and a ``#`` is a comment only at a word start outside quotes."""
+    assert security.is_denied(cmd) is None, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd,rule",
+    [
+        ("cat <<EOF\nok\nEOF\nkirocrew restart", "self-protection-restart"),
+        # The ``eof`` / ``Eof`` lines do not close the ``EOF`` body; the real ``EOF``
+        # does, and the self command after it runs.
+        ("cat <<'EOF'\n'\neof\nEOF\nkirocrew restart\necho '", "self-protection-restart"),
+        ("cat <<'EOF'\n'\nEof\nEOF\nssh -p 22 localhost id\necho '", _RULE),
+        (
+            "bash -c \"cat <<'EOF'\n'\neof\nEOF\nkirocrew restart\necho '\"",
+            "self-protection-restart",
+        ),
+        # A comment after a command, or a ``#`` inside a word, hides nothing before it.
+        ("cat <<'EOF'\n'\nEOF\nkirocrew restart # x\necho '", "self-protection-restart"),
+        ("cat <<'EOF'\n'\nEOF\necho a#b; kirocrew restart\necho '", "self-protection-restart"),
+    ],
+)
+def test_reset_still_refuses_self_command_after_the_real_tag(cmd, rule):
+    """A self command bash runs after the real closing tag is still refused."""
+    verdict = security.is_denied(cmd)
+    assert verdict is not None, cmd
+    assert f"rule={rule}" in verdict, verdict

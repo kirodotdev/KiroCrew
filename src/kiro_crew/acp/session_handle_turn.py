@@ -55,7 +55,6 @@ from kiro_crew.acp.client import (
     AcpError,
     _effective_prompt_timeout_async,
     _loggable_request_id,
-    _raise_acp_error,
     parse_slash_command,
 )
 from kiro_crew.acp.elicitation import (
@@ -1195,7 +1194,11 @@ async def _run_turn(
                 # The same state the backend's own error response leaves:
                 # no stop reason, because the turn did not complete.
                 self._last_stop_reason = ""
-                _raise_acp_error(
+                # Under KAS machine mode a refused credential is the host token's.
+                from kiro_crew.agent_sdk.kas_machine import raise_turn_error
+
+                raise_turn_error(
+                    self._runtime,
                     _failure,
                     self._advertised_model_ids(),
                     backend=getattr(self._runtime, "acp_backend", ""),

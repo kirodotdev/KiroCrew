@@ -76,6 +76,7 @@ from kiro_crew.start_priority import StartPriority
 from kiro_crew.startup_deadline import cancel_outcome
 
 if TYPE_CHECKING:
+    from kiro_crew.acp.transport_errors import AcpError
     from kiro_crew.providers.acp import AcpProvider
 
 #: The provider's own logger, so these records carry the provider's name.
@@ -455,6 +456,33 @@ def _kas_engine_refusal(runtime: AcpRuntime, backend: str) -> AcpKasEngineRefuse
     if backend == ACP_BACKEND_KAS and runtime.saw_kas_engine_refusal():
         return kas_engine_refused()
     return None
+
+
+def _kas_machine_refusal(
+    runtime: AcpRuntime, exc: BaseException, not_logged_in: bool
+) -> AcpError | None:
+    """A machine-mode start the engine refused, worded as that, or None.
+
+    Under KAS machine mode (``agent_sdk/kas_machine.py``) the engine reads a host
+    credential file, so a sign-in refusal is the host's, not Crew's: personal sign-in
+    cannot repair it, and the readiness latch must not read it as signed out.
+    *not_logged_in* is the runtime's auth latch, as the caller read it.
+    """
+    # Deferred: a module-level AcpError would be one more binding of the name in the
+    # kiro_crew.providers.acp facade family (``_facade_mirror``).
+    from kiro_crew.acp.transport_errors import AcpError
+    from kiro_crew.agent_sdk import kas_machine
+
+    if not kas_machine.runs_machine_auth(runtime):
+        return None
+    text = kas_machine.start_refusal(str(exc), getattr(exc, "code", None))
+    if not text and not not_logged_in:
+        return None
+    return AcpError(
+        text or kas_machine.REFUSED_TEXT,
+        transient=False,
+        user_worded=True,
+    )
 
 
 def _member_session_key(self: AcpProvider) -> str:
@@ -906,10 +934,14 @@ async def _start_kiro_runtime_impl(
             kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
             if kas_refusal is not None:
                 raise kas_refusal from exc
+            not_logged_in = runtime.saw_not_logged_in()
+            machine_refusal = _kas_machine_refusal(runtime, exc, not_logged_in)
+            if machine_refusal is not None:
+                raise machine_refusal from exc
             # kiro-cli can exit during initialize when not authenticated —
             # surface an actionable login prompt (parity with AcpClient) rather
             # than a generic runtime-death error.
-            if runtime.saw_not_logged_in():
+            if not_logged_in:
                 # ``self._client`` is still the placeholder AcpClient at this
                 # point, and it carries the backend this runtime was spawned for
                 # (it is the value passed as ``acp_backend`` above) — so the
@@ -1182,7 +1214,11 @@ async def _start_kiro_runtime_impl(
                     kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
                     if kas_refusal is not None:
                         raise kas_refusal from exc
-                    if runtime.saw_not_logged_in():
+                    not_logged_in = runtime.saw_not_logged_in()
+                    machine_refusal = _kas_machine_refusal(runtime, exc, not_logged_in)
+                    if machine_refusal is not None:
+                        raise machine_refusal from exc
+                    if not_logged_in:
                         signed_out = host_auth.signed_out_message(
                             self._client.backend, route=runtime.kas_spawn_route
                         )
@@ -1233,7 +1269,11 @@ async def _start_kiro_runtime_impl(
                 kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
                 if kas_refusal is not None:
                     raise kas_refusal from exc
-                if runtime.saw_not_logged_in():
+                not_logged_in = runtime.saw_not_logged_in()
+                machine_refusal = _kas_machine_refusal(runtime, exc, not_logged_in)
+                if machine_refusal is not None:
+                    raise machine_refusal from exc
+                if not_logged_in:
                     signed_out = host_auth.signed_out_message(
                         self._client.backend, route=runtime.kas_spawn_route
                     )

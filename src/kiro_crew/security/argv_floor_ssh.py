@@ -174,6 +174,13 @@ def _escaped(text: str, at: int) -> bool:
 # no quote rewriting in a splice. Recursion inherits it, so that reading stays whole.
 _MAIN_READING = contextvars.ContextVar("ssh_floor_main_reading", default=False)
 
+# Set for the floor's EXTRA, additive here-document pass only (see
+# ``_reaches_self_over_ssh``): escape the quote an own-line body leaves open so the
+# text after the closing line reads unquoted. Off by default, so the ordinary and
+# the main-reading passes read a body's quotes exactly as origin/main does and
+# this pass can only ADD a denial, never remove one.
+_HEREDOC_RESET = contextvars.ContextVar("ssh_floor_heredoc_reset", default=False)
+
 
 def _splice_static_substitutions(text: str, *, escaped_too: bool = False) -> str:
     """*text* with each flat ``echo``/``printf`` substitution replaced by its static output.
@@ -1096,7 +1103,12 @@ def _is_ssh_to_self(
     from .shell_commands import _CALL_VIEWS  # local: the facade serves every module name
 
     memo = _CALL_VIEWS.get()
-    reading = (_MAIN_READING.get(), _LITERAL_HOSTS.get(), _ssh_reading_depth.get())
+    reading = (
+        _MAIN_READING.get(),
+        _LITERAL_HOSTS.get(),
+        _HEREDOC_RESET.get(),
+        _ssh_reading_depth.get(),
+    )
     key = ("ssh_to_self", text_lower, own_line, raw_text, *reading)
     if memo is None:
         return _judge_ssh_to_self(text_lower, own_line, raw_text)
@@ -1168,6 +1180,18 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
         and not _is_ssh_to_self(view, own_line=own_line)
     ):
         return False
+    # Close the quote a here-document body leaves open (the shared walk-reset the
+    # self floor uses too), so the mask and the frame tokenizer below read the
+    # text after the closing line as unquoted instead of pulling ``ssh localhost``
+    # into a quoted blob. The body reader is untouched. This runs ONLY in the
+    # extra ``_HEREDOC_RESET`` pass ``_reaches_self_over_ssh`` adds: the ordinary
+    # and main-reading passes keep a body's quotes as origin/main read them, so
+    # the reset is a purely ADDITIONAL denial and never removes one main had.
+    # The bodies are found on the words as written (*cased*), since bash closes a body
+    # only on its tag with case; without them, on the lowered line as before.
+    if own_line and "<<" in text_lower and _HEREDOC_RESET.get():
+        reset = _shell_normalizer._heredoc_body_quotes_literal(cased or text_lower)
+        text_lower = reset.lower() if cased is not None else reset
     # Single quotes read as literal only in the caller's own line, and only when it
     # has no live substitution opener before the splices below rewrite it: a spliced
     # static output (``x'y``) could otherwise pair into quotes around a live one.

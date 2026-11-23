@@ -340,17 +340,16 @@ def _load_overlay_for_agent(
     work_dir: str | Path | None = None,
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
-    kas_worker_session_key: str | None = None,
+    worker_session_key: str | None = None,
 ) -> dict[str, Any] | None:
     """Locate the rewritten overlay spec for *agent*, or ``None``.
 
-    *kas_worker_session_key* is set only on KAS, by
-    ``acp.runtime_session_setup._pooled_session_servers_and_ref_spec``'s positive
-    ``backend == kas`` check. With it, a crewmate's worker
+    *worker_session_key* is the session's own key, passed by KAS and by the
+    mirrored hosts (codex, claude). With it, a crewmate's worker
     (``kirocrew-mate-worker``) is not looked up by that shared name: its overlay
     is the session's own crewmate's
     (:func:`kiro_crew.mcp_gateway.mate_overlays.worker_overlay_spec`). Without it
-    -- every other host -- the lookup below runs exactly as before.
+    the worker gets no overlay, and every other agent ignores it.
 
     Package-installed agents are written to the overlay directory under a
     package-qualified filename (e.g. ``Pkg-gpu-dev.json``) while the session
@@ -374,13 +373,13 @@ def _load_overlay_for_agent(
     an exception.
     """
     if agent == MATE_WORKER_AGENT:
-        # A worker's stubs are its own session's (KAS, keyed by the session). The
+        # A worker's stubs are its own session's (keyed by the session). The
         # stock worker overlay is also written under this name, and a lookup by
         # name would hand it to any session that runs the worker spec without
         # that session's merged limits, so no other host reads it.
-        if not kas_worker_session_key:
+        if not worker_session_key:
             return None
-        return worker_overlay_spec(overlay_dir, kas_worker_session_key)
+        return worker_overlay_spec(overlay_dir, worker_session_key)
     project = _project_spec_for_agent(agent, work_dir, markdown_specs, dispatchable_only)
     if project is not None:
         # WARNING, not debug. This is not an error path: it is the posture this
@@ -502,7 +501,7 @@ def pooled_session_servers(
     work_dir: str | Path | None = None,
     markdown_specs: bool = False,
     dispatchable_only: bool = True,
-    kas_worker_session_key: str | None = None,
+    worker_session_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return ACP ``session/new`` entries for *agent*'s broker stubs.
 
@@ -530,11 +529,12 @@ def pooled_session_servers(
     agree on which file the session's agent is, or the stub set and the spec it
     shadows are read from different agents.
 
-    ``kas_worker_session_key`` names a KAS session, for the one agent whose
-    overlay is the session's rather than the agent's: a crewmate's worker
-    (:func:`_load_overlay_for_agent`). Every other agent, and every other host,
-    ignores it. KAS subtracts the names of exactly the entries this returns
-    (``acp/harness/kas.py``), so the two sets come from this one lookup.
+    ``worker_session_key`` names the session, for the one agent whose overlay
+    is the session's rather than the agent's: a crewmate's worker
+    (:func:`_load_overlay_for_agent`). Every other agent ignores it. The caller
+    withholds the names of exactly the entries this returns (KAS in
+    ``acp/harness/kas.py``, a mirrored host from its spec projection), so the
+    two sets come from this one lookup.
 
     Fail-soft by design: any unreadable or malformed overlay yields ``[]``, so a
     bad rewrite degrades to unpooled operation rather than breaking the spawn.
@@ -547,7 +547,7 @@ def pooled_session_servers(
         work_dir,
         markdown_specs,
         dispatchable_only,
-        kas_worker_session_key,
+        worker_session_key,
     )
     if not isinstance(spec, dict):
         return []
@@ -605,8 +605,8 @@ def injection_server_names(
 
     This is deliberately cheap (one file read, no shaping) so it can be called
     as a post-launch health check without adding latency to the session path.
-    It never answers for a crewmate's worker on KAS: that host subtracts the
-    names of the entries :func:`pooled_session_servers` already returned for the
+    It never answers for a crewmate's worker: its host withholds the names of
+    the entries :func:`pooled_session_servers` already returned for the
     session, so no second lookup can disagree with the first.
     """
     if not overlay_dir or not agent:

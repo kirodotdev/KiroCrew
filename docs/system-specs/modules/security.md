@@ -110,8 +110,8 @@ outside every session sandbox, as the user, while the same command run per
 chat runs inside the sandbox. The approval
 therefore covers exactly the launch that existed at the press, never what an
 agent writes afterwards: a later change to the command, args or declared env
-text under an approved name (agent specs and `~/.kiro/crew/mcp.json` are
-agent-writable) is refused as `changed_needs_reapproval` and stays on the
+text under an approved name (agent specs and kiro-cli's `~/.kiro/settings/mcp.json`
+are still writable from an agent shell) is refused as `changed_needs_reapproval` and stays on the
 session's sandboxed path until the operator presses **Approve update**, which
 reads the new launch and pins it. Only a `${VAR}` expansion moving under
 unchanged declared text is re-recorded (the rebind), because its values come
@@ -136,6 +136,44 @@ under the sealed `run/` parent. The existing validated runtime carve-out grants
 that child write access to only the random staging directory; it cannot cover
 `record.json` or another resolution. After validating the tree, the gateway
 process renames it into `mcp/resolved/` and writes `record.json`.
+
+The MCP registries are the person's, not the agent's
+([decision](../../decisions/2026-11-20-agents-ask-before-changing-gateway-trusted-files.md)).
+Kiro Crew's own store, `<data home>/mcp.json` (the MCP page's servers), is on the
+file-tool write tier (`paths_lists._CREW_MCP_REGISTRY_ROWS`) and mounted read-only in
+every sandbox (`_CREW_READONLY_LEAVES`, pre-created as `{}` so an absent store cannot
+be created from inside one). Its gateway saves go through
+`mcp_config_files._atomic_write`, which records each one in `config.write_provenance`
+like a `config.json` save, so a page save landing between a spawn's pre-pass and its
+pin is not refused. kiro-cli's `~/.kiro/settings/mcp.json` stays on the file-tool tier
+only (see the discovery-endpoint residual below). A refusal on either path names the
+way forward (`paths_lists.MCP_REGISTRY_REMEDY`): the agent calls `request_server`
+with `action` `add` (`source` `custom` and the entry), `change` or `remove`, which
+raises an `mcp.server` card showing the entry's change (env and header values go
+through the credential redactor, and an env change marks the card as running new
+code, like a launch-line change); Apply runs the MCP page's own routes, then `POST
+/api/sessions/restart` while **Restart open chats to use it** is checked
+(`change_card_mcp_server`, `dashboard.handlers.request_server_page`). `propose_change`
+cannot raise that kind, nor `mcp.add_custom`. The card offers **Share this server with
+other chats and Bots**, ticked on an add card, only for a server that is safe to share
+(`change_card_mcp_server.safe_to_share`): a local command, no other source
+declaring the name (`share_exclusive`), the asking agent's required
+`uses_chat_folder` claim false, no recorded `uses_cwd` answer, and Kiro Crew's own
+reading (`detects_chat_folder`: an arg or env value that is `.`, a relative path or
+a folder placeholder; the server and package names are not read) finding no sign of
+the chat's folder. Any Apply that stops sharing a server shows a **Sharing** On ->
+Off change line, and a stop never rewrites a recorded `cwd_use` answer: it records
+`uses_cwd` only for a server with no answer yet. Checked, the same Apply turns MCP
+server sharing on for the install when it is off (a broker restart, never a gateway restart), reads the launch
+the write produced and shares the server with that launch as the expected one and
+the card's command, args and env as `expected_entry`: the stub route refuses
+`launch_differs_from_card` unless the whole resolved set is exactly that one launch
+(`launch_resolve.matches_entry`), so the press approves only what the card shows. A
+server that is not safe to share keeps one copy per chat. Relative script paths,
+including bare names such as `server.py` and `index.js`, count as using the chat's
+folder. A per-server share that restarts the broker resets open chats even with
+**Restart open chats to use it** unchecked: subscribed stubs cannot reconnect.
+The reset defers busy chats until their turn ends and reports `sessions_reset`.
 
 The `template-mcp-additions/` directory holds the servers the user approved for
 an agent template on a change card (`template_mcp_additions`), which the next
@@ -1122,6 +1160,28 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     the closing line, where bash keeps it) or a line holding `<<` ends in a backslash
     (bash joins it to the next line; the view does not). Both guards only turn the
     allow off, so this floor never refuses more than it did without the view.
+    For an own-line input `_reaches_self_over_ssh` then reads the line ONE MORE
+    TIME, under the `_HEREDOC_RESET` flag, and refuses if that reading does: the
+    reset pass calls `shell_normalizer._heredoc_body_quotes_literal`, which returns
+    the command with every here-document BODY and its closing tag line removed, to be
+    read from a fresh quote state (see the tokenizer note below, including the
+    `arith_held` shift it skips, so a `<<` inside an open `$(( ))` does not expose a
+    real command after the arithmetic). Without that pass a body holding an unbalanced
+    quote (`cat <<EOF` NL `it's` NL `EOF` NL `ssh … localhost id` NL `# '`) keeps the
+    floor's own separator mask and its frame tokenizer reading everything after the
+    body as one quoted blob, so the `ssh … localhost` on the line after the closing
+    `EOF` is never seen; the reset pass drops the body and feeds the mask and the walk
+    the text that surrounds the bodies, which they read as the commands bash runs.
+    Removing whole bodies also exposes a command written BETWEEN two here-documents
+    (`cat <<A` .. `A` NL `kirocrew restart` NL `cat <<B` .. `B`), where a quote in body
+    A would otherwise pair with a quote in body B across A's closing line. A comment in the
+    kept text (a `#` at a word start outside any quote) is removed, an
+    `ssh … localhost` written INSIDE a body stays part of the dropped span, and the
+    bodies are found on the line as written (`raw_text`), since bash closes a body
+    only on its tag with case. The ordinary
+    reading and the main-reading pass keep a body's quotes as origin/main read them,
+    so the reset pass only ADDS a denial and never removes one. The here-document
+    body readers and the untracked fallback are unchanged.
   - `argv_floor_ssh_bodies.py` — the floor's reading of substitution bodies
     (`_reaches_self_over_ssh`). The static splice reads only the first command of a
     `$( )` or backtick body, so `$(echo hi; ssh -p 22 <this host> id)` would splice to
@@ -1198,6 +1258,59 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   `$((a) …)`), or is still open at the next newline, reads exactly as with no span
   tracking. The read stays one pass.
   The default stays the stopping read, for callers that do not ask.
+  `read_commands` resumes after a tag line in a CLOSED quote state, so a floor that
+  reads through it (the rm floor) already reads the text after a here-document's
+  closing line as the fresh command bash runs. The self and ssh floors do not read
+  through `read_commands`: they tokenize the line with `shlex` (`_self_tokens`) or
+  scan it with the ssh floor's own quote mask, both quote-blind to a here-document,
+  so a quote left open in a body would pair with a quote after the closing line and
+  bury the command on it (`cat <<EOF` NL `it's` NL `EOF` NL `kirocrew restart` NL
+  `# '`). So each of those two floors evaluates the command through TWO INDEPENDENT
+  readings and refuses if EITHER reading does: the command as written, and a second
+  reading with `shell_normalizer._heredoc_body_quotes_literal` applied. Each reading
+  runs the floor in FULL on its own — its own tokenization, alias and assignment
+  resolution, nested payload descent and denial check — and no reading's token stream
+  is ever concatenated with another's. That helper locates each body and its delimiter
+  line with `read_commands` and returns the command with every here-document BODY and
+  its closing tag line removed, to be read from a fresh quote state: what is kept is
+  everything AROUND the bodies -- each opener line, any command written BETWEEN two
+  closing lines, and the final tail. No quote in a body can pair across its closing
+  line, or with a quote in a later body, so a self-restart or self-ssh written between
+  two bodies (`cat <<A` .. `A` NL `kirocrew restart` NL `cat <<B` .. `B`) or after the
+  last one is exposed, while one written INSIDE a body stays part of the removed span.
+  Each comment in the kept text is removed too, found the way bash finds one: a `#`
+  only at a word start OUTSIDE any quote (the shared quote walk `_iter_shell_chars`
+  plus `_opens_comment`), running to its newline, so a quote or a self command in a
+  real comment opens and runs nothing. A `#` inside quotes or mid-word is data and
+  stays, so a quoted argument whose line starts with `#` (`echo 'Heading` NL `# end'`)
+  still closes its quote; no line-level `startswith("#")` test is used. The bodies
+  are found on the command AS WRITTEN, case and line continuations intact, because
+  bash matches a closing tag case-sensitively: an `eof` line in an `EOF` body is body
+  text, not its end. `is_denied` keeps the submitted text for the call
+  (`_keep_submitted_command`), the payload walk hands it (and the matching slice of
+  each nested payload, when the payload sits in it verbatim) to the reset reading,
+  and the ssh floor uses its `raw_text`; only the text left after the removal is
+  lowered and folded for tokenizing. Without the submitted text (or when its lowered
+  form is not the text read) the reset reads the lowered text as before. The body
+  stays in place for the here-document payload readers, which read the whole command
+  unchanged. The as-written reading is what
+  origin/main tokenizes, so the second reading is a PURELY ADDITIONAL denial check: it
+  can only catch the buried command, never drop a denial the as-written reading has, so
+  head's denial set is a superset of main's because the as-written reading is run
+  unchanged. `_self_tokens` produces ONE reading per call: the as-written reading by
+  default, and the reset reading when `_HEREDOC_RESET` is set. The self floors' payload
+  walk seeds that reset reading as a SECOND independent pass — a frame of its own, with
+  its own tokens and descent, deduping nested payloads per reading so each reading walks
+  every one — alongside the as-written pass whenever a `<<` is present;
+  the ssh floor adds its reset reading the same way, through its own `_HEREDOC_RESET`
+  flag. The second reading runs only when the command contains `<<`, so a command with
+  no here-document keeps the single reading and its linear cost. The quote-reset applies
+  only to a reader-CONFIRMED here-document: a `<<` the reader held inside an open
+  `$(( ))` / `(( ))` is a left SHIFT, not a body (`HereDoc.arith_held`), so its fictional
+  span is skipped and no real command after the arithmetic is exposed. An
+  unclosed body (nothing runs after it) and a degenerate delimiter carrying a quote,
+  backslash or substitution character (`<<'a"'`, `<<$(x)`), whose own quote is
+  structural, stay read as before.
   `pipelines(commands)` groups one read's commands into the pipelines bash runs: a command
   joins the one before it when that one ended in `|`, in `|&` (read as `|` then an empty
   `&`), or opened the `( … )` group the pipe feeds (`| (sh)`).

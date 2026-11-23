@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from skill_script_helpers import skill_text as whole_skill_text
 
 import kiro_crew
 from kiro_crew import cli_help
@@ -97,7 +98,7 @@ def _is_named(command: str, skill_text: str) -> bool:
 
 @pytest.fixture(scope="module")
 def skill_text() -> str:
-    return SKILL.read_text(encoding="utf-8")
+    return whole_skill_text(SKILL)
 
 
 class TestEveryUserFacingCommandIsNamed:

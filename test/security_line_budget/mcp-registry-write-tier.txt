@@ -1,0 +1,2 @@
++36
+Kiro Crew's own mcp.json and kiro-cli's settings mcp.json join the file-tool write tier as the "mcp-registry" rows, and a refused write names request_server as the way to ask (MCP_REGISTRY_REMEDY). Rows in paths_lists, the tier name in paths_targets, the remedy in paths.sensitive_write_path_refusal, and the facade's type-checking manifest for the two new names.
