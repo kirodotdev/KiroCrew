@@ -135,15 +135,19 @@ def snapshot_store(db_path: Path, dest: Path) -> Path:
 
 
 def _items_from_copy(
-    copy: Path, store: str
+    copy: Path, store: str, include_documents: bool = False
 ) -> tuple[list[BenchItem], list[tuple[str, str, float | None]]]:
     """``(items, revisions)`` read from a snapshot copy with Crew's own converters.
 
     ``revisions`` are ``(fact item id, old text, old time)`` for facts an update
     replaced; the id carries *store*, so two stores' facts of one key stay apart.
+    With *include_documents*, the store's documents and history days join them
+    through the provider's own read (Global V1's Markdown files live beside the
+    database, so the live files are read, never written).
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.memory_provider import builtin
+    from kiro_crew.memory_provider.contract import ProviderScope
     from kiro_crew.vector_memory_member import declared_store
 
     # The copy keeps the source's member identity, so a private V2 store's copy is
@@ -160,6 +164,9 @@ def _items_from_copy(
             builtin._episode_item(r)
             for r in vectors.get_episodic_list(limit=10_000, offset=0, tag_filter=None)
         ]
+        if include_documents:
+            scope = ProviderScope(store, None, "persistent", "own-memory-eval")
+            converted += builtin.BUILTIN._documents(scope, vectors)
         revisions: list[tuple[str, str, float | None]] = []
         try:
             with vectors._db_lock:
@@ -455,7 +462,9 @@ async def _build_in(
         if live is None:
             raise ValueError(f"memory store {store!r} has no readable database")
         copy = await asyncio.to_thread(snapshot_store, live, root / "source" / f"{store}.db")
-        found, revs = await asyncio.to_thread(_items_from_copy, copy, store)
+        found, revs = await asyncio.to_thread(
+            _items_from_copy, copy, store, options.include_documents
+        )
         items += found
         revisions += revs
     # The copies were only read to build the set; the unredacted text goes with them.

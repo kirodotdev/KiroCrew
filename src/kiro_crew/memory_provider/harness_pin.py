@@ -3,7 +3,8 @@
 The Kiro agent harness can run a memory of its own. Crew's ``initialize`` names no
 setting for it, so without a pin the harness decides on its own whether it runs.
 A provider in ``replace`` mode is the one memory the owner chose, so a spawn made
-while ``memory.provider.mode`` is ``replace`` sends ``userMemoryOptIn: {"enabled":
+while the effective mode (``resolver._chosen``, which reads builtin while the
+memory provider preview is off) is ``replace`` sends ``userMemoryOptIn: {"enabled":
 false}`` in ``_meta.kiro.settings``.
 
 Only a harness that reads that channel gets it: the caller sends it inside the
@@ -38,8 +39,7 @@ def harness_memory_settings(config: Any = None) -> dict[str, Any]:
     from kiro_crew.memory_provider import resolver
 
     try:
-        cfg = resolver._load_config(config)
-        mode = cfg.memory.provider.mode
+        mode, _ = resolver._chosen(resolver._load_config(config).memory.provider)
     except Exception:  # noqa: BLE001 - an unreadable config pins nothing, as before
         logger.debug("memory provider mode unreadable at spawn", exc_info=True)
         return {}

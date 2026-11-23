@@ -63,6 +63,16 @@ the next start will answer differently. A PUT body is `{"enabled": bool}`; anyth
 else is 400 `invalid_body`. Each PUT is written to the SEL
 (`shared_crew.preview.set`).
 
+The mechanism is generic: `preview.PreviewSwitch` (variable, keystone read once at
+start, in-place write), `PreviewSetting.of` and `gate`, and in `routes_preview`
+`audit`, `respond_setting` and `put_setting` past the owner gate. The module-level
+functions bind them to this switch; `preview_enabled`, `current_setting`,
+`preview_only` and the route handlers look the module-level names up when called,
+so a patch on `snapshot_at_start`, `preview_enabled`, `write_stored` or
+`routes_preview._audit` reaches them. The memory provider preview
+(`memory_provider/preview.py`, `memory_provider/routes_preview.py`) binds the same
+pieces to its own variable, keystone, owner gate and audit names.
+
 - Gate off (the default): `config.sections_shared_crew.load_shared_crew_config`, the
   runtime's one reader of the section, returns `SharedCrewConfig()` whatever
   config.json says. `admission_enabled`, `hard_limits` and every other

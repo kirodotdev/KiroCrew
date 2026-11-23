@@ -29,6 +29,8 @@ vi.mock('../../api/client', async importOriginal => {
       sharedCrewPreview: vi.fn(),
       sharedCrewCapabilities: vi.fn(),
       sharedCrewSetPreview: vi.fn(),
+      memoryProviderPreview: vi.fn(),
+      memoryProviderSetPreview: vi.fn(),
       restartGateway: vi.fn(),
       dashboardConfig: vi.fn(),
       kirocrewConfig: vi.fn(),
@@ -58,6 +60,7 @@ const toggle = () => screen.findByRole('switch', { name: 'Shared Crew' })
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ shared_crew_preview: false } as never)
+  vi.mocked(api.memoryProviderPreview).mockResolvedValue(null)
   vi.mocked(api.dashboardConfig).mockResolvedValue({ decisions_enabled: false } as never)
   vi.mocked(api.kirocrewConfig).mockResolvedValue({} as never)
   vi.mocked(api.getDecisionsConsent).mockResolvedValue({ enabled: false, endpoint: '', configured_endpoint: '', permits: false })
@@ -314,5 +317,20 @@ describe('Connected computers on a shared Crew', () => {
     const computer = screen.getByRole('switch', { name: 'Connected computers' })
     expect(computer).toHaveAttribute('aria-checked', 'false')
     expect(computer).toHaveAttribute('aria-disabled', 'true')
+  })
+})
+
+describe('memory provider preview card', () => {
+  it('writes {enabled} through its own route and asks for the shared restart', async () => {
+    read.mockResolvedValue(null)
+    vi.mocked(api.memoryProviderPreview).mockResolvedValue(setting())
+    vi.mocked(api.memoryProviderSetPreview).mockResolvedValue(setting({ enabled: true, restart_required: true }))
+    mount()
+    const sw = await screen.findByRole('switch', { name: 'Memory providers' })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    await waitFor(() => expect(api.memoryProviderSetPreview).toHaveBeenCalledWith(true))
+    expect(await screen.findByTestId('memory-provider-preview-restart')).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Shared Crew' })).toBeNull()
   })
 })

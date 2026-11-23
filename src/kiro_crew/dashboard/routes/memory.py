@@ -12,6 +12,8 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers, stt_stream
+from kiro_crew.memory_provider import routes_preview
+from kiro_crew.memory_provider.preview import preview_only as _gated
 
 
 def register(app: web.Application) -> None:
@@ -83,57 +85,89 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/memory/seed", handlers.api_memory_seed)
 
     # Memory providers (handlers/memory_provider.py and memory_provider_migrations.py).
+    # Every ``/api/memory/provider`` route is a 404 while the memory provider preview
+    # is off (``memory_provider.preview``); the owner's switch is registered either way.
+    app.router.add_get(routes_preview.PREVIEW_PATH, routes_preview.api_get_preview)
+    app.router.add_put(routes_preview.PREVIEW_PATH, routes_preview.api_put_preview)
     # Literal sub-paths first; the revisions route before the greedy item id.
-    app.router.add_get("/api/memory/provider/items", handlers.api_memory_provider_items)
-    app.router.add_post("/api/memory/provider/items", handlers.api_memory_provider_items_create)
+    app.router.add_get("/api/memory/provider/items", _gated(handlers.api_memory_provider_items))
+    app.router.add_post(
+        "/api/memory/provider/items", _gated(handlers.api_memory_provider_items_create)
+    )
     app.router.add_get(
         "/api/memory/provider/items/{id:.+}/revisions",
-        handlers.api_memory_provider_item_revisions,
+        _gated(handlers.api_memory_provider_item_revisions),
     )
-    app.router.add_get("/api/memory/provider/items/{id:.+}", handlers.api_memory_provider_item)
-    app.router.add_patch("/api/memory/provider/items/{id:.+}", handlers.api_memory_provider_item)
-    app.router.add_delete("/api/memory/provider/items/{id:.+}", handlers.api_memory_provider_item)
-    app.router.add_get("/api/memory/provider/migrations", handlers.api_memory_provider_migrations)
-    app.router.add_post("/api/memory/provider/migrations", handlers.api_memory_provider_migrations)
+    app.router.add_get(
+        "/api/memory/provider/items/{id:.+}", _gated(handlers.api_memory_provider_item)
+    )
+    app.router.add_patch(
+        "/api/memory/provider/items/{id:.+}", _gated(handlers.api_memory_provider_item)
+    )
+    app.router.add_delete(
+        "/api/memory/provider/items/{id:.+}", _gated(handlers.api_memory_provider_item)
+    )
+    app.router.add_get(
+        "/api/memory/provider/migrations", _gated(handlers.api_memory_provider_migrations)
+    )
+    app.router.add_post(
+        "/api/memory/provider/migrations", _gated(handlers.api_memory_provider_migrations)
+    )
     app.router.add_post(
         "/api/memory/provider/migrations/{id}/resume",
-        handlers.api_memory_provider_migration_resume,
+        _gated(handlers.api_memory_provider_migration_resume),
     )
     app.router.add_post(
         "/api/memory/provider/migrations/{id}/rollback",
-        handlers.api_memory_provider_migration_rollback,
+        _gated(handlers.api_memory_provider_migration_rollback),
     )
     app.router.add_get(
-        "/api/memory/provider/migrations/{id}", handlers.api_memory_provider_migration
+        "/api/memory/provider/migrations/{id}", _gated(handlers.api_memory_provider_migration)
     )
     app.router.add_delete(
-        "/api/memory/provider/migrations/{id}", handlers.api_memory_provider_migration
+        "/api/memory/provider/migrations/{id}", _gated(handlers.api_memory_provider_migration)
     )
     # Provider benchmarks (handlers/memory_provider_bench.py): owner runs, apps plan.
-    app.router.add_get("/api/memory/provider/bench/suites", handlers.api_bench_suites)
+    app.router.add_get("/api/memory/provider/bench/suites", _gated(handlers.api_bench_suites))
     app.router.add_post(
-        "/api/memory/provider/bench/suites/{id}/fetch", handlers.api_bench_suite_fetch
+        "/api/memory/provider/bench/suites/{id}/fetch", _gated(handlers.api_bench_suite_fetch)
     )
-    app.router.add_get("/api/memory/provider/bench/runs", handlers.api_bench_runs)
-    app.router.add_post("/api/memory/provider/bench/runs", handlers.api_bench_runs)
+    app.router.add_get("/api/memory/provider/bench/runs", _gated(handlers.api_bench_runs))
+    app.router.add_post("/api/memory/provider/bench/runs", _gated(handlers.api_bench_runs))
     app.router.add_post(
-        "/api/memory/provider/bench/runs/{id}/resume", handlers.api_bench_run_resume
+        "/api/memory/provider/bench/runs/{id}/resume", _gated(handlers.api_bench_run_resume)
     )
-    app.router.add_get("/api/memory/provider/bench/runs/{id}/report", handlers.api_bench_run_report)
-    app.router.add_get("/api/memory/provider/bench/runs/{id}", handlers.api_bench_run)
-    app.router.add_delete("/api/memory/provider/bench/runs/{id}", handlers.api_bench_run)
-    app.router.add_get("/api/memory/provider/bench/compare", handlers.api_bench_compare)
-    app.router.add_get("/api/memory/provider/bench/evalsets", handlers.api_bench_evalsets)
-    app.router.add_post("/api/memory/provider/bench/evalsets", handlers.api_bench_evalsets)
-    app.router.add_get("/api/memory/provider/bench/evalsets/{id}", handlers.api_bench_evalset)
-    app.router.add_delete("/api/memory/provider/bench/evalsets/{id}", handlers.api_bench_evalset)
-    app.router.add_get("/api/memory/provider/export", handlers.api_memory_provider_export)
-    app.router.add_post("/api/memory/provider/import", handlers.api_memory_provider_import)
+    app.router.add_get(
+        "/api/memory/provider/bench/runs/{id}/report", _gated(handlers.api_bench_run_report)
+    )
+    app.router.add_get("/api/memory/provider/bench/runs/{id}", _gated(handlers.api_bench_run))
+    app.router.add_delete("/api/memory/provider/bench/runs/{id}", _gated(handlers.api_bench_run))
+    app.router.add_get("/api/memory/provider/bench/compare", _gated(handlers.api_bench_compare))
+    app.router.add_get("/api/memory/provider/bench/evalsets", _gated(handlers.api_bench_evalsets))
+    app.router.add_post("/api/memory/provider/bench/evalsets", _gated(handlers.api_bench_evalsets))
+    app.router.add_get(
+        "/api/memory/provider/bench/evalsets/{id}", _gated(handlers.api_bench_evalset)
+    )
+    app.router.add_delete(
+        "/api/memory/provider/bench/evalsets/{id}", _gated(handlers.api_bench_evalset)
+    )
+    app.router.add_get("/api/memory/provider/export", _gated(handlers.api_memory_provider_export))
+    app.router.add_post("/api/memory/provider/import", _gated(handlers.api_memory_provider_import))
     app.router.add_post(
-        "/api/memory/provider/conformance", handlers.api_memory_provider_conformance
+        "/api/memory/provider/conformance", _gated(handlers.api_memory_provider_conformance)
     )
-    app.router.add_get("/api/memory/provider", handlers.api_memory_provider_get)
-    app.router.add_put("/api/memory/provider", handlers.api_memory_provider_put)
+    app.router.add_get("/api/memory/provider", _gated(handlers.api_memory_provider_get))
+    app.router.add_put("/api/memory/provider", _gated(handlers.api_memory_provider_put))
+    # Memory manager app host routes (handlers/memory_app_host.py). The facade is the
+    # one way a ``memoryAdmin`` app reaches the owner routes it lists.
+    app.router.add_route(
+        "*", "/api/memory/provider/host/{tail:.+}", _gated(handlers.api_memory_app_host)
+    )
+    app.router.add_get("/api/memory/context-stack", handlers.api_memory_context_stack)
+    app.router.add_get("/api/memory/review", handlers.api_memory_review)
+    app.router.add_post("/api/memory/review/{id}", handlers.api_memory_review_resolve)
+    app.router.add_get("/api/members/{slug}/soul", handlers.api_member_soul)
+    app.router.add_put("/api/members/{slug}/soul", handlers.api_member_soul)
 
     # Crons, lessons, spawn, taskrunner, send-message, notifications
     # are registered via _register_mcp_routes() above.

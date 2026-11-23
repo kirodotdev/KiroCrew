@@ -46,7 +46,8 @@ async def api_memory_records(request: web.Request) -> web.Response:
         return refusal
     try:
         # Authentication retains its token in the query; it is not a record filter.
-        if set(request.query) - {"store", "q", "kind", "limit", "offset", "token"}:
+        filters = ("q", "kind", "applies", "source", "status", "never_recalled")
+        if set(request.query) - {"store", "limit", "offset", "token", *filters}:
             raise memory_edit.MemoryEditError("Invalid memory filter.")
         tier = await vector_memory_for_store(request.app["state"], name)
         if tier is None:
@@ -60,7 +61,7 @@ async def api_memory_records(request: web.Request) -> web.Response:
         result = await asyncio.to_thread(
             memory_edit.list_records,
             tier,
-            {key: request.query[key] for key in ("q", "kind") if key in request.query},
+            {key: request.query[key] for key in filters if key in request.query},
             limit=limit,
             offset=offset,
         )
@@ -91,6 +92,7 @@ async def api_memory_records_refresh(request: web.Request) -> web.Response:
             tier,
             body.get("items"),
             selection=body.get("selection"),
+            status=body.get("status"),
         )
     except memory_edit.MemoryEditError as exc:
         return _error(exc)

@@ -30,6 +30,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers._shared")
 
+#: Request-state key the memory app host facade
+#: (:mod:`kiro_crew.dashboard.handlers.memory_app_host`) sets to ``"app:<name>"`` on
+#: the inner request it dispatches, after verifying ``permissions.memoryAdmin`` and
+#: its route allowlist. :func:`require_owner_dashboard_request` admits such a request.
+MEMORY_ADMIN_GRANT = "memory_admin_grant"
+
 
 def _audit_admission(surface: str, resource: str, allowed: bool, error: str = "") -> None:
     """Record an external-access verdict in the security event log.
@@ -286,6 +292,24 @@ async def require_owner_dashboard_request(
     )
 
     if is_owner_dashboard_request(request):
+        return None
+    grant = request.get(MEMORY_ADMIN_GRANT)
+    if isinstance(grant, str) and grant.startswith("app:"):
+        # The memory app host facade set this on its own inner request after it
+        # checked the app's ``permissions.memoryAdmin`` and the route allowlist.
+        # Request state is server side, so no header or cookie can carry it.
+        try:
+            from kiro_crew.sel import sel as _sel
+
+            _sel().log_api_access(
+                caller=grant,
+                operation=operation,
+                outcome="allowed",
+                source="dashboard",
+                resources="memory_admin_grant",
+            )
+        except Exception:  # pragma: no cover - audit must never change the outcome
+            logger.debug("SEL audit for memory admin %s failed", operation, exc_info=True)
         return None
 
     # SEL is warmed at gateway startup (sel.warm_sel_singleton), so this

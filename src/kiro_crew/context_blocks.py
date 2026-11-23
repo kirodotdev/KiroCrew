@@ -401,6 +401,39 @@ def split_blocks(
     return {label: size for label, size in out.items() if size > 0}
 
 
+def block_spans(prompt: str) -> list[tuple[str, int, int]]:
+    """``(label, start, end)`` for each block of a session-start *prompt*, in send order.
+
+    The same openers and closers :func:`split_blocks` measures, for a prompt with no
+    user text (the Memory app's prompt preview). Text between a closer and the next
+    opener is its own ``unclassified`` span, so the spans tile the prompt exactly.
+    """
+    hits = sorted(
+        (match.start(), label) for label, pattern in _COMPILED for match in pattern.finditer(prompt)
+    )
+    spans: list[tuple[str, int, int]] = []
+    if not hits:
+        return [(UNCLASSIFIED_LABEL, 0, len(prompt))] if prompt else []
+    if hits[0][0] > 0:
+        spans.append((UNCLASSIFIED_LABEL, 0, hits[0][0]))
+    for index, (start, label) in enumerate(hits):
+        next_start = hits[index + 1][0] if index + 1 < len(hits) else len(prompt)
+        end = next_start
+        closer = _CLOSERS.get(label)
+        if closer is not None:
+            closed = None
+            for match in closer.finditer(prompt, start, next_start):
+                closed = match
+            if closed is not None:
+                end = closed.end()
+                while end < next_start and prompt[end] in " \t\r\n":
+                    end += 1
+        spans.append((label, start, end))
+        if end < next_start:
+            spans.append((UNCLASSIFIED_LABEL, end, next_start))
+    return spans
+
+
 def _block_domain(label: str) -> str:
     """Group one assembled block by what the provider is being asked to do with it.
 

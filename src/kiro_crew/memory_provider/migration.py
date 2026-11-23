@@ -7,8 +7,8 @@ A move is a job with phases::
 - **Plan** lists the source page by page and counts what would happen per kind
   (written, refused by Crew's content screens, skipped because the target does not
   hold the kind, skipped because the item came from the target). It keeps up to 20
-  sample items per kind with their planned outcome, and asks a target that offers
-  ``dry_run_put`` for its dedup answer on those samples. It writes nothing.
+  sample items per kind with their planned outcome. It never sends memory to the
+  target and writes nothing.
 - **Run** writes each page with ``put_batch`` (or ``put``), keyed
   ``crew-move:<job>:<origin id>``, so a resumed or repeated run writes nothing twice.
   After each page the checkpoint (source cursor and counts) is saved and one ledger
@@ -801,24 +801,6 @@ async def _write_page(
         job.pending_ids = []
 
 
-async def _dry_run_samples(
-    job: MigrationJob, target: MemoryProvider, scope: ProviderScope, planned: list[_Planned]
-) -> None:
-    """Ask a target with ``dry_run_put`` what it would do with the sampled items."""
-    for p in planned:
-        if p.write is None:
-            continue
-        bucket = job.samples.get(p.item.kind) or []
-        sample = next((s for s in bucket if s["id"] == p.item.id), None)
-        if sample is None:
-            continue
-        try:
-            result = await target.put(scope, p.write, _key(job, p), dry_run=True)
-        except ProviderError:
-            continue
-        sample["planned"] = result.outcome
-
-
 async def _verify(
     job: MigrationJob, target: MemoryProvider, scope: ProviderScope, rng: random.Random
 ) -> None:
@@ -955,10 +937,9 @@ async def run_job(
                     _count(job.outcomes, outcome)
                     _sample(job, p, outcome)
                 planned.append(p)
-            if job.dry_run:
-                if caps.dry_run_put:
-                    await _dry_run_samples(job, target, scope, planned)
-            else:
+            # A plan stays local: it never sends memory to the target, so a plan an app
+            # asked for (directly, or through the copy sheet) hands it nothing.
+            if not job.dry_run:
                 await _write_page(
                     job,
                     target,

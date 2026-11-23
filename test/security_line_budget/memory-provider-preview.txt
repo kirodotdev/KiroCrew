@@ -1,0 +1,2 @@
++3
+`memory_provider_preview.json` on the crew secret-leaf list in paths_lists, beside `shared_crew_preview.json`: the owner's memory provider preview switch authorizes an app to serve or manage Crew's memory, so the file-tool gate fences it like the Shared Crew switch.

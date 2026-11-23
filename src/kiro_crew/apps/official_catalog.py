@@ -549,12 +549,15 @@ def _curated_links(entry: dict[str, Any]) -> list[dict[str, str]]:
 
 
 #: The permissions the trust prompt names before install, each a literal ``true``.
+#: ``memoryAdmin`` is installed as the ``/api/memory/provider`` API grant
+#: (``point_grants.grant_source``), so the prompt must see it to name it.
 _DISCLOSED_PERMISSIONS = (
     "sessionApproval",
     "workerAutoApprove",
     "chatSlots",
     "hiddenSessions",
     "webhookSource",
+    "memoryAdmin",
 )
 
 

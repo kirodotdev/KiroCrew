@@ -364,8 +364,8 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Memory provider item responses",
         "dashboard/handlers/memory_provider.py",
-        "Item text an app's memory provider returns, served to the owner by the "
-        "provider browse routes. Each item's text passes "
+        "Item text an app's memory provider returns, served to the owner or a "
+        "memoryAdmin app by the provider browse routes. Each item's text passes "
         "through the shared credential + exfiltration-URL chain before "
         "serialization.",
     ),
@@ -373,16 +373,23 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Memory provider move and export responses",
         "dashboard/handlers/memory_provider_migrations.py",
         "Move plans (with their sampled item text) and the JSONL export of an app's "
-        "memory provider or Crew's own memory, served to the owner. Each job and "
-        "each export record passes through the shared credential + exfiltration-URL "
-        "chain before serialization.",
+        "memory provider or Crew's own memory, served to the owner or a memoryAdmin "
+        "app. Each job and each export record passes through the shared credential "
+        "+ exfiltration-URL chain before serialization.",
     ),
     (
         "Memory provider benchmark responses",
         "dashboard/handlers/memory_provider_bench.py",
-        "Benchmark plans, run states, reports and own-memory probe text, served to "
-        "the owner. Every body passes "
+        "Benchmark plans, run states, reports and, for the owner only, own-memory "
+        "probe text, served to the owner or a memoryAdmin app. Every body passes "
         "through the shared credential + exfiltration-URL chain before serialization.",
+    ),
+    (
+        "Memory app host responses",
+        "dashboard/handlers/memory_app_host.py",
+        "The prompt stack, review queues and member SOUL.md a memory manager app reads "
+        "through the host facade. Record text passes through the shared credential + "
+        "exfiltration-URL chain before serialization.",
     ),
     (
         "Own-memory eval set",

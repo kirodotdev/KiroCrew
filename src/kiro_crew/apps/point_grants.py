@@ -117,6 +117,7 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
         perms = perms if isinstance(perms, dict) else {}
         api = perms.get("api")
         events = perms.get("events")
+        memory_admin = perms.get("memoryAdmin")
         permissions_view: Any = perms
     else:
         perms_obj = getattr(manifest, "permissions", None)
@@ -124,6 +125,7 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
         ui_view = getattr(manifest, "ui", None)
         api = getattr(perms_obj, "api", None)
         events = getattr(perms_obj, "events", None)
+        memory_admin = getattr(perms_obj, "memoryAdmin", None)
         permissions_view = perms_obj
     out: dict[str, list[str]] = {
         "api": [e for e in api if isinstance(e, str) and e] if isinstance(api, list) else [],
@@ -131,6 +133,14 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
             [e for e in events if isinstance(e, str) and e] if isinstance(events, list) else []
         ),
     }
+    # ``memoryAdmin`` is granted as the one API prefix it opens, so install, update
+    # staging and owner approval hold it like any other ``api`` entry. While the
+    # memory provider preview is off it opens nothing, so it is not granted.
+    if memory_admin is True:
+        from kiro_crew.memory_provider.preview import preview_enabled
+
+        if preview_enabled():
+            out["api"].append("/api/memory/provider")
     for families, entries in _REGISTRY:
         declared = entries(contributes)
         for family in families:

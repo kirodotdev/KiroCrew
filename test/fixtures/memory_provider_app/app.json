@@ -24,5 +24,8 @@
         "description": "The same items, read-only."
       }
     ]
+  },
+  "permissions": {
+    "memoryAdmin": true
   }
 }

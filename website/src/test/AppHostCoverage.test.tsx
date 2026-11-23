@@ -244,6 +244,16 @@ describe('AppHost — hosting a real bundle', () => {
     expect(hosted().allowedEvents).toEqual([])
   })
 
+  it('lets an app with the memoryAdmin grant call the memory provider routes', async () => {
+    // The gateway stages that grant like an api entry; the SDK must not refuse it first.
+    renderHost(appRecord({
+      manifest: { version: '1.2.3', ui: { entry: 'index.js' }, permissions: { memoryAdmin: true } },
+    }))
+    await settleBundle()
+
+    expect(hosted().allowedApiPaths).toEqual(['/api/memory/provider'])
+  })
+
   it('prefers the manifest version and falls back to the installed record', async () => {
     const { unmount } = renderHost(appRecord())
     await settleBundle()

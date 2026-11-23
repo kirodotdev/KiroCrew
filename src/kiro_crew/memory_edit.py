@@ -14,6 +14,7 @@ import json
 import re
 import time
 import unicodedata
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,13 @@ PREVIEW_TTL = 900
 # Revision ids are SQLite rowids; a larger Python int cannot be bound at all.
 _MAX_SQLITE_INTEGER = 2**63 - 1
 _KINDS = {"all", "fact", "directive", "episode"}
+#: ``applies`` filter values: the lesson tier, ``unstated`` for a lesson written before
+#: tiers existed (read as a rule).
+_TIERS = {"always", "on_topic", "unstated"}
+#: ``status`` filter values: live rows, forgotten (tombstoned) rows, both, or a row
+#: whose metadata names the reason it left (``superseded`` by a newer row, ``expired``).
+_STATUSES = {"active", "forgotten", "any", "superseded", "expired"}
+_META_STATUSES = {"superseded", "expired"}
 _PROTECTED_FIELDS = {"repo_scope", "scope", "source", "source_ref", "derived_from", "category"}
 
 
@@ -73,7 +81,19 @@ def _normalized(value: str) -> str:
 
 
 def _query(raw: Any) -> dict:
-    if not isinstance(raw, dict) or set(raw) - {"q", "kind"}:
+    """A record filter: free text, kind, and the optional ``applies``, ``source``, ``status``.
+
+    The optional keys appear in the result only when given, so a preview token signed
+    before they existed decodes to the same filter.
+    """
+    if not isinstance(raw, dict) or set(raw) - {
+        "q",
+        "kind",
+        "applies",
+        "source",
+        "status",
+        "never_recalled",
+    }:
         raise MemoryEditError("Invalid memory filter.")
     query, kind = raw.get("q", ""), raw.get("kind", "all")
     if (
@@ -83,7 +103,44 @@ def _query(raw: Any) -> dict:
         or kind not in _KINDS
     ):
         raise MemoryEditError("Use a valid kind and a query up to 2000 characters.")
-    return {"q": query.strip(), "kind": kind}
+    out: dict = {"q": query.strip(), "kind": kind}
+    applies = raw.get("applies")
+    if applies not in (None, ""):
+        tiers = applies.split(",") if isinstance(applies, str) else applies
+        if (
+            not isinstance(tiers, list)
+            or not tiers
+            or not all(isinstance(t, str) for t in tiers)
+            or any(t not in _TIERS for t in tiers)
+        ):
+            raise MemoryEditError("applies must name always, on_topic or unstated.")
+        out["applies"] = sorted(set(tiers))
+    source = raw.get("source")
+    if source not in (None, ""):
+        if not isinstance(source, str) or len(source) > 200:
+            raise MemoryEditError("source must be text of at most 200 characters.")
+        out["source"] = source
+    status = raw.get("status")
+    if status not in (None, "", "active"):
+        if not isinstance(status, str) or status not in _STATUSES:
+            raise MemoryEditError("status must be active, forgotten, any, superseded or expired.")
+        out["status"] = status
+    recalled = raw.get("never_recalled")
+    if recalled not in (None, "", "0", False):
+        if recalled not in ("1", True):
+            raise MemoryEditError("never_recalled is 1 or absent.")
+        out["never_recalled"] = True
+    return out
+
+
+def _lesson_tier(value_json: Any) -> str:
+    """A lesson row's tier from its stored value: ``unstated`` when it names none."""
+    try:
+        value = json.loads(value_json) if isinstance(value_json, str) else None
+    except (ValueError, TypeError, RecursionError):
+        return "unstated"
+    applies = value.get("applies") if isinstance(value, dict) else None
+    return applies if applies in ("always", "on_topic") else "unstated"
 
 
 def _identity(item: Any, *, revision: bool = False) -> tuple[str, str]:
@@ -135,6 +192,12 @@ def _operation(raw: Any) -> dict:
     mode = raw.get("type")
     if mode == "forget" and set(raw) == {"type"}:
         return raw
+    if mode == "unforget" and set(raw) == {"type"}:
+        return raw
+    if mode == "set_tier" and set(raw) == {"type", "applies"}:
+        if raw["applies"] not in ("always", "on_topic"):
+            raise MemoryEditError("A lesson tier is always or on_topic.")
+        return raw
     if mode == "set" and set(raw) in ({"type", "value"}, {"type", "text"}):
         try:
             _json(raw)
@@ -177,6 +240,22 @@ def _record(row: Any) -> dict:
     return value
 
 
+def _effective_source(store: Any, row: Any) -> str:
+    """The source a record is returned with: its own, else its metadata's ``source_ref``.
+
+    A V1 experience's row carries no source; the records list fills it from metadata, so
+    a source filter must compare against that same value.
+    """
+    own = row["_source"] if "_source" in row.keys() else row["source"]
+    if own:
+        return str(own)
+    from kiro_crew.memory_record_metadata import get_record_metadata, record_identity_or_none
+
+    record_id = record_identity_or_none(row["kind"], row["id"])
+    meta = get_record_metadata(store.db, record_id) if record_id is not None else {}
+    return str(meta.get("source_ref", "") or "")
+
+
 def _rows(
     store: Any,
     query: dict,
@@ -205,12 +284,17 @@ def _rows(
         return f" AND {column} IN ({','.join('?' for _ in values)})" if values else " AND 0"
 
     tokens = _normalized(query["q"]).split()
+    status = query.get("status", "active")
+    live = {"active": " WHERE is_deleted = 0", "forgotten": " WHERE is_deleted = 1"}.get(
+        status, " WHERE 1"
+    )
     sql = (
         "SELECT CASE WHEN key LIKE 'lesson.%' THEN 'directive' ELSE 'fact' END AS kind, "
         "key AS id, key, value_json, value_json AS text, source, updated_at, '' AS tags, "
-        f"confidence AS importance FROM semantic_memory WHERE is_deleted = 0{clause('key', sem_ids)} UNION ALL "
-        "SELECT 'episode', id, NULL, NULL, text, '', created_at, tags, importance "
-        f"FROM episodic_memories WHERE is_deleted = 0{clause('id', epi_ids)}"
+        "confidence AS importance, is_deleted, NULL AS _recalled "
+        f"FROM semantic_memory{live}{clause('key', sem_ids)} UNION ALL "
+        "SELECT 'episode', id, NULL, NULL, text, '', created_at, tags, importance, is_deleted, "
+        f"last_accessed_at FROM episodic_memories{live}{clause('id', epi_ids)}"
     )
     # A search matches on three metadata fields too. One join reads them for every
     # row; a query per row cost most of a searched listing. The join key is
@@ -226,21 +310,51 @@ def _rows(
             " WHEN b.kind = 'episode' OR substr(b.id, 1, 4) = 'key:' THEN b.id"
             " ELSE 'key:' || b.id END"
         )
+    status_join, status_args = "", []
+    if status in _META_STATUSES:
+        # A superseded or expired row says why it left in its metadata, not its tombstone.
+        status_join = (
+            " JOIN memory_record_meta ms ON ms.status = ? AND ms.record_id = CASE"
+            " WHEN typeof(b.id) <> 'text' OR b.id = '' THEN NULL"
+            " WHEN b.kind = 'episode' OR substr(b.id, 1, 4) = 'key:' THEN b.id"
+            " ELSE 'key:' || b.id END"
+        )
+        status_args = [status]
+    elif status == "forgotten":
+        # Forgotten means the owner (or a bulk edit) dropped it; a row a newer one
+        # superseded, or one that expired, answers to its own status instead.
+        status_join = (
+            " LEFT JOIN memory_record_meta ms ON ms.record_id = CASE"
+            " WHEN typeof(b.id) <> 'text' OR b.id = '' THEN NULL"
+            " WHEN b.kind = 'episode' OR substr(b.id, 1, 4) = 'key:' THEN b.id"
+            " ELSE 'key:' || b.id END"
+            " WHERE COALESCE(ms.status, 'active') NOT IN ('superseded', 'expired')"
+        )
     if store._lineage == memory_schema.LINEAGE_CREW:
         sql = (
             f"SELECT b.*, p.derived_from, p.source AS _source, p.updated_at AS _updated{search_meta} "
             f"FROM ({sql}) b JOIN memory_items p ON p.id = "
-            f"CASE WHEN b.kind='episode' THEN b.id ELSE 'key:' || b.id END{search_join} ORDER BY b.kind,b.id"
+            f"CASE WHEN b.kind='episode' THEN b.id ELSE 'key:' || b.id END{search_join}{status_join} ORDER BY b.kind,b.id"
         )
     else:
-        sql = f"SELECT b.*, '' AS derived_from{search_meta} FROM ({sql}) b{search_join} ORDER BY b.kind,b.id"
-    cursor = store.db.execute(sql, sem_ids + epi_ids)
+        sql = f"SELECT b.*, '' AS derived_from{search_meta} FROM ({sql}) b{search_join}{status_join} ORDER BY b.kind,b.id"
+    cursor = store.db.execute(sql, sem_ids + epi_ids + status_args)
     matched = -1
     try:
         for row in cursor:
             if identities is not None and (row["kind"], row["id"]) not in identities:
                 continue
             if query["kind"] != "all" and row["kind"] != query["kind"]:
+                continue
+            if "applies" in query and (
+                row["kind"] != "directive"
+                or _lesson_tier(row["value_json"]) not in query["applies"]
+            ):
+                continue
+            if "source" in query and _effective_source(store, row) != query["source"]:
+                continue
+            # Only an experience records a recall (episodic search stamps it).
+            if query.get("never_recalled") and (row["kind"] != "episode" or row["_recalled"]):
                 continue
             if tokens:
                 text = row["text"]
@@ -260,7 +374,12 @@ def _rows(
             record_id = record_identity_or_none(row["kind"], row["id"])
             meta = get_record_metadata(store.db, record_id) if record_id is not None else {}
             record = dict(row)
-            for column in ("_m_category", "_m_subject", "_m_predicate"):
+            if not record.get("is_deleted"):
+                # A live row reads the same under every status filter: the column stays
+                # out, so its revision fingerprint matches the default (active) read an
+                # explicit selection re-checks against.
+                record.pop("is_deleted", None)
+            for column in ("_m_category", "_m_subject", "_m_predicate", "_recalled"):
                 record.pop(column, None)
             record["source"] = record.pop("_source", record["source"] or meta.get("source_ref", ""))
             record["updated_at"] = record.pop("_updated", record["updated_at"])
@@ -309,7 +428,14 @@ def _check_selection_size(matched: int, size: int) -> None:
         )
 
 
-def refresh_records(store: Any, items: Any = None, *, selection: Any = None) -> dict:
+def refresh_records(
+    store: Any, items: Any = None, *, selection: Any = None, status: Any = None
+) -> dict:
+    """Re-read explicit identities (or count a query's matches).
+
+    *status* (``active``, ``forgotten`` or ``any``) widens an explicit refresh past
+    live rows: an undo of a forget refreshes the forgotten rows it brings back.
+    """
     if selection is not None:
         selected = _selection(selection)
         if items is not None or "query" not in selected:
@@ -327,8 +453,9 @@ def refresh_records(store: Any, items: Any = None, *, selection: Any = None) -> 
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_EXPLICIT_ROWS:
         raise MemoryEditError("Select 1–500 record identities to refresh.")
     identities = list(dict.fromkeys(_identity(item) for item in items))
+    query = _query({"status": status} if status not in (None, "") else {})
     with store._db_lock:
-        entries = list(_rows(store, _query({}), identities))
+        entries = list(_rows(store, query, identities))
         for row in entries:
             _conflict_count(store, row)
     found = {(row["kind"], row["id"]) for row in entries}
@@ -500,8 +627,29 @@ def _after(store: Any, before: dict, operation: dict) -> dict | None:
     mode = operation["type"]
     if mode == "forget":
         return None
+    if mode == "unforget":
+        # Only a forgotten row comes back; a live one is unchanged.
+        return dict(before, _unforget=True) if before.get("is_deleted") else dict(before)
     after = dict(before)
     episode = before["kind"] == "episode"
+    if mode == "set_tier":
+        if before["kind"] != "directive":
+            return after
+        try:
+            value = json.loads(before["value_json"])
+        except (ValueError, TypeError):
+            return after
+        if not isinstance(value, dict) or value.get("applies") == operation["applies"]:
+            return after
+        tiered = dict(value, applies=operation["applies"])
+        error = store.validate_semantic(before["key"], tiered, 1.0, "user_explicit")
+        if error:
+            raise MemoryEditError(error[1], status=422)
+        after["value_json"] = _json(tiered)
+        after["text"] = after["value_json"]
+        # Where the lesson is sent changes, not who stated it: keep source and confidence.
+        after["_tier"] = True
+        return after
     value = before["text"] if episode else json.loads(before["value_json"])
     if not episode:
         # The stored value can hold NaN or Infinity (an imported fact) that
@@ -581,6 +729,9 @@ def _collect(store: Any, selection: dict, operation: dict) -> tuple[str, int, li
     explicit = {(item["kind"], item["id"]): item["revision"] for item in selection.get("items", [])}
     excluded = {(item["kind"], item["id"]) for item in selection.get("exclude", [])}
     query = selection.get("query", _query({}))
+    if operation["type"] == "unforget" and explicit:
+        # An undo names forgotten rows, which the default live-only filter skips.
+        query = _query({"status": "forgotten"})
     digest = hashlib.sha256()
     matched, size, changes = 0, 0, []
     for before in _rows(store, query, list(explicit) if explicit else None):
@@ -652,6 +803,8 @@ def _operation_label(after: dict | None) -> str:
     without touching the content, bring back a saved version, or replace the content."""
     if after is None:
         return "forget"
+    if after.get("_unforget"):
+        return "unforget"
     if after.get("_resolution"):
         return "resolve"
     if after.get("_restore"):
@@ -679,7 +832,7 @@ def _preview_response(
                     {
                         key: value
                         for key, value in after.items()
-                        if key not in {"_resolution", "_restore"}
+                        if key not in {"_resolution", "_restore", "_unforget", "_tier"}
                     }
                     if after is not None
                     else None
@@ -789,6 +942,11 @@ def _write(store: Any, before: dict, after: dict | None, now: str) -> None:
     resolving = bool(after and after.get("_resolution"))
     if resolving:
         pass  # Explicit review preserves the current content, source and embedding.
+    elif after is not None and after.get("_unforget"):
+        # The tombstone is cleared in place: the row keeps its id, content and vector.
+        store.db.execute(
+            f"UPDATE {relation} SET is_deleted = 0 WHERE {identity} = ?{guard}", (record_id,)
+        )
     elif after is None:
         store.db.execute(
             f"UPDATE {relation} SET is_deleted = 1 WHERE {identity} = ?{guard}", (record_id,)
@@ -798,6 +956,13 @@ def _write(store: Any, before: dict, after: dict | None, now: str) -> None:
         params = (after["text"], now, record_id) if crew else (after["text"], record_id)
         store.db.execute(
             f"UPDATE {relation} SET text = ?, embedding = NULL{extra} WHERE id = ?{guard}", params
+        )
+    elif after.get("_tier"):
+        extra = ", text = ?" if crew else ""
+        tier_set = (after["value_json"], now) + ((after["value_json"],) if crew else ())
+        store.db.execute(
+            f"UPDATE {relation} SET value_json = ?, updated_at = ?{extra} WHERE key = ?{guard}",
+            tier_set + (record_id,),
         )
     else:
         extra = ", text = ?" if crew else ""
@@ -845,7 +1010,18 @@ def _write(store: Any, before: dict, after: dict | None, now: str) -> None:
     )
 
 
-def apply_edit(store: Any, store_name: str, secret: bytes, token: Any) -> dict:
+def apply_edit(
+    store: Any,
+    store_name: str,
+    secret: bytes,
+    token: Any,
+    precondition: Callable[[Any], bool] | None = None,
+) -> dict:
+    """Apply a previewed edit in one write transaction.
+
+    *precondition*, when given, is called with the connection inside that transaction,
+    before anything is written; ``False`` refuses with ``review_item_stale``.
+    """
     payload = _decode(token, secret, store_name)
     receipt_key = "bulk_edit_receipt:" + hashlib.sha256(token.encode()).hexdigest()
     with store._db_lock:
@@ -862,6 +1038,12 @@ def apply_edit(store: Any, store_name: str, secret: bytes, token: Any) -> dict:
                 raise MemoryEditError(
                     "The matching memories changed. Review a fresh preview before applying.",
                     "stale_memory_preview",
+                    409,
+                )
+            if precondition is not None and not precondition(store.db):
+                raise MemoryEditError(
+                    "This proposal is out of date: a memory it names has changed or is gone.",
+                    "review_item_stale",
                     409,
                 )
             now = datetime.now(timezone.utc).isoformat()

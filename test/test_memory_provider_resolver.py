@@ -1,7 +1,8 @@
 """``route_for``: the one place a memory provider is chosen.
 
 With no provider configured the answer is the shared builtin route and nothing is
-read. A configured provider answers only when its app is enabled, the owner consented to its egress and it can hold the store; otherwise the route
+read. A configured provider answers only when its app is enabled, policy allows it,
+the owner consented to its egress and it can hold the store; otherwise the route
 says why, and Crew's own memory never stands in. A session is frozen to the choice
 it started with.
 """
@@ -9,9 +10,16 @@ it started with.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
-from memory_provider_helpers import FIXTURE_ID, READONLY_ID, fixture_provider, set_provider
+from memory_provider_helpers import (  # noqa: F401
+    FIXTURE_ID,
+    READONLY_ID,
+    fixture_provider,
+    memory_provider_preview_on,
+    set_provider,
+)
 
 from kiro_crew.config import loader
 from kiro_crew.history import ConversationLog
@@ -119,9 +127,10 @@ def test_a_chat_created_before_the_switch_stays_on_crew_memory(fixture) -> None:
     "setup, reason",
     [
         (lambda mp, f: mp.setattr(resolver, "_shared_crew_on", lambda: True), "Shared Crew"),
+        (lambda mp, f: mp.setattr(resolver, "_governance_permits", lambda key: False), "policy"),
         (lambda mp, f: setattr(f.health, "port", None), "connect"),
     ],
-    ids=["shared_crew", "unhealthy"],
+    ids=["shared_crew", "policy", "unhealthy"],
 )
 def test_an_unavailable_provider_never_falls_back(monkeypatch, fixture, setup, reason) -> None:
     set_provider("replace", FIXTURE_ID)
@@ -131,6 +140,36 @@ def test_an_unavailable_provider_never_falls_back(monkeypatch, fixture, setup, r
     assert route.replaces and route.provider is None
     assert reason in route.unavailable
     assert not resolver.builtin_writes_allowed("default")
+
+
+def test_sessionless_governance_honors_the_host_profile(monkeypatch, tmp_path) -> None:
+    from kiro_crew.platform import context, governance_profiles
+    from kiro_crew.platform.governance import parse_policy
+
+    ceiling = parse_policy(
+        {
+            "version": 1,
+            "boot": {"fail_closed": True},
+            "capabilities": {"memory_provider": {"enabled": True}},
+        }
+    )
+    monkeypatch.setattr(context, "current_context", lambda: SimpleNamespace(governance=ceiling))
+    monkeypatch.setattr(governance_profiles, "_PROFILES_DIR", tmp_path)
+    monkeypatch.setattr(governance_profiles, "_STORE", governance_profiles.ProfileStore())
+    (tmp_path / "host.json").write_text(
+        json.dumps(
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                resolver.GOVERNANCE_SCOPE: {"enabled": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert resolver._governance_permits("dashboard:chat-1")
+    assert not resolver._governance_permits(None)
+    assert not resolver._governance_permits("")
 
 
 def test_a_missing_app_is_unavailable(fixture) -> None:

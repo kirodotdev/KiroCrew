@@ -25,6 +25,8 @@ import MemoryFailuresCard from './MemoryFailuresCard'
 import MemberMemoryPanel from './MemberMemoryPanel'
 import MemoryRecordsEditor from './MemoryRecordsEditor'
 import MemoryDocCard from './MemoryDocCard'
+import MemoryProviderPicker from '../settings/MemoryProviderPicker'
+import { useMemoryProviderPreviewSetting } from '../settings/memoryProviderPreviewSetting'
 import Modal from '../../components/Modal'
 import { useConfirm } from '../../components/ConfirmDialog'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -277,6 +279,8 @@ export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, sele
 
 function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, focusFailures = false }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusFailures?: boolean }) {
   const queryClient = useQueryClient()
+  const memoryProviderPreview = useMemoryProviderPreviewSetting()
+  const memoryProviderPreviewActive = !!memoryProviderPreview.setting?.active
   // The failed-session link leaves this tab; through the same guard as the
   // outer tab's exits, since the drafts held here are what the guard protects.
   const navigate = useNavigate()
@@ -743,6 +747,8 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, 
     })
   }
   return (<>
+    {memoryProviderPreviewActive && <MemoryProviderPicker />}
+    {memoryProviderPreview.failed && <ErrorNotice variant="inline" askAgent message={i18nT('pages.overview.memoryProvider.load_failed')} />}
     <Card><CardTitle>{i18nT('pages.overview.memoryTab.memory_settings')} <InfoTip text={i18nT('pages.overview.memoryTab.controls_how_conversation_history_is_consolidate')} /></CardTitle>
       <div className="flex gap-3 items-end flex-wrap">
         <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">

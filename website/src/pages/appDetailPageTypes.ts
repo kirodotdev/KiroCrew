@@ -126,6 +126,8 @@ interface AppPermissions {
   cron?: boolean
   network?: boolean
   memory?: boolean | string
+  /** Grants the `/api/memory/provider` routes; held like that one `api` entry. */
+  memoryAdmin?: boolean
   sessionApproval?: boolean
   memberThreads?: boolean
   workerAutoApprove?: boolean

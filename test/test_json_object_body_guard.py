@@ -307,6 +307,14 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # A benchmark run or eval-set request: suite and provider ids, cut-offs, budgets
     # and an acknowledgement per provider, far under the shared 64 KB ceiling.
     "handlers/memory_provider_bench.py::_body": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # A review decision names one queue item and accept or reject.
+    "handlers/memory_app_host.py::api_memory_review_resolve": ("4096", _BOUNDED_CONTROL_FIELDS),
+    # A member's SOUL.md: at most 16,000 characters, twelve bytes each at worst (an
+    # escaped surrogate pair), plus the JSON envelope.
+    "handlers/memory_app_host.py::api_member_soul": (
+        "SOUL_MAX_CHARS * _JSON_ESCAPED_BYTES_PER_CHAR + 1024",
+        _BOUNDED_EXPLICIT,
+    ),
     # One item: a ``document`` carries up to 64,000 characters, which escaping can
     # grow to 768 KB, so the handler owns a 1 MiB cap beside the contract caps.
     "handlers/memory_provider.py::api_memory_provider_item": (

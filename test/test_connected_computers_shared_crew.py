@@ -33,8 +33,8 @@ def computer_config(monkeypatch):
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
     monkeypatch.setattr("kiro_crew.session_environment.session_environments_enabled", lambda: True)
     monkeypatch.delenv(preview.PREVIEW_ENV, raising=False)
-    monkeypatch.setattr(preview, "_boot_stored", None)
-    monkeypatch.setattr(preview, "read_stored", lambda: False)
+    monkeypatch.setattr(preview._SWITCH, "_boot_stored", None)
+    monkeypatch.setattr(preview._SWITCH, "read_stored", lambda: False)
     return cfg
 
 
@@ -43,10 +43,10 @@ def shared_active(request, computer_config, monkeypatch):
     if request.param == "environment":
         monkeypatch.setenv(preview.PREVIEW_ENV, "1")
     elif request.param == "stored":
-        monkeypatch.setattr(preview, "read_stored", lambda: True)
+        monkeypatch.setattr(preview._SWITCH, "read_stored", lambda: True)
         assert preview.snapshot_at_start() is True
         # A pending Off must not open computers before the gateway restarts.
-        monkeypatch.setattr(preview, "read_stored", lambda: False)
+        monkeypatch.setattr(preview._SWITCH, "read_stored", lambda: False)
     else:
 
         def unreadable():
@@ -128,7 +128,7 @@ def test_shared_picker_offers_no_computer(shared_active, monkeypatch):
 def test_inactive_shared_crew_keeps_the_computer_switch(computer_config, monkeypatch, stored):
     assert preview.snapshot_at_start() is False
     # A pending On is not the running Shared Crew state either.
-    monkeypatch.setattr(preview, "read_stored", lambda: True)
+    monkeypatch.setattr(preview._SWITCH, "read_stored", lambda: True)
     computer_config.dashboard.feature_previews[flag.PREVIEW_NAME] = stored
     assert flag.preview_on(computer_config) is stored
     assert flag.local_enabled(computer_config) is stored

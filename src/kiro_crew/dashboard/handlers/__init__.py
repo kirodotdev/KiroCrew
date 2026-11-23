@@ -332,6 +332,15 @@ from kiro_crew.dashboard.handlers.memory_admin import (  # noqa: E402, F401
     api_memory_retired_restore,
     api_memory_stores,
 )
+
+# ── Memory manager app host routes (handlers/memory_app_host.py) ──
+from kiro_crew.dashboard.handlers.memory_app_host import (  # noqa: E402, F401
+    api_member_soul,
+    api_memory_app_host,
+    api_memory_context_stack,
+    api_memory_review,
+    api_memory_review_resolve,
+)
 from kiro_crew.dashboard.handlers.memory_edit import (  # noqa: E402, F401
     api_memory_bulk_apply,
     api_memory_bulk_preview,

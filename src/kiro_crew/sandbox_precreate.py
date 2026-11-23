@@ -55,6 +55,8 @@ from kiro_crew.sandbox_leaves import (
 #:      there is nothing to resume or clean up;
 #:    * ``shared_crew_preview.json`` — ``shared_crew.preview.read_stored`` reads
 #:      ``{}`` as OFF, which is what an absent keystone means;
+#:    * ``memory_provider_preview.json`` — ``memory_provider.preview.read_stored``
+#:      reads ``{}`` as OFF, the same;
 #:    * ``settings_seeds.json`` — ``acp.seed_provenance._load`` finds no ``seeds``
 #:      mapping in ``{}`` and returns having recorded nothing, so every settings
 #:      path reads as unowned. Identical to absent, and the leaf that most needs
@@ -70,6 +72,7 @@ from kiro_crew.sandbox_leaves import (
 #:    its leave-it-alone branch: the seed is not refreshed, and nothing is overwritten
 #:    or unlinked. A writer that rewrites in place (``atomic_write.rewrite_in_place``:
 #:    ``decisions_consent.json``, ``shared_crew_preview.json``,
+#:    ``memory_provider_preview.json``,
 #:    ``credential_redaction.json``, ``mcp_body_fields.json``) keeps the inode, so
 #:    its reader then sees the owner's record under the seal; one that publishes by
 #:    rename detaches the seal in a running sandbox until it respawns (the
@@ -439,6 +442,10 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # stays on the same inode and a sandboxed reader sees the owner's choice,
     # never a writable copy (criterion 2).
     "shared_crew_preview.json",
+    # The memory provider preview switch: ``memory_provider.preview.read_stored``
+    # reads it exactly as the Shared Crew switch above reads its own, and its
+    # writer rewrites in place the same way (criteria 1 and 2).
+    "memory_provider_preview.json",
     # Consent to forward SSH_AUTH_SOCK: ``ssh_auth_sock_consent.is_granted``
     # reports no consent for an absent, empty, AND unreadable store alike, so a
     # pre-created ``{}`` means exactly "not forwarded" (criterion 1); the writer

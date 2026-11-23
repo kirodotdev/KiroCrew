@@ -19,6 +19,10 @@ The stored choice is read once, when the gateway starts
 snapshot for the life of the process. Routes, the direct listener and the
 lifecycle hooks are wired at start, so a changed choice applies on the next
 start, and the switch reports ``restart_required`` until then.
+
+:class:`PreviewSwitch`, :meth:`PreviewSetting.of` and :func:`gate` are the
+mechanism every owner's preview switch of this shape runs through; the memory
+provider switch (:mod:`kiro_crew.memory_provider.preview`) binds them too.
 """
 
 from __future__ import annotations
@@ -39,14 +43,47 @@ logger = logging.getLogger(__name__)
 #: The gateway environment variable that opts this host into the preview.
 PREVIEW_ENV = "KIROCREW_SHARED_CREW_PREVIEW"
 
-_LOCK = threading.Lock()
-#: The stored choice as read at gateway start; ``None`` until then.
-_boot_stored: bool | None = None
 
+class PreviewSwitch:
+    """One preview switch: an environment override and a keystone read once at start."""
 
-def env_override() -> bool:
-    """Whether the environment forces the preview on. Exactly ``1`` does."""
-    return os.environ.get(PREVIEW_ENV, "") == "1"
+    def __init__(self, env: str, path: Callable[[], Any]) -> None:
+        self._env = env
+        self._path = path
+        self._lock = threading.Lock()
+        #: Serializes the owner's writes; the switch's route is the only writer.
+        self._write_lock = threading.Lock()
+        #: The stored choice as read at gateway start; ``None`` until then.
+        self._boot_stored: bool | None = None
+
+    def env_override(self) -> bool:
+        return os.environ.get(self._env, "") == "1"
+
+    def read_stored(self) -> bool:
+        path = self._path()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except Exception:  # noqa: BLE001 -- an unreadable record reads as the default
+            logger.debug("%s unreadable; reading as off", path.name, exc_info=True)
+            return False
+        return isinstance(raw, dict) and raw.get("enabled") is True
+
+    def write_stored(self, enabled: bool) -> None:
+        data = json.dumps({"enabled": bool(enabled)}, indent=2, sort_keys=True).encode("utf-8")
+        with self._write_lock:
+            rewrite_in_place(self._path(), data)
+
+    def snapshot_at_start(self) -> bool:
+        with self._lock:
+            if self._boot_stored is None:
+                self._boot_stored = self.read_stored()
+            return self._boot_stored
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            self._boot_stored = None
 
 
 def _path() -> Any:
@@ -57,20 +94,17 @@ def _path() -> Any:
     return shared_crew_preview_path()
 
 
+_SWITCH = PreviewSwitch(PREVIEW_ENV, _path)
+
+
+def env_override() -> bool:
+    """Whether the environment forces the preview on. Exactly ``1`` does."""
+    return _SWITCH.env_override()
+
+
 def read_stored() -> bool:
     """The owner's stored choice. Only a JSON ``true`` is on; anything else is off."""
-    try:
-        raw = json.loads(_path().read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return False
-    except Exception:  # noqa: BLE001 -- an unreadable record reads as the default
-        logger.debug("shared_crew_preview.json unreadable; reading as off", exc_info=True)
-        return False
-    return isinstance(raw, dict) and raw.get("enabled") is True
-
-
-#: Serializes the owner's writes; the route is the only writer.
-_WRITE_LOCK = threading.Lock()
+    return _SWITCH.read_stored()
 
 
 def write_stored(enabled: bool) -> None:
@@ -80,18 +114,12 @@ def write_stored(enabled: bool) -> None:
     running Linux sandbox's read-only mount of it stays sealed. A torn read during
     the rewrite reads as off, the narrow answer.
     """
-    data = json.dumps({"enabled": bool(enabled)}, indent=2, sort_keys=True).encode("utf-8")
-    with _WRITE_LOCK:
-        rewrite_in_place(_path(), data)
+    _SWITCH.write_stored(enabled)
 
 
 def snapshot_at_start() -> bool:
     """Read the stored choice once and keep it for this process; later calls return it."""
-    global _boot_stored
-    with _LOCK:
-        if _boot_stored is None:
-            _boot_stored = read_stored()
-        return _boot_stored
+    return _SWITCH.snapshot_at_start()
 
 
 def preview_enabled() -> bool:
@@ -116,6 +144,16 @@ class PreviewSetting:
     #: The next start will answer differently from this one.
     restart_required: bool
 
+    @classmethod
+    def of(cls, stored: bool, forced: bool, active: bool) -> PreviewSetting:
+        """The setting for a stored choice, an override and what this process runs."""
+        return cls(
+            enabled=stored,
+            active=active,
+            env_override=forced,
+            restart_required=(forced or stored) != active,
+        )
+
     def to_dict(self) -> dict[str, bool]:
         return {
             "enabled": self.enabled,
@@ -127,22 +165,28 @@ class PreviewSetting:
 
 def current_setting() -> PreviewSetting:
     """Read the stored choice and compare it with what this process runs."""
-    stored = read_stored()
-    forced = env_override()
-    active = preview_enabled()
-    return PreviewSetting(
-        enabled=stored,
-        active=active,
-        env_override=forced,
-        restart_required=(forced or stored) != active,
-    )
+    return PreviewSetting.of(read_stored(), env_override(), preview_enabled())
 
 
 def reset_for_tests() -> None:
     """Forget the boot snapshot so the next read takes a fresh one."""
-    global _boot_stored
-    with _LOCK:
-        _boot_stored = None
+    _SWITCH.reset_for_tests()
+
+
+def gate(
+    enabled: Callable[[], bool], handler: Callable[[Any], Awaitable[Any]]
+) -> Callable[[Any], Awaitable[Any]]:
+    """Wrap *handler* to answer 404 while *enabled* is false, asked per request."""
+
+    @functools.wraps(handler)
+    async def gated(request: Any) -> Any:
+        if not enabled():
+            from aiohttp import web
+
+            raise web.HTTPNotFound()
+        return await handler(request)
+
+    return gated
 
 
 def preview_only(handler: Callable[[Any], Awaitable[Any]]) -> Callable[[Any], Awaitable[Any]]:
@@ -153,16 +197,7 @@ def preview_only(handler: Callable[[Any], Awaitable[Any]]) -> Callable[[Any], Aw
     not with the invite routes, so a boot-path module can gate one route
     without importing a preview-only module.
     """
-
-    @functools.wraps(handler)
-    async def gated(request: Any) -> Any:
-        if not preview_enabled():
-            from aiohttp import web
-
-            raise web.HTTPNotFound()
-        return await handler(request)
-
-    return gated
+    return gate(lambda: preview_enabled(), handler)
 
 
 def no_maintenance() -> None:

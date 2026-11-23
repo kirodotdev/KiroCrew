@@ -13,7 +13,8 @@ is reset and done again. Per-query results hold ids and scores only, never memor
 or query text, so an own-memory run leaves no text in its results or report.
 
 State lives in :func:`~kiro_crew.config.loader_locations.memory_provider_bench_dir`
-(a READONLY crew-home leaf). The newest :data:`RUNS_KEPT` runs are kept.
+(a READONLY crew-home leaf). The newest :data:`RUNS_KEPT` plans and, apart, the
+newest :data:`RUNS_KEPT` real runs are kept.
 """
 
 from __future__ import annotations
@@ -399,7 +400,16 @@ def list_runs() -> list[BenchRun]:
 
 
 def prune() -> None:
-    for run in list_runs()[RUNS_KEPT:]:
+    """Keep the newest :data:`RUNS_KEPT` plans and, apart, the newest real runs.
+
+    A plan (``planned``, which an app may make) never evicts a run, so a paused or
+    failed run's ledger, which cleanup, cancel and resume read, stays until newer runs
+    push it out.
+    """
+    runs = list_runs()
+    plans = [r for r in runs if r.state == "planned"]
+    real = [r for r in runs if r.state != "planned"]
+    for run in plans[RUNS_KEPT:] + real[RUNS_KEPT:]:
         if run.state in ACTIVE_STATES:
             continue
         for suffix in (".json", ".ledger.jsonl", ".results.jsonl", ".report.json"):

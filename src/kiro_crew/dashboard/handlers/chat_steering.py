@@ -321,10 +321,17 @@ async def _chat_rows(
     slot = state._slots.get(name)
     if slot is None:
         return slot_not_found()
-    gate = deny_app_slot_session_access if session_gate else deny_app_slot_access
-    denied = gate(request.get("app", ""), slot, name, operation)
-    if denied is not None:
-        return denied
+    from ._shared import MEMORY_ADMIN_GRANT
+
+    app = request.get("app", "")
+    # The memory app host facade dispatched this for an app whose approved
+    # ``permissions.memoryAdmin`` grant names this exact route; the owner's chat
+    # steering is what that grant manages, so the app's own-slot rule does not apply.
+    if not (app and request.get(MEMORY_ADMIN_GRANT) == f"app:{app}"):
+        gate = deny_app_slot_session_access if session_gate else deny_app_slot_access
+        denied = gate(app, slot, name, operation)
+        if denied is not None:
+            return denied
     session_key = effective_session_key(slot)
     provider = state.sessions.get_provider(session_key)
     if provider is not None and not hasattr(provider, "native_steering"):

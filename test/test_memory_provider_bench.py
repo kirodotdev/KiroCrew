@@ -11,7 +11,11 @@ import json
 from pathlib import Path
 
 import pytest
-from memory_provider_helpers import FIXTURE_ID, fixture_provider  # noqa: F401
+from memory_provider_helpers import (  # noqa: F401
+    FIXTURE_ID,
+    fixture_provider,
+    memory_provider_preview_on,
+)
 
 from kiro_crew.eval.bench import own_memory, provider_run, report, scorers, stats
 from kiro_crew.eval.bench.item_corpus import BenchItem, ItemCorpus, ItemQuery, ItemUnit, ranked_ids
@@ -268,6 +272,24 @@ def test_a_crashed_run_resumes_at_the_next_unit(tmp_path) -> None:
     assert again.state == "done"
     ingests = [r["q"] for r in provider_run.read_results(run.id) if r.get("cat") == "ingest"]
     assert sorted(ingests) == [f"u{n}:ingest" for n in range(4)]
+
+
+def test_many_plans_never_evict_a_real_run(tmp_path, monkeypatch) -> None:
+    # An app may make plans; a paused run's ledger is what cleanup and resume read.
+    monkeypatch.setattr(provider_run, "_dir", lambda: tmp_path)
+    paused = _run(["baseline:recency"])
+    paused.state, paused.created_at = "paused", 1.0
+    provider_run.save(paused)
+    provider_run._append(paused.id, ".ledger.jsonl", [{"op": "created"}])
+    for index in range(provider_run.RUNS_KEPT + 5):
+        plan = _run(["baseline:recency"])
+        plan.created_at = 2.0 + index
+        provider_run.save(plan)
+        provider_run.prune()
+    assert (tmp_path / f"{paused.id}.json").exists()
+    assert provider_run.read_ledger(paused.id) == [{"op": "created"}]
+    plans = [r for r in provider_run.list_runs() if r.state == "planned"]
+    assert len(plans) == provider_run.RUNS_KEPT
 
 
 def test_the_llm_budget_stops_the_run_with_a_partial_report(tmp_path) -> None:
@@ -612,6 +634,34 @@ def test_a_secret_in_an_items_scopes_or_meta_drops_the_item() -> None:
     assert own_memory._item_redacted(BenchItem("b", "Uses Helix.", scopes=("repo:" + PLANTED,)))
     assert own_memory._item_redacted(BenchItem("c", "Uses Helix.", meta=(("crew.tags", PLANTED),)))
     assert own_memory._item_redacted(BenchItem(f"default:fact:pref.{PLANTED}", "Uses Helix."))
+
+
+def test_include_documents_decides_whether_v1_documents_join_the_set(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.memory_provider import builtin
+
+    live = tmp_path / "live" / "memory.db"
+    live.parent.mkdir()
+    _seed_store(live)
+    doc = {"content": "Prefers Helix and short replies.", "updated_at": None}
+    snapshot = {"preferences": doc, "projects": {"content": ""}, "history": []}
+    memory = SimpleNamespace(markdown_snapshot=lambda: snapshot)
+    monkeypatch.setattr(builtin.BUILTIN, "_memory", lambda scope: memory)
+
+    def kinds(include: bool) -> dict[str, int]:
+        options = own_memory.EvalSetOptions.from_request(
+            {"stores": ["default"], "probes": ["P1"], "sample": 10, "include_documents": include}
+        )
+        plan = asyncio.run(
+            own_memory.build(
+                own_memory.new_evalset_id(), options, resolve_path=lambda s: live, dry_run=True
+            )
+        )
+        return plan.items_by_kind
+
+    assert kinds(True).get("document") == 1
+    assert "document" not in kinds(False)
 
 
 def test_a_failed_eval_set_build_leaves_no_copy(tmp_path) -> None:

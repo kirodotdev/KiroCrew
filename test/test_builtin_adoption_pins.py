@@ -588,6 +588,8 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {},
             {"app.json permissions.chatLaunch": 10},
         ),
+        ({"permissions": {"memoryAdmin": True}}, {}, {"app.json permissions.memoryAdmin": 10}),
+        ({"permissions": {"memoryAdmin": "true"}}, {}, {}),
         (
             {},
             {"backend/_host.py": "def f(ctx):\n    return ctx.webhook_source.refusal()\n"},
