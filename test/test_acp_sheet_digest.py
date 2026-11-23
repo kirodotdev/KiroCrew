@@ -170,6 +170,48 @@ def test_a_quoted_multi_line_tsv_cell_stays_one_cell_and_the_ids_stay_integers(u
     assert "sample: 1 | line one line two" in text
 
 
+def test_a_semicolon_csv_is_read_as_columns(uploads, digest_on):
+    body = 'id;name;price\r\n1;a;1,5\r\n2;"b;c";2,5\r\n'
+    text = _text(str(_stage(uploads, "eu_sheet.csv", body)))
+    assert "2 data rows; 3 columns: id (integer), name (text), price (text)" in text
+    assert "sample: 1 | a | 1,5\nsample: 2 | b;c | 2,5" in text
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "shape"),
+    [
+        ("quoted.csv", '"a;b",c\n1,2\n', "2 columns: a;b (integer), c (integer)"),
+        ("single.csv", "notes\nfoo\nbar\n", "1 columns: notes (text)"),
+        ("tabbed.tsv", "a;b\n1;2\n", "1 columns: a;b (text)"),
+        ("lone.csv", "notes; more\nfoo\nbar\n", "1 columns: notes; more (text)"),
+        ("ragged.csv", "a;b;c\n1;2\n3;4;5\n", "1 columns: a;b;c (text)"),
+        ("mixed.csv", "a;b,c\n1;2,3\n", "2 columns: a;b (text), c (integer)"),
+        ("onlyquote.csv", '"a;b"\n"c;d"\n', "1 columns: a;b (text)"),
+    ],
+)
+def test_a_file_that_is_not_plainly_semicolon_separated_keeps_its_old_reading(
+    uploads, digest_on, name, body, shape
+):
+    assert shape in _text(str(_stage(uploads, name, body)))
+
+
+def test_a_comma_csv_with_a_quoted_multi_line_header_stays_comma_read(uploads, digest_on):
+    body = '"item\nname",cost;currency\nwidget,10;EUR\n'
+    text = _text(str(_stage(uploads, "multi_comma.csv", body)))
+    assert "1 data rows; 2 columns: item name (text), cost;currency (text)" in text
+
+
+def test_a_semicolon_csv_with_a_quoted_multi_line_header_is_read_with_semicolons(
+    uploads, digest_on
+):
+    for name, body in (
+        ("multi_semi.csv", '"item\nname";cost\nwidget;10\n'),
+        ("multi_semi_comma.csv", '"item,\nname";cost\nwidget;10\n'),
+    ):
+        text = _text(str(_stage(uploads, name, body)))
+        assert "1 data rows; 2 columns: item" in text and "cost (integer)" in text, name
+
+
 def test_a_csv_keeps_its_quote_rules_and_an_ordinary_digest_is_unchanged(uploads, digest_on):
     body = 'k,v\n"a, b","line one\nline two"\nc,d\n'
     text = _text(str(_stage(uploads, "ab_pin.csv", body)))
