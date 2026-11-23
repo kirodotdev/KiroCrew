@@ -33,9 +33,10 @@ cannot guarantee removal after a crash or for undocumented engine storage.
 Each harness's own record of a restricted session goes at teardown too. An
 OpenCode session's rows (its session, messages, parts, event log and child
 sessions) are deleted from OpenCode's `opencode.db` after the process ends
-(`agent_sdk/opencode_transcripts.py`). A pi session is deleted by pi itself: the
-provider sends pi-acp's advertised `session/delete` before the process ends, which
-removes pi's session file and pi-acp's map entry. Persistent sessions keep both.
+(`agent_sdk/opencode_transcripts.py`). A pi or goose session is deleted by the
+harness itself: the provider sends its advertised `session/delete` before the process
+ends, which removes pi's session file and pi-acp's map entry, or the session from
+goose's own session store. Persistent sessions keep their records.
 
 The ordinary host sandbox and backend capability checks apply independently.
 Member memory requires no extra OS filesystem view, HMAC capability or platform
