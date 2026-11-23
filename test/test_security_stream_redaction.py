@@ -1177,6 +1177,31 @@ class TestStreamRedactor:
         emitted = r.feed(blob) + r.flush()
         assert emitted == blob  # committed in full, nothing dropped
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            'see password="Zq8vLm2 Kd9pRt4" ok',
+            "密码 password = 'Zq8vLm2 Kd9pRt4'",
+            'see password="Zq8v密Lm2 Kd9p" ok',
+        ],
+    )
+    def test_a_quoted_value_whose_label_already_streamed_is_still_redacted(self, text: str) -> None:
+        """A space inside a quoted value lets the label stream on its own, so
+        the value's open unit starts in text already sent. It still holds the
+        rest, and every split equals the whole-text redaction."""
+        from kiro_crew.security import StreamRedactor, redact
+
+        whole = redact(text)
+        assert "Kd9p" not in whole
+        n = len(text)
+        for a in range(1, n):
+            for b in range(a, n):
+                bounds = sorted({0, a, b, n})
+                r = StreamRedactor()
+                pieces = zip(bounds, bounds[1:], strict=False)
+                out = "".join(r.feed(text[x:y]) for x, y in pieces) + r.flush()
+                assert out == whole, (a, b, out)
+
 
 class TestScanMemoryImportGuard:
     """scan_memory()'s optional vector_memory import must degrade gracefully on

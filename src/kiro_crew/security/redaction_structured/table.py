@@ -392,6 +392,7 @@ ROWS: tuple[Mapping[str, Any], ...] = (
             "password",
             "passwd",
             "secret",
+            "token",
             "api_key",
             "apikey",
             "api_secret",

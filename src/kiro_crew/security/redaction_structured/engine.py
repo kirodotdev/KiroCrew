@@ -112,9 +112,11 @@ def scan(
         hits += found
         opens += op
 
-    live = [o for o in opens if o >= origin]
+    # An open unit runs to the end of the text, so one that started before
+    # ``origin`` (its label already streamed) still holds the text after it.
+    live = [max(o, origin) for o in opens]
     replace_from = min(live) if live else None
-    live += [o for o in value_opens if o >= origin]
+    live += [max(o, origin) for o in value_opens]
     return ScanResult(_outside_tags(text, hits), min(live) if live else None, replace_from)
 
 

@@ -1396,4 +1396,6 @@ def _default_workspace_base() -> Path:
 
 def _safe_dir_name(key: str) -> str:
     """Sanitize a session key into a safe directory name."""
-    return key.replace("/", "_").replace("\\", "_").replace(":", "_").replace(" ", "_")
+    name = key.replace("/", "_").replace("\\", "_").replace(":", "_").replace(" ", "_")
+    # A key of "." or ".." would otherwise name the folder itself or its parent.
+    return f"_{name}" if name in (".", "..") else name

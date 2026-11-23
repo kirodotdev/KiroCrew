@@ -171,3 +171,12 @@ def test_adversarial_input_costs_linear_work_whole(build: Callable[[int], str]) 
 @pytest.mark.parametrize("build", [pytest.param(b, id=n) for n, b in _adversarial()])
 def test_adversarial_input_costs_linear_work_streamed(build: Callable[[int], str]) -> None:
     assert_linear_work(build, _streamed)
+
+
+@pytest.mark.parametrize("window", [' password="Zq8v', ' password="Zq8v Lm', ' password="Zq8v密'])
+def test_an_open_unit_that_started_before_the_origin_still_holds(window: str) -> None:
+    """The label sits in the look-behind (before ``origin``) and its value is
+    still open, so the scan reports it open from ``origin`` instead of dropping it."""
+    from kiro_crew.security.redaction_structured.engine import scan
+
+    assert scan(window, final=False, origin=1).open_from == 1

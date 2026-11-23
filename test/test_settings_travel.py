@@ -533,7 +533,11 @@ class TestCliRestoreRefusesAnUnusableSettingsDocument:
             [str(tarball), "--mode", mode, "--components", "config", "--force"] + unpinnable_argv()
         )
 
-        assert ret != 0
+        if name == "config.local.json" and mode == "merge":
+            # A merge never installs the overlay, so its bundle copy cannot refuse the restore.
+            assert ret == 0
+        else:
+            assert ret != 0
         assert (live.read_bytes() if live.exists() else None) == before
 
 

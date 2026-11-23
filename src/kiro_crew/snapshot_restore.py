@@ -24,6 +24,7 @@ import os
 import shutil
 import stat as _stat
 from contextlib import ExitStack, closing
+from contextvars import ContextVar
 from datetime import timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, cast
@@ -50,6 +51,7 @@ from kiro_crew.snapshot_components import (
     _FLAT_DOCUMENT_VALIDATORS,
     _JSON_OBJECT_LISTS,
     _LOCKED_DOCUMENT_TREES,
+    _MERGE_NEVER_INSTALLS_FILES,
     _TREE_DOCUMENT_VALIDATORS,
     _WHOLE_TREE_COMPONENTS,
     COMPONENT_JSON_OBJECTS,
@@ -64,6 +66,10 @@ from kiro_crew.snapshot_components import (
     safe_tree_root,
 )
 from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+
+host_local_installable: ContextVar[frozenset[str]] = ContextVar(
+    "host_local_installable", default=frozenset()
+)
 
 
 def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
@@ -200,6 +206,23 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
             ) from e
         _refuse_dropped_entries(label, dropped)
         return
+    if validator == "config_document":
+        import json
+
+        from kiro_crew.archive_config_vetting import config_document_refusal
+
+        try:
+            parsed = json.loads(src.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
+            return  # the JSON-object check has already refused an unreadable document
+        why = config_document_refusal(parsed)
+        if why:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot is not safe to install: {why}.\n"
+                "   Refusing to restore it: the roster and workspace entries become file "
+                "paths, so one that names a path rather than a file or folder is not applied."
+            )
+        return
     raise AssertionError(f"no validator named {validator!r}")
 
 
@@ -334,11 +357,25 @@ def _backup_and_copy(
     ``O_EXCL``, not by name through ``shutil.copy2``: a by-name write follows a data-home
     component swapped for a link, or a symlink left at the core file's name. A name still
     occupied after the backup move is refused instead of written through.
+
+    A component's ``host_local`` files are neither moved nor installed unless this
+    caller explicitly marks one installable for its checked import. The others name
+    paths on the machine that made the archive, so this install's copy stays.
     """
+    installable = host_local_installable.get()
+    host_local = frozenset(f for f in COMPONENTS[component].host_local if f not in installable)
+    for f in host_local:
+        if os.path.lexists(snap / f):
+            kept = "; this install's copy is kept" if os.path.lexists(mc / f) else ""
+            print(
+                f"  ↩  {f}: not restored (the backup's copy points at the machine "
+                f"that made it){kept}."
+            )
+    files = [f for f in CORE_FILES.get(component, ()) if f not in host_local]
     if not _facade()._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {component!r}"
     ):
-        for f in CORE_FILES.get(component, ()):
+        for f in files:
             # Validated before the live file is touched, and a symlink at the live name is
             # MOVED aside rather than skipped -- the same two properties the pinned branch
             # has. Skipping would skip both the backup AND the replacement, so the archive's
@@ -388,7 +425,7 @@ def _backup_and_copy(
                 backup, what=f"pre-restore backup for {component!r}"
             )
             try:
-                for f in CORE_FILES.get(component, ()):
+                for f in files:
                     live = mc / f
                     # Checked BEFORE the live file is touched: the archive is untrusted, and
                     # finding a FIFO or directory only after the move would leave nothing
@@ -595,6 +632,8 @@ def _refuse_corrupt_source_databases(
         files are installed only where their own destination is missing.
         """
         assert mc_for_merge is not None
+        if rel in _MERGE_NEVER_INSTALLS_FILES:
+            return False  # merge never installs it, so its bundle copy cannot refuse
         if rel == "crons.json":
             return True
         if rel == "memory_index.db":
@@ -613,6 +652,8 @@ def _refuse_corrupt_source_databases(
         if not _want(components, component):
             continue
         for name in files:
+            if name in COMPONENTS[component].host_local:
+                continue  # never installed, so its bundle copy cannot refuse the restore
             src = snap / name
             if not src.exists() and not platform_compat.is_link_or_junction(src):
                 continue  # absent from a selective bundle; nothing to validate

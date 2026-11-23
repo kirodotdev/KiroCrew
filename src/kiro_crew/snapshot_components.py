@@ -117,12 +117,16 @@ class ComponentSpec:
     data-home-relative directories copied wholesale. A ``.db`` file in ``files`` is
     copied through the SQLite backup API rather than the filesystem, so a live
     gateway holding the database open still yields a consistent copy.
+
+    ``host_local`` names files of ``files`` that stay in bundles but are never installed by
+    a restore, in either mode: this host's own runtime state, kept as it is.
     """
 
     policy: SecretPolicy
     help: str
     files: tuple[str, ...] = ()
     trees: tuple[str, ...] = ()
+    host_local: tuple[str, ...] = ()
 
 
 # The single source of truth for what a bundle can contain. Both the staging path
@@ -177,6 +181,11 @@ COMPONENTS: dict[str, ComponentSpec] = {
             "project_dir",
             "workspace_dir",
         ),
+        # `project_dir` names the checkout the gateway runs `ensure-node.sh` from at boot;
+        # a bundle that also carries `workspace/` could supply pointer and tree together.
+        # `workspace_dir` roots every session work directory, outbox and upload root;
+        # `session_map.json` holds the folder a resumed session starts in.
+        host_local=("project_dir", "session_map.json", "workspace_dir"),
     ),
     "skills": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
@@ -351,12 +360,20 @@ _CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
     }
 )
 
+#: Files a MERGE deliberately never installs from the bundle, even when this install has
+#: no copy. Kept beside the component tables so the pre-flight validator and the merge
+#: driver cannot disagree about whether one of these files can reach a live consumer.
+_MERGE_NEVER_INSTALLS_FILES: frozenset[str] = frozenset({"config.local.json"})
+
+
 #: Flat component files whose own store reader is stricter than "a JSON object". An
 #: installed `{"prefs": []}` or `{"channel_settings": []}` passes that generic check and
 #: reads back EMPTY, and a prefs document past the store's key or byte limit makes every
 #: later save fail -- so an installed one is held to the same reader the dashboard
 #: import uses. Keyed by file name; the value names the validator.
 _FLAT_DOCUMENT_VALIDATORS: dict[str, str] = {
+    "config.json": "config_document",
+    "config.local.json": "config_document",
     "ui-prefs.json": "ui_prefs",
     "notification_settings.json": "notification_settings",
 }

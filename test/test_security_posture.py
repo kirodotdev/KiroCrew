@@ -1191,9 +1191,9 @@ class TestRedactionSinkRegistry:
             # The shared dashboard memory helper recursively runs the exfil
             # scanner followed by the credential scanner for every text value.
             "_redact_memory_field(",
-            # redact_mcp_error runs redact_exfiltration_urls THEN redact_credentials
-            # (mcp_discovery_server_info.py) and then scrubs the exact configured header values
-            # the generic scanners cannot know about — strictly more than either
+            # redact_mcp_error scrubs the exact configured header values first
+            # (mcp_discovery_server_info.py), then runs redact_exfiltration_urls THEN
+            # redact_credentials -- strictly more than either
             # scanner alone, so a sink using it is fully covered.
             "redact_mcp_error",
             # redact_note (notifications/bridge_egress.py) runs redact_exfiltration_urls

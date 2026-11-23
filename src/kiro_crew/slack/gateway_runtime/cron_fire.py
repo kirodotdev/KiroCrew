@@ -716,10 +716,8 @@ def _resolve_cron_agent(
     if template_namespace:
         return None, None, ""
     try:
-        from kiro_crew.config.loader import (
-            resolve_agent_bindings,
-            workspace_dir_from_entry,
-        )
+        from kiro_crew.config.loader import resolve_agent_bindings
+        from kiro_crew.config.loader_locations import usable_workspace_dir_from_entry
 
         cfg = getattr(self, "_cfg", None)
         # Prefer the last applied reload: an agent created at runtime is in
@@ -790,7 +788,9 @@ def _resolve_cron_agent(
         # dir the default declares, so a missing mapping anchors to
         # the data home rather than escaping it (or defaulting to the
         # gateway process cwd via a None).
-        ws_dir = workspace_dir_from_entry(ws_entry)
+        # A sensitive folder falls back to the base workspace, as chat does for its default
+        # project folder. A folder that is not there yet is kept: it is created on use.
+        ws_dir = usable_workspace_dir_from_entry(ws_entry, ws_name or "", must_exist=False)
         cwd = str(ws_dir) if ws_dir else None
         # Carry the identity-resolved alias back as crew_alias:
         # prepare_runtime needs it to resolve the member identity (the

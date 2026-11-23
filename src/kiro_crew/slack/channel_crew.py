@@ -56,7 +56,8 @@ def resolve_channel_crew(name: str | None) -> ChannelCrew | None:
         return None
     try:
         from kiro_crew.config import KiroCrewConfig, live
-        from kiro_crew.config.loader import resolve_agent_bindings, workspace_dir_from_entry
+        from kiro_crew.config.loader import resolve_agent_bindings
+        from kiro_crew.config.loader_locations import usable_workspace_dir_from_entry
 
         # The last APPLIED reload first, so a record created at runtime is seen
         # without a gateway restart (the cron resolver reads the same way).
@@ -76,7 +77,8 @@ def resolve_channel_crew(name: str | None) -> ChannelCrew | None:
         # a relative dir under the data home and an unmapped name to the base
         # workspace directory, never another workspace's.
         ws_entry = (getattr(cfg, "workspaces", None) or {}).get(record.workspace or "")
-        cwd = str(workspace_dir_from_entry(ws_entry))
+        # A folder that is missing or sensitive falls back to the base workspace.
+        cwd = str(usable_workspace_dir_from_entry(ws_entry, record.workspace or ""))
         return ChannelCrew(kiro_agent=kiro_agent, crew_agent=name, cwd=cwd)
     except Exception:
         logger.debug("slack channel agent %r: crew record not resolvable", name, exc_info=True)
