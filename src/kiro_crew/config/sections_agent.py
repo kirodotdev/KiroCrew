@@ -1035,10 +1035,11 @@ class AgentConfig:
             "Resource Critical Threshold (GB)",
             "Available memory (GB) at or below which the [RESOURCES] context line "
             "escalates to 'critically low' and advises against starting heavy work "
-            "at all. Should be <= resource_pressure_gb. It also arms the host memory guard, "
-            "which on Linux stops the largest Crew tool or test tree at critical memory, or "
-            "at tight memory with PSI full avg10 >= 10. 0 disables the critical tier and "
-            "turns the memory guard off. When the container's memory limit is at or under "
+            "at all. Should be <= resource_pressure_gb. It also arms the host memory guard, which "
+            "on Linux stops the largest Crew tool or test tree at critical memory, or at tight "
+            "memory with PSI full avg10 >= 10, or, with no memory controller in view, when the "
+            "cgroup in view stalls 10% of the time between samples. 0 disables the critical tier "
+            "and turns the memory guard off. When the container's memory limit is at or under "
             "it, the gateway logs one start-up warning naming the settings to lower.",
         ),
     )
