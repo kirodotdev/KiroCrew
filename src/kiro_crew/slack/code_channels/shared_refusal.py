@@ -23,14 +23,20 @@ def _r() -> ModuleType:
     return routing
 
 
-def shared_user_refused_in(channel: str) -> bool:
+def shared_user_refused_in(channel: str, thread_ts: str = "") -> bool:
     """Whether a shared user (``slack.shared_access``) is refused in *channel*.
 
     True in a bound code channel whether or not ``slack.code_channels`` is on: a
     binding kept while the feature is off still leads to the owner's session. Fails
     closed for a channel that could be a code channel when the store cannot be
     read. Reads the store from disk on first use, so async callers run it in a thread.
+
+    With *thread_ts*, also True in that thread when it is a Conductor thread --
+    live, ended, pruned into ``revoked`` or quarantined -- in any channel or DM,
+    whatever the switch says, and when the store cannot be read.
     """
+    if thread_ts and _conductor_thread_refused(channel, thread_ts):
+        return True
     if not _r().recognition.could_be_code_channel(channel):
         return False
     try:
@@ -45,6 +51,21 @@ def shared_user_refused_in(channel: str) -> bool:
         )
     except Exception:
         _r().logger.warning("code channel: shared-user binding lookup failed", exc_info=True)
+        return True
+
+
+def _conductor_thread_refused(channel: str, thread_ts: str) -> bool:
+    """Whether *thread_ts* in *channel* is (or was) a Conductor thread; fails closed."""
+    try:
+        current = _r().store()
+        return (
+            current.get_thread_binding(channel, thread_ts) is not None
+            or current.is_thread_quarantined(channel, thread_ts)
+            or current.revoked_anchor(thread_ts)
+            or current.unreadable
+        )
+    except Exception:
+        _r().logger.warning("conductor thread: shared-user lookup failed", exc_info=True)
         return True
 
 
@@ -175,8 +196,8 @@ def _quarantined_session_matches(
 
 def shared_user_refused_for_slot(slot_key: str, thread_ts: str, *, _alias: bool = True) -> bool:
     """Whether a shared user is refused a linked thread that leads to a code channel's
-    session: the slot is a bound channel's session or a helper agent one started, or
-    the thread is a bound or revoked channel's anchor. Fails closed when the store
+    or a Conductor thread's session: the slot is a bound channel's or thread's session
+    or a helper agent one started, or the thread is a bound or revoked anchor. Fails closed when the store
     cannot be read. Reads the store, so async callers run it in a thread.
     """
     # Callers hold a session in any of its spellings: the bare slot key a binding
@@ -192,7 +213,8 @@ def shared_user_refused_for_slot(slot_key: str, thread_ts: str, *, _alias: bool 
     anchor_of_key = bare[len("slack:") :] if bare.startswith("slack:") else ""
     try:
         bindings = _r().store()
-        for binding in bindings.bindings():  # loads the store first
+        # Code channels and Conductor threads alike (loads the store first).
+        for binding in (*bindings.bindings(), *bindings.thread_bindings()):
             if (
                 (bare and binding.session_key in (bare, slot_key))
                 or (thread_ts and binding.anchor_ts == thread_ts)
