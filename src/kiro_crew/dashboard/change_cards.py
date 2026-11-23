@@ -390,6 +390,28 @@ class CardStore:
             rec["slot_key"] == slot_key and self._is_open(rec, now) for rec in self._cards.values()
         )
 
+    def next_close_in(self) -> float | None:
+        """Seconds until an open card may close with nobody acting, else ``None``.
+
+        That is a card's expiry, or the moment its running step goes stale. Either
+        can leave the card open (a step still running, a plan between two writes),
+        so the caller reads :meth:`holds_open_card` again when it comes. Changes
+        nothing and never reads disk.
+        """
+        if not self._loaded:
+            return None
+        now = self._clock()
+        ends = []
+        for rec in self._cards.values():
+            if not self._is_open(rec, now):
+                continue
+            ends.append(float(rec["expires_at"]))
+            inflight = rec.get("inflight")
+            if inflight:
+                ends.append(float(inflight.get("started_at", 0)) + INFLIGHT_STALE_SECONDS)
+        ahead = [end - now for end in ends if end > now]
+        return min(ahead) if ahead else None
+
     def slots_with_open_cards(self) -> frozenset[str]:
         """Every slot :meth:`holds_open_card` answers ``True`` for, in one pass."""
         if not self._loaded:

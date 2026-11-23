@@ -582,6 +582,21 @@ class LiveHub:
     def get(self, session_key: str) -> LiveSession | None:
         return self._sessions.get(session_key)
 
+    def first_ask_deadline_ms(self, after_ms: int) -> int | None:
+        """The earliest ``expires_at`` (epoch ms) after *after_ms* of a bound ask with no outcome.
+
+        A lapsed ask can stay bound until its tool polls again, so its past deadline
+        must not hide another session's future one.
+        """
+        ends = [
+            int(sess.ask.expires_at)
+            for sess in self._sessions.values()
+            if sess.ask is not None
+            and not sess.ask.outcome
+            and int(sess.ask.expires_at or 0) > after_ms
+        ]
+        return min(ends) if ends else None
+
     def _session(self, session_key: str) -> LiveSession:
         sess = self._sessions.get(session_key)
         if sess is None:

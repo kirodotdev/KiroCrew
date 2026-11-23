@@ -452,6 +452,16 @@ class GuideStore:
             for g in self._guides.values()
         )
 
+    def next_lapse_in(self) -> float | None:
+        """Seconds until the first live guide offer expires, else ``None``. Changes nothing."""
+        now = self._clock()
+        ahead = [
+            g.expires_at - now
+            for g in self._guides.values()
+            if g.status in LIVE_STATUSES and now < g.expires_at
+        ]
+        return min(ahead) if ahead else None
+
     def owner_tab_for_slot(self, slot_key: str) -> tuple[str, str] | None:
         """``(guide_id, owner_tab)`` of *slot_key*'s running guide, or ``None``.
 

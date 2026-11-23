@@ -1108,7 +1108,8 @@ message, a pending approval). `needsFullChat` is true while the session waits on
 `ChatEmbed` cannot show or answer: a change card, a guide offer, or a browser sign-in or
 other `ask`. Send the person to the session for those, with
 `useChatLauncher().openChat({ slotKey })`. A page reading `/api/chat/slots` itself finds the
-same answer in each slot's `needs_full_chat`. It needs `APP_SDK_LEVEL >= 8`, and since a host can report 8
+same answer in each slot's `needs_full_chat`. It turns false soon after the wait ends,
+also when a card, offer or `ask` expires with nobody acting. It needs `APP_SDK_LEVEL >= 8`, and since a host can report 8
 before it has this hook, read it off a namespace import:
 
 ```tsx

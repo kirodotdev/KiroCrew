@@ -6180,7 +6180,12 @@ parked on the live card before its deadline. `ChatEmbed` draws none of these, so
 sends the person to the session. `dashboard/full_chat_waits.py` reads each from the store
 that owns it (`CardStore.holds_open_card`, `GuideStore.holds_live_guide`, the live hub's
 quick-ask binding), never from transcript rows, and the card and guide broadcasts and the
-hub's ask listener push the slot list when one moves. An MCP elicitation is not in it:
+hub's ask listener push the slot list when one moves. A wait that ends with nobody acting
+(a card past its expiry or its running step gone stale, a guide offer or an ask past its
+deadline) moves no store, so each push also sets one timer per gateway, read from the
+same stores (`CardStore.next_close_in`, `GuideStore.next_lapse_in`,
+`LiveHub.first_ask_deadline_ms`), that pushes the slot list again just after the
+earliest of them. An MCP elicitation is not in it:
 it already sets `pending_approval`. `send` is chat-core's `sendTurn`
 over the dashboard wire, `decide` is `api.decideApproval` and `create` is
 `api.createChatSlot()`, so a session the app shows reads and behaves as the sidebar's row
