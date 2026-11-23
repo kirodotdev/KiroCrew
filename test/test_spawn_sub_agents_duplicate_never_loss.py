@@ -686,6 +686,38 @@ def _cron_orchestrator(sessions: Any, infos: list[SubagentInfo]) -> Any:
     return orch
 
 
+def _run_the_real_retirement_gate(sessions: Any, mgr: Any, infos: Any) -> None:
+    """Give *mgr* the real teardown snapshot and the real retired-delivery decision
+    over *infos*, registered on *sessions* as service boot registers the manager.
+    Only a conversation-ending parent end takes the snapshot that arms the gate."""
+    from kiro_crew.subagent_manager.cancellation import CancellationCoordinator
+    from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+    mgr._agents = {info.id: info for info in infos}
+    mgr._queue = []
+    mgr._undurable_in_dispatch = {}
+    mgr._teardown_cancelled_ids = set()
+    mgr._followup_watchers = {}
+    mgr._followup_watcher_parents = {}
+    mgr._followup_watcher_infos = {}
+    mgr._admission = MagicMock()
+    # Tolerant of a tree without the decision, so these tests fail there on
+    # behaviour, not names.
+    decide = getattr(TerminalCoordinator(mgr), "suppress_retired_delivery_impl", None)
+    if decide is not None:
+        mgr.suppress_retired_delivery = decide
+    coordinator = CancellationCoordinator(mgr)
+
+    class _Handler:
+        def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]:
+            return coordinator.snapshot_teardown_children_impl(parent_session_key)
+
+        async def cancel_for_teardown(self, agent_ids: Any, **_kw: Any) -> int:
+            return 0  # every child here has finished: nothing is left to stop
+
+    sessions.set_child_teardown_handler(_Handler())
+
+
 def _cron_job() -> Any:
     job = MagicMock()
     job.execution_context = None
@@ -753,7 +785,8 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
     """The real cron callback over a real lease. The turn's ``spawn_sub_agents``
     reply is written and marked through the real endpoint; each child's completion
     then reaches the real cron route on its own task while the turn is still
-    answering. The turn then ends as *ending* says:
+    answering, and the manager runs the real retirement gate. The turn then ends
+    as *ending* says:
 
     * ``lands`` -- the stream returns a synthesized answer;
     * ``deadline`` -- cancelled, as the job's deadline ``wait_for`` cancels ``_execute``;
@@ -771,6 +804,7 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
     sessions = SessionManager(KiroCrewConfig(), provider_factory=_provider_factory())
     infos = [_returned_child(f"child-{i}", key) for i in range(children)]
     orch = _cron_orchestrator(sessions, infos)
+    _run_the_real_retirement_gate(sessions, orch.subagent_mgr, infos)
     seen: dict[str, Any] = {"injected": [], "infos": infos, "sessions": sessions, "orch": orch}
 
     async def inject(i: Any, _client: Any, _msg: Any, parent: str, _label: str, **_kw: Any) -> str:
@@ -831,15 +865,14 @@ async def _drive_cron_turn(*, ending: str, children: int = 1) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["deadline", "failure"])
-async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result(
-    ending: str,
-) -> None:
+async def test_a_cron_turn_that_does_not_land_still_delivers_the_returned_result() -> None:
     """GPT 6.1's BLOCK (comment 6036084771). The turn's reply was written, but the
-    deadline or a failure ends the turn before it lands. The completion is
-    neither acknowledged nor tombstoned while the turn is live, returns from
-    ``_on_done`` at once, and is injected once after the turn's release."""
-    seen = await _drive_cron_turn(ending=ending)
+    deadline ends the turn before it lands. The completion is neither
+    acknowledged nor tombstoned while the turn is live, returns from ``_on_done``
+    at once, and is injected once after the turn's release. A turn that FAILS
+    ends its conversation instead
+    (``test_a_failed_cron_turn_retires_its_parked_results_with_its_conversation``)."""
+    seen = await _drive_cron_turn(ending="deadline")
     (info,) = seen["infos"]
 
     assert seen["acked_while_live"] is False, (
@@ -878,14 +911,43 @@ async def test_a_reaped_cron_turn_leaves_its_returned_result_to_the_bell() -> No
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ending", ["deadline", "failure"])
-async def test_a_re_routed_cron_completion_injects_into_the_turns_own_session(
-    ending: str,
+@pytest.mark.parametrize("children", [1, 2])
+async def test_a_failed_cron_turn_retires_its_parked_results_with_its_conversation(
+    children: int,
 ) -> None:
+    """The run failed for good after the turn's reply was written, so it ends its
+    conversation before its release: nothing is left to orchestrate the
+    sub-agents' work. That ending reset retires each parked completion as at any
+    parent end (``suppress_retired_delivery``): no session is claimed or started
+    for it, nothing is injected, and its own delivery is settled. Nothing is
+    deferred to a completion, so the run retires its key itself."""
+    seen = await _drive_cron_turn(ending="failure", children=children)
+    infos = seen["infos"]
+    orch = seen["orch"]
+
+    assert seen["routes_returned_while_live"], "the route waited inside _on_done"
+    assert seen["acked_while_live"] is False
+    assert seen["gate_open_while_live"] is False
+    assert seen["injected"] == [], "the failed run's conversation was continued"
+    assert "cron:j1:r1" not in seen["sessions"]._sessions, "a session was started"
+    assert all(i._report_delivered for i in infos), "owed only to the conversation that ended"
+    settled = {
+        delivery.agent_id
+        for call in orch.subagent_mgr.settle_queued_delivery.await_args_list
+        for delivery in call.args[0]
+    }
+    assert settled == {i.id for i in infos}
+    assert orch._cron_injecting == {}
+    assert orch._inline_parked == {}
+    seen["cron_svc"].clear_active_session_key.assert_called_once_with("j1", "cron:j1:r1")
+
+
+@pytest.mark.asyncio
+async def test_a_re_routed_cron_completion_injects_into_the_turns_own_session() -> None:
     """The release counts the re-routed completion before the cron ``finally``
     decides its reset, so the reset is deferred and the injection continues the
     same conversation; the completion's own cleanup then resets it once."""
-    seen = await _drive_cron_turn(ending=ending)
+    seen = await _drive_cron_turn(ending="deadline")
     sessions = seen["sessions"]
 
     assert seen["inject_session"] is seen["turn_session"], "the injection cold-started"
@@ -1618,34 +1680,8 @@ class TestAParkedCompletionOfARetiredParentIsNotDelivered:
     def _retiring_gateway(sessions: Any, *infos: SubagentInfo) -> Any:
         """A channel gateway whose manager runs the real teardown snapshot and the
         real retired-delivery decision over its own records."""
-        from kiro_crew.subagent_manager.cancellation import CancellationCoordinator
-        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
-
         gateway = _channel_gateway(sessions, *infos)
-        mgr = gateway.subagent_mgr
-        mgr._agents = {info.id: info for info in infos}
-        mgr._queue = []
-        mgr._undurable_in_dispatch = {}
-        mgr._teardown_cancelled_ids = set()
-        mgr._followup_watchers = {}
-        mgr._followup_watcher_parents = {}
-        mgr._followup_watcher_infos = {}
-        mgr._admission = MagicMock()
-        # Tolerant of a tree without the decision, so these tests fail there on
-        # behaviour, not names.
-        decide = getattr(TerminalCoordinator(mgr), "suppress_retired_delivery_impl", None)
-        if decide is not None:
-            mgr.suppress_retired_delivery = decide
-        coordinator = CancellationCoordinator(mgr)
-
-        class _Handler:
-            def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]:
-                return coordinator.snapshot_teardown_children_impl(parent_session_key)
-
-            async def cancel_for_teardown(self, agent_ids: Any, **_kw: Any) -> int:
-                return 0  # every child here has finished: nothing is left to stop
-
-        sessions.set_child_teardown_handler(_Handler())
+        _run_the_real_retirement_gate(sessions, gateway.subagent_mgr, infos)
         return gateway
 
     @staticmethod

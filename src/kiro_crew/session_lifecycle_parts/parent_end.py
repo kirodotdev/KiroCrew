@@ -40,7 +40,9 @@ def set_child_teardown_handler(
     self._child_teardown = handler
 
 
-async def end_children_for(self: SessionLifecycleService, key: str) -> None:
+async def end_children_for(
+    self: SessionLifecycleService, key: str, *, unless_registered: bool = False
+) -> bool:
     """End *key*'s sub-agent runs without touching its process.
 
     The conversation-ended half of a parent end, on its own. Every other verb here
@@ -60,9 +62,20 @@ async def end_children_for(self: SessionLifecycleService, key: str) -> None:
     key's ownership generation -- that counter belongs to session allocation, the
     process here leaves the session in place, and advancing it from a verb that
     retires nothing would report a replacement to every reader of it.
+
+    ``unless_registered`` ends nothing while a session is registered under *key*,
+    read in the same lock hold as the snapshot. A caller ending the runs of a
+    conversation that was already torn down (a cron run that failed for good) passes
+    it: a session registered after any earlier read of its own may have run a turn by
+    the time the snapshot is taken, and the runs that turn spawned are that session's.
+
+    Returns whether the runs were snapshotted and cancelled, which is always the case
+    without ``unless_registered``.
     """
     owner = self._owner
     async with owner._lock:
+        if unless_registered and owner._fold_key(key) in owner._sessions:
+            return False
         teardown_children = self._snapshot_parent_children(key)
     # Names ITSELF in the audit, exactly as the six teardown verbs do, rather than
     # forwarding a verb a caller supplies. One consumer passed one value, so the
@@ -70,6 +83,7 @@ async def end_children_for(self: SessionLifecycleService, key: str) -> None:
     # verb-naming ratchet an exemption, which is machinery in place of a rule. The
     # caller's own identity is not lost: the line's ``key`` carries it.
     await self._cancel_parent_children(key, teardown_children, verb="end_children_for")
+    return True
 
 
 def _open_teardown_fence(self: SessionLifecycleService, key: str) -> "AbstractSet[str] | None":

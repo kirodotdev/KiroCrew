@@ -426,14 +426,34 @@ def test_cron_sequence_step_second_loss_raises_clear_error(gw_and_cb):  # noqa: 
     assert calls == 2
 
 
-def test_cron_sequence_step_defers_reset_when_subagents_pending(gw_and_cb):  # noqa: F811
-    """A lost step whose sibling completion is still injecting must not reset the
-    session out from under it, nor re-run the step; it defers the reset to
-    ``_subagent_done`` and ends on the give-up error."""
+def test_cron_sequence_step_lost_under_an_injection_ends_its_conversation(gw_and_cb):  # noqa: F811
+    """A lost step whose sibling completion is still injecting is not re-run: it
+    ends on the give-up error, which fails the run for good, so it ends its
+    conversation while it still holds the key and only then releases it. The
+    injection is left no session to claim."""
     gw, get_cb, capture_cron = gw_and_cb
     gw.cron_svc = None
     # A sibling step's subagent completion is mid-injection into this key.
     gw._cron_injecting = {"cron:seqdef:a": 1}
+    holder: dict[str, Any] = {}
+    events: list[tuple[str, str, bool]] = []
+
+    async def acquire(key, *_a, **_k):
+        holder[key] = asyncio.current_task()
+        return (MagicMock(), True, False)
+
+    def release(key, *_a, **_k):
+        events.append(("release", key, False))
+        holder.pop(key, None)
+
+    async def reset(key, *, ends_conversation=False, **_k):
+        events.append(("reset", key, ends_conversation))
+        return True
+
+    gw.sessions.get_or_create = AsyncMock(side_effect=acquire)
+    gw.sessions.release = MagicMock(side_effect=release)
+    gw.sessions.reset = AsyncMock(side_effect=reset)
+    gw.sessions.turn_holder = MagicMock(side_effect=holder.get)
     calls = 0
 
     async def resume(_c, _m, **_k):
@@ -447,9 +467,11 @@ def test_cron_sequence_step_defers_reset_when_subagents_pending(gw_and_cb):  # n
         )
     # One attempt only: the step is not re-run while a completion is injecting.
     assert calls == 1
-    # The retry path's unconditional reset was skipped; _subagent_done owns it.
-    reset_keys = [c.args[0] for c in gw.sessions.reset.await_args_list]
-    assert reset_keys.count("cron:seqdef:a") == 0
+    # No retry reset: the one reset is the ending one, taken before the release.
+    assert [e for e in events if e[1] == "cron:seqdef:a"] == [
+        ("reset", "cron:seqdef:a", True),
+        ("release", "cron:seqdef:a", False),
+    ]
 
 
 def test_cron_sequence_step_loss_does_not_reset_a_key_another_turn_holds(gw_and_cb):  # noqa: F811
