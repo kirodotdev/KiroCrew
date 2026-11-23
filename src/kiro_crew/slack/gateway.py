@@ -358,6 +358,11 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.spawn_approval_delivery import deliver_spawn_approval
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.metrics.usage_attrs import (
+    TRIGGER_MONITOR,
+    reset_current_trigger,
+    set_current_trigger,
+)
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
     disposition_for_stop_reason,
