@@ -808,7 +808,7 @@ def _save_slot_to_history(
                     slot._pending_rewrite = False
                 # How many window messages are now on disk, so memory trimming can
                 # safely fold leading window messages into the frozen prefix.
-                slot._disk_window_len = len(window)
+                slot._disk_window_len = _write_guards.saved_rows_still_held(slot, window)
                 slot._disk_meta_created_at = _post_write_created_at
                 # A committed save is a direct observation of the file this slot
                 # writes — even when the carried-forward metadata is legacy and
