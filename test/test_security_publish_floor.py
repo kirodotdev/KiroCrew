@@ -251,6 +251,41 @@ class TestPublishFloorNestedPayloads:
         ):
             assert is_denied(cmd) is None, cmd
 
+    def test_an_unquoted_backslash_path_to_git_is_git_on_windows(self, monkeypatch) -> None:
+        """PowerShell keeps ``\\`` in ``C:\\Git\\cmd\\git.exe``; a POSIX shell drops it.
+
+        The detector reads the program word both ways on Windows, so the Windows
+        spelling is refused there, and on POSIX the escaped word stays not-git.
+        """
+        from kiro_crew import platform_compat
+        from kiro_crew.security import argv_floor_git as fg
+        from kiro_crew.security import is_denied
+
+        expected = (is_denied("git push origin main") or "").splitlines()[0]
+        protected = (
+            "C:\\Git\\cmd\\git.exe push origin main",
+            "& C:\\Git\\cmd\\git.exe push origin main",
+            ".\\git.exe push origin main",
+            "echo x; C:\\Git\\cmd\\git.exe -C C:\\repo push origin main",
+        )
+        allowed = (
+            "C:\\Git\\cmd\\git.exe push origin feature",
+            "C:\\Git\\cmd\\git.exe status",
+            "C:\\Tools\\legit.exe push origin main",
+        )
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        for cmd in protected:
+            assert fg._is_git_publish(cmd.lower()), cmd
+            assert (is_denied(cmd) or "").splitlines()[:1] == [expected], cmd
+        for cmd in allowed:
+            assert is_denied(cmd) is None, cmd
+
+        # A POSIX shell runs ``C:Gitcmdgit.exe``, which is not git: unchanged there.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        for cmd in protected + allowed:
+            assert not fg._is_git_publish(cmd.lower()), cmd
+
     def test_obfuscation_with_no_payload_still_fails_closed(self) -> None:
         """The deferral is NOT a general escape hatch.
 

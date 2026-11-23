@@ -171,6 +171,24 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     except Exception:
         return False
 
+    if _has_git_push_word_pair(tokens):
+        return True
+    # The view above reads ``\`` as a POSIX escape, so an unquoted Windows path
+    # (``c:\git\cmd\git.exe``, ``.\git.exe``) reaches it with its separators gone.
+    # PowerShell and cmd keep ``\`` as a separator, so on Windows the same walk also
+    # runs over the separator-preserving split. It only adds detection.
+    from kiro_crew import platform_compat
+
+    if not platform_compat.IS_WINDOWS:
+        return False
+    try:
+        return _has_git_push_word_pair(_split_shell_words(text_lower))
+    except Exception:
+        return False
+
+
+def _has_git_push_word_pair(tokens: list[str]) -> bool:
+    """True when *tokens* hold a git program word whose subcommand is ``push``."""
     if not tokens:
         return False
 
