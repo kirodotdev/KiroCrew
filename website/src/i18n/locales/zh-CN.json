@@ -6302,6 +6302,18 @@
       "title_wants_to_run": "<title/> 请求运行"
     },
     "approvalModePicker": {
+      "approve_for_me_failed": "无法开启“替我批准”。请重试。",
+      "approve_for_me_busy": "请等当前回复结束，再选一次 Approve for me。",
+      "approve_for_me_not_owners": "Approve for me 只在你从这里操作的对话中提供，与频道、定时任务或应用相连的对话中不提供。",
+      "approve_for_me_label": "替我批准",
+      "approve_for_me_desc": "在此对话中，KAS 会替你批准日常操作，包括 shell 命令和文件编辑；拿不准时会问你",
+      "approve_for_me_details": "Approve for me 如何工作",
+      "approve_for_me_detail_skip": "KAS 想替你批准的每个操作，{{productName}} 都会先检查：高风险命令、敏感文件、你的批准规则和 hook",
+      "approve_for_me_detail_direct": "你自己写的始终允许规则或预设允许的操作，仍会直接运行，{{productName}} 不会过问",
+      "approve_for_me_detail_kept": "任何一项检查不通过时，你会看到平常的批准卡片",
+      "approve_for_me_detail_blocked": "KAS 也可能自己拦下某个操作，这时该行会显示“Blocked by KAS”",
+      "approve_for_me_detail_off": "来自频道、定时任务或他人的消息不会使用它；管理员配置生效时也会关闭",
+      "approve_for_me_detail_logged": "这样由 KAS 批准或拦下的每个操作，都会记录在安全日志里",
       "nudge_body": "在这里可以调整 {{productName}} 的审批模式——选择这里的“信任”后，它在此对话中无需先询问即可工作，随时可以改回。",
       "nudge_dismiss": "知道了",
       "nudge_title": "想减少确认次数？",

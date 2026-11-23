@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import agent_scratch, agent_scratch_trees, model_scope
+from kiro_crew.agent_sdk import kas_approve_for_me
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_CWD_BOUND_SESSIONS,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
@@ -969,6 +970,9 @@ async def _get_or_create_impl(
                 bound_profile,
             )
         extra_env = bound_env
+    # KAS approve-for-me: only a session a person opted in starts its engine with
+    # the switch on, and it keys onto a process of its own (``acp.kas_approve_for_me``).
+    extra_env = kas_approve_for_me.session_env(key, extra_env)
 
     # Reconciliation can publish a new template model. Resolve only after
     # that boundary, while retaining an explicit caller model unchanged.

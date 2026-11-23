@@ -3607,6 +3607,43 @@ enforcement and display correctly scoped:
   never surfacing as a no-op opt-out (UI success while the bound-profile gate
   still denies). This is display-only and does not widen enforcement.
 
+**KAS approve-for-me** (`acp/kas_approve_for_me.py`, `dashboard/approve_for_me.py`) —
+a KAS session a person opts in from the approval-mode picker lets the engine judge
+each tool call, shell and file calls included. That session's own process (started
+with approve-for-me on) declares `checksAutoApprovals` at `initialize`; no other
+process does. So a call the engine would approve does not run: it arrives as
+`session/request_permission` carrying `_meta.kiro.autoApproval` (`decision: allow`,
+`by: classifier | preset`; `AcpEvent.kas_auto_approval`). That request takes this table
+like any other; only where Trust or YOLO would approve (the last rung of
+`chat_turn.tool_approval._decide_permission_request`, after the deny floor, the
+sensitive-path check, the governance ceiling, spec limits and PreToolUse hooks) is it
+approved without a card, and only while `_approve_for_me_allows` holds: the engine is
+known to send its verdict (`kas_approve_for_me.engine_supported`), no
+`hooks.confirm_tools` pattern names the call, and the owner check holds
+(`approve_for_me.owner_allows`: the person's pick, the policy, a slot a person drives
+from the dashboard and an owner-sent turn with no channel text
+(`deny_override.slot_is_owners` / `turn_is_owners`), no governance profile
+(`resolve_active_scope`, also for the slot agent's task bind), no Trust, Reads or
+YOLO, no card turn). Anything else is the usual card. Each such approval gets an SEL
+row (`reason=approve_for_me`, `by=<classifier|preset>`, `crew_gate=ran`).
+The `approval_modes` policy permits `approve_for_me` only where an installed rule's
+`allow` list names it (in either tier of a composed policy); allowing `trust` does
+not. Only Crew's own engine bundle at or above
+`kas_pin.KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION` counts as sending its verdict
+(`None` while no release does, so the mode is offered nowhere); kiro-cli's relay
+starts an engine of its own choosing and never counts. An engine seen marking a call
+`trustClassifierApproved` (one it ran on its own verdict) is marked as not checking
+for the gateway's life, an SEL row names the call, and the turn is cancelled.
+A call KAS's classifier refuses itself (`_meta.kiro.policyDenial` naming an
+`evaluate` rule) never reaches Crew's gate: Crew logs one WARNING and one SEL row
+(`outcome=denied`, `decided_by=kas`) and starts its tool row with "Blocked by KAS".
+Calls a user-written always-allow rule or preset allows still run without Crew asking.
+Every child Crew spawns carries `KIRO_TRUST_CLASSIFIER_MODE=off`; only an opted-in
+session's own `extra_env` carries `enforce` (`session_env`), which also keys it onto
+a process of its own (`apply_runtime_env`). The option is written `on` or `off` at
+session open and before each turn (`settle`). A mode change never resets a session a
+turn holds or that waits on a person; the restart waits for idle.
+
 **KAS spec built-in grant** (`spec-builtin-grant`, the fifth grant row of
 `GATE_TIERS`, after `operator-grants`) — a built-in the KAS session's agent spec
 grants in `allowedTools` is auto-approved by Crew at its permission request instead

@@ -454,6 +454,7 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_SENT_IMAGE_RECORD": frozenset({"codex", "kas", "kiro"}),
     # The set above under the name of what it means; the same three captures.
     "ACP_BACKENDS_COMPACTION_REPORTED": frozenset({"codex", "kas", "kiro"}),
+    "ACP_BACKENDS_APPROVE_FOR_ME": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or

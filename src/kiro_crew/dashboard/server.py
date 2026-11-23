@@ -1600,6 +1600,11 @@ async def start_dashboard(
     from kiro_crew.approval_mode_policy import register_deny_hook
 
     register_deny_hook("dashboard", functools.partial(_drop_policy_denied_trust, state))
+    # Which KAS sessions may keep approve-for-me on: the ones a person turned it on
+    # for here, while no Trust, Reads, YOLO or policy deny says otherwise.
+    from kiro_crew.dashboard import approve_for_me
+
+    approve_for_me.install(state)
 
     await _notify_restart_dropped_grant(state)
 

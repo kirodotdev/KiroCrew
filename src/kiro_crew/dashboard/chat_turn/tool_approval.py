@@ -467,11 +467,13 @@ def _conductor_own_child_call(state: Any, slot: Any, event: Any) -> bool:
 
 
 def _operator_confirms_call(state: Any, event: Any) -> bool:
-    """Whether an operator ``hooks.confirm_tools`` pattern names this MCP call.
+    """Whether an operator ``hooks.confirm_tools`` pattern names this call.
 
     The gate's own grants withhold on the same match (``gate_tiers._operator_confirms``);
-    this rung runs after the gate, so it asks again. Fails CLOSED: no hooks config,
-    or a confirm list the load could not read, names every call.
+    this rung runs after the gate, so it asks again. Every call is matched on its
+    title, normalized title and tool name; an MCP call also on its MCP identity
+    spellings. Fails CLOSED: no hooks config, or a confirm list the load could not
+    read, names every call.
     """
     from kiro_crew.hooks import _normalize_tool_name, _tool_matches, mcp_identity_ref
     from kiro_crew.platform.governance import confirm_tools_unknown_now
@@ -480,25 +482,51 @@ def _operator_confirms_call(state: Any, event: Any) -> bool:
     config = getattr(getattr(builder, "hooks", None), "_config", None)  # noqa: SLF001
     if config is None or getattr(config, "confirm_tools_unknown", False):
         return True
-    server, tool = event.mcp_server_name, event.tool_name
-    ref = mcp_identity_ref(server, tool)
+    server = getattr(event, "mcp_server_name", "") or ""
+    tool = getattr(event, "tool_name", "") or ""
     title = event.title if isinstance(getattr(event, "title", None), str) else ""
     # Every spelling the gate's matcher tries (the title and its normalized form
-    # included), plus the bare and ``mcp__`` tool names. Extra spellings can only
-    # make this ask more, never less.
-    targets = (
-        ref,
-        f"Running: {ref}",
-        mcp_identity_ref(server, ""),
-        title,
-        _normalize_tool_name(title),
-        tool,
-        f"mcp__{server}__{tool}",
-    )
+    # included), plus the tool name. Extra spellings can only make this ask more,
+    # never less.
+    targets = [title, _normalize_tool_name(title), tool]
+    if not server and tool:
+        from kiro_crew.platform.tool_names import builtin_names
+
+        # A built-in answers to its aliases too (``run_command`` -> ``execute_bash``),
+        # the same names the gate's own confirm match tries.
+        targets += builtin_names(tool)
+    if server:
+        ref = mcp_identity_ref(server, tool)
+        targets += [ref, f"Running: {ref}", mcp_identity_ref(server, ""), f"mcp__{server}__{tool}"]
     patterns = list(getattr(config, "confirm_tools", None) or ())
     if any(_tool_matches(p, t) for p in patterns for t in targets if t):
         return True
     return confirm_tools_unknown_now()
+
+
+def _approve_for_me_allows(state: Any, session_key: str, event: Any) -> bool:
+    """Whether KAS's approve-for-me verdict may approve *event* after Crew's checks.
+
+    The engine must be one known to send its verdict to Crew, the session's owner
+    check must hold (``dashboard.approve_for_me.owner_allows``: the person's pick,
+    the policy, an owner-driven slot and owner-sent turn with no channel text, no
+    governance profile, no Trust/Reads/YOLO, no card turn), and no operator
+    ``hooks.confirm_tools`` pattern may name the call. Fails closed.
+    """
+    try:
+        from kiro_crew.agent_sdk.kas_approve_for_me import engine_supported
+        from kiro_crew.dashboard.approve_for_me import owner_allows
+
+        if not engine_supported() or not owner_allows(state, session_key):
+            return False
+        return not _operator_confirms_call(state, event)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "approve-for-me check failed; the call asks", exc_info=True
+        )
+        return False
 
 
 async def _name_grant_refusal_for(event: object) -> Refusal | None:
@@ -1472,6 +1500,17 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         )
         slot_trusted = False
         yolo_active = False
+    # Approve for me: KAS's own verdict that it would run this call. It approves
+    # the call here, where Trust and YOLO do, so every check above has already run
+    # on it, and only while the owner check holds for this session and turn.
+    _afm_by = str(getattr(event, "kas_auto_approval", "") or "")
+    afm_allows = bool(
+        _afm_by
+        and not _card_turn
+        and not slot_trusted
+        and not yolo_active
+        and _approve_for_me_allows(state, session_key, event)
+    )
     if (
         slot._trust_reads
         and not slot_trusted
@@ -1549,7 +1588,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # verified identity falls through to the interactive card;
     # children WITH cached bytes take these branches exactly like
     # the main agent (mode parity).
-    if (slot_trusted or yolo_active) and _child_grant_eligible:
+    if (slot_trusted or yolo_active or afm_allows) and _child_grant_eligible:
         try:
             validated_tool = _validate_tool_name(
                 event.title,
@@ -1625,8 +1664,13 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             outcome="auto_approved",
             request_id=event.request_id,
             # Provenance, so an auditor can separate a human's session
-            # trust from an unattended worker's expiring scoped grant.
-            metadata={"reason": _auto_approve_reason(slot, yolo_active)},
+            # trust from an unattended worker's expiring scoped grant, and
+            # both from a KAS verdict Crew checked.
+            metadata=(
+                {"reason": "approve_for_me", "by": _afm_by, "decided_by": "kas", "crew_gate": "ran"}
+                if afm_allows
+                else {"reason": _auto_approve_reason(slot, yolo_active)}
+            ),
         )
         return _Flow.CONTINUE
     return None

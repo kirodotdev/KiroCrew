@@ -1022,6 +1022,23 @@ def _isolate_context_store_caches(_floor_monkeypatch):
 
 
 @per_test_guard
+def _isolate_kas_approve_for_me():
+    """Drop the approve-for-me owner check and engine answer a test left behind.
+
+    A gateway boot registers an owner check bound to its own ``DashboardState``
+    and may cache the engine's answer; both are process state. Only a module
+    already imported can hold them, so a run that never imports it pays nothing.
+    """
+    module = sys.modules.get("kiro_crew.acp.kas_approve_for_me")
+    if module is not None:
+        module.reset_owner_check()
+    yield
+    module = sys.modules.get("kiro_crew.acp.kas_approve_for_me")
+    if module is not None:
+        module.reset_owner_check()
+
+
+@per_test_guard
 def _isolate_member_identity_cache(_floor_monkeypatch):
     """Give each test an empty cache of passed member-database identity checks.
 

@@ -459,3 +459,23 @@ def policy_alias_split(identity: str) -> tuple[tuple[str, ...], tuple[str, ...]]
     if identity in POLICY_ALIAS_DENY_ONLY_IDS:
         return (), aliases
     return aliases, ()
+
+
+def builtin_names(raw: str) -> tuple[str, ...]:
+    """Every name a built-in call stamped *raw* answers to.
+
+    Its stamped id, kiro-cli's spelling of that id (``shell`` -> ``execute_bash``),
+    the kiro-cli policy names that are the SAME work (``read_file`` -> ``fs_read``),
+    and for a shell call both of KAS's shell tools. A deny-only alias is left out:
+    ``delete_file`` is governed under ``fs_write`` but a ``fs_write`` grant never
+    mounted it, so it never approves it. Shared by the gate's grant tiers and every
+    ``hooks.confirm_tools`` match on a built-in.
+    """
+    names = [raw, KIRO_TOOL_ALIASES.get(raw, raw)]
+    may_admit, _deny_only = policy_alias_split(raw)
+    names.extend(may_admit)
+    if "execute_bash" in names:
+        # KAS's one built-in alias pair: both shell tools reach the permission
+        # frame as ``run_command``, so a grant of either names this call.
+        names.append("execute_pwsh")
+    return tuple(dict.fromkeys(n for n in names if n))

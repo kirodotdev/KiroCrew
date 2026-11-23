@@ -6656,6 +6656,18 @@
       "title_wants_to_run": "<title/> demande à s’exécuter"
     },
     "approvalModePicker": {
+      "approve_for_me_failed": "Impossible d'activer « Approuver pour moi ». Réessaie.",
+      "approve_for_me_busy": "Attends la fin de la réponse en cours, puis choisis de nouveau Approve for me.",
+      "approve_for_me_not_owners": "Approve for me n'est proposé que dans un chat que tu mènes d'ici, pas dans un chat lié à un canal, une planification ou une app.",
+      "approve_for_me_label": "Approuver pour moi",
+      "approve_for_me_desc": "Dans ce chat, KAS approuve pour toi les actions courantes, commandes shell et modifications de fichiers comprises, et te demande quand il n'est pas sûr",
+      "approve_for_me_details": "Comment fonctionne Approve for me",
+      "approve_for_me_detail_skip": "{{productName}} vérifie d'abord chaque action que KAS veut approuver pour toi : commandes à risque, fichiers sensibles, tes règles d'approbation et hooks",
+      "approve_for_me_detail_direct": "Les actions qu'autorisent tes propres règles Toujours autoriser ou un preset s'exécutent toujours sans que {{productName}} demande",
+      "approve_for_me_detail_kept": "Si une vérification dit non, tu reçois la carte d'approbation habituelle",
+      "approve_for_me_detail_blocked": "KAS peut aussi bloquer une action lui-même ; sa ligne indique alors « Blocked by KAS »",
+      "approve_for_me_detail_off": "Il reste désactivé pour les messages venant d'un canal, d'une planification ou d'une autre personne que toi, et tant qu'un profil administrateur s'applique",
+      "approve_for_me_detail_logged": "Chaque action que KAS approuve ou bloque ainsi est enregistrée dans le journal de sécurité",
       "nudge_body": "C'est ici que vous réglez la façon dont {{productName}} demande une approbation. En choisissant « Confiance » ici, il travaille dans cette conversation sans demander d'abord — vous pouvez revenir en arrière à tout moment.",
       "nudge_dismiss": "J'ai compris",
       "nudge_title": "Envie de moins de demandes d'approbation ?",

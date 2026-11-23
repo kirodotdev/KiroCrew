@@ -37,11 +37,13 @@ from __future__ import annotations
 import os
 
 __all__ = [
+    "KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION",
     "KAS_PIN_ENGINE_RELEASE",
     "KAS_PIN_MANIFEST_SHA256",
     "KAS_PIN_VERSION",
     "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
     "KAS_VERSION_OVERRIDE_ENV",
+    "engine_checks_auto_approvals",
     "engine_spec_permissions_supported",
     "pinned_version",
 ]
@@ -77,6 +79,28 @@ KAS_VERSION_OVERRIDE_ENV = "KIROCREW_KAS_VERSION"
 #: Lowering it needs the block confirmed on that older engine; the pin bump test
 #: keeps it at or below ``KAS_PIN_VERSION`` so the stock install always passes.
 KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION: tuple[int, int, int] = (0, 66, 33)
+
+#: First engine release that, for a client declaring ``checksAutoApprovals``, sends
+#: a call it would approve as ``session/request_permission`` with
+#: ``_meta.kiro.autoApproval`` instead of running it. ``None`` while no release
+#: carries it: approve-for-me is then offered on no engine. Set it to that release
+#: when the pin moves to one, after measuring it.
+KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION: tuple[int, int, int] | None = None
+
+
+def engine_checks_auto_approvals(version: str | None) -> bool:
+    """Pure gate: does an engine at *version* send its approve-for-me verdict to Crew?
+
+    False for an unknown version and while no release is known to
+    (:data:`KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION`).
+    """
+    floor = KAS_CHECKS_AUTO_APPROVALS_MIN_ENGINE_VERSION
+    if floor is None or not version:
+        return False
+    from kiro_crew.mcp_hot_reload import parse_kiro_cli_version  # noqa: PLC0415
+
+    parsed = parse_kiro_cli_version(version)
+    return parsed is not None and parsed >= floor
 
 
 def pinned_version() -> str:

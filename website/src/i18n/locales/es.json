@@ -6656,6 +6656,18 @@
       "title_wants_to_run": "<title/> quiere ejecutarse"
     },
     "approvalModePicker": {
+      "approve_for_me_failed": "No se pudo activar «Aprobar por mí». Inténtalo de nuevo.",
+      "approve_for_me_busy": "Espera a que termine la respuesta actual y vuelve a elegir Approve for me.",
+      "approve_for_me_not_owners": "Approve for me solo se ofrece en un chat que llevas desde aquí, no en uno vinculado a un canal, una programación o una app.",
+      "approve_for_me_label": "Aprobar por mí",
+      "approve_for_me_desc": "KAS aprueba por ti las acciones habituales en este chat, incluidos comandos de shell y cambios en archivos, y te pregunta cuando no está seguro",
+      "approve_for_me_details": "Cómo funciona Approve for me",
+      "approve_for_me_detail_skip": "{{productName}} revisa primero cada acción que KAS quiere aprobar por ti: comandos de riesgo, archivos sensibles, tus reglas de aprobación y hooks",
+      "approve_for_me_detail_direct": "Las acciones que permiten tus propias reglas de permitir siempre o un preset se siguen ejecutando sin que {{productName}} pregunte",
+      "approve_for_me_detail_kept": "Si una revisión dice que no, recibes la tarjeta de aprobación habitual",
+      "approve_for_me_detail_blocked": "KAS también puede bloquear una acción por sí mismo; su fila dice entonces “Blocked by KAS”",
+      "approve_for_me_detail_off": "Queda desactivado para mensajes de un canal, una programación o de cualquiera que no seas tú, y mientras se aplique un perfil de administrador",
+      "approve_for_me_detail_logged": "Cada acción que KAS aprueba o bloquea así queda registrada en el registro de seguridad",
       "nudge_body": "Aquí puedes ajustar cómo {{productName}} pide aprobación. Si eliges «Confianza» aquí, podrá trabajar en este chat sin preguntar antes; puedes volver a cambiarlo cuando quieras.",
       "nudge_dismiss": "Entendido",
       "nudge_title": "¿Quieres menos solicitudes de aprobación?",

@@ -259,6 +259,8 @@ interface ComposerDockViewProps {
   fastMode?: boolean
   /** Why that switch cannot be turned on (the read's `fast_unavailable` field). */
   fastUnavailable?: string
+  /** The active slot's KAS approve-for-me (the read's `approve_for_me` field). */
+  approveForMe?: boolean
   modelMarker: 'auto' | 'default' | null
   pinModelToAgentMut: ReturnType<typeof useComposerChips>['pinModelToAgentMut']
   projectBranch: string
@@ -355,7 +357,7 @@ export default function ComposerDockView({
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
   activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
-  effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
+  effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, approveForMe, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
   composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, agentPickerKept = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
@@ -838,6 +840,7 @@ export default function ComposerDockView({
               compacting={!!currentSlot?.compacting}
               stopDeclined={!!currentSlot?.stop_declined}
               approvalMode={displayMode}
+              approveForMe={approveForMe}
               afterApprovalMode={crewModeMidChatOffered
                 ? <CrewModeChip testId="crew-mode-switch" onTurnOn={turnOnCrewMode} busy={crewModeBusy} disabled={memorySwitching || !!crewModeSwitching} />
                 : undefined}
