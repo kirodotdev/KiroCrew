@@ -73,7 +73,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
-from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
+from kiro_crew.dashboard.side_readonly_spec import kas_offered, unavailable_mode_explanation
 from kiro_crew.mcp_gateway.session_servers import attach_stub_start_priority
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import START_QUEUE_SESSION_NEW, StartPriority, notify_start_queue
@@ -1258,11 +1258,15 @@ async def _finish_create_session(
     elif mode_agent:
         _ids, _current, _adv = parse_session_modes(resp)
         await self.terminate_session(session_id)
-        cause, remedy = await asyncio.to_thread(
-            unavailable_mode_explanation,
-            mode_agent,
-            kiro_cli_engine=self._harness.backend == ACP_BACKEND_KIRO,
-        )
+        known = await asyncio.to_thread(_known_mode_refusal, self, mode_agent, kas_agents)
+        if known is not None:
+            cause, remedy = known
+        else:
+            cause, remedy = await asyncio.to_thread(
+                unavailable_mode_explanation,
+                mode_agent,
+                kiro_cli_engine=self._harness.backend == ACP_BACKEND_KIRO,
+            )
         raise AcpRuntimeError(
             f"Agent mode {mode_agent!r} is not available on this session "
             f"(advertised modes: {_ids or 'none'}); {cause} Refusing to run "
@@ -1336,6 +1340,50 @@ async def _finish_create_session(
     self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
     return handle
+
+
+def _known_mode_refusal(
+    runtime: AcpRuntime, agent: str, kas_agents: list[dict[str, Any]] | None
+) -> tuple[str, str] | None:
+    """``(cause, remedy)`` when Kiro Crew itself knows why *agent* is not a mode, else ``None``.
+
+    Two causes are known without reading the agent file again:
+
+    * Crew sent *agent*'s definition with this session (KAS), so the engine did
+      not read any file. It leaves out a definition its schema rejects, and says
+      nothing about which field.
+    * The kiro-cli skill view refused the agent (``NativeSkillProjection.errors``),
+      for example because it maps skills and withholds ``skill_search``. That
+      sentence is the reason, and the file itself parses.
+
+    ``None`` sends the caller to :func:`unavailable_mode_explanation`. Blocking
+    (the KAS-offered read): run it off the event loop.
+    """
+    if kas_agents and any(isinstance(a, dict) and a.get("id") == agent for a in kas_agents):
+        return (
+            "Kiro Crew sent its definition with this session, but the engine did not "
+            "register it: the engine leaves out a definition whose fields do not match "
+            "its agent format, without naming the field.",
+            "Check that each field of the agent file has the type the agent format "
+            "documents (for example, excludedTools is a list of names), then start a "
+            "new session.",
+        )
+    projection = getattr(runtime, "_native_skill_projection", None)
+    errors = getattr(projection, "errors", None)
+    if projection is None or not isinstance(errors, dict) or agent not in errors:
+        return None
+    try:
+        projection.agent(agent)
+    except ValueError as exc:
+        return (
+            f"Kiro Crew's skill view refused it: {exc}.",
+            (
+                "Drop the agent's skill:// resources, or spawn it with backend 'kas'."
+                if kas_offered()
+                else "Drop the agent's skill:// resources."
+            ),
+        )
+    return None
 
 
 async def probe_advertised_models(
