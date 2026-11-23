@@ -298,6 +298,8 @@ class AcpProvider(LLMProvider):
         # conversation_log into the fresh session on the first prompt so the slot
         # is not context-free.
         self._history_replay_needed: bool = False
+        # The sid whose KAS load replayed no turn; get_or_create refuses its next prefetch.
+        self._resume_refused_sid: str = ""
         # Only the direct-dashboard Tool Search compatibility path owns the
         # dashboard runner's durable replay settlement contract. Generic
         # session/load recovery (including channel dispatchers) still requests

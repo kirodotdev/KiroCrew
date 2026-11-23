@@ -52,6 +52,7 @@ from kiro_crew.acp.runtime import (
     AcpRuntimeStdinStalled,
     AcpSessionHandle,
 )
+from kiro_crew.acp.session_handle_model_selection import kas_auto_judged_ids
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -448,6 +449,15 @@ class AcpSessionProvider(LLMProvider):
         """A copy of ``AcpSessionHandle.kas_registered_agents``: the batch KAS holds."""
         value = getattr(self._handle, "kas_registered_agents", None)
         return [dict(a) for a in value if isinstance(a, dict)] if isinstance(value, list) else []
+
+    @property
+    def kas_auto_judged_ids(self) -> list[str]:
+        """A copy of the ids a KAS ``set_model("auto")`` on this session is judged by.
+
+        ``session_handle_model_selection.kas_auto_judged_ids`` over the handle, for
+        the turn's settle step, which holds this provider rather than the handle.
+        """
+        return list(kas_auto_judged_ids(self._handle))
 
     @property
     def kas_active_mode_id(self) -> str:

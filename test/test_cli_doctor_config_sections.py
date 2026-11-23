@@ -6,7 +6,9 @@ the local-bind auth row, and the platform-scope name-grant row.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -679,6 +681,94 @@ class TestWhatsAppSection:
         cli_doctor._doctor_whatsapp(self._cfg(groups=[]), issues)
 
         assert "none configured" in capsys.readouterr().out
+
+    @staticmethod
+    def _refuse_stat(monkeypatch, path: Path, error: OSError) -> None:
+        """Make ``os.stat`` refuse *path*, as a sandbox or a mode-000 directory does."""
+        real_stat = os.stat
+        refused = os.fspath(path)
+
+        def _stat(target, *args, **kwargs):
+            if not isinstance(target, int) and os.fspath(target) == refused:
+                raise type(error)(*error.args)
+            return real_stat(target, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", _stat)
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(PermissionError(errno.EPERM, "Operation not permitted"), id="sandbox"),
+            pytest.param(PermissionError(errno.EACCES, "Permission denied"), id="mode-000"),
+            pytest.param(OSError(errno.EIO, "Input/output error"), id="io-error"),
+            pytest.param(OSError(), id="no-reason"),
+        ],
+    )
+    def test_a_store_the_host_will_not_check_is_named_and_the_section_finishes(
+        self, home: Path, monkeypatch, capsys, error
+    ) -> None:
+        """A refused ``stat`` neither ends doctor nor reads as an unpaired channel.
+
+        ``Path.exists()`` raises it on Python 3.12 and 3.13, which ended the whole
+        report here, and returns ``False`` on 3.14, which told a paired operator
+        to pair again.
+        """
+        self._extra(monkeypatch, True)
+        store = self._pair(home)
+        self._refuse_stat(monkeypatch, store, error)
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(groups=[{"jid": "1@g.us"}]), issues)
+
+        out = capsys.readouterr().out
+        flat = " ".join(out.split())
+        reason = error.strerror or type(error).__name__
+        assert f"could not check the session store ({reason})" in out
+        assert "(None)" not in out
+        assert str(store) in out
+        assert "run `kirocrew doctor` from your own terminal" in flat
+        assert "not paired yet" not in out, "a refusal is not an unpaired channel"
+        assert "groups:      ✅ 1 configured" in out, "the section must finish"
+        assert issues == []
+
+    def test_a_store_path_that_is_not_a_directory_is_still_unpaired(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        """A file where the store's directory belongs answers the question: no store."""
+        from kiro_crew.whatsapp.client import default_db_path
+
+        self._extra(monkeypatch, True)
+        default_db_path(home).parent.write_text("not a directory\n", encoding="utf-8")
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(), issues)
+
+        out = capsys.readouterr().out
+        assert "not paired yet" in out
+        assert "could not check" not in out
+        assert issues == []
+
+    def test_a_mode_000_store_directory_is_named_not_raised(
+        self, home: Path, monkeypatch, capsys, request
+    ) -> None:
+        """The kernel refuses the ``stat`` here, not a patch, for a user the mode binds."""
+        self._extra(monkeypatch, True)
+        store = self._pair(home)
+        store.parent.chmod(0)
+        request.addfinalizer(lambda: store.parent.chmod(0o700))
+        try:
+            os.stat(store)
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this process still reads through a mode-000 directory")
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(), issues)
+
+        out = capsys.readouterr().out
+        assert "could not check the session store" in out
+        assert issues == []
 
     def test_the_section_is_wired_into_the_doctor_run(self) -> None:
         """Guards the call site itself. Every other test here drives the helper

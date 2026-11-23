@@ -169,6 +169,66 @@ with no select. A reopened chat therefore judges no pin before the turn: a pin t
 engine does not serve fails that turn with `InvalidModelError`, and every other pick
 switches the live session.
 
+Auto is a value KAS takes like any other, though it advertises no list to find it
+in. `AcpSessionHandle.set_model("auto")` on KAS sends it through
+`session/set_config_option` instead of letting `resolve_usable_model` drop it for
+want of a list, and refuses it (`model_pin_refused`, the live pick answers
+`model_unavailable`) only when the ids it is judged by leave it out
+(`kas_select_refuses_auto` over `kas_auto_judged_ids`): the session's own full
+select (`_kas_served_ids` naming a concrete model), else, on a reopened chat whose
+one-entry select names nothing more, the catalog recorded for the session's vault
+identity (`recorded_catalog_snapshot(request_vault_identity)`, the evidence the pin
+validators below read) when it names a concrete model. An account whose region
+serves no `auto` is therefore never sent it while either list is known: KAS would
+take it and fail every later prompt. The dashboard's `_wire_model_id` sends an
+Auto pick live on KAS unless the stored `configOptions` leave `auto` out
+(`agent_sdk/kas_model_catalog.config_options_refuse_auto`), and keeps the reset
+there: a reset reloads the session on the model it ran. On a reopened chat it
+sends the pick live and the handle's verdict decides it. Only the literal `auto`
+is an Auto pick there: `""` (Inherited, what a crewmate's profile posts) keeps the
+reset on KAS, live and deferred alike (`apply_deferred_model_switch` passes the
+committed `slot.model`, not `slot.model or "auto"`), so the next cold start runs
+the inherited model (`acp_effective_model(agent, "")`: the agent's or Crew's
+default, else kiro-cli `chat.defaultModel`). Picking Auto again on a KAS slot that
+already holds `auto` while its live session runs a concrete model is not answered
+by the same-value shortcut in `switch_slot_model` (`_auto_repick_moves_session`):
+it goes live like any Auto pick. Every other harness keeps its `""` and `auto`
+handling unchanged.
+
+Residual: with neither list known, a person's Auto pick is not judged, the rule a
+concrete pin on a reopened chat already follows (above). That is a reopened chat in
+a process that has recorded no catalog for the account yet (the catalog is in
+memory only): an Auto pick made after a gateway restart and before any
+`session/new` recorded the catalog is sent unjudged. On an account served no `auto`
+that turn fails with `InvalidModelError`, and so does every later turn of the
+session until the person picks a concrete model. The settle step below never sends
+an unjudged `auto` for a value the session already ran under.
+
+A cold start sends nothing for `auto` (`acp_effective_model` reads it as nothing
+pinned), so a reloaded session comes back on the model it ran before the pick, and
+a KAS start inherits kiro-cli's `chat.defaultModel`. The turn's settle step
+(`chat_turn/model_fallback._reassert_explicit_auto`, from `_settle_session_model`)
+therefore moves a fresh or reloaded KAS session to `auto` when the slot holds the
+picker's literal `auto`, the session runs a concrete model, and `_wire_model_id`
+would send Auto live on it. How it is judged depends on when the slot got its
+`auto`. Every turn's settle stamps `slot._turn_pick_gen` with `slot._model_pick_gen`
+(runtime only, both 0 after a restart), so a generation past the stamp is a pick
+made since the session last ran a turn (a pick after a restart, or one the reset
+or the deferred path committed). Such a pick follows the live-pick rule: the move
+goes through `AcpProvider.set_model`, and the handle's verdict above judges it,
+or sends it unjudged when no list is known. A value the session already ran
+under (the stored `auto` of a chat reopened after a restart, or after a reload)
+moves it only when the ids that judge it are known and list `auto`
+(`agent_sdk/kas_model_catalog.session_lists_auto` over `kas_auto_judged_ids`,
+read off the dashboard provider's session client: the `AcpSessionProvider` passes
+the handle's ids through as `kas_auto_judged_ids`, and a client without that
+field, the placeholder before a start, answers unknown); unknown leaves the session on its model, so a reopened chat on an account served
+no `auto` keeps working. Picking Auto again (above) moves it then. A refusal or a
+switch that sent nothing leaves the session on its model and is logged as such. A
+slot holding `""` never picked: it keeps the inherited model, `chat.defaultModel`
+included. A slot whose Crew fallback serves it is left to the fallback's restore.
+Other harnesses have no settle re-assert.
+
 Saving a pin is judged against the same select before any session sends it:
 with no `models` list on the newest live KAS session, the agent and role-pin
 validators (`dashboard/handlers/core_config_models.py`, `_kas_select_ids`) refuse

@@ -697,6 +697,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_generation": ("value", "0"),
     "_turn_lineage": ("type", "builtins.tuple"),
     "_turn_in_flight_generation": ("value", "0"),
+    "_turn_pick_gen": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
     "_restored_turn_marker": ("value", "None"),
     "_run_started_at": ("value", "None"),

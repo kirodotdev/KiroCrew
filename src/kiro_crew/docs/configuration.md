@@ -236,7 +236,9 @@ the `@kiro/agent` version this Kiro Crew release pins, plus its own Node runtime
 from a sha256-pinned manifest (`agent.kas_bundle_url`) into
 `<data home>/engines/kas/<version>/`. Each Kiro Crew release runs exactly one
 engine version, and `kirocrew update` (like the dashboard's Update and the
-automatic update) installs the new release's engine before it switches over;
+automatic update) installs the new release's engine before it switches over,
+with `agent.kas_bundle` on or off (off, a failed download only prints the
+retry, `kirocrew kas install`, and the update goes on);
 the previous version stays on disk. And
 `agent.kas_bundle: true` makes the `kas` backend spawn that engine directly. On
 this route Kiro Crew is always the credential owner: sign in from the dashboard

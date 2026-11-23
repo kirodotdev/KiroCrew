@@ -530,7 +530,10 @@ class TestAcpRuntimeLoadSession:
         rt, evict, terminate, outcome = await self._load_with_frames(
             monkeypatch, frames, require_replay=True
         )
-        assert isinstance(outcome, AcpRuntimeError)
+        from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored
+
+        # Typed, so the provider can tell this refusal apart from any other failed load.
+        assert isinstance(outcome, AcpResumeNotRestored)
         assert "replayed no earlier turn" in str(outcome)
         # Evicted, never deleted: a wrong refusal must not lose a real record.
         evict.assert_awaited_once_with("sid-r")

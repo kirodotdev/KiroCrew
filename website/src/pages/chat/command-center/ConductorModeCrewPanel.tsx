@@ -303,7 +303,9 @@ export function milestoneState(item: WorkBoardItem, waiting: boolean): Milestone
   // session working again reads as running even after an earlier "done"
   // report. A report counts only until the conductor decides on it
   // (`decided_at` at or after the report hands it back).
-  if (item.state === 'accepted') return 'done'
+  // A comment on a doc an accepted milestone made wakes its session again; while
+  // that session works or waits on an approval, the row says so instead of done.
+  if (item.state === 'accepted') return waiting ? 'needs_you' : item.alive === 'running' ? 'running' : 'done'
   if (item.terminal) return 'not_done'
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
@@ -407,6 +409,8 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
     // A worker idle inside its own loop reads one way, typed: "In progress · PR #N".
     const text = state === 'needs_you' ? waitingOn
       : state === 'running' && item.alive !== 'running' && item.pr != null ? `${i18nT('components.crewMode.conductor_mode_ms_running')} ${i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}`
+      // An accepted milestone's summary is its done report, so a woken one says only Running.
+      : state === 'running' && item.state === 'accepted' ? i18nT('components.crewMode.conductor_mode_ms_running')
       : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.conductor_mode_ms_running'))
         : i18nT('components.crewMode.conductor_mode_ms_not_started')
     sub = <span className={WRAP} title={text}>{text}</span>

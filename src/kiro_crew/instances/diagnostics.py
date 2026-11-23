@@ -33,6 +33,7 @@ from kiro_crew.instances.token_mint import (
     REMOTE_BIN_CANDIDATES,
     _build_ssh_argv,
     custom_remote_bin,
+    refused_plugin_message,
     ssh_spawn_argv_env,
 )
 from kiro_crew.instances.validation import (
@@ -337,7 +338,15 @@ async def diagnose_instance(
     ssh_ok = await _probe_ssh(ssh_host, connect_timeout_secs)
     probes.append({"name": "ssh", "ok": ssh_ok})
     if not ssh_ok:
-        return DiagnosisResult(SSH_UNREACHABLE, _REASONS[SSH_UNREACHABLE], probes)
+        reason = _REASONS[SSH_UNREACHABLE]
+        refused = await asyncio.to_thread(refused_plugin_message)
+        if refused:
+            # This step sees no ssh stderr, so the plugin is only a possible cause.
+            reason += (
+                " If this host's ssh config runs session-manager-plugin in a ProxyCommand,"
+                f" this is the cause: {refused}"
+            )
+        return DiagnosisResult(SSH_UNREACHABLE, reason, probes)
 
     remote_ok = await _probe_remote_dashboard(ssh_host, remote_port, connect_timeout_secs)
     probes.append({"name": "remote_dashboard", "ok": remote_ok})

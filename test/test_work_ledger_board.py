@@ -331,6 +331,38 @@ async def test_an_unbound_item_is_closed_not_running():
     assert body["items"][0]["alive"] == "closed"
 
 
+def _accept(item_id: str) -> None:
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted", decision="ok")
+
+
+@pytest.mark.asyncio
+async def test_a_busy_worker_runs_only_the_item_it_is_bound_to_now():
+    """One chat bound to v1, then v2, then v3: its turn is for v3 alone.
+
+    v1 and v2 are accepted and still name the chat, but its one binding names v3.
+    """
+    ids = []
+    for title in ("v1", "v2", "v3"):
+        ids.append(_item(title=title))
+        _bind(ids[-1])
+        if title != "v3":
+            _accept(ids[-1])
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    alive = {row["title"]: row["alive"] for row in body["items"]}
+    assert alive == {"v1": "idle", "v2": "idle", "v3": "running"}
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_item_whose_worker_works_on_it_again_is_running():
+    """An accepted item its worker is still bound to runs when the worker does."""
+    item_id = _item(title="done once")
+    _bind(item_id)
+    _accept(item_id)
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    assert body["items"][0]["alive"] == "running"
+
+
 # ── terminal and orphaned ─────────────────────────────────────────────────
 
 

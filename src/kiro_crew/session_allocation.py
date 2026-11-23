@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew import keepalive_route as _keepalive_route
+from kiro_crew.agent_sdk.kas_default_model import serve_kiro_cli_default_model
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
@@ -251,6 +252,10 @@ class SessionRegistryState:
     #: their spawn door and started itself: each stands down at that door
     #: (``SpeculativeResumeRefused``). Removed with the announcement.
     superseded_speculative_starts: set[object] = field(default_factory=set)
+    #: Per key, the sid a resume prefetch saw its KAS ``session/load`` refuse
+    #: (``AcpResumeNotRestored``): a later prefetch of that sid is refused before it
+    #: starts a process. In memory only; registering a session for the key drops it.
+    refused_resume_sids: dict[str, str] = field(default_factory=dict)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -1067,6 +1072,21 @@ class SessionAllocationService:
         assert won_race_session is session
         await session.semaphore.acquire()
         session.turn_owner = asyncio.current_task()
+        try:
+            # On KAS an unpinned step starts on kiro-cli's chat.defaultModel. Under
+            # the turn semaphore, so no other claimant runs a turn before it lands.
+            await serve_kiro_cli_default_model(
+                runtime,
+                handle,
+                cwd,
+                lambda: owner._cfg.acp_effective_model(
+                    agent or getattr(runtime, "_agent", "") or None, None
+                ),
+            )
+        except BaseException:
+            # Gives the permit back unless a teardown during the call already did.
+            self._release_reacquired(key, session)
+            raise
         return session.provider, True, False
 
     def record_success(self, key: str) -> None:
