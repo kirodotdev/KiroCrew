@@ -210,6 +210,25 @@ class TestOnTheWorkerGetsTheKit:
             assert uri in spec["resources"]
         assert "skill://release/SKILL.md" in spec["resources"]
 
+    def test_a_mapped_bot_file_keeps_its_knowledge_base(self, bot):
+        """A knowledge base is an object entry in ``resources``: mapping the conductor
+        skill beside the Bot file's own skill keeps it, so KAS still carries it."""
+        from kiro_crew.agent_materialization import skill_resources
+        from kiro_crew.config import paths
+
+        kb = {"type": "knowledgeBase", "source": "file://docs/release", "name": "release-notes"}
+        own = {"name": "pixel", "resources": ["skill://release/SKILL.md", kb]}
+        (paths.mate_agents_dir() / "pixel.json").write_text(json.dumps(own), encoding="utf-8")
+        assert mate_worker.mate_file_for_member("pixel-id") == "pixel"
+        bot.worker_conducts = False
+        assert kb in _spec()["resources"]  # the Bot file's entry reaches the merge
+        bot.worker_conducts = True
+        resources = _spec()["resources"]
+        assert kb in resources
+        assert "skill://release/SKILL.md" in resources
+        for uri in skill_resources.prompt_skill_uris("goal-conductor"):
+            assert uri in resources
+
     def test_the_grants_cross_the_ceiling(self, monkeypatch):
         from kiro_crew.platform import governance
 

@@ -77,8 +77,11 @@ def conducting_worker_kit(spec: dict[str, Any]) -> dict[str, Any]:
     piece = ledger_rules_block(CONDUCTS_PIECE)
     own = spec.get("prompt") if isinstance(spec.get("prompt"), str) else ""
     spec["prompt"] = f"{own.rstrip()}\n\n{piece}" if own else piece
-    resources = [entry for entry in spec.get("resources") or [] if isinstance(entry, str)]
-    if any(entry.startswith("skill://") for entry in resources):
+    # Every entry stays: a knowledge base is an object, not a string
+    # (``agent_capabilities_resources``), and only a string entry maps a skill.
+    raw = spec.get("resources")
+    resources = list(raw) if isinstance(raw, list) else []
+    if any(isinstance(entry, str) and entry.startswith("skill://") for entry in resources):
         for uri in agent_mod.prompt_skill_uris("goal-conductor"):
             if uri not in resources:
                 resources.append(uri)
