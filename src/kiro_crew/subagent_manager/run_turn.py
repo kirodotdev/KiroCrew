@@ -1068,8 +1068,10 @@ async def _run_inner_impl(
                     # Two attempts per candidate
                     # (FALLBACK_CANDIDATE_ATTEMPTS), ~2s backoff each —
                     # NOT the exponential same-model curve; see
-                    # llm_helpers Case 2.75 for the rationale.
-                    if not _fb_state.chain:
+                    # llm_helpers Case 2.75 for the rationale. Kiro's
+                    # per-user rate limit is shared by every model: a swap
+                    # cannot clear it, so it surfaces as its own error.
+                    if not _fb_state.chain or getattr(exc, "user_rate_limit", False) is True:
                         raise
                     if not _fb_state.should_retry_active():
                         _cand = await advance_fallback_candidate(

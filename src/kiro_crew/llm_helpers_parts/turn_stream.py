@@ -593,6 +593,9 @@ async def stream_and_collect(
             # ``not result_text``: a tool call can complete an EXTERNAL
             # MUTATION before any text streams. Any fired tool across ANY
             # attempt disables every original-prompt replay for this call.
+            #
+            # Kiro's per-user rate limit is shared by every model: a swap cannot
+            # clear it, so it surfaces as its own error instead.
             if (
                 retry_transient
                 and not result_text
@@ -600,6 +603,7 @@ async def stream_and_collect(
                 and _fb_state is not None
                 and acp_error_is_transient(exc)
                 and transient_attempts >= _TRANSIENT_RETRIES
+                and getattr(exc, "user_rate_limit", False) is not True
             ):
                 if _fb_state.should_retry_active():
                     # Final attempt on the current candidate — the shared

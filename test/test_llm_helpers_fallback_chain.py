@@ -524,6 +524,35 @@ class TestStreamAndCollectThrottleFallback:
         assert not hasattr(ei.value, "_kc_fallback_story")
 
     @pytest.mark.asyncio
+    async def test_per_user_rate_limit_does_not_walk_the_chain(self) -> None:
+        """Kiro's per-user rate limit is shared by every model: once the same-model
+        budget is spent the error surfaces as it is, with no swap and no story."""
+        from kiro_crew.llm_helpers import _TRANSIENT_RETRIES
+
+        call_count = 0
+
+        async def _stream(msg):
+            nonlocal call_count
+            call_count += 1
+            err = AcpError("You're sending requests faster than your rate limit allows.")
+            err.transient = True
+            err.throttle = True
+            err.user_rate_limit = True
+            raise err
+            yield  # pragma: no cover
+
+        provider = self._provider(_stream)
+        with (
+            patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0.0),
+            pytest.raises(AcpError) as ei,
+        ):
+            await stream_and_collect(provider, "test", fallback_models=["fb-1", "fb-2"])
+
+        assert call_count == _TRANSIENT_RETRIES + 1
+        provider.set_model.assert_not_awaited()
+        assert not hasattr(ei.value, "_kc_fallback_story")
+
+    @pytest.mark.asyncio
     async def test_non_transient_error_mid_chain_propagates_immediately(self) -> None:
         """An auth/validation error raised by a candidate fails fast — the
         chain is for transient throttles only."""
