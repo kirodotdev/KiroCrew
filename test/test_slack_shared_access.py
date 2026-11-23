@@ -442,9 +442,33 @@ async def test_a_shared_user_cannot_answer_someone_elses_linked_prompt(
     assert fut.result() == "approved"
 
 
+@pytest.mark.parametrize("asker", ["UFRIEND001>|<!channel", "<@UFRIEND001>", "ufriend001", ""])
+def test_a_requester_that_is_not_a_member_id_is_never_mentioned(asker: str) -> None:
+    """The refusal names the requester as ``<@id>`` only for a well-formed member id,
+    so a malformed one cannot carry markup such as ``<!channel>`` into Slack."""
+    owner = f"the Kiro Crew owner (<@{OWNER}>)"
+    assert interactions._owner_only_text(False, asker) == (
+        interactions.APPROVAL_OWNER_ONLY_TEXT.format(owner=owner)
+    )
+    assert interactions._owner_only_text(False, OTHER) == (
+        interactions.APPROVAL_OWNER_OR_ASKER_TEXT.format(owner=owner, asker=OTHER)
+    )
+
+
+@pytest.fixture
+def _clean_linked_approvals():
+    """Empty the linked-card registry around a test that writes it for real
+    (``post_linked_approval``), so a failure cannot leave an entry for the next."""
+    from kiro_crew.slack.handler import _linked_approvals
+
+    _linked_approvals.clear()
+    yield
+    _linked_approvals.clear()
+
+
 @pytest.mark.asyncio
 async def test_a_mirrored_card_answers_to_the_requester_it_was_posted_for(
-    _floor_monkeypatch, _linked_slot_state
+    _floor_monkeypatch, _linked_slot_state, _clean_linked_approvals
 ) -> None:
     """``post_linked_approval`` registers the card under the requester it is given."""
     from kiro_crew.slack.handler import post_linked_approval

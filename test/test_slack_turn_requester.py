@@ -115,6 +115,7 @@ async def test_any_text_steered_into_the_turn_drops_the_name() -> None:
     "stamped, code_channel, child, expected",
     [
         (True, False, "", FRIEND),
+        (True, False, "unmarked_backend", ""),
         (False, False, "", ""),
         (True, True, "", ""),
         (True, False, "sub_session_id", ""),
@@ -127,6 +128,7 @@ async def test_any_text_steered_into_the_turn_drops_the_name() -> None:
     ],
     ids=[
         "shared-users-turn",
+        "a-backend-that-does-not-mark-child-calls",
         "unstamped-turn",
         "code-channel-session",
         "a-childs-call",
@@ -162,6 +164,8 @@ async def test_the_linked_card_carries_the_turns_requester(
     slot._slack_channel = "C1"
     slot._slack_thread_ts = "1700000000.000100"
     asked = _permission_event()
+    # A backend whose transport marks its children's calls, unless the case says not.
+    asked.child_calls_marked = child != "unmarked_backend"
     if child == "sub_session_id":
         # A background child's call, routed to whichever turn runs the slot now.
         asked.sub_session_id = "child-1"

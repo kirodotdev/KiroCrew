@@ -466,10 +466,13 @@ async def _on_permission_prompt(
                 # The shared user whose message alone opened this turn may answer
                 # its own call too. A code channel's own session stays the owner's,
                 # and so does a child's call: a background child can outlive the
-                # turn that started it and ask under a later one.
+                # turn that started it and ask under a later one. Only a backend
+                # that marks its children's calls can tell them apart
+                # (``child_calls_marked``, as ``deny_override`` requires).
                 requester=(
                     _slack_turn_requester(slot)
                     if _approval_thread is not None
+                    and getattr(event, "child_calls_marked", False) is True
                     and not getattr(event, "sub_session_id", "")
                     and not getattr(event, "native_child_call", False)
                     else ""
