@@ -294,6 +294,32 @@ def test_a_checkout_that_does_not_declare_the_agent_keeps_pooling(tmp_path):
     assert [e["name"] for e in got] == ["pooled"]
 
 
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"markdown_specs": False, "dispatchable_only": True},
+        {"markdown_specs": True, "dispatchable_only": False},
+    ],
+    ids=["kiro-cli", "mirrored"],
+)
+def test_a_session_in_the_home_folder_keeps_the_user_level_stubs(tmp_path, monkeypatch, scope):
+    """The home folder's ``.kiro/agents`` IS the user-level folder, not a checkout.
+
+    A chat, cron run or sub-agent working in ``~`` found the user-level spec there
+    and read it as a project shadow, so every shared server ran unpooled: on the
+    Claude Code backend, raw inside the chat's sandbox.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("KIRO_HOME", str(home / ".kiro"))
+    _write_project_agent(home, "kirocrew")
+    overlay = _write_overlay(tmp_path / "gw", "kirocrew", {"pooled": _stub()})
+    got = pooled_session_servers(overlay, "kirocrew", work_dir=home, **scope)
+    assert [e["name"] for e in got] == ["pooled"]
+    assert injection_server_names(overlay, "kirocrew", work_dir=home, **scope) == frozenset(
+        {"pooled"}
+    )
+
+
 def test_a_project_agents_declared_name_beats_its_filename(tmp_path):
     """The shadowing rule is ``agent_discovery``'s and is not restated here.
 
