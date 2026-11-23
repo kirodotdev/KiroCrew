@@ -59,6 +59,7 @@ from kiro_crew.instances.token_mint import (
     refused_plugin_folder,
     refused_plugin_message,
     ssh_spawn_argv_env,
+    under_group_leader,
 )
 from kiro_crew.sandbox import without_python_env
 
@@ -358,7 +359,10 @@ class _SshTunnel:
         try:
             ssm = self._transport == "ssm"
             self._proc = await asyncio.create_subprocess_exec(
-                *argv,
+                # ssh runs under a leader shell that ends the ProxyCommand ssh
+                # leaves behind when it exits (token_mint.under_group_leader).
+                # spawn_env above was resolved for the ssh head, not the shell.
+                *(argv if ssm else under_group_leader(argv)),
                 # SSM only: `aws ssm start-session` prints every session-close
                 # notice to STDOUT (its own diagnostics go to a rolling log
                 # file), so this pipe is the ONLY place the reason a forward

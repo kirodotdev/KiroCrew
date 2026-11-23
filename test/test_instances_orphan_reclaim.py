@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -12,6 +14,7 @@ import pytest
 from closed_peer_helpers import refused_peer_connects  # noqa: F401
 from instances_helpers import _FakeTunnel
 
+from kiro_crew.instances import token_mint
 from kiro_crew.testing.wait import async_wait_until
 
 pytestmark = pytest.mark.usefixtures("refused_peer_connects")
@@ -103,8 +106,10 @@ class TestOrphanForwarderReclaim:
             "time.sleep(120)\n"
         )
         argv = [sys.executable, "-c", code]
+        # Spawned the way the tunnel spawns ssh: under its group leader shell,
+        # which is the process the gateway records.
         proc = subprocess.Popen(
-            argv,
+            token_mint.under_group_leader(argv),
             start_new_session=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -114,7 +119,7 @@ class TestOrphanForwarderReclaim:
             line = proc.stdout.readline()
             port = int(line.strip())
         except Exception:
-            proc.kill()
+            self._cleanup(proc)
             raise
         # flake-ok: daemon reaper's untimed wait never blocks the test, and the finally cleanup kills a live child; moved verbatim
         threading.Thread(target=proc.wait, daemon=True).start()
@@ -152,7 +157,12 @@ class TestOrphanForwarderReclaim:
     @staticmethod
     def _cleanup(proc):
         if proc.poll() is None:
-            proc.kill()
+            if os.name == "posix":
+                # Each holder leads its own session; never signal a reaped leader.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -238,7 +248,7 @@ class TestOrphanForwarderReclaim:
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew.instances import token_mint
 
-        head = str(tmp_path / "bin" / "ssh")
+        head = sys.executable
         monkeypatch.setattr(token_mint, "resolve_ssh_bin", lambda: head)
         self._fake_orphan(monkeypatch)
         sign = self._pin_identity_key(monkeypatch)
@@ -246,7 +256,7 @@ class TestOrphanForwarderReclaim:
 
         def capture(pid, start, expected_argv, port, tree, audit, expected_argv_sig=""):
             seen["argv"] = list(expected_argv)
-            return "identity_mismatch"
+            return "reclaimed"
 
         monkeypatch.setattr(stm, "_verify_and_reclaim_forwarder", capture)
         holder = socket.socket()
@@ -272,8 +282,59 @@ class TestOrphanForwarderReclaim:
         spawned = stm._SshTunnel(
             "cd-1", "cd-1-alias", port, reg.get("cd-1").remote_port
         )._build_argv()
-        assert seen["argv"][0] == head
-        assert seen["argv"] == spawned
+        assert spawned[0] == head
+        # The recorded forwarder is the group leader shell running that argv.
+        assert seen["argv"] == token_mint.under_group_leader(spawned)
+
+    @pytest.mark.skipif(os.name != "posix", reason="ssh group leader is POSIX-only")
+    @pytest.mark.parametrize("argv_sig", ["", "ab" * 32], ids=["rebuilt", "signed"])
+    @pytest.mark.asyncio
+    async def test_reclaim_retries_unwrapped_ssh_only_without_a_fingerprint(
+        self, tmp_path, monkeypatch, argv_sig
+    ):
+        """Only a fingerprint-free mismatch permits the unwrapped ssh candidate."""
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew.testing.ids import UNALLOCATABLE_PID
+
+        head = sys.executable
+        monkeypatch.setattr(token_mint, "resolve_ssh_bin", lambda: head)
+        self._fake_orphan(monkeypatch)
+        sign = self._pin_identity_key(monkeypatch)
+        seen = []
+
+        def capture(pid, start, expected_argv, port, tree, audit, expected_argv_sig=""):
+            seen.append((pid, start, list(expected_argv), port, tree, audit, expected_argv_sig))
+            return "identity_mismatch"
+
+        monkeypatch.setattr(stm, "_verify_and_reclaim_forwarder", capture)
+        with socket.socket() as holder:
+            holder.bind(("127.0.0.1", 0))
+            holder.listen(1)
+            port = holder.getsockname()[1]
+            reg, mgr = self._mgr(tmp_path)
+            reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+            pid, start = UNALLOCATABLE_PID, "12345"
+            reg.update(
+                "cd-1",
+                local_port=port,
+                forwarder_pid=pid,
+                forwarder_start=start,
+                forwarder_argv_sig=argv_sig,
+                forwarder_sig=sign("cd-1", pid, start, port, argv_sig),
+                was_connected=True,
+            )
+            await mgr.connect("cd-1")
+
+        spawned = stm._SshTunnel(
+            "cd-1", "cd-1-alias", port, reg.get("cd-1").remote_port
+        )._build_argv()
+        wrapped = token_mint.under_group_leader(spawned)
+        assert wrapped != spawned
+        candidates = [[]] if argv_sig else [wrapped, spawned]
+        audit = f"instance=cd-1 pid={pid} port={port} transport=ssh"
+        assert seen == [
+            (pid, start, candidate, port, False, audit, argv_sig) for candidate in candidates
+        ]
 
     @pytest.mark.skipif(
         sys.platform != "linux",
@@ -302,7 +363,10 @@ class TestOrphanForwarderReclaim:
         )
         argv = [sys.executable, "-c", code]
         proc = subprocess.Popen(
-            argv, start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            token_mint.under_group_leader(argv),
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
         try:
             # flake-ok: pre-existing read of the child's ready line returns on its port print or its EOF; moved verbatim
@@ -527,7 +591,7 @@ class TestOrphanForwarderReclaim:
             # flake-ok: pre-existing read of the child's ready line returns on its port print or its EOF; moved verbatim
             port = int(proc.stdout.readline().strip())
         except Exception:
-            proc.kill()
+            self._cleanup(proc)
             raise
         # flake-ok: daemon reaper's untimed wait never blocks the test, and the finally cleanup kills a live child; moved verbatim
         threading.Thread(target=proc.wait, daemon=True).start()
@@ -878,7 +942,7 @@ class TestOrphanForwarderReclaim:
             assert reached, "the orphan test refused a dead or reused parent"
             r_pid, r_start, r_argv, r_port, r_tree = reached[0]
             assert (r_pid, r_start, r_port, r_tree) == (proc.pid, start, port, False)
-            assert r_argv == list(argv)
+            assert r_argv == token_mint.under_group_leader(list(argv))
         finally:
             self._cleanup(proc)
 
