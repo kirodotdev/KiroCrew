@@ -399,6 +399,21 @@ Every `decompose_yaml` audit event carries the run's provenance — `source` and
 `spec_name` in its metadata, and the source as its caller identity (`dashboard` for
 unsourced runs), so a denial is attributed to the surface that started the run.
 
+An LLM decomposition that fails returns an empty plan (`run()`: `Failed to decompose spec
+into tasks`; `plan()`: `Could not generate a plan. Try rephrasing.`; a replan: `Re-plan
+failed after task N`). A sandbox refusal (`SandboxUnavailableError` or
+`SandboxCeilingUnsealable` from a run's decompose) gives the same failure, through
+`run_reporting.decompose_recording_refusal`, so `run.error`, its notices, `runs.json`,
+`TASK_PROGRESS.md`, the workflow run record and the task-queue record carry exactly that
+text, and the stack trace is logged at DEBUG only. The refusal's own text names the host's
+remedy and is stored nowhere. It reaches two live readers alone: `kirocrew run`'s stderr
+line, through `run_reporting.live_error` (a `ContextVar` of the task that awaited the run,
+read only while `run.error` is still the failure it stands behind), and `POST
+/api/taskrunner/plan`'s answer to the machine owner (`plan()` raises
+`PlanSandboxRefused`, a `ValueError` whose text is the ordinary one and whose `refusal`
+is the host text). The run list and the task review sent to chat show `run.error` to every
+reader.
+
 A YAML plan with no workflow name, no `# ` line and no path is named after its first
 step's title (`auto_name`'s `first_step`), not after its first line, a YAML key such as
 `agents:`.
