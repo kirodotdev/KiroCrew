@@ -2603,8 +2603,12 @@ The snapshot is only ever rebuilt off-loop:
   spec it skipped did not parse, in either directory: the same bytes fail the
   same way, while a failed read or listing can pass a moment later. So one
   unparseable spec keeps the memo on, and a transient failure is read again. A
-  key `agents_dir_revision` cannot prove (Windows by default, a symlinked spec,
-  more than 64 entries younger than 2 s) scans every time. Callers whose inputs
+  key `agents_dir_revision` cannot prove (a symlinked spec, more than 64 entries
+  or 8 MiB younger than 2 s, on Windows more than 256 MiB of specs, since there
+  every entry is pinned on a digest of its bytes) scans every time. An entry it
+  must hash but cannot is logged at WARNING, naming the folder and the
+  entry, once until that folder next yields a revision; a spent byte budget is
+  not logged. Callers whose inputs
   keep moving scan one after another; readers of the snapshot never wait on the
   flight lock. A reuse heals like a scan, outside the lock, and the agent-catalog
   fetch (`dashboard/handlers/agent_catalog.py`) calls the refresh once and then
