@@ -114,8 +114,8 @@ outside every session sandbox, as the user, while the same command run per
 chat runs inside the sandbox. The approval
 therefore covers exactly the launch that existed at the press, never what an
 agent writes afterwards: a later change to the command, args or declared env
-text under an approved name (agent specs and kiro-cli's `~/.kiro/settings/mcp.json`
-are still writable from an agent shell) is refused as `changed_needs_reapproval` and stays on the
+text under an approved name (a project's agent specs and MCP files are still
+writable from an agent shell) is refused as `changed_needs_reapproval` and stays on the
 session's sandboxed path until the operator presses **Approve update**, which
 reads the new launch and pins it. Only a `${VAR}` expansion moving under
 unchanged declared text is re-recorded (the rebind), because its values come
@@ -149,11 +149,34 @@ every sandbox (`_CREW_READONLY_LEAVES`, pre-created as `{}` so an absent store c
 be created from inside one). Its gateway saves go through
 `mcp_config_files._atomic_write`, which records each one in `config.write_provenance`
 like a `config.json` save, so a page save landing between a spawn's pre-pass and its
-pin is not refused. kiro-cli's `~/.kiro/settings/mcp.json` stays on the file-tool tier
-only (see the discovery-endpoint residual below). A refusal on either path names the
+pin is not refused. kiro-cli's `~/.kiro/settings/mcp.json` is on the file-tool tier
+too, and read-only on both of Kiro Crew's launchers
+([decision](../../decisions/2026-11-23-agents-ask-before-changing-kiro-cli-project-and-app-mcp-files.md)):
+`sandbox_seals._resolved_kiro_mcp_registry_targets` names both spellings (`$HOME/.kiro`,
+which the gateway writes, and `KIRO_HOME`, which kiro-cli reads) and they ride the
+kiro agents tree's host field, so each is sealed with its parents guarded against
+rename, including the unresolved spelling of an accepted `KIRO_HOME` override so its
+symlinks are pinned beside the resolved path. Every spelling's resolved path is also
+listed and sealed. Seatbelt denies the path
+whether or not it exists; the Linux launcher seals a name that exists, so
+`sandbox_seals._materialize_kiro_mcp_registry` creates an absent one as
+`{"mcpServers": {}}` (0o600, exclusive, no-follow, under a kiro home that
+exists). A dangling registry symlink is preserved; its absent referent is published
+only when its resolved parent is an existing real directory, without creating any
+intermediate directories or replacing an existing entry. Unlike a crew-home ceiling,
+that step never refuses a spawn: a file it cannot create is logged and left unsealed
+for that spawn. It is not on the delegated-workspace guard, so a
+workspace that holds it keeps working where kiro-cli's own sandbox confines the
+spawn, and there the file-tool refusal is the only fence. Its gateway saves are not
+vouched for the pin, because the pin compares only a file the pre-pass established,
+and this one is not. kiro-cli's in-chat `/mcp` command shares the harness's sandbox
+and is refused on it, as its writes to the agents tree already are; `kiro-cli mcp add`
+in a terminal runs outside every sandbox. A refusal on either path names the
 way forward (`paths_lists.MCP_REGISTRY_REMEDY`): the agent calls `request_server`
 with `action` `add` (`source` `custom` and the entry), `change` or `remove`, which
-raises an `mcp.server` card showing the entry's change (env and header values go
+raises an `mcp.server` card showing the entry's change (an add with `target`
+`kiro-cli` also writes kiro-cli's file through the MCP page's `kiroGlobal` toggle, and
+the card names that file) (env and header values go
 through the credential redactor, and an env change marks the card as running new
 code, like a launch-line change); Apply runs the MCP page's own routes, then `POST
 /api/sessions/restart` while **Restart open chats to use it** is checked
