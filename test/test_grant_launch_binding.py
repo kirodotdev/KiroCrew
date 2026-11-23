@@ -227,19 +227,39 @@ def test_the_gate_reads_the_agent_that_serves_the_session_not_the_alias(agents):
     assert _approved(manager, _call(resolved_agent="a"), alias="my-alias")
 
 
-def test_a_call_with_no_resolved_agent_is_checked_against_the_default_template(
-    agents, default_template
-):
+def test_a_call_with_no_resolved_agent_asks_on_a_bound_grant(agents, default_template):
+    # The surface did not say which spec runs; the default template is not assumed.
     _spec(agents, NPX)
-    assert _approved(_manager({REF: [_id(NPX)]}), _call(resolved_agent=""), alias="")
+    assert not _approved(_manager({REF: [_id(NPX)]}), _call(resolved_agent=""), alias="a")
 
 
 def test_the_tool_list_toggle_binds_the_default_templates_launches(agents, default_template):
     _spec(agents, NPX)
     launches = always_allow_tool.grant_launches("ops", resolved_agent="")
     assert launches == (_id(NPX),)
-    # The gate approves the grant the toggle wrote for a call with no resolved agent.
-    assert _approved(_manager({REF: list(launches)}), _call(resolved_agent=""), alias="")
+    # A session served by the default template is approved by that grant.
+    assert _approved(_manager({REF: list(launches)}), _call(resolved_agent="a"), alias="")
+
+
+def test_a_commented_mcp_json_still_binds_and_approves(agents):
+    settings = agents.parent / "settings"
+    settings.mkdir()
+    (settings / "mcp.json").write_text(
+        '{\n  // the fleet server\n  "mcpServers": {"ops": ' + json.dumps(NPX) + ",},\n}\n"
+    )
+    assert always_allow_tool.grant_launches("ops", resolved_agent="a") == (_id(NPX),)
+    assert _approved(_manager({REF: [_id(NPX)]}))
+
+
+@pytest.mark.parametrize("raw", [b"{ not json", b'{"mcpServers": {"ops": "\xff"}}'])
+def test_a_settings_file_that_cannot_be_read_makes_a_bound_grant_ask(agents, raw):
+    _spec(agents, NPX)
+    manager = _manager({REF: [_id(NPX)]})
+    assert _approved(manager)
+    settings = agents.parent / "settings"
+    settings.mkdir()
+    (settings / "mcp.json").write_bytes(raw)
+    assert not _approved(manager)
 
 
 def test_with_no_known_agent_a_bound_grant_asks(agents, monkeypatch):

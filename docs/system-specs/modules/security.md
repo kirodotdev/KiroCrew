@@ -6429,14 +6429,16 @@ same locked write, to the launch ids (`tool_grant_launch_audit.launch_id`: comma
 and args, or the URL; never env) of every definition of its server the granting
 session could see, in `hooks.auto_approve_tool_identity_launches`; granting the
 same entry again adds the launches seen then. The writer and the gate read the
-definitions of the same agent (`tool_grant_launch_audit.grant_agent`): the agent
-that actually serves the session, or the configured default template where none
-is known (the MCP tool list toggle, a surface that does not stamp it), never the
-slot's alias, which can name another spec. A bound grant matches its
+definitions of the agent that actually serves the session (on the gate, the
+call's `resolved_agent`), never the slot's alias, which can name another spec;
+the MCP tool list toggle has no session and binds the configured default
+template's (`tool_grant_launch_audit.grant_agent`). A bound grant matches its
 identity case-sensitively and approves a call only when every definition of the
 server the calling session can see has a launch id in its binding; a changed,
-added or unidentifiable launch, no definition at all, or no known agent gets no
-verdict and the call asks. The settings files this check reads are re-read on
+added or unidentifiable launch, no definition at all, a call with no resolved
+agent (every surface but the dashboard chat today), or a settings file that
+exists but cannot be read or parsed gets no verdict and the call asks. The
+settings files are parsed as JSONC like the session's own reader, re-read on
 each check and cached by content digest, never by mtime and size, which a
 rewrite can restore. An explicit `null` binding map is read like any other
 malformed map: every grant is bound to nothing. A grant with no binding (every grant written before the binding

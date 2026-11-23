@@ -18,11 +18,16 @@ re-read on every check and cached by content digest only (a rewrite that keeps
 the size and restores the mtime is still seen), and the agent-spec reader's own
 directory-revision memo.
 
-Both sides read the definitions of ONE agent, :func:`grant_agent`: the agent
-that actually serves the session (``read_effective_agent``), or the configured
-default template where there is none (the MCP tool list's toggle, a surface that
-does not stamp it). The slot's alias is never used, because it can name a
-different spec than the one the session runs.
+Both sides read the definitions of the agent that actually serves the session
+(``read_effective_agent``; on the gate, the call's ``resolved_agent``), never the
+slot's alias, which can name a different spec than the one the session runs.
+The MCP tool list's toggle has no session and binds the configured default
+template's (:func:`grant_agent`). A call whose surface stamps no resolved agent
+has an unknown spec, so a bound grant asks there.
+
+shortcut: only the dashboard chat stamps ``resolved_agent`` today, so on other
+surfaces (Slack, cron, subagents, the task runner) a bound grant asks; upgrade
+by stamping the served agent at those gate sites.
 
 Stage 1 (unbound grants, observe only). A grant with no record -- every grant
 written before stage 2, and every ``auto_approve_tools`` pattern -- approves as
@@ -43,7 +48,6 @@ files are not read. Upgrade with a session-recorded mount.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import queue
@@ -69,7 +73,7 @@ _MAX_CACHED_FILES = 64
 _LOCK = threading.Lock()
 _FIRST_SEEN: dict[str, frozenset[str]] = {}
 _REPORTED: set[tuple[str, str]] = set()
-_FILE_CACHE: dict[str, tuple[str, dict[str, Any]]] = {}
+_FILE_CACHE: dict[str, tuple[str, dict[str, Any] | None]] = {}
 #: Observations each cap dropped, reported once per process (``_note_overflow``).
 _DROPPED: dict[str, int] = {"names": 0, "reports": 0, "queued": 0}
 _OVERFLOW_NOTED = False
@@ -162,30 +166,43 @@ def _read_settings(path: Path, *, follow_links: bool) -> bytes | None:
         os.close(fd)
 
 
-def _servers_in(path: Path, *, follow_links: bool) -> dict[str, Any]:
-    """``mcpServers`` of one settings file; ``{}`` when missing or unreadable.
+def _servers_in(path: Path, *, follow_links: bool) -> dict[str, Any] | None:
+    """``mcpServers`` of one settings file: ``{}`` when it is absent, ``None`` when refused.
+
+    Parsed as JSONC (``user_json.loads_user_jsonc``), the way the session's own
+    reader takes it, so a commented file still contributes its servers. A file
+    that exists but cannot be read or parsed (a refused link, not a regular
+    file, too large, not UTF-8, not JSON) is ``None``: what the session mounts
+    from it is unknown, so a bound grant must not approve over it.
 
     The bytes are read on every call and only the parse is cached, keyed by
     their digest: this read decides whether a bound grant approves, and mtime
     and size can both be put back after a rewrite.
     """
+    from kiro_crew.user_json import loads_user_jsonc
+
     try:
         raw = _read_settings(path, follow_links=follow_links)
+    except FileNotFoundError:
+        return {}
     except OSError:
-        return {}
+        return None
     if raw is None:
-        return {}
+        return None
     key = str(path)
     digest = hashlib.sha256(raw).hexdigest()
     cached = _FILE_CACHE.get(key)
     if cached is not None and cached[0] == digest:
         return cached[1]
+    servers: dict[str, Any] | None
     try:
-        data = json.loads(raw)
+        text = raw.decode("utf-8")
+        # A blank file declares no server, as the session reads it.
+        data = loads_user_jsonc(text) if text.strip() else {}
         found = data.get("mcpServers") if isinstance(data, dict) else None
         servers = found if isinstance(found, dict) else {}
-    except ValueError:
-        servers = {}
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        servers = None
     if len(_FILE_CACHE) >= _MAX_CACHED_FILES:
         _FILE_CACHE.clear()
     _FILE_CACHE[key] = (digest, servers)
@@ -210,14 +227,22 @@ def _spec_servers(agents_dir: Path, agent: str) -> dict[str, Any]:
     return found if isinstance(found, dict) else {}
 
 
-def _definition_sources(agent: str, work_dir: str) -> list[dict[str, Any]]:
-    """Every ``mcpServers`` map a session's server under one name can come from."""
+def _definition_sources(agent: str, work_dir: str) -> list[dict[str, Any] | None]:
+    """Every ``mcpServers`` map a session's server under one name can come from.
+
+    ``None`` stands for a settings file that exists but was refused or could not
+    be parsed (:func:`_servers_in`).
+
+    shortcut: an agent spec that exists but cannot be read reads as no spec,
+    because ``load_agent_spec`` reports a missing spec and a broken one alike;
+    upgrade when that reader tells them apart.
+    """
     from kiro_crew.config.paths import data_home, kiro_agents_dir, project_agents_dir
 
     agents_dir = kiro_agents_dir()
     project = Path(work_dir) if work_dir and os.path.isabs(work_dir) else None
     safe = bool(agent) and "/" not in agent and "\\" not in agent and ".." not in agent
-    sources: list[dict[str, Any]] = []
+    sources: list[dict[str, Any] | None] = []
     if safe:
         if project is not None:
             sources.append(_spec_servers(project_agents_dir(project), agent))
@@ -234,6 +259,9 @@ def session_launch_ids(server: str, *, agent: str, work_dir: str) -> frozenset[s
     wanted = server.lower()
     ids: set[str] = set()
     for servers in _definition_sources(agent, work_dir):
+        if servers is None:
+            # Unknown definitions bind nothing; the gate asks while it stays so.
+            continue
         for name, entry in servers.items():
             if isinstance(name, str) and name.lower() == wanted and isinstance(entry, dict):
                 found = launch_id(entry, work_dir)
@@ -243,16 +271,17 @@ def session_launch_ids(server: str, *, agent: str, work_dir: str) -> frozenset[s
 
 
 def grant_agent(resolved_agent: str) -> str:
-    """The agent whose definitions a bound grant's launches are read from.
+    """The agent whose definitions a grant WRITER binds (blocking I/O on a cold start).
 
-    The one answer both the grant writers and the gate use, so a grant is
-    checked against the same spec it was written from. *resolved_agent* is the
-    agent that actually serves the session (``read_effective_agent``); with none,
-    the configured default template as a session with no crewmate dispatches it
-    (``dispatch_kiro_agent(default_template(...))``), read from the published
-    in-memory alias snapshot. ``""`` when that snapshot is not published yet and
-    cannot be loaded here (on the event loop): the gate then refuses the bound
-    grant and a writer writes the grant unbound. Never raises.
+    *resolved_agent* is the agent that actually serves the granting session
+    (``read_effective_agent``), the same value the gate later reads from the
+    call (``ToolCall.resolved_agent``). With none (the MCP tool list's toggle,
+    which has no session), the configured default template as a session with
+    no crewmate dispatches it (``dispatch_kiro_agent(default_template(...))``),
+    read from the published alias snapshot and loaded off the event loop when
+    cold. ``""`` when it cannot be known: the writer then writes the grant
+    unbound. The gate never calls this: a call with no resolved agent is one
+    whose spec is unknown, so a bound grant asks. Never raises.
     """
     if isinstance(resolved_agent, str) and resolved_agent:
         return resolved_agent
@@ -291,6 +320,10 @@ def bound_launch_holds(server: str, bound: frozenset[str], *, agent: str, work_d
         wanted = server.lower()
         seen = False
         for servers in _definition_sources(agent, work_dir):
+            if servers is None:
+                # A settings file that exists but could not be read: what the
+                # session mounts from it is unknown.
+                return False
             for name, entry in servers.items():
                 if not (isinstance(name, str) and name.lower() == wanted):
                     continue
@@ -317,16 +350,19 @@ def identity_grant_approves(config: Any, call: Any, agent: str, identity_ref: st
     of the identity is bound, no unbound spelling approves it, so a hand-written
     case variant cannot step around a binding.
 
-    The bound check reads the spec of :func:`grant_agent` for the call's
-    ``resolved_agent``, the agent the writers bound it from; *agent* (the
-    surface's slot alias) only labels the stage-1 observation.
+    The bound check reads the spec of the call's ``resolved_agent``, the agent
+    that actually serves the session and the one a writer bound from
+    (:func:`grant_agent`). A call with none is from a surface that does not
+    stamp it, whose spec is unknown, so a bound grant asks there rather than
+    guess the default template. *agent* (the surface's slot alias) only labels
+    the stage-1 observation.
     """
     bindings = config.auto_approve_tool_identity_launches
     grants = config.auto_approve_tool_identities
     bound = bindings.get(identity_ref)
     if bound is not None and identity_ref in grants:
         work_dir = str(getattr(call, "spec_write_cwd", "") or "")
-        spec_agent = grant_agent(str(getattr(call, "resolved_agent", "") or ""))
+        spec_agent = str(getattr(call, "resolved_agent", "") or "")
         if bound_launch_holds(call.mcp_server, bound, agent=spec_agent, work_dir=work_dir):
             return True
         logger.info(
