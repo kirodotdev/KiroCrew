@@ -236,6 +236,7 @@ from kiro_crew.dashboard.messaging_api.run_views import (  # noqa: F401
     _redact,
     _session_turn_holding,
     _spawn_result_view,
+    _worktree_field,
     api_spawn_list,
     api_spawn_status,
 )

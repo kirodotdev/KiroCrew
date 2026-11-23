@@ -545,6 +545,13 @@ class SubagentInfo:
     # ``CLAUDE.md``) resolve against this directory. Validated on spawn against
     # ``AgentConfig.subagent_cwd_allowed_roots``.
     cwd: str = ""
+    # ``spawn_run``'s ``isolate``: ``"worktree"`` gives the run a git worktree of
+    # its own, made at run start (``crewmate_worktree.make_run_worktree``), which
+    # then replaces ``cwd``. ``worktree`` is that ``RunWorktree``; ``worktree_note``
+    # is the completion event's line about it, computed when the run ends.
+    isolate: str = ""
+    worktree: Any = None
+    worktree_note: str = ""
     _pid: int | None = None  # PID of kiro-cli child process, for tombstone diagnostics
     # Wall-clock (time.time) when _run_inner actually began executing. Distinct
     # from ``started`` (set at registration): a subagent may sit in ``_agents``

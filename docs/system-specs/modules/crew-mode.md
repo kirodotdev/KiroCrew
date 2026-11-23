@@ -5070,6 +5070,12 @@ removed by a guarded `os.rmdir` of that same folder while `os.lstat` still shows
 it is a directory (never a link or junction) whose `(dev, ino)` is the one made,
 so the next turn builds the worktree as on POSIX.
 
+The same module also makes the worktree an isolated `spawn_run` worker runs in
+(`isolate: "worktree"`; `make_run_worktree`, `remove_run_worktree`): detached,
+beside the repository as `<repo>-wt-<run id>` rather than under a Bot's
+workspace, with no branch, and maps it back to the repository in `source_path`.
+Its rules are in [subagent](subagent.md), *Isolated runs: a worktree of their own*.
+
 **A worker reports back on its own** (`dashboard/mate_thread_wakes.py`), so the
 conductor dispatches and ends its turn. Every top-level turn end calls
 `note_turn_end`. When the slot's `_created_by` names a live Bot thread and

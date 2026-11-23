@@ -481,6 +481,15 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "~/workplaces]). Applies to all tasks in a batch spawn."
                         ),
                     },
+                    "isolate": {
+                        "type": "string",
+                        "enum": ["worktree"],
+                        "description": (
+                            "Optional. 'worktree' gives each task its own git worktree of "
+                            "cwd's repository, detached at HEAD; uncommitted changes are "
+                            "not copied. Needs 'cwd'."
+                        ),
+                    },
                     "model": {
                         "type": "string",
                         "description": (

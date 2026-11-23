@@ -269,6 +269,17 @@ async def _run_inner_impl(
             source="subagent",
             resources=f"subagent_id={info.id},inherited_agent={agent}",
         )
+    if info.isolate and not info.conversation_key:
+        # ``spawn_run``'s ``isolate``: the run's own worktree of the repository its
+        # cwd is in, made once here and before the session, so the provider, the
+        # session record and every continuation take it as the run's cwd. A
+        # refusal fails this admitted run with its reason. A recovery attempt
+        # makes it again from the cwd the run was admitted with.
+        from kiro_crew.subagent_worktree import prepare_run_worktree
+
+        source = info.worktree.source_cwd if info.worktree is not None else info.cwd
+        info.worktree = await asyncio.to_thread(prepare_run_worktree, info.id, source)
+        info.cwd = info.worktree.cwd
     effective_cwd = info.cwd or str(getattr(self._manager._sessions, "_pool_cwd", "") or "")
     from kiro_crew.mate_worker import is_own_worker_execution
 
