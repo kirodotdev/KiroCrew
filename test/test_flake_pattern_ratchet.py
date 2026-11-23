@@ -470,12 +470,40 @@ def _k23_silent_park_expiry(module: _Module) -> Iterable[ast.AST]:
         if seconds is None or seconds < 2 or module.inside_raises_timeout(node):
             continue
         receiver = func.value
+        if isinstance(receiver, ast.Call):
+            # ``Popen(cmd).wait(10)``, ``Barrier(n).wait(5)``: a constructed
+            # object, not a shared Event a worker parks on.
+            continue
         name = receiver.id if isinstance(receiver, ast.Name) else ""
         if isinstance(receiver, ast.Attribute):
             name = receiver.attr
         if "proc" in name or name in ("child", "popen", "p"):
             continue
+        if isinstance(receiver, ast.Name) and _k23_bound_to_raising_wait(module, node, name):
+            continue
         yield node
+
+
+#: Constructors whose ``.wait(timeout)`` raises on expiry instead of returning False.
+_K23_RAISING_WAITS = ("Popen", "Process", "Barrier")
+
+
+def _k23_bound_to_raising_wait(module: _Module, node: ast.AST, name: str) -> bool:
+    """``name`` is assigned, in the function holding ``node``, from a process or
+    barrier constructor or a ``spawn`` helper (``root = self._spawn_isolated()``)."""
+    scope = module.enclosing_function(node) or module.tree
+    for assign in ast.walk(scope):
+        if not isinstance(assign, ast.Assign) or not isinstance(assign.value, ast.Call):
+            continue
+        bound = [
+            n for t in assign.targets for n in ([t] if isinstance(t, ast.Name) else getattr(t, "elts", []))
+        ]
+        if not any(isinstance(n, ast.Name) and n.id == name for n in bound):
+            continue
+        callee = _dotted(assign.value.func).rsplit(".", 1)[-1]
+        if callee.endswith(_K23_RAISING_WAITS) or "spawn" in callee.lower():
+            return True
+    return False
 
 
 def _k18_xfail_strict_false(module: _Module) -> Iterable[ast.AST]:
@@ -1328,7 +1356,12 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         # expiry, and a short bound, which is K9's.
         "import pytest\ndef worker():\n    assert release.wait(timeout=10)\n"
         "    if not gate.wait(5):\n        raise AssertionError('never released')\n"
-        "    proc.wait(timeout=30)\n    release.wait(0.5)\n",
+        "    proc.wait(timeout=30)\n    release.wait(0.5)\n"
+        # Constructed or spawned processes and barriers raise on expiry.
+        "    subprocess.Popen(cmd).wait(timeout=10)\n    threading.Barrier(2).wait(timeout=5)\n"
+        "def held_spawn(self):\n    root = self._spawn_isolated()\n    root.wait(timeout=10)\n"
+        "    tree, gc_pid = self._spawn_tree()\n    tree.wait(timeout=10)\n"
+        "    server = subprocess.Popen(cmd)\n    server.wait(timeout=10)\n",
     ),
     "K16-module-async-state": (
         (
