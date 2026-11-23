@@ -710,10 +710,10 @@ class StreamRedactor:
             floor_crossing = _complete_token_match_crossing(complete_token_matches, i)
             if floor_crossing is not None:
                 i = floor_crossing.end(1)
-            # The same holds for a complete AWS key-value pair the floor would
-            # split (a PEM hold can keep one buffered after its value ended):
-            # its tail would stream with no label left to redact it.
-            if aws_label_seen:
+            # The same holds for a complete AWS key-value pair or private-key
+            # body the floor would split (a PEM hold can keep one buffered after
+            # its value ended): its tail would stream with no anchor left to redact it.
+            if aws_label_seen or self._armour_blocks:
                 for start, end in _batch_spans(self._buf):
                     if start < i < end:
                         i = end

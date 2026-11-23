@@ -11,6 +11,7 @@ from redaction_structured_cases import (
     PEM_BEGIN,
     PEM_BEGIN_PLAIN,
     PEM_BODY,
+    PEM_END,
     PGP_BEGIN,
     PGP_END,
     assert_linear_work,
@@ -219,3 +220,24 @@ def test_a_block_past_the_look_behind_keeps_the_scan_where_whole_text_resumes_it
     assert "M32702Z" not in out
     if entry == "structured":
         assert out == whole
+
+
+def test_a_completed_block_split_by_the_floor_keeps_its_retained_body_masked() -> None:
+    import kiro_crew.security as production
+    from kiro_crew.security.redaction_switch import always_scan
+
+    ec_begin = "-----BEGIN EC " "PRIVATE KEY-----"
+    text = (
+        f"prefix {PEM_BEGIN}\nSYNTHETIC_ALPHA "
+        + "q " * 2100
+        + f"{ec_begin}\nSYNTHETIC_OMEGA\n{PEM_END}\n"
+        + f"{PEM_BEGIN}\n{synth(64, B64, 41)}\n{PEM_END}\n"
+    )
+    with always_scan():
+        whole = production.redact(text)
+        stream = production.StreamRedactor()
+        out = "".join(stream.feed(text[i : i + 64]) for i in range(0, len(text), 64))
+        out += stream.flush()
+    assert "SYNTHETIC_ALPHA" not in out
+    assert "SYNTHETIC_OMEGA" not in out
+    assert out == whole
