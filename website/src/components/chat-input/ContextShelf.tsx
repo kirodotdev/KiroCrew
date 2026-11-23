@@ -553,7 +553,14 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
     {/* Ellipsis at the front: a provider-prefixed id such as
         `<provider>/<model>` names the model only at its end. */}
     <span className="truncate max-w-[180px] [direction:rtl] text-left">
-      <bdi dir="ltr">{modelIsJevRouted ? i18nT('components.modelDropdownList.auto_jev') : modelName}</bdi>
+      {modelIsJevRouted ? (
+        <bdi dir="ltr">{i18nT('components.modelDropdownList.auto_jev')}</bdi>
+      ) : (
+        // The model id is opaque data (a provider/model string), not prose:
+        // the render-scan i18n gate skips [data-i18n-opaque] so it is not read
+        // as untranslated text. The routed label above stays translatable.
+        <bdi dir="ltr" data-i18n-opaque>{modelName}</bdi>
+      )}
     </span>
     {/* Outside the truncating span: a long provider-prefixed id must
         ellipsize its own text, never the marker beside it. A routed chip
