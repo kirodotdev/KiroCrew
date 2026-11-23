@@ -33,6 +33,7 @@ from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
 from kiro_crew.members import DM_SLOT_KEY_PREFIX
+from kiro_crew.testing.ids import seq_ids
 
 
 class TestMemberChatAgent:
@@ -227,11 +228,13 @@ def sc_conducts(state, slot):
     return _conducts_for_a_worker(read_session_execution(slot_history_key(slot)), kit)
 
 
-def _start(state, slot, *, session_id: str = "") -> _LiveSession:
+def _start(state, slot, *, session_id: str | None = None) -> _LiveSession:
     """(Re)start *slot*'s session: its live provider reports whether the composer
     mounted session control at that start (``member_dispatch_mounted``), decided by
     the predicate every composer reads, ``members.mounts_session_control``, at the
-    moment of the start. A reload is another call. Returns that provider."""
+    moment of the start. A reload is another call. Each start reports a native session
+    id of its own, as a real start does, unless *session_id* names one (``""`` for a
+    session that reports none). Returns that provider."""
     from kiro_crew import members
     from kiro_crew.dashboard.chat_utils import effective_session_key
 
@@ -239,7 +242,10 @@ def _start(state, slot, *, session_id: str = "") -> _LiveSession:
     if not isinstance(live, dict):
         live = state.sessions.live_for_test = {}
         state.sessions.get_provider.side_effect = live.get
+        state.sessions.start_ids_for_test = seq_ids("session")
     mounted = members.mounts_session_control(slot_history_key(slot))
+    if session_id is None:
+        session_id = next(state.sessions.start_ids_for_test)
     started = live[effective_session_key(slot)] = _LiveSession(mounted, session_id)
     return started
 
@@ -664,6 +670,22 @@ class TestTheFirstTurnOnTheKit:
         assert worker._trust
         live.session_id = "s2"  # the swap: the same provider, a new native conversation
         assert self._admit(state, worker)
+        assert not worker._trust
+
+    def test_a_session_that_reports_no_id_is_checked_at_each_turn(self, crewmate, tmp_path):
+        """An empty native session id never matches the recorded start, so a session
+        that reports none is checked again at its next turn: a mode a person set in
+        between is lowered, and the check rests on nothing outside it."""
+        state, caller, _execution = crewmate
+        _profile_mode(tmp_path, "normal")
+        _switch(tmp_path, on=True)
+        worker = state.get_slot(_create(state, caller)["target"])
+        _start(state, worker, session_id="")
+        _hold(worker, "trust")
+        assert self._admit(state, worker)
+        assert not worker._trust
+        worker._trust = True  # a person trusts the conducting worker
+        assert self._admit(state, worker)  # still no id: checked again
         assert not worker._trust
 
     def test_the_check_after_the_claim_holds_a_start_the_admission_did_not_predict(

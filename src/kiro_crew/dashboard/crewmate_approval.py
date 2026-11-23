@@ -70,9 +70,11 @@ def seed_for_turn(state: Any, slot: Any, config: Any, execution: Any) -> bool:
 #: (``SessionLifecycleService.swap_conversation``, behind Edit & Resend) has a new
 #: native id, and a claim of the running session keeps both, so each start is checked
 #: once. (``SessionManager.session_generation`` cannot say this: every claim advances
-#: it.) An id the start does not report yet is recorded as ``""``, so the check runs
-#: again once one appears, and the check only ever lowers. Kept on the state, not the
-#: slot: ``_ChatSlot`` declares ``__slots__``.
+#: it.) An empty id never matches: a session that reports none (one not started yet, or
+#: a direct client whose process ended between turns) is checked at every turn until
+#: its start reports one, so the check needs nothing from the order in which other
+#: modules set the id, and it only ever lowers. Kept on the state, not the slot:
+#: ``_ChatSlot`` declares ``__slots__``.
 KIT_CHECKED_ATTR = "_crewmate_kit_checked"
 
 _PROFILE_CALLER = "dashboard:member_profile"
@@ -96,7 +98,8 @@ def tighten_for_conducting(state: Any, slot: Any, config: Any, execution: Any) -
     (``mate_worker_conducts.holds_conducting_kit``), and the outcome is recorded
     against that provider and its native session id (:data:`KIT_CHECKED_ATTR`): a mode
     a person sets while the worker conducts stands until its next start on the kit,
-    a conversation swapped in place included. A pending policy verdict (a
+    a conversation swapped in place included. A session that reports no native id is
+    checked at every turn, only ever lowering. A pending policy verdict (a
     ceiling install, while trust reads as denied) leaves it to the next turn.
     Sessions that inherit the worker's mode follow the lowering and keep following
     it. Returns whether a posture was lowered. Pure in-memory work, safe on the loop.
@@ -122,7 +125,12 @@ def tighten_for_conducting(state: Any, slot: Any, config: Any, execution: Any) -
             return False
         native_sid = str(getattr(provider, "session_id", "") or "")
         judged = checked.get(key)
-        if judged is not None and judged[0]() is provider and judged[1] == native_sid:
+        if (
+            judged is not None
+            and native_sid
+            and judged[0]() is provider
+            and judged[1] == native_sid
+        ):
             return False
     elif not members.conducting_worker_session(slot_history_key(slot), config):
         return False
