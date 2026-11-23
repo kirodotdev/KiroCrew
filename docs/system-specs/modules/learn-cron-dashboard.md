@@ -2592,9 +2592,11 @@ specified compatibility change.
   `initial_setup_complete` results plus `setup_allowed=false`, so readiness
   cannot lock them out and host details do not leak. Successful authentication
   persists an owner-only setup-complete marker; existing installations are
-  inferred only from that marker or non-empty persisted session/history
-  content. Empty directories and zero-byte files created during gateway startup
-  do not bypass first-run setup. App tokens remain denied. Two owner-only POST routes are the writes on this
+  inferred only from that marker, a session transcript holding a message (or
+  one that cannot be read), or non-empty `history/` content. What a gateway
+  start or the dashboard writes by itself (empty directories, zero-byte files,
+  the session index, the empty default chat) does not bypass first-run setup.
+  App tokens remain denied. Two owner-only POST routes are the writes on this
   surface: `repair-specs` rewrites Kiro Crew's own agent specs and returns `200`,
   and `update-cli` runs the CLI's in-place self-update (`kiro-cli update`).
   **Probing is boot-and-explicit-action only.** The readiness probe

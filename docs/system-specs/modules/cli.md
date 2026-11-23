@@ -1052,7 +1052,10 @@ before another action can start.
 
 An auto-created `config.json` alone does not mark first-run setup complete; a
 successful authenticated probe writes the setup marker, while existing
-session/history state preserves established-install migration behavior. Fresh
+session/history state preserves established-install migration behavior. Under
+`sessions/` only a transcript holding a message counts (an unreadable one
+counts too): the session index a gateway start writes and the empty default
+chat the dashboard opens do not, so a restart alone never completes setup. Fresh
 installs receive the full-screen flow. Established dashboards remain navigable
 and fully usable when signed out — no controls are paused. Readiness is probed
 once at gateway boot and thereafter only on explicit user action, so no path runs
