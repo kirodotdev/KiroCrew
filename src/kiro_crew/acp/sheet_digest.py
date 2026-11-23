@@ -110,11 +110,13 @@ def _kind(value: str) -> str:
     if body.isascii() and body.isdigit():
         return "integer"
     if any(ch.isdigit() for ch in value):
-        try:
-            float(value)
-            return "number"
-        except ValueError:
-            pass
+        # float() reads "12_34" as a number; a code with an underscore is not one.
+        if "_" not in value:
+            try:
+                float(value)
+                return "number"
+            except ValueError:
+                pass
         try:
             _dt.datetime.fromisoformat(value)
             return "date"
