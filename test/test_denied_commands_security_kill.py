@@ -1370,7 +1370,11 @@ class TestWindowsKillByNamePrograms:
             "Get-Process {n} | Stop-Process -WhatIf:$false",
             # Command position after a wrapper, an assignment, a call operator or a block.
             "cmd /c taskkill /im {n}.exe",
+            "cmd.exe /c taskkill /im {n}.exe",
+            "start taskkill /im {n}.exe",
+            "call taskkill /im {n}.exe",
             "sudo taskkill /im {n}.exe",
+            "sudo -u bob taskkill /im {n}.exe",
             "timeout 5 taskkill /im {n}.exe",
             "A=1 taskkill /im {n}.exe",
             "& taskkill /im {n}.exe",

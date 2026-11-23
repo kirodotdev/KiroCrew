@@ -15,37 +15,30 @@ exclusion filter, a later command or a printed message is not a kill:
 
   For ``executablepath`` only the last path segment, the image, counts.
 
-A program counts only in command position (:func:`_in_command_position`), so
-heredoc prose or a message that names it is not a kill. The tokenizer splits on
-whitespace only, so a word glued to ``|`` or ``;`` (``kirocrew|``, ``delete;``) is
-split here first.
+A program counts only in the position a command runs, as ``argv_rules`` reads it
+(past ``VAR=value`` words, the wrappers in ``argv_rules._WRAPPERS`` and ``cmd /c``), so heredoc
+prose, a comment or a message that names it is not a kill. The tokenizer splits on
+whitespace only, so each word is first cut at a glued ``|`` or ``;``
+(``kirocrew|``, ``delete;``) by ``argv_rules``' own splitter.
 
 shortcut: an alias (``tk=taskkill``), a backslash path the tokenizer flattens, a
 ``powershell -c`` payload and a ``Where-Object`` filter that selects the product
 are not read; reading them needs a PowerShell tokenizer.
 
 ``argv_floor_self`` calls :func:`_windows_self_kill` once per token frame. This
-module reads the shell reader and the shared name vocabulary below it, and
-nothing else.
+module reads the shell reader, ``argv_rules``' command splitter and command-position
+reader, and the shared name vocabulary below it, and nothing else.
 """
 
 from __future__ import annotations
 
 import re
 
-from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
-
 from . import shell_normalizer as _shell_normalizer
+from .argv_rules import _expand_glued_boundaries, _split_commands_indexed, _win_program_index
 from .shell_normalizer import _debracket
 from .vocabulary import _SELF_NAME_RE, _WINDOWS_KILL_BY_NAME_PROGRAMS
 
-#: A run of pipe and statement separators glued inside a word.
-_GLUED_SEPARATOR_RE = re.compile(r"([|;]+)")
-#: Programs that run the command after their own flags (``cmd /c``, ``sudo``).
-_WRAPPERS = frozenset(
-    {"cmd", "sudo", "start", "call", "env", "nohup", "nice", "time", "timeout", "xargs"}
-    | {"command", "exec", "builtin", "doas"}
-)
 #: The pipeline source whose operands name the processes a piped ``Stop-Process`` ends.
 _GET_PROCESS = frozenset({"get-process", "gps"})
 #: ``-Name`` and the prefixes PowerShell accepts for it on both cmdlets.
@@ -60,24 +53,6 @@ _PATH_SEPARATOR_RE = re.compile(r"[\\/]+")
 
 def _is_separator(word: str) -> bool:
     return bool(word) and set(word) <= set("|;&\n")
-
-
-def _split_glued(tokens: "list[str]") -> "list[str]":
-    """*tokens* with each blank-free word glued to ``|`` or ``;`` split around them.
-
-    A word with a blank in it was quoted, and a quoted separator is literal.
-    """
-    words: list[str] = []
-    for token in tokens:
-        if (
-            _is_separator(token)
-            or not _GLUED_SEPARATOR_RE.search(token)
-            or any(c.isspace() for c in token)
-        ):
-            words.append(token)
-            continue
-        words.extend(part for part in _GLUED_SEPARATOR_RE.split(token) if part)
-    return words
 
 
 def _names_product(word: str) -> bool:
@@ -167,50 +142,32 @@ def _program_of(word: str) -> str:
     return _shell_normalizer._program_basename(word).removesuffix(".exe")
 
 
-def _in_command_position(words: "list[str]", i: int) -> bool:
-    """True if ``words[i]`` is what its statement runs.
+def _run_positions(words: "list[str]") -> "set[int]":
+    """Indices in *words* that a command runs, as ``argv_rules`` reads command position.
 
-    That is the first word after a separator or an opening ``{``/``(``, past any
-    ``VAR=value`` words and any :data:`_WRAPPERS` with their flags (``cmd /c``,
-    ``sudo``, ``timeout 5``). A word anywhere else is an argument: prose in a
-    heredoc body, a message, a search pattern. A comment is never a command.
-    shortcut: a wrapper option that takes a value (``sudo -u bob``) is not read,
-    so that line reaches approval as it does on main; widen ``_WRAPPERS``' reading
-    when such a spelling shows up.
+    Every other word is an argument: prose in a heredoc body, a message, a pattern.
     """
-    start = 0
-    for k in range(i - 1, -1, -1):
-        word = words[k]
-        if _is_separator(word) or word in ("{", "(") or word.endswith("{"):
-            start = k + 1
-            break
-    wrapped = False
-    for word in words[start:i]:
-        if word.startswith("#"):
-            return False
-        if ENV_ASSIGNMENT_RE.match(word):
-            continue
-        if _program_of(word) in _WRAPPERS:
-            wrapped = True
-            continue
-        if wrapped and (word[:1] in "-/" or word.isdigit()):
-            continue
-        return False
-    return True
+    positions = set()
+    for command in _split_commands_indexed(words):
+        found = _win_program_index([word for _, word in command])
+        if found is not None:
+            positions.add(command[found][0])
+    return positions
 
 
 def _windows_self_kill(tokens: "list[str]") -> bool:
     """True if a Windows by-name kill in this token frame targets the product."""
     if not any(p in token for token in tokens for p in _WINDOWS_KILL_BY_NAME_PROGRAMS):
         return False
-    words = _split_glued(tokens)
+    words = [piece for token in tokens for piece in _expand_glued_boundaries(token)]
     # ``echo taskkill /im <name> | sh`` runs the printed words: read every position.
     executes = _shell_normalizer._data_consumer_command_disqualified(words)
+    runs = _run_positions(words)
     for i, word in enumerate(words):
         program = _program_of(word)
         if program not in _WINDOWS_KILL_BY_NAME_PROGRAMS:
             continue
-        if not executes and not _in_command_position(words, i):
+        if not executes and i not in runs:
             continue
         args = _own_args(words, i)
         if program == "taskkill":

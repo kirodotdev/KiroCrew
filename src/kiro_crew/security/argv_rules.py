@@ -78,6 +78,10 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
         0,
     ),
     "systemd-run": (frozenset({"-p", "-u", "-E", "--unit", "--property", "--setenv"}), 0),
+    # cmd.exe's ``start`` and ``call`` run the command after them (``cmd /c`` is
+    # read by ``_win_program_index``, since its switch is not a ``-`` option).
+    "start": (frozenset(), 0),
+    "call": (frozenset(), 0),
 }
 
 #: ``find`` options whose following words, up to ``;`` or ``+``, are a command.
@@ -271,6 +275,40 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
     if i is None:
         return None
     return _shell._program_basename(tokens[i]), tokens[i + 1 :]
+
+
+def _strip_win_program_suffix(word: str) -> str:
+    return next((word[:-4] for s in (".exe", ".cmd", ".bat") if word.endswith(s)), word)
+
+
+def _cmd_line_args(args: "list[str]") -> "list[str] | None":
+    """The words after ``/c`` or ``/k`` in a ``cmd`` argv, past other ``/x`` switches.
+
+    cmd.exe also takes the switch glued to another switch or to the line (``/s/c``,
+    ``/c"dir"``); the rest of that word is then the first word of the line.
+    """
+    for i, arg in enumerate(args):
+        if not arg.startswith("/"):
+            return None
+        low = arg.lower()
+        for switch in ("/c", "/k"):
+            at = low.find(switch)
+            if at != -1:
+                tail = arg[at + 2 :]
+                return ([tail] if tail else []) + args[i + 1 :]
+    return None
+
+
+def _win_program_index(tokens: "list[str]") -> "int | None":
+    """Index of the program word, past ``sudo``/``env``-style wrappers and ``cmd /c``."""
+    start = 0
+    while (found := _program_args(tokens[start:])) is not None:
+        program, args = found
+        rest = _cmd_line_args(args) if _strip_win_program_suffix(program) == "cmd" else None
+        if not rest:
+            return len(tokens) - len(args) - 1
+        start = len(tokens) - len(rest)
+    return None
 
 
 def _split_commands_indexed(
