@@ -57,6 +57,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from . import shell_normalizer as _shell_normalizer
+from .argv_floor_git import _git_push_refspec_indices
 from .argv_floor_self import _SELF_FLOOR_MACHINERY_RE, _SELF_FLOOR_QUOTE_JUNK_RE
 from .argv_floor_ssh import (
     _FUNCTION_BIND_CAP,
@@ -81,7 +82,7 @@ from .argv_floor_ssh import (
     _ssh_floor_unmasked_text,
     _unmask_separators,
 )
-from .argv_floor_ssh_operand import _REFSPEC_WORD, _git_push_refspec_indices
+from .argv_floor_ssh_operand import _REFSPEC_WORD
 from .argv_floor_tar import (
     _GLOB_WORDS,
     _RAW_COMMAND,

@@ -146,32 +146,6 @@ _LITERAL_HOSTS = contextvars.ContextVar("ssh_floor_literal_hosts", default=False
 # a refspec names refs, never a transport, so a Windows own-name in it is a ref.
 _REFSPEC_WORD = contextvars.ContextVar("ssh_floor_refspec_word", default=False)
 
-_GIT_PUSH_DETACHED_VALUE_OPTS = frozenset(
-    {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
-)
-
-
-def _git_push_refspec_indices(words: "list[str]") -> "frozenset[int]":
-    """Indices of ``git push`` refspec words: every positional after the remote.
-
-    shortcut: only the detached-value options above are known.  An unknown one
-    makes its value read as the remote, so the real remote is read as a refspec
-    and loses only the Windows own-name reading (``_REFSPEC_WORD``), which main
-    never had; extend the set when such an option is found.
-    """
-    refspecs: "set[int]" = set()
-    remote_seen = value_next = False
-    for idx, word in enumerate(words):
-        if value_next:
-            value_next = False
-        elif word.startswith("-") and word != "-":
-            value_next = word in _GIT_PUSH_DETACHED_VALUE_OPTS
-        elif remote_seen:
-            refspecs.add(idx)
-        else:
-            remote_seen = True
-    return frozenset(refspecs)
-
 
 _URI_SCHEMES: tuple[str, ...] = ("ssh://", "scp://", "sftp://", "rsync://")
 

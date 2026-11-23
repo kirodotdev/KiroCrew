@@ -182,8 +182,20 @@ def test_a_windows_name_in_a_push_refspec_is_not_a_host(cmd):
         "git push %COMPUTERNAME%:/srv/repo.git feature",
         "git push -o ci.skip %COMPUTERNAME%:/srv/repo.git feature",
         "git push --repo %COMPUTERNAME%:/srv/repo.git feature",
+        # A bundled or abbreviated value option still consumes its value.
+        "git push -fo ci.skip %COMPUTERNAME%:/srv/repo.git feature",
+        "git push --push-opt ci.skip %COMPUTERNAME%:/srv/repo.git feature",
         "git push ssh://%COMPUTERNAME%/srv/repo.git feature",
     ],
 )
 def test_a_windows_name_as_a_push_remote_is_refused(cmd):
     assert _denied_by(cmd) == "sandbox-escape-git-tar-self", cmd
+
+
+def test_the_push_refspec_split_fails_closed_on_an_unmodelled_option():
+    # An option the push arity tables do not model might take a separated value,
+    # so no word is treated as a refspec and every word keeps the full reading.
+    words = ["--unmodelled-option", "x", "%computername%:/srv/repo.git", "feature"]
+    assert _argv_floor._git_push_refspec_indices(words) == frozenset()
+    assert _argv_floor._git_push_refspec_indices(["origin", "a:b", "c"]) == {1, 2}
+    assert _argv_floor._git_push_refspec_indices(["-fo", "x", "origin", "a:b"]) == {3}
