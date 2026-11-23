@@ -266,8 +266,49 @@ def _rewrite(
     return missing, held
 
 
+def _retry_full_hold(
+    cfg: KiroCrewConfig, base: dict[str, Any], name: str, source: str, member_id: str
+) -> bool:
+    """Carry a complete legacy hold after its owner selects a compatible backend."""
+    from kiro_crew.agent import agents_spec_lock
+    from kiro_crew.mate_config_migration import _read_ledger
+    from kiro_crew.mate_config import refuse_foreign_file
+    from kiro_crew.mate_held_rules import HELD_KEY, drop_held, split_policy
+    from kiro_crew.mate_mount_repair import _old_agent
+    from kiro_crew.mate_restriction_carry import applies_restrictions, carried_policy
+
+    if not applies_restrictions(cfg, name):
+        return False
+
+    directory = paths_mod.mate_agents_dir()
+    with agents_spec_lock(directory):
+        old = _old_agent(source)
+        path = directory / f"{name}.json"
+        mate_file = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(old, dict) or not isinstance(mate_file, dict):
+            return False
+        policy = carried_policy(base, old)
+        _, expected = split_policy(False, base, policy, mate_file)
+        fixed, remaining = split_policy(True, base, policy, mate_file)
+        if not expected or remaining or _kept(base, old, fixed):
+            return False
+        with ledger_lock():
+            entries = _read_ledger().get(HELD_KEY) or {}
+            if entries.get(name) != {"member_id": member_id, "rules": expected}:
+                return False
+            if fixed != mate_file:
+                write_mate_spec(name, fixed)
+                written = json.loads(path.read_text(encoding="utf-8"))
+                if written != fixed:
+                    return False
+            refuse_foreign_file(name)
+            drop_held(name, member_id)
+            return True
+
+
 def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
     """Run the repair over every moved Bot not checked yet; the Bots repaired. Never raises."""
+    from kiro_crew.mate_held_rules import HELD_KEY
     from kiro_crew.mate_config_migration import (
         _already_moved,
         _read_ledger,
@@ -290,10 +331,11 @@ def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
         # Only such a Bot: the asks of one never held on every call are its owner's.
         asks_due = {n for n in (rechecked - asks_done) & done if _file_carries_hold_asks(n)}
         recheck = ((_every_call_held(data) - rechecked) | asks_due) & done
+        held_names = set(data.get(HELD_KEY) or {})
         owed = {
             name: entry["from"]
             for name, entry in (threads.items() if isinstance(threads, dict) else ())
-            if (name not in done or name in recheck)
+            if (name not in done or name in recheck or name in held_names)
             and isinstance(entry, dict)
             and isinstance(entry.get("from"), str)
             and entry["from"]
@@ -314,7 +356,10 @@ def restore_dropped_policy(cfg: KiroCrewConfig | None = None) -> list[str]:
         if not _already_moved(data, name, member_id):
             continue
         try:
-            outcome = _repair_one(cfg, base, name, source, recheck=name in recheck)
+            if name in done and name not in recheck:
+                outcome = _retry_full_hold(cfg, base, name, source, member_id)
+            else:
+                outcome = _repair_one(cfg, base, name, source, recheck=name in recheck)
         except Exception:  # noqa: BLE001 - one Bot's file never stops the others
             logger.warning("crewmate policy repair: %s not checked", name, exc_info=True)
             continue

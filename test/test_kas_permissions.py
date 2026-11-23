@@ -1162,7 +1162,7 @@ class TestRule1TheBlockIsParsedAgainstKasShapeAndRefusedWhole:
     @pytest.mark.parametrize(
         "block",
         [
-            {"rules": [{"capability": "web_search", "effect": "deny"}] * 201},
+            {"rules": [{"capability": "web_search", "effect": "deny"}] * 209},
             {"rules": [{"capability": "shell", "exclude": ["x"] * 65, "effect": "deny"}]},
             {"rules": [{"capability": "shell", "match": ["x" * 1025], "effect": "deny"}]},
         ],
@@ -1175,15 +1175,18 @@ class TestRule1TheBlockIsParsedAgainstKasShapeAndRefusedWhole:
         assert _merge(block, derived=_DERIVED) == _DERIVED
 
     def test_a_block_at_the_bounds_still_travels(self):
-        block = {"rules": [{"capability": "shell", "match": ["x"] * 64, "effect": "deny"}] * 200}
-        assert len(_user_rules(_merge(block, derived=_DERIVED))) == 200
+        rules = [
+            {"capability": "shell", "match": [f"blocked-{i}-{j}" for j in range(64)], "effect": "deny"}
+            for i in range(208)
+        ]
+        assert _user_rules(_merge({"rules": rules}, derived=_DERIVED)) == rules
 
     def test_a_long_match_counts_against_the_rule_bound_as_the_rules_it_becomes(self):
-        """199 short rules plus one 129-pattern rule send 201 rules, one too many."""
-        short = [{"capability": "web_search", "effect": "deny"}] * 199
+        """207 short rules and a split match can exceed the 208 projected rules."""
+        short = [{"capability": "web_search", "effect": "deny"}] * 207
         fits = {"rules": short + [{"capability": "shell", "match": ["x"] * 64, "effect": "deny"}]}
         over = {"rules": short + [{"capability": "shell", "match": ["x"] * 65, "effect": "deny"}]}
-        assert len(_user_rules(_merge(fits, derived=_DERIVED))) == 200
+        assert len(_user_rules(_merge(fits, derived=_DERIVED))) == 208
         assert _merge(over, derived=_DERIVED) == _DERIVED
 
     def test_the_refusal_is_reported_at_warning_with_its_reason(self, caplog):

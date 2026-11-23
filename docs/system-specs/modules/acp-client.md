@@ -1529,6 +1529,11 @@ kiro-cli also accepts `subagent` for this tool. The KAS projection reads it as
 alias mounts, grants and excludes what `use_subagent` does, and the ceiling never
 sees a second spelling.
 
+Kiro Crew bounds an authored KAS policy block to 208 rules, including the rules
+produced by splitting long match lists into groups of 64 patterns. A block
+above the limit is refused as a whole. The bound leaves room to layer worker
+template rules onto policies authored at the previous 200-rule limit.
+
 **Crew-answered built-ins on KAS.** `kas_agents.to_client_custom_agent` records the
 shell/filesystem built-ins the spec grants (which the KAS policy keeps at `ask`), `code` aside, under
 `kas_permissions.CREW_ANSWERED_BUILTINS_KEY` on the projected entry.
