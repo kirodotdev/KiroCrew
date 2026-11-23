@@ -281,12 +281,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         preserved_data_awaits,
     )
     from kiro_crew.apps.manager_uninstall import (  # noqa: F401
+        _APP_DELETE_USES_DIR_FD,
+        _UNINSTALL_RETRY_HINT,
+        _app_entry_exists_at,
         _count_uninstall,
         _drop_trust_grant,
         _has_trust_grant,
         _holds_base_grant,
+        _remove_posix_app_entry,
         _restore_trust_grant,
         _rmtree_app_dir,
+        _same_directory_at_path,
         _trust_grant_local,
         _trust_grant_repository,
         _uninstall_labels,
@@ -449,6 +454,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform_compat import (  # noqa: F401
         is_link_or_junction,
         pid_exists,
+        rmtree_force,
     )
     from kiro_crew.sel import (  # noqa: F401
         sel,

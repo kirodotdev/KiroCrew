@@ -2289,7 +2289,19 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
    `resources`, because an app that registered its own agents, skills and crons
    owns their lifecycle and the gateway must not delete them.
 4. Dependency cleanup (see §11).
-5. File removal, preserving `data/` unless the caller asked to purge.
+5. File removal, preserving `data/` unless the caller asked to purge. Every entry
+   but `installed.json` goes first, then the record and folder. A removal that
+   stops partway therefore leaves the app listed, and a retried uninstall finds
+   it. On POSIX, `_rmtree_app_dir` opens the selected app folder with
+   `O_DIRECTORY | O_NOFOLLOW` and verifies its device and inode. It enumerates
+   and removes children through descriptor-relative `unlink` and `rmtree`
+   calls. Replacing the app-root name therefore cannot redirect deletion. The
+   descriptor-relative read-only handler changes and retries only parents
+   beneath the opened folder. On Windows, `platform_compat.rmtree_force` clears
+   a read-only entry copied from the source. `remove_with_retry` then waits out
+   a file another process holds open. An app folder that is a link or junction
+   is unlinked, never traversed. An install over a folder left with no record
+   clears read-only entries the same way.
 6. Resume pointers dropped for every conversation the app owned, on success only.
 7. For a registry-sourced app, its clone under `app-sources/<registry-name>` is
    removed, on success only. The removal runs off-loop and inside the lifecycle
