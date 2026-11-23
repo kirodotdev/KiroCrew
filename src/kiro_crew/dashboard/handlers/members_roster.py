@@ -462,6 +462,9 @@ async def _build_roster(state: DashboardState | None) -> BoardAnswer:
                 # The per-crewmate Dynamic capabilities preview, the profile
                 # card's switch (``kiro_crew.crewmate_dynamic_capabilities``).
                 "dynamic_capabilities": bool(getattr(agent_cfg, "dynamic_capabilities", False)),
+                # The owner's switch for conducting workers, read at each worker's
+                # session start (``members.conducting_worker_session``).
+                "worker_conducts": bool(getattr(agent_cfg, "worker_conducts", False)),
                 # Presentation-only, but `_safe_avatar` pins only the SHAPE:
                 # its `traits` and `expressions` values are free text, so the
                 # avatar is masked leaf-by-leaf (`_roster_avatar`) rather than

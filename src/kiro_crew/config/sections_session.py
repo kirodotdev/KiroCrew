@@ -32,9 +32,13 @@ STAR_ORDER_MAX = 10_000
 # the host's resources unless the owner chooses a number
 # (rfc-work-ledger-concurrency-cap.md section 7). The ceiling is the work
 # ledger's own open bound (``work_ledger_records.MAX_ITEMS_PER_CONDUCTOR``).
+# While the Bot's ``worker_conducts`` switch is on, 0 is read as
+# ``BOT_MAX_WORKERS_CONDUCTING`` (``mate_worker_conducts.effective_worker_cap_refusal``),
+# so a tree of conducting workers is bounded even when the owner chose no number.
 BOT_MAX_WORKERS_DEFAULT = 0
 BOT_MAX_WORKERS_MIN = 0
 BOT_MAX_WORKERS_MAX = 32
+BOT_MAX_WORKERS_CONDUCTING = 4
 
 
 def _archive_retention_days(session_data: dict) -> int:
@@ -427,8 +431,9 @@ class KiroCrewAgentConfig:
             "may be open at once. A session_create, session_revive or "
             "session_fork past it is refused with bot_worker_cap_reached until "
             "one of them is closed. Set by the owner on the Bot's settings page; "
-            "the Bot cannot change it. 0 (the default) sets no limit; otherwise "
-            "1 to 32.",
+            "the Bot cannot change it. 0 (the default) sets no limit while Workers "
+            "can conduct is off; while it is on, 0 means at most 4. Otherwise 1 "
+            "to 32, used as set.",
         ),
     )
     acp_backend: str = field(
@@ -451,6 +456,21 @@ class KiroCrewAgentConfig:
             "chat. Off (the default): only you add them, in this Bot's "
             "advanced settings, and it tells you when its worker lacks one. "
             "Read per request, so a change reaches the Bot's next session.",
+        ),
+    )
+    worker_conducts: bool = field(
+        default=False,
+        metadata=_meta(
+            "Workers can conduct",
+            "Off (the default): a worker this Bot opens does its task itself. On: "
+            "each worker the Bot's own thread opens can split its task into tracked "
+            "work-ledger items, open further workers of this Bot for them, follow "
+            "them and check their results. Those workers keep the Bot's identity, "
+            "memory, permissions and limits and count toward Workers at once. While "
+            "this is on and Workers at once is 0, at most 4 of the Bot's workers are "
+            "open at once. Set by the owner; the Bot cannot change it. A change "
+            "reaches each worker at its next start: saving it reloads the Bot's "
+            "workers, an idle one at once and a busy one when its turn ends.",
         ),
     )
     approval_mode: str = field(

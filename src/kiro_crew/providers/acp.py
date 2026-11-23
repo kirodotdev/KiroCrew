@@ -1273,9 +1273,10 @@ class AcpProvider(LLMProvider):
             # needs too: the member DM mount and channel ride ``session/new``
             # (``_start_kiro_runtime``), the essentials delivered to the old
             # conversation are not in the new one, and an effort pushed as a
-            # per-session config option (KAS, codex) is back at the default.
+            # per-session config option (KAS, codex) is back at the default. The key
+            # is read off the loop: a Bot worker's answer reads its Bot's record.
             await self._client.new_conversation(
-                member_session_key=self._member_session_key(),
+                member_session_key=await asyncio.to_thread(self._member_session_key),
                 channel_id=self._owning_channel_id() or "",
             )
             self.essential_delivery.invalidate()

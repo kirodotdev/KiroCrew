@@ -884,9 +884,11 @@ def _append_member_dispatch_server(
     joins that set and mounts the server on one path while this one withholds it would
     refuse every dispatch call as a drifted server rather than run a plain chat.
     """
-    # Every exit below answers whether THIS composition mounted session
-    # control, so the context builder can teach the session_* tools only to a
-    # session that holds them (see :attr:`member_dispatch_mounted`).
+    # What this client's previous composition answered (``None`` before its first),
+    # read before every exit below resets it to answer for THIS composition, so the
+    # context builder can teach the session_* tools only to a session that holds
+    # them (see :attr:`member_dispatch_mounted`).
+    started = getattr(self, "_member_dispatch_mounted", None)
     self._member_dispatch_mounted = False
     if self.backend not in ACP_BACKENDS_MEMBER_DISPATCH:
         return servers
@@ -895,9 +897,19 @@ def _append_member_dispatch_server(
         MEMBER_DISPATCH_SERVER,
         is_member_session_key,
         member_dispatch_session_server,
+        mounts_session_control,
     )
 
-    if not is_member_session_key(self._session_key):
+    # A member DM, or a Bot worker that conducts: the one predicate the runtime's
+    # create and load paths key on too (``acp_runtime_start._member_session_key``).
+    # A worker this client already composed plain stays unmounted when it composes
+    # again (a respawn or relaunch inside a turn, after admission checked its approval
+    # mode against the Bot's Profile), so the session-control mount arrives only with a
+    # new client, at a start, as the KAS re-inject keeps it (``session_provider_mcp_reinject``).
+    if not (
+        is_member_session_key(self._session_key)
+        or (started is not False and mounts_session_control(self._session_key))
+    ):
         return servers
     session_key = self._session_key or ""
     if self._member_mount_withheld(MEMBER_DISPATCH_SERVER, "session control", restricted, disabled):

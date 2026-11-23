@@ -213,11 +213,15 @@ async def create_session(
     the owner is not known yet (a pooled worker claimed later), and the
     ``rekey()`` claim then carries the token.
 
-    ``member_session_key`` marks a crew member's DM session and carries its
-    session key: the dashboard session-control server is mounted as a
-    session-level entry (identity via ``KIROCREW_SESSION_KEY``), and the
-    KAS wire agent's projection widens to grant its tools. Empty — every
-    non-member session — leaves both paths byte-identical to before.
+    ``member_session_key`` marks a session that mounts session control and
+    carries its session key: a crew member's DM session, or one of its
+    conducting workers (``members.mounts_session_control``, the provider's
+    test). The dashboard session-control server is mounted as a session-level
+    entry (identity via ``KIROCREW_SESSION_KEY``), and the KAS wire agent's
+    projection widens to grant its tools, the thread's set or the conducting
+    worker's (``kas_agents.to_client_custom_agent``). The crew panel stays the
+    thread's alone (``_mount_member_panel``). Empty — every other session —
+    leaves both paths byte-identical to before.
 
     ``channel_id`` is the channel this session belongs to, and it reaches a
     MIRRORED host's ``mcpServers`` ELEMENTS rather than the process env: a

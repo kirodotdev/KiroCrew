@@ -834,6 +834,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         from kiro_crew.dashboard.crewmate_approval import seed_for_turn
 
         seed_for_turn(state, slot, loaded_cfg, execution_context)
+        # A worker whose session this turn starts, or runs for the first time, on
+        # the conducting kit holds no posture looser than its Profile's (never
+        # raised); checked again after the claim, once the start is known.
+        from kiro_crew.dashboard.crewmate_approval import tighten_for_conducting
+
+        tighten_for_conducting(state, slot, loaded_cfg, execution_context)
         # A crewmate's worker runs in the crewmate's own git worktree of the
         # repository this turn is about, unless the edition works it in place.
         from kiro_crew.dashboard.crewmate_worktree_scope import scope_worker_turn
@@ -1677,6 +1683,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 "text": f"Session created · {agent_label} · {model_label}",
             },
         )
+
+    # The session's start is known now: a Bot's worker whose start took the
+    # conducting kit is held to its Profile here, before the policy below is stored
+    # from its posture, whatever the admission's config predicted.
+    if bindings is not None and loaded_cfg is not None:
+        from kiro_crew.dashboard.crewmate_approval import tighten_for_conducting
+
+        tighten_for_conducting(state, slot, loaded_cfg, turn.execution_context)
 
     # Propagate trust/YOLO to session so subagents inherit auto-approve.
     # A scoped grant is excluded on purpose — see _persistable_session_policy.

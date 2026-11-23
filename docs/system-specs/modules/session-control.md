@@ -1085,6 +1085,10 @@ plus `_created_by_sid` / `_lineage_minted` as at a create, so the other verbs
 reach the child and the per-creator ceiling counts it), and the caller's
 session posture — `_trust` and `_trust_reads`, with `_trusted_patterns` and
 `_trust_scope` excluded for the reasons "What a created child inherits" gives.
+A fork that conducts (a Bot's thread forking its own worker while the Bot's
+`worker_conducts` switch is on, `mate_worker_conducts.thread_fork_conducts`)
+carries neither: like a created worker it is seeded from its Bot's Profile
+Permissions once its record is bound (`crewmate_approval.seed_new_worker`).
 A fork spends the `session_create` rate budget and is bounded by the same live
 and per-creator slot ceilings; it is a session the caller manufactured, whatever
 it starts with.
@@ -1110,9 +1114,17 @@ load (`_SECURITY_BOUNDED_FIELDS`) with a SEL `config_bounds_clamped` event.
 **A Bot's own worker cap.** `agents.<name>.max_workers` (default 0 = no limit,
 else 1-32, `BOT_MAX_WORKERS_MAX` in `config/sections_session.py`) bounds how many of
 one Bot's own worker sessions, the ones on its worker template, are live at once.
+While the Bot's `worker_conducts` switch is on, 0 reads as
+`BOT_MAX_WORKERS_CONDUCTING` (4), so a tree of conducting workers is bounded when
+the owner chose no number; a limit the owner set is used as is.
 `session_create` (from the Bot's chat or a worker), `session_revive` and
-`session_fork` ask `worker_cap_refusal` (`dashboard/state_parts/bot_worker_cap.py`)
-with the execution record the new slot will run under, and a create past it is
+`session_fork` ask `mate_worker_conducts.effective_worker_cap_refusal` with the
+execution record the new slot will run under. It is `worker_cap_refusal`
+(`dashboard/state_parts/bot_worker_cap.py`) except for a Bot with no limit whose
+switch is on, or whose caller holds the conducting kit
+(`mate_worker_conducts.holds_conducting_kit`: a conducting worker keeps the bound
+it started under until its next start), which it asks `bot_worker_cap_refusal`
+under the bound. A create past it is
 refused `bot_worker_cap_reached` (409) with nothing minted; a handoff opens nothing
 and is not asked. A worker counts while its slot is live, from its mint (so two
 parallel creates cannot both pass) until it is closed, and workers a restart brought
@@ -1161,7 +1173,14 @@ the caller's execution record through `_dispatching_crewmate`; the one
 exception is a name-first `agent` naming another `config.agents` row, which
 keeps its own resolution and so stays refused as a cross-workspace peer; a
 worker it already opened is a template
-selection, so the worker's own unnamed children inherit the worker; see
+selection, so the worker's own unnamed children inherit the worker, unless that
+worker conducts: when the Bot's thread opened the worker and its session started
+with the session-control mount (the Bot's owner had `worker_conducts` on at that
+start), `_dispatching_crewmate` answers the Bot's record for it too
+(`mate_worker_conducts.holds_conducting_kit`, the caller slot's thread-born mark and
+its live provider's `member_dispatch_mounted`, never the live switch), so until
+that session next starts its child is forced onto the Bot's worker exactly as the
+thread's is, and that child, created by a `chat-` key, is never a conductor itself; see
 crew-mode.md, "Conductor and worker") -- takes that workspace's project directory as its cwd, and is attributed to
 the caller via `created_by` so the per-creator slot ceiling is countable. The
 caller's ACP session id is also frozen onto the child at this mint
@@ -1227,7 +1246,8 @@ creator's posture rather than unexplained.
 **A later mode change follows the creation tree** (`approval_inheritance`).
 Inheritance is transitive (a trusted child is itself an eligible creator). A child
 made by `session_create` or `session_fork`, or revived by its own creator, is
-marked `_posture_inherited`, and so is every restored child with a `created_by`:
+marked `_posture_inherited` (a fork that conducts is not: its Profile seeds it),
+and so is every restored child with a `created_by`:
 no mode a person set survives a restart. When one slot is set to Normal, Reads
 or Trust, `apply_approval_mode` walks `_created_by` below it, and every
 descendant still marked inherited takes exactly what that slot now carries,
@@ -1851,7 +1871,14 @@ original member — without the operator's global `session_control` switch. This
 INTENDED, not an accidental widening: the conductor model is recursive by design (a
 `kirocrew-conductor` dispatches a `kirocrew-conductor` child for a sub-goal that
 itself decomposes), and depth is bounded elsewhere — the conductor agent caps
-nesting (children may conduct, grandchildren may not), not this fence. Every node
+nesting (children may conduct, grandchildren may not), not this fence. For a Bot
+the client side opts in per Bot and bounds the depth by lineage: a worker
+receives the session-control mount, the conductor grants and the conductor rules
+only when the Bot's owner set `worker_conducts` AND the Bot's own thread created
+it (`members.conducting_worker_session`; crew-mode.md, "A Bot's worker conducts
+only when its owner says so"), and a conducting worker's own children, created
+by a `chat-` key, are never marked, so the server-side admission below is what
+they keep and the mount is what they never get. Every node
 in that tree stays bounded by the SAME ownership fence: a worker reaches only the
 grandchildren it created itself, never the user's own sessions and never a sibling
 worker's, because `_created_by` is checked at each hop. The population the

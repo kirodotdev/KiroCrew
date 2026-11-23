@@ -311,6 +311,23 @@ Profile card and read per request. A config that still holds an old
 `dashboard.crewmate_dynamic_capabilities` key loads unchanged; the key is not
 read. Owned by [crew-mode](crew-mode.md#dynamic-capabilities).
 
+`agents.<name>.worker_conducts` (default false) is the same shape: a per-Bot
+bool the owner sets through `PUT /api/agents/{name}` (a non-bool is refused
+with `invalid_worker_conducts`; a non-bool in the file reads as false), shipped
+on `GET /api/members`, and read from the Bot's record at each worker's session
+start, never cached on the worker; a save that changes it reloads the Bot's
+workers so each reads it again soon (an idle one at once, a busy one at its turn
+end). On, each worker the Bot's own thread opens may conduct: it gets the
+thread's session-control mount, the conductor's ledger grants and rules, and its
+own `session_create` opens the Bot's worker. While it
+is on, the Bot's `agents.<name>.max_workers` always applies: 0 (no limit) reads
+as `BOT_MAX_WORKERS_CONDUCTING` (4, `config/sections_session.py`), read at each
+create, revive and fork; a limit the owner set is used as is, and with the
+switch off 0 still sets no limit. Owned by
+[crew-mode](crew-mode.md#conductor-and-worker) ("A Bot's worker conducts only
+when its owner says so") and
+[rfc-bot-workers-conduct](../../request-for-change/rfc-bot-workers-conduct.md).
+
 ## Orchestration prompt contract
 
 `config/prompt.md` guides direct work and delegation using a concrete-value

@@ -577,9 +577,14 @@ async def _mount_member_panel(
     from kiro_crew.members import (
         MEMBER_PANEL_SERVER,
         crew_panel_enabled,
+        is_member_session_key,
         member_panel_session_server,
     )
 
+    # The thread's alone: a Bot's conducting worker shares the session-control
+    # key (``members.mounts_session_control``) and never gets the panel.
+    if not is_member_session_key(member_session_key):
+        return mcp_servers, False
     where = " on resume" if resuming else ""
     if not await asyncio.to_thread(crew_panel_enabled):
         logger.info(

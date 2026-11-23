@@ -486,7 +486,13 @@ def _kas_machine_refusal(
 
 
 def _member_session_key(self: AcpProvider) -> str:
-    """This session's key when it is a member DM on a dispatch-capable backend.
+    """This session's key when it mounts session control on a dispatch-capable
+    backend: a member DM, or a Bot worker that conducts
+    (``members.mounts_session_control``). For a worker its thread opened that
+    reads the Bot's switch from the cached config load, the source the worker's
+    spec reads it from (``mate_worker.is_conducting_worker_execution``), so the
+    mount and the spec agree even for a start a save brings at once, ahead of the
+    watcher's copy. Blocking for such a worker: every caller runs it off the loop.
 
     Empty for every other session. One resolution rule for BOTH session
     establishment paths (session/new and session/load) — the mount must
@@ -495,13 +501,13 @@ def _member_session_key(self: AcpProvider) -> str:
     """
     # circular import: members sits above the provider layer.
     from kiro_crew.acp_backends import ACP_BACKENDS_MEMBER_DISPATCH
-    from kiro_crew.members import is_member_session_key
+    from kiro_crew.members import mounts_session_control
 
     skey = getattr(self._client, "_session_key", None)
     if (
         isinstance(skey, str)
         and self._client.backend in ACP_BACKENDS_MEMBER_DISPATCH
-        and is_member_session_key(skey)
+        and mounts_session_control(skey)
     ):
         return skey
     return ""
@@ -1107,7 +1113,7 @@ async def _start_kiro_runtime_impl(
                         resume_sid,
                         session_cwd,
                         agent,
-                        member_session_key=self._member_session_key(),
+                        member_session_key=await asyncio.to_thread(self._member_session_key),
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
                         kas_memory_mode=self.kas_memory_mode,
@@ -1241,7 +1247,7 @@ async def _start_kiro_runtime_impl(
                     cwd=session_cwd,
                     agent=agent or None,
                     harness_options=_harness_session_options(self),
-                    member_session_key=self._member_session_key(),
+                    member_session_key=await asyncio.to_thread(self._member_session_key),
                     # Per session: on a shared chat runtime the process's own
                     # crew identity is the founder's, not this chat's.
                     crew_agent=self._crew_agent,
