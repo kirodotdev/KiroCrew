@@ -37,6 +37,7 @@ vi.mock('../../store', () => ({
   useAppStore: () => ({ getState: () => storeState }),
 }))
 vi.mock('../../store/chatSlice', () => ({
+  selectSlotStreamState: () => 'idle',
   createSlot: (arg: unknown) => ({ type: 'createSlot', arg }),
   setPendingInput: (text: string) => ({ type: 'setPendingInput', text }),
   switchSlot: (arg: unknown) => ({ type: 'switchSlot', arg }),
