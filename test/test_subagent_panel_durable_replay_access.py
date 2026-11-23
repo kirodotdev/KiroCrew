@@ -56,7 +56,11 @@ class TestAGrantIsAuditedNotOnlyARefusal:
         return calls
 
     def request(self, state, caller: str, app: str = "", *, internal: bool = True):
-        values: dict[str, object] = {"app": app, "internal_auth": internal}
+        # Token auth leaves the app claim ABSENT for an internal caller acting as
+        # the person and publishes it only when an app owns the calling session.
+        values: dict[str, object] = {"internal_auth": internal}
+        if app or not internal:
+            values["app"] = app
         return SimpleNamespace(
             app={"state": state},
             headers={"X-Session-Key": caller},
@@ -859,14 +863,20 @@ class TestAnAppTokenCannotReadAnotherAppsRuns:
         return calls
 
     def request(self, state, *, internal: bool, app: str):
-        return SimpleNamespace(
-            app={"state": state},
-            headers={"X-Session-Key": "dashboard:chat-1"},
-            query={},
-            get=lambda key, default=None: (
-                True if key == "internal_auth" and internal else (app if key == "app" else default)
-            ),
-        )
+        class _Request(dict):
+            """The claims token auth publishes, readable with ``in`` and ``[]``."""
+
+        claims: dict[str, object] = {"app": app}
+        if internal:
+            claims["internal_auth"] = True
+        elif app == "":
+            # The owner's own dashboard session: the local owner, no owner set.
+            claims.update(user="local-app", is_dashboard_user=True)
+        request = _Request(claims)
+        request.app = {"state": state}  # type: ignore[attr-defined]
+        request.headers = {"X-Session-Key": "dashboard:chat-1"}  # type: ignore[attr-defined]
+        request.query = {}  # type: ignore[attr-defined]
+        return request
 
     def state(self, slot_app: str = ""):
         manager = SimpleNamespace(all_agents=[])

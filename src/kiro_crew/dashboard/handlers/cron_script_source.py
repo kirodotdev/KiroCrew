@@ -219,5 +219,6 @@ async def api_cron_script_source(request: web.Request) -> web.Response:
 
 
 # Every api_* handler in this module is an owner surface, so a private member's
-# internal call is refused before it runs.
-guard_owner_surface_routes(globals(), member_scoped=frozenset())
+# internal call is refused before it runs, and so is a dashboard session that is
+# neither the owner nor a teammate; an app token keeps its own job confinement.
+guard_owner_surface_routes(globals(), member_scoped=frozenset(), dashboard_owner_only=True)
