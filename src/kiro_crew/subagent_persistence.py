@@ -362,11 +362,16 @@ class PanelRecords(NamedTuple):
 
     ``overflow_is_lower_bound`` says the scan's own candidate window filled up, so
     more admissible folders may exist past it and the count is a floor.
+
+    ``unread`` says the run folders could not be listed at all, so the empty
+    result describes the read, not the runs. A missing folder is not unread: it
+    is a population of none.
     """
 
     records: list[dict]
     overflow: int
     overflow_is_lower_bound: bool
+    unread: bool = False
 
 
 def read_panel_records(
@@ -420,8 +425,10 @@ def read_panel_records(
     saturated = False
     try:
         scan = os.scandir(_subagents_dir())
-    except OSError:
+    except FileNotFoundError:
         return PanelRecords([], 0, False)
+    except OSError:
+        return PanelRecords([], 0, False, unread=True)
     with scan:
         for entry in scan:
             try:
