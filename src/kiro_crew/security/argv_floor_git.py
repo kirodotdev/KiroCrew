@@ -192,11 +192,35 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
         return False
     try:
         return any(
-            _windows_words_hold_git_push(_split_shell_words(segment))
+            _windows_words_hold_git_push(_split_git_words(segment))
             for segment in _split_push_command_segments(text_lower)
         )
     except Exception:
         return False
+
+
+def _split_git_words(segment: str) -> list[str]:
+    """Keep raw quoting, with literal backslashes in the Windows word view."""
+    from kiro_crew import platform_compat
+
+    if not platform_compat.IS_WINDOWS:
+        return _split_shell_words(segment)
+    words: list[str] = []
+    quote = ""
+    start = 0
+    for i, char in enumerate(segment):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char.isspace():
+            if start < i:
+                words.append(segment[start:i])
+            start = i + 1
+    if start < len(segment):
+        words.append(segment[start:])
+    return words
 
 
 def _windows_words_hold_git_push(words: list[str]) -> bool:
@@ -409,7 +433,7 @@ def _git_push_args(segment: str) -> list[str] | None:
     """
     # Strip glued shell operators for the same reason as ``_dequote_token``:
     # ``(git`` IS the git program to bash, and ``main)&`` IS the ref ``main``.
-    raw_tokens = _split_shell_words(segment)
+    raw_tokens = _split_git_words(segment)
     tokens = [_cut_at_operator(t) for t in raw_tokens]
     # Anchoring compares against a DEQUOTED view, because a quoted ``"git"`` is
     # still the git program to bash. Matching the raw token missed it and

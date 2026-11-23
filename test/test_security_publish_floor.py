@@ -306,6 +306,32 @@ class TestPublishFloorNestedPayloads:
         for cmd in protected + allowed:
             assert not fg._is_git_publish(cmd.lower()), cmd
 
+    def test_windows_trailing_backslashes_do_not_join_arguments(self, monkeypatch) -> None:
+        """A Windows path's trailing separator cannot consume the next argument."""
+        from kiro_crew import platform_compat
+        from kiro_crew.security import argv_floor_git as fg
+        from kiro_crew.security import is_denied
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        for directory in ("C:\\repo\\", '"C:\\my repo\\"', "'C:\\my repo\\'"):
+            command = f"C:\\Git\\cmd\\git.exe -C {directory} push origin"
+            assert is_denied(command + " main") is not None, command
+            assert fg._git_push_args(command + " main") == ["origin", "main"]
+            assert is_denied(command + " feature") is None, command
+
+        # The same split must preserve a backslash in an argument after the verb.
+        assert fg._git_push_args(r"C:\Git\cmd\git.exe push C:\repo\ main") == [
+            "C:\\repo\\",
+            "main",
+        ]
+        for command in (
+            r"C:\Git\cmd\git.exe push origin feature",
+            r"C:\Git\cmd\git.exe status",
+            r"C:\Tools\legit.exe push origin main",
+            r"Get-ChildItem C:\src\git push",
+        ):
+            assert is_denied(command) is None, command
+
     def test_obfuscation_with_no_payload_still_fails_closed(self) -> None:
         """The deferral is NOT a general escape hatch.
 
