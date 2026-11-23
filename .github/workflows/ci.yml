@@ -91,10 +91,13 @@ jobs:
     # with local git instead of the REST API and needs no pull-requests:read.
     # Job-level permissions REPLACE the top-level grant, so contents:read is
     # restated. issues:read is for the one read of the open main-red issue
-    # ("Read the open main-red issue" below).
+    # ("Read the open main-red issue" below). actions:read is for the shadow
+    # test-selection step's read of the nightly bundle, an artifact of another
+    # run ("Score the diff for test selection" below).
     permissions:
       contents: read
       issues: read
+      actions: read
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
@@ -650,6 +653,35 @@ jobs:
             # strictly worse than absent.
             echo "windows_runner=windows-latest" >> "$GITHUB_OUTPUT"
           fi
+
+      # SHADOW ONLY: nothing reads this verdict to skip a test. The scorer says
+      # what diff-based selection WOULD run for this pull request, and the miss
+      # ledger (scripts/ci_test_selection_ledger.py) joins that with what failed.
+      # These two steps come last, set no output and carry no `id`, so no other
+      # job can read them, and `continue-on-error` keeps a step that crashes or
+      # runs out of time from failing the job every other job waits for. The
+      # script answers every failure it can see with verdict `full` and exits 0
+      # inside its own 60 s; the step's timeout only ends a hung interpreter.
+      # Which bundle it trusts, and the three API reads it makes:
+      # scripts/ci_test_selection_step.py.
+      - name: Score the diff for test selection (shadow)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_test_selection_step.py
+
+      - name: Upload the test-selection verdict (shadow)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-selection-verdict
+          path: ${{ runner.temp }}/test-selection-verdict/verdict.json
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
 
   # Build the Linux desktop packages and install them for real, but ONLY when the
   # diff could change what a package installs. The check is expensive (a PBS
