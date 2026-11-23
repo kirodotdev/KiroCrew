@@ -37,13 +37,14 @@ not by column, so a sentence lands on the card it is about. A `checks` value tha
 not a bare `N/M` is dropped and the cell reads as not said — that cell means a tally
 you read off a forge, and the work log has none.
 
-Every key is optional: one you leave out reads as not said. A `you` value shorter
-than 8 characters or without a space also reads as not said — a name is not an
-action. `notes` is read only for the tile keys `items`, `entries` and `round`; any
-other key is ignored. The host clips what it prints: `lede` at 400
-bytes, each `notes` gloss and each row cell at 120, a `you` line at 200, and a
-clipped value ends ` [trimmed]`. Make the `lede` name the round it describes; do
-not write "nothing yet" beside a `round` tile that is not zero.
+Every key is optional: one you leave out reads as not said. A `you` value of
+fewer than two words also reads as not said — a name is not an action. There is
+no length floor, so a short action like `fix it` still counts. `notes` is read
+only for the tile keys `items`, `entries` and `round`; any other key is ignored.
+The host clips what it prints: `lede` at 400 bytes, each `notes` gloss and each
+row cell at 120, a `you` line at 200, and a clipped value ends ` [trimmed]`.
+Make the `lede` name the round it describes; do not write "nothing yet" beside a
+`round` tile that is not zero.
 
 ## How the ledger behaves
 
