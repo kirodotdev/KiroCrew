@@ -594,6 +594,14 @@
       "configKey": "teams.tenant_id"
     },
     {
+      "id": "channels.tracked-channels-slack",
+      "label": "Tracked channels (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=channels.tracked-channels-slack",
+      "description": "Channels the agent can post, react and read in. Applies when you save.",
+      "hint": "Slack channel IDs, starting with C or G. In Slack, open the channel's details: the ID is at the bottom. You can also add channels in Slack with /kirocrew channels, where you also set each channel's activation mode and agent."
+    },
+    {
       "id": "channels.webex-bot-token-webex",
       "label": "Webex bot token (Webex)",
       "tab": "channels",

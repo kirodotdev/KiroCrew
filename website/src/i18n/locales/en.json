@@ -11646,6 +11646,10 @@
       "slackPanel": {
         "add": "Add",
         "allowed_enterprise_orgs": "Allowed enterprise orgs",
+        "tracked_channels": "Tracked channels",
+        "tracked_channels_summary": "Channels the agent can post, react and read in. Applies when you save.",
+        "tracked_channels_hint": "Slack channel IDs, starting with C or G. In Slack, open the channel's details: the ID is at the bottom. You can also add channels in Slack with /kirocrew channels, where you also set each channel's activation mode and agent.",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "App-level token required for Socket Mode (starts with xapp-).",
         "behavior": "Behavior",
         "cannot_load_slack_config_is_the_gateway_running": "Cannot load Slack config. Is the gateway running?",

@@ -21969,6 +21969,10 @@
       "slackPanel": {
         "add": "Adicionar",
         "allowed_enterprise_orgs": "Organizações enterprise permitidas",
+        "tracked_channels": "Canais monitorados",
+        "tracked_channels_summary": "Canais em que o agente pode publicar, reagir e ler. Aplica-se ao salvar.",
+        "tracked_channels_hint": "IDs de canais do Slack, começando com C ou G. No Slack, abra os detalhes do canal: o ID fica no final. Você também pode adicionar canais no Slack com /kirocrew channels, onde também define o modo de ativação e o agente de cada canal.",
+        "c0123abc456": "C0123ABC456",
         "app_level_token_required_for_socket_mode_starts": "Token de nível de app necessário para o Socket Mode (começa com xapp-).",
         "auto_link_sessions": "Conectar novas sessões ao Slack automaticamente",
         "auto_link_sessions_desc": "Cada nova sessão do painel ganha uma thread no Slack na primeira mensagem, na sua mensagem direta privada com o bot. Sessões iniciadas por cron, apps ou subagentes, sessões que começaram no Slack ou em outro app de mensagens, e sessões anônimas ou temporárias ficam como estão. Uma sessão conectada assim não conta como sessão do Slack para a configuração de pasta abaixo: ela fica onde está na barra lateral, e só as conversas que começam no Slack são arquivadas.",
