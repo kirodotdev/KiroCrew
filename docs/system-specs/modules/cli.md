@@ -1727,7 +1727,12 @@ both halves:
   refusal line instead (`print_if_data_home_not_owned`) when another account
   owns some of the files, with the same exit status; a start that can run is
   never refused for it. `kirocrew doctor` prints it under Data Home
-  as an issue, `/api/status` carries `data_home_access` (`ok`, `home`,
+  as an issue; from a confined shell (`confinement._doctor_vantage_confined()`,
+  an agent's shell included), entries that each lstat as this process's own
+  effective uid but cannot be used are the sandbox's read-only or hidden mounts,
+  so the row is a `⏭  skipped — <paths> is not readable from this shell` skip
+  that is never an issue, while files another account owns, or whose owner
+  cannot be read, still fail there. `/api/status` carries `data_home_access` (`ok`, `home`,
   `foreign`, `owner`, `help_url`), and
   `POST /api/agents` refuses with 409 `data_home_not_owned`, `home`, `owner` and
   `help_url` before it touches the config.
