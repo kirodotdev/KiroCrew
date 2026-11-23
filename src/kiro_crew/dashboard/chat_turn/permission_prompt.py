@@ -17,6 +17,11 @@ from kiro_crew.dashboard.deny_override import (
     deny_override_enabled,
     override_decision,
 )
+from kiro_crew.dashboard.slack_reconnect_wait import (
+    APPROVAL_NOTICE,
+    slack_reply_client,
+    wait_for_slack_reconnect,
+)
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
@@ -410,6 +415,23 @@ async def _on_permission_prompt(
     # The Slack click resolves THIS future on this slot (request ids recur
     # across slots); we remain the sole caller of approve_tool/reject_tool below.
     _slack_approval_ts: str | None = None
+    if (
+        # A reconnect took the client: wait for it, so the card posts through
+        # the one it publishes. The checks below run again after the wait, and
+        # a pre-declined row (see below) never waits.
+        "resolved" not in perm_meta
+        and _override_offer is None
+        and slot._slack_linked
+        and slot._slack_channel
+        and slot._slack_thread_ts
+        and not state.slack_client
+        and not slack_mirror_is_paused(state, session_key)
+    ):
+        await wait_for_slack_reconnect(state)
+        if not slack_mirror_is_paused(state, session_key):
+            slack_reply_client(
+                state, session_key, slot._slack_channel, turn=turn, notice=APPROVAL_NOTICE
+            )
     if (
         # A row pre-declined at its append is not mirrored. The
         # post is the one cancellable await between the future's
@@ -915,6 +937,8 @@ async def _on_permission_prompt(
                 resolve_linked_approval(slot._slack_channel, _slack_approval_ts)
                 # A code-channel card its Trust answered says so in
                 # place; every other card goes once decided.
+                # A reconnect may have taken the client the card posted with.
+                await wait_for_slack_reconnect(state)
                 if state.slack_client and not keep_code_channel_card(
                     slot._slack_channel, _slack_approval_ts
                 ):

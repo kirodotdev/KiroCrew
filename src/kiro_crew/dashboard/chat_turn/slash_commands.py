@@ -922,6 +922,8 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     turn._mirror_thinking_ts = ""
     # Whether this turn posted its prompt echo; a recovery requeue reads it.
     turn._mirror_echo_posted = False
+    # Whether the owner was told Slack did not reconnect (``slack_reply_client``).
+    turn._mirror_owner_told = False
     _mirror_chan: str | None = ""
     turn._mirror_chan = _mirror_chan
     _mirror_active_task = ""
