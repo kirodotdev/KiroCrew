@@ -14,6 +14,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -1228,8 +1229,8 @@ class TestRunTask:
     def test_builtin_sync_runs_through_the_explicit_seam(
         self, taskrunner_env, tmp_path, monkeypatch
     ) -> None:
-        # _run_task runs on a loop, where construction-time sync skips
-        # itself: the loader must be built with install_builtins=False and
+        # _run_task builds the loader off the loop, where construction would
+        # run the sync itself: it must be built with install_builtins=False and
         # have sync_builtins driven through the explicit off-loop seam.
         created: list[_FakeStore] = []
 
@@ -1248,6 +1249,26 @@ class TestRunTask:
             inst.kwargs.get("install_builtins") is False and inst.builtins_synced
             for inst in created
         )
+
+    def test_skills_loader_is_built_off_the_loop(
+        self, taskrunner_env, tmp_path, monkeypatch
+    ) -> None:
+        # Its constructor resolves every skills.extra_paths root, which blocks
+        # until a slow or network mount answers.
+        built_on: list[int] = []
+
+        class _SpyLoader(_FakeStore):
+            def __init__(self, *a, **kw) -> None:
+                super().__init__(*a, **kw)
+                built_on.append(threading.get_ident())
+
+        monkeypatch.setattr(cli_server, "SkillsLoader", _SpyLoader)
+        taskrunner_env["install_runner"](_Result("completed"))
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=True, fresh=False, timeout=0, name=""
+        )
+        asyncio.run(cli_server._run_task(args))
+        assert built_on and threading.get_ident() not in built_on
 
     def test_consolidator_gets_the_configured_migrated_flag(
         self, taskrunner_env, tmp_path, monkeypatch

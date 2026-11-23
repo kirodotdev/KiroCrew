@@ -483,11 +483,13 @@ async def _run_task(args: argparse.Namespace) -> None:
     conv_log = ConversationLog()
     conv_log.init()
     lessons = LessonStore()
-    # Constructed on a running loop, so construction-time sync skips itself;
-    # standalone `kirocrew run` has no gateway to own the sync, so run the
-    # explicit seam in a worker thread (mirrors gateway startup). A failed
-    # sync must not gate the task: continue with the skills already on disk.
-    skills = SkillsLoader(install_builtins=False)
+    # Built in a worker thread (the constructor resolves every
+    # `skills.extra_paths` root, which blocks on a slow or network mount) and
+    # without the builtin sync: standalone `kirocrew run` has no gateway to own
+    # it, so run the explicit seam in a worker thread too (mirrors gateway
+    # startup). A failed sync must not gate the task: continue with the skills
+    # already on disk.
+    skills = await asyncio.to_thread(lambda: SkillsLoader(install_builtins=False))
     try:
         await asyncio.to_thread(skills.sync_builtins)
     except Exception:
