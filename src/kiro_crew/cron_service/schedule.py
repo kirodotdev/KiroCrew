@@ -583,10 +583,9 @@ def parse_time_string(s: str, tz_name: str = "") -> float | str:
         try:
             parsed = seams.datetime.strptime(text, fmt)
             result = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
-            if tomorrow:
+            # "tomorrow 5pm", or "5pm" when it's already 6pm → tomorrow
+            if tomorrow or result <= now:
                 result += timedelta(days=1)
-            elif result <= now:
-                result += timedelta(days=1)  # "5pm" when it's already 6pm → tomorrow
             error = _wall_clock_resolution_error(result, tz, resolved_tz_name)
             return error or result.timestamp()
         except ValueError:
@@ -922,13 +921,10 @@ def jitter_bound(job: CronJob) -> float:
             return 0.0
 
         parts = sched.cron_expr.split()
-        if len(parts) == 5:
-            # Single literal hour (e.g., "0 3 * * *") = truly daily/weekly
-            if parts[1].isdigit():
-                return _JITTER_DAILY_MAX
-            # Multi-hour patterns (*/2, 1,13) or wildcard = hourly jitter
-            if parts[1] != "*":
-                return _JITTER_HOURLY_MAX
+        # Single literal hour (e.g., "0 3 * * *") = truly daily/weekly
+        if len(parts) == 5 and parts[1].isdigit():
+            return _JITTER_DAILY_MAX
+        # Multi-hour patterns (*/2, 1,13), a wildcard hour, or any other shape = hourly jitter
         return _JITTER_HOURLY_MAX
     return 0.0
 
