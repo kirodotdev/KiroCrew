@@ -385,12 +385,15 @@ def _targets_denied(
         jev = lane == LANE_JEV
         endpoint = configured_endpoint(config) if jev else None
         if endpoint is not None:
+            from kiro_crew.decisions import impl_signed_https
             from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint, policy_endpoint
 
             # The ceiling is asked about the AWS host the request reaches, not the
             # endpoint name; an address that names no host raises and denies below.
             if is_sagemaker_endpoint(endpoint):
                 endpoint = policy_endpoint(endpoint)
+            elif impl_signed_https.is_signed_https_endpoint(endpoint):
+                endpoint = impl_signed_https.policy_endpoint(endpoint)
         return targets_denied(
             session_key or DASHBOARD_SURFACE_KEY,
             point=point,
@@ -687,7 +690,9 @@ def lane_model(config: Any | None = None, *, lane: str) -> str:
     wire, or the session layer's model selection), so both go through the
     ``ERROR_SCRUBBED_MODEL`` refusal in :func:`scrub_reason`.
 
-    :data:`LANE_ENDPOINT` gives ``provider.model`` with the shipped fallback.
+    :data:`LANE_ENDPOINT` gives ``provider.model`` with the shipped fallback, except
+    for an ``aws-https://`` endpoint, which has none: its blank model stays blank, so
+    the scrub refuses it and nothing is sent with the hosted default id.
     :data:`LANE_LLM` resolves an empty ``llm_model`` to ``impl_llm.JUDGE_MODEL_DEFAULT``
     ("inherit": the runner passes no model), the same word the picker shows.
     """
@@ -700,7 +705,14 @@ def lane_model(config: Any | None = None, *, lane: str) -> str:
             configured = ""
         return configured or JUDGE_MODEL_DEFAULT
     provider = getattr(_decisions_config(config), "provider", None)
-    return str(getattr(provider, "model", "") or _DEFAULT_MODEL)
+    configured = str(getattr(provider, "model", "") or "")
+    if configured:
+        return configured
+    from kiro_crew.decisions.impl_signed_https import is_signed_https_endpoint
+
+    if is_signed_https_endpoint(getattr(provider, "endpoint", "")):
+        return ""
+    return _DEFAULT_MODEL
 
 
 def _oracle(lane: str, provider: Any, model: str = "") -> _provider.DecisionProvider:

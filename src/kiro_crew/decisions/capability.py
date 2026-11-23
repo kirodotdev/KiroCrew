@@ -87,6 +87,9 @@ PROVIDERS_LIST = "providers"
 PROVIDER_HOSTED = "jev"
 #: Allow-list id of any ``sagemaker://`` address, valid or not.
 PROVIDER_SAGEMAKER = "sagemaker"
+#: Allow-list id of any ``aws-https://`` address (an HTTPS endpoint signed with
+#: SigV4), valid or not.
+PROVIDER_SIGNED_HTTPS = "aws_https"
 #: What ``local_models.active_id`` answers for a hand-written address: not a list id.
 #: An LTS build's :func:`provider_id` answers it too, and refuses it
 #: (:func:`edition_refuses`).
@@ -132,7 +135,8 @@ def provider_id(endpoint: object, model: object) -> str | None:
     :data:`PROVIDER_HOSTED` when *endpoint* is the hosted default endpoint exactly, a
     local preset id for the address the provider route builds for that preset,
     :data:`PROVIDER_SAGEMAKER` for any ``sagemaker://`` address (the scheme alone picks
-    the SageMaker client, so a malformed one is still that provider) and
+    the SageMaker client, so a malformed one is still that provider),
+    :data:`PROVIDER_SIGNED_HTTPS` for any ``aws-https://`` address on the same terms, and
     :data:`PROVIDER_NONE` for "No model". *endpoint* is the configured address with the
     unset fallback already applied (``gate.configured_endpoint``).
 
@@ -149,9 +153,12 @@ def provider_id(endpoint: object, model: object) -> str | None:
     """
     from kiro_crew.decisions import local_models
     from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint
+    from kiro_crew.decisions.impl_signed_https import is_signed_https_endpoint
 
     if is_sagemaker_endpoint(endpoint):
         return PROVIDER_SAGEMAKER
+    if is_signed_https_endpoint(endpoint):
+        return PROVIDER_SIGNED_HTTPS
     named = local_models.active_id(endpoint, model)
     if named != _UNGOVERNED:
         return named
@@ -184,6 +191,7 @@ def provider_ids() -> tuple[str, ...]:
         PROVIDER_HOSTED,
         *(m.id for m in local_models.LOCAL_MODELS),
         PROVIDER_SAGEMAKER,
+        PROVIDER_SIGNED_HTTPS,
     )
 
 

@@ -1170,6 +1170,9 @@ from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.decisions_sagemaker import (  # noqa: E402, F401
     api_decisions_provider_sagemaker_test,
 )
+from kiro_crew.dashboard.handlers.decisions_signed_https import (  # noqa: E402, F401
+    api_decisions_provider_signed_https_test,
+)
 
 # MCP message-body fields — owner-gated, and the ONLY writer of
 # ``mcp_body_fields.json`` (see ``security.mcp_body_fields``).

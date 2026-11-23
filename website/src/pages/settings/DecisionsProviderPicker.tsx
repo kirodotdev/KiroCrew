@@ -10,6 +10,7 @@ import type {
   DecisionsRuntimeStatus,
   DecisionsSageMakerTarget,
   DecisionsSageMakerTestResult,
+  DecisionsSignedHttpsTarget,
 } from '../../api/client/decisions'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Input } from '../../components/ui'
@@ -17,12 +18,21 @@ import { fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { DecisionsHostedKeyField } from './DecisionsHostedKeyField'
 import {
+  DecisionsSignedHttpsFields,
+  EMPTY_AWS_HTTPS,
+  PRESET_AWS_HTTPS,
+  sameSignedHttps,
+  signedHttpsComplete,
+  signedHttpsRefusal,
+} from './DecisionsSignedHttpsFields'
+import {
   DECISIONS_PROVIDER_QUERY_KEY,
   PRESET_HOSTED,
   PRESET_NONE,
   allModelsRefused,
   isRefusedHostedDefault,
   isRefusedSageMaker,
+  isRefusedSignedHttps,
   providerPermitted,
 } from './decisionsProviderQuery'
 
@@ -387,12 +397,23 @@ export function DecisionsProviderPicker({
   const [hostedKeyMounted, setHostedKeyMounted] = useState(false)
   // The SageMaker fields as typed; null until edited, which shows the configured ones.
   const [smDraft, setSmDraft] = useState<DecisionsSageMakerTarget | null>(null)
+  // The AWS-signed HTTPS fields as typed, on the same terms.
+  const [ahDraft, setAhDraft] = useState<DecisionsSignedHttpsTarget | null>(null)
   const saveMut = useMutation({
-    mutationFn: (choice: { preset: string; sagemaker?: DecisionsSageMakerTarget }) =>
-      choice.sagemaker ? api.saveDecisionsSageMaker(choice.sagemaker) : api.saveDecisionsProvider(choice.preset),
+    mutationFn: (choice: {
+      preset: string
+      sagemaker?: DecisionsSageMakerTarget
+      awsHttps?: DecisionsSignedHttpsTarget
+    }) =>
+      choice.sagemaker
+        ? api.saveDecisionsSageMaker(choice.sagemaker)
+        : choice.awsHttps
+          ? api.saveDecisionsSignedHttps(choice.awsHttps)
+          : api.saveDecisionsProvider(choice.preset),
     onSuccess: () => {
       setSelected(null)
       setSmDraft(null)
+      setAhDraft(null)
     },
     // The endpoint moved, so the consent row's "sent to" line and the config read
     // both change with it.
@@ -436,9 +457,14 @@ export function DecisionsProviderPicker({
   const blockedId = (id: string) => !providerPermitted(data, id)
   // An older gateway reports no SageMaker fields and would refuse the body.
   const sageMakerOffered = typeof data.sagemaker_available === 'boolean'
-  const hiddenId = (id: string) => id === PRESET_SAGEMAKER && !sageMakerOffered
+  // The same for the AWS-signed HTTPS option.
+  const awsHttpsOffered = typeof data.aws_https_available === 'boolean'
+  const hiddenId = (id: string) =>
+    (id === PRESET_SAGEMAKER && !sageMakerOffered) || (id === PRESET_AWS_HTTPS && !awsHttpsOffered)
   const sageMakerAvailable = data.sagemaker_available === true
   const smValue = smDraft ?? data.sagemaker ?? EMPTY_SAGEMAKER
+  const awsHttpsAvailable = data.aws_https_available === true
+  const ahValue = ahDraft ?? data.aws_https ?? EMPTY_AWS_HTTPS
   // The polled status is newer than the provider read while that read still shows
   // the model being prepared. Once a fresh provider read has settled, its own
   // runtime is current and the last poll -- kept by react-query -- is not.
@@ -454,7 +480,13 @@ export function DecisionsProviderPicker({
   // for it, but "No model" is not what is saved, so no option is drawn selected; the
   // saved one is marked as saved and refused instead.
   const refusedDefault = isRefusedHostedDefault(data)
-  const savedRefusedId = refusedDefault ? (isRefusedSageMaker(data) ? PRESET_SAGEMAKER : PRESET_JEV) : null
+  const savedRefusedId = refusedDefault
+    ? isRefusedSageMaker(data)
+      ? PRESET_SAGEMAKER
+      : isRefusedSignedHttps(data)
+        ? PRESET_AWS_HTTPS
+        : PRESET_JEV
+    : null
   const configuredChoice =
     data.active === 'custom' || hiddenId(data.active) || refusedDefault ? '' : data.active
   const chosen = selected ?? configuredChoice
@@ -468,6 +500,7 @@ export function DecisionsProviderPicker({
   const chosenRuntime =
     runtime && chosenPreset && runtime.preset === chosenPreset.id && runtime.state !== 'idle' ? runtime : undefined
   const sageMakerChosen = chosen === PRESET_SAGEMAKER
+  const awsHttpsChosen = chosen === PRESET_AWS_HTTPS
   // Another endpoint while one is in use is a change too, not only another option.
   // A refused hosted default is reported as "No model" while the config still names
   // it, so choosing "No model" over it is a change that has to be written.
@@ -475,10 +508,20 @@ export function DecisionsProviderPicker({
     chosen !== '' &&
     (chosen !== data.active ||
       (chosen === PRESET_NONE && refusedDefault) ||
-      (sageMakerChosen && !sameSageMaker(smValue, data.sagemaker)))
-  const sageMakerReady = !sageMakerChosen || (sageMakerAvailable && smValue.endpoint_name !== '' && smValue.region !== '')
+      (sageMakerChosen && !sameSageMaker(smValue, data.sagemaker)) ||
+      (awsHttpsChosen && !sameSignedHttps(ahValue, data.aws_https)))
+  const sageMakerReady =
+    (!sageMakerChosen || (sageMakerAvailable && smValue.endpoint_name !== '' && smValue.region !== '')) &&
+    (!awsHttpsChosen || (awsHttpsAvailable && signedHttpsComplete(ahValue)))
   const canSave = needsSave && sageMakerReady && !frozen && !saveMut.isPending && !blockedId(chosen)
-  const save = () => saveMut.mutate(sageMakerChosen ? { preset: chosen, sagemaker: smValue } : { preset: chosen })
+  const save = () =>
+    saveMut.mutate(
+      sageMakerChosen
+        ? { preset: chosen, sagemaker: smValue }
+        : awsHttpsChosen
+          ? { preset: chosen, awsHttps: ahValue }
+          : { preset: chosen },
+    )
   const removable = presets.filter(p => p.installed && p.id !== data.active && p.id !== runtime?.preset)
   // Every option the picker offers is refused; "No model" is then the only choice.
   const allBlocked = allModelsRefused({ ...data, presets })
@@ -493,7 +536,9 @@ export function DecisionsProviderPicker({
               ? i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev')
               : chosen === PRESET_SAGEMAKER
                 ? i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker')
-                : (presets.find(p => p.id === chosen)?.name ?? chosen),
+                : chosen === PRESET_AWS_HTTPS
+                  ? i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https')
+                  : (presets.find(p => p.id === chosen)?.name ?? chosen),
         })
 
   // A preset that just failed to start here is not one to recommend for this machine.
@@ -536,7 +581,7 @@ export function DecisionsProviderPicker({
   const answering = (id: string) =>
     (id === PRESET_NONE && !refusedDefault) ||
     (consentOn &&
-      (id === PRESET_JEV || id === PRESET_SAGEMAKER || (runtime?.preset === id && runtime.state === 'running')))
+      (id === PRESET_JEV || id === PRESET_SAGEMAKER || id === PRESET_AWS_HTTPS || (runtime?.preset === id && runtime.state === 'running')))
   const activeBadge = (id: string) =>
     id === savedRefusedId ? (
       <span className="rounded bg-bg px-1.5 text-[11px] text-warn border border-border">
@@ -689,6 +734,24 @@ export function DecisionsProviderPicker({
           notSending={!consentOn && data.active === PRESET_SAGEMAKER && sameSageMaker(smValue, data.sagemaker)}
         />
       )}
+      {awsHttpsOffered &&
+        option(
+          PRESET_AWS_HTTPS,
+          i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https'),
+          <span className="text-[12px] text-muted">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_detail')}
+          </span>,
+        )}
+      {clearSaved(PRESET_AWS_HTTPS, i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https'))}
+      {awsHttpsOffered && awsHttpsChosen && (
+        <DecisionsSignedHttpsFields
+          value={ahValue}
+          onChange={setAhDraft}
+          disabled={frozen || saveMut.isPending || blockedId(PRESET_AWS_HTTPS)}
+          available={awsHttpsAvailable}
+          notSending={!consentOn && data.active === PRESET_AWS_HTTPS && sameSignedHttps(ahValue, data.aws_https)}
+        />
+      )}
       {option(
         PRESET_NONE,
         i18nT('pages.developer.featurePreviewsTab.decisions_provider_none'),
@@ -760,7 +823,9 @@ export function DecisionsProviderPicker({
         <ErrorNotice
           variant="inline"
           message={
-            sageMakerRefusal(saveMut.error) ?? i18nT('pages.developer.featurePreviewsTab.decisions_provider_save_failed')
+            sageMakerRefusal(saveMut.error) ??
+            signedHttpsRefusal(saveMut.error) ??
+            i18nT('pages.developer.featurePreviewsTab.decisions_provider_save_failed')
           }
         />
       )}

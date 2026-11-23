@@ -204,15 +204,20 @@ def endpoint_refused(endpoint: str, *, audit: bool = True) -> bool:
     pinned to. The same question the send path asks, so an option the answer refuses
     is one a decision could never use. Blocking: call off the event loop.
     """
-    from kiro_crew.decisions import capability, impl_sagemaker
+    from kiro_crew.decisions import capability, impl_sagemaker, impl_signed_https
 
     try:
-        url = (
-            impl_sagemaker.policy_endpoint(endpoint)
-            if impl_sagemaker.is_sagemaker_endpoint(endpoint)
-            else endpoint
-        )
-    except (impl_sagemaker.SageMakerConfigError, ValueError):
+        if impl_sagemaker.is_sagemaker_endpoint(endpoint):
+            url = impl_sagemaker.policy_endpoint(endpoint)
+        elif impl_signed_https.is_signed_https_endpoint(endpoint):
+            url = impl_signed_https.policy_endpoint(endpoint)
+        else:
+            url = endpoint
+    except (
+        impl_sagemaker.SageMakerConfigError,
+        impl_signed_https.SignedHttpsConfigError,
+        ValueError,
+    ):
         # An address that names no host cannot be sent to, which is the send
         # path's own answer (``gate._targets_denied`` denies on the same raise).
         return True
@@ -222,15 +227,17 @@ def endpoint_refused(endpoint: str, *, audit: bool = True) -> bool:
 def consent_endpoint_refused(endpoint: str) -> bool:
     """Whether turning consent on for *endpoint* is refused by the ceiling's ``endpoints`` list.
 
-    Only the hosted default and a ``sagemaker://`` address leave the machine through a
-    host the picker offers; anything else (a local preset, "none", a hand-written
-    address) is not asked here. Blocking: call off the event loop.
+    Only the hosted default, a ``sagemaker://`` and an ``aws-https://`` address leave
+    the machine through a host the picker offers; anything else (a local preset,
+    "none", a hand-written address) is not asked here. Blocking: call off the event loop.
     """
     from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
-    from kiro_crew.decisions import impl_sagemaker
+    from kiro_crew.decisions import impl_sagemaker, impl_signed_https
 
-    if endpoint != DECISION_PROVIDER_ENDPOINT_DEFAULT and not impl_sagemaker.is_sagemaker_endpoint(
-        endpoint
+    if (
+        endpoint != DECISION_PROVIDER_ENDPOINT_DEFAULT
+        and not impl_sagemaker.is_sagemaker_endpoint(endpoint)
+        and not impl_signed_https.is_signed_https_endpoint(endpoint)
     ):
         return False
     return endpoint_refused(endpoint)
