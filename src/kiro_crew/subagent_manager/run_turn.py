@@ -582,6 +582,7 @@ async def _run_inner_impl(
     # tool_call_id -> the tool id the call's PostToolUse spec hooks match on.
     from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_TOOL_CALL_UPDATE
     from kiro_crew.agent_sdk.spec_hooks import PostToolIdentity, post_tool_identity
+    from kiro_crew.hook_output import bounded_hook_output
     from kiro_crew.hooks import pre_tool_match_names
     from kiro_crew.subagent_manager.card_tool_titles import CardToolTitles
 
@@ -1506,13 +1507,12 @@ async def _run_inner_impl(
                 try:
                     _tool_name = _pending_tools.pop(event.tool_call_id, "")
                     _named = _pending_tool_ids.pop(event.tool_call_id, None)
-                    _out = _redact((event.tool_output or "")[:2000])
                     # The child's own ACP session id, for its spec hooks only.
                     _sid = getattr(client, "session_id", "") if _spec.hooks else ""
                     results = await self._manager.hook_store.fire(
                         HOOK_EVENT_POST_TOOL_USE,
                         tool_name=_tool_name,
-                        tool_response={"output": _out},
+                        tool_response=bounded_hook_output(_redact(event.tool_output or "")),
                         # This child's own key, for per-session attribution;
                         # parent_session_key below names who spawned it.
                         session_key=session_key,
