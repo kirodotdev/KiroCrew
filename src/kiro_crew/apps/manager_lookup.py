@@ -523,6 +523,7 @@ def list_apps() -> list[dict[str, Any]]:
             app_info["orphaned"] = True
         if adoption_markers is not None:
             _add_adoption_row(app_info, entry.name, meta, manifest_data, adoption_markers)
+        _add_shadowed_builtin_row(app_info, entry.name, meta)
         result.append(app_info)
     return result
 
@@ -573,7 +574,17 @@ def get_app(name: str) -> dict[str, Any] | None:
     adoption_markers = _adoption_rows_context()
     if adoption_markers is not None:
         _add_adoption_row(row, name, meta, manifest_data, adoption_markers)
+    _add_shadowed_builtin_row(row, name, meta)
     return row
+
+
+def _add_shadowed_builtin_row(app_info: dict[str, Any], name: str, meta: InstalledApp) -> None:
+    """Set ``app_info["shadowedBuiltin"]`` when a still-running built-in shares the name."""
+    from kiro_crew.apps.builtin_shadow import shadowed_builtin_notice
+
+    notice = shadowed_builtin_notice(name, meta)
+    if notice:
+        app_info["shadowedBuiltin"] = notice
 
 
 def _adoption_rows_context() -> dict[str, Any] | None:
