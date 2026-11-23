@@ -17280,6 +17280,8 @@
         "scope_builtin": "{{label}}: 켜짐 ({{productName}}에 내장됨. 끌 수 없음)",
         "scope_switch_pending_on": "{{label}}: 적용을 누르면 켜짐 (클릭해 되돌리기)",
         "scope_switch_pending_off": "{{label}}: 적용을 누르면 꺼짐 (클릭해 되돌리기)",
+        "all_off": "모두 끄기",
+        "all_off_help": "목록에 있는 모든 서버의 {{productName}} 스위치를 끈 뒤 ‘적용’을 누르세요. {{productName}}에 내장된 서버는 켜진 상태로 남습니다.",
         "disabled_count_other": "{{count}}개 비활성화됨",
         "sign_in": "로그인",
         "sign_in_authorize": "{{name}} 승인",

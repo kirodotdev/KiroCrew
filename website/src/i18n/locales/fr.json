@@ -18202,6 +18202,8 @@
         "scope_builtin": "{{label}} : activé (intégré à {{productName}} ; ne peut pas être désactivé)",
         "scope_switch_pending_on": "{{label}} : sera activé quand tu appuieras sur Appliquer (clique pour annuler)",
         "scope_switch_pending_off": "{{label}} : sera désactivé quand tu appuieras sur Appliquer (clique pour annuler)",
+        "all_off": "Tout désactiver",
+        "all_off_help": "Désactive l’interrupteur {{productName}} de chaque serveur de la liste, puis clique sur Appliquer. Les serveurs intégrés à {{productName}} restent activés.",
         "disabled_count_one": "{{count}} désactivé",
         "disabled_count_many": "{{count}} désactivés",
         "disabled_count_other": "{{count}} désactivés",

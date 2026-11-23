@@ -17741,6 +17741,8 @@
         "scope_builtin": "{{label}}: an (in {{productName}} integriert; kann nicht ausgeschaltet werden)",
         "scope_switch_pending_on": "{{label}}: wird beim Klick auf „Anwenden“ eingeschaltet (zum Zurücknehmen klicken)",
         "scope_switch_pending_off": "{{label}}: wird beim Klick auf „Anwenden“ ausgeschaltet (zum Zurücknehmen klicken)",
+        "all_off": "Alle aus",
+        "all_off_help": "Schaltet bei jedem aufgeführten Server den {{productName}}-Schalter aus; danach „Anwenden“ klicken. In {{productName}} integrierte Server bleiben an.",
         "disabled_count_one": "{{count}} deaktiviert",
         "disabled_count_other": "{{count}} deaktiviert",
         "sign_in": "Anmelden",

@@ -17280,6 +17280,8 @@
         "scope_builtin": "{{label}}：已开启（{{productName}} 内置，无法关闭）",
         "scope_switch_pending_on": "{{label}}：点“应用更改”后开启（点击撤销）",
         "scope_switch_pending_off": "{{label}}：点“应用更改”后关闭（点击撤销）",
+        "all_off": "全部关闭",
+        "all_off_help": "关闭列表中每个服务器的 {{productName}} 开关，然后点“应用更改”。{{productName}} 内置的服务器保持开启。",
         "disabled_count_other": "{{count}} 个已禁用",
         "sign_in": "登录",
         "sign_in_authorize": "授权 {{name}}",
