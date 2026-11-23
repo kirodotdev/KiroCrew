@@ -113,7 +113,13 @@ _PS_PARAMS = {
     ),
     **dict.fromkeys("recurse whatif force confirm verbose debug".split(), "switch"),
 }
-_PS_ALIASES = {"pspath": "literalpath", "lp": "literalpath", "wi": "whatif", "cf": "confirm"}
+_PS_ALIASES = dict(
+    pair.split("=")
+    for pair in "pspath=literalpath lp=literalpath wi=whatif cf=confirm vb=verbose db=debug"
+    " ea=erroraction wa=warningaction infa=informationaction proga=progressaction"
+    " ev=errorvariable wv=warningvariable iv=informationvariable ov=outvariable"
+    " ob=outbuffer pv=pipelinevariable".split()
+)
 #: Windows only. cmd deletes whose ``/s`` recurses: rd/rmdir the tree, del/erase its files.
 _CMD_REMOVE_WORDS = frozenset({"rd", "rmdir", "del", "erase"})
 _WINDOWS_CAN_FIRE_RE = re.compile(r"(?i)remove-item|\b(?:ri|rd|del|erase)\b")
@@ -197,14 +203,19 @@ def _target_kind(word: str) -> "str | None":
     return "home" if base in _HOME_WORDS else None
 
 
-def _segments(command: str, track: bool = True, quoted_tilde: bool = False) -> "list[str]":
+def _segments(command: str, track: bool = True) -> "list[str]":
     """*command* as the shared reader's commands, each rendered as one segment string.
 
     A live redirection starts its own word with its fd prefix and operator kept
     together, and an escaped or single-quoted ``$`` or any quoted ``~`` is a literal
-    ``\\0`` so it can never read as ``$HOME`` or ``~``. With *quoted_tilde* a quoted
-    ``~`` stays ``~``: PowerShell resolves ``"~"`` in a path to home.
+    ``\\0`` so it can never read as ``$HOME`` or ``~``.
     """
+    return _render_segments(command, track, quoted_tilde=False)
+
+
+def _render_segments(command: str, track: bool, quoted_tilde: bool) -> "list[str]":
+    """:func:`_segments`; with *quoted_tilde* a quoted ``~`` stays ``~``, because
+    PowerShell resolves ``"~"`` in a path to home."""
     out = []
     # ``&>`` is one redirect in bash but a background ``&`` then ``>`` in dash
     for text in dict.fromkeys((command, command.replace("&>", "& >"))):
@@ -236,7 +247,7 @@ def _rm_wipe_targets(command: str) -> "set[str]":
         view = _DRIVE_BACKSLASH_RE.sub(r"\1/", command)
         segments += [(s, True) for s in _segments(view)] if view != command else []
         if "~" in command:  # PowerShell resolves a quoted ``~``; rm does not
-            segments += [(s, False) for s in _segments(view, quoted_tilde=True)]
+            segments += [(s, False) for s in _render_segments(view, True, quoted_tilde=True)]
     for segment, rm_reads in segments:
         words = _shell._shell_tokens(segment)
         while words:
@@ -305,6 +316,8 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
                 continue
             param, glued, value = arg[1:].partition(":")  # ``-Path:C:\``
             param = _ps_param(param.lower())
+            if not param and "," in arg:  # an array its quotes made a word: ``"-x",C:\``
+                operands.extend(arg.split(","))
             role = _PS_PARAMS.get(param, "switch")
             if role == "switch" and param in flags:
                 flags[param] = not glued or value.lower() not in ("$false", "0")
@@ -317,7 +330,8 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
     if name in _CMD_REMOVE_WORDS:
         switches = [arg for arg in args if _CMD_SWITCH_RE.fullmatch(arg)]
         if any(re.search(r"(?i)/s(?![a-z])", arg) for arg in switches):
-            kinds |= {kind for arg in args if arg not in switches and (kind := _target_kind(arg))}
+            # cmd never expands ``~``: only a drive root is a root there
+            kinds |= {"root" for arg in args if arg not in switches and _target_kind(arg) == "root"}
     return kinds
 
 
