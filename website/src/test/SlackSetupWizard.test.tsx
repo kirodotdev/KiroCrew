@@ -112,6 +112,19 @@ describe('SlackSetupWizard', () => {
     expect(screen.getByTestId('slack-wizard-diagram-workspace')).toBeTruthy()
   })
 
+  it('keeps the alias lowercase and within the slash command’s 22 characters', async () => {
+    const manifest = vi.spyOn(api, 'getSlackManifest').mockResolvedValue(MANIFEST)
+    mount(config())
+    fireEvent.click(screen.getByRole('button', { name: /I have a workspace/ }))
+    const input = screen.getByTestId('slack-wizard-alias') as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'Jane-Doe' } })
+    expect(input.value).toBe('jane-doe')
+    fireEvent.change(input, { target: { value: 'a'.repeat(30) } })
+    expect(input.value).toBe('a'.repeat(22))
+    await waitFor(() => expect(manifest).toHaveBeenCalledWith('a'.repeat(22)))
+    expect(manifest).not.toHaveBeenCalledWith('a'.repeat(30))
+  })
+
   it('refuses an alias the manifest cannot render, and fetches none', () => {
     const manifest = vi.spyOn(api, 'getSlackManifest')
     mount(config())
@@ -200,11 +213,36 @@ describe('SlackSetupWizard', () => {
 
   it('reports a refused reconnect in the panel’s words and stays put', async () => {
     vi.spyOn(api, 'saveSlackConfig').mockResolvedValue(OK_SAVE)
+    vi.spyOn(api, 'reconnectSlack').mockResolvedValue({ connected: false, connect_error: 'enterprise_validation_failed' })
+    mount(config({ bot_token_set: true, app_token_set: true }))
+    fireEvent.change(screen.getByTestId('slack-wizard-owner'), { target: { value: 'U0123ABC456' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save and connect/ }))
+    expect(await screen.findByText(/E:enterprise_validation_failed/)).toBeTruthy()
+    expect(step()).toBe('owner')
+  })
+
+  it('sends a rejected-token reconnect back to the token steps, not to the panel’s fields', async () => {
+    vi.spyOn(api, 'saveSlackConfig').mockResolvedValue(OK_SAVE)
     vi.spyOn(api, 'reconnectSlack').mockResolvedValue({ connected: false, connect_error: 'invalid_auth' })
     mount(config({ bot_token_set: true, app_token_set: true }))
     fireEvent.change(screen.getByTestId('slack-wizard-owner'), { target: { value: 'U0123ABC456' } })
     fireEvent.click(screen.getByRole('button', { name: /Save and connect/ }))
-    expect(await screen.findByText(/E:invalid_auth/)).toBeTruthy()
+    expect(await screen.findByText('Slack rejected the saved tokens (invalid_auth). Go Back to step 3 and paste them again.')).toBeTruthy()
+    expect(screen.queryByText(/E:invalid_auth/)).toBeNull()
+    expect(step()).toBe('owner')
+  })
+
+  it('says to restart, and does not reconnect, when the saved owner needs a restart', async () => {
+    const save = vi.spyOn(api, 'saveSlackConfig').mockResolvedValue({ ...OK_SAVE, restart_required: true, reconnect_required: false })
+    const reconnect = vi.spyOn(api, 'reconnectSlack')
+    mount(config({ bot_token_set: true, app_token_set: true, owner_id: 'U1', connected: true }))
+    fireEvent.click(screen.getByRole('button', { name: /Back/ }))
+    fireEvent.change(screen.getByTestId('slack-wizard-owner'), { target: { value: 'U0123ABC456' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save and connect/ }))
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ owner_id: 'U0123ABC456' }))
+    expect(await screen.findByText(/Restart the gateway to change the owner/)).toBeTruthy()
+    expect(reconnect).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Could not connect/)).toBeNull()
     expect(step()).toBe('owner')
   })
 
@@ -220,10 +258,12 @@ describe('SlackSetupWizard', () => {
     for (const name of WIZARD_STEPS.slice(1)) {
       fireEvent.click(screen.getByTestId('slack-wizard-next'))
       expect(step()).toBe(name)
+      // On each step, so every step's own read-only gate is pinned.
+      expect(screen.getByTestId('slack-wizard').querySelector('input')).toBeNull()
+      expect(screen.queryByRole('button', { name: /Verify and save|Save and connect|I created the app/ })).toBeNull()
+      expect(screen.queryByTestId('slack-wizard-test-reconnect')).toBeNull()
     }
     expect(screen.queryByTestId('slack-wizard-next')).toBeNull()
-    expect(screen.queryByRole('button', { name: /Verify and save/ })).toBeNull()
-    expect(screen.queryByTestId('slack-wizard-test-reconnect')).toBeNull()
   })
 
   it('offers status and Reconnect on the test step', async () => {
