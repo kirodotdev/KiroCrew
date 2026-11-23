@@ -95,6 +95,21 @@ the normal budget.  A desktop budget (below ``stall_after``) defers
 nothing: the desktop app's own liveness probe ends a silent gateway about
 a minute in regardless.
 
+**A paused process is not a wedge.**  When the whole host stops running user
+processes (heavy memory reclaim, a frozen VM, ``SIGSTOP``) the monotonic clock
+keeps running, so every armed alarm expires during the pause and the kernel
+delivers it on resume before any thread can look.  So on a managed budget
+(``exit_after`` at or above ``stall_after``, the line the paging deferral uses)
+the daemon thread makes the normal stall exit: it arms the alarm to fire at the
+moment the budget runs out, moved later by every poll gap of its own longer
+than one poll interval, which is time it could not run either.  Each beat arms
+the kernel alarm one budget later than that, capped at the paging grace, as a
+backstop for a daemon thread that never runs again.  A host pause shorter than
+the backstop leaves the gateway running; a loop thread holding the GIL in a
+long C call starves the daemon thread too, so it ends at the backstop.  A
+desktop budget keeps the exact alarm: a later backstop would let the desktop
+app's liveness kill land before the stack dump.
+
 **A wedged default executor is a stall too.**  Every ``asyncio.to_thread``
 call waits in the loop's default executor, so when its workers are all
 blocked no turn runs while the loop keeps beating.  The heartbeat beats only
@@ -167,6 +182,12 @@ PAGING_GRACE_MAX_SECS_MACOS: float = 120.0
 #: past the seconds its bounded callers wait (tool policy 5s, MCP mount 30s),
 #: so a queue that deep has already failed them many times over.
 EXECUTOR_STALL_SECS: float = 300.0
+
+#: Shortest delay the daemon thread arms its stall exit with.  The alarm's dump
+#: walks every thread's frames with no GIL, and a thread running Python at that
+#: instant can change a frame under the walk; this leaves the deciding thread
+#: time to get back into its wait first.
+EXIT_ARM_FLOOR_SECS: float = 0.5
 
 #: The WARNING a paging deferral logs, once per silence, in two forms selected
 #: by the grace cap -- already how the macOS watchdog is distinguished without a
@@ -415,8 +436,10 @@ class LoopStallWatchdog:
 
     When ``exit_after`` is below ``stall_after`` (the desktop default), the
     alarm exits before the soft threshold.  When it is above ``stall_after``
-    (the managed-service default), the soft dump records the transient stall
-    and the alarm exits only if recovery never arrives.
+    (the managed-service default), the soft dump records the transient stall,
+    the daemon thread arms the exit for when ``exit_after`` of silence it could
+    see has passed, and each beat arms the alarm one budget later as a
+    backstop (:meth:`_decide_exit`).
 
     Args:
         stall_after: Seconds of heartbeat silence before the soft daemon-thread
@@ -554,6 +577,23 @@ class LoopStallWatchdog:
             if self._paging_grace_max == PAGING_GRACE_MAX_SECS_MACOS
             else _PAGING_MESSAGE_LINUX
         )
+        # On a managed budget the daemon thread makes the stall exit and the
+        # kernel alarm is a backstop this much later (see the module docstring).
+        self._decides_exit = exit_after is not None and exit_after >= stall_after
+        self._backstop_slack = (
+            min(exit_after, self._paging_grace_max)
+            if self._decides_exit and exit_after is not None
+            else 0.0
+        )
+        # Per silence (beat generation), on the daemon thread only: the seconds
+        # it could not run, the silence net of those at which it exits, and
+        # whether it has armed that exit.
+        self._paused_generation: int | None = None
+        self._paused = 0.0
+        self._exit_due = exit_after or 0.0
+        self._exit_armed = False
+        self._pause_logged = False
+        self._last_check_mono: float | None = None
         # Counts beats, so a paging deferral can tell that the loop beat after
         # it sampled and must leave the beat's fresh deadline alone.
         self._beat_generation = 0
@@ -608,7 +648,7 @@ class LoopStallWatchdog:
         self._loop_native_thread_id = threading.get_native_id()
         self._beat_generation += 1
         if self._later_active and self._exit_after is not None:
-            self._rearm_alarm(self._exit_after)
+            self._rearm_alarm(self._exit_after + self._backstop_slack)
 
     def default_executor_live(self, loop: asyncio.AbstractEventLoop) -> bool:
         """Probe *loop*'s default executor; ``False`` once a probe has waited too long.
@@ -756,9 +796,12 @@ class LoopStallWatchdog:
         mono = self._now()
         self._note_resume(mono)
         self._record_alarm_due(mono)
+        generation = self._beat_generation
         silence = mono - self._last_beat
+        self._note_own_pause(mono, silence, generation)
         self._note_sustained_lag()
         self._defer_exit_while_paging(silence)
+        self._decide_exit(silence, generation)
         if silence >= self._enrich_after and not self._enriched:
             self._enriched = True
             try:
@@ -959,8 +1002,14 @@ class LoopStallWatchdog:
         remaining_budget = exit_after + self._paging_grace_max - silence
         if remaining_budget <= 0:
             return
-        if not self._rearm_alarm(min(exit_after, remaining_budget), unless_beat_since=generation):
+        deferral = min(exit_after, remaining_budget)
+        backstop = min(deferral + self._backstop_slack, remaining_budget)
+        if not self._rearm_alarm(backstop, unless_beat_since=generation):
             return
+        # The daemon thread's own exit moves with the deferral; the backstop
+        # it just armed stays one budget behind, inside the grace cap.
+        self._exit_due = silence - self._paused + deferral
+        self._exit_armed = False
         if self._paging_logged_generation != generation:
             self._paging_logged_generation = generation
             self._log.warning(
@@ -969,6 +1018,56 @@ class LoopStallWatchdog:
                 major_faults - baseline[1],
                 exit_after + self._paging_grace_max,
             )
+
+    def _note_own_pause(self, mono: float, silence: float, generation: int) -> None:
+        """Add this poll's own lateness to the time this thread could not run.
+
+        The poll should come one ``poll_interval`` after the previous one; any
+        more is time the daemon thread was not running either, so the whole
+        process was paused, not the loop wedged.  Counted only within the
+        current silence, and reset by a beat.  Logged once per silence.
+        """
+        prev, self._last_check_mono = self._last_check_mono, mono
+        if self._paused_generation != generation:
+            self._paused_generation = generation
+            self._paused = 0.0
+            self._exit_due = self._exit_after or 0.0
+            self._exit_armed = False
+            self._pause_logged = False
+        if prev is None:
+            return
+        late = mono - prev - self._poll_interval
+        if late <= 0:
+            return
+        self._paused = min(silence, self._paused + late)
+        if self._decides_exit and not self._pause_logged and late >= SUSPEND_SKEW_MIN_SECS:
+            self._pause_logged = True
+            self._log.warning(
+                "this process did not run for about %.0fs (the stall watchdog's own thread "
+                "was stopped too, not only the event loop): the host paused it, so that "
+                "time does not count toward the %.0fs stall exit",
+                late,
+                self._exit_after,
+            )
+
+    def _decide_exit(self, silence: float, generation: int) -> None:
+        """On a managed budget, arm the stall exit for when the budget runs out.
+
+        The budget counts silence net of :meth:`_note_own_pause`.  Once less
+        than one poll interval of it is left, the alarm is re-armed to fire then
+        (never sooner than :data:`EXIT_ARM_FLOOR_SECS`), so a wedged loop ends
+        on time while the backstop a beat armed stays one budget later.  A beat
+        since ``generation`` keeps its fresh backstop instead.
+        """
+        if not self._decides_exit or not self._later_active or self._exit_armed:
+            return
+        left = self._exit_due - (silence - self._paused)
+        if left >= self._poll_interval:
+            return
+        if not self._rearm_alarm(max(left, EXIT_ARM_FLOOR_SECS), unless_beat_since=generation):
+            return
+        self._exit_armed = True
+        self._record_alarm_due(self._now())
 
     def claim_lag_enrichment(self, lag: float) -> bool:
         """Return ``True`` at most once per episode of heartbeat lag.
@@ -1072,12 +1171,13 @@ class LoopStallWatchdog:
         self._loop_native_thread_id = threading.get_native_id()
         self._last_poll_mono = None
         self._last_poll_suspend = None
+        self._last_check_mono = self._last_beat
         # Prime the authoritative dump-then-exit before the first beat.
         if self._exit_after is not None:
             try:
                 self._cancel_later()
-                self._arm_later(self._exit_after)
-                self._alarm_due_at = self._now() + self._exit_after
+                self._arm_later(self._exit_after + self._backstop_slack)
+                self._alarm_due_at = self._now() + self._exit_after + self._backstop_slack
                 self._later_active = True
             except Exception:  # pragma: no cover - degrade to soft dump only
                 self._log.exception("loop watchdog failed to arm the stall alarm")
