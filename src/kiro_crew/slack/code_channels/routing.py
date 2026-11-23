@@ -1379,6 +1379,11 @@ def _seed_framing(origin_channel: str, context: str) -> str:
         "document (inline <style>, no external files or data: URLs). It opens as a tab in "
         "this channel, with no upload or screenshot. Slack shows it as a sandboxed static "
         "preview where scripts may not run, so put the visible result in the markup and CSS.",
+        # Without this an asked-for (or offered) diff is pasted as a code block.
+        "To show a diff here (asked for, or a 'Show me the diff' option picked), call "
+        "code_channel_set_view with type diff and no other argument: it opens this "
+        "channel's Code tab. Never paste the diff into a message: reply with a one-line "
+        "summary and the PR link. If it finds nothing to show, send the diff as an html view.",
     ]
     # Only while hand-off is on: with the switch off (its default) the guidance
     # would steer the conductor into a call that is refused.

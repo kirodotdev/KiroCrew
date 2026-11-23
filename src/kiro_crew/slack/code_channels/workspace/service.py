@@ -686,6 +686,8 @@ class WorkspaceService(BoardCache, CodeTab, WorkerPrs, WorkerStatus):
         #: See :class:`~.code_tab.CodeTab`: the withdraw backoff, and who was told.
         self._withdraw_wait: dict[str, tuple[float, float]] = {}
         self._withdraw_told: set[str] = set()
+        #: ``channel key -> whether the last pass's Code tab is up`` (``show_code_tab``).
+        self._diff_up: dict[str, bool] = {}
         #: Per channel whose owed Code tab the board's scope (or Off / Review)
         #: refuses: when the watch arms its next takedown pass, and the wait after.
         self._takedown_retry: dict[str, tuple[float, float]] = {}

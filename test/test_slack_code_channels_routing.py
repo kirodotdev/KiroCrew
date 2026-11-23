@@ -1247,6 +1247,10 @@ async def test_the_first_message_is_the_request_alone_with_the_framing_as_contex
     # A preview request goes to an html view, not an upload or a screenshot.
     assert f"call {code_tools.SET_VIEW} with type html" in entry["content"]
     assert "self-contained HTML document" in entry["content"]
+    # A diff, asked for or offered, opens in the Code tab, not as a pasted code block.
+    assert f"call {code_tools.SET_VIEW} with type diff" in entry["content"]
+    assert "'Show me the diff'" in entry["content"]
+    assert "Never paste the diff into a message" in entry["content"]
 
 
 async def test_a_binding_that_cannot_be_saved_leaves_no_session_behind(

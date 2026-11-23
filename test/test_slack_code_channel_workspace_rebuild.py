@@ -17,6 +17,7 @@ import test_slack_code_channel_workspace as _ws
 
 from kiro_crew.slack.code_channels.workspace import git_ops, service
 from kiro_crew.slack.code_channels.workspace.store import WorkspaceStore
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 FakeBinding = _ws.FakeBinding
 Harness = _ws.Harness
@@ -430,6 +431,107 @@ def test_a_rebind_landing_while_a_refresh_removes_the_tab_keeps_no_stale_id(
     h.run(h.svc.refresh(binding))
     assert h.client.of("remove_view") == [{"view_id": "V1"}]
     assert h.store.get("T1", "C1").view_id == ""
+
+
+def test_show_code_tab_publishes_the_diff_now_and_says_if_there_is_one(tmp_path, repo, audits):
+    """code_channel_set_view type diff: the workspace's own pass, mid-turn."""
+    h = Harness(tmp_path)
+    binding = FakeBinding("C1", project_dir=str(repo))
+    rec = h.run(h.svc.ensure(binding))
+    assert h.run(h.svc.show_code_tab(binding)) is False  # a clean tree: nothing to show
+    assert h.client.of("set_diff_view") == []
+    (Path(rec.worktree) / "README.md").write_text("changed\n", newline="\n")
+    assert h.run(h.svc.show_code_tab(binding)) is True
+    [sent] = h.client.of("set_diff_view")
+    assert "+changed" in sent["content"]
+
+
+def test_show_code_tab_joins_a_refresh_already_running(tmp_path, repo, audits, monkeypatch):
+    """One writer: a pass in flight is joined (it runs once more after), never raced."""
+    import asyncio
+
+    h = Harness(tmp_path)
+    binding = FakeBinding("C1", project_dir=str(repo))
+    rec = h.run(h.svc.ensure(binding))
+    (Path(rec.worktree) / "README.md").write_text("changed\n", newline="\n")
+    real_refresh = h.svc.refresh
+    running: list[int] = []
+    overlap: list[int] = []
+
+    async def refresh(b, **kwargs):
+        if running:
+            overlap.append(1)  # two passes of one channel at once
+        running.append(1)
+        await asyncio.sleep(0)  # a yield: the other pass would start here
+        await real_refresh(b, **kwargs)
+        running.pop()
+
+    monkeypatch.setattr(h.svc, "refresh", refresh)
+
+    async def both() -> bool:
+        h.svc.schedule_refresh(binding)  # a turn end's pass, still running
+        shown = await asyncio.wait_for(h.svc.show_code_tab(binding), FALLBACK_TIMEOUT_SECS)
+        await asyncio.wait_for(h.svc.drain(), FALLBACK_TIMEOUT_SECS)
+        return shown
+
+    assert h.run(both()) is True and overlap == []
+    assert len(h.client.of("set_diff_view")) == 1  # the second pass found it unchanged
+
+
+def test_show_code_tab_answers_before_a_slow_pass_ends_and_the_pass_goes_on(
+    tmp_path, repo, audits, monkeypatch
+):
+    """Slow PR or CI reads must not outlast the tool call's deadline: the wait is
+    bounded, the answer says it is still publishing, and the pass still lands."""
+    import asyncio
+
+    from kiro_crew.slack.code_channels.workspace import code_tab
+
+    h = Harness(tmp_path)
+    binding = FakeBinding("C1", project_dir=str(repo))
+    rec = h.run(h.svc.ensure(binding))
+    (Path(rec.worktree) / "README.md").write_text("changed\n", newline="\n")
+    real_refresh = h.svc.refresh
+
+    reads_done = asyncio.Event()
+
+    async def slow_refresh(b, **kwargs):
+        await reads_done.wait()  # the forge reads, still running
+        await real_refresh(b, **kwargs)
+
+    monkeypatch.setattr(h.svc, "refresh", slow_refresh)
+    monkeypatch.setattr(code_tab, "SHOW_WAIT_SECS", 0)
+
+    async def ask() -> object:
+        try:
+            # Bounded here too, so an unbounded wait fails by name, not by pytest-timeout.
+            shown = await asyncio.wait_for(h.svc.show_code_tab(binding), FALLBACK_TIMEOUT_SECS)
+        finally:
+            reads_done.set()
+        assert h.client.of("set_diff_view") == []  # answered before the pass sent
+        await asyncio.wait_for(h.svc.drain(), FALLBACK_TIMEOUT_SECS)
+        return shown
+
+    assert h.run(ask()) is None
+    assert len(h.client.of("set_diff_view")) == 1
+
+
+def test_show_code_tab_is_false_when_this_pass_did_not_send_over_an_older_tab(
+    tmp_path, repo, audits
+):
+    """An older Code tab is up, and this pass's replacement fails to send: the agent
+    must not be told the diff it asked for is there (the tab shows the old one)."""
+    h = Harness(tmp_path)
+    binding = FakeBinding("C1", project_dir=str(repo))
+    rec = h.run(h.svc.ensure(binding))
+    readme = Path(rec.worktree) / "README.md"
+    readme.write_text("first\n", newline="\n")
+    assert h.run(h.svc.show_code_tab(binding)) is True  # V1, the first diff
+    readme.write_text("second\n", newline="\n")
+    h.client.fail["set_diff_view"] = "internal_error"
+    assert h.run(h.svc.show_code_tab(binding)) is False
+    stored = h.store.get("T1", "C1")
+    assert stored.view_id == "V1" and stored.diff_hash  # the old tab is still recorded
 
 
 # ── a worktree removed by hand while its branch stays ───────────────────────
