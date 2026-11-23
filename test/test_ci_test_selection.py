@@ -8,6 +8,7 @@ bundle, a corrupt one, the time-out) giving verdict `full` with exit 0.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import re
 import subprocess
@@ -142,6 +143,27 @@ def test_a_held_file_is_never_skipped_even_when_f_is_skippable() -> None:
 def test_a_missing_map_table_falls_back() -> None:
     bundle = {k: v for k, v in BUNDLE.items() if k != "files"}
     assert _score(bundle=bundle)["verdict"] == "full"
+
+
+def test_a_schema_2_bundle_loads_as_its_map_cochange_and_guard(tmp_path: Path) -> None:
+    flat = {k: v for k, v in BUNDLE.items() if k != "cochange"}
+    packed = {
+        "schema": ctm.BUNDLE_SCHEMA,
+        "map": flat,
+        "co_change": {"src/kiro_crew/acp/mod.py": {"test/test_cochanged.py": 3}},
+        "guard": GUARD,
+        "reach": {},
+    }
+    path = tmp_path / "bundle.json.gz"
+    path.write_bytes(gzip.compress(json.dumps(packed).encode("utf-8")))
+    assert cts.load_bundle(path) == {**BUNDLE, "guard": GUARD}
+    # Without its co_change table the map has no `cochange`: no data, not no links.
+    path.write_bytes(gzip.compress(json.dumps({**packed, "co_change": None}).encode("utf-8")))
+    assert "cochange" not in cts.load_bundle(path)
+    for bad in ({**packed, "co_change": {"a": ["t"]}}, {**packed, "map": None}):
+        path.write_bytes(gzip.compress(json.dumps(bad).encode("utf-8")))
+        with pytest.raises(ValueError):
+            cts.load_bundle(path)
 
 
 def test_bounded_returns_the_value_or_reraises_the_error() -> None:

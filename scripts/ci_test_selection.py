@@ -25,8 +25,9 @@ Tiers, first match wins
        folder)
     G  no signal
 
-The bundle is a schema-1 test map (`ci_test_map.py`); `tests`, `files` and
-`cochange` are the tables read. A missing table never makes a file skippable:
+The bundle is a schema-1 test map, or the schema-2 gzip file `ci_test_map.py
+bundle` writes, read as its map plus `co_change` (as `cochange`) and `guard`;
+`tests`, `files` and `cochange` are the tables read. A missing table never makes a file skippable:
 the files that would be G are held in F instead. An optional `guard` table
 (`[test file]`, `leaf_test_scope.corpus_gates` run when the bundle was built)
 spares the live guard scan, which costs seconds; without it the scan runs. A
@@ -85,10 +86,31 @@ def load_rates(path: Path) -> tuple[set[str], int]:
 
 
 def load_bundle(path: Path) -> dict[str, Any]:
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    """A schema-1 map, or a schema-2 `ci_test_map.py bundle` read as its tables."""
+    doc = ctm._read_json(path)
+    if isinstance(doc, dict) and doc.get("schema") == ctm.BUNDLE_SCHEMA:
+        doc = _flatten_bundle(doc)
     if not isinstance(doc, dict) or doc.get("schema") != ctm.SCHEMA:
         raise ValueError(f"{path}: not a schema-{ctm.SCHEMA} bundle")
     check_tables(doc)
+    return doc
+
+
+def _flatten_bundle(packed: Mapping[str, Any]) -> Any:
+    """The schema-2 bundle's map, with its `co_change` and `guard` tables beside it."""
+    doc = packed.get("map")
+    if not isinstance(doc, dict):
+        return doc
+    doc = dict(doc)
+    co_change = packed.get("co_change")
+    if co_change is not None:
+        if not isinstance(co_change, dict) or not all(
+            isinstance(r, dict) for r in co_change.values()
+        ):
+            raise ValueError("bundle table `co_change` is not {file: {test file: count}}")
+        doc["cochange"] = {src: sorted(row) for src, row in co_change.items()}
+    if "guard" in packed:
+        doc["guard"] = packed["guard"]
     return doc
 
 
