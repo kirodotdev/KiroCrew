@@ -1,5 +1,7 @@
 # Configuration Reference
 
+<!-- docs-lint: wrong-on-purpose secrets_vault -->
+
 Everything Kiro Crew remembers about how it should behave lives in one JSON file,
 `~/.kiro/crew/config.json`, created automatically on the first `kirocrew gateway`
 run. Most keys are also editable from the dashboard's Settings pages. This page
