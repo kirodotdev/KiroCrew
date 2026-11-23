@@ -163,36 +163,12 @@ def test_a_scan_older_than_a_record_delays_the_rescue_by_one_tick_only(
 def test_both_arms_ask_the_gate_before_the_comment_read(script: str) -> None:
     """Every call of the comment read sits behind both gates, in order."""
     lines = [line.strip() for line in script.splitlines()]
-    calls = [
-        i
-        for i, line in enumerate(lines)
-        if 'newest_disposition_epoch "$number" "$updated_epoch"' in line
-    ]
+    calls = [i for i, line in enumerate(lines) if 'newest_disposition_epoch "$number"' in line]
     assert len(calls) >= 2
     for index in calls:
         before = [line for line in lines[:index] if line and not line.startswith("#")]
         assert before[-1] == 'comment_evidence_possible "$updated_epoch" || continue'
         assert before[-2] == '[ "$pr_updated_epoch" -gt "$updated_epoch" ] || continue'
-
-
-@pytest.mark.parametrize("state", ["failure", "success"])
-@pytest.mark.parametrize("scan_reads", [False, True])
-def test_the_comment_read_asks_for_comments_since_the_verdict(
-    runner: Runner, state: str, scan_reads: bool
-) -> None:
-    """The listing is bounded below by the verdict's own stamp, never later.
-
-    A later bound would hide a record between the verdict and the bound. The
-    stub honours `since` as GitHub does, so a record one second after the
-    verdict is still returned, and re-fires.
-    """
-    dispatched, read = _sweep_comments(runner, state, 1, -600, scan_reads=scan_reads)
-    assert read and len(dispatched) == 1
-    asked = runner.comments_read.read_text().splitlines()
-    assert len(asked) == 1
-    since = re.search(r"/comments\?since=([^&\s]+)&per_page=100", asked[0])
-    assert since and since.group(1) == _at(0)
-    assert "--paginate" in asked[0]
 
 
 # ── The description read ─────────────────────────────────────────────────────

@@ -376,19 +376,9 @@ jobs:
           # `--slurp` collapses `--paginate`'s one-document-per-page output into a
           # single array, so the filter sees one document and `max` emits one
           # timestamp instead of one per page -- which `date -d` would reject.
-          #
-          # newest_disposition_epoch <pr number> <verdict epoch>. Only a record
-          # updated after the verdict is evidence, so the listing is asked for
-          # the comments updated since the verdict (`since`, which is
-          # inclusive: a comment updated in the verdict's own second is
-          # returned, and the caller's strict comparison sets it aside). That
-          # is one page for all but a pull request with over 100 comments
-          # changed since its verdict, where the whole listing is 30 a page.
           newest_disposition_epoch() {
-            local pr_number="$1" newest since
-            since="$(date -u -d "@$2" +%Y-%m-%dT%H:%M:%SZ)"
-            newest="$(with_read_token gh api \
-              "repos/$REPO/issues/$pr_number/comments?since=$since&per_page=100" \
+            local pr_number="$1" newest
+            newest="$(with_read_token gh api "repos/$REPO/issues/$pr_number/comments" \
               --paginate --slurp 2>/dev/null \
               | jq -r '[.[][]? | select((.body // "")
                          | startswith("<!-- ai-review-disposition ")) | .updated_at]
@@ -943,7 +933,7 @@ jobs:
                   # comment behind it. The scan's newest issue comment says
                   # whether any comment changed after the verdict.
                   comment_evidence_possible "$updated_epoch" || continue
-                  disposition_epoch="$(newest_disposition_epoch "$number" "$updated_epoch")"
+                  disposition_epoch="$(newest_disposition_epoch "$number")"
                   [ "$disposition_epoch" -ne 0 ] || continue
                   # STRICT, with no margin. The check-evidence modes carry a
                   # 5s margin so a check completing in the same second as the
@@ -1039,7 +1029,7 @@ jobs:
                   # comment behind it. The scan's newest issue comment says
                   # whether any comment changed after the verdict.
                   comment_evidence_possible "$updated_epoch" || continue
-                  disposition_epoch="$(newest_disposition_epoch "$number" "$updated_epoch")"
+                  disposition_epoch="$(newest_disposition_epoch "$number")"
                   [ "$disposition_epoch" -ne 0 ] || continue
                   # STRICT, with no margin. The check-evidence modes carry a
                   # 5s margin so a check completing in the same second as the

@@ -5265,9 +5265,7 @@ Two subtleties:
   `StatusContext.description`, and the pull request's most recently updated issue
   comment (`comments(first: 1, orderBy: {field: UPDATED_AT, direction: DESC})`). The
   sweep classifies a pending from the row's description, and makes the REST comment read
-  only when the newest issue comment is newer than the verdict. That read asks for the
-  comments updated since the verdict (`since`, inclusive), which is one page unless
-  over 100 changed. A disposition record is
+  only when the newest issue comment is newer than the verdict. A disposition record is
   an issue comment and an edit moves its `updatedAt` as creation does, so a record
   created or edited after the verdict always opens that gate; a label, a review or a
   push, which also move the pull request's `updatedAt`, do not. Only an answer skips a

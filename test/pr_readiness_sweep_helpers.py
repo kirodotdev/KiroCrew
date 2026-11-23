@@ -76,14 +76,9 @@ if [ "$1" = "api" ]; then
       else
         printf '{"workflow_runs":[]}'
       fi; exit 0 ;;
-    *"/comments?since="*)
-      # The listing honours `since` as GitHub does: comments updated at or
-      # after it, so a test sees what the sweep's own filter would be handed.
+    *"/comments")
       printf '%s\n' "$*" >> "$FIXTURES/comments_read.txt"
-      since="${2#*\?since=}"
-      jq -c --arg since "${since%%&*}" \
-        'map(map(select((.updated_at // "") >= $since)))' "$FIXTURES/comments.json"
-      exit 0 ;;
+      cat "$FIXTURES/comments.json"; exit 0 ;;
     *"/status")
       printf '%s\n' "$*" >> "$FIXTURES/status_read.txt"
       if [ -f "$FIXTURES/status_read_fails" ]; then exit 1; fi
