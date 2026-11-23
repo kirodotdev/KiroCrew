@@ -1178,7 +1178,14 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     kept text (a `#` at a word start outside any quote) is removed, an
     `ssh … localhost` written INSIDE a body stays part of the dropped span, and the
     bodies are found on the line as written (`raw_text`), since bash closes a body
-    only on its tag with case. The ordinary
+    only on its tag with case. The reset reading keeps its result in the CASE of
+    the walk's own text and lowers only when that text is already lowered, so the
+    git/tar floor's original-case and lowered passes stay aligned frame for frame:
+    were the reset reading to lower the original-case pass too, a frame the lowered
+    pass dedups would survive in the original-case pass, the two frame counts would
+    diverge, and the floor would drop the option words it reads in the written case
+    and lose a denial it should make. This holds whether the `<<` opens a real body
+    or none at all (a here-string `<<<`, an arithmetic `<<` shift). The ordinary
     reading and the main-reading pass keep a body's quotes as origin/main read them,
     so the reset pass only ADDS a denial and never removes one. The here-document
     body readers and the untracked fallback are unchanged.
