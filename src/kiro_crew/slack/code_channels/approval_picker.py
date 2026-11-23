@@ -776,11 +776,10 @@ async def _still_admitted(orch: Any, binding: Binding, user: str, team: str) -> 
 
     if thread_runtime.live_thread_binding(binding) is None:
         return agent_picker.REBOUND
+    channel = binding.channel_id
     if not (
         await channel_inbound_permitted("slack")
-        and not channel_refusal(
-            binding.channel_id, operation="slack.code_channel.control", caller=user
-        )
+        and not channel_refusal(channel, operation="slack.code_channel.control", caller=user)
     ):
         return agent_picker.NO_LONGER_ADMITTED
     return None if _sync_gates(orch, binding, user, team) else agent_picker.NO_LONGER_ADMITTED
