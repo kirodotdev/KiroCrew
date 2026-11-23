@@ -525,40 +525,7 @@ def append(
     # prefix after the swap removed it from disk. The first append after the
     # swap trims the whole excess.
     if len(self.messages) > _MAX_SLOT_MESSAGES and not self._swap_in_flight:
-        excess = len(self.messages) - _MAX_SLOT_MESSAGES
-        # A trimmed leading window message may only join the frozen prefix
-        # once it is actually on disk. Credit _disk_older_count only
-        # for the persisted portion; the unpersisted overflow (should not
-        # happen between 5s flushes) is logged rather than silently counted
-        # as on-disk, which would have stranded those turns.
-        persisted_trim = min(excess, self._disk_window_len)
-        # The durable counter counts the WHOLE evicted slice, including the
-        # unpersisted overflow the disk counter excludes. The two draw
-        # different lines because they answer different questions:
-        # ``_disk_older_count`` claims on-disk lines (its save contract), so
-        # counting a row that never reached disk would corrupt the frozen
-        # prefix. ``_disk_older_durable_count`` is a POSITION base with no
-        # disk contract — if a durable row leaves the window uncounted,
-        # every later absolute position shifts down and a poller's cursor
-        # silently skips rows. Counting the lost rows instead makes a cursor
-        # that pointed at them refuse loudly (``since < base``), which is
-        # the recoverable outcome. Counted BEFORE the ``del`` below —
-        # afterwards the slice is gone.
-        durable_trim = durable_row_count(self.messages[:excess])
-        del self.messages[:excess]
-        self._resumed_count = max(0, self._resumed_count - excess)
-        self._disk_older_count += persisted_trim
-        self._disk_older_durable_count += durable_trim
-        self._disk_window_len = max(0, self._disk_window_len - excess)
-        if persisted_trim < excess:
-            logger.warning(
-                "Slot %s trimmed %d messages not yet flushed to disk; "
-                "they will not be recoverable from history",
-                self.key,
-                excess - persisted_trim,
-            )
-        # The frozen prefix grew → its cached bytes are stale.
-        self._frozen_prefix_cache = None
+        _fold_head(self, len(self.messages) - _MAX_SLOT_MESSAGES)
     # Hand back the row as appended (id included): a dual-writer that also
     # persists this message through ``ConversationLog.append`` needs the
     # ``meta.mid`` minted above so BOTH copies carry the same identity —
@@ -566,6 +533,94 @@ def append(
     # ids for one logical message. Read the id off the return with
     # :func:`row_mid`, never an inline ``meta`` poke.
     return msg
+
+
+def _fold_head(self: _ChatSlot, excess: int) -> None:
+    """Drop the oldest *excess* window rows, crediting the saved ones to the frozen prefix."""
+    # A trimmed leading window message may only join the frozen prefix
+    # once it is actually on disk. Credit _disk_older_count only
+    # for the persisted portion; the unpersisted overflow (should not
+    # happen between 5s flushes) is logged rather than silently counted
+    # as on-disk, which would have stranded those turns.
+    persisted_trim = min(excess, self._disk_window_len)
+    # The durable counter counts the WHOLE evicted slice, including the
+    # unpersisted overflow the disk counter excludes. The two draw
+    # different lines because they answer different questions:
+    # ``_disk_older_count`` claims on-disk lines (its save contract), so
+    # counting a row that never reached disk would corrupt the frozen
+    # prefix. ``_disk_older_durable_count`` is a POSITION base with no
+    # disk contract — if a durable row leaves the window uncounted,
+    # every later absolute position shifts down and a poller's cursor
+    # silently skips rows. Counting the lost rows instead makes a cursor
+    # that pointed at them refuse loudly (``since < base``), which is
+    # the recoverable outcome. Counted BEFORE the ``del`` below —
+    # afterwards the slice is gone.
+    durable_trim = durable_row_count(self.messages[:excess])
+    # The prefix counts transcript LINES, and a transient row (a permission
+    # card, a queued placeholder) is never written as one, so only the durable
+    # rows of the saved part move the line count. Crediting the row count would
+    # put the first window row inside the prefix and the next rewrite would
+    # write it twice.
+    persisted_lines = durable_row_count(self.messages[:persisted_trim])
+    del self.messages[:excess]
+    self._resumed_count = max(0, self._resumed_count - excess)
+    self._disk_older_count += persisted_lines
+    self._disk_older_durable_count += durable_trim
+    self._disk_window_len = max(0, self._disk_window_len - excess)
+    if persisted_trim < excess:
+        logger.warning(
+            "Slot %s trimmed %d messages not yet flushed to disk; "
+            "they will not be recoverable from history",
+            self.key,
+            excess - persisted_trim,
+        )
+    # The frozen prefix grew → its cached bytes are stale.
+    self._frozen_prefix_cache = None
+
+
+def release_saved_head(self: _ChatSlot, keep: int) -> int:
+    """Fold every saved row older than the newest *keep* into the frozen prefix.
+
+    The slot then holds the window a restart would load for it, and its older
+    rows are read from disk like any restored slot's. Nothing is written: the
+    file already holds those rows, only the window boundary moves. Runs only
+    when the whole window is on disk, alone in its region of the file (the last
+    save's append basis matches it), and nothing is rewriting it (a dirty or
+    pending window, a Regenerate swap, a truncating rewrite still owed, a
+    guarded metadata write), so every row it drops can be read back. The title
+    refresh mark is re-based as a restore re-bases it. Returns how many rows it
+    dropped. LOOP-AFFINE, like :func:`append`.
+    """
+    if (
+        self._lazy_window is not None
+        or self._dirty
+        or self._swap_in_flight
+        or self._pending_rewrite
+        or self._metadata_persist_inflight
+        or self._guarded_history_writes
+    ):
+        return 0
+    excess = len(self._messages) - keep
+    if excess <= 0 or self._disk_window_len != len(self._messages):
+        return 0
+    # The fold counts lines from the front of the window region, which is only
+    # right when that region holds this window's rows and nothing else. A save
+    # that kept another writer's rows there leaves no append basis, and one that
+    # wrote a different window or prefix leaves a basis that does not match.
+    basis = self._append_basis
+    if basis is None or basis[2] != self._disk_older_count or len(basis[4]) != len(self._messages):
+        return 0
+    _fold_head(self, excess)
+    # The window now holds what a restore loads, so the title refresh mark is
+    # re-based the way a restore re-bases it; left above the user turns the
+    # window holds, it would keep the refresh cadence silent.
+    # circular import: metadata_values -> chat_title -> state -> here
+    from kiro_crew.dashboard.slot_persistence.metadata_values import (
+        _rebase_rehydrated_refresh_mark,
+    )
+
+    _rebase_rehydrated_refresh_mark(self)
+    return excess
 
 
 def update_message(

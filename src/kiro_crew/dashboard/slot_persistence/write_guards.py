@@ -660,6 +660,25 @@ def paired_window_snapshot(
     return window, queue_snapshot, queue_candidates, disk_older
 
 
+def saved_rows_still_held(slot: _ChatSlot, window: list[dict]) -> int:
+    """How many rows of the saved *window* the slot's window still holds.
+
+    ``len(window)`` unless the window's front was folded into the frozen prefix
+    while the save wrote (``slot_transcript._fold_head``: the cap trim, or the
+    idle release). Those rows left the window, so counting them as its on-disk
+    part would let a later fold credit rows that were never saved. Rows are
+    matched by identity: the snapshot holds the very row objects the window does.
+    """
+    held = slot._messages
+    if not window or not held or held[0] is window[0]:
+        return len(window)
+    first = held[0]
+    for i, row in enumerate(window):
+        if row is first:
+            return len(window) - i
+    return len(window)
+
+
 def routing_snapshot(slot: _ChatSlot) -> tuple[str, str, TranscriptBinding]:
     """``(live_session, history_key, binding)``, all from ONE observation of the routing.
 
