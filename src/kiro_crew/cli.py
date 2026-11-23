@@ -130,6 +130,11 @@ def _is_sign_in_command(args: argparse.Namespace) -> bool:
     )
 
 
+def _headless_ssh_skips_browser_here() -> bool:
+    """Whether an SSH session with no display skips the browser here (not on macOS)."""
+    return not platform_compat.IS_MACOS
+
+
 def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     """Gateway boot failed for *exc*: show the sign-in screen if nobody is signed in.
 
@@ -164,7 +169,7 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     no_open = (
         bool(gw["no_open"])
         or not cfg.dashboard.auto_open_browser
-        or (is_ssh and not has_display and sys.platform != "darwin")
+        or (is_ssh and not has_display and _headless_ssh_skips_browser_here())
     )
     _host, port = parse_dashboard_url(cfg.dashboard.url)
     override = gw["port_override"]

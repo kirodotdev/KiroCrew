@@ -670,7 +670,12 @@ def test_cli_opens_a_browser_only_where_the_gateway_would(
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr("kiro_crew.cli.sys.platform", "linux")
+    from kiro_crew import cli
+
+    # Take the non-macOS branch on every host through `cli`'s own one-line helper. A faked
+    # `sys.platform` or `platform_compat` would be live while `_cli_gateway` imports
+    # `cli_server`, and every module imported then would see the fake value.
+    monkeypatch.setattr(cli, "_headless_ssh_skips_browser_here", lambda: True)
     seen: dict[str, Any] = {}
 
     def sign_in_then_exit(_exc: BaseException, **kwargs: Any) -> None:
