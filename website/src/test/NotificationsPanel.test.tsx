@@ -106,6 +106,41 @@ describe('NotificationsPanel', () => {
     expect(mute().textContent).toBe('Off')
   })
 
+  it('sets weekly sound hours per day, keeps a day\'s end after its start, and keeps the days when switched off', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    onTestFinished(() => { vi.useRealTimers() })
+    vi.setSystemTime(new Date(2026, 10, 28, 10, 0)) // a Saturday, outside the default hours
+    render(<NotificationsPanel />)
+    const hoursSwitch = () => screen.getByRole('switch', { name: 'Play sounds only during set hours' })
+    const choose = (combobox: string, option: RegExp) => {
+      fireEvent.click(screen.getByRole('combobox', { name: combobox }))
+      fireEvent.click(screen.getByRole('option', { name: option }))
+    }
+    expect(hoursSwitch().getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByRole('switch', { name: 'Sound on Monday' })).toBeNull()
+
+    fireEvent.click(hoursSwitch())
+    const workday = { from: 8 * 60, to: 18 * 60 }
+    expect(loadSoundSettings().schedule).toEqual({ on: true, days: [workday, workday, workday, workday, workday, null, null] })
+    expect(screen.getByRole('combobox', { name: 'Monday: sound from' }).textContent).toMatch(/^8:00\sAM$/)
+    expect(screen.getByRole('switch', { name: 'Sound on Saturday' }).getAttribute('aria-checked')).toBe('false')
+    // Outside the hours is not a timed mute, so that select still reads Off.
+    expect(screen.getByRole('combobox', { name: 'Mute sounds' }).textContent).toBe('Off')
+
+    choose('Monday: sound from', /^7:00\sPM$/)
+    expect(loadSoundSettings().schedule?.days[0]).toEqual({ from: 19 * 60, to: 19 * 60 + 30 })
+    fireEvent.click(screen.getByRole('switch', { name: 'Sound on Saturday' }))
+    choose('Saturday: sound until', /^1:00\sPM$/)
+    expect(loadSoundSettings().schedule?.days[5]).toEqual({ from: 8 * 60, to: 13 * 60 })
+    fireEvent.click(screen.getByRole('switch', { name: 'Sound on Tuesday' }))
+    expect(loadSoundSettings().schedule?.days[1]).toBeNull()
+
+    const days = loadSoundSettings().schedule?.days
+    fireEvent.click(hoursSwitch())
+    expect(loadSoundSettings().schedule).toEqual({ on: false, days })
+    expect(screen.queryByRole('switch', { name: 'Sound on Monday' })).toBeNull()
+  })
+
   it('chooses the shortest turn that earns a desktop toast, stays locked until the toast is on, and keeps a saved odd value visible', () => {
     render(<NotificationsPanel />, 'alerts')
     const minTurn = () => screen.getByRole('combobox', { name: 'Only notify for longer turns' })

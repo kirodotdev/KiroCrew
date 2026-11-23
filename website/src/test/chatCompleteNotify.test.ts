@@ -373,6 +373,21 @@ describe('useWebSocket chat_done native toast', () => {
     expect(CONSTRUCTED[0].options?.silent).toBe(false)
   })
 
+  it('still toasts outside the sound hours, without the OS sound', () => {
+    saveChatCompleteNotify(true)
+    // Sound hours on with no day allowed, so every moment is outside them.
+    localStorage.setItem('mc-notification-sound', JSON.stringify({ schedule: { on: true, days: Array(7).fill(null) } }))
+    onTestFinished(() => { localStorage.removeItem('mc-notification-sound') })
+    const ws = mountOpened()
+    seedSlot('slot-done', 'Refactor the planner')
+
+    act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-done' } }) })
+
+    expect(CONSTRUCTED).toHaveLength(1)
+    expect(CONSTRUCTED[0].options?.body).toBe('Response ready')
+    expect(CONSTRUCTED[0].options?.silent).toBe(true)
+  })
+
   it('does not toast while the user has not opted in', () => {
     const ws = mountOpened()
     seedSlot('slot-a', 'Refactor the planner')

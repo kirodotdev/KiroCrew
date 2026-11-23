@@ -13,6 +13,7 @@ import { appsMutingSessions, isSlotMuted } from '../sessionMute'
 import { takeTurnErrored } from '../turnError'
 import { isMemberThreadSlot, takeMemberThreadSpoke } from '../unreadOnAttention'
 import { postNativeNotification } from '../../lib/nativeNotify'
+import { isSoundMuted, loadSoundSettings } from '../useNotificationSound'
 import { normalizeRunSessionKey } from '../../components/workflows/runModel'
 import { dashboardAutomationSlotKey } from '../../monitoring/automation'
 import { i18nT } from '../../i18n/t'
@@ -140,8 +141,10 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
             : i18nT('hooks.useWebSocket.response_ready')
         // Best-effort (same as approval): the helper swallows Android
         // Chrome's "Illegal constructor" and relays to the parent frame
-        // when this dashboard is an embedded instance pane.
-        postNativeNotification(doneTitle, { body: doneBody, tag: `kirocrew-chat-done:${doneSlot}`, silent: questionPending })
+        // when this dashboard is an embedded instance pane. A timed mute or
+        // the time being outside the sound hours keeps its OS sound off too.
+        const silent = questionPending || isSoundMuted(loadSoundSettings())
+        postNativeNotification(doneTitle, { body: doneBody, tag: `kirocrew-chat-done:${doneSlot}`, silent })
       }
       // Off screen: badge the session, and warm its cache so switching to
       // it renders the finished answer instantly (no on-switch fetch). In

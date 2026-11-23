@@ -2003,6 +2003,13 @@
       "route": "/settings/notifications/sound?highlight=notifications.play-sound-on-new-notifications"
     },
     {
+      "id": "notifications.play-sounds-only-during-set-hours",
+      "label": "Play sounds only during set hours",
+      "tab": "notifications",
+      "route": "/settings/notifications/sound?highlight=notifications.play-sounds-only-during-set-hours",
+      "hint": "Choose, for each day of the week, the hours notifications may make a sound. Outside them, notifications still arrive, without sound."
+    },
+    {
       "id": "notifications.sound-category-agent",
       "label": "Proactive agent messages",
       "tab": "notifications",

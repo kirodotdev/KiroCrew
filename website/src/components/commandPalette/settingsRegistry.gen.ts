@@ -3407,6 +3407,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "notifications.play-sounds-only-during-set-hours",
+    "label": "Play sounds only during set hours",
+    "labelKey": "pages.settings.notificationsPanel.sound_hours",
+    "hint": "Choose, for each day of the week, the hours notifications may make a sound. Outside them, notifications still arrive, without sound.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sound"
+    }
+  },
+  {
     "id": "notifications.sound-category-agent",
     "params": {
       "sub": "percategory"

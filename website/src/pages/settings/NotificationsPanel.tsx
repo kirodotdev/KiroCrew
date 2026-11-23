@@ -4,6 +4,7 @@ import { Lock, Check, RadioTower, Bell, Volume2, ListMusic, Music } from 'lucide
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
+import SimpleSelect from '../../components/SimpleSelect'
 import { Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
@@ -12,7 +13,8 @@ import type { NotificationChannel } from '../../types'
 import {
   SOUND_PRESETS, SOUND_CATEGORIES, type SoundPreset, type SoundChoice, type SoundCategory, type SoundSettings, type ToneStep,
   type CustomTones, type CustomFiles, type CustomFileMeta, type StoredFileMeta, validateCustomTone, validateCustomFile, allCustomSounds,
-  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, fileSoundId, userSoundName, isSoundMuted,
+  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, fileSoundId, userSoundName, isTimedMuteRunning,
+  type SoundHours, MINUTES_PER_DAY,
 } from '../../hooks/useNotificationSound'
 import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '../../hooks/customSoundFiles'
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
@@ -25,7 +27,7 @@ import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unread
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
-import { compareText, fmtTime, fmtUnit } from '../../i18n/format'
+import { compareText, fmtTime, fmtUnit, fmtWeekday } from '../../i18n/format'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 
 /** localStorage key the sound settings persist under. Mirrors the private
@@ -186,6 +188,27 @@ const muteLabel = (choice: MuteChoice, now: number): string => {
     case 'morning': return i18nT('pages.settings.notificationsPanel.mute_until', { time: fmtTime(muteEnd('morning', now)) })
   }
 }
+
+/** Hours a day gets when it is turned on, and what a schedule starts with:
+ *  8:00 to 18:00 on weekdays, no sound at the weekend. */
+const DEFAULT_SOUND_HOURS: SoundHours = { from: 8 * 60, to: 18 * 60 }
+const DEFAULT_SOUND_DAYS: Array<SoundHours | null> = [...Array<SoundHours>(5).fill(DEFAULT_SOUND_HOURS), null, null]
+const HOUR_STEP = 30
+
+/** Times every half hour from `min` to `max` minutes after midnight, plus a
+ *  saved `keep` off that grid, so the select never hides what is saved. */
+function hourChoices(min: number, max: number, keep: number): number[] {
+  const out: number[] = []
+  for (let m = min; m <= max; m += HOUR_STEP) out.push(m)
+  if (!out.includes(keep)) out.push(keep)
+  return out.sort((a, b) => a - b)
+}
+
+/** A time of day in the app's locale. The end of the day is named, so a whole
+ *  day does not read as 12:00 AM to 12:00 AM. */
+const hourLabel = (minutes: number): string => minutes === MINUTES_PER_DAY
+  ? i18nT('pages.settings.notificationsPanel.sound_hours_midnight')
+  : fmtTime(new Date(2024, 0, 1, 0, minutes))
 
 /** Shortest-turn choices for the toast, in seconds; `0` means every turn. A
  *  stored value outside this list is still offered, so the select never hides
@@ -444,6 +467,73 @@ function SystemNotificationsRow() {
   )
 }
 
+/** One of a day's two times. */
+function HourSelect({ value, choices, label, disabled, onChange }: {
+  value: number; choices: number[]; label: string; disabled: boolean; onChange: (minutes: number) => void
+}) {
+  return (
+    <div className="shrink-0 w-28">
+      <SimpleSelect
+        options={choices.map(String)}
+        optionLabels={choices.map(hourLabel)}
+        value={String(value)}
+        onChange={v => onChange(Number(v))}
+        disabled={disabled}
+        aria-label={label}
+        triggerFallback={hourLabel(value)}
+      />
+    </div>
+  )
+}
+
+/** The weekly sound hours, Monday first: a switch per day and, while it is on,
+ *  the times sound may play from and until. A later start pushes the end past
+ *  it, so a day's hours are never empty. */
+function SoundHoursRows({ days, disabled, onChange }: {
+  days: Array<SoundHours | null>; disabled: boolean; onChange: (day: number, hours: SoundHours | null) => void
+}) {
+  return (
+    <div className={`flex flex-col py-1.5 ${disabled ? 'opacity-40' : ''}`}>
+      {days.map((hours, i) => {
+        const day = fmtWeekday(i + 1, 'long')
+        return (
+          <div key={day} className="flex flex-wrap items-center gap-2.5 py-1">
+            <span className="w-28 shrink-0 text-[13px] text-text">{day}</span>
+            <Toggle
+              checked={hours !== null}
+              onChange={on => onChange(i, on ? DEFAULT_SOUND_HOURS : null)}
+              disabled={disabled}
+              label={i18nT('pages.settings.notificationsPanel.sound_hours_day', { day })}
+            />
+            {hours === null ? (
+              <span className="text-[12px] text-muted">{i18nT('pages.settings.notificationsPanel.sound_hours_no_sound')}</span>
+            ) : (
+              // One unit, so a narrow screen wraps the whole range together.
+              <div className="flex items-center gap-2.5">
+                <HourSelect
+                  value={hours.from}
+                  choices={hourChoices(0, MINUTES_PER_DAY - HOUR_STEP, hours.from)}
+                  label={i18nT('pages.settings.notificationsPanel.sound_hours_from', { day })}
+                  disabled={disabled}
+                  onChange={from => onChange(i, { from, to: Math.min(MINUTES_PER_DAY, Math.max(hours.to, from + HOUR_STEP)) })}
+                />
+                <span aria-hidden="true" className="text-muted">–</span>
+                <HourSelect
+                  value={hours.to}
+                  choices={hourChoices((Math.floor(hours.from / HOUR_STEP) + 1) * HOUR_STEP, MINUTES_PER_DAY, hours.to)}
+                  label={i18nT('pages.settings.notificationsPanel.sound_hours_to', { day })}
+                  disabled={disabled}
+                  onChange={to => onChange(i, { from: hours.from, to })}
+                />
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const notifyChatComplete = useChatCompleteNotify()
@@ -696,7 +786,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
 
   const fallback = settings.perCategory.all ?? 'chime'
   const now = Date.now()
-  const muted = isSoundMuted(settings, now)
+  const muted = isTimedMuteRunning(settings, now)
 
   // The channel save lives here, not in ChannelsSection: the rail unmounts the
   // Sources pane on switch, so an in-pane failure notice would vanish silently
@@ -917,6 +1007,23 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             }}
             disabled={!settings.enabled}
           />
+          <SettingsToggle
+            label={i18nT('pages.settings.notificationsPanel.sound_hours')}
+            hint={i18nT('pages.settings.notificationsPanel.sound_hours_description')}
+            checked={settings.schedule?.on ?? false}
+            onChange={on => applySetting(current => ({ ...current, schedule: { on, days: current.schedule?.days ?? DEFAULT_SOUND_DAYS } }))}
+            disabled={!settings.enabled}
+          />
+          {settings.schedule?.on && (
+            <SoundHoursRows
+              days={settings.schedule.days}
+              disabled={!settings.enabled}
+              onChange={(day, hours) => applySetting(current => ({
+                ...current,
+                schedule: { on: true, days: (current.schedule?.days ?? DEFAULT_SOUND_DAYS).map((d, j) => (j === day ? hours : d)) },
+              }))}
+            />
+          )}
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.notificationsPanel.volume')}>
             {/* Slider is correctly associated via htmlFor+id (a range input can't be nested); label-has-for's nesting requirement is a false positive here. */}
             <label htmlFor="mc-volume-slider" className="text-[13px] font-semibold text-text">{i18nT('pages.settings.notificationsPanel.volume')}</label>

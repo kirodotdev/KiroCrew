@@ -281,11 +281,14 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'right now (manual: notifications.sources)',
   },
   'NotificationsPanel.tsx': {
-    counts: { Toggle: 1, Select: 1, input: 1 },
+    counts: { Toggle: 2, Select: 1, input: 1, SimpleSelect: 1 },
     reason:
       'per-channel mute Toggle + priority Select render runtime-fetched rows ' +
       '(manual: notifications.sources); the volume range input has no slider ' +
-      'primitive (manual: notifications.volume)',
+      'primitive (manual: notifications.volume); the per-day sound-hours Toggle and ' +
+      'its from/until SimpleSelect (one HourSelect) render once per weekday, reached ' +
+      'through the sound-hours switch the extractor indexes ' +
+      '(notifications.play-sounds-only-during-set-hours), which reveals them',
   },
   'PortabilityTab.tsx': {
     counts: { input: 6, SimpleSelect: 1 },
