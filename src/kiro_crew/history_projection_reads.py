@@ -888,6 +888,34 @@ class TranscriptReadProjection:
                 logical_row += 1
         return messages
 
+    def read_rows_from(self, key: str, start: int) -> tuple[list[dict], int] | None:
+        """``(rows[start:], row_count)`` of *key*'s own file, without parsing the rows before *start*.
+
+        Served from the message cache when it holds this revision, otherwise
+        through the sparse row index, which decodes from the checkpoint at or
+        before *start*. The caller holds the transcript lock, so the file
+        cannot change between the index and the range read. None when the
+        index cannot frame the file the way the full reader does, or when any
+        ``OSError`` (a missing file included) interrupts the stat, the index or
+        the range read; the caller then reads the whole file, which retries a
+        transient error and reads a missing file as empty.
+        """
+        from kiro_crew.jsonl_util import UnreadableRecord
+
+        path = self._log._path(key)
+        try:
+            identity = self._log._cache_identity(path.stat())
+        except OSError:
+            return None
+        cached = self._log._msg_cache.get(key)
+        if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
+            return list(cached[2][start:]), len(cached[2])
+        try:
+            index = self._row_index(key)
+            return self._read_message_range(key, start, index.row_count, index), index.row_count
+        except (UnreadableRecord, UnicodeDecodeError, OSError):
+            return None
+
     def _read_messages_chained_page_once(
         self,
         key: str,

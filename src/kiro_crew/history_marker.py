@@ -9,7 +9,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_meta_cache``.
 
-Instance fields read: none.
+Instance fields read: ``_read_projection``.
 """
 
 from __future__ import annotations
@@ -84,10 +84,16 @@ def snapshot_for_consolidation(
     with hold:
         if withhold_restricted:
             self._withhold_if_restricted(key)
-        messages = self._read_messages(key)
         meta = self._read_metadata(key)
         generation = int(meta.get("rotation_generation", 0) or 0)
         offset, sub_offset = _live_position(meta, generation)
+        # Only the rows after the marker are decoded: a long transcript with a
+        # short unconsolidated tail is not parsed whole for it.
+        tail = self._read_projection.read_rows_from(key, offset)
+        if tail is not None:
+            rows, total = tail
+            return rows, total, generation, sub_offset
+        messages = self._read_messages(key)
         return list(messages[offset:]), len(messages), generation, sub_offset
 
 
