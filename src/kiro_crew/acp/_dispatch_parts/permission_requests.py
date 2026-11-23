@@ -160,6 +160,59 @@ def reject_option_id(params: dict) -> str | None:
     return None
 
 
+def asks_allow_always(option_id: str | None, event: AcpEvent | None, *, always: bool) -> bool:
+    """Whether an approval answering with *option_id* asks for an allow-always.
+
+    An id the frame offered is read by the kind it was offered as, before its
+    spelling: a frame may offer its one-call allow under the id ``allow_always``,
+    and choosing it is a one-call approval. Either reading of one call wins, so
+    the canonical ``allow_once`` never asks for an allow-always, whatever the
+    frame offered under that id. No id at all asks for what *always* says.
+    """
+    if option_id is None:
+        return always
+    offered = event.offered_allow if event is not None else {}
+    if option_id in (offered.get("once"), OPTION_ALLOW_ONCE):
+        return False
+    return option_id in (offered.get("always"), OPTION_ALLOW_ALWAYS)
+
+
+def offered_allow_id(resolved_id: str, event: AcpEvent | None, *, always: bool) -> str | None:
+    """*resolved_id* when *event*'s frame offered it, else its id naming the same allow.
+
+    The last step before an approval is written. A harness reads an id it never
+    offered as a refusal (claude-agent-acp: "Permission option was not offered"),
+    so a canonical allow literal that reached here because no allow id was
+    recorded for the request is answered with the id the frame offered for that
+    kind (``allow-once`` for ``allow_once``). The kinds are the builder's
+    (``AcpEvent.offered_allow``): an option's explicit ``kind`` first, a
+    well-known id only when it has none. Only the canonical literals are changed.
+
+    The kind asked for is *always*, the caller's decision after any downgrade to
+    a one-call answer, never the literal's spelling: an id already resolved by
+    its kind may be spelled like the other literal (a one-call option offered
+    under the id ``allow_always``), and reading the spelling would turn a
+    one-call approval into an allow-always. An allow-always the frame did not
+    offer is answered with its one-call allow, and a one-call allow is never
+    answered with an allow-always.
+
+    ``None`` when the frame offers no allow of the kind asked for and the
+    literal names one of its options of another kind (an ``allow_once`` id
+    offered as allow-always), which the caller refuses rather than answer. A
+    frame that classified no allow leaves *resolved_id* as it was.
+    """
+    if event is None or resolved_id not in (OPTION_ALLOW_ONCE, OPTION_ALLOW_ALWAYS):
+        return resolved_id
+    offered = event.offered_allow
+    if always and offered.get("always"):
+        return offered["always"]
+    if offered.get("once"):
+        return offered["once"]
+    if offered and resolved_id in {o.get("id") for o in event.options}:
+        return None
+    return resolved_id
+
+
 # Legacy kiro permission options omit the spec-mandated `kind` field. Only
 # synthesize a kind for these well-known literals — unknown ids stay empty so we
 # don't fabricate intent the agent didn't express. Shared by both transports.
@@ -1475,6 +1528,11 @@ def build_permission_event(
         or _connection_identity,
         shell_classified=cached_shell is not None,
         options=options,
+        offered_allow={
+            slot: kind_to_id[kind]
+            for slot, kind in (("once", "allow_once"), ("always", "allow_always"))
+            if kind in kind_to_id
+        },
         tool_input=tool_input,
         tool_input_redacted=tool_input_redacted,
         tool_call_id=tool_call_id,

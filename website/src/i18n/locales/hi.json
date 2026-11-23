@@ -8120,6 +8120,7 @@
       "profile_lookup_failed_body": "तुम्हारी Kiro प्रोफ़ाइल नहीं खोजी जा सकी। फिर से कोशिश करने के लिए फिर से शुरू करो।",
       "connection_lost_body": "{{productName}} से कनेक्शन टूट गया, शायद वह पुनः शुरू हुआ है। फिर से साइन इन करने के लिए फिर से शुरू करो।",
       "sign_in_status_unavailable": "साइन-इन की स्थिति जाँची नहीं जा सकी",
+      "owner_only": "केवल डैशबोर्ड का मालिक Kiro साइन-इन प्रबंधित कर सकता है।",
       "sign_in_to_kiro": "Kiro में साइन इन करें",
       "skip_for_now": "अभी छोड़ें",
       "signing_in_with": "{{provider}} से साइन इन हो रहा है",
@@ -10239,7 +10240,7 @@
       "retry": "पुन: प्रयास करें",
       "save_failed": "सहेजना विफल",
       "star_as_artifact": "आर्टिफ़ैक्ट के रूप में स्टार करें",
-      "starred_as_click_to_remove": "\"{{name}}\" के रूप में स्टार किया गया — हटाने के लिए क्लिक करें",
+      "popout_blocked": "यह विजेट नए टैब में नहीं खुल सका। विंडो ब्लॉक कर दी गई।",
       "open_artifact_named": "आर्टिफ़ैक्ट “{{slug}}” खोलो"
     },
     "widgetPlaceholder": {
@@ -14002,6 +14003,7 @@
         "agent_switch_blocked_channel": "{{agent}} पर बदलना रोका गया — यह चैट एक Slack चैनल से जुड़ी है जिसे {{channel_agent}} संभालता है। अगला टर्न उसी एजेंट पर फिर से शुरू होगा।",
         "channel_message_not_run": "एक Slack चैनल का संदेश नहीं चलाया गया: इस सत्र का एजेंट वह एजेंट नहीं है जिसे वह चैनल इस्तेमाल करता है।",
         "member_rebind_kept_agent": "{{bot}} अब {{agent}} पर सेट है, लेकिन यह चैट अब भी {{recorded}} चला रही है, वही एजेंट जिससे यह शुरू हुई थी। {{agent}} इस्तेमाल करने के लिए {{bot}} के साथ एक नई चैट शुरू करो।",
+        "member_harness_elsewhere": "{{bot}} अपनी चैट में {{bot_harness}} पर चलता है, और यह चैट {{chat_harness}} पर ही रहती है। {{bot_harness}} इस्तेमाल करने के लिए {{bot}} की अपनी चैट खोलो।",
         "agent_no_tools": "{{agent}} में कोई टूल नहीं दिया गया है, इसलिए यह इस चैट में कमांड नहीं चला सकता, फ़ाइलों पर काम नहीं कर सकता और MCP सर्वर इस्तेमाल नहीं कर सकता।",
         "agent_no_tools_open": "इसके टूल चुनो",
         "harness_mode_changed": "यह सेशन {{mode}} मोड में बदल गया।",
@@ -15570,7 +15572,12 @@
       "hide_sessions_count_one": "{{n}} सत्र छिपाएँ",
       "hide_sessions_count_other": "{{n}} सत्र छिपाएँ",
       "reclick_toggles_side_panel": "साइड पैनल दिखाने या छिपाने के लिए फिर से क्लिक करो",
-      "reclick_toggles_side_panel_shortcut": "साइड पैनल दिखाने या छिपाने के लिए फिर से क्लिक करो ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "साइड पैनल दिखाने या छिपाने के लिए फिर से क्लिक करो ({{shortcut}})",
+      "show_linked_items_one": "{{count}} जुड़ा हुआ आइटम दिखाएँ",
+      "show_linked_items_other": "{{count}} जुड़े हुए आइटम दिखाएँ",
+      "hide_linked_items": "जुड़े हुए आइटम छिपाएँ",
+      "show_linked_items_failed_one": "{{count}} जुड़ा हुआ आइटम दिखाएँ, एक जाँच विफल हुई",
+      "show_linked_items_failed_other": "{{count}} जुड़े हुए आइटम दिखाएँ, एक जाँच विफल हुई"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
@@ -20704,6 +20711,13 @@
         "mute_sounds_description": "नोटिफिकेशन की ध्वनियों को कुछ समय के लिए म्यूट करता है, फिर अपने-आप दोबारा चालू कर देता है। नोटिफिकेशन फिर भी आते रहते हैं।",
         "mute_until": "{{time}} तक",
         "muted_until": "{{time}} तक म्यूट",
+        "sound_hours": "सिर्फ़ तय घंटों में ध्वनि बजाएँ",
+        "sound_hours_description": "हफ़्ते के हर दिन के लिए वे घंटे चुनो जिनमें नोटिफिकेशन ध्वनि बजा सकते हैं। उनके बाहर नोटिफिकेशन फिर भी आते रहते हैं, बिना ध्वनि के।",
+        "sound_hours_day": "{{day}} को ध्वनि",
+        "sound_hours_from": "{{day}}: ध्वनि कब से",
+        "sound_hours_to": "{{day}}: ध्वनि कब तक",
+        "sound_hours_no_sound": "कोई ध्वनि नहीं",
+        "sound_hours_midnight": "आधी रात",
         "notifications_for": "{{name}} के लिए सूचनाएँ",
         "per_category_sounds": "श्रेणी-वार ध्वनियाँ",
         "play_sound_on_new_notifications": "नए नोटिफिकेशन पर ध्वनि बजाएँ",

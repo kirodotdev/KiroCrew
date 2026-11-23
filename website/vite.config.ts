@@ -37,6 +37,10 @@ import {
   verifyOverlayBytes,
 } from './scripts/lib/editionShell.mjs'
 
+/** A chunk of the dashboard's own first-load code (`first-load-<N>`, not
+ *  `first-load-shared` or `first-load-vendor`); see `build.modulePreload`. */
+const OWN_LAYER_CHUNK = /(^|\/)first-load-\d+-[^/]*\.js$/
+
 /** Shape produced by parseBrandingConfig (editionShell.mjs is untyped .mjs). */
 type EditionBranding = { title?: string; themeColor?: string; issuesUrl?: string }
 
@@ -1024,6 +1028,18 @@ export default defineConfig({
     // feasible) — are worse. Lower this the moment `editor.main`/`index` shrink;
     // do NOT raise it without first splitting the chunk that forced the raise.
     chunkSizeWarningLimit: 3810,
+    // `index.html` does not modulepreload the dashboard's own first-load layers
+    // (`first-load-<N>`, scripts/lib/firstLoadGroup.mjs); the browser fetches
+    // them when `main` imports them. Preloaded, their ~3 MB of script is parsed
+    // on background threads while the boot page lays out, and that layout's
+    // first font lookup waits behind the parse: on an 8-core Linux host it
+    // made a ~120 ms main-thread task of a page with six boxes. Without them
+    // that task is gone and the first paint is no later (measured on loopback
+    // and at 40 ms round trip). Vendor and shared chunks stay preloaded.
+    modulePreload: {
+      resolveDependencies: (_filename, deps, { hostType }) =>
+        hostType === 'html' ? deps.filter((dep) => !OWN_LAYER_CHUNK.test(dep)) : deps,
+    },
     // The Slack brand mark must remain a physical file. The gateway serves
     // /assets, while an inline SVG would also conflict with security review.
     // The sign-in dialog's Google and AWS marks stay files too: inlined, they

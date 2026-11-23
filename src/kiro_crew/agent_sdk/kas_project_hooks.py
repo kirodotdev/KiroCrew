@@ -195,10 +195,12 @@ async def person_turn_reprojects(
 ) -> bool:
     """Whether a person's turn re-projects *provider*'s scheduled-kind ``cron:`` batch.
 
-    Only when the folder agent has consented hooks now (a user-level agent of the
-    same name never resets; a consented spec that cannot be read re-projects, so
-    the turn fails closed), and only while no sub-agent work is *pending* on the
-    session; with work pending the turn runs without the folder hooks, logged.
+    Only when the folder agent has consented hooks now, or a native sub-agent
+    target the batch registered is a folder agent with consented PreToolUse hooks
+    now, which a person-kind batch leaves out (a user-level agent of the same name
+    never resets; a consented spec that cannot be read re-projects, so the turn
+    fails closed), and only while no sub-agent work is *pending* on the session;
+    with work pending the turn runs without the folder hooks, logged.
     """
     # circular import: spec_hooks re-exports this module.
     from kiro_crew.agent_sdk import spec_hooks
@@ -213,24 +215,43 @@ async def person_turn_reprojects(
         return False
     agent_id = spec_hooks.session_agent(provider, agent_id)
     cwd = getattr(provider, "cwd", "")
+    # The batch projects its sub-agent targets from the runtime's folder, which a
+    # shared runtime keeps apart from the session's (``project_subagent_targets``);
+    # an ``AcpProvider`` reaches that runtime through its ``_client``.
+    runtime = getattr(provider, "_client", provider)
+    target_dir = str(getattr(runtime, "_work_dir", "") or cwd)
+    targets = [
+        target
+        for a in getattr(provider, "kas_registered_agents", None) or ()
+        if isinstance(a, dict) and isinstance(target := a.get("id"), str) and target != agent_id
+    ]
 
-    def _folder_hooks() -> bool:
+    def _consented(name: str, folder: str) -> dict[str, Any]:
         from kiro_crew.acp.kas_agents import agent_spec_absent
         from kiro_crew.config.paths import spec_dir_for
 
+        if not agent_spec_absent(spec_dir_for(name), name):
+            return {}
+        return _consented_kas_project_hooks(name, folder) or {}
+
+    def _folder_hooks() -> bool:
+        from kiro_crew.acp.kas_subagent_targets import _spec_pre_tool_matchers
+
         if not agent_id or not isinstance(cwd, str) or not cwd:
             return False
-        if not agent_spec_absent(spec_dir_for(agent_id), agent_id):
-            return False
-        return bool((_consented_kas_project_hooks(agent_id, cwd) or {}).get("hooks"))
+        if _consented(agent_id, cwd).get("hooks"):
+            return True
+        # The rule a person-kind batch leaves a target out by
+        # (``kas_subagent_targets._project_target``).
+        return any(_spec_pre_tool_matchers(name, _consented(name, target_dir)) for name in targets)
 
     try:
         if not await asyncio.to_thread(_folder_hooks):
             return False
     except Exception:  # noqa: BLE001 - an unreadable consented spec fails closed
         logger.info(
-            "folder hooks for %r could not be read; the batch is re-projected so the turn "
-            "fails closed",
+            "folder hooks for %r or its sub-agent targets could not be read; the batch is "
+            "re-projected so the turn fails closed",
             agent_id,
         )
     if await pending():

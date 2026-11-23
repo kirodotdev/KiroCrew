@@ -82,6 +82,14 @@ them yet:
   (`effort_applied`, `effort_dropped`, `effort_pending`) still report only an
   effort the call named itself, so a light spawn that took its effort from the
   pin shows the `light` line and no effort verdict.
+- `agent.subagent_light_lean_context` (off by default) also starts a `light`
+  spawn without the lessons and memory blocks, while the tier is on. A helper
+  that searches or summarizes seldom needs them, and each block adds tokens to
+  every run. A call that sets `include_lessons` or `include_memory` to `true`
+  keeps that block, `include_project` is not changed, and a spawn that names an
+  `agent`, a `crew` or a `backend` is not narrowed. The receipt's `light` line
+  names what was withheld, and the sub-agent is told by name what it lacks. With
+  the setting off every spawn starts with the context it always has.
 
 #### When to delegate
 

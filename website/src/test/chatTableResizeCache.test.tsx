@@ -62,7 +62,13 @@ class Observer {
   static all: Observer[] = []
   targets = new Set<Element>()
   constructor(readonly callback: ResizeObserverCallback) { Observer.all.push(this) }
-  observe(el: Element) { this.targets.add(el) }
+  observe(el: Element) {
+    this.targets.add(el)
+    // A browser delivers once for each new target after its next layout; the
+    // width observers take their first width from that delivery. Only the
+    // scroller gets it here, so the rows keep the explicit samples below.
+    if (el.classList.contains('chat-container')) this.fire([el])
+  }
   unobserve(el: Element) { this.targets.delete(el) }
   disconnect() { this.targets.clear() }
   fire(targets = [...this.targets]) {

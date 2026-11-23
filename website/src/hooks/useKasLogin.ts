@@ -7,7 +7,7 @@ import {
   type KasLoginLoopbackSession,
   type KasLoginStatus,
 } from '../api/client'
-import { ApiError, apiErrorCode } from '../api/apiError'
+import { ApiError, apiErrorCode, isPermissionRefusal } from '../api/apiError'
 import { parseKiroUsagePayload } from '../api/kiroUsage'
 import { clearCachedModels } from '../providers/adapters/acp'
 import { RELAY_VIEWER_CREWS_KEY, closeRelayCrews } from './useRelayViewerCrews'
@@ -90,11 +90,17 @@ export function openAuthTab(url: string): void {
  * that interval; leave it off to observe what another surface reads.
  */
 export function useKasLoginStatus({ enabled = true, poll }: { enabled?: boolean; poll?: number } = {}) {
-  return useQuery({
+  return useQuery<KasLoginStatus, Error>({
     queryKey: KAS_LOGIN_STATUS_KEY,
     queryFn: api.kasLoginStatus,
     enabled,
-    ...(poll ? { refetchInterval: poll } : {}),
+    // React Query re-reads a failed read with no data on EVERY mount, and the
+    // card swaps its spinner for the flow (a new reader) on each failure, so a
+    // failed read would loop mount -> read -> spinner -> failure -> mount.
+    retryOnMount: false,
+    // A refusal (not the owner) gives the same answer every time, and each ask
+    // writes another denial row to the security event log: it is not polled again.
+    ...(poll ? { refetchInterval: (query: { state: { error: unknown } }) => (isPermissionRefusal(query.state.error) ? false : poll) } : {}),
   })
 }
 

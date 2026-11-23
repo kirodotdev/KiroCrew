@@ -12,7 +12,8 @@ while ``work_ledger.remote_dispatch`` is on.
 An optional ``requires: {"tags": [...], "logins": [...]}`` filters crews before
 they are ranked: a crew qualifies only when its headroom lists every tag and
 reports ``valid`` for every login. When none qualifies the create is refused
-``crew_requirements_unmet`` naming what each crew lacked; there is no blind pick.
+``crew_requirements_unmet`` naming what each crew lacked and each connected crew
+whose version or headroom read failed; there is no blind pick.
 """
 
 from __future__ import annotations
@@ -59,6 +60,10 @@ CODE_DUPLICATE_ITEM = "duplicate_item"
 
 #: :func:`_candidate`'s answer for a crew that meets ``requires`` but has no room.
 _NO_ROOM = "no_room"
+
+#: :func:`_candidate`'s answer for a connected crew whose version or headroom read
+#: failed, so whether it meets ``requires`` is unknown.
+_UNREAD = "unread"
 
 #: ``TunnelState.CONNECTED.value``.
 _CONNECTED = "connected"
@@ -172,9 +177,10 @@ def _lacks(unmet: list[Unmet]) -> str:
     return "; ".join(f"{u.name} lacks {', '.join(u.missing)}" for u in unmet)
 
 
-def unmet_message(unmet: list[Unmet]) -> str:
-    """The ``crew_requirements_unmet`` prose: each crew and what it lacked."""
-    shown = _lacks(unmet)
+def unmet_message(unmet: list[Unmet], unread: tuple[str, ...] = ()) -> str:
+    """The ``crew_requirements_unmet`` prose: each crew and what it lacked, then
+    each connected crew in *unread* as ``<name> could not be checked``."""
+    shown = "; ".join([_lacks(unmet), *(f"{name} could not be checked" for name in unread)])
     return (
         f"no connected crew meets this item's requires ({shown}); it stays open and "
         "unbound. Sign in or tag a crew, or drop the requirement"
@@ -222,6 +228,11 @@ def _connected(mgr: Any, instance_id: str) -> bool:
     return getattr(getattr(status, "state", None), "value", None) == _CONNECTED
 
 
+def _display_name(row: Any, instance_id: str) -> str:
+    """*row*'s name as a refusal shows it, its id when it has none."""
+    return str(getattr(row, "name", "") or instance_id)
+
+
 def _headroom_params(requires: Requires) -> dict[str, str]:
     """The headroom read's query: ask for logins only when *requires* names one,
     so an item that needs no login never waits on the peer's login checks."""
@@ -237,8 +248,10 @@ async def _candidate(
     requires: Requires = Requires(),
 ) -> Candidate | Unmet | str | None:
     """*row* as a :class:`Candidate`; :class:`Unmet` when its headroom lacks part of
-    *requires*; :data:`_NO_ROOM` when it meets *requires* but is short; ``None``
-    when it is not connected or its headroom cannot be read."""
+    *requires*; :data:`_NO_ROOM` when it meets *requires* but is short;
+    :data:`_UNREAD` when it is connected but its version or headroom read failed,
+    timed out or answered non-2xx or a non-object; ``None`` when it has no id or is
+    not connected."""
     from kiro_crew.dashboard.handlers import remote_dispatch_routes as routes
 
     instance_id = str(getattr(row, "id", "") or "")
@@ -255,16 +268,16 @@ async def _candidate(
         status, payload = await asyncio.wait_for(_probe(), PROBE_TIMEOUT_S)
     except routes.CrewCallError as exc:
         logger.info("placement skips crew %s (%s)", instance_id, exc.code)
-        return None
+        return _UNREAD
     except asyncio.TimeoutError:
         logger.info("placement skips crew %s (headroom read timed out)", instance_id)
-        return None
+        return _UNREAD
     except Exception:  # noqa: BLE001 - one crew's fault must not fail the placement
         logger.warning("placement skips crew %s (probe failed)", instance_id, exc_info=True)
-        return None
+        return _UNREAD
     if not 200 <= status < 300 or not isinstance(payload, dict):
-        return None
-    name = str(getattr(row, "name", "") or instance_id)
+        return _UNREAD
+    name = _display_name(row, instance_id)
     lacks = missing(requires, payload)
     if lacks:
         # Filtered before it is ranked: a crew without the capability is never
@@ -410,8 +423,14 @@ async def place(
     unmet = [c for c in found if isinstance(c, Unmet)]
     if unmet and not pool and _NO_ROOM not in found:
         # No crew that answered has the capability: name what each lacks, and
-        # never fall back to a crew without it.
-        raise routes.CrewCallError(503, CREW_REQUIREMENTS_UNMET, unmet_message(unmet))
+        # never fall back to a crew without it. A crew that could not be read is
+        # named too, so the person is not told to fix only the crews that were.
+        unread = tuple(
+            _display_name(r, str(getattr(r, "id", "") or ""))
+            for r, c in zip(rows, found)
+            if c == _UNREAD
+        )
+        raise routes.CrewCallError(503, CREW_REQUIREMENTS_UNMET, unmet_message(unmet, unread))
     busy: list[str] = []
     duplicate: list[Candidate] = []
     stopped = False

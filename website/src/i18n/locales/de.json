@@ -8120,6 +8120,7 @@
       "profile_lookup_failed_body": "Wir konnten dein Kiro-Profil nicht abrufen. Beginne neu, um es noch einmal zu versuchen.",
       "connection_lost_body": "Die Verbindung zu {{productName}} wurde unterbrochen, vielleicht durch einen Neustart. Beginne neu, um dich wieder anzumelden.",
       "sign_in_status_unavailable": "Der Anmeldestatus konnte nicht geprüft werden",
+      "owner_only": "Nur der Besitzer des Dashboards kann die Kiro-Anmeldung verwalten.",
       "sign_in_to_kiro": "Bei Kiro anmelden",
       "skip_for_now": "Vorerst überspringen",
       "signing_in_with": "Anmeldung mit {{provider}}",
@@ -10239,7 +10240,7 @@
       "retry": "Wiederholen",
       "save_failed": "Speichern fehlgeschlagen",
       "star_as_artifact": "Als Artefakt markieren",
-      "starred_as_click_to_remove": "Markiert als „{{name}}“ — klicken, um die Markierung zu entfernen",
+      "popout_blocked": "Dieses Widget konnte nicht in einem neuen Tab geöffnet werden. Das Fenster wurde blockiert.",
       "open_artifact_named": "Artefakt „{{slug}}“ öffnen"
     },
     "widgetPlaceholder": {
@@ -14002,6 +14003,7 @@
         "agent_switch_blocked_channel": "Der Wechsel zu {{agent}} wurde blockiert — dieser Chat ist mit einem Slack-Kanal verknüpft, den {{channel_agent}} bedient. Die nächste Runde startet neu auf diesem Agenten.",
         "channel_message_not_run": "Eine Nachricht aus einem Slack-Kanal wurde nicht ausgeführt: Der Agent dieser Sitzung ist nicht der Agent, den dieser Kanal verwendet.",
         "member_rebind_kept_agent": "{{bot}} ist jetzt auf {{agent}} eingestellt, aber dieser Chat läuft weiter auf {{recorded}}, dem Agenten, mit dem er begonnen hat. Starte einen neuen Chat mit {{bot}}, um {{agent}} zu verwenden.",
+        "member_harness_elsewhere": "{{bot}} läuft in seinem eigenen Chat auf {{bot_harness}}, und dieser Chat bleibt auf {{chat_harness}}. Öffne den eigenen Chat von {{bot}}, um {{bot_harness}} zu verwenden.",
         "agent_no_tools": "{{agent}} führt keine Werkzeuge auf und kann in diesem Chat deshalb keine Befehle ausführen, nicht mit Dateien arbeiten und keine MCP-Server nutzen.",
         "agent_no_tools_open": "Werkzeuge auswählen",
         "harness_mode_changed": "Diese Sitzung ist in den Modus {{mode}} gewechselt.",
@@ -15570,7 +15572,12 @@
       "hide_sessions_count_one": "{{n}} Sitzung ausblenden",
       "hide_sessions_count_other": "{{n}} Sitzungen ausblenden",
       "reclick_toggles_side_panel": "Erneut klicken, um das Seitenpanel ein- oder auszublenden",
-      "reclick_toggles_side_panel_shortcut": "Erneut klicken, um das Seitenpanel ein- oder auszublenden ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Erneut klicken, um das Seitenpanel ein- oder auszublenden ({{shortcut}})",
+      "show_linked_items_one": "{{count}} verknüpftes Element anzeigen",
+      "show_linked_items_other": "{{count}} verknüpfte Elemente anzeigen",
+      "hide_linked_items": "Verknüpfte Elemente ausblenden",
+      "show_linked_items_failed_one": "{{count}} verknüpftes Element anzeigen, eine Prüfung ist fehlgeschlagen",
+      "show_linked_items_failed_other": "{{count}} verknüpfte Elemente anzeigen, eine Prüfung ist fehlgeschlagen"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
@@ -20704,6 +20711,13 @@
         "mute_sounds_description": "Schaltet Benachrichtigungstöne eine Weile stumm und danach von selbst wieder ein. Benachrichtigungen kommen weiterhin an.",
         "mute_until": "Bis {{time}}",
         "muted_until": "Stumm bis {{time}}",
+        "sound_hours": "Töne nur zu festgelegten Zeiten abspielen",
+        "sound_hours_description": "Lege für jeden Wochentag fest, zu welchen Zeiten Benachrichtigungen einen Ton abspielen dürfen. Außerhalb davon kommen Benachrichtigungen weiterhin an, nur ohne Ton.",
+        "sound_hours_day": "Ton am {{day}}",
+        "sound_hours_from": "{{day}}: Ton ab",
+        "sound_hours_to": "{{day}}: Ton bis",
+        "sound_hours_no_sound": "Kein Ton",
+        "sound_hours_midnight": "Mitternacht",
         "notifications_for": "Benachrichtigungen für {{name}}",
         "per_category_sounds": "Töne pro Kategorie",
         "play_sound_on_new_notifications": "Ton bei neuen Benachrichtigungen abspielen",

@@ -7908,6 +7908,7 @@
       "profile_lookup_failed_body": "Kiro プロファイルを検索できませんでした。最初からやり直して、もう一度お試しください。",
       "connection_lost_body": "{{productName}} との接続が切れました。再起動した可能性があります。最初からやり直して、もう一度サインインしてください。",
       "sign_in_status_unavailable": "サインイン状態を確認できませんでした",
+      "owner_only": "Kiro のサインインを管理できるのはダッシュボードのオーナーだけです。",
       "sign_in_to_kiro": "Kiro にサインイン",
       "skip_for_now": "今はスキップ",
       "signing_in_with": "{{provider}} でサインイン中",
@@ -9999,7 +10000,7 @@
       "retry": "再試行",
       "save_failed": "保存に失敗しました",
       "star_as_artifact": "アーティファクトとしてスター付け",
-      "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除",
+      "popout_blocked": "このウィジェットを新しいタブで開けませんでした。ウィンドウがブロックされました。",
       "open_artifact_named": "アーティファクト「{{slug}}」を開く"
     },
     "widgetPlaceholder": {
@@ -13662,6 +13663,7 @@
         "agent_switch_blocked_channel": "{{agent}} への切り替えはブロックされました — このチャットは {{channel_agent}} が担当する Slack チャンネルにリンクされています。次のターンはそのエージェントで再開します。",
         "channel_message_not_run": "Slack チャンネルからのメッセージは実行されませんでした: このセッションのエージェントは、そのチャンネルが使うエージェントではありません。",
         "member_rebind_kept_agent": "{{bot}} は現在 {{agent}} に設定されていますが、このチャットは開始時のエージェントである {{recorded}} で動作し続けます。{{agent}} を使うには、{{bot}} との新しいチャットを開始してください。",
+        "member_harness_elsewhere": "{{bot}} は自分のチャットでは {{bot_harness}} で動きますが、このチャットは {{chat_harness}} のままです。{{bot_harness}} を使うには、{{bot}} 自身のチャットを開いてください。",
         "agent_no_tools": "{{agent}} にはツールが指定されていないため、このチャットではコマンドの実行、ファイルの操作、MCP サーバーの利用ができません。",
         "agent_no_tools_open": "ツールを選ぶ",
         "harness_mode_changed": "このセッションは {{mode}} モードに切り替わりました。",
@@ -15163,7 +15165,10 @@
       "show_sessions_count_other": "{{n}} 件のセッションを表示",
       "hide_sessions_count_other": "{{n}} 件のセッションを非表示",
       "reclick_toggles_side_panel": "もう一度クリックするとサイドパネルの表示を切り替えます",
-      "reclick_toggles_side_panel_shortcut": "もう一度クリックするとサイドパネルの表示を切り替えます（{{shortcut}}）"
+      "reclick_toggles_side_panel_shortcut": "もう一度クリックするとサイドパネルの表示を切り替えます（{{shortcut}}）",
+      "show_linked_items_other": "関連項目を {{count}} 件表示",
+      "hide_linked_items": "関連項目を隠す",
+      "show_linked_items_failed_other": "関連項目を {{count}} 件表示（失敗したチェックあり）"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -20168,6 +20173,13 @@
         "mute_sounds_description": "通知サウンドを一定時間ミュートし、その後自動で元に戻します。通知は引き続き届きます。",
         "mute_until": "{{time}}まで",
         "muted_until": "{{time}}までミュート中",
+        "sound_hours": "設定した時間帯だけサウンドを再生",
+        "sound_hours_description": "曜日ごとに、通知がサウンドを鳴らしてよい時間帯を選びます。時間帯の外でも通知は届きますが、サウンドは鳴りません。",
+        "sound_hours_day": "{{day}}のサウンド",
+        "sound_hours_from": "{{day}}：サウンドの開始時刻",
+        "sound_hours_to": "{{day}}：サウンドの終了時刻",
+        "sound_hours_no_sound": "サウンドなし",
+        "sound_hours_midnight": "24:00",
         "notifications_for": "{{name}} の通知",
         "per_category_sounds": "カテゴリごとのサウンド",
         "play_sound_on_new_notifications": "新しい通知でサウンドを再生",

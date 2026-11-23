@@ -470,6 +470,13 @@ def _consented_for(
     return False
 
 
+#: (point, exception class) pairs whose provider failure was already logged at
+#: WARNING, so the cause shows on the shipped WARNING level once per pair rather
+#: than once per decision. Bounded: points are a fixed set and so, in practice,
+#: are the classes a provider raises.
+_provider_error_warned: set[tuple[str, str]] = set()
+
+
 #: Points already warned about for a missing scope, so a consented install that has
 #: not opted in says so once rather than once per tool call.
 _unscoped_warned: set[str] = set()
@@ -1348,9 +1355,14 @@ async def decide(
     except Exception as exc:
         # The class, and no traceback: a provider message -- and the locals a
         # traceback renders -- can quote the request back. The class still
-        # separates a transport failure from a protocol one. INFO, so the cause of
-        # a provider error is readable in the gateway log without DEBUG.
-        logger.info("decisions: %s provider call failed (%s)", point, type(exc).__name__)
+        # separates a transport failure from a protocol one. WARNING the first time
+        # a point fails with a class, so the cause is in the gateway log on the
+        # shipped WARNING level; INFO after that, so a failing provider is not one
+        # warning per decision.
+        cause = (point, type(exc).__name__)
+        level = logging.INFO if cause in _provider_error_warned else logging.WARNING
+        _provider_error_warned.add(cause)
+        logger.log(level, "decisions: %s provider call failed (%s)", *cause)
         await _write(latency_ms=_elapsed_ms(started), answers=None, error=ERROR_PROVIDER)
         return None
 

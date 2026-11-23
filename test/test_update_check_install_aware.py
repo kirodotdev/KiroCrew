@@ -1303,7 +1303,7 @@ class TestCheckIsRateLimitedEvenOnFailure:
         # The derivation runs before any branch is chosen, so a raise there is the
         # one that can escape ordinary result containment. A leaked task owner
         # makes later callers join a dead worker instead of checking again.
-        def _boom() -> object:
+        def _boom(**_kw: object) -> object:
             raise RuntimeError("git exploded")
 
         monkeypatch.setattr(updates, "derive_capability", _boom)

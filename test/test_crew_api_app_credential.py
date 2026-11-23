@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from token_auth_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     _make_request,
     _session_token,
@@ -31,6 +32,7 @@ from kiro_crew.dashboard import local_authorization as la
 from kiro_crew.dashboard.crew_api_errors import CREDENTIAL_HINT
 from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_CALLER_KEY, RelayCaller, RelayCallerKind
+from kiro_crew.dashboard.routes import crew_api
 from kiro_crew.dashboard.token_auth import generate_token, token_auth_middleware
 
 VERIFIER = "v" * 43
@@ -88,14 +90,19 @@ def store(tmp_path: Path, clock: Clock, audit, monkeypatch) -> la.LocalAuthoriza
     return store
 
 
-def _grant(store: la.LocalAuthorization, clock: Clock, client_id: str = CLIENT) -> dict:
-    """The tokens of a grant the owner approved for *client_id*."""
+def _grant(
+    store: la.LocalAuthorization,
+    clock: Clock,
+    client_id: str = CLIENT,
+    scope: str = "responses:write conversations:read",
+) -> dict:
+    """The tokens of a grant the owner approved for *client_id*, holding *scope*."""
     ask = {
         "response_type": "code",
         "client_id": client_id,
         "client_name": "Notely",
         "redirect_uri": REDIRECT,
-        "scope": "responses:write conversations:read",
+        "scope": scope,
         "state": "xyz",
         "code_challenge": CHALLENGE,
         "code_challenge_method": "S256",
@@ -115,8 +122,18 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _send(**request_fields):
-    """The middleware's answer, the request it judged, and whether a handler ran."""
+def _crew_api_router() -> web.UrlDispatcher:
+    """A router holding the Crew API routes the gateway registers."""
+    app = web.Application()
+    crew_api.register(app)
+    return app.router
+
+
+async def _send(router: web.UrlDispatcher | None = None, **request_fields):
+    """The middleware's answer, the request it judged, and whether a handler ran.
+
+    The request carries the route *router* matches its path to, as a real one does.
+    """
     reached: list = []
 
     async def _handler(request):
@@ -124,6 +141,10 @@ async def _send(**request_fields):
         return web.Response(text="ok")
 
     request = _make_request(**request_fields)
+    probe = make_mocked_request(request.method, request.path)
+    # An unnamed-route router is an empty mapping, so it is compared with None.
+    router = _crew_api_router() if router is None else router
+    request.match_info = await router.resolve(probe)
     resp = await token_auth_middleware(port=5476)(request, _handler)
     return resp, request, bool(reached)
 
@@ -182,7 +203,9 @@ async def test_a_valid_app_credential_is_403_owner_only_on_every_crew_api_path(
     row = audit.log_api_access.call_args.kwargs
     assert audit.log_api_access.call_count == 1
     assert row["caller"] == f"app:{tokens['grant_id']}"
-    assert (row["outcome"], row["error"]) == ("denied", "owner_only")
+    # The path no route answers has no row in the scope table, and the row says so.
+    why = "owner_only:no-row" if path == "/v1/responses" else "owner_only"
+    assert (row["outcome"], row["error"]) == ("denied", why)
     assert row["resources"] == f"{path} client_id={CLIENT}"
 
 
@@ -301,7 +324,7 @@ async def test_an_app_credential_the_relay_delivered_is_401(store, clock, audit)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/v1/crew/owner/bots", "/v1/models", "/v1/responses"])
 async def test_a_forwarded_valid_credential_is_answered_exactly_as_a_forged_one(
-    store, clock, path
+    store, clock, audit, path
 ) -> None:
     """Nothing in the answer says the forwarded credential was a live one."""
     valid = _grant(store, clock)["access_token"]
@@ -314,6 +337,11 @@ async def test_a_forwarded_valid_credential_is_answered_exactly_as_a_forged_one(
         assert "app" not in _published(request)
         answers.append((resp.status, resp.body, sorted(resp.headers.items())))
     assert answers[0] == answers[1]
+    # The valid one was recognised and refused for where it came from: one audit row,
+    # and none for the forged one. Without it the comparison would prove nothing.
+    assert [call.kwargs["error"] for call in audit.log_api_access.call_args_list] == [
+        "not-direct-local"
+    ]
 
 
 @pytest.mark.asyncio

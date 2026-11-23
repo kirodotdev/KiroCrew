@@ -7908,6 +7908,7 @@
       "profile_lookup_failed_body": "无法查询你的 Kiro 配置文件。请重新开始以再试一次。",
       "connection_lost_body": "与 {{productName}} 的连接已断开，它可能已重启。请重新开始以再次登录。",
       "sign_in_status_unavailable": "无法检查登录状态",
+      "owner_only": "只有仪表板所有者可以管理 Kiro 登录。",
       "sign_in_to_kiro": "登录 Kiro",
       "skip_for_now": "暂时跳过",
       "signing_in_with": "正在通过 {{provider}} 登录",
@@ -9999,7 +10000,7 @@
       "retry": "重试",
       "save_failed": "保存失败",
       "star_as_artifact": "加星标为产物",
-      "starred_as_click_to_remove": "已加星标为“{{name}}” — 点击取消",
+      "popout_blocked": "无法在新标签页中打开此小组件：窗口被拦截。",
       "open_artifact_named": "打开产物“{{slug}}”"
     },
     "widgetPlaceholder": {
@@ -13662,6 +13663,7 @@
         "agent_switch_blocked_channel": "切换到 {{agent}} 已被阻止 — 此聊天已关联到由 {{channel_agent}} 服务的 Slack 频道。下一轮将在该智能体上重新开始。",
         "channel_message_not_run": "Slack 频道发来的消息未运行：此会话的智能体与该频道所用智能体不同。",
         "member_rebind_kept_agent": "{{bot}} 现已设为使用 {{agent}}，但此聊天仍在运行它开始时使用的智能体 {{recorded}}。要使用 {{agent}}，请与 {{bot}} 开始一个新聊天。",
+        "member_harness_elsewhere": "{{bot}} 在自己的聊天中运行在 {{bot_harness}} 上，而此聊天仍运行在 {{chat_harness}} 上。要使用 {{bot_harness}}，请打开 {{bot}} 自己的聊天。",
         "agent_no_tools": "{{agent}} 没有列出任何工具，所以在此聊天中无法运行命令、处理文件或使用 MCP 服务器。",
         "agent_no_tools_open": "选择它的工具",
         "harness_mode_changed": "此会话已切换到 {{mode}} 模式。",
@@ -15163,7 +15165,10 @@
       "show_sessions_count_other": "显示 {{n}} 个会话",
       "hide_sessions_count_other": "隐藏 {{n}} 个会话",
       "reclick_toggles_side_panel": "再次点击可显示或隐藏侧边面板",
-      "reclick_toggles_side_panel_shortcut": "再次点击可显示或隐藏侧边面板（{{shortcut}}）"
+      "reclick_toggles_side_panel_shortcut": "再次点击可显示或隐藏侧边面板（{{shortcut}}）",
+      "show_linked_items_other": "显示 {{count}} 个关联项",
+      "hide_linked_items": "隐藏关联项",
+      "show_linked_items_failed_other": "显示 {{count}} 个关联项，有检查失败"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -20168,6 +20173,13 @@
         "mute_sounds_description": "暂时静音通知提示音，到时自动恢复。通知仍会照常送达。",
         "mute_until": "直到 {{time}}",
         "muted_until": "静音至 {{time}}",
+        "sound_hours": "仅在设定时段播放提示音",
+        "sound_hours_description": "为每周的每一天选择通知可以发出提示音的时段。在此时段之外，通知仍会照常送达，只是不发出声音。",
+        "sound_hours_day": "{{day}}播放提示音",
+        "sound_hours_from": "{{day}}：提示音开始时间",
+        "sound_hours_to": "{{day}}：提示音结束时间",
+        "sound_hours_no_sound": "无提示音",
+        "sound_hours_midnight": "午夜",
         "notifications_for": "{{name}} 的通知",
         "per_category_sounds": "分类提示音",
         "play_sound_on_new_notifications": "收到新通知时播放提示音",

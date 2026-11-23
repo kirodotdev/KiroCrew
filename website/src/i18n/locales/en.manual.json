@@ -2982,6 +2982,7 @@
       "profile_lookup_failed_body": "We couldn't look up your Kiro profile. Start over to try again.",
       "connection_lost_body": "We lost the connection to {{productName}}, which may have restarted. Start over to sign in again.",
       "sign_in_status_unavailable": "We could not check sign-in status",
+      "owner_only": "Only the dashboard owner can manage Kiro sign-in.",
       "sign_in_to_kiro": "Sign in to Kiro",
       "skip_for_now": "Skip for now",
       "signing_in_with": "Signing in with {{provider}}",
@@ -3961,10 +3962,10 @@
       "cannot_star_widget_has_no_slug_or_message_contex": "Cannot star: widget has no slug or message context",
       "expand": "Expand",
       "minimize": "Minimize",
+      "popout_blocked": "Couldn't open this widget in a new tab. The window was blocked.",
       "remove_artifact_from_library": "Remove artifact {{name}} from library",
       "rendering": "Rendering…",
-      "star_as_artifact": "Star as artifact",
-      "starred_as_click_to_remove": "Starred as \"{{name}}\" — click to remove"
+      "star_as_artifact": "Star as artifact"
     },
     "workspacePicker": {
       "create": "Create",
@@ -7352,7 +7353,12 @@
       "kind_section_mate": "From bots",
       "filter_crew_description": "Show only conductor mode chats",
       "reclick_toggles_side_panel": "Click again to show or hide the side panel",
-      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "Click again to show or hide the side panel ({{shortcut}})",
+      "show_linked_items_one": "Show {{count}} linked item",
+      "show_linked_items_other": "Show {{count}} linked items",
+      "hide_linked_items": "Hide linked items",
+      "show_linked_items_failed_one": "Show {{count}} linked item, a check failed",
+      "show_linked_items_failed_other": "Show {{count}} linked items, a check failed"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

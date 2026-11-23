@@ -5,6 +5,7 @@
 import { api } from '../../api/client'
 import type { ChatMessage } from '../../types'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
+import { recordSlotWalk } from '../../dev/slotReadCounts'
 import { fetchSlotDetail, normalizeSlotDetail } from './wire'
 import { idAnchorsOneRow, midOccurrences } from './transcript'
 import { SLOT_DETAIL_MAX_LIMIT } from './paging'
@@ -58,8 +59,9 @@ function headAnchorRows(rows: ChatMessage[]): ChatMessage[] {
  *  Returns the input page untouched when there is nothing to reach (`held`
  *  empty -- a cold view has no scrollback to protect, and a wider window would
  *  be one nothing asked for), when the page already reaches the start, or when
- *  it already anchors. */
-export async function walkWindowBackTo(key: string, page: SlotDetailPage, held: ChatMessage[], mustInclude?: string): Promise<SlotDetailPage> {
+ *  it already anchors. `countAs`, set by a caller only in a dev build, is the
+ *  reason a walk that fetched older pages is counted under. */
+export async function walkWindowBackTo(key: string, page: SlotDetailPage, held: ChatMessage[], mustInclude?: string, countAs?: string): Promise<SlotDetailPage> {
   const anchor = headAnchorRows(held)
   const anchorCounts = midOccurrences(anchor)
   /* `mustInclude` names one held row the caller needs RE-SERVED, not kept: a
@@ -105,6 +107,8 @@ export async function walkWindowBackTo(key: string, page: SlotDetailPage, held: 
   if (inspectorOn()) {
     devLog('WALK', `${key} pages=${pages} rows=${messages.length} reached=${!hasMore || reaches(messages)} held=${anchor.length}`)
   }
+  // Dev-build tally of walks that paged (`slotReadCounts`); the caller names the reason.
+  if (countAs && pages > 0) recordSlotWalk(key, countAs, pages)
   /* The newest edge must be as fresh as the status. Every row the walk added is
    * OLDER than the first page, so after `pages` more round trips the first page's
    * tail can be stale -- a turn that finished meanwhile left a partial reply

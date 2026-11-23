@@ -174,7 +174,7 @@ def test_the_scorer_reads_what_bundle_writes_and_holds_files_for_a_table_left_ou
         commit="c0ffee",
     )
     doc, absent = ctm_.bundle(test_map, repo)
-    assert sorted(absent) == sorted(left_out)
+    assert {table for table in absent if table in ("cochange", "guard")} == set(left_out)
     scans.clear()
     monkeypatch.setattr(ctm_, "guard_tier", scan)
     (tmp_path / "bundle.json").write_bytes(gzip.compress(json.dumps(doc).encode("utf-8")))
@@ -399,6 +399,39 @@ def test_cli_writes_a_select_verdict_for_a_tree(
     assert verdict["would_run_share"] == pytest.approx(5 / 6)
 
 
+def test_a_function_table_links_only_the_tests_that_ran_the_changed_function(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_git(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    path = "src/kiro_crew/testing/wait.py"
+    two = "def f():\n    return 1\n\n\ndef g():\n    return {}\n"
+    tree = {
+        path: two.format(2),
+        "test/test_f.py": "",
+        "test/test_g.py": "",
+        "test/test_gate.py": "",
+    }
+    base, head = _repo(repo, tree, {path: two.format(3)})
+    bundle = {
+        "schema": 1,
+        "commit": "c0ffee",
+        "tests": {"test/test_f.py": 1, "test/test_g.py": 1},
+        "files": {path: [0, 1]},
+        "functions": {path: {"f": [1, 2, [0]], "g": [5, 6, [1]]}},
+        "cochange": {},
+        "guard": ["test/test_gate.py"],
+    }
+    (tmp_path / "bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
+    out = tmp_path / "verdict.json"
+    argv = ["--root", str(repo), "--bundle", str(tmp_path / "bundle.json"), "--out", str(out)]
+    assert cts.main([*argv, "--base", base, "--head", head]) == 0
+    verdict = json.loads(out.read_text(encoding="utf-8"))
+    # Only g changed: test_f, which never ran g, has no signal left.
+    assert verdict["tiers"]["B"] == ["test/test_g.py"]
+    assert verdict["tiers"]["G"] == verdict["would_skip"] == ["test/test_f.py"]
+
+
 def test_without_a_guard_table_the_live_guard_scan_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -426,6 +459,8 @@ def test_without_a_guard_table_the_live_guard_scan_runs(
         json.dumps({**BUNDLE, "files": {"src/kiro_crew/acp/mod.py": [3]}}),
         json.dumps({**BUNDLE, "files": {"src/kiro_crew/acp/mod.py": 0}}),
         json.dumps({**BUNDLE, "files": {"src/kiro_crew/acp/mod.py": [True]}}),
+        json.dumps({**BUNDLE, "functions": {"src/kiro_crew/acp/mod.py": {"f": [1, 2, [3]]}}}),
+        json.dumps({**BUNDLE, "functions": {"src/kiro_crew/acp/mod.py": [[1, 2, [0]]]}}),
         json.dumps({**BUNDLE, "tests": {"test/test_narrow.py": "2"}}),
         json.dumps({**BUNDLE, "tests": {"test/test_narrow.py": -1}}),
         json.dumps({**BUNDLE, "tests": ["test/test_narrow.py"]}),

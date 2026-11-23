@@ -597,6 +597,10 @@ returned tail and its `running`, `stopping`, `turn`, and `turn_gen` status field
 come from the same newest edge. When the cap is spent, or the held rows carry no
 `meta.mid` to anchor on, the replacing reducer keeps no head: the rows above the
 walked window leave the tab and are one page-back away.
+In a dev build `refreshSlot` and `warmSlotCache` count, per slot, each read and
+each walk that fetched older pages (with the pages and the reason), readable in
+devtools as `window.__kcSlotReads()` (`website/src/dev/slotReadCounts.ts`); a
+production build records nothing.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands
@@ -2020,7 +2024,12 @@ no longer destroy older turns.
   when the turn produced a reply, through one rewrite pinned to the transcript
   and slot the Regenerate was authorized against that names the rows it removes
   (`retired_rows`). The variants stashed at the press keep the endpoint's
-  existing cap (`_MAX_VARIANTS`, the newest kept). They stay stashed while
+  existing cap (`_MAX_VARIANTS`, the newest kept). Each keeps the `mid` of the
+  row it was written as (`variant_from_row`), so that id names the same version
+  after the swap moves it into the new reply's list; the discussion card keys
+  its sends on it (`grillKey`). A stash of a row that already has versions
+  takes no id: that row's `mid` names its newest version, not always the one it
+  shows. They stay stashed while
   the turn runs: the segment flush attaches none to a reply of a turn that owns
   the target, and the reply gets them only from the committed rewrite, so a
   declined swap (refused or failed write, a reply trimmed into the frozen

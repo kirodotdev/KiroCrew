@@ -212,6 +212,10 @@ class LaunchJob:
     # A custom EC2 instance type the built-in lane launches instead of the
     # ``size_key`` tier; empty = the tier.
     instance_type: str = ""
+    # A failed provision's rollback found no resource for the tag and its delete
+    # confirmed: the launch left no stack or task behind, so the dashboard offers
+    # Launch itself as the retry with the same settings.
+    never_created: bool = False
 
     @property
     def terminal(self) -> bool:
@@ -243,6 +247,7 @@ class LaunchJob:
             "subnet_id": self.subnet_id,
             "signin_skipped": self.signin_skipped,
             "instance_type": self.instance_type,
+            "never_created": self.never_created,
         }
 
     @classmethod
@@ -289,6 +294,7 @@ class LaunchJob:
             subnet_id=str(d.get("subnet_id") or ""),
             signin_skipped=bool(d.get("signin_skipped", False)),
             instance_type=str(d.get("instance_type") or ""),
+            never_created=bool(d.get("never_created", False)),
         )
 
 
@@ -1103,8 +1109,9 @@ def _rollback_failed_provision(
     Best-effort and never raises; it augments the recorded failure message rather
     than replacing it, so the original error stays visible. Safe when no stack was
     created — deleting an absent stack is a no-op. When :func:`_engine_resource_exists`
-    says absent, a confirmed delete is reported as "never created". The delete still
-    runs: a lookup that reads an unrelated error as absent must not skip it.
+    says absent, a confirmed delete is reported as "never created" and sets
+    ``job.never_created``. The delete still runs: a lookup that reads an unrelated
+    error as absent must not skip it.
     """
     base = job.error or "Setup failed."
     existed = _engine_resource_exists(engine, job)
@@ -1125,6 +1132,7 @@ def _rollback_failed_provision(
             else "was never created, so it is not billing"
         )
         job.error = f"{base} The {_resource_noun(job)} {job.tag} {outcome}."
+        job.never_created = not existed
         return
     job.error = (
         f"{base} The delete of {_resource_noun(job)} {job.tag} was requested but did NOT confirm "

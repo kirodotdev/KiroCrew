@@ -8120,6 +8120,7 @@
       "profile_lookup_failed_body": "তোমার Kiro প্রোফাইল খোঁজা গেল না। আবার চেষ্টা করতে আবার শুরু করো।",
       "connection_lost_body": "{{productName}}-এর সঙ্গে সংযোগ বিচ্ছিন্ন হয়েছে, হয়তো এটি রিস্টার্ট হয়েছে। আবার সাইন ইন করতে আবার শুরু করো।",
       "sign_in_status_unavailable": "সাইন-ইন অবস্থা পরীক্ষা করা গেল না",
+      "owner_only": "শুধু ড্যাশবোর্ডের মালিক Kiro সাইন-ইন পরিচালনা করতে পারেন।",
       "sign_in_to_kiro": "Kiro-তে সাইন ইন করুন",
       "skip_for_now": "এখন বাদ দিন",
       "signing_in_with": "{{provider}} দিয়ে সাইন ইন হচ্ছে",
@@ -10239,7 +10240,7 @@
       "retry": "আবার চেষ্টা করুন",
       "save_failed": "সেভ ব্যর্থ হয়েছে",
       "star_as_artifact": "আর্টিফ্যাক্ট হিসেবে স্টার দাও",
-      "starred_as_click_to_remove": "\"{{name}}\" নামে স্টার দেওয়া — সরাতে ক্লিক করো",
+      "popout_blocked": "এই উইজেটটি নতুন ট্যাবে খোলা যায়নি। উইন্ডোটি ব্লক করা হয়েছে।",
       "open_artifact_named": "আর্টিফ্যাক্ট “{{slug}}” খোলো"
     },
     "widgetPlaceholder": {
@@ -14002,6 +14003,7 @@
         "agent_switch_blocked_channel": "{{agent}}-এ বদল আটকানো হয়েছে — এই চ্যাটটি এমন একটি Slack চ্যানেলের সাথে যুক্ত যা {{channel_agent}} পরিচালনা করে। পরের টার্নটি সেই এজেন্টে আবার শুরু হবে।",
         "channel_message_not_run": "একটি Slack চ্যানেলের বার্তা চালানো হয়নি: এই সেশনের এজেন্ট সেই চ্যানেলের ব্যবহৃত এজেন্ট নয়।",
         "member_rebind_kept_agent": "{{bot}} এখন {{agent}}-এ সেট করা আছে, কিন্তু এই চ্যাটটি এখনও {{recorded}} চালাচ্ছে, যে এজেন্ট দিয়ে এটি শুরু হয়েছিল। {{agent}} ব্যবহার করতে {{bot}}-এর সাথে একটি নতুন চ্যাট শুরু করো।",
+        "member_harness_elsewhere": "{{bot}} নিজের চ্যাটে {{bot_harness}}-এ চলে, আর এই চ্যাটটি {{chat_harness}}-এ থেকে যায়। {{bot_harness}} ব্যবহার করতে {{bot}}-এর নিজের চ্যাট খোলো।",
         "agent_no_tools": "{{agent}}-এ কোনো টুল দেওয়া নেই, তাই এই চ্যাটে এটি কমান্ড চালাতে, ফাইল নিয়ে কাজ করতে বা MCP সার্ভার ব্যবহার করতে পারে না।",
         "agent_no_tools_open": "এর টুল বেছে নাও",
         "harness_mode_changed": "এই সেশন {{mode}} মোডে বদলেছে।",
@@ -15570,7 +15572,12 @@
       "hide_sessions_count_one": "{{n}}টি সেশন লুকাও",
       "hide_sessions_count_other": "{{n}}টি সেশন লুকাও",
       "reclick_toggles_side_panel": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো",
-      "reclick_toggles_side_panel_shortcut": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো ({{shortcut}})"
+      "reclick_toggles_side_panel_shortcut": "সাইড প্যানেল দেখাতে বা লুকাতে আবার ক্লিক করো ({{shortcut}})",
+      "show_linked_items_one": "{{count}}টি সংযুক্ত আইটেম দেখাও",
+      "show_linked_items_other": "{{count}}টি সংযুক্ত আইটেম দেখাও",
+      "hide_linked_items": "সংযুক্ত আইটেম লুকাও",
+      "show_linked_items_failed_one": "{{count}}টি সংযুক্ত আইটেম দেখাও, একটি যাচাই ব্যর্থ হয়েছে",
+      "show_linked_items_failed_other": "{{count}}টি সংযুক্ত আইটেম দেখাও, একটি যাচাই ব্যর্থ হয়েছে"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
@@ -20704,6 +20711,13 @@
         "mute_sounds_description": "কিছু সময়ের জন্য বিজ্ঞপ্তির শব্দ মিউট করে, তারপর নিজে থেকেই আবার চালু করে। বিজ্ঞপ্তি তবুও আসতে থাকে।",
         "mute_until": "{{time}} পর্যন্ত",
         "muted_until": "{{time}} পর্যন্ত মিউট",
+        "sound_hours": "শুধু নির্দিষ্ট সময়ে শব্দ বাজান",
+        "sound_hours_description": "সপ্তাহের প্রতিটি দিনের জন্য সেই সময় বেছে নাও যখন বিজ্ঞপ্তি শব্দ করতে পারে। এর বাইরে বিজ্ঞপ্তি তবুও আসতে থাকে, শব্দ ছাড়া।",
+        "sound_hours_day": "{{day}}: শব্দ",
+        "sound_hours_from": "{{day}}: শব্দ কখন থেকে",
+        "sound_hours_to": "{{day}}: শব্দ কখন পর্যন্ত",
+        "sound_hours_no_sound": "কোনো শব্দ নেই",
+        "sound_hours_midnight": "মধ্যরাত",
         "notifications_for": "{{name}}-এর বিজ্ঞপ্তি",
         "per_category_sounds": "বিভাগভিত্তিক শব্দ",
         "play_sound_on_new_notifications": "নতুন বিজ্ঞপ্তিতে শব্দ বাজান",

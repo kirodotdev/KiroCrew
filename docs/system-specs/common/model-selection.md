@@ -767,7 +767,11 @@ its own once the cache refreshes with a list that carries it.
   (`_inherited_default_model`) only to know which default the slot inherits. Neither
   `slot.model` backfill site writes the provider's served model into such a slot,
   whatever that default is, Auto included (every tier deferring to the backend); the
-  composer chip reads it from `served_model`. A Bot's thread with no pick of its own
+  composer chip reads it from `served_model` when what the slot inherits resolves to
+  Auto, and names the inherited model otherwise, except after an engine promotion: the
+  promotion records the served id as the slot's `engine_promoted_model`, and while
+  `served_model` still equals it the chip names that model, the one the session runs
+  on until its next fresh start. A Bot's thread with no pick of its own
   is the same: it asks for the Bot's model on every turn and `slot.model` stays empty,
   so `slot.model` holds only a person's pick. A settings change to the default or to
   the Bot's model
