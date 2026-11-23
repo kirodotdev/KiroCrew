@@ -4455,7 +4455,7 @@ the `exclude_incognito` arm reports as retryable) is `503 crew_peer_busy`, its
 naming the status and nothing from the peer's body, and a reply over the read cap
 is `502 crew_reply_too_large`; `crew_malformed_reply` is reserved for a 2xx that is
 not JSON. Every call emits a SEL audit event
-(`instances_crew_search|crew_list|crew_read`) carrying the resolved instance id
+(tool name `instances_` plus `crew_search`, `crew_list` or `crew_read`) carrying the resolved instance id
 **and the originating MCP caller's session key**, so an audit reviewer can see
 which agent session read which remote crew's history.
 

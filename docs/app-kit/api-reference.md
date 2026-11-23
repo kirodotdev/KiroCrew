@@ -3119,7 +3119,7 @@ await mc.send_message("slot-1", "hello")
 
 The standalone package exports `KiroCrewClient`, `KiroCrewError`, `ErrorCode`,
 `WsClient`, `WsEvent` and `GATEWAY_CONFIG_KEYS`. It does not export
-`AppManifest`, `AppLifecycle`, `GatewayManager` or proxy-auth helpers. Validate
+`AppManifest`, `AppLifecycleSDK`, `GatewayManager` or proxy-auth helpers. Validate
 manifests through the main package's install path, manage the Gateway with the `kirocrew` CLI, and use
 `kiro_crew.apps.proxy_auth` only from a backend that can import the main package.
 
