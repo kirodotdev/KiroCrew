@@ -808,6 +808,7 @@ async def _run_inner_impl(
         # swap below is stated in its [ACTIVE MODEL] line rather than the model the
         # prompt was built on. A continuation prompt carries no such line.
         from kiro_crew.llm_helpers import ActiveModelLine
+        from kiro_crew.messaging.alternation_echo import drop_echo
 
         _active_line = ActiveModelLine(full_message, client)
         msg = full_message
@@ -858,7 +859,8 @@ async def _run_inner_impl(
                 # The completion that ends this prompt, if the stream sent one.
                 _ended: LLMEvent | None = None
                 _prompt = _active_line.current() if msg is full_message else msg
-                stream = (
+                # Each prompt's opening alternation placeholder is dropped (``drop_echo``).
+                stream = drop_echo(
                     client.stream(_prompt)
                     if prompt_timeout is None
                     else client.stream(_prompt, timeout=prompt_timeout)
