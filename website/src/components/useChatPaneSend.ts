@@ -9,7 +9,7 @@ import { readPaneDraft, writePaneDraft } from '../utils/chatPaneDrafts'
 import { expandAll as expandPasteTokens, carryPastes, type PasteBlock } from '../utils/pasteTokens'
 import { prependQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
-import { sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
+import { holdForStop, sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTurn'
@@ -333,7 +333,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // `response-late` proves no refusal either; restoring either one here could
     // invite a retry that duplicates a turn already in flight, side effects
     // included, so the optimistic composer row stays pending.
-    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}) }).then((receipt) => {
+    void sendTurn({ message: llm, slot: slotKey, meta, ...(crewmate ? { responsive: true } : steerNow ? { steer: steerNow } : {}), stopHold: !running && !paneSlot?.running ? holdForStop(slotKey) : undefined }).then((receipt) => {
       // Receipt policy, owned once in chat-core (issue #9457). This is the
       // PARTIAL copy: doSend is a full send, not only a steer, so the rulings
       // applySteerReceipt owns (echo short-circuit, refused/response-late/
@@ -427,7 +427,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, running, paneSlot?.running, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the

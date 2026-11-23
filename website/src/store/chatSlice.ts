@@ -17,6 +17,7 @@ import { jsonEqual } from '../utils/structuralEqual'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
+import { abortPendingSends, settleCancelledSends } from '../chat-core/transport/sendTurn'
 import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
 import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
 import { isClosedIncarnation, watchCloseOutcome } from './dashboard/closeWatch'
@@ -919,6 +920,8 @@ export type StopFailure = { error: string; status?: number; code?: string; authR
 export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean; rejectPending?: boolean }>(
   'chat/requestStop',
   async ({ slotId, force, rejectPending }, { getState, dispatch }) => {
+    // A send still waiting on the network must not start the stopped turn.
+    const sendCancelled = abortPendingSends(slotId)
     const state = (getState() as { chat: ChatState }).chat
     if (!force) {
       const lastPress = state.stopPressedAt[slotId] ?? 0
@@ -951,8 +954,11 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
     // it as "Stop does not work" (#9547). `already_stopping` is the other
     // no-op (a cancel already in flight) and changes nothing here.
     if (reply?.info === 'not running' && !reply.already_stopping) {
-      dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch }))
+      dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch, sendCancelled }))
     }
+    // The gateway answered this press, so the cancel it carried is settled; a
+    // press still waiting on another cancel (`already_stopping`) keeps it.
+    if (!reply?.already_stopping) settleCancelledSends(slotId)
     // Only the cards on screen for the turn this press was about: a switch
     // to another chat, or a newer turn on this one, keeps its cards.
     const now = (getState() as { chat: ChatState }).chat
@@ -1385,7 +1391,7 @@ export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWork
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
 export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
-  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
+  selectActiveSlotProject, selectComposerBusy, selectSlotTurnRunning, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
   selectPendingTurn, selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
   selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,

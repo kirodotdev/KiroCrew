@@ -90,6 +90,13 @@ export const selectSlotPendingApproval = (state: RootState, slot: string | null)
   return null
 }
 
+/** Whether `slot`'s own turn is running, sub-agents aside. A composer send
+ *  while only sub-agents run still starts a turn (the gateway exempts it from
+ *  their hold), so this, not `selectComposerBusy`, says whether Stop may cancel
+ *  it. */
+export const selectSlotTurnRunning = (state: RootState, slot: string): boolean =>
+  selectSlotStreamState(state, slot) !== 'idle' || (slot === state.chat.activeSlot && state.chat.slotRunning)
+
 /**
  * Single source of truth for "is this slot's composer busy" — the signal that
  * queues the next message (busy affordance) and skips the optimistic user
@@ -104,8 +111,7 @@ export const selectSlotPendingApproval = (state: RootState, slot: string | null)
  */
 export const selectComposerBusy = (state: RootState, slot: string | null): boolean => {
   if (!slot) return state.chat.slotRunning
-  if (selectSlotStreamState(state, slot) !== 'idle') return true
-  if (slot === state.chat.activeSlot && state.chat.slotRunning) return true
+  if (selectSlotTurnRunning(state, slot)) return true
   if (selectSlotSubagentsActive(state, slot)) return true
   const dashSlot = slotRowByKey(state.dashboard.slots, slot)
   return !!dashSlot?.subagents_running
