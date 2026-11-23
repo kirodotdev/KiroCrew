@@ -84,6 +84,7 @@ Available to all allowed users (no `!` prefix needed):
 |---------|-------------|
 | `/kirocrew dashboard` | Same as `!dashboard` |
 | `/kirocrew agent` | Switch the active agent |
+| `/kirocrew bot` | List Crew Bots. Slack runs no slash command in a thread, so send `!bot <name>` as a thread's first message to run that thread as a Bot |
 | `/kirocrew voice` | Configure TTS voice settings |
 | `/kirocrew yolo` | Toggle auto-approve for all tool calls |
 | `/kirocrew config` | Edit the tracked-channel list (owner only); its user half is inert |
