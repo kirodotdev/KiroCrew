@@ -1,5 +1,5 @@
 import type React from 'react'
-import { createContext } from 'react'
+import { createContext, useContext } from 'react'
 
 /**
  * The React contexts the markdown pipeline's modules share.
@@ -14,6 +14,20 @@ import { createContext } from 'react'
  * this module, `MediaApprovedCtx`, is private to `remoteMedia.tsx`: its provider
  * and its only reader are both there.
  */
+
+/** The nearest container that picks its own direction (`dir="auto"`) from its
+ *  first strong letter: a quote, or a list item or table cell. That search skips
+ *  any child carrying its own `dir`, so a paragraph or heading under one leaves
+ *  `dir` off and sets `unicode-bidi: plaintext`, which still lays out and aligns
+ *  each of its lines by its own first strong letter. A list item or quote directly
+ *  under a quote leaves `dir` off too, so a quote that opens with one reads it. */
+export const DirOwnerCtx = createContext<'quote' | 'item' | null>(null)
+
+/** A paragraph's or heading's direction: its own `dir="auto"`, or under a
+ *  {@link DirOwnerCtx} container no `dir` and the plaintext class. */
+export function useTextBlockDir(): { dir?: 'auto'; cls: string } {
+  return useContext(DirOwnerCtx) ? { cls: ' [unicode-bidi:plaintext]' } : { dir: 'auto', cls: '' }
+}
 
 /** Context providing the viewed file's directory path for resolving bare relative image paths. */
 export const BasePathCtx = createContext<string | null>(null)
