@@ -85,9 +85,10 @@ def mcp_entry_is_remote(entry: Any) -> bool:
     """Whether one ``mcpServers`` entry is a remote server rather than a local process.
 
     Every site that decides whether an entry has a process behind it -- the
-    sharing rows, the gateway rewriter, the probe -- asks this, so they agree with
-    each other. For every entry this reads as remote, the session projections
-    already connect to the ``url`` instead of running the ``command``. Reading the
+    sharing rows, the gateway rewriter, the probe, the KAS projection -- asks this,
+    so they agree with each other. For every entry this reads as remote, the session
+    projections connect to the ``url`` instead of running the ``command``; the KAS
+    one drops the ``command``, since KAS runs any entry that carries one. Reading the
     mere presence of ``command`` as "stdio" would offer a remote server for
     sharing, and sharing it fails because no launch resolves for the placeholder.
     """

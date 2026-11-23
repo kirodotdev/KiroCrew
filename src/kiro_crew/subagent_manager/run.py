@@ -246,6 +246,7 @@ class RunEventCoordinator(ManagerComponent):
     _write_state_off_loop_impl = _run_records._write_state_off_loop_impl
     _write_finished_result_off_loop_impl = _run_records._write_finished_result_off_loop_impl
     _start_result_file_impl = _run_records._start_result_file_impl
+    _append_result_chunk_impl = _run_records._append_result_chunk_impl
     _drain_state_writer_impl = _run_records._drain_state_writer_impl
     _hold_for_detached_writer_impl = _run_records._hold_for_detached_writer_impl
     _cap_unclaimed_result_impl = _run_records._cap_unclaimed_result_impl

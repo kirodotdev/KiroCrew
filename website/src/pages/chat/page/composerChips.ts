@@ -9,7 +9,7 @@ import { i18nT } from '../../../i18n/t'
 import { effortOffOnAuto, modelSupportsEffort, selectionCapabilitiesFailed } from '../../../lib/effort'
 import { displayModel, modelChipMarker } from '../../../lib/model'
 import type { useProvider } from '../../../providers'
-import { modelHealthKey, useModelsDegraded } from '../../../providers/modelListHealth'
+import { modelHealthKey, useModelsUnconfirmed } from '../../../providers/modelListHealth'
 import type { ModelInfo } from '../../../providers/types'
 import type { AppDispatch } from '../../../store'
 import { triggerRefresh } from '../../../store/dashboardSlice'
@@ -123,12 +123,12 @@ export function useComposerChips({
   // backend's verdict for exactly that (`model_withheld`), and it is pinned
   // server-side to the model it was computed for, so it always describes the
   // first operand below whenever that operand is the slot's own pin. The
-  // degraded flag gates the list-membership fallback used when there is no
-  // verdict — a cached list served while /api/models fails is stale, not
-  // authoritative — and is subscribed to rather than read, because it can flip
-  // without the list changing.
+  // unconfirmed flag gates the list-membership fallback used when there is no
+  // verdict — a cached list served while /api/models fails or answers cold is
+  // stale, not authoritative — and is subscribed to rather than read, because it
+  // can flip without the list changing.
   // The flag of the list the chip reads: a session on another harness reads that harness's own list.
-  const _modelsDegraded = useModelsDegraded(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
+  const _modelsUnconfirmed = useModelsUnconfirmed(modelHealthKey(provider.id, selectionCapabilitiesQ.data?.models_backend))
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
@@ -137,7 +137,7 @@ export function useComposerChips({
   const shownModel = displayModel(
     displayPin,
     displayModels,
-    _modelsDegraded,
+    _modelsUnconfirmed,
     currentSlot?.model_withheld,
     // Names the backend's own choice when the slot inherits, so the chip is not
     // a bare `auto` for a session running one specific model.
@@ -164,7 +164,7 @@ export function useComposerChips({
   const _pinShownModel = displayModel(
     displayPin,
     displayModels,
-    _modelsDegraded,
+    _modelsUnconfirmed,
     currentSlot?.model_withheld,
   )
   // The chip says `default` only for the Settings default; a model picked for

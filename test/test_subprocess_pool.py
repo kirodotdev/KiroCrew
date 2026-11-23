@@ -29,6 +29,7 @@ from kiro_crew.subprocess_pool.executor import (
     pack_strings,
     unpack_strings,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 _CHILD = pathlib.Path(child_mod.__file__)
@@ -443,18 +444,97 @@ class TestCallerBudget:
         assert len(destroyed) == 1, (before.keys(), still_held)
         assert destroyed[0].wait(timeout=10.0) is not None
 
+    @staticmethod
+    def _bound_caller_waits(
+        monkeypatch: pytest.MonkeyPatch,
+        executor: SubprocessPoolExecutor,
+        budget: float,
+        clock: ManualClock | None = None,
+    ) -> list[tuple[str, float | None]]:
+        """Record every wait the calling thread makes, refusing one past *budget*.
+
+        The caller blocks in exactly three places: the free-queue lease, ``select`` on
+        the child's pipe, and (where ``select`` cannot watch a pipe) the reader
+        future.  Each is handed a timeout derived from the caller's absolute deadline,
+        so each must be at most *budget* (plus float error from deadline minus clock).
+        A wait with no timeout, a pipe read with no deadline, or one past the budget is
+        refused at once on the calling thread, so the test fails by name instead of
+        hanging on the silent child.  Other threads are left alone.
+
+        With *clock* (a :class:`ManualClock` installed on the executor module) the
+        caller's deadline moves only through the reader wait: that wait still blocks
+        for real for the timeout it was handed, then advances the clock by it.
+        """
+        caller = threading.get_ident()
+        waits: list[tuple[str, float | None]] = []
+
+        def _check(kind: str, timeout: float | None) -> None:
+            if threading.get_ident() != caller:
+                return
+            waits.append((kind, timeout))
+            assert (
+                timeout is not None and timeout <= budget + 1e-6
+            ), f"the caller's {kind} waited {timeout!r}, past its {budget} s budget"
+
+        real_get = executor._free.get
+
+        def _bounded_get(block: bool = True, timeout: float | None = None):
+            _check("lease", timeout)
+            return real_get(block, timeout)
+
+        real_select = executor_mod.select.select
+
+        def _bounded_select(rlist, wlist, xlist, timeout=None):
+            _check("select", timeout)
+            return real_select(rlist, wlist, xlist, timeout)
+
+        real_read = executor_mod._read_exactly
+
+        def _deadlined_read(stream, count, deadline, **kwargs):
+            if threading.get_ident() == caller and executor_mod._CAN_SELECT_PIPES:
+                assert deadline is not None, "the caller read the pipe with no deadline"
+            return real_read(stream, count, deadline, **kwargs)
+
+        real_readers = executor._bounded_readers
+
+        class _BoundedFuture:
+            def __init__(self, future) -> None:
+                self._future = future
+
+            def result(self, timeout: float | None = None):
+                _check("reader", timeout)
+                try:
+                    return self._future.result(timeout=timeout)
+                finally:
+                    if clock is not None and timeout is not None:
+                        clock.advance(timeout)
+
+        def _submit(fn, *args, **kwargs):
+            return _BoundedFuture(real_readers.submit(fn, *args, **kwargs))
+
+        monkeypatch.setattr(executor._free, "get", _bounded_get)
+        monkeypatch.setattr(executor_mod, "select", types.SimpleNamespace(select=_bounded_select))
+        monkeypatch.setattr(executor_mod, "_read_exactly", _deadlined_read)
+        monkeypatch.setattr(
+            executor,
+            "_bounded_readers",
+            types.SimpleNamespace(submit=_submit, shutdown=real_readers.shutdown),
+        )
+        return waits
+
     def test_a_silent_child_raises_timeout_at_the_callers_budget(
-        self, tmp_path: pathlib.Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
-        # The ceiling is parked far away so the CALLER's budget is what fires.
+        # The ceiling is parked far away so the CALLER's budget is what fires: every
+        # wait the caller makes is handed at most that budget.
         executor = SubprocessPoolExecutor(
             workers=2, script=self._hanging(tmp_path), ceiling_secs=600.0
         )
         try:
-            started = time.monotonic()
+            waits = self._bound_caller_waits(monkeypatch, executor, budget=1.0)
             with pytest.raises(TimeoutError):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=1.0)
-            assert time.monotonic() - started < 30.0
+            assert waits and waits[0][0] == "lease", waits
         finally:
             executor.shutdown(wait=False)
 
@@ -792,16 +872,23 @@ class TestCallerBudget:
         # The request then runs on a pool thread and the CALLER waits with the budget,
         # so a wedge still surfaces as the timeout subclass (charged by the resolver)
         # and the child is destroyed -- not a 20 s freeze followed by an EOF fault.
+        # The executor's clock moves only through the reader wait, so however long
+        # the caller is descheduled after its lease, the deadline is still ahead when
+        # the reader is submitted; the reader wait itself (1 s, refused if unbounded)
+        # stops a lost run.
         monkeypatch.setattr(executor_mod, "_CAN_SELECT_PIPES", False)
         executor = SubprocessPoolExecutor(
             workers=2, script=self._hanging(tmp_path), ceiling_secs=600.0
         )
         try:
-            started = time.monotonic()
             before = self._spawned(executor)
+            clock = ManualClock()
+            clock.install(monkeypatch, executor_mod)
+            waits = self._bound_caller_waits(monkeypatch, executor, budget=1.0, clock=clock)
             with pytest.raises(SubprocessPoolTimeout):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=1.0)
-            assert time.monotonic() - started < 30.0
+            # The caller waited on the reader with its budget, not on the child.
+            assert [kind for kind, _ in waits] == ["lease", "reader"], waits
             self._assert_leased_child_destroyed(executor, before)
         finally:
             executor.shutdown(wait=False)

@@ -101,11 +101,11 @@ class TestWindowsNeverSpawnsBash:
     def test_no_node_on_path_still_spawns_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # PATH empty: the callers report "not found" (the existing log line
-        # upstream) instead of asking WSL.
+        # PATH empty, and no install directory has one either: the callers
+        # report "not found" (the existing log line upstream) instead of asking WSL.
         _nvm_dir(tmp_path, monkeypatch)
         calls = _spy_runs(monkeypatch)
-        monkeypatch.setattr(bmod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(bmod.shutil, "which", lambda _name, **_kw: None)
         assert bmod._find_node_binary() is None
         assert bmod._find_npm_binary() is None
         assert calls == []

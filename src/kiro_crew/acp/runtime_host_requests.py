@@ -519,9 +519,10 @@ def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> 
     """Ask the engine to connect a failed MCP server of one session again.
 
     For a server that failed to start for want of a credential that may
-    exist now. Sends ``_kiro/mcp/resetServer`` with ``startOAuth``
-    false in the background; the server's next ``_kiro/mcp/status`` entry
-    reports whether it connected. The host that takes this request is the
+    exist now, or that lost its connection mid-session. Sends
+    ``_kiro/mcp/resetServer`` with ``startOAuth`` false in the background;
+    the server's next ``_kiro/mcp/status`` entry reports whether it
+    connected. The host that takes this request is the
     one that sends consent URLs, so the same capability gates both.
 
     Returns False, starting nothing, on a host without the request, when

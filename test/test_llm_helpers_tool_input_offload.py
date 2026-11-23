@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -338,9 +337,7 @@ class TestLiveness:
         try:
             await asyncio.sleep(0.02)
             before = ticks
-            started = time.monotonic()
             approved, _provider, _rows = await _resolve(json.dumps({"content": body}))
-            elapsed = time.monotonic() - started
         finally:
             stop = True
             task.cancel()
@@ -350,10 +347,9 @@ class TestLiveness:
                 pass
 
         assert approved is True
-        # Generous: the scan itself legitimately costs tens of seconds on this
-        # payload (is_sensitive_bash_command dominates). What the watchdog cares
-        # about is that the LOOP stayed live throughout, asserted below.
-        assert elapsed < 120.0, f"scan took {elapsed:.1f}s — far past any sane bound"
+        # The scan's own cost is not bounded here (the timeout mark stops a hang by
+        # name); what the watchdog cares about is that the LOOP stayed live
+        # throughout.
         assert ticks > before, (
             f"the event loop made no progress during the scan (ticks stuck at "
             f"{before}); the scan is still blocking the loop"

@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -27,7 +27,7 @@ from apps_registry_coverage_helpers import pip_importable_fixture  # noqa: F401
 from apps_registry_coverage_helpers import _DATA_IS_A_FILE, _asgi_backend, _fake_sandbox, _FakeProc
 
 from conftest import requires_symlinks
-from kiro_crew.apps import registry
+from kiro_crew.apps import backend, registry
 from kiro_crew.apps.manifest import AppManifest
 
 # Build step selection + execution
@@ -44,11 +44,36 @@ class TestRunAppBuild:
     @pytest.mark.asyncio
     async def test_missing_npm_is_a_soft_skip(self, tmp_path, monkeypatch):
         (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(registry.shutil, "which", lambda name: None)
+        monkeypatch.setattr(registry.shutil, "which", lambda name, **_kw: None)
+        monkeypatch.setattr(backend, "_resolve_nvm_path", lambda _name: None)
         log: list[str] = []
         result = await registry._run_app_build(tmp_path, "demo", log, manifest=AppManifest.from_dict({}), self_managed=False)
         assert result == {"ok": True}
         assert any("npm not found on PATH" in line for line in log)
+
+    @pytest.mark.asyncio
+    async def test_npm_off_path_is_found_in_a_node_install_directory(self, tmp_path, monkeypatch):
+        """A launchd PATH omits Homebrew; the build finds its npm off PATH, and
+        npm's ``#!/usr/bin/env node`` reaches the node the backend lookup finds, even
+        in another directory (a user-level npm prefix)."""
+        (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setattr(registry.shutil, "which", lambda name, **_kw: None)
+        monkeypatch.setattr(backend, "_find_npm_binary", lambda: "/home/u/.npm-packages/bin/npm")
+        monkeypatch.setattr(backend, "_find_node_binary", lambda: "/opt/homebrew/bin/node")
+        spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
+        fake_spawn = registry.create_subprocess_limited
+        child_paths: list[str] = []
+
+        async def _spawn(*argv, **kwargs):
+            child_paths.append(kwargs["env"]["PATH"])
+            return await fake_spawn(*argv, **kwargs)
+
+        monkeypatch.setattr(registry, "create_subprocess_limited", _spawn)
+        log: list[str] = []
+        assert await registry._run_app_build(tmp_path, "demo", log, manifest=AppManifest.from_dict({}), self_managed=False) == {"ok": True}
+        assert spawned == [["/home/u/.npm-packages/bin/npm", "install"]]
+        assert child_paths == [os.pathsep.join(["/usr/bin", "/opt/homebrew/bin"])]
 
     @pytest.mark.asyncio
     async def test_npm_install_only_when_no_build_script(self, tmp_path, monkeypatch):
@@ -961,16 +986,33 @@ class TestRunAppBuild:
         """Declare `B -> .` plus ``backend.entryPoint: "B/B/.../B/server.py"`` with
         *depth* components and put it through the three judgements the install
         makes of a declared entry -- the runtime's own file check, the build gate
-        and the final gate -- timed together. Returns the runtime's refusal (``""``
-        when it accepts the path), the build result, the final refusal and the
-        elapsed seconds."""
+        and the final gate. Returns the runtime's refusal (``""`` when it accepts
+        the path), the build result, the final refusal and, for every preview the
+        gates copied, the checkout's and the preview's entries as ``(relative
+        path, link text or None)``, read right after the copy, links unfollowed."""
         from kiro_crew.apps.manifest import file_entry_point_refusal
 
         (tmp_path / "B").symlink_to(Path("."))
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
         deep = "/".join(["B"] * depth) + "/server.py"
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
-        started = time.monotonic()
+        previews: list[tuple[list[tuple[str, str | None]], list[tuple[str, str | None]]]] = []
+        real_copy = registry.copy_app_tree_as_installed
+
+        def _entries(top):
+            found = []
+            for root, dirs, files in os.walk(top):
+                for name in sorted(dirs + files):
+                    path = os.path.join(root, name)
+                    link = os.readlink(path) if os.path.islink(path) else None
+                    found.append((os.path.relpath(path, top).replace(os.sep, "/"), link))
+            return found
+
+        def _recording_copy(source, dest, **kwargs):
+            real_copy(source, dest, **kwargs)
+            previews.append((_entries(source), _entries(dest)))
+
+        monkeypatch.setattr(registry, "copy_app_tree_as_installed", _recording_copy)
         runtime_refusal = file_entry_point_refusal(deep, tmp_path)
         result = await registry._run_app_build(
             tmp_path, "demo", [], manifest=_asgi_backend(deep), self_managed=False
@@ -978,9 +1020,8 @@ class TestRunAppBuild:
         final = registry._desktop_build_refusal(
             tmp_path, _asgi_backend(deep), self_managed=False, final=True
         )
-        elapsed = time.monotonic() - started
         assert spawned == []  # nothing planned either way
-        return runtime_refusal, result, final, elapsed
+        return runtime_refusal, result, final, previews
 
     @requires_symlinks
     @pytest.mark.timeout(60)
@@ -991,13 +1032,20 @@ class TestRunAppBuild:
     ):
         """`B -> .` under ``backend.entryPoint: "B/B/.../B/server.py"`` is judged in bounded time.
 
-        The install copy keeps `B` as one link, so the judgment is linear in the path,
+        The install copy keeps `B` as one link and never walks through it, so the
+        work is the same at every depth and the kernel resolves the path in one pass,
         and the final pass agrees with the runtime's `file_entry_point_refusal`. Which
         way a 60-link path goes belongs to the host (POSIX symlink budget, Windows hop
         budget), so no single verdict is asserted."""
-        runtime_refusal, result, final, elapsed = await self._judge_a_deep_self_link(
+        runtime_refusal, result, final, previews = await self._judge_a_deep_self_link(
             tmp_path, monkeypatch, depth
         )
+        # Every preview the gates judged is the checkout as written: `B` one link
+        # whose text is `.`, nothing copied through it, whatever the depth.
+        assert previews, "no preview was copied"
+        for checkout, preview in previews:
+            assert ("B", ".") in checkout, checkout
+            assert preview == checkout, (checkout, preview)
         # Each judge answers with a verdict it owns -- never an escape, since the
         # link points at its own directory, and never an ordinary install error.
         assert runtime_refusal in (
@@ -1017,7 +1065,6 @@ class TestRunAppBuild:
         # entry that is merely absent, the final pass refuses it -- so a refusal
         # from the build pass is always the final pass's desktop refusal.
         assert result["ok"] or final == registry._DESKTOP_BUILD_REFUSAL, (result, final)
-        assert elapsed < 20, f"the desktop gate took {elapsed:.1f}s on a {depth}-component path"
 
     @requires_symlinks
     @pytest.mark.skipif(

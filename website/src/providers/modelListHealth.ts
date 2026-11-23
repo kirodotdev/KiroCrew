@@ -4,7 +4,8 @@
 // self-heal decision must key off this explicit signal — NOT the shape/length
 // of the list, which cannot distinguish a live single-model backend from a
 // degraded fallback, and would stop polling the moment a
-// possibly-stale cached multi-entry list is served.
+// possibly-stale cached multi-entry list is served. A COLD answer (a 200 that
+// is not yet the account's list) is a third state: not a failure, still polled.
 //
 // Keyed by provider id (read from the ['available-models', <providerId>] query
 // key) so it is provider-safe. Default is "not degraded" (undefined → false):
@@ -26,6 +27,9 @@ const authRequiredByProvider = new Map<string, boolean>()
 // under its lead. '' when the last fetch failed with no error (an empty list)
 // or did not fail.
 const reasonByProvider = new Map<string, string>()
+// Set while the gateway answers cold; not a failure, so apart from
+// `degradedByProvider`.
+const coldByProvider = new Map<string, boolean>()
 const subscribers = new Set<() => void>()
 
 /** Record whether the last fetch for a provider was degraded (fallback) or
@@ -50,6 +54,30 @@ export function markModelsDegraded(providerId: string, degraded: boolean, reason
     changed = true
   }
   if (changed) for (const cb of subscribers) cb()
+}
+
+/** Record whether the provider's last answer was cold. The adapter sets it on a
+ *  cold answer and clears it on a live one. */
+export function markModelsCold(providerId: string, cold: boolean): void {
+  if ((coldByProvider.get(providerId) === true) === cold) return
+  coldByProvider.set(providerId, cold)
+  for (const cb of subscribers) cb()
+}
+
+/** True while the provider's list is not a live answer: a failed read's
+ *  fallback (degraded) or a cold one. */
+function modelsUnconfirmed(providerId: string): boolean {
+  return degradedByProvider.get(providerId) === true || coldByProvider.get(providerId) === true
+}
+
+/** Reactive `modelsUnconfirmed`, for a picker deciding whether its list can
+ *  disprove a pin (`displayModel`'s `degraded`). */
+export function useModelsUnconfirmed(providerId: string): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => modelsUnconfirmed(providerId),
+    () => false,
+  )
 }
 
 /** Record whether the provider's degraded model list is due to an expired /
@@ -119,10 +147,10 @@ export function useModelsDegraded(providerId: string): boolean {
 
 /**
  * refetch cadence for the ['available-models', <providerId>] query: poll every
- * 8s WHILE the served list is a degraded fallback, then stop the instant a LIVE
- * fetch succeeds. Reads the provider id from the query key (index 1), so it is
- * decoupled from the list shape and safe across providers. RQ v5 passes the
- * Query instance.
+ * 8s WHILE the served list is a degraded fallback or a cold answer, then stop
+ * the instant a LIVE fetch succeeds. Reads the provider id from the query key
+ * (index 1), so it is decoupled from the list shape and safe across providers.
+ * RQ v5 passes the Query instance.
  */
 export function modelListRefetchInterval(
   query: { queryKey: readonly unknown[] },
@@ -130,7 +158,7 @@ export function modelListRefetchInterval(
   const providerId = typeof query.queryKey[1] === 'string' ? query.queryKey[1] : ''
   // Another backend's list (`['available-models', <providerId>, <backend>]`) heals on its own flag.
   const backend = typeof query.queryKey[2] === 'string' ? query.queryKey[2] : undefined
-  return modelsDegraded(modelHealthKey(providerId, backend)) ? 8_000 : false
+  return modelsUnconfirmed(modelHealthKey(providerId, backend)) ? 8_000 : false
 }
 
 /** The degraded-flag key for the configured list, or for one backend's own list. */

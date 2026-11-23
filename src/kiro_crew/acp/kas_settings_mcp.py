@@ -362,7 +362,8 @@ def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
 
     Only Crew's own servers are hoisted into the session-level array, on
     ``session/new`` and ``session/load`` alike, so every user server the block
-    keeps gets the ``timeout`` here (KAS's session-level element has no slot).
+    keeps gets the ``timeout`` here (the hoist stamps Crew's own in their
+    ``_meta.kiro``).
     """
     stamp = agent.get(CREW_SETTINGS_MCP_KEY)
     if not isinstance(stamp, dict):
