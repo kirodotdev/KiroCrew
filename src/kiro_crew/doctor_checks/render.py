@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import contextlib
 import os
+import stat
 import textwrap
 from collections.abc import Callable, Iterator
+from pathlib import Path
 
 
 def _safe_display(value: object) -> str:
@@ -58,6 +60,25 @@ def _print_wrapped(text: str, keep: tuple[str, ...] = ()) -> None:
         break_on_hyphens=False,
     ):
         print(f"{_INDENT}{line.replace(_KEPT_SPACE, ' ')}")
+
+
+def _probe_file(path: Path) -> tuple[bool, OSError | None]:
+    """Whether *path* is a regular file, and the error when the host did not say.
+
+    ``stat`` is called here rather than through ``Path.exists()`` or
+    ``Path.is_file()``, whose answer to a refused ``stat`` depends on the
+    interpreter: Python 3.12 and 3.13 raise it, which ends the whole doctor run,
+    and 3.14 returns ``False``, which reads as "not there" on a host that has the
+    file. An agent sandbox that hides a path refuses this ``stat``, and so does a
+    directory this user lacks permission on. Only a missing file or a missing
+    directory answers "not there".
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode), None
+    except (FileNotFoundError, NotADirectoryError):
+        return False, None
+    except OSError as exc:
+        return False, exc
 
 
 @contextlib.contextmanager
