@@ -86,8 +86,11 @@ loop, which the route-latency middleware drives on every HTTP request. The
 consequence to know: the recheck is eventual in BOTH directions. A change is
 noticed at the window boundary and lands a thread hop later, which is immaterial
 against the window it already sits behind. `_check_in_flight` keeps a busy window
-from spawning one worker per request, and is cleared in the worker's `finally` so a
-crash costs one window rather than stranding the check.
+from spawning one worker per request. It is set only after the worker's
+`Thread.start()` returned and cleared in the worker's `finally`, so neither a crash
+nor a thread that cannot start (thread exhaustion, interpreter shutdown, a test
+patching `Thread.start`) strands the check: a set flag with no worker would skip
+every later recheck for the life of the process.
 
 Consent resolution is env-first: `env_pin()` reads `DO_NOT_TRACK`, then
 `TELEMETRY_ENV_VAR` (`KIROCREW_TELEMETRY`), then `KIROCREW_TELEMETRY_DISABLED`
@@ -137,7 +140,10 @@ polling. `shutdown()` bumps the generation but does not stop an already-running
 consent worker, so `reset_for_testing()` also waits (bounded, `_RESET_WAIT_BOUND_SECS`)
 for `_check_in_flight` to clear before returning — raising if the bound expires —
 so a worker left running by an earlier test can never mutate module state
-underneath the next one.
+underneath the next one. That error carries the stack of each live
+`kirocrew-telemetry-consent` thread (the step it is held in: config read, provider
+flush or build), or states that no such thread is alive, i.e. a flag left set with
+no worker behind it (`metrics/consent_worker_stacks.py`).
 
 One consequence of the detached flush: while it is still in its join, a re-enable
 can put a second exporter on the same per-PID shard, which the local exporter's
