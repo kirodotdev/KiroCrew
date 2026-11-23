@@ -3207,11 +3207,18 @@ unless its `_meta.kiro` names a `timeout` on an engine that reads it (below),
 and only Crew's own elements carry one, so a user server hoisted there would lose the default
 `kas_settings_mcp.finish_settings_mcp` gives the block (120 s, 300 s for a remote one). On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
-entry stays authoritative and a name appears once), and only a stdio entry whose
-keys are drawn only from `command`, `args`, `env`, `type` — a `disabled`,
-`disabledTools` or `timeout` customization, a registry marker, a remote URL or a
-command-less entry keeps the agent-block path where that field is honoured.
-A managed stdio entry kept there (a `timeout`, a registry marker) still
+entry stays authoritative and a name appears once), and only a stdio entry with a
+command moves — a registry marker, a remote URL or a command-less entry keeps
+the agent-block path where that field is honoured. A managed stdio entry with a
+key outside `command`, `args`, `env`, `type` (a `timeout`, a `cwd`) moves anyway
+when the session has a token:
+those keys are dropped and named in one info log line, since the hoisted
+element does not reproduce them (a user `timeout` gives way to the 120 s
+`_meta.kiro.timeout` below). Left
+in the block it would carry no session token and refuse every call as
+`identity_unattested`. An app server entry with such a key, or any entry with
+one on a session without a token, still keeps the block.
+A managed stdio entry kept there (a registry marker, an extra key with no token) still
 launches the managed invocation: its `command` and `args` are replaced from
 `SessionExtras.managed_entries` (`agent.with_managed_launch`), every other key
 stays as projected, and it carries no session token. KAS starts a block entry
@@ -3223,7 +3230,7 @@ untouched: refs resolve wherever the server was declared, and on 2.18.0 an
 allowlist-only or `excludedTools` restriction on the hoisted server still
 yields readiness with only the permitted tag advertised. Exact legacy
 limitation: on a release that stamps no provenance, a managed entry left in the
-block by one of those extra fields is still refused as
+block by a registry marker is still refused as
 `connected without provenance`; it works on a release that stamps `origin:
 client`.
 
