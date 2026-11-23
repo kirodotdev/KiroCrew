@@ -52,6 +52,7 @@ from ci_test_selection_ledger_fake import (
 
 from scripts import ci_test_selection_ledger as ledger
 
+# guard-tier: not a member -- it reads ci.yml and its own temp folder, never the test tree
 # The script's own binding of the shadow module: the one its calls go through.
 shadow = ledger.shadow
 

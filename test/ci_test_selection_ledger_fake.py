@@ -24,6 +24,8 @@ shadow = ledger.shadow
 
 ROOT = Path(__file__).resolve().parents[1]
 DAY = "2026-11-18T00:00:00Z"
+# `gh api` on a log the token may not read, as the Actions token may not here.
+REFUSED = "gh: Resource not accessible by integration (HTTP 403)"
 LATER = "2026-11-18T01:00:00Z"
 VERDICT: dict[str, Any] = {
     "schema": 1,
@@ -95,6 +97,16 @@ class FakeGh:
         self.expired: set[int] = set()
         # Runs that uploaded their artifact twice (two ids for one run).
         self.twice: set[int] = set()
+        # What `gh` says when it ends a log read with an error; "" for a read that
+        # only fails when the job has no log here.
+        self.log_error = ""
+        # Artifacts whose download arrives cut short.
+        self.torn: set[int] = set()
+        # URL fragments whose next read fails once, then answers.
+        self.fail_once: set[str] = set()
+        # Called before a page of the repository's artifact listing is answered,
+        # with the page number: artifacts uploaded or deleted while a pass reads.
+        self.before_artifact_page: Any = None
         self.pool = 15000
 
     def add(
@@ -130,6 +142,22 @@ class FakeGh:
             if run["id"] == run_id:
                 run["run_attempt"] = len(attempts)
 
+    def _artifacts(self) -> list[dict[str, Any]]:
+        """One artifact a run, its id the run's, created when the run was, newest first."""
+        dated = {run["id"]: run["created_at"] for run in self.runs}
+        listed = [
+            {
+                "id": run_id,
+                "name": "test-selection-verdict",
+                "expired": run_id in self.expired,
+                "created_at": dated[run_id],
+                "workflow_run": {"id": run_id},
+            }
+            for run_id in sorted(self.artifacts, key=lambda r: (dated[r], r), reverse=True)
+        ]
+        again = [{**item, "id": item["id"] + 1000} for item in listed if item["id"] in self.twice]
+        return listed + again
+
     def _listed(self, url: str) -> list[dict[str, Any]]:
         """The runs a listing URL names: its event, branch, status and `created` window."""
         event = re.search(r"[?&]event=(\w+)", url)
@@ -154,6 +182,10 @@ class FakeGh:
     def gh_json(self, args: list[str], root: Path) -> Any:
         url = args[1]
         self.calls.append(url)
+        for fragment in sorted(self.fail_once):
+            if fragment in url:
+                self.fail_once.discard(fragment)
+                raise subprocess.CalledProcessError(1, args, stderr="gh: Bad Gateway (HTTP 502)")
         if "/workflows/ci.yml/runs?" in url:
             listed = self._listed(url)
             return {"total_count": len(listed), "workflow_runs": self._page(url, listed)}
@@ -177,22 +209,15 @@ class FakeGh:
             other = [{"id": 900 + n, "name": f"Lint {n}", "conclusion": "success"} for n in (1, 2)]
             jobs = other + self.jobs[key]
             return {"total_count": len(jobs), "jobs": self._page(url, jobs)}
+        own = re.search(r"/actions/runs/(\d+)/artifacts\?name=", url)
+        if own:
+            mine = [a for a in self._artifacts() if a["workflow_run"]["id"] == int(own[1])]
+            return {"total_count": len(mine), "artifacts": mine}
         if "/actions/artifacts?name=" in url:
-            # One artifact a run, its id the run's, created when the run was, newest first.
-            dated = {run["id"]: run["created_at"] for run in self.runs}
-            listed = [
-                {
-                    "id": run_id,
-                    "name": "test-selection-verdict",
-                    "expired": run_id in self.expired,
-                    "created_at": dated[run_id],
-                    "workflow_run": {"id": run_id},
-                }
-                for run_id in sorted(self.artifacts, key=lambda r: dated[r], reverse=True)
-            ]
-            listed += [
-                {**item, "id": item["id"] + 1000} for item in listed if item["id"] in self.twice
-            ]
+            page = re.search(r"[?&]page=(\d+)", url)
+            if self.before_artifact_page is not None and page:
+                self.before_artifact_page(int(page[1]))
+            listed = self._artifacts()
             return {"total_count": len(listed), "artifacts": self._page(url, listed)}
         if url == "rate_limit":
             return {"resources": {"core": {"remaining": self.pool}}}
@@ -203,15 +228,20 @@ class FakeGh:
     def raw(self, argv: list[str], root: Path) -> bytes:
         """An artifact's archive: one JSON file for each text the run's artifact holds."""
         self.calls.append(" ".join(argv[1:4]))
+        artifact = int(argv[-1].rsplit("/", 2)[1])
+        if artifact in self.torn:
+            return b"PK not an archive"
         held = io.BytesIO()
         with zipfile.ZipFile(held, "w") as archive:
-            for number, text in enumerate(self.artifacts[int(argv[-1].rsplit("/", 2)[1])]):
+            for number, text in enumerate(self.artifacts[artifact]):
                 archive.writestr(f"verdict-{number}.json", text)
         return held.getvalue()
 
     def run(self, argv: list[str], root: Path) -> str:
         self.calls.append(" ".join(argv[1:4]))
         job_id = int(argv[-1].rsplit("/", 2)[1])
+        if self.log_error:
+            raise subprocess.CalledProcessError(1, argv, stderr=self.log_error)
         if job_id not in self.logs:
             raise subprocess.CalledProcessError(1, argv)
         return "".join(

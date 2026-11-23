@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 from ci_test_selection_ledger_fake import (
     FULL,
+    REFUSED,
     ROOT,
     VERDICT,
     WIN_SELECT,
@@ -108,9 +109,22 @@ def test_annotations_that_may_not_be_the_whole_answer_need_the_log(
         [*files, "test/test_only_in_the_log.py"]
     )
 
-    # The same run when the log cannot be read: its failing tests are not all
-    # known, so it is excluded with the reason, is no trial, and is not asked for again.
+    # The same run when the log read fails for now (no answer, a server error, a
+    # spent limit, which GitHub also answers with 403): nothing is recorded, and a
+    # later pass asks again.
     del gh.logs[12]
+    later = tmp_path / "later"
+    later.mkdir()
+    shutil.copytree(tmp_path / "verdicts", later / "verdicts")
+    for said in ("", "gh: Bad Gateway (HTTP 502)", "gh: API rate limit exceeded (HTTP 403)"):
+        gh.log_error = said
+        assert run_main(later) == 0
+        assert rows(later) == []
+
+    # And when GitHub refuses the log, as it does the Actions token here: the
+    # run's failing tests are not all known, so it is excluded with the reason,
+    # is no trial, and is not asked for again.
+    gh.log_error = REFUSED
     again = tmp_path / "again"
     again.mkdir()
     shutil.copytree(tmp_path / "verdicts", again / "verdicts")
@@ -125,6 +139,31 @@ def test_annotations_that_may_not_be_the_whole_answer_need_the_log(
     before = len(gh.calls)
     assert run_main(again) == 0
     assert not [call for call in gh.calls[before:] if "/runs/1/" in call or "check-runs" in call]
+
+
+def test_the_suites_limit_is_counted_in_annotations_not_in_the_tests_they_name(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    # Half the limit in tests, each annotated twice (its call and its teardown):
+    # the suite wrote all it writes, so a further failing file may be missing.
+    twice = [f"test/test_n{n}.py" for n in range(ledger.ANNOTATED_FAILURES_MAX // 2)] * 2
+    assert len(twice) == ledger.ANNOTATED_FAILURES_MAX > len(set(twice))
+    _annotated_run(gh, twice, ["test/test_past_the_limit.py"])
+
+    assert run_main(tmp_path) == 0
+
+    assert [r["file"] for r in rows(tmp_path, "failure")] == sorted(
+        {*twice, "test/test_past_the_limit.py"}
+    )
+    # One record fewer is under the limit: the annotations are the whole answer.
+    under = tmp_path / "under"
+    under.mkdir()
+    shutil.copytree(tmp_path / "verdicts", under / "verdicts")
+    gh.annotations[12] = twice[:-1]
+    before = len(gh.calls)
+    assert run_main(under) == 0
+    assert [r["file"] for r in rows(under, "failure")] == sorted(set(twice))
+    assert not [call for call in gh.calls[before:] if "logs" in call]
 
 
 def test_a_full_page_of_annotations_is_not_taken_for_all_of_them(
@@ -375,6 +414,126 @@ def test_the_verdicts_of_a_pass_come_from_one_listing_and_one_download_each(
     assert reasons == {2: ledger.NO_VERDICT, 4: ledger.NO_VERDICT, 5: ledger.BAD_VERDICT}
     assert len([call for call in gh.calls if "/actions/artifacts?name=" in call]) == 1
     assert len([call for call in gh.calls if call.endswith("/zip")]) == 2
+
+
+def _five_runs_with_verdicts(gh: FakeGh) -> None:
+    for run_id in range(1, 6):
+        stamp = f"2026-11-1{run_id}T00:00:00Z"
+        gh.add(run_id, run_id, [[job(run_id * 10, 1)]], verdict=None, date=stamp)
+        gh.artifacts[run_id] = [json.dumps(VERDICT)]
+
+
+@pytest.mark.parametrize("change", ["an upload", "a deletion"])
+@pytest.mark.parametrize("at_page", [2, 3])
+def test_a_listing_that_shifts_under_the_pass_costs_no_run_its_verdict(
+    gh: FakeGh, tmp_path: Path, change: str, at_page: int
+) -> None:
+    gh.page_size = 2
+    _five_runs_with_verdicts(gh)
+    moved: list[int] = []
+
+    def shift(page: int) -> None:
+        if page != at_page or moved:
+            return
+        moved.append(page)
+        if change == "an upload":
+            # A newer run uploads its verdict: every artifact moves one place on, and the
+            # last of the page before is listed again as the first of this one.
+            gh.add(9, 9, [[job(90, 1)]], verdict=None, date="2026-11-19T00:00:00Z")
+            gh.artifacts[9] = [json.dumps(VERDICT)]
+        else:
+            # A rerun replaces the newest artifact: every older one moves one place
+            # back, and the first of this page was never listed.
+            del gh.artifacts[5]
+
+    gh.before_artifact_page = shift
+
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+
+    # Runs 1 to 5 were listed when the pass began (run 5 was read before its artifact
+    # went): each has its one verdict, and none is recorded as having none or two.
+    assert moved and sorted(r["run"] for r in rows(tmp_path, "run")) == [1, 2, 3, 4, 5]
+    assert rows(tmp_path, "skip") == []
+    # An upload shows an artifact twice, which is still one; a deletion hides one, and
+    # only the run it hid is asked for its own listing.
+    asked = [call for call in gh.calls if "/artifacts?name=" in call and "/actions/runs/" in call]
+    assert len(asked) == (0 if change == "an upload" else 1)
+
+
+def test_a_page_of_the_artifact_listing_that_fails_is_asked_for_again_not_passed_over(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    gh.page_size = 2
+    _five_runs_with_verdicts(gh)
+    gh.fail_once = {"/actions/artifacts?name=test-selection-verdict&per_page=100&page=2"}
+
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+
+    # Runs 5 and 4 are on the first page. Run 3 needed the page that failed: it is
+    # left for a later pass, never recorded as a run with no verdict; the page
+    # is then read for run 2, and the runs after it lose nothing.
+    assert [r["run"] for r in rows(tmp_path, "run")] == [5, 4, 2, 1]
+    assert rows(tmp_path, "skip") == []
+    pages = [call[-6:] for call in gh.calls if "/actions/artifacts?name=" in call]
+    assert pages == ["page=1", "page=2", "page=2", "page=3"]
+    # No run had to be asked for its own artifacts: the listing lost none.
+    assert not [call for call in gh.calls if "/actions/runs/" in call and "/artifacts?" in call]
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+    assert sorted(r["run"] for r in rows(tmp_path, "run")) == [1, 2, 3, 4, 5]
+
+
+def test_a_download_that_is_no_archive_is_a_failed_read_not_a_bad_verdict(
+    gh: FakeGh, tmp_path: Path
+) -> None:
+    _five_runs_with_verdicts(gh)
+    gh.torn.add(3)
+
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+
+    assert sorted(r["run"] for r in rows(tmp_path, "run")) == [1, 2, 4, 5]
+    assert rows(tmp_path, "skip") == []
+    gh.torn.clear()
+    assert run_main(tmp_path, "--no-windows", offline=False) == 0
+    assert sorted(r["run"] for r in rows(tmp_path, "run")) == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.parametrize("conclusion", ["success", "cancelled", "skipped", "startup_failure"])
+def test_what_a_conclusion_decides_is_decided_on_a_first_attempt_only(
+    gh: FakeGh, tmp_path: Path, conclusion: str
+) -> None:
+    full_both = {**FULL, "windows": {"verdict": "full", "reason": "linux_full: no bundle"}}
+    # Attempt 1 failed a shard; attempt 2 reran that shard to green. Whatever the
+    # run's conclusion says of the second attempt, the first is read.
+    first = [job(11, 1), job(12, 2, "failure")]
+    gh.add(1, 7, [first, [job(13, 2)]], verdict=full_both)["conclusion"] = conclusion
+    gh.logs[12] = ["test/test_a.py"]
+    # The same file fails on another branch: the rerun's failure is what says it is shared.
+    failed_run(gh, 2, 8, ["test/test_a.py"])
+
+    assert run_main(tmp_path) == 0
+
+    assert rows(tmp_path, "skip") == []
+    seen = {(r["run"], r["file"], r["rerun_green"]) for r in rows(tmp_path, "failure")}
+    assert seen == {(1, "test/test_a.py", True), (2, "test/test_a.py", False)}
+    marked = ledger.classify(ledger.current(rows(tmp_path), None), 3.0)
+    assert [row["shared"] for row in marked if row["run"] == 2] == [True]
+
+
+@pytest.mark.parametrize("conclusion", ledger._NOT_YET)
+def test_a_run_whose_conclusion_is_not_final_is_neither_read_nor_recorded(
+    gh: FakeGh, tmp_path: Path, conclusion: str
+) -> None:
+    run = gh.add(1, 7, [[job(11, 1)]])
+    run["conclusion"] = conclusion
+
+    assert run_main(tmp_path) == 0
+
+    assert rows(tmp_path) == []
+    assert not [call for call in gh.calls if "/runs/1/" in call or "check-runs" in call]
+    # The same run id and attempt, once it has run: read like any other.
+    run["conclusion"] = "success"
+    assert run_main(tmp_path) == 0
+    assert [r["run"] for r in rows(tmp_path, "run")] == [1]
 
 
 def test_the_artifact_listing_is_read_only_as_far_back_as_the_runs_asked_for(
