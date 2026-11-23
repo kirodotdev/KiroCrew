@@ -19854,7 +19854,15 @@
         "strict_off": "Autoriser un léger délai aléatoire",
         "strict_off_hint": "Démarre un peu en retard pour répartir la charge",
         "strict_on": "Exécuter à l’heure exacte",
-        "strict_on_hint": "Démarre exactement à l’heure prévue"
+        "strict_on_hint": "Démarre exactement à l’heure prévue",
+        "send_to_telegram": "Définir la destination Telegram",
+        "telegram_failed": "{{name}} (échec)",
+        "telegram_failed_reason": "{{name}} (échec : {{reason}})",
+        "telegram_failed_heading": "Certaines tâches cochées n’ont pas pu être mises à jour. Elles restent cochées.",
+        "telegram_kept_slack_heading": "Ces tâches cochées gardent leur canal Slack et n’ont pas été mises à jour. Elles restent cochées.",
+        "telegram_updated_many": "{{count}} tâches transmettent désormais leurs résultats à {{destination}}.",
+        "telegram_updated_one": "{{count}} tâche transmet désormais ses résultats à {{destination}}.",
+        "telegram_updated_other": "{{count}} tâches transmettent désormais leurs résultats à {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_many": "{{count}} tâches sur {{total}} n'ont pas pu être déplacées",

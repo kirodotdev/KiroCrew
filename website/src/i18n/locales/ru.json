@@ -20375,7 +20375,16 @@
         "strict_off": "Разрешить небольшую случайную задержку",
         "strict_off_hint": "Запуск чуть позже, чтобы распределить нагрузку",
         "strict_on": "Запускать точно по расписанию",
-        "strict_on_hint": "Запуск точно по расписанию"
+        "strict_on_hint": "Запуск точно по расписанию",
+        "send_to_telegram": "Задать назначение в Telegram",
+        "telegram_failed": "{{name}} (сбой)",
+        "telegram_failed_reason": "{{name}} (сбой: {{reason}})",
+        "telegram_failed_heading": "Некоторые отмеченные задания не удалось обновить. Они остаются выбранными.",
+        "telegram_kept_slack_heading": "Эти отмеченные задания сохраняют свой канал Slack и не обновлены. Они остаются выбранными.",
+        "telegram_updated_few": "{{count}} задания теперь доставляют результаты в {{destination}}.",
+        "telegram_updated_many": "{{count}} заданий теперь доставляют результаты в {{destination}}.",
+        "telegram_updated_one": "{{count}} задание теперь доставляет результаты в {{destination}}.",
+        "telegram_updated_other": "{{count}} задания теперь доставляют результаты в {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_few": "Не удалось переместить {{count}} из {{total}} заданий",

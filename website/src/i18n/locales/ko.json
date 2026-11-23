@@ -18807,7 +18807,13 @@
         "strict_off": "약간의 무작위 지연 허용",
         "strict_off_hint": "부하를 분산하려고 조금 늦게 시작",
         "strict_on": "정확한 시간에 실행",
-        "strict_on_hint": "예정된 시간에 정확히 시작"
+        "strict_on_hint": "예정된 시간에 정확히 시작",
+        "send_to_telegram": "Telegram 대상 설정",
+        "telegram_failed": "{{name}} (실패)",
+        "telegram_failed_reason": "{{name}} (실패: {{reason}})",
+        "telegram_failed_heading": "선택한 작업 중 일부를 업데이트하지 못했습니다. 선택된 상태로 유지됩니다.",
+        "telegram_kept_slack_heading": "선택한 이 작업은 Slack 채널을 유지하므로 업데이트되지 않았습니다. 선택된 상태로 유지됩니다.",
+        "telegram_updated_other": "작업 {{count}}개의 대상이 이제 {{destination}}입니다."
       },
       "cronFolders": {
         "batch_move_failed_other": "{{total}}개 중 {{count}}개의 작업을 이동하지 못했습니다",

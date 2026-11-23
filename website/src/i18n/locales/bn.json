@@ -19333,7 +19333,14 @@
         "strict_off": "সামান্য এলোমেলো দেরি হতে দাও",
         "strict_off_hint": "চাপ ভাগ করতে একটু দেরিতে শুরু হয়",
         "strict_on": "ঠিক সময়ে চালাও",
-        "strict_on_hint": "ঠিক নির্ধারিত সময়ে শুরু হয়"
+        "strict_on_hint": "ঠিক নির্ধারিত সময়ে শুরু হয়",
+        "send_to_telegram": "Telegram গন্তব্য ঠিক করো",
+        "telegram_failed": "{{name}} (ব্যর্থ)",
+        "telegram_failed_reason": "{{name}} (ব্যর্থ: {{reason}})",
+        "telegram_failed_heading": "কিছু নির্বাচিত কাজ আপডেট করা যায়নি। সেগুলো নির্বাচিত থাকে।",
+        "telegram_kept_slack_heading": "এই নির্বাচিত কাজগুলো নিজেদের Slack চ্যানেল রাখে, তাই আপডেট হয়নি। সেগুলো নির্বাচিত থাকে।",
+        "telegram_updated_one": "{{count}} টি কাজের গন্তব্য এখন {{destination}}।",
+        "telegram_updated_other": "{{count}} টি কাজের গন্তব্য এখন {{destination}}।"
       },
       "cronFolders": {
         "batch_move_failed_one": "{{total}} টির মধ্যে {{count}} টি কাজ সরানো যায়নি",

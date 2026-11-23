@@ -18812,7 +18812,13 @@
         "strict_off": "允许少量随机延迟",
         "strict_off_hint": "稍晚一点开始，以分散负载",
         "strict_on": "按准确时间运行",
-        "strict_on_hint": "严格按计划时间开始"
+        "strict_on_hint": "严格按计划时间开始",
+        "send_to_telegram": "设置 Telegram 目标",
+        "telegram_failed": "{{name}}（失败）",
+        "telegram_failed_reason": "{{name}}（失败：{{reason}}）",
+        "telegram_failed_heading": "部分勾选的任务未能更新，仍保持选中。",
+        "telegram_kept_slack_heading": "这些勾选的任务保留其 Slack 频道，未更新，仍保持选中。",
+        "telegram_updated_other": "{{count}} 个任务的目标现已设为 {{destination}}。"
       },
       "cronFolders": {
         "batch_move_failed_other": "{{total}} 个任务中有 {{count}} 个无法移动",

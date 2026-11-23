@@ -18812,7 +18812,13 @@
         "strict_off": "わずかなランダム遅延を許可",
         "strict_off_hint": "負荷を分散するため少し遅れて開始",
         "strict_on": "正確な時刻に実行",
-        "strict_on_hint": "スケジュールどおりに正確に開始"
+        "strict_on_hint": "スケジュールどおりに正確に開始",
+        "send_to_telegram": "Telegram の送信先を設定",
+        "telegram_failed": "{{name}}（失敗）",
+        "telegram_failed_reason": "{{name}}（失敗：{{reason}}）",
+        "telegram_failed_heading": "チェックしたジョブの一部を更新できませんでした。選択されたままです。",
+        "telegram_kept_slack_heading": "これらのチェックしたジョブは Slack チャネルを維持するため、更新されていません。選択されたままです。",
+        "telegram_updated_other": "{{count}} 件のジョブの送信先が {{destination}} になりました。"
       },
       "cronFolders": {
         "batch_move_failed_other": "{{total}}件中{{count}}件のジョブを移動できませんでした",

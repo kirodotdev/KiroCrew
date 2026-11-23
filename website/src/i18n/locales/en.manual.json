@@ -9258,7 +9258,14 @@
         "strict_off": "Allow small random delay",
         "strict_off_hint": "Start a little late to spread the load",
         "strict_on": "Run at exact time",
-        "strict_on_hint": "Start exactly on schedule"
+        "strict_on_hint": "Start exactly on schedule",
+        "send_to_telegram": "Set Telegram destination",
+        "telegram_failed": "{{name}} (failed)",
+        "telegram_failed_reason": "{{name}} (failed: {{reason}})",
+        "telegram_failed_heading": "Some checked jobs could not be updated. They stay selected.",
+        "telegram_kept_slack_heading": "These checked jobs keep their Slack channel and were not updated. They stay selected.",
+        "telegram_updated_one": "{{count}} job now reports to {{destination}}.",
+        "telegram_updated_other": "{{count}} jobs now report to {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_one": "{{count}} of {{total}} job could not be moved",

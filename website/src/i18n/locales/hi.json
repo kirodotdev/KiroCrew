@@ -19333,7 +19333,14 @@
         "strict_off": "थोड़ी रैंडम देरी होने दो",
         "strict_off_hint": "लोड बाँटने के लिए थोड़ी देर से शुरू होता है",
         "strict_on": "ठीक समय पर चलाओ",
-        "strict_on_hint": "ठीक शेड्यूल पर शुरू होता है"
+        "strict_on_hint": "ठीक शेड्यूल पर शुरू होता है",
+        "send_to_telegram": "Telegram गंतव्य तय करो",
+        "telegram_failed": "{{name}} (विफल)",
+        "telegram_failed_reason": "{{name}} (विफल: {{reason}})",
+        "telegram_failed_heading": "कुछ चुने गए कार्य अपडेट नहीं हो सके। वे चुने हुए रहते हैं।",
+        "telegram_kept_slack_heading": "ये चुने गए कार्य अपना Slack चैनल रखते हैं और अपडेट नहीं हुए। वे चुने हुए रहते हैं।",
+        "telegram_updated_one": "{{count}} कार्य का गंतव्य अब {{destination}} है।",
+        "telegram_updated_other": "{{count}} कार्यों का गंतव्य अब {{destination}} है।"
       },
       "cronFolders": {
         "batch_move_failed_one": "{{total}} में से {{count}} कार्य स्थानांतरित नहीं किया जा सका",

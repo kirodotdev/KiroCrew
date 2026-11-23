@@ -19854,7 +19854,15 @@
         "strict_off": "Permitir um pequeno atraso aleatório",
         "strict_off_hint": "Começa um pouco depois para distribuir a carga",
         "strict_on": "Executar no horário exato",
-        "strict_on_hint": "Começa exatamente no horário agendado"
+        "strict_on_hint": "Começa exatamente no horário agendado",
+        "send_to_telegram": "Definir destino no Telegram",
+        "telegram_failed": "{{name}} (falha)",
+        "telegram_failed_reason": "{{name}} (falha: {{reason}})",
+        "telegram_failed_heading": "Algumas tarefas marcadas não puderam ser atualizadas. Elas continuam selecionadas.",
+        "telegram_kept_slack_heading": "Estas tarefas marcadas mantêm o canal do Slack e não foram atualizadas. Elas continuam selecionadas.",
+        "telegram_updated_many": "{{count}} tarefas agora reportam para {{destination}}.",
+        "telegram_updated_one": "{{count}} tarefa agora reporta para {{destination}}.",
+        "telegram_updated_other": "{{count}} tarefas agora reportam para {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_many": "Não foi possível mover {{count}} de {{total}} tarefas",

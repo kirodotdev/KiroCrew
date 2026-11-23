@@ -19333,7 +19333,14 @@
         "strict_off": "Kleine zufällige Verzögerung erlauben",
         "strict_off_hint": "Startet etwas später, um die Last zu verteilen",
         "strict_on": "Zur exakten Zeit ausführen",
-        "strict_on_hint": "Startet genau nach Zeitplan"
+        "strict_on_hint": "Startet genau nach Zeitplan",
+        "send_to_telegram": "Telegram-Ziel festlegen",
+        "telegram_failed": "{{name}} (fehlgeschlagen)",
+        "telegram_failed_reason": "{{name}} (fehlgeschlagen: {{reason}})",
+        "telegram_failed_heading": "Einige ausgewählte Jobs konnten nicht aktualisiert werden. Diese bleiben ausgewählt.",
+        "telegram_kept_slack_heading": "Diese ausgewählten Jobs behalten ihren Slack-Kanal, wurden nicht aktualisiert und bleiben ausgewählt.",
+        "telegram_updated_one": "{{count}} Job berichtet jetzt an {{destination}}.",
+        "telegram_updated_other": "{{count}} Jobs berichten jetzt an {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_one": "{{count}} von {{total}} Job konnte nicht verschoben werden",

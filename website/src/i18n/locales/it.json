@@ -19854,7 +19854,15 @@
         "strict_off": "Consenti un piccolo ritardo casuale",
         "strict_off_hint": "Parte un po’ in ritardo per distribuire il carico",
         "strict_on": "Esegui all’ora esatta",
-        "strict_on_hint": "Parte esattamente all’ora pianificata"
+        "strict_on_hint": "Parte esattamente all’ora pianificata",
+        "send_to_telegram": "Imposta destinazione Telegram",
+        "telegram_failed": "{{name}} (non riuscito)",
+        "telegram_failed_reason": "{{name}} (non riuscito: {{reason}})",
+        "telegram_failed_heading": "Non è stato possibile aggiornare alcuni processi selezionati. Restano selezionati.",
+        "telegram_kept_slack_heading": "Questi processi selezionati mantengono il loro canale Slack e non sono stati aggiornati. Restano selezionati.",
+        "telegram_updated_many": "{{count}} processi ora consegnano i risultati a {{destination}}.",
+        "telegram_updated_one": "{{count}} processo ora consegna i risultati a {{destination}}.",
+        "telegram_updated_other": "{{count}} processi ora consegnano i risultati a {{destination}}."
       },
       "cronFolders": {
         "batch_move_failed_many": "Impossibile spostare {{count}} processi su {{total}}",
