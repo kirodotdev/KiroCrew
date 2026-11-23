@@ -378,7 +378,9 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
     # Read once per pass. A rebuild writes ``kirocrew.json`` before it refreshes
     # the forks (``spec_rebuild``), so this is the default spec it just granted;
     # pinned by ``test_fork_edition_refs``.
-    default_tools = guide_platform.default_spec_tools()
+    from kiro_crew.agent_materialization import worker_agent
+
+    default_tools = (worker_agent._installed_default_spec() or {}).get("tools")
 
     for fork_name in sorted(forks):
         # Owned specs have their own writer; this path must never touch them -- EXCEPT an

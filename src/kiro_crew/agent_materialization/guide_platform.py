@@ -227,22 +227,8 @@ def record_fork_edition_baseline(fork: str) -> None:
     agent_state.add_edition_refs_offered(fork, offered)
 
 
-def default_spec_tools() -> list[str]:
-    """The ``tools`` of the default spec on disk, or ``[]`` when it cannot be read."""
-    from kiro_crew import user_json
-    from kiro_crew.agent_files import AGENT_FILENAME
-
-    try:
-        path = agent_mod.kiro_agents_dir_path() / AGENT_FILENAME
-        spec = user_json.loads_user_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    tools = spec.get("tools") if isinstance(spec, dict) else None
-    return [t for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
-
-
 def grant_fork_edition_refs_once(
-    config: dict[str, Any], fork: str, default_tools: list[str]
+    config: dict[str, Any], fork: str, default_tools: object
 ) -> list[str]:
     """Give a private copy of an owned template each edition ref the default spec got, once.
 
@@ -258,7 +244,7 @@ def grant_fork_edition_refs_once(
     from kiro_crew import agent_state
 
     tools = config.get("tools")
-    if not isinstance(tools, list):
+    if not isinstance(tools, list) or not isinstance(default_tools, list):
         return []
     try:
         offered = agent_state.get_edition_refs_offered(fork, strict=True)
