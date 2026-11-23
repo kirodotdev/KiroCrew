@@ -1182,10 +1182,12 @@ def authorize_target(
             "app_scoped_target",
         )
 
-    if getattr(slot, "workspace", "default") != getattr(caller_slot, "workspace", "default"):
-        # Workspaces are the memory boundary; reaching across one would let a
-        # session act on work it cannot see.
-        raise deny("target session belongs to a different workspace", "workspace_mismatch")
+    # Workspaces are the memory boundary; reaching across one would let a
+    # session act on work it cannot see. Refused below, after the fence verdict,
+    # so one refusal names both walls: a workspace fix cannot clear the fence.
+    other_workspace = getattr(slot, "workspace", "default") != getattr(
+        caller_slot, "workspace", "default"
+    )
     # Resolve the fence verdict ONCE. A caller passing ``precomputed_ownership_fenced``
     # already holds it — the HTTP gate's verified member admission, or
     # ``close_target``'s up-front pass — so honour that value rather than
@@ -1202,11 +1204,19 @@ def authorize_target(
     # waiver an agent-created session could never release itself from a parent,
     # because its own ``_created_by`` names its creator and not itself.
     self_addressed = slot.key == caller_key
-    if (
+    outside_fence = (
         ownership_fenced
         and not self_addressed
         and _outside_reach(state, slot, caller_key, operation)
-    ):
+    )
+    if other_workspace:
+        reason = "target session belongs to a different workspace"
+        if outside_fence:
+            reason += "; also, " + _not_creator_reason(
+                state, caller_key, caller_slot, precomputed_ownership_fenced
+            )
+        raise deny(reason, "workspace_mismatch")
+    if outside_fence:
         # The fence every exempted caller class is bounded by, plus anything they
         # created. It reaches ONLY the sessions the caller made itself
         # (`created_by` is written at birth and rehydrated on restart), or, for the

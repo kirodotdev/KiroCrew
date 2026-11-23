@@ -329,12 +329,14 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         send_to_target,
     )
     from kiro_crew.dashboard.session_control_parts.session_revive import (  # noqa: F401
+        _ARCHIVED_NOT_CREATOR,
         _PENDING_REBINDS,
         DEFAULT_HISTORY_LIST_ROWS,
         MAX_HISTORY_FOLDER_ID_CHARS,
         MAX_HISTORY_LIST_ROWS,
         MAX_HISTORY_SCAN_ENTRIES,
         UNVERIFIED_CREATOR,
+        _archived_fence_refusal,
         _archived_link_and_mirror,
         _archived_session_is_channel_linked,
         _archived_session_is_mirrored,
