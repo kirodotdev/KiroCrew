@@ -333,13 +333,21 @@ async def api_skills(request: web.Request) -> web.Response:
                 provider_type=served_provider_label(served),
             )
             if action == "read":
+                from kiro_crew.agent_sdk.kas_tool_names import is_kas_provider_label
+                from kiro_crew.skills_body_reads import kas_read_capacity
+
+                read_capacity = (
+                    kas_read_capacity(key, capacity)
+                    if is_kas_provider_label(served_provider_label(served))
+                    else capacity
+                )
                 outcome = skills.read_scoped_skill_page(
                     key,
                     only=only,
                     project_dir=project_dir,
                     offset=offset if paging else None,
                     limit=page_limit,
-                    capacity=capacity,
+                    capacity=read_capacity,
                 )
                 if isinstance(outcome, SkillReadRefusal):
                     return {"matches": [], "next_offset": None, "refusal": outcome._asdict()}
@@ -354,14 +362,14 @@ async def api_skills(request: web.Request) -> web.Response:
                 match: dict[str, Any] = {
                     "key": key,
                     "name": key,
-                    "description": "",
+                    "description": outcome.description,
                     "content": outcome.content,
                 }
                 if paging:
                     match["page"] = {
                         field: value
                         for field, value in outcome._asdict().items()
-                        if field != "content"
+                        if field not in ("content", "description")
                     }
                 return {"matches": [match], "next_offset": None}
             report = skills.search_skills_report(

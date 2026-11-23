@@ -283,6 +283,41 @@ def kas_runs_here(config: Any) -> bool:
     return False
 
 
+def kiro_cli_runs_anywhere(config: Any) -> bool:
+    """Whether any configured harness choice spawns kiro-cli. In memory.
+
+    The main and crewmate backends, a Bot's own pin, and the members of an enabled
+    ``agent.acp_failover`` chain. A choice runs kiro-cli when it is Kiro CLI, or KAS
+    served through kiro-cli's relay (``agent.kas_bundle`` off). A stored value is
+    read as written, so a pin that would land elsewhere still counts, and a Bot that
+    :func:`kas_runs_here` moves onto KAS counts too: the answer errs toward keeping
+    kiro-cli maintained. Never raises on a missing field.
+    """
+    from kiro_crew.acp_failover import failover_policy
+
+    agent = getattr(config, "agent", None)
+    relay = not getattr(agent, "kas_bundle", False)
+    chosen: list[object] = [
+        getattr(agent, "acp_backend", ""),
+        getattr(agent, "member_acp_backend", ""),
+    ]
+    for crew in list(getattr(config, "agents", {}) or {}):
+        pin = crewmate_pin_for(config, str(crew))
+        if pin is not None:
+            chosen.append(_backends.backend_from_stored(pin.stored))
+    policy = failover_policy(getattr(agent, "acp_failover", {}))
+    if policy.enabled:
+        chosen.extend(_backends.backend_from_stored(name) for name in policy.chain)
+    if any(
+        backend == _backends.ACP_BACKEND_KIRO or (relay and backend == _backends.ACP_BACKEND_KAS)
+        for backend in chosen
+    ):
+        return True
+    # A Bot that lands on KAS without choosing it (a worker spec KAS must carry, a pin
+    # to a harness Bots cannot run on) still runs through kiro-cli's relay.
+    return relay and kas_runs_here(config)
+
+
 def _note_pin_fallback(crew: str, pinned: str, landed: str) -> None:
     """Say once per process per Bot and harness where its pin runs instead (H3, H17)."""
     with _VERDICT_LOCK:
@@ -744,6 +779,29 @@ def _note_worker_spec_fallback(crew: str, inherited: str, fields: tuple[str, ...
     )
 
 
+#: ``(Bot, model)`` pairs whose unread own-file model was logged in this process.
+_file_model_logged: set[tuple[str, str]] = set()
+
+
+def note_unread_file_model(bot: str, file_id: str, model: str) -> None:
+    """Say once per process per Bot and value that its own file's ``model`` is not read.
+
+    No session reads that key on any backend (``rfc-mate-owned-agent-config`` §5),
+    so a model named there would otherwise never run without a word.
+    """
+    with _VERDICT_LOCK:
+        if (bot, model) in _file_model_logged:
+            return
+        _file_model_logged.add((bot, model))
+    logger.warning(
+        "Bot %r: its own file %r sets model %r, which is not read; its chat runs on "
+        "its Model setting and its workers on its Worker model setting. Set the model there.",
+        bot,
+        file_id,
+        model,
+    )
+
+
 def selectable_harnesses() -> list[str]:
     """Every harness a crewmate may be pinned to, in the stored spelling, sorted."""
     return sorted(_backends.backend_to_stored(b) for b in _backends.selectable_backends())
@@ -788,10 +846,11 @@ def _harnesses_whose_runtime_is_in(config: Any, runtimes: frozenset[str]) -> lis
 def crewmate_harnesses(config: Any) -> list[str]:
     """The harnesses a crewmate may be pinned to here, in the stored spelling, sorted.
 
-    The one list the harness picker offers and a save accepts: selectable on this
+    The one list the harness picker offers, and a save accepts it bar a harness this
+    host's sandbox refuses (:func:`harness_pin_rejected`): selectable on this
     gateway now (``selectable_backends()``, which the ``agent_backend`` governance
     scope already narrows), able to start here, AND crewmate-capable
-    (:data:`CREWMATE_CAPABLE_BACKENDS`: KAS, Claude Code, Codex today; never pi or
+    (:data:`CREWMATE_CAPABLE_BACKENDS`: KAS, Claude Code, Codex and Pi today; never
     deepseek), judged on the runtime the pin starts on.
     So a Kiro CLI pin counts as KAS where kiro-cli's v3 engine takes it, and as
     kiro-cli, which is not crewmate-capable, everywhere else.
@@ -849,17 +908,25 @@ def pin_remedy(pin: CrewBackendPin, harnesses: list[str], *, clearing_helps: boo
 def harness_pin_rejected(value: object, config: Any) -> str | None:
     """Why *value* cannot be stored as a crewmate's harness pin, or ``None``.
 
-    ``""`` clears the pin. Anything else must be in :func:`crewmate_harnesses`,
-    so a save can never store a pin that would refuse every session or run a
-    crewmate on a harness that cannot carry it.
+    ``""`` clears the pin. Anything else must be in :func:`crewmate_harnesses`
+    and be a harness this host's session start does not refuse
+    (``tool_gate.sandbox_floor_refusal``), so a save can never store a pin that
+    would refuse every session or run a crewmate on a harness that cannot carry
+    it. Blocking: the host question can probe for a sandbox backend.
     """
     if not isinstance(value, str):
         return "acp_backend must be a string"
     stored = value.strip()
-    allowed = crewmate_harnesses(config)
-    if not stored or stored in allowed:
+    if not stored:
         return None
-    return "acp_backend must be one of: " + ", ".join(["(empty)", *allowed])
+    allowed = crewmate_harnesses(config)
+    if stored not in allowed:
+        return "acp_backend must be one of: " + ", ".join(["(empty)", *allowed])
+    from kiro_crew import sandbox
+    from kiro_crew.agent_sdk.tool_gate import sandbox_floor_refusal
+
+    backend = str(_backends.backend_from_stored(stored))
+    return sandbox_floor_refusal(backend, sandbox.configured_sandbox_mode()) or None
 
 
 def pinned_entitlement_backend(

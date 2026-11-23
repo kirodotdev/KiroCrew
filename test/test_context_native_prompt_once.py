@@ -98,6 +98,43 @@ def test_the_block_stays_unless_the_harness_holds_its_exact_text(
     assert msg.count(BLOCK) == 1
 
 
+def test_a_conductor_handed_its_prompt_gets_only_the_widget_pointer(tmp_path, monkeypatch):
+    # A shipped conductor's block is its spec prompt plus the widget pointer, so it
+    # never equals the recorded wire prompt; only the part the harness lacks is sent.
+    conductor = "kirocrew-conductor"
+    agents_dir = tmp_path / ".kiro" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / f"{conductor}.json").write_text(
+        json.dumps({"name": conductor, "prompt": PERSONA}), encoding="utf-8"
+    )
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir)
+    monkeypatch.setattr("kiro_crew.agent_discovery._KIRO_AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(agent_sdk, "context_provider_of", lambda value: value)
+    builder = ContextBuilder(
+        memory=MemoryStore(workspace=tmp_path / "ws"),
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+    )
+
+    def turn(recorded: dict[str, str]) -> str:
+        msg, _ = builder.build_message(
+            "hello",
+            True,
+            "dashboard:conductor-chat",
+            agent=conductor,
+            context_provider=_kas_provider(recorded),
+        )
+        return msg
+
+    # Control: with nothing recorded, the block carries the prompt and the pointer.
+    full = turn({})
+    assert f"{BLOCK}\n{PERSONA}\n\n## Inline Widgets" in full
+    msg = turn({f"template://{conductor}#prompt": PERSONA})
+    assert PERSONA not in msg
+    assert f"{BLOCK}\n## Inline Widgets" in msg
+    assert msg.count(BLOCK) == 1
+
+
 def test_the_turn_after_a_compaction_still_restores_the_block(tmp_path, monkeypatch):
     _write_spec(tmp_path, monkeypatch, PERSONA)
     provider = _kas_provider({"template://writer#prompt": PERSONA})

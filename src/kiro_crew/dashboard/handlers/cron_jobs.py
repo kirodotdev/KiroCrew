@@ -55,6 +55,7 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _sel,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.token_auth_callers import effective_request_app
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
@@ -344,6 +345,7 @@ async def api_cron_tools(request: web.Request) -> web.Response:
     presented_token = request.headers.get("X-Session-Token", "")
     # Read while the verified caller's tab is open; cron_add records the answer.
     caller_is_person_tab = name == "cron_add" and is_person_tab(state, actual)
+    loop = asyncio.get_running_loop()
 
     def dispatch() -> str:
         # A tool that calls back into the gateway (cron_add creating a missing
@@ -357,8 +359,8 @@ async def api_cron_tools(request: web.Request) -> web.Response:
 
             if verify_session_token(presented_token) == actual:
                 token = presented_token
-        # ContextVars are isolated by to_thread. Restore the prior value even
-        # on failure; no caller identity survives into a later request.
+        # ContextVars are isolated by the call's copied context. Restore the prior
+        # value even on failure; no caller identity survives into a later request.
         previous = current_caller()
         set_current_caller(
             CallerContext(
@@ -369,13 +371,19 @@ async def api_cron_tools(request: web.Request) -> web.Response:
                 person_tab=caller_is_person_tab,
             )
         )
+        # The chat folder a cron_add/cron_update names is checked, held and its
+        # tab moved on this route's loop, which this call reaches through here.
+        route_call = mcp_cron.set_route_call(request, loop)
         try:
             return mcp_cron._call_tool_locally(name, arguments)
         finally:
+            mcp_cron.reset_route_call(route_call)
             set_current_caller(previous)
 
+    from kiro_crew.dashboard.cron_tools_pool import run_cron_tool_call
+
     try:
-        result = await asyncio.to_thread(dispatch)
+        result = await run_cron_tool_call(dispatch)
     except Exception:
         logger.exception("Cron tool dispatch failed")
         return web.json_response(
@@ -512,6 +520,9 @@ def _refuse_mate_home_chat_folder(
     memory_store: str,
     operation: str,
     current_chat_folder_id: str = "",
+    *,
+    caller: str = "dashboard",
+    source: str = "dashboard",
 ) -> web.Response | None:
     """A 403 ``mate_home_locked`` when the job's tab could never be filed in *chat_folder_id*.
 
@@ -521,6 +532,7 @@ def _refuse_mate_home_chat_folder(
     is the folder an existing job is filed in: moving its tab out of a mate's
     home its store may not write is refused the same way. Refused here, while a
     person is present to be told, and recorded like the routes' other denials.
+    *source* labels that row, and *caller* does when no app calls (an app is always named).
     """
     if not chat_folder_move_refuses_store(
         state, current_chat_folder_id, chat_folder_id, memory_store
@@ -533,10 +545,10 @@ def _refuse_mate_home_chat_folder(
         resources += f",current_chat_folder_id={current_chat_folder_id}"
     try:
         _sel().log_api_access(
-            caller=f"app:{app}" if app else "dashboard",
+            caller=f"app:{app}" if app else caller,
             operation=operation,
             outcome="denied",
-            source="dashboard",
+            source=source,
             resources=resources,
             error="mate_home_locked",
         )
@@ -622,6 +634,7 @@ def _with_schedule_warnings(
 #: set as ``mcp_cron._AUTO_RESETTING_FIELDS`` (a test keeps the two equal).
 _APP_AUTO_RESETTING_FIELDS = frozenset(
     {"message", "agent_id", "model", "cron_expr", "every_secs", "channel", "thread_ts"}
+    | {"channel_type", "target_id"}
 )
 
 #: What ``PATCH /api/crons/{id}`` says when a body names ``enabled``, which it ignores.
@@ -651,6 +664,50 @@ def _refuse_app_auto_approval(
         },
         status=403,
     )
+
+
+async def _channel_target_kwargs(
+    request: web.Request, state: DashboardState, body: dict[str, Any]
+) -> tuple[dict[str, str], web.Response | None]:
+    """The job's ``channel_type``/``target_id`` from *body*, vetted like ``send_message``'s.
+
+    ``({}, None)`` when the body names neither. A set pair passes the same four
+    gates as an explicit-target send (``_vet_channel_target``), so a destination
+    the job could never reach is refused when it is saved rather than at its
+    first run; the send re-checks them under the job's own ``cron:<id>`` key.
+    """
+    if "channel_type" not in body and "target_id" not in body:
+        return {}, None
+    pair: dict[str, str] = {}
+    for field in ("channel_type", "target_id"):
+        raw = body.get(field) or ""
+        if not isinstance(raw, str) or len(raw) > MAX_SHORT_STRING:
+            return {}, web.json_response(
+                {"error": f"invalid {field}", "code": "invalid_channel_target"}, status=400
+            )
+        pair[field] = raw.strip()
+    if bool(pair["channel_type"]) != bool(pair["target_id"]):
+        return {}, web.json_response(
+            {
+                "error": "channel_type and target_id are set together",
+                "code": "invalid_channel_target",
+            },
+            status=400,
+        )
+    if pair["channel_type"]:
+        # Function-local: the handlers package imports ``messaging`` after this
+        # module, so a module-scope import would close a cycle.
+        from kiro_crew.dashboard.handlers.messaging import _vet_channel_target
+
+        refusal = await _vet_channel_target(
+            state,
+            pair["channel_type"],
+            pair["target_id"],
+            request_app=effective_request_app(state, request),
+        )
+        if refusal is not None:
+            return {}, refusal
+    return pair, None
 
 
 async def api_crons_create(request: web.Request) -> web.Response:
@@ -729,6 +786,9 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return at_err
     if channel and not CHANNEL_ID_RE.match(channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
+    channel_target, channel_target_err = await _channel_target_kwargs(request, state, body)
+    if channel_target_err is not None:
+        return channel_target_err
     if approval_mode and approval_mode not in {"", "auto"}:
         return web.json_response({"error": "invalid approval_mode"}, status=400)
     if (refused := _refuse_app_auto_approval(request, approval_mode, "crons.create")) is not None:
@@ -884,6 +944,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
             return refused
     add_kwargs: dict[str, Any] = {
         "channel": channel,
+        **channel_target,
         "agent_id": (agent_id or ""),
         "member_id": member_id or "",
         "model": model_val,
@@ -894,6 +955,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "minimal_context": bool(minimal_context),
         "persistent_session": bool(persistent_session),
         "new_chat_per_run": new_chat_per_run,
+        # The store refuses anything but "resume" or "fresh" with a 400.
+        "on_tab_close": body.get("on_tab_close", "resume"),
         "folder_id": folder_id,
         "chat_folder_id": chat_folder_id,
         # Dashboard-only template provenance (see CronJob.source_preset). The
@@ -1176,6 +1239,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
         "minimal_context",
         "persistent_session",
         "new_chat_per_run",
+        "on_tab_close",
         "folder_id",
         "chat_folder_id",
     ):
@@ -1337,6 +1401,10 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["channel"] = ch
         if ch and (len(ch) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(ch)):
             return web.json_response({"error": "invalid channel ID format"}, status=400)
+    channel_target, channel_target_err = await _channel_target_kwargs(request, state, body)
+    if channel_target_err is not None:
+        return channel_target_err
+    kwargs.update(channel_target)
     # Schedule: accept cron_expr or every (seconds)
     # The store reads an empty value as "leave unchanged" (other writers rely on
     # that), so an empty one here answers ok for an edit that never happened: say so.

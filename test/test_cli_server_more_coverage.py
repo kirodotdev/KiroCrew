@@ -25,6 +25,7 @@ from cli_server_more_coverage_helpers import (  # noqa: F401 -- the fixture is r
 )
 
 from kiro_crew import cli_server, kiro_cli, platform_compat
+from kiro_crew.doctor_checks import services
 from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.platform.update_layout import InstallLayout
 
@@ -487,10 +488,34 @@ class TestUpdateGitPath:
             cli_server._update()
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "will be discarded" in out
+        assert "uncommitted changes in 1 file" in out
         assert " M src/a.py" in out
         assert "?? scratch.txt" not in out  # untracked files are preserved, not listed
-        assert "Aborted." in out
+        assert "Answer N to keep them" in out
+        # The stash steps act on the installed checkout, not the shell's folder.
+        assert f"go to the checkout:\n      {git_checkout}\n  and run there:\n" in out
+        assert "git stash\n" in out
+        assert "      kirocrew update\n" in out
+        assert "git stash pop" in out
+        assert "Your changes were kept" in out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_local_changes_prompt_counts_files_and_repeats_force(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub()
+        stub.status_out = "".join(f" M src/f{i}.py\n" for i in range(12))
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update(force=True)
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "uncommitted changes in 12 files" in out
+        assert " M src/f9.py" in out
+        assert " M src/f10.py" not in out
+        assert "… and 2 more" in out
+        assert "kirocrew update --force" in out
         assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
 
     def test_local_changes_confirmed_proceeds_to_reset(
@@ -625,6 +650,45 @@ class TestUpdateGitPath:
         assert built == [git_checkout]
         assert ["/usr/bin/kiro-cli", "update"] in stub.calls
         assert any("setup" in c for c in stub.calls)
+
+    @pytest.mark.parametrize(
+        ("main", "member", "runs"),
+        [
+            ("claude", "claude", False),
+            ("codex", "claude", False),
+            # "" is ACP_BACKEND_KIRO, the Kiro CLI backend's id.
+            ("claude", "", True),
+            ("", "claude", True),
+        ],
+    )
+    def test_kiro_cli_update_runs_only_when_a_selected_role_runs_kiro_cli(
+        self, monkeypatch, git_checkout, capsys, main, member, runs
+    ) -> None:
+        """With no selected backend on kiro-cli the step is skipped, the reason
+        printed, and kiro-cli is never launched (its 120 s wait is the gateway's
+        downtime).
+
+        RED-BEFORE: on main every row runs ``kiro-cli update``.
+        """
+        from kiro_crew.config import KiroCrewConfig
+
+        real_load = KiroCrewConfig.load
+
+        def _load(*args, **kw):
+            cfg = real_load(*args, **kw)
+            cfg.agent.acp_backend = main
+            cfg.agent.member_acp_backend = member
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(_load))
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
+        cli_server._update()
+        out = capsys.readouterr().out
+        assert (["/usr/bin/kiro-cli", "update"] in stub.calls) is runs
+        assert ("no selected backend runs kiro-cli" in out) is not runs
+        assert "Kiro Crew updated!" in out
 
     def test_agent_config_refresh_failure_only_warns(
         self, monkeypatch, git_checkout, capsys
@@ -1432,7 +1496,7 @@ class TestUpdateWheelInstaller:
     @pytest.mark.parametrize(
         ("stamp", "gateway", "code", "said"),
         [
-            (4242, 4242, 0, "The running gateway is already installing an update"),
+            (4242, 4242, 0, "It does not\n     restart itself"),
             (5151, 4242, 1, "possibly the gateway's own"),
             (4242, None, 1, "possibly the gateway's own"),
         ],
@@ -1440,8 +1504,9 @@ class TestUpdateWheelInstaller:
     def test_a_lock_the_running_gateway_holds_is_not_a_failure(
         self, monkeypatch, capsys, stamp, gateway, code, said
     ) -> None:
-        """The gateway's own update restarts it onto the new version, so the CLI says so
-        and exits 0; another holder, or a gateway it cannot name, keeps exit 1."""
+        """The gateway's own update is no failure, so the CLI exits 0 and says a restart
+        is still needed (the gateway never restarts itself); another holder, or a
+        gateway it cannot name, keeps exit 1."""
         from kiro_crew import gateway_lock
         from kiro_crew.platform import wheel_engine
 
@@ -1538,8 +1603,37 @@ class TestUpdateWheelInstaller:
             raise AssertionError("installer must not run when already current")
 
         monkeypatch.setattr(subprocess, "run", unreachable)
+        monkeypatch.setattr(services, "_running_gateway_version", lambda port: None)
         cli_server._update_wheel(_LAYOUT)
         assert "Already on the latest version" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("running", "said", "not_said"),
+        [
+            ("0.0.1", "but the running gateway is still 0.0.1", "Already on the latest"),
+            (None, "Already on the latest version", "kirocrew restart"),
+            ("same", "Already on the latest version", "kirocrew restart"),
+        ],
+    )
+    def test_already_latest_names_a_restart_when_the_gateway_runs_an_older_version(
+        self, monkeypatch, wheel_feed, capsys, running, said, not_said
+    ) -> None:
+        """An update never restarts the gateway, so the installed version can be the
+        latest while the gateway still serves an older one: then the next step is a
+        restart, not "already on the latest"."""
+        from kiro_crew import __version__ as local_version
+
+        wheel_feed(
+            b'{"schema": "kirocrew-cli-artifact-manifest-v1", "channel": "stable", '
+            + f'"version": "{local_version}"'.encode()
+            + b"}"
+        )
+        reported = local_version if running == "same" else running
+        monkeypatch.setattr(services, "_running_gateway_version", lambda port: reported)
+        cli_server._update_wheel(_LAYOUT)
+        out = capsys.readouterr().out
+        assert said in out
+        assert not_said not in out
 
 
 class TestStatusCountLines:

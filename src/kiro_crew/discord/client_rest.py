@@ -543,7 +543,7 @@ async def _api_request(
                 method,
                 url,
                 headers=auth,
-                proxy=self._proxy,
+                proxy=self._proxy_for(url),
                 timeout=aiohttp.ClientTimeout(total=timeout),
                 **build(),
             ) as resp:

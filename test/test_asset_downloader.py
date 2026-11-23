@@ -14,6 +14,7 @@ answers with a reason rather than raising into a background thread.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import http.client
 import os
@@ -23,6 +24,7 @@ import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 
+import aiohttp
 import pytest
 from _clock_isolation import assert_clock_is_private
 
@@ -437,6 +439,46 @@ class TestRedaction:
             assert secret not in reason
         assert type(exc).__name__ in reason
         assert "mirror.example" in reason
+
+    def test_an_unreachable_host_is_named_with_the_cause(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _open(request, timeout=None):  # noqa: ANN001 - OpenerDirector.open signature
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+        monkeypatch.setattr(
+            "kiro_crew.asset_downloader.build_opener",
+            lambda *a, **k: SimpleNamespace(open=_open),
+        )
+        url = "https://user:sup3rsecret@mirror.example/a.bin"
+        ok, reason = dl.download_to(tmp_path / "a.bin", url, sha256="0" * 64)
+        assert ok is False
+        assert reason == f"HTTPS download failed from {dl.redact_url(url)}: connection refused"
+        assert "sup3rsecret" not in reason
+
+
+class TestNetworkFailureCause:
+    """A reset, an abort and an unreachable host or network each read as a plain cause,
+    from the errno alone; on Windows the ``errno`` names hold the Winsock numbers."""
+
+    @pytest.mark.parametrize(
+        ("exc", "cause"),
+        [
+            (ConnectionResetError(errno.ECONNRESET, "reset"), "the connection was reset"),
+            (urllib.error.URLError(OSError(errno.ECONNRESET, "x")), "the connection was reset"),
+            (aiohttp.ClientOSError(errno.ECONNRESET, "reset"), "the connection was reset"),
+            (ConnectionAbortedError(errno.ECONNABORTED, "aborted"), "the connection was closed"),
+            (OSError(errno.EHOSTUNREACH, "no route"), "the host is unreachable"),
+            (urllib.error.URLError(OSError(errno.EHOSTUNREACH, "x")), "the host is unreachable"),
+            (OSError(errno.ENETUNREACH, "unreachable"), "the network is unreachable"),
+            (urllib.error.URLError(OSError(errno.ENETUNREACH, "x")), "the network is unreachable"),
+            (http.client.RemoteDisconnected("closed without an answer"), ""),
+            (OSError(errno.EACCES, "denied"), ""),
+            (urllib.error.URLError("no socket error"), ""),
+        ],
+    )
+    def test_each_failure_reads_as_its_cause(self, exc: OSError, cause: str) -> None:
+        assert dl.network_failure_cause(exc) == cause
 
 
 class TestSameHostRedirects:

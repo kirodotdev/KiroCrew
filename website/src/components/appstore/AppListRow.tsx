@@ -116,10 +116,14 @@ export default function AppListRow({ app, sources, busy, connected, onOpen, onGe
               )}
             </span>
           )
-        ) : app.installed && app.updateAvailable ? (
+        ) : app.installed && app.updateAvailable && app.installedFrom !== 'market' ? (
           <Btn disabled={busy} className="border-[var(--info)] text-[var(--info)] hover:text-[var(--info)] hover:border-[var(--info)]" onClick={onUpdate}>
             <ArrowUp size={14} /> {i18nT('components.appstore.appListRow.update')}
           </Btn>
+        ) : app.installed && app.installedFrom === 'market' ? (
+          /* Installed from a Kiro Space store under this name: this git row
+             neither updates nor reinstalls it. */
+          <span className="inline-flex items-center gap-1 text-[12px] text-muted" data-testid="installed-from-market"><Check size={12} /> {i18nT('components.appstore.marketStore.installed_from_market')}</span>
         ) : app.installed ? (
           <span className="inline-flex items-center gap-1 text-[12px] text-muted"><Check size={12} /> {i18nT('components.appstore.appListRow.installed')}</span>
         ) : (

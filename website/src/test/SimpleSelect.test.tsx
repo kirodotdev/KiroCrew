@@ -111,4 +111,36 @@ describe('SimpleSelect', () => {
     expect(onSelect).toHaveBeenCalledTimes(1)
     expect(onChange).not.toHaveBeenCalled()
   })
+
+  it('truncateLabels keeps each row on one line with its full name on hover and as its name', async () => {
+    const long = 'a-very-long-machine-name.ec2.internal.example.test'
+    const view = (value: string) => (
+      <SimpleSelect options={['all', 'p1']} optionLabels={['All sessions', long]} value={value} onChange={() => {}} truncateLabels aria-label="Show" />
+    )
+    const { rerender } = render(view('all'))
+    const trigger = screen.getByRole('combobox', { name: 'Show' })
+    // The trigger's copy of the selected text takes no pointer events, so the
+    // trigger itself carries the full selected label for hover.
+    expect(trigger).toHaveAttribute('title', 'All sessions')
+    fireEvent.click(trigger)
+    const row = await screen.findByRole('option', { name: long })
+    const text = within(row).getByTitle(long)
+    expect(text).toHaveClass('truncate')
+    expect(text).toHaveTextContent(long)
+    expect(within(screen.getByRole('option', { name: 'All sessions' })).getByTitle('All sessions')).toHaveClass('truncate')
+    fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
+    rerender(view('p1'))
+    expect(screen.getByRole('combobox', { name: 'Show' })).toHaveAttribute('title', long)
+  })
+
+  it('leaves plain rows and the trigger untouched without truncateLabels', async () => {
+    render(<SimpleSelect options={['a', 'b']} value="a" onChange={() => {}} aria-label="Plain" />)
+    const trigger = screen.getByRole('combobox', { name: 'Plain' })
+    expect(trigger).not.toHaveAttribute('title')
+    fireEvent.click(trigger)
+    const row = await screen.findByRole('option', { name: 'b' })
+    expect(row.querySelector('[title]')).toBeNull()
+    expect(row.querySelector('.truncate')).toBeNull()
+    expect(row.className).not.toContain('min-w-0')
+  })
 })

@@ -268,6 +268,16 @@ from kiro_crew.mcp_gateway.daemon.replacement import (  # noqa: F401
     _respawn_backend_for_stub,
     _respawn_backend_for_stub_unrecorded,
 )
+from kiro_crew.mcp_gateway.daemon.session_describe import (  # noqa: F401
+    _LIVE_CONNS,
+    _attributed,
+    _describes,
+    _oversized,
+    describe_session_reply,
+    forget_live_conn,
+    track_initialize,
+    track_live_conn,
+)
 from kiro_crew.mcp_gateway.daemon.sweepers import (  # noqa: F401
     _HEARTBEAT_SWEEP_INTERVAL_SECS,
     _OWNER_LIVENESS_INTERVAL_SECS,
@@ -1268,6 +1278,12 @@ async def _acquire_backend(
             raise
         if admission is not None and charge is not None and permit is not None:
             admission.track_process(charge, backend.process.wait)
+            admission.track_initialize(
+                pool_key,
+                init_done=backend._init_done_event,
+                outcome=lambda: (backend._init_state, backend._dead_reason),
+                process_exited=backend.process.wait,
+            )
             if prewarm:
                 permit.settle(OUTCOME_NEUTRAL)
                 permit.release()
@@ -1482,7 +1498,7 @@ async def _acquire_backend(
             declared_temp_keys=accepted_temp_keys,
             secret_env_keys=tuple(_secret_keys),
             **(
-                {"initialize_timeout_secs": admission.initialize_timeout_secs}
+                {"initialize_timeout_secs": admission.initialize_timeout_for(pool_key)}
                 if admission is not None
                 else {}
             ),
@@ -1659,6 +1675,11 @@ def main() -> None:
 
     ensure_data_home()
     _prepare_telemetry()
+    # The gateway's PATH part, for the launch approval fold. Taken out of the
+    # env so no backend inherits it.
+    from kiro_crew.mcp_gateway.hashing import GATEWAY_PATH_ENV, pin_gateway_path
+
+    pin_gateway_path(os.environ.pop(GATEWAY_PATH_ENV, None))
     try:
         # Windows: every spawn on this loop builds its child off-loop.
         rc = asyncio.run(_amain(), loop_factory=gateway_loop_factory())

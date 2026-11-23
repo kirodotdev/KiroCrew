@@ -21,6 +21,7 @@ part of the argv floor.
 
 from __future__ import annotations
 
+import ast
 import re
 from typing import NamedTuple
 
@@ -1139,6 +1140,295 @@ def _self_program_index(tokens: "list[str]", i: int, scan: "_SelfModuleScan") ->
     return None
 
 
+#: Programs that only store or print a heredoc body: no word of it runs.
+_HEREDOC_DATA_PROGRAMS = frozenset({"cat", "tee"})
+
+
+#: The call names a ``python -`` body may invoke as a top-level statement and still
+#: be inert: ``print`` writes to stdout; a ``Path(...)`` / ``open(...)`` write stores
+#: text. Any other call (``os.system``, ``pickle.loads``, ``getattr``, ``exec`` …)
+#: can run text built at run time, so a body that holds one keeps the floor's read.
+_PYTHON_INERT_CALL_NAMES = frozenset({"print", "open"})
+_PYTHON_WRITE_METHODS = frozenset({"write", "write_text", "write_bytes", "writelines"})
+
+
+def _ast_arg_is_constant(node: "ast.AST") -> bool:
+    """True if *node* is a literal: a constant, or a list/tuple/set/dict of literals.
+
+    A keyword or f-string whose value is built from a call is not constant, so a
+    ``write_text(f"{os.system(x)}")`` argument fails here and the body is not data.
+    """
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return all(_ast_arg_is_constant(elt) for elt in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            k is not None and _ast_arg_is_constant(k) and _ast_arg_is_constant(v)
+            for k, v in zip(node.keys, node.values)
+        )
+    if isinstance(node, ast.JoinedStr):  # f-string: inert only if every piece is
+        for v in node.values:
+            if isinstance(v, ast.Constant):
+                continue
+            # A replacement field: its value AND its (possibly nested) format spec must
+            # both be constant -- ``f"{1:{os.system(x)}}"`` hides a call in the spec.
+            if not isinstance(v, ast.FormattedValue) or not _ast_arg_is_constant(v.value):
+                return False
+            if v.format_spec is not None and not _ast_arg_is_constant(v.format_spec):
+                return False
+        return True
+    return False
+
+
+#: Constructors a ``python -`` body may call and still be inert: they build a path
+#: or file handle, they run nothing. A write goes through :data:`_PYTHON_WRITE_METHODS`.
+_PYTHON_INERT_CTORS = frozenset({"path", "open", "pathlib"})
+
+
+def _ast_call_is_inert(call: "ast.Call") -> bool:
+    """True if *call* only prints or writes, with inert arguments.
+
+    ``print(...)`` / ``open(...)`` by bare name, and a ``<obj>.write*(...)`` where
+    *obj* is an inert expression (``Path("x").write_text("y")``,
+    ``open("x").write("y")``). Every argument is checked by :func:`_ast_expr_is_inert`,
+    so no argument can carry a value a run-time call produced.
+    """
+    func = call.func
+    if isinstance(func, ast.Name):
+        ok_target = func.id in _PYTHON_INERT_CALL_NAMES
+    elif isinstance(func, ast.Attribute) and func.attr in _PYTHON_WRITE_METHODS:
+        ok_target = _ast_expr_is_inert(func.value)
+    else:
+        return False
+    if not ok_target:
+        return False
+    args = [*call.args, *(kw.value for kw in call.keywords)]
+    return all(_ast_expr_is_inert(a.value if isinstance(a, ast.Starred) else a) for a in args)
+
+
+def _ast_expr_is_inert(node: "ast.AST") -> bool:
+    """True if evaluating *node* reaches no run-time program.
+
+    A literal, a name, an attribute READ of an inert expression, or a call that is
+    ONLY a ``Path(...)`` / ``open(...)`` constructor or an inert ``print`` / write.
+    Any other call -- a bare name call, a method call that is not a write
+    (``os.system(...)``, ``x.decode()``) -- is NOT inert, so it can never ride on an
+    assignment's right-hand side or a write's argument.
+    """
+
+    if _ast_arg_is_constant(node) or isinstance(node, ast.Name):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _ast_expr_is_inert(node.value)
+    if isinstance(node, ast.BinOp):  # "a" + str(path) style joins of inert parts
+        return _ast_expr_is_inert(node.left) and _ast_expr_is_inert(node.right)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return all(_ast_expr_is_inert(elt) for elt in node.elts)
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in _PYTHON_INERT_CTORS:
+            # Path(...) / open(...) build a path or handle and run nothing; its own
+            # arguments are checked here and nowhere else.
+            args = [*node.args, *(kw.value for kw in node.keywords)]
+            return all(
+                _ast_expr_is_inert(a.value if isinstance(a, ast.Starred) else a) for a in args
+            )
+        # ``print(...)`` / ``<inert>.write*(...)``: _ast_call_is_inert already checked
+        # every argument, so it is NOT re-walked here (that double walk is exponential
+        # in nesting depth -- GPT 6.1 F3).
+        return _ast_call_is_inert(node)
+    return False
+
+
+def _python_body_is_data(body: str) -> bool:
+    """True if every statement of a Python program on stdin only stores or prints.
+
+    Parsed with :mod:`ast`, an ALLOWLIST of provably inert statements: an import that
+    rebinds no accepted name, an assignment whose value evaluates no run-time program
+    and whose target is not an accepted name, and a bare ``print`` / ``open`` /
+    ``Path(...).write*`` call on inert arguments. A body with any other call
+    (``os.system``, ``pickle.loads``, ``getattr``, ``exec``), a name that shadows
+    ``print`` / ``open`` / ``path`` (``from os import system as print`` -- GPT 6.1
+    F1), a decorator, a function or class body, or a syntax error keeps the floor's
+    old read. Python has no backtick of its own, but an opaque call can reach a shell
+    at run time, so the name is matched identical and lower-cased (the floor
+    lower-cases its input). A parse or a classification that exhausts the recursion
+    limit (a deeply nested expression -- GPT 6.1 F2) is treated as not data, never as
+    a crash, and the tree is capped first so the walk is bounded.
+    """
+    try:
+        tree = ast.parse(body)
+        if sum(1 for _ in ast.walk(tree)) > _PYTHON_BODY_NODE_CAP:
+            return False  # too large to classify cheaply: keep the old read
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                if _import_rebinds_accepted_name(stmt):
+                    return False
+                continue
+            if isinstance(stmt, ast.Pass):
+                continue
+            if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                if _assign_target_rebinds(stmt):
+                    return False  # a later print(...) could call the rebound target
+                # An annotation is evaluated at run time (``x: os.system('…') = 1``).
+                annotation = getattr(stmt, "annotation", None)
+                if annotation is not None and not _ast_expr_is_inert(annotation):
+                    return False
+                value = stmt.value
+                if value is None or _ast_expr_is_inert(value):
+                    continue
+                return False
+            if isinstance(stmt, ast.Expr):
+                node = stmt.value
+                if _ast_arg_is_constant(node):  # a bare literal or docstring
+                    continue
+                if isinstance(node, ast.Call) and _ast_call_is_inert(node):
+                    continue
+                return False
+            return False  # if/for/while/def/class/with/try/import-star etc.
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    return True
+
+
+#: An ``ast.walk`` node count above which a ``python -`` body is not classified but
+#: kept under the old read: a deep tree is unusual for a data script and bounds the
+#: recursive inert walk well under the recursion limit.
+_PYTHON_BODY_NODE_CAP = 2000
+
+
+#: Names that, once rebound, let a later ``print(...)`` / ``open(...)`` / ``Path(...)``
+#: call reach something other than the inert builtin the allowlist assumes.
+_PYTHON_ACCEPTED_NAMES = _PYTHON_INERT_CALL_NAMES | _PYTHON_INERT_CTORS
+
+
+def _import_rebinds_accepted_name(stmt: "ast.AST") -> bool:
+    """True if an import binds an accepted name to something other than its builtin.
+
+    ``from os import system as print`` makes a later ``print(...)`` run ``os.system``;
+    ``import os as open`` shadows ``open``. An ``as`` alias onto an accepted name is
+    always a rebind. A plain import whose bound leaf is accepted (``import print``) is
+    one too, with the single exception of ``from pathlib import Path`` -- the real
+    inert path type the allowlist expects. Names are matched lower-cased, as the floor
+    lower-cases its whole input before this runs."""
+    module = getattr(stmt, "module", None)  # ImportFrom source, else None
+    for alias in getattr(stmt, "names", []):
+        if alias.asname and alias.asname in _PYTHON_ACCEPTED_NAMES:
+            return True
+        if alias.asname:
+            continue  # aliased to a non-accepted name: shadows nothing here
+        leaf = alias.name.split(".")[0]
+        if leaf in _PYTHON_ACCEPTED_NAMES and not (module == "pathlib" and alias.name == "path"):
+            return True
+    return False
+
+
+def _assign_target_rebinds(stmt: "ast.AST") -> bool:
+    """True unless every assignment target is a bare local ``ast.Name`` that is not an
+    accepted name.
+
+    A tuple/list/starred target (``print, _ = os.system, 0``) can rebind an accepted
+    name, and an attribute or subscript target (``builtins.print = os.system``,
+    ``d['x'] = ...``) mutates an object the allowlist cannot track, so any target that
+    is not a plain non-accepted ``Name`` keeps the body under the old read."""
+    targets = getattr(stmt, "targets", None) or [getattr(stmt, "target", None)]
+
+    def _bad(target: "ast.AST | None") -> bool:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return any(_bad(elt) for elt in target.elts)
+        if isinstance(target, ast.Starred):
+            return _bad(target.value)
+        if isinstance(target, ast.Name):
+            return target.id in _PYTHON_ACCEPTED_NAMES
+        return True  # Attribute, Subscript, or anything unexpected: not provably safe
+
+    return any(_bad(t) for t in targets)
+
+
+def _heredoc_data_view(text_lower: str) -> str:
+    """*text_lower* with each heredoc body that no shell or program runs blanked out.
+
+    A body is data when bash expands nothing in it (a quoted tag, or no ``$``,
+    backtick or backslash in it) and its command is ``cat`` / ``tee`` or a bare
+    ``python [-]`` whose every statement only stores or prints
+    (:func:`_python_body_is_data`), spelled as a bare word and the only command in
+    the text. Every other body is kept, so ``bash <<'EOF'``, ``perl <<'EOF'`` and
+    ``python3 script.py <<'EOF'`` are read as before. Nothing is blanked when the
+    text outside the bodies has a pipe, a group, a substitution or a lone ``&``,
+    because each can carry the body to a shell (``cat <<'EOF' | sh``,
+    ``bash -c "$(cat <<'EOF' ...)"``, ``cat > >(bash) <<'EOF'``, ``>&3``), nor when
+    any heredoc tag carries ``$`` / quote / backslash machinery the reader and bash
+    read differently (:func:`_any_decorated_heredoc_tag`).
+    Read on the text as typed, before continuations are joined, as bash reads it.
+    """
+    if "<<" not in text_lower:
+        return text_lower
+    from .shell_commands import read_commands
+
+    commands = read_commands(text_lower, heredocs=True)
+    docs = sorted((doc.start, doc.end) for cmd in commands for doc in cmd.heredocs)
+    if not docs:
+        return text_lower
+    outside, pos = [], 0
+    for start, end in docs:
+        outside.append(text_lower[pos:start])
+        pos = max(pos, end)
+    outside.append(text_lower[pos:])
+    rest = "".join(outside)
+    if any(ch in rest for ch in "|(){}`") or "&" in rest.replace("&&", ""):
+        return text_lower
+    argvs = [[word.raw for word in cmd.argv] for cmd in commands]
+    if sum(1 for argv in argvs if argv) != 1:
+        return text_lower  # another command can rebind the name (alias, hash -p, PATH)
+    # The reader matches a heredoc's closing tag literally, but bash decodes a tag
+    # spelled with ``$'…'`` / quotes / a backslash before matching it. So such a tag
+    # can close the body earlier than the reader saw, leaving a command the reader
+    # folded into the body to run on its own (GPT 6.1 F1). Blank a body only when
+    # every ``<<`` tag in the text is a plain word the reader and bash read alike.
+    if _any_decorated_heredoc_tag(text_lower):
+        return text_lower
+    view = text_lower
+    for cmd, argv in zip(commands, argvs):
+        if not argv or cmd.separator.startswith("|"):
+            continue
+        # The raw word, never a normalised one: ``$cat`` or ``/tmp/x/cat`` may run a shell.
+        python = _PYTHON_PROGRAM_RE.match(argv[0]) is not None and argv[1:] in ([], ["-"])
+        if argv[0] not in _HEREDOC_DATA_PROGRAMS and not python:
+            continue
+        for doc in cmd.heredocs:
+            if not doc.quoted and any(ch in doc.body for ch in "$`\\"):
+                continue
+            if python and not _python_body_is_data(doc.body):
+                continue
+            blank = "".join(ch if ch == "\n" else " " for ch in doc.body)
+            view = view[: doc.start] + blank + view[doc.end :]
+    return view
+
+
+#: A ``<<`` / ``<<-`` opener and the tag word after it, with optional blanks.
+_HEREDOC_OPENER_RE = re.compile(r"<<-?[ \t]*(\S+)")
+
+
+def _any_decorated_heredoc_tag(text_lower: str) -> bool:
+    """True if any ``<<`` heredoc tag carries quote or ``$`` / backslash machinery.
+
+    bash resolves such a tag (``<<$'E\\x4fF'``, ``<<"E"OF``, ``<<E\\OF``) before it
+    matches the closing line, while the command reader matches the tag literally, so
+    the two can disagree on where a body ends. When they might, the data view is not
+    taken at all. A plain ``<<EOF`` or a single-/double-quoted ``<<'EOF'`` with no
+    ``$`` or backslash in the quotes reads the same both ways and is allowed.
+    """
+    for match in _HEREDOC_OPENER_RE.finditer(text_lower):
+        tag = match.group(1)
+        if "$" in tag or "\\" in tag:
+            return True
+        unquoted = tag.replace("'", "").replace('"', "")
+        if ("'" in tag or '"' in tag) and (unquoted != tag.strip("'\"") or not unquoted):
+            return True
+    return False
+
+
 def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> bool:
     """True if the product CLI is invoked with leading operand words *spec*.
 
@@ -1149,7 +1439,19 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
     """
     if not _self_floor_can_fire(text_lower):
         return False
-    for tokens in _self_token_frames(_shell_join_continuations(text_lower)):
+    view = _shell_join_continuations(_heredoc_data_view(text_lower))
+    # The blunt continuation fold above keeps the self views fail-closed, but it
+    # strips the last ``\`` before a newline even in an even run, so a proved
+    # message value such as ``"\\<newline>`kirocrew restart`"`` loses its LIVE
+    # backtick to a ``\```. The quote/escape walk in ``_substitution_bodies`` reads
+    # that backtick as the substitution bash runs, so enumerate the un-folded frames
+    # as well; checking more frames only adds denials.
+    unfolded = _heredoc_data_view(text_lower)
+    frames = _self_token_frames(view)
+    if unfolded != view:
+        seen = {tuple(tokens) for tokens in frames}
+        frames = frames + [t for t in _self_token_frames(unfolded) if tuple(t) not in seen]
+    for tokens in frames:
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)

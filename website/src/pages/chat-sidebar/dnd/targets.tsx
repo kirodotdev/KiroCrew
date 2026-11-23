@@ -2,12 +2,13 @@
  *  DndContext. */
 import { useDndContext, useDroppable } from '@dnd-kit/core'
 import { useRef, useState, useCallback, useLayoutEffect } from 'react'
-import { EyeOff, Repeat, MessagesSquare, CornerDownRight } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { EyeOff, Repeat, MessagesSquare, CornerDownRight, Columns2 } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { SessionRefBlockReason } from '../../../utils/sessionRefs'
 import { i18nT } from '../../../i18n/t'
-import { CHAT_PANE_DROP_TYPE } from './collision'
+import { CHAT_PANE_DROP_TYPE, SPLIT_PANE_DROP_TYPE } from './collision'
 import type { ChatFolder } from '../../../types'
 import FolderGlyph from '../../../components/FolderGlyph'
 import type { Slot } from '../types'
@@ -140,6 +141,73 @@ export function ChatPaneDropZone({ refusal }: { refusal: SessionRefBlockReason |
         // Fall back to a centered pill rather than rendering no affordance at all.
         <div className="absolute inset-0 flex items-center justify-center">{pill}</div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Split View's drop targets: one per pane, portaled into each pane's leaf
+ * (`data-split-leaf`, read once when the drag starts; a pane changed mid-drag
+ * is picked up by the next drag). A drop shows the session in that
+ * pane through `onShow`. A session already in a pane is refused on the hovered
+ * pane with a neutral note, and its zone still catches the drop so the release
+ * never falls through to a folder.
+ */
+export function SplitPaneDropZones({ host, draggedKey, onShow }: {
+  host: HTMLElement
+  draggedKey: string
+  onShow: (leafId: string, key: string) => void
+}) {
+  const [panes, setPanes] = useState<{ el: HTMLElement; leafId: string; slot?: string }[]>([])
+  useLayoutEffect(() => {
+    setPanes(Array.from(host.querySelectorAll<HTMLElement>('[data-split-leaf]'), el => (
+      { el, leafId: el.dataset.splitLeaf ?? '', slot: el.dataset.splitSlot }
+    )))
+  }, [host])
+  const shown = panes.some(p => p.slot === draggedKey)
+  return <>{panes.map(p => createPortal(
+    <SplitPaneDropZone
+      leafId={p.leafId}
+      refusal={p.slot === draggedKey ? 'self' : shown ? 'elsewhere' : null}
+      onShow={onShow}
+    />,
+    p.el,
+    p.leafId,
+  ))}</>
+}
+
+function SplitPaneDropZone({ leafId, refusal, onShow }: {
+  leafId: string
+  refusal: 'self' | 'elsewhere' | null
+  onShow: (leafId: string, key: string) => void
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `split-pane:${leafId}`,
+    data: { type: SPLIT_PANE_DROP_TYPE, show: refusal ? null : (key: string) => onShow(leafId, key) },
+  })
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid="split-pane-drop-zone"
+      data-refused={refusal ?? undefined}
+      aria-hidden="true"
+      className="absolute inset-0 z-30 pointer-events-none"
+    >
+      {isOver && (refusal ? (
+        // Under the pane's title row, clear of the drag ghost at the pointer.
+        <div className="absolute inset-x-0 top-14 flex justify-center">
+          <div className="inline-flex items-center gap-2 rounded-lg border border-dashed border-border bg-bg-elevated/90 px-3 py-2 text-[12px] text-muted shadow-lg backdrop-blur-xs">
+            {refusal === 'self' ? <Repeat size={14} className="shrink-0" /> : <Columns2 size={14} className="shrink-0" />}
+            <span>
+              {refusal === 'self'
+                ? i18nT('pages.chatSidebar.session_dropped_into_itself')
+                : i18nT('pages.chatSidebar.session_already_in_another_pane')}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div data-testid="split-pane-drop-accept" className="absolute inset-1 rounded-lg border-2 border-accent bg-accent/[0.06]" />
+      ))}
     </div>
   )
 }

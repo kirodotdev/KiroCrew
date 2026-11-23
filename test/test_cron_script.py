@@ -223,9 +223,10 @@ class TestMcpToolClient:
             with pytest.raises(RuntimeError, match="not found"):
                 McpToolClient("nonexistent-server")
 
-    def test_close_handles_already_terminated(self, tmp_path):
+    def test_close_handles_already_terminated(self, tmp_path, monkeypatch):
         from kiro_crew.cron_script import McpToolClient
 
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)  # the POSIX stop path
         client = object.__new__(McpToolClient)
         client._proc = MagicMock()
         client._proc.terminate = MagicMock()
@@ -1330,11 +1331,12 @@ class TestMcpToolClientProtocol:
         client.close()
         assert not cleanup_file.exists()
 
-    def test_close_timeout_kills(self, tmp_path):
+    def test_close_timeout_kills(self, tmp_path, monkeypatch):
         import subprocess
 
         from kiro_crew.cron_script import McpToolClient
 
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)  # the POSIX stop path
         cleanup_file = tmp_path / "sandbox_cleanup"
         cleanup_file.write_text("temp")
         client = object.__new__(McpToolClient)
@@ -1536,10 +1538,11 @@ class TestMcpToolClientInitFailures:
         with pytest.raises(RuntimeError, match="did not respond"):
             client._rpc("tools/list")
 
-    def test_close_exception_swallowed(self, tmp_path):
+    def test_close_exception_swallowed(self, tmp_path, monkeypatch):
         """An exception in terminate is swallowed and the sandbox file is still removed."""
         from kiro_crew.cron_script import McpToolClient
 
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)  # the POSIX stop path
         cleanup_file = tmp_path / "sandbox_cleanup"
         cleanup_file.write_text("temp")
         client = object.__new__(McpToolClient)

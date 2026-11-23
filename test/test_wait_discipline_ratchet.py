@@ -89,6 +89,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from source_corpus import untraced
 from test_ratchet_scope import _drop_ambient_git_location, _fixture_git_env
 
 # ratchet_scope is a standalone script; load it the same way
@@ -432,8 +433,12 @@ def scan(root: Path = TEST_ROOT) -> dict[str, list[Site]]:
 
 @functools.lru_cache(maxsize=1)
 def _tree_scan() -> dict[str, list[Site]]:
-    """The real tree, read once per process: the tests below share one scan."""
-    return scan()
+    """The real tree, read once per process: the tests below share one scan.
+
+    The scan only parses test source, so it runs with the coverage tracer paused.
+    """
+    with untraced():
+        return scan()
 
 
 def _counts(found: dict[str, list[Site]]) -> Counter[str]:

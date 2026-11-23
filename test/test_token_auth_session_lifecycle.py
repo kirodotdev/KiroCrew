@@ -289,7 +289,7 @@ async def test_api_logout_success_revokes_sessions() -> None:
 
     The reject paths above are covered; this locks in the success path, which is
     what makes the /api/logout entry in _BYPASS_EXACT meaningful -- the endpoint
-    has to be reachable AND still do its job. revoke_all_sessions is patched so
+    has to be reachable AND still do its job. revoke_all_sessions_async is patched so
     the test never touches the real nonce store / persisted generation.
     """
     from aiohttp import web
@@ -301,7 +301,7 @@ async def test_api_logout_success_revokes_sessions() -> None:
     app["local_secret"] = "correct-secret"
     app.router.add_post("/api/logout", api_logout)
 
-    with patch("kiro_crew.dashboard.token_auth.revoke_all_sessions") as mock_revoke:
+    with patch("kiro_crew.dashboard.token_auth.revoke_all_sessions_async") as mock_revoke:
         async with TestClient(TestServer(app)) as client:
             resp = await client.post(
                 "/api/logout",
@@ -311,7 +311,7 @@ async def test_api_logout_success_revokes_sessions() -> None:
             assert resp.status == 200
             data = await resp.json()
             assert data["ok"] is True
-            mock_revoke.assert_called_once()
+            mock_revoke.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -494,12 +494,15 @@ def test_revoked_store_locks_the_file_down_to_its_owner(tmp_path, monkeypatch) -
     from kiro_crew.dashboard import token_auth as token_auth_mod
 
     locked: list[tuple[str, int]] = []
+    test_thread = threading.get_ident()
     real_restrict = platform_compat.restrict_to_owner
 
     def _spy(path, **_kw) -> None:
         # Record the size at lockdown time: the nonce list must not be sitting
-        # in the file yet (see the ordering assertion below).
-        locked.append((str(path), os.path.getsize(str(path))))
+        # in the file yet (see the ordering assertion below). This thread only:
+        # the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            locked.append((str(path), os.path.getsize(str(path))))
         real_restrict(path)
 
     monkeypatch.setattr(token_auth_mod.platform_compat, "restrict_to_owner", _spy)
@@ -566,8 +569,11 @@ def test_is_revoked_answers_while_a_denylist_write_is_stuck(tmp_path, monkeypatc
     real_restrict = platform_compat.restrict_to_owner
 
     def _stuck_lockdown(path, **_kw) -> None:
-        in_write.set()
-        release.wait(default_timeout())
+        # This store's files only: revoke runs on worker threads, and the SEL
+        # writer thread re-locks its non-empty log on every append.
+        if os.path.dirname(str(path)) == str(tmp_path):
+            in_write.set()
+            release.wait(default_timeout())
         real_restrict(path)
 
     monkeypatch.setattr(token_auth_mod.platform_compat, "restrict_to_owner", _stuck_lockdown)

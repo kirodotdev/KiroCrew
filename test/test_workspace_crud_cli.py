@@ -1083,6 +1083,102 @@ class TestCliRound8Hardening:
         assert shown in err and not_shown not in err
         assert "copied" not in json.loads(cfg_path.read_text(encoding="utf-8"))["workspaces"]
 
+    @pytest.mark.parametrize("held", [False, True], ids=["read-only-git", "held-open"])
+    @pytest.mark.parametrize("stage", ["copy", "publish", "write"])
+    def test_a_refused_create_removes_a_staged_git_tree_or_names_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], stage: str, held: bool
+    ) -> None:
+        """The staged copy keeps the source's ``.git``, whose files git writes read-only.
+        A copy that fails, a refused publish and a config write that fails before the
+        install each remove it the way Windows allows; a file another program still
+        holds open keeps the folder, and stderr names it."""
+        import contextlib
+        import os
+        import shutil
+
+        from windows_sim import readonly_unlink_refused
+
+        loose = tmp_path / "workspace" / ".git" / "objects" / "ab" / ("c" * 38)
+        loose.parent.mkdir(parents=True)
+        loose.write_bytes(b"blob")
+        os.chmod(loose, 0o444)
+        cfg_path = _write_config(tmp_path, _base_config())
+        real_rmtree_force = platform_compat.rmtree_force
+        real_copytree = shutil.copytree
+        sim: dict = {}
+
+        depth = [0]
+
+        def _copy_then_fail(src: object, dst: object, *args: object, **kwargs: object) -> None:
+            # copytree recurses through the patched name; only the outer copy fails.
+            depth[0] += 1
+            try:
+                real_copytree(src, dst, *args, **kwargs)  # type: ignore[call-overload]
+            finally:
+                depth[0] -= 1
+            if depth[0] == 0:
+                raise PermissionError(13, "The process cannot access the file")
+
+        def _refuse(*_args: object, **_kwargs: object) -> None:
+            raise PermissionError(13, "Access is denied")
+
+        def _rmtree_force(path: object) -> bool:
+            if held:
+                return False
+            # Windows unlink rules for the cleanup alone: that is what is judged.
+            with readonly_unlink_refused() as refused:
+                sim.update(refused)
+                return real_rmtree_force(path)  # type: ignore[arg-type]
+
+        failing = {
+            "copy": unittest.mock.patch.object(shutil, "copytree", side_effect=_copy_then_fail),
+            "publish": unittest.mock.patch.object(
+                platform_compat, "publish_dir_noreplace", side_effect=_refuse
+            ),
+            "write": unittest.mock.patch(
+                "kiro_crew.config.loader.update_config_locked", side_effect=_refuse
+            ),
+        }[stage]
+        outcome = {
+            "copy": contextlib.nullcontext(),
+            "publish": pytest.raises(SystemExit),
+            "write": pytest.raises(PermissionError),
+        }[stage]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            failing,
+            unittest.mock.patch.object(platform_compat, "rmtree_force", side_effect=_rmtree_force),
+            unittest.mock.patch(
+                "sys.argv",
+                [
+                    "kirocrew",
+                    "workspace",
+                    "create",
+                    "--name",
+                    "copied",
+                    "--copy-from",
+                    "default",
+                ],
+            ),
+            outcome as exc_info,
+        ):
+            main()
+        if stage == "publish":
+            assert exc_info.value.code == 1
+        leftovers = [p.name for p in tmp_path.iterdir() if ".staging-" in p.name]
+        err = capsys.readouterr().err
+        if stage == "copy":
+            assert "nothing was copied" in err
+        if held:
+            assert len(leftovers) == 1
+            assert "could not remove the partial copy at" in err and leftovers[0] in err
+        else:
+            assert sim["refused"], "the read-only object was never refused; nothing was judged"
+            assert leftovers == [], f"staging residue: {leftovers}"
+            assert "could not remove the partial copy" not in err
+
 
 class TestWorkspaceNameRefusalNamesTheShape:
     """``workspace create`` refuses a name ``WORKSPACE_NAME_RE`` does not admit, and the

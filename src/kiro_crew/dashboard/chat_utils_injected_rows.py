@@ -11,6 +11,7 @@ patch; this module never imports it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from enum import Enum
 from typing import Any
@@ -264,12 +265,37 @@ SPEC_HOOKS_NOTICE_KIND = "spec_hooks"
 
 #: ``meta.spec_hooks_notice`` of the one :data:`SPEC_HOOKS_NOTICE_KIND` row that
 #: says nothing runs the agent spec's hooks on this backend. The dashboard offers
-#: a Dismiss link on this row alone and hides it by this value, so dismissing it
-#: hides no other notice of the kind (``website/src/pages/chat/SpecHooksNotice.tsx``).
+#: a Dismiss link on this row and hides it by this value, so its dismiss hides no
+#: other notice of the kind (``website/src/pages/chat/SpecHooksNotice.tsx``).
 #: A row that names a ``preToolUse`` hook does not carry it, because such a hook
 #: is there to refuse calls. It changes only what the dashboard draws: which
 #: hooks run is decided elsewhere.
 SPEC_HOOKS_RUN_NOWHERE_NOTICE = "run_nowhere"
+
+#: ``meta.spec_hooks_notice`` of the row that says a folder's own
+#: ``.kiro/hooks/*.json`` files do not run. It rides with
+#: ``meta.project_hook_files_mark``, a hash of the folder and the files' names,
+#: and the dashboard's Dismiss hides every row with that mark: the notice shows
+#: again in another folder or once a file is added, removed or renamed. Names
+#: only, so a file whose content changes stays hidden. It changes only what the
+#: dashboard draws (``website/src/pages/chat/SpecHooksNotice.tsx``).
+SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE = "project_hook_files"
+
+
+def project_hook_files_notice_meta(project_dir: str, names: list[str]) -> dict[str, str]:
+    """The meta of the hook-files notice row for *project_dir*'s hook file *names*.
+
+    ``project_hook_files_mark`` is also the chat's once-shown mark
+    (``turn_spec_hooks._project_hook_files_notice_is_new``), so one value says both
+    "this chat showed it" and "the user dismissed it here".
+    """
+    mark = hashlib.sha256(json.dumps([project_dir, names]).encode()).hexdigest()[:16]
+    return {
+        "kind": SPEC_HOOKS_NOTICE_KIND,
+        "spec_hooks_notice": SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
+        "project_hook_files_mark": mark,
+    }
+
 
 #: ``meta.kind`` of the session-start notice that says Crew's tools are off in
 #: this session because a settings file Crew does not govern holds its path.
@@ -306,10 +332,15 @@ MODEL_UNAVAILABLE_KIND = "model_unavailable"
 #: produces (the agent process reported it is not signed in). Like
 #: MODEL_UNENTITLED_KIND, no recovery is queued -- a retry hits the same wall --
 #: and the frontend uses the kind to offer the fix that does end it: a deep link
-#: to the dashboard's Kiro sign-in card (Settings > Agent Harness), where the
+#: to the dashboard's Kiro sign-in card (Settings > Kiro account), where the
 #: user signs in to Kiro Crew's own identity again. The prose stays as the
 #: backend formatted it.
 AUTH_REQUIRED_KIND = "auth_required"
+
+#: Row-level kind for the same signed-out turn on the Kiro CLI harness, which
+#: runs on kiro-cli's own sign-in: the frontend shows the setup gate's two kiro-cli
+#: sign-in commands, read from the prerequisite status, instead of Crew's card.
+KIRO_CLI_SIGN_IN_KIND = "kiro_cli_sign_in"
 
 #: Row-level kind for the terminal `error` row a SPENT PLAN ALLOWANCE produces
 #: ("The monthly usage limit has been reached"). Like the two above, no
@@ -394,8 +425,15 @@ CRON_NOTIFICATION_KIND = "cron_notification"
 #: into user-authored, persisted, channel-mirrored history).
 MCP_APP_MESSAGE_KIND = "mcp_app_message"
 
+#: A wake for an MCP resource subscription
+#: (``rfc-mcp-resource-subscriptions.md`` §4.9.2), queued behind a running turn by
+#: ``session_deliver``'s ``resource`` origin. System injection like the app
+#: message above: its URI is server-written, so it is never user speech and must
+#: never be mirrored to a linked channel as the person's words.
+RESOURCE_WAKE_KIND = "resource_wake"
+
 #: A runner notice re-routed into a crew member's own next turn — today the
-#: automation arm/revision/stop refusal (``session_directive_apply``). A member
+#: automation arm/revision/stop or person-only refusal (``session_directive_apply``). A member
 #: DM draws messages only and never replays a ``notice`` row to the model, so a
 #: refused directive there would reach neither the person nor the crewmate; this
 #: kind delivers it as an ``inject`` row the crewmate's turn carries. System
@@ -440,6 +478,7 @@ _SYSTEM_INJECTION_KINDS = SUBAGENT_DELIVERY_KINDS | frozenset(
     (
         CRON_NOTIFICATION_KIND,
         MCP_APP_MESSAGE_KIND,
+        RESOURCE_WAKE_KIND,
         AUTOMATION_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
         *GATEWAY_PROMPT_INJECT_KINDS,
@@ -459,6 +498,25 @@ def app_inject_row(label: str) -> tuple[str, str, dict]:
     travels in ``meta`` only, and is never re-derived from the banner text.
     """
     return "inject", "msg msg-inject", {"injectKind": "mcp_app", "appLabel": label}
+
+
+def resource_inject_row(server: str, subscription_id: str) -> tuple[str, str, dict]:
+    """The ONE builder for a resource-wake transcript row (both delivery paths).
+
+    The same shape as :func:`app_inject_row`, for the same reason: a plain CSS
+    ``cls`` and the identity in ``meta``, so an HTTP rebuild keeps ``injectKind``.
+    The chip names the server; the subscription id lets a queued wake be found
+    again to fold a later update into it.
+    """
+    return (
+        "inject",
+        "msg msg-inject",
+        {
+            "injectKind": "resource",
+            "resourceServer": server,
+            "resourceSubscription": subscription_id,
+        },
+    )
 
 
 def is_synthetic_recovery_item(item: dict) -> bool:
@@ -524,7 +582,7 @@ def is_synthetic_payload_item(item: dict) -> bool:
     if payload:
         return payload == RecoveryPayload.CONTINUATION
     kind = item.get("kind")
-    if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
+    if kind in (MCP_APP_MESSAGE_KIND, RESOURCE_WAKE_KIND) or kind in GATEWAY_PROMPT_INJECT_KINDS:
         return True
     return is_synthetic_recovery_item(item)
 
@@ -582,6 +640,10 @@ COMPOSER_SEND_META = "composer_send"
 #: ``nudge`` row instead of a ``user`` row, and the entry drains alone: merged,
 #: its text would be glued onto the human's own queued words in one row.
 AUTOMATION_STEER_META = "automation_steer"
+#: The wire mark (``queue_push`` meta and the slot-detail queue view) of a queue
+#: entry carrying :data:`AUTOMATION_STEER_META`, so the client never draws its
+#: card as the person's own words.
+AUTOMATION_STEER_WIRE_KEY = "automationSteer"
 
 
 def releases_past_subagent_hold(item: dict) -> bool:

@@ -17,6 +17,10 @@ What it does, in order:
 5. writes ``<root>/out.json``: per probe server what value it saw, which decoys
    started, and the tool bytes of the largest model request.
 
+With ``PROBE_TOOLLESS=1`` step 1 writes a spec that mounts nothing instead (a
+tool-less helper, ``client_mcp_array.spec_is_toolless``), and step 4 skips the
+mount wait: the run then measures only which decoys a helper starts.
+
 Probe servers in the spec:
 
 =============  ================================  =================================
@@ -56,6 +60,7 @@ SESSION_KEY = "dashboard:probe-1"
 #: How long to wait for the spec's probe servers to start. A harness that mounts
 #: none of them (pi without a gateway) spends all of it.
 MOUNT_WAIT_S = float(os.environ.get("PROBE_MOUNT_WAIT_S", "20"))
+TOOLLESS = os.environ.get("PROBE_TOOLLESS") == "1"
 
 
 def _server(name: str, env: dict) -> dict:
@@ -76,6 +81,9 @@ def write_spec() -> None:
         "tools": ["*"],
         "allowedTools": [],
     }
+    if TOOLLESS:
+        servers = {}
+        spec = {**spec, "mcpServers": servers, "tools": [], "includeMcpJson": False}
     agents = HOME / ".kiro" / "agents"
     agents.mkdir(parents=True, exist_ok=True)
     (agents / "kirocrew.json").write_text(json.dumps(spec, indent=1), encoding="utf-8")
@@ -245,6 +253,9 @@ async def wait_for_mounts(bound: float = MOUNT_WAIT_S) -> None:
     line each probe writes; a harness that mounts none of them (pi without a
     gateway) is the bounded case, and the checks read what did start."""
     from kiro_crew.testing.wait import async_wait_until
+
+    if TOOLLESS:
+        return
 
     def all_started() -> bool:
         state = probe_state()

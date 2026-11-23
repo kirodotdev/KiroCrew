@@ -13,10 +13,10 @@ the only auth owner this route has.
 
 What is on disk, under ``<data home>/engines/kas/``::
 
-    0.66.33/
+    0.66.117/
       install.json                what was installed, and where its two entry points are
       bundle/node_modules/@kiro/agent/dist/server/acp-server.js
-      node/node-v22.20.0-linux-x64/bin/node
+      node/node-v22.23.3-linux-x64/bin/node
 
 The desktop app stages the same layout into its resources. A universal Mac app
 stages it once, with a Node binary holding both architectures
@@ -40,16 +40,16 @@ The manifest's own sha256 is pinned beside the version, which makes the
 manifest the trust root for everything else. Its shape::
 
     {
-      "version": "0.66.33",
+      "version": "0.66.117",
       "package": "@kiro/agent",
       "platforms": {
-        "linux-x64": {"file": "kas-linux-x64.tar.xz", "sha256": "...", "size": 25630996},
+        "linux-x64": {"file": "kas-linux-x64.tar.xz", "sha256": "...", "size": 21280012},
         ...
       },
       "node": {
-        "version": "22.20.0",
+        "version": "22.23.3",
         "builds": {
-          "linux-x64": {"file": "node-v22.20.0-linux-x64.tar.xz", "sha256": "...", "size": ...},
+          "linux-x64": {"file": "node-v22.23.3-linux-x64.tar.xz", "sha256": "...", "size": ...},
           ...
         }
       }
@@ -115,6 +115,9 @@ __all__ = [
     "kas_engines_root",
     "make_universal_node",
     "manifest_url_for",
+    "PACKAGED_KAS_DIR_NAME",
+    "engine_roots",
+    "packaged_kas_root",
     "parse_manifest",
     "sweep_stale_staging",
     "trim_for_shipping",
@@ -231,6 +234,9 @@ class InstalledKasBundle:
     #: True when *root* is the desktop app's own staged copy
     #: (``BUNDLED_KAS_DIR_ENV``), not the data home's ``engines/kas``.
     bundled: bool = False
+    #: True when *root* is the copy a platform wheel carries inside the installed
+    #: ``kiro_crew`` package (:func:`packaged_kas_root`).
+    packaged: bool = False
 
 
 # ── host keys ──────────────────────────────────────────────────────────────────
@@ -441,6 +447,22 @@ def kas_engines_root(home: Path | None = None) -> Path:
     return (home or data_home()) / KAS_BUNDLE_ENGINES_LEAF / "kas"
 
 
+#: Package-relative directory a platform wheel stages the pinned engine under
+#: (``scripts/build_platform_wheels.py``). A pure wheel and a source checkout have none.
+PACKAGED_KAS_DIR_NAME = "_kas_engine"
+
+
+def packaged_kas_root() -> Path:
+    """``<kiro_crew package>/_kas_engine``: where a platform wheel carries its engine.
+
+    Inside the package directory, so the install-tree seal
+    (``sandbox_tiers._resolved_install_root_targets``) already makes it read-only for
+    every sandboxed child, and an update or rollback that swaps the package swaps the
+    engine with it.
+    """
+    return Path(__file__).resolve().parents[1] / PACKAGED_KAS_DIR_NAME
+
+
 def bundled_kas_root() -> Path | None:
     """The desktop app's staged engine root, or ``None`` when not bundled.
 
@@ -627,7 +649,13 @@ def _locate_node(node_dir: Path) -> Path:
 _NODE_PROBE_TIMEOUT_SECS = 30
 
 
-def _probe_node(node_bin: Path, expected_version: str, *, launcher: tuple[str, ...] = ()) -> None:
+def _probe_node(
+    node_bin: Path,
+    expected_version: str,
+    *,
+    launcher: tuple[str, ...] = (),
+    timeout_retries: int = 0,
+) -> None:
     """Run the extracted Node once, the way the harness will, and check its version.
 
     One probe covers every way an archive can be dead on this host: the wrong
@@ -635,20 +663,32 @@ def _probe_node(node_bin: Path, expected_version: str, *, launcher: tuple[str, .
     Failing here keeps a broken runtime from being published at its version's name instead of
     surfacing as a handshake timeout on the first session. *launcher* is prepended
     to the argv (``arch -x86_64``, to run one slice of a universal binary).
+    *timeout_retries* reruns the probe that many more times when it times out;
+    any other failure is raised at once.
     """
-    try:
-        proc = subprocess.run(
-            [*launcher, str(node_bin), "--version"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_NODE_PROBE_TIMEOUT_SECS,
-            cwd=str(node_bin.parent),
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise KasBundleError(
-            f"the extracted Node runtime does not run on this host: {exc}"
-        ) from exc
+    attempt = 0
+    while True:
+        try:
+            proc = subprocess.run(
+                [*launcher, str(node_bin), "--version"],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_NODE_PROBE_TIMEOUT_SECS,
+                cwd=str(node_bin.parent),
+            )
+            break
+        except subprocess.TimeoutExpired as exc:
+            if attempt < timeout_retries:
+                attempt += 1
+                continue
+            raise KasBundleError(
+                f"the extracted Node runtime does not run on this host: {exc}"
+            ) from exc
+        except OSError as exc:
+            raise KasBundleError(
+                f"the extracted Node runtime does not run on this host: {exc}"
+            ) from exc
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip().splitlines()
         raise KasBundleError(
@@ -706,6 +746,19 @@ def sweep_stale_staging(root: Path) -> None:
             logger.warning("could not sweep the KAS staging tree %s: %s", tree, exc)
             continue
         logger.info("removed the stale KAS staging tree %s (%d bytes)", tree, size)
+
+
+def _move_aside(path: Path) -> Path:
+    """Rename *path* to a hidden ``.staging-retired-*`` sibling and return that name.
+
+    Windows refuses the rename while a process holds a file inside *path* open
+    without delete sharing (a running session's ``node.exe``); the :class:`OSError`
+    then leaves *path* untouched.
+    """
+    retired = Path(tempfile.mkdtemp(prefix=_RETIRED_STAGING_PREFIX, dir=path.parent))
+    retired.rmdir()
+    os.rename(path, retired)
+    return retired
 
 
 def install_bundle(
@@ -795,10 +848,8 @@ def install_bundle(
         # and the no-replace publish turns that into a refusal, never a swap.
         retired: Path | None = None
         if force and final.exists():
-            retired = Path(tempfile.mkdtemp(prefix=_RETIRED_STAGING_PREFIX, dir=root))
-            retired.rmdir()
             try:
-                os.rename(final, retired)
+                retired = _move_aside(final)
             except OSError as exc:
                 # Windows refuses to rename a directory while a process holds a file
                 # in it open, as a running session's node.exe does; the installed
@@ -842,6 +893,35 @@ def installed_versions(*, root: Path | None = None) -> list[str]:
     return sorted(n for n in names if _VERSION_RE.match(n) and not n.startswith("."))
 
 
+def remove_version(version: str, *, root: Path | None = None) -> None:
+    """Remove the installed engine *version* from *root* whole, or leave it whole.
+
+    *version* is a name :func:`installed_versions` listed. The folder is renamed to
+    a hidden ``.staging-retired-*`` sibling first, as ``install_bundle(force=True)``
+    does: Windows refuses that rename while a process holds a file inside open
+    without delete sharing (a running session's ``node.exe``), so a held engine
+    fails before anything is deleted and stays installed. Once renamed, the version
+    is out of :func:`installed_versions`; a failed delete of the renamed tree leaves
+    a hidden folder that costs disk space, never a half-engine at the version's
+    name. Raises :class:`KasBundleError`.
+    """
+    home = (root or kas_engines_root()) / version
+    try:
+        retired = _move_aside(home)
+    except OSError as exc:
+        raise KasBundleError(
+            f"KAS {version} at {home} could not be removed ({exc.strerror or exc}); "
+            "if a KAS session is running it, stop that session and retry"
+        ) from exc
+    try:
+        shutil.rmtree(retired)
+    except OSError as exc:
+        raise KasBundleError(
+            f"KAS {version} is removed, but its files at {retired} could not be deleted "
+            f"({exc.strerror or exc}); delete that folder once nothing holds it"
+        ) from exc
+
+
 def install_pinned(
     base_url: str,
     *,
@@ -857,8 +937,14 @@ def install_pinned(
     manifest's bytes before anything is parsed or fetched, so a host serving a
     different manifest under the pinned version's name installs nothing.
     """
+    explicit_root = root is not None
     root = root or kas_engines_root()
     present = installed_bundle(root=root, version=KAS_PIN_VERSION)
+    if present is None and not explicit_root:
+        # A platform wheel carries the pin inside the package: nothing to fetch.
+        present = installed_bundle(version=KAS_PIN_VERSION)
+        if present is not None and not present.packaged:
+            present = None
     if present is not None:
         return present
     # The local host checks install_bundle repeats; none of them reads the network.
@@ -987,8 +1073,19 @@ def make_universal_node(
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
+    # The slice that is not the host's runs under Rosetta. Its first launch of
+    # this freshly written binary waits for Rosetta to translate the whole
+    # Node (about 100 MB) ahead of time, which on a loaded macOS runner can
+    # take longer than the probe's timeout. Rosetta's translation daemon
+    # caches what it translated, so one rerun after a timeout usually starts
+    # fast. Only a timeout is rerun, once; any other probe failure fails at once.
     for slice_name in sorted(want):
-        _probe_node(node_bin, manifest.node_version, launcher=(arch, f"-{slice_name}"))
+        _probe_node(
+            node_bin,
+            manifest.node_version,
+            launcher=(arch, f"-{slice_name}"),
+            timeout_retries=1,
+        )
     again = _read_installed(home.parent, installed.version, bundled=installed.bundled)
     if again is None or again.node_bin != node_bin:
         raise KasBundleError(f"{home} does not read back after the universal Node was written")
@@ -1067,10 +1164,13 @@ def installed_bundle(
 ) -> InstalledKasBundle | None:
     """The engine this release runs (*version*, default the pin), or ``None``.
 
-    With no *root*, two roots are asked in order: the data home's ``engines/kas``
-    (an operator's own install, which wins), then the desktop app's staged copy
-    (:func:`bundled_kas_root`) when the shell exported one. An explicit *root* is
-    asked alone.
+    With no *root*, three roots are asked in order: the engine a platform wheel
+    carries inside the installed package (:func:`packaged_kas_root`, the same bytes
+    the pin names, shipped with this exact code), then the data home's
+    ``engines/kas`` (``kirocrew kas install``), then the desktop app's staged copy
+    (:func:`bundled_kas_root`) when the shell exported one. A version other than the
+    pin (an override) is never in the package, so it resolves from the data home. An
+    explicit *root* is asked alone.
 
     Never raises: a damaged record reads as "not installed" and is logged, so a
     spawn path can ask without a try/except.
@@ -1081,13 +1181,28 @@ def installed_bundle(
         return None
     if root is not None:
         return _read_installed(root, version, bundled=False)
-    found = _read_installed(kas_engines_root(), version, bundled=False)
+    packaged, home, bundled = engine_roots()
+    if (packaged / version).is_dir():
+        found = _read_installed(packaged, version, bundled=False, packaged=True)
+        if found is not None:
+            return found
+    found = _read_installed(home, version, bundled=False)
     if found is not None:
         return found
-    bundled = bundled_kas_root()
     if bundled is None:
         return None
     return _read_installed(bundled, version, bundled=True)
+
+
+def engine_roots() -> tuple[Path, Path, Path | None]:
+    """Every root Crew's own engine runs from, in the order :func:`installed_bundle` asks.
+
+    The package's ``_kas_engine`` (a platform wheel), the data home's ``engines/kas``,
+    and the desktop app's staged copy (``None`` when the shell exported none). The
+    harness reads the same tuple to tell Crew's engine from a kiro-cli relay, so the
+    lookup and that identity check cannot name different roots.
+    """
+    return packaged_kas_root(), kas_engines_root(), bundled_kas_root()
 
 
 def _stays_inside(rel: str) -> bool:
@@ -1104,7 +1219,9 @@ def _stays_inside(rel: str) -> bool:
     return ".." not in PureWindowsPath(rel).parts
 
 
-def _read_installed(root: Path, version: str, *, bundled: bool) -> InstalledKasBundle | None:
+def _read_installed(
+    root: Path, version: str, *, bundled: bool, packaged: bool = False
+) -> InstalledKasBundle | None:
     try:
         home = root / version
         record = json.loads((home / KAS_BUNDLE_INSTALL_RECORD_NAME).read_text(encoding="utf-8"))
@@ -1133,6 +1250,7 @@ def _read_installed(root: Path, version: str, *, bundled: bool) -> InstalledKasB
             node_bin=node_bin,
             acp_server=acp_server,
             bundled=bundled,
+            packaged=packaged,
         )
     except FileNotFoundError:
         return None

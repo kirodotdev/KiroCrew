@@ -28,8 +28,10 @@ current run and up to four earlier ones, `gateway.log.prev` and `logs/gateway-bo
 crash reports, `versions.txt` and `manifest.json`. Every text file in it passes
 through the credential redaction first, and the command prints how many secrets it
 removed. Home-directory paths are shortened to `~`, and this machine's current
-host name is replaced with `<host>`. A name the machine had before, or another
-spelling of it, can remain, so look through the zip before you attach it.
+host name is replaced with `<host>`, including its escaped, percent-encoded and
+IDNA spellings. A name the machine had before, the domain after a short name, a
+name followed by `-`, `_` or a digit, or a less common spelling of the name can
+remain, so look through the zip before you attach it.
 It then prints a GitHub new-issue link on the bug-report form; drag the
 zip into that issue. The link fills in the version and the release channel from
 the build's own release record. When the build cannot prove its channel, the
@@ -144,9 +146,6 @@ skipped. Do not put the key in the systemd unit or in
 `/etc/kirocrew/kirocrew.env` — both are readable by any local user.
 `kirocrew service install` warns when it sees a key in your shell that the
 service will not inherit.
-
-Releases before 0.3.0 filtered `KIRO_API_KEY` out of the probe entirely, so no
-placement works on those; use `kiro-cli login` or upgrade.
 
 ### A service-started gateway lacks AWS container credentials, region or the ssh-agent
 
@@ -266,7 +265,8 @@ not found on this computer is dropped at the rebuild; the gateway log names it
 where the gateway already searches, start a new chat: the next default-agent
 session start rebuilds the spec with the server. A program found only through the
 server's own `env.PATH`, or under a Node version installed after the gateway
-started, needs a gateway restart.
+started, needs a gateway restart. The agent's `diagnose_settings` check names a
+server dropped this way, so you can ask the agent why a server is missing.
 
 `kirocrew doctor` auto-appends missing `tools` entries for managed servers and
 rewrites the file. It may also repair `allowedTools` for always-on servers, but
@@ -316,7 +316,11 @@ with the `mcp_server_wait` tool (up to 90 seconds in one call), then uses its
 tool and finishes the request in the same reply. If the server is still not
 ready after that, the agent says so and you can ask again a moment later. For a
 server in any other state it does not wait: it tells you what is true of the
-server and does what it can without it.
+server and does what it can without it. For one that failed to start, it tells
+you that **Test** on that server's row of the **MCP Servers** page shows its error
+if the page lists the server (one only a custom agent declares has no row there),
+and that in a dashboard chat the chat menu's **MCP servers** list shows the error
+from this chat's session. The error itself is never passed to the agent.
 
 A first message that cannot carry that note still waits for your servers, for at
 most 5 seconds, as every first message did before: `kirocrew chat` in a
@@ -326,8 +330,9 @@ of its own. A server that will not start (switched off, or left out by your
 organization's registry) is never waited for.
 
 A server that failed to start usually stays failed for that chat. (One that
-failed over a missing or refused credential may be tried again.) Check its row
-and its command on the **MCP Servers** page, then start a new chat.
+failed over a missing or refused credential may be tried again.) If the
+**MCP Servers** page lists it, check its row and its command there. Then start a
+new chat.
 
 A sub-agent and an unattended run (a schedule, a webhook) still wait briefly for
 the agent's servers before their first prompt, because such a run may have only
@@ -487,7 +492,7 @@ start. If it keeps failing:
   verifies whatever is downloaded
 - To run a different model entirely, set `memory.embed_model_path` (see below).
   The default model is then never downloaded at all
-- Retry from the dashboard Overview → Memory card, or do nothing: it retries on
+- Retry from the Memory card on **Settings → Overview**, or do nothing: it retries on
   the next gateway start
 - Coming from an install that used Ollama for embeddings? The download is
   usually skipped: Kiro Crew finds the identical model in the local Ollama blob
@@ -625,7 +630,8 @@ directory named the way Kiro Crew names one: eight hex characters, such as
 with at least one letter (`runtime-0123abcd`). A folder you made or cloned
 there under any other name is left alone (a dated name such as
 `backup-20261105` is not a Kiro Crew name), as is any folder with no `.owner`
-file under `KIROCREW_SCRATCH_ROOT`, which can hold folders of your own.
+file under `KIROCREW_SCRATCH_ROOT` (Windows only, below), which can hold folders
+of your own.
 On Linux such a directory is also kept while a running process still uses it,
 as above; macOS and Windows have no such check, so a process that uses one
 without writing to it for a week finds it moved.
@@ -782,15 +788,16 @@ nothing.
 
 ### Kiro Crew files belong to another account
 
-`kirocrew doctor`, the gateway log, Settings and the New Bot dialog say that some
-files in your data home (`~/.kiro/crew` unless you set `KIROCREW_HOME`) belong to
-another account, usually `root`, so Kiro Crew can't read them. When the notice
-says the files "can't be used by this account" instead, they are already yours
-but their permissions keep you out: skip to step 6.
+`kirocrew doctor`, the gateway log, a refused `kirocrew gateway` start, Settings
+and the New Bot dialog say that some files in your data home (`~/.kiro/crew`
+unless you set `KIROCREW_HOME`) belong to another account, usually `root`, so
+Kiro Crew can't read them. When the notice says the files "can't be used by this
+account" instead, they are already yours but their permissions keep you out:
+skip to step 6.
 
 This almost always means Kiro Crew was started as root once, for example with
 `sudo kirocrew ...`. `sudo` keeps your `HOME`, so that run wrote root-owned files
-into your own data home. Kiro Crew now refuses such a run, but it does not change
+into your own data home. Kiro Crew refuses such a run, but it does not change
 the owner of files back by itself: doing that as root inside a folder an agent can
 write is not safe to automate.
 

@@ -62,7 +62,8 @@ def _persisted_mode_is_restricted(
     ``<name>.jsonl`` and an archived ``dashboard_<name>.jsonl``), and the
     memory-mode helper answers from the FIRST candidate — letting a persistent
     file answer for an incognito session. The probe refuses to guess and reports
-    unknown, as does a header no normal session wrote.
+    unknown unless every match gives the same readable mode, as it does for a
+    header no normal session wrote.
 
     *unknown_denies* decides what an unreadable mode means, because the two
     ceilings are not symmetric. For an UPLOAD (the default) unknown always
@@ -71,11 +72,11 @@ def _persisted_mode_is_restricted(
 
     For durable HISTORY unknown denies only when a transcript EXISTS. That is
     where an incognito session can hide — an ambiguous stem matching several
-    transcripts, or a header no normal session wrote — so a write there could
-    persist a conversation that promised to leave none. A legacy header whose
-    ``memory_mode`` field is simply absent does NOT reach this case: it reads
-    ``persistent``. So the only record-present unknowns are genuinely
-    unresolvable, and denying them costs a cold resume nothing.
+    transcripts that disagree on the mode, or a header no normal session wrote —
+    so a write there could persist a conversation that promised to leave none. A
+    legacy header whose ``memory_mode`` field is simply absent does NOT reach this
+    case: it reads ``persistent``. So the only record-present unknowns are
+    genuinely unresolvable, and denying them costs a cold resume nothing.
 
     A truly ABSENT record is the remaining case, and history allows it: nothing
     on disk claims the session is restricted, and denying there would silently

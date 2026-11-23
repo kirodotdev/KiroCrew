@@ -349,11 +349,21 @@ def redact_url(url: str) -> str:
         return "<unparseable-url>"
 
 
+#: On Windows these names hold the Winsock numbers a socket error carries (10054 for
+#: a reset), so one table serves every platform.
+_ERRNO_CAUSES = {
+    errno.ECONNRESET: "the connection was reset",
+    errno.ECONNABORTED: "the connection was closed",
+    errno.EHOSTUNREACH: "the host is unreachable",
+    errno.ENETUNREACH: "the network is unreachable",
+}
+
+
 def network_failure_cause(exc: BaseException) -> str:
     """Why a connection failed, in a user's words, or ``""`` for any other failure.
 
-    Read from the exception types, never their text: urllib carries the socket
-    error in ``URLError.reason``, aiohttp in ``ClientConnectorError.os_error``.
+    Read from the exception types and errno, never their text: urllib carries the
+    socket error in ``URLError.reason``, aiohttp in ``ClientConnectorError.os_error``.
     """
     for err in (exc, getattr(exc, "reason", None), getattr(exc, "os_error", None)):
         if isinstance(err, socket.gaierror):
@@ -362,6 +372,8 @@ def network_failure_cause(exc: BaseException) -> str:
             return "connection refused"
         if isinstance(err, TimeoutError):
             return "timed out"
+        if isinstance(err, OSError) and err.errno in _ERRNO_CAUSES:
+            return _ERRNO_CAUSES[err.errno]
     return ""
 
 
@@ -1036,12 +1048,15 @@ def download_to(
             # unsatisfiable range on every later attempt, so the next one starts
             # from zero.
             _discard(where, staging_name)
-        # TYPE and a redacted url, never `exc`. This string is RETURNED, and the
-        # feature-video caller puts it in the cache's failure state, which /status
-        # serves to the dashboard — so an unredacted url here is a wider leak than a
-        # log line. `http.client.InvalidURL` carries the url verbatim in its message
-        # ("nonnumeric port: 'secretpw@…'"), which is how a credentialed override
-        # reaches a reader. The type is the diagnostic that matters anyway.
+        # The plain cause or the TYPE, and a redacted url, never `exc`. This string is
+        # RETURNED, and the feature-video caller puts it in the cache's failure state,
+        # which /status serves to the dashboard — so an unredacted url here is a wider
+        # leak than a log line. `http.client.InvalidURL` carries the url verbatim in
+        # its message ("nonnumeric port: 'secretpw@…'"), which is how a credentialed
+        # override reaches a reader.
+        cause = network_failure_cause(exc)
+        if cause:
+            return False, f"{_ERROR_PREFIX} from {redact_url(url)}: {cause}"
         return False, f"{_ERROR_PREFIX}: {type(exc).__name__} from {redact_url(url)}"
     except Exception as exc:
         # A resumable partial is KEPT on a transport failure — that is the whole

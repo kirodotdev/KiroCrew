@@ -1,7 +1,8 @@
 import { forwardRef, type ForwardedRef } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useNavigate } from 'react-router-dom'
-import { useAppSelector } from '../../store'
+import { useAppDispatch, useAppSelector } from '../../store'
+import { setActiveId } from '../../store/instancesSlice'
 import { getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount } from '../../surfaces/registry'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Bot } from 'lucide-react'
@@ -14,11 +15,10 @@ import type { UiLocationId } from '../../uiLocations/descriptors'
 import type { AppRunState } from '../../appRunState'
 import { useNavTip } from './navTip'
 
-function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
+function BadgeIndicator({ count, collapsed, label, name }: { count: number; collapsed: boolean; label: string; name: string }) {
   if (count <= 0) return null
-  const ariaLabel = `${count} ${label}`
   return collapsed
-    ? <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" role="status" aria-label={ariaLabel} />
+    ? <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" role="status" aria-label={name} />
     // Expanded: IN FLOW, not `absolute right-2`. The row's other right-edge
     // occupant is the hover/focus shortcut hint, which is an in-flow span — so an
     // absolutely-positioned badge sat ON TOP of it and a row with an unread count
@@ -28,22 +28,21 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
     //
     // `title` names what the number IS, for sighted users: a bare pill beside a
     // bare bot glyph does not say what either counts, and the fix above makes the
-    // two reliably co-visible. It carries the LABEL ALONE, not `ariaLabel` — the
-    // label is a plural phrase, so "1 unread conversations" would be visibly
-    // wrong at count 1, and the count is already rendered in the pill an inch
-    // away. `aria-label` keeps the count because a screen reader gets no pill.
+    // two reliably co-visible. It carries the LABEL ALONE, not `name` — the
+    // label is a count-free plural phrase, and the count is already rendered in
+    // the pill an inch away. `aria-label` carries the count because a screen
+    // reader gets no pill.
     // The Settings rows' update dot likewise carries different title and aria strings.
-    : <span className="shrink-0 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" title={label} aria-label={ariaLabel}>{count}</span>
+    : <span className="shrink-0 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" title={label} aria-label={name}>{count}</span>
 }
 
 /** Sub-agent activity belongs in the expanded rail, where the bot icon and
  *  count communicate what is active. The collapsed rail omits it: a second
  *  anonymous dot competes with the unread badge without identifying a session,
  *  while the Sessions list provides the actionable per-session status. */
-function ActivityIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
+function ActivityIndicator({ count, collapsed, label, name }: { count: number; collapsed: boolean; label: string; name: string }) {
   if (count <= 0 || collapsed) return null
-  const ariaLabel = `${count} ${label}`
-  return <span className="shrink-0 flex items-center gap-1 text-[11px] text-accent" role="status" title={label} aria-label={ariaLabel}>
+  return <span className="shrink-0 flex items-center gap-1 text-[11px] text-accent" role="status" title={label} aria-label={name}>
     {/* Size and spacing are main's. A 12px glyph was tried here to make the mark
         identify its own count at a glance, and a reader of the rendered frames
         still could not tell what it depicted -- so it bought nothing and cost the
@@ -150,14 +149,22 @@ export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: str
   const appName = navId.startsWith('app-') ? navId.slice(4) : navId
   const dynamicCount = surfaceHasBadgeSource ? 0 : (appBadges[appName] || 0)
   const builtinLabel = surface?.badgeLabelKey ? i18nT(surface.badgeLabelKey) : surface?.badgeLabel ?? i18nT('app.updates')
+  // The count goes inside a plural catalog string so each language picks its own
+  // form; a surface's own plain label has no forms, so it keeps the number glued.
+  const badgeName = (count: number) => {
+    if (surface?.badgeCountKey) return i18nT(surface.badgeCountKey, { count })
+    if (surface?.badgeLabelKey || surface?.badgeLabel) return `${count} ${builtinLabel}`
+    return i18nT('app.updates_count', { count })
+  }
   const activityCount = useAppSelector(selectSurfaceActivityCount(navId))
   const activityLabel = surface?.activityLabel ?? i18nT('app.subagents_in_flight_fallback')
+  const activityName = surface?.activityLabel ? `${activityCount} ${activityLabel}` : i18nT('app.subagents_in_flight_count', { count: activityCount })
   return (
     <>
-      <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
+      <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} name={activityName} />
       <RunStateIndicator state={runState} collapsed={collapsed} label={runStateLabel(runState)} />
-      <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
-      <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} />
+      <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} name={badgeName(builtinCount)} />
+      <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} name={badgeName(dynamicCount)} />
     </>
   )
 }
@@ -207,7 +214,11 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
   const shortcut = useNavShortcutHint(path)
   const mayLeave = useMayLeaveForNavigation()
   const isCurrentUrl = useIsCurrentUrl()
+  const dispatch = useAppDispatch()
+  // The rail stays on screen over a relay tab; what a row opens is in the local Crew.
+  const relayCovered = useAppSelector(s => s.instances?.relayActive != null)
   const activate = () => {
+    if (relayCovered) dispatch(setActiveId(null))
     // Navigating swaps the whole page, and the page leaving may hold a draft the
     // user typed — `beforeunload` cannot defend it, because a client-side route
     // change never unloads the document. Ask its guard first.

@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import json
 import random
+import shutil
 from typing import Any
 
 import pytest
@@ -34,6 +35,7 @@ from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log import projection_catalogue
 from kiro_crew.crew_log.projection_slot_memo import _Ordinal, _ordinal_seq, _SlotFold
 from kiro_crew.crew_log.schema import Entry
+from kiro_crew.crew_log.store_paths import crew_log_root
 from kiro_crew.projection import ProjectionRegistry
 
 SLOT = "dashboard:3"
@@ -309,6 +311,29 @@ def _write_slot(units: int, per_unit: int, seed: int) -> tuple[str, ...]:
     return tuple(ids)
 
 
+@pytest.fixture(scope="module")
+def _large_slot_template(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """Where the module keeps the large slot after its first test writes it."""
+    return {"tree": tmp_path_factory.mktemp("cold-prime-slot") / "crew-log", "units": None}
+
+
+def _large_slot(template: dict[str, Any]) -> tuple[str, ...]:
+    """``_write_slot(units=24, per_unit=60, seed=7)`` in this test's own data home.
+
+    Written once per module: the first test writes the slot and keeps a copy of its
+    crew-log tree before any fold runs; every later test copies that tree into its
+    own home. A unit's directory name folds only its id, so the copy opens as the
+    same units, and each test still folds its own copy on both paths.
+    """
+    tree = crew_log_root(lg.KIND_SESSION).parent
+    if template["units"] is None:
+        template["units"] = _write_slot(units=24, per_unit=60, seed=7)
+        shutil.copytree(tree, template["tree"])
+    else:
+        shutil.copytree(template["tree"], tree)
+    return template["units"]
+
+
 def _cold_value(name: str, units: tuple[str, ...]) -> str:
     from kiro_crew.crew_log import projection_slot_memo
 
@@ -335,10 +360,14 @@ def _cold_value(name: str, units: tuple[str, ...]) -> str:
         crew_log.forget_slot_folds()
 
 
+# One worker for every fold, so the slot is written once per run.
+@pytest.mark.xdist_group(name="crew_log_slot_cold_prime_large_slot")
 @pytest.mark.parametrize("name", SLOT_FOLDS)
-def test_a_large_cold_slot_fold_equals_the_copy_per_step_fold(name, monkeypatch):
+def test_a_large_cold_slot_fold_equals_the_copy_per_step_fold(
+    name, monkeypatch, _large_slot_template
+):
     """Many units, entries spread across them: the cold value is unchanged."""
-    units = _write_slot(units=24, per_unit=60, seed=7)
+    units = _large_slot(_large_slot_template)
     after = _cold_value(name, units)
     monkeypatch.delattr(_SlotFold, "apply_owned")
     before = _cold_value(name, units)

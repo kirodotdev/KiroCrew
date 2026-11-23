@@ -76,7 +76,9 @@ A gated loop that names no criteria of its own is screened under a built-in
 brief only once you grant the `nudge_evidence` scope on the Decisions card in
 Settings. That scope sends a watched session's transcript tail and a pull
 request's typed facts to the decision service, so it is off until you turn it
-on. With the scope off, such a loop runs as a plain timer.
+on. With the scope off, such a loop runs as a plain timer. A loop whose
+instruction names no session and no pull request, such as a conductor's patrol,
+gives the built-in brief nothing to read, so it runs as it does with the scope off.
 
 A loop never switches its session to a cheaper model for a check. The judge is a
 separate small call, not a turn of the loop's own session, and every cycle that

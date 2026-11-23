@@ -1,6 +1,7 @@
 """The relay viewer's gateway routes: the Crew list and the desktop app's token mint.
 
-Off by default (404 ``RELAY_VIEWER_OFF``), the list is owner-only and carries no
+On with no setting, off (404 ``RELAY_VIEWER_OFF``) only in a build that locks the
+``tunnel`` control; the dev settings count only with the dev switch on. The list is owner-only and carries no
 token, the mint needs loopback plus the local secret (a session alone is refused),
 neither route is reachable through the relay, and every answer is ``no-store``.
 """
@@ -11,6 +12,7 @@ import dataclasses
 import hashlib
 import logging
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,6 +20,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from token_auth_helpers import _make_request, _ok_handler, clear_nonces  # noqa: F401
 
+from kiro_crew.auth import bridge
 from kiro_crew.dashboard.handlers import relay_viewer as rv
 from kiro_crew.dashboard.kiro_relay import limits
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_CALLER_KEY, RelayCaller, RelayCallerKind
@@ -44,6 +47,10 @@ PROFILE = "arn:aws:codewhisperer:us-east-1:000000000000:profile/EXAMPLEPROFILE"
 TEAM_CREW = dataclasses.replace(CREW, crew_type="TEAM", name="Team box")
 FP_A = "fingerprint-of-account-a"
 FP_B = "fingerprint-of-account-b"
+START = "https://example-portal.awsapps.example.test/start"
+IDC = {"identity": "identity_center", "provider": "Enterprise", "start_url": START}
+#: The real vault read, kept before the fixture replaces it.
+_REAL_VAULT_CLAIMS = bridge.vault_identity_claims
 
 
 def _marker(fingerprint: str) -> str:
@@ -52,9 +59,14 @@ def _marker(fingerprint: str) -> str:
 
 @pytest.fixture
 def viewer(monkeypatch):
-    """The viewer on, CPS faked, the owner and host-process gates passing."""
+    """The dev settings on, CPS faked, the owner and host-process gates passing."""
     state = SimpleNamespace(
-        enabled=True, calls=[], owner=True, provenance=LocalOwnerProvenance(), fingerprint=FP_A
+        enabled=True,
+        calls=[],
+        owner=True,
+        provenance=LocalOwnerProvenance(),
+        fingerprint=FP_A,
+        locked=False,
     )
     tunnel = SimpleNamespace(
         relay_viewer_cps_url="https://cps.example.test",
@@ -71,16 +83,22 @@ def viewer(monkeypatch):
     state.profile_arn = ""
     state.token_types = []
     state.profile_arns = []
+    state.list_profile_arns = []
     state.crew_domains = []
+    state.off_domain = 0
+
+    state.refs = []
 
     async def _bearer(ref, rejected=""):
+        state.refs.append(ref)
         return BEARER, state.token_type, state.profile_arn
 
-    async def _list(url, bearer, *, crew_domain, token_type=""):
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         state.crew_domains.append(crew_domain)
         state.calls.append(("list", bearer))
         state.token_types.append(("list", token_type))
-        return (CREW,)
+        state.list_profile_arns.append(profile_arn)
+        return cps.CrewList((CREW,), state.off_domain)
 
     async def _mint(url, bearer, endpoint_id, *, token_type="", profile_arn=""):
         state.calls.append(("mint", endpoint_id))
@@ -92,6 +110,7 @@ def viewer(monkeypatch):
         return None if state.owner else web.json_response({"code": "owner_only"}, status=403)
 
     monkeypatch.setattr(rv, "_load_tunnel", _tunnel)
+    monkeypatch.setattr(rv, "local_enable_locked", lambda control: state.locked)
     monkeypatch.setattr(rv, "_bearer", _bearer)
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     monkeypatch.setattr(cps, "create_crew_access_token", _mint)
@@ -105,6 +124,14 @@ def viewer(monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.auth.bridge.vault_identity_fingerprint", lambda: state.fingerprint
     )
+    state.claims = {"identity": "builder_id", "provider": "BuilderId"}
+    state.claim_reads = 0
+
+    def _claims():
+        state.claim_reads += 1
+        return (state.fingerprint, dict(state.claims)) if state.fingerprint else ("", {})
+
+    monkeypatch.setattr("kiro_crew.auth.bridge.vault_identity_claims", _claims)
     return state
 
 
@@ -133,14 +160,38 @@ async def _mint(client, headers=None, body=None):
 
 
 @pytest.mark.asyncio
-async def test_both_routes_answer_404_while_off(viewer) -> None:
-    viewer.enabled = False
+async def test_both_routes_answer_404_in_a_build_that_locks_the_tunnel_control(viewer) -> None:
+    viewer.locked = True
     async with _client() as client:
         for resp in (await client.get("/api/relay-viewer/crews"), await _mint(client)):
             assert resp.status == 404
             assert (await resp.json())["code"] == "RELAY_VIEWER_OFF"
             assert resp.headers["Cache-Control"] == "no-store"
     assert viewer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_with_the_dev_switch_off_leftover_dev_settings_are_ignored(
+    viewer, monkeypatch
+) -> None:
+    """No setting lists; a leftover URL, credential or domain alone is never used."""
+    urls = _recording_urls(monkeypatch)
+    viewer.enabled = False
+    viewer.tunnel.relay_viewer_credential = "secret://RELAY_VIEWER_TEST"
+    async with _client() as client:
+        assert (await client.get("/api/relay-viewer/crews")).status == 200
+        assert (await _mint(client)).status == 200
+    assert urls == [("list", US_HOST), ("list", US_HOST), ("mint", US_HOST)]
+    assert viewer.refs == ["", ""]
+    assert viewer.crew_domains == ["", ""]
+
+
+@pytest.mark.asyncio
+async def test_a_dev_relay_domain_counts_only_with_a_dev_url(viewer) -> None:
+    viewer.tunnel.relay_viewer_cps_url = ""
+    async with _client() as client:
+        assert (await client.get("/api/relay-viewer/crews")).status == 200
+    assert viewer.crew_domains == [""]
 
 
 @pytest.mark.asyncio
@@ -160,6 +211,7 @@ async def test_crews_lists_for_the_owner_with_no_token(viewer, caplog) -> None:
             "relayConnectionStatus": "CONNECTED",
             "crewUrl": CREW.crew_url,
             "lastSeenAt": None,
+            "unseen": False,
         }
     ]
     assert BEARER not in text and BEARER not in caplog.text
@@ -169,8 +221,8 @@ async def test_crews_lists_for_the_owner_with_no_token(viewer, caplog) -> None:
 async def test_crews_gives_last_seen_in_whole_epoch_seconds(viewer, monkeypatch) -> None:
     seen = dataclasses.replace(CREW, presence="NOT_CONNECTED", last_seen_at=1762470000.75)
 
-    async def _list(url, bearer, *, crew_domain, token_type=""):
-        return (seen, dataclasses.replace(CREW, endpoint_id=OTHER))
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
+        return cps.CrewList((seen, dataclasses.replace(CREW, endpoint_id=OTHER)))
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     async with _client() as client:
@@ -191,7 +243,7 @@ async def test_crews_needs_the_owner(viewer) -> None:
 
 @pytest.mark.asyncio
 async def test_a_cps_refusal_passes_its_code_through(viewer, monkeypatch) -> None:
-    async def _throttled(url, bearer, *, crew_domain, token_type=""):
+    async def _throttled(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         raise cps.CpsRefused(cps.THROTTLED, "slow down", status=429, retry_after=7.0)
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _throttled)
@@ -211,7 +263,7 @@ async def test_a_cps_refusal_passes_its_code_through(viewer, monkeypatch) -> Non
 async def test_a_crews_refusal_carries_the_cps_request_id(
     viewer, monkeypatch, code, status, retry_after
 ) -> None:
-    async def _refused(url, bearer, *, crew_domain, token_type=""):
+    async def _refused(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         raise cps.CpsRefused(
             code, "refused", status=503, retry_after=retry_after, request_id="req-1"
         )
@@ -225,7 +277,7 @@ async def test_a_crews_refusal_carries_the_cps_request_id(
 
 @pytest.mark.asyncio
 async def test_a_crews_refusal_with_no_request_id_leaves_the_field_out(viewer, monkeypatch) -> None:
-    async def _refused(url, bearer, *, crew_domain, token_type=""):
+    async def _refused(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         raise cps.CpsRefused(cps.SERVICE_ERROR, "refused", status=503)
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _refused)
@@ -427,13 +479,13 @@ def _refusing_list(viewer, monkeypatch, refusals):
         seen.append(rejected)
         return (FRESH if rejected else BEARER), "", ""
 
-    async def _list(url, bearer, *, crew_domain, token_type=""):
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         viewer.calls.append(("list", bearer))
         if refusals:
             status = refusals.pop(0)
             code = cps.SIGNED_OUT if status == 401 else cps.ACCESS_DENIED
             raise cps.CpsRefused(code, "refused", status=status)
-        return (CREW,)
+        return cps.CrewList((CREW,))
 
     monkeypatch.setattr(rv, "_bearer", _bearer)
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
@@ -702,7 +754,7 @@ def _no_grant(viewer, monkeypatch, *, switch_to=None):
             viewer.fingerprint = switch_to
         return BEARER, "", ""
 
-    async def _list(url, bearer, *, crew_domain, token_type=""):
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         viewer.calls.append(("list", bearer))
         raise cps.CpsRefused(cps.CREW_ACCESS_NOT_GRANTED, "this Crew isn't granted")
 
@@ -812,12 +864,26 @@ async def test_both_routes_pass_the_relay_domain_to_the_list(viewer) -> None:
 
 
 @pytest.mark.asyncio
+async def test_with_no_domain_set_the_mint_pins_the_window_to_the_listed_host(viewer) -> None:
+    viewer.tunnel.relay_viewer_relay_domain = ""
+    async with _client() as client:
+        resp = await _mint(client)
+        body = await resp.json()
+    assert resp.status == 200 and viewer.crew_domains == [""]
+    assert (body["crewUrl"], body["relayDomain"]) == (CREW.crew_url, "relay.example.test")
+    assert ("mint", EP) in viewer.calls
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "crew_url",
     [
         f"https://{EP}.relay.example.test",
         f"https://{EP}.evil.example.test",
         f"https://{EP}.relay.example.test:8443",
+        f"https://{EP}.us-east-1.relay.kiro.dev",
+        f"https://{EP}.kiro-relay.eu-central-1.on.aws",
+        f"https://{EP}.kiro-relay.eu-central-1.on.aws.evil.example.test",
     ],
 )
 @pytest.mark.parametrize(
@@ -832,18 +898,20 @@ async def test_both_routes_pass_the_relay_domain_to_the_list(viewer) -> None:
         "relaý.example.test",
     ],
 )
-async def test_a_crew_is_kept_only_under_the_set_domain_or_with_none_set(
+async def test_a_crew_is_kept_only_under_the_set_domain_or_at_its_own_name(
     viewer, monkeypatch, crew_url, domain
 ) -> None:
     on_domain = crew_url == f"https://{EP}.relay.example.test"
-    kept = not domain.strip() or (domain == "relay.example.test" and on_domain)
+    # With no domain set, the address CPS lists is trusted when it has no port.
+    in_zone = ":8443" not in crew_url
+    kept = (not domain.strip() and in_zone) or (domain == "relay.example.test" and on_domain)
     viewer.tunnel.relay_viewer_relay_domain = domain
     raw = {"endpointId": EP, "crewUrl": crew_url, "name": "Build box", "crewType": "PERSONAL"}
 
-    async def _list(url, bearer, *, crew_domain="", token_type=""):
+    async def _list(url, bearer, *, crew_domain="", token_type="", profile_arn=""):
         viewer.calls.append(("list", bearer))
         crew = cps._crew_endpoint(raw, crew_domain)
-        return () if crew is None else (crew,)
+        return cps.CrewList(() if crew is None else (crew,))
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     async with _client() as client:
@@ -853,18 +921,25 @@ async def test_a_crew_is_kept_only_under_the_set_domain_or_with_none_set(
         minted_body = await minted.json()
     assert listed.status == 200
     assert [c["endpointId"] for c in listed_body["crews"]] == ([EP] if kept else [])
-    if not domain.strip():
-        # Listed, but no token is minted until the relay domain is set.
-        assert (minted.status, minted_body["code"]) == (409, cps.NOT_SET_UP)
-        assert ("mint", EP) not in viewer.calls
-    elif kept:
+    if kept:
+        # With no domain set, the window is pinned to the host the list gave.
         assert minted.status == 200 and minted_body["crewUrl"] == crew_url
+        assert minted_body["relayDomain"] == crew_url.split(f"{EP}.", 1)[1]
     else:
         assert (minted.status, minted_body["code"]) == (403, "CREW_ACCESS_NOT_GRANTED")
         assert ("mint", EP) not in viewer.calls
     assert listed_body.get("code") != "NOT_SET_UP"
-    if domain.strip():
-        assert minted_body.get("code") != "NOT_SET_UP"
+    assert minted_body.get("code") != "NOT_SET_UP"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", [PROFILE, ""])
+async def test_both_routes_list_with_the_sign_ins_profile(viewer, profile) -> None:
+    viewer.profile_arn = profile
+    async with _client() as client:
+        assert (await client.get("/api/relay-viewer/crews")).status == 200
+        assert (await _mint(client)).status == 200
+    assert viewer.list_profile_arns == [profile, profile]
 
 
 @pytest.mark.asyncio
@@ -879,8 +954,8 @@ async def test_a_personal_crew_is_minted_with_the_sign_ins_profile(viewer) -> No
 async def test_a_team_crew_is_minted_with_no_profile_even_when_signed_in_with_one(
     viewer, monkeypatch
 ) -> None:
-    async def _list(url, bearer, *, crew_domain, token_type=""):
-        return (TEAM_CREW,)
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
+        return cps.CrewList((TEAM_CREW,))
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _list)
     viewer.profile_arn = PROFILE
@@ -912,7 +987,7 @@ def _recording_urls(monkeypatch) -> list[tuple[str, str]]:
     urls: list[tuple[str, str]] = []
     listed, minted = cps.list_crew_endpoints, cps.create_crew_access_token
 
-    async def _list(url, bearer, *, crew_domain, token_type=""):
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
         urls.append(("list", url))
         return await listed(url, bearer, crew_domain=crew_domain, token_type=token_type)
 
@@ -1008,3 +1083,180 @@ async def test_a_rejected_url_is_not_set_up_and_only_an_empty_one_uses_the_built
         assert (await listed.json())["code"] == code
         assert (await minted.json())["code"] == code
     assert urls == posted * 2
+
+
+# The account the list was read for: {accountType, startUrl?}, only when proven.
+
+
+async def _crews():
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        return resp, await resp.json()
+
+
+@pytest.mark.asyncio
+async def test_crews_names_the_account_when_both_reads_match(viewer) -> None:
+    resp, body = await _crews()
+    assert resp.status == 200 and body.get("account") == {"accountType": "BuilderId"}
+    viewer.claims = dict(IDC)
+    _, body = await _crews()
+    assert body.get("account") == {"accountType": "IamIdentityCenter", "startUrl": START}
+    assert viewer.claim_reads == 4, "one vault read before and one after each list"
+
+
+@pytest.mark.asyncio
+async def test_crews_leaves_the_account_out_when_the_sign_in_changes(viewer, monkeypatch) -> None:
+    async def _list(url, bearer, *, crew_domain, token_type="", profile_arn=""):
+        viewer.fingerprint = FP_B  # a sign-in landed during the list call
+        return cps.CrewList((CREW,))
+
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    resp, body = await _crews()
+    assert resp.status == 200 and len(body["crews"]) == 1
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fingerprint", "claims"),
+    [("", IDC), (FP_A, {"identity": "unknown_slot", "provider": ""})],
+    ids=["signed-out", "unlabelled-slot"],
+)
+async def test_crews_leaves_the_account_out_when_nothing_is_known(
+    viewer, fingerprint, claims
+) -> None:
+    viewer.fingerprint, viewer.claims = fingerprint, dict(claims)
+    _, body = await _crews()
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_signed_out_refusal_carries_no_account(viewer, monkeypatch) -> None:
+    _refusing_list(viewer, monkeypatch, [401, 401])
+    resp, body = await _crews()
+    assert (resp.status, body["code"]) == (409, "SIGNED_OUT")
+    assert "account" not in body
+
+
+@pytest.mark.asyncio
+async def test_the_test_credential_names_no_account(viewer) -> None:
+    viewer.tunnel.relay_viewer_credential = "relay-viewer-test-credential"
+    _, body = await _crews()
+    assert "account" not in body
+    assert viewer.claim_reads == 0, "the vault is never read for the test credential"
+
+
+@pytest.mark.asyncio
+async def test_the_start_url_is_capped_and_only_for_identity_center(viewer) -> None:
+    viewer.claims = {**IDC, "start_url": "https://" + "a" * 300}
+    _, body = await _crews()
+    assert len((body.get("account") or {}).get("startUrl", "")) == 200
+    viewer.claims = {"identity": "builder_id", "provider": "BuilderId", "start_url": START}
+    _, body = await _crews()
+    assert body.get("account") == {"accountType": "BuilderId"}
+
+
+@pytest.mark.asyncio
+async def test_the_account_never_reaches_the_log(viewer, caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    viewer.claims = dict(IDC)
+    _, body = await _crews()
+    assert (body.get("account") or {}).get("startUrl") == START
+    assert "relay viewer: crews -> 1 listed" in caplog.text
+    for value in (START, "example-portal", "IamIdentityCenter", FP_A):
+        assert value not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_forced_refresh_keeps_the_fingerprint_and_the_account(
+    viewer, monkeypatch, tmp_path
+) -> None:
+    # The real vault read over a real store: a CPS 401, then one forced refresh
+    # whose result is built by the real SSO-OIDC refresh and saved, as the
+    # provider does. The refresh completes no sign-in, so the fingerprint holds.
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew.auth import refresh
+    from kiro_crew.auth.store import KasToken, TokenStore
+
+    monkeypatch.setattr(bridge, "vault_identity_claims", _REAL_VAULT_CLAIMS)
+    monkeypatch.setattr(bridge, "data_home", lambda: tmp_path)
+    store = TokenStore(tmp_path)
+    stored = KasToken(
+        access_token=BEARER,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        provider="Enterprise",
+        identity="identity_center",
+        refresh_token="rt-1",
+        profile_arn="arn:aws:kiro:us-east-1:1:profile/p1",
+        region="us-east-1",
+        client_id="client-1",
+        client_secret="client-secret-1",
+        extra={"start_url": START},
+    )
+    store.save(stored)
+    store.bump_signin_generation()
+    first = _REAL_VAULT_CLAIMS()[0]
+
+    class _Answer:
+        status = 200
+
+        async def json(self):
+            return {"accessToken": FRESH, "expiresIn": 3600, "refreshToken": "rt-2"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    session: Any = SimpleNamespace(post=lambda *a, **k: _Answer())
+    seen = _refusing_list(viewer, monkeypatch, [401])
+
+    async def _bearer(ref, rejected=""):
+        seen.append(rejected)
+        if not rejected:
+            return BEARER, "", ""
+        current = store.resolve()
+        assert current is not None
+        store.save(await refresh._refresh_sso_oidc(current, session=session))
+        return FRESH, "", ""
+
+    monkeypatch.setattr(rv, "_bearer", _bearer)
+    resp, body = await _crews()
+    assert resp.status == 200
+    assert seen == ["", BEARER] and viewer.calls == [("list", BEARER), ("list", FRESH)]
+    refreshed = store.resolve()
+    assert refreshed is not None and refreshed.access_token == FRESH
+    assert _REAL_VAULT_CLAIMS()[0] == first != ""
+    assert body.get("account") == {"accountType": "IamIdentityCenter", "startUrl": START}
+
+
+@pytest.mark.asyncio
+async def test_a_workload_host_reads_no_person_sign_in(monkeypatch) -> None:
+    """With KIROCREW_WORKLOAD_IDENTITY set, the viewer never builds the person's auth provider."""
+    from kiro_crew import workload_identity
+    from kiro_crew.auth import provider
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a person sign-in was read")
+
+    monkeypatch.setenv(workload_identity.ENV_MODE, "spiffe")
+    monkeypatch.setattr(provider, "KasAuthProvider", boom)
+    monkeypatch.setattr(bridge, "default_token_store", boom)
+    monkeypatch.setattr(bridge, "vault_identity_fingerprint", boom)
+    with pytest.raises(cps.CpsRefused) as refused:
+        await rv._bearer("")
+    assert refused.value.code == cps.SIGNED_OUT
+    assert await rv._sign_in_marker("") is None
+
+
+@pytest.mark.asyncio
+async def test_the_list_says_how_many_crews_the_relay_domain_alone_left_out(viewer) -> None:
+    """Row 65: the dashboard is told, so it names the setting instead of showing none."""
+    async with _client() as client:
+        assert "offDomain" not in await (await client.get("/api/relay-viewer/crews")).json()
+        viewer.off_domain = 3
+        body = await (await client.get("/api/relay-viewer/crews")).json()
+    assert body["offDomain"] == 3
+    assert [c["endpointId"] for c in body["crews"]] == [EP]

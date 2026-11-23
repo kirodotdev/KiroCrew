@@ -84,7 +84,9 @@ def autonudge_stop(name: str, args: dict[str, Any]) -> str:
         # acting on an unverified claim.
         "Stop REQUESTED for this session's auto-nudge loop. This is not "
         "confirmation that a loop was found or stopped; the applied outcome is "
-        "recorded separately and may report that nothing was stopped.",
+        "recorded separately and may report that nothing was stopped. In a Bot's "
+        "chat or a Bot's worker session that outcome arrives as an [Automation "
+        "notice] message that starts a new turn.",
     )
 
 
@@ -506,7 +508,9 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
         "Arming happens when this turn's result is processed, so "
         "this ack cannot confirm it; the outcome is reported as a transcript notice "
         'on this session — "Automation loop armed: …" or "Automation loop NOT armed: '
-        '<reason> [status N]". If the notice says NOT armed, read the reason before '
+        "<reason> [status N]\". In a Bot's chat or a Bot's worker session a NOT armed "
+        "outcome also arrives as an [Automation notice] message that starts a new "
+        "turn. If the notice says NOT armed, read the reason before "
         "trying again — a monitor the user stopped is retained as evidence and only "
         "its owner can clear it. Do NOT report monitoring as started on the strength "
         "of this ack; verify with monitor_inspect at the start of a later turn or in "
@@ -570,6 +574,8 @@ def _compact_monitor_inspection(result: dict[str, Any]) -> dict[str, Any]:
         "objective",
         "budgets",
         "cadence_secs",
+        "wake_instructions",
+        "wake_on_terminal",
         "last_observation_status",
         "last_observation_reason_code",
         "last_fingerprint",
@@ -663,7 +669,9 @@ def monitor_stop(name: str, args: dict[str, Any]) -> str:
     return _emit_directive(
         "monitor_stop",
         {"reason": str(args.get("reason") or "").strip()},
-        "Monitor stop requested for this session.",
+        "Monitor stop requested for this session. In a Bot's chat or a Bot's "
+        "worker session the applied outcome, stopped or nothing to stop, arrives "
+        "as an [Automation notice] message that starts a new turn.",
     )
 
 

@@ -1,25 +1,35 @@
-"""The conductor skills must send corrections to a busy worker with ``steer: true``.
+"""Conductor prompts steer every direct message to an existing worker.
 
 A plain ``session_send`` to a busy target queues behind its running turn, so a
-correction sent that way only arrives after the worker has spent the whole turn
-going the wrong way. ``session_send`` accepts ``steer`` for exactly this;
-these tests pin that the goal and pipeline conductor skills tell the conductor
-to use it for corrections, keep it off for everything else, and warn that a
-steer does not withdraw messages already queued.
+ruling or correction sent that way may arrive after the worker has spent a whole
+turn without it. The initial dispatch seed is the only plain send because the
+new session has no turn to steer.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from skill_script_helpers import skill_text
+
+from kiro_crew import agent, conductor_patrol, crewmate_prompts
+from kiro_crew.mcp_dashboard import TABLE
+from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+from kiro_crew.mcp_tools.table import Caller, ToolContext
 from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 
 GOAL_SKILL = Path(_BUILTIN_SKILLS_DIR) / "goal-conductor" / "SKILL.md"
 PIPELINE_SKILL = Path(_BUILTIN_SKILLS_DIR) / "pipeline-conductor" / "SKILL.md"
+WORKER_DEBATE = GOAL_SKILL.parent / "references" / "worker-debate.md"
 
 
 def _flat(path: Path) -> str:
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(skill_text(path).split())
+
+
+def _flat_text(text: str) -> str:
+    return " ".join(text.split())
 
 
 def _section(body: str, heading: str, next_heading: str) -> str:
@@ -28,21 +38,131 @@ def _section(body: str, heading: str, next_heading: str) -> str:
     return body[start:end]
 
 
-def test_goal_conductor_steers_a_correction_into_a_running_item():
+def test_shared_conductor_prompt_steers_every_direct_worker_message():
+    rule = _flat_text(agent._LEDGER_CONDUCTOR_RULES["worker_communication"])
+    assert "Every direct message to an existing worker is a steer" in rule
+    assert "answers, rulings, corrections, nudges and follow-ups" in rule
+    assert "The initial seed stays plain" in rule
+    assert rule in _flat_text(agent._CONDUCTOR_SYSTEM_PROMPT)
+
+
+def test_goal_conductor_steers_every_direct_worker_follow_up():
     section = _section(
         _flat(GOAL_SKILL), "### Goal changes mid-flight", "## When a conductor dispatched you"
     )
     assert "`session_send` the correction straight into it with `steer: true`" in section
-    assert "**Steer corrections, queue everything else.**" in section
-    # Everything that can wait keeps today's queue-after-turn delivery.
-    assert "Leave `steer` off for answers to a `question`, seeds" in section
-    # A steer is additive: what is already queued still runs.
-    assert "A steer does not withdraw what is already queued" in section
-    assert "`queue_depth`" in section
+    assert "**Steer every direct follow-up; never queue it.**" in section
+    assert "Follow your prompt's direct-worker communication rule after the seed" in section
+    assert "Leave `steer` off" not in section
+    assert "If `session_read_message` reports a non-zero `queue_depth`" in section
 
 
-def test_pipeline_conductor_forwards_a_live_mode_change_as_a_steer():
+def test_goal_conductor_steers_the_next_item_goal_to_a_reused_worker():
+    section = _section(_flat(GOAL_SKILL), "### Patrol", "### Close the round")
+    sentence = (
+        "then `session_send` it the new item's goal with `steer: true`; its `work_brief` "
+        "and `work_report` resolve to the new item."
+    )
+    assert section.count(sentence) == 1
+    assert "`session_send` it the new item's goal;" not in section
+
+
+def test_worker_report_guidance_steers_the_next_step_to_the_same_worker():
+    guidance = _flat_text(crewmate_prompts.text("worker_report.guidance"))
+    sentence = (
+        "When a worker needs the next step of its own task, give it with session_send "
+        "and steer: true, and end this turn;"
+    )
+    assert guidance.count(sentence) == 1
+    assert "give it with session_send and end this turn" not in guidance
+
+
+def test_pipeline_conductor_steers_every_direct_worker_message():
+    prompt = _flat_text(agent._PIPELINE_CONDUCTOR_SYSTEM_PROMPT)
+    assert "Every direct message to an existing worker is a steer" in prompt
+    assert "pass `steer: true` on every `session_send`" in prompt
     section = _section(_flat(PIPELINE_SKILL), "## Live steering", "## Merge, cleanup, reconcile")
-    assert "forward it with `session_send` and `steer: true`" in section
-    assert "Keep `steer` off for rulings, nudges" in section
+    assert (
+        "Every direct message to an existing worker uses `session_send` with `steer: true`"
+        in section
+    )
+    assert "including mode changes, rulings and nudges" in section
+    assert "The initial seed stays plain" in section
+    assert "Keep `steer` off" not in section
     assert "A steer does not withdraw messages already queued" in section
+
+
+def test_worker_debate_steers_every_relay_and_direct_follow_up():
+    body = _flat(WORKER_DEBATE)
+    section = _section(body, "## A round", "## Checkpoint")
+    assert (
+        "Send every relay, ruling, changed role card, nudge and finishing instruction "
+        "with `session_send` and `steer: true`." in section
+    )
+    assert "use `session_broadcast` with `mode: steer`" in section
+    assert "The initial `work_dispatch` seed stays plain (`steer: false`)." in section
+    ruling = _section(body, "## The human's ruling", "## Finishing")
+    assert "`session_send` with `steer: true`" in ruling
+
+
+def test_worker_debate_distinguishes_steered_started_and_queued_receipts():
+    section = _section(_flat(WORKER_DEBATE), "## A round", "## Checkpoint")
+    assert (
+        "Check each delivery result in order: `steered: true` means it entered the "
+        "running turn; otherwise `started: true` means a new turn started." in section
+    )
+    assert (
+        "`pending_steer: true` means it is held for the target's next tool boundary, so "
+        "do not resend it." in section
+    )
+    assert (
+        "Only `steered: false` AND `started: false` without `pending_steer` means queued."
+        in section
+    )
+    assert "Never resend a successful steer merely because `started` is false." in section
+    assert "`started: false` means the message is queued" not in section
+    assert "resend with `session_send` and `steer: true`" in section
+
+
+def test_default_patrol_steers_next_steps_and_question_or_blocked_answers():
+    message = conductor_patrol.PATROL_MESSAGE
+    assert "send it the next step with session_send with steer: true." in message
+    assert "Answer question and blocked items with session_send with steer: true." in message
+    assert message.count("session_send") == message.count("session_send with steer: true") == 2
+
+
+@pytest.mark.parametrize(
+    "steered,started,pending,expected,absent",
+    [
+        pytest.param(True, False, False, "Steered", "Queued", id="running-turn-steered"),
+        pytest.param(False, True, False, "started a turn", "Queued", id="idle-turn-started"),
+        pytest.param(False, False, True, "pending-steer", "Queued", id="steer-held-for-boundary"),
+        pytest.param(False, False, False, "Queued", "Steered", id="steer-fell-back-to-queue"),
+        pytest.param(True, True, False, "Steered", "started a turn", id="steered-takes-precedence"),
+    ],
+)
+def test_debate_receipt_guidance_matches_session_send_tool(
+    steered, started, pending, expected, absent
+):
+    client = InMemoryDashboardClient(
+        {
+            "POST /api/session-control/send": {
+                "ok": True,
+                "target": "chat-debate-worker",
+                "steered": steered,
+                "started": started,
+                **({"pending_steer": True, "steer_id": "abc"} if pending else {}),
+            }
+        }
+    )
+    result = TABLE.call(
+        "session_send",
+        {"target": "chat-debate-worker", "message": "read the next round", "steer": True},
+        ToolContext(client, Caller.strict("dashboard:chat-debate-conductor")),
+    )
+    assert expected in result
+    assert absent not in result
+    (request,) = client.requests
+    assert request.body["steer"] is True
+    if not steered and not started and not pending:
+        assert "Your steer could not go into the running turn" in result

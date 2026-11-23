@@ -6,7 +6,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -19,13 +19,19 @@ import { Btn } from './ui'
 import { setTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { useTerminalSearch } from '../hooks/useTerminalSearch'
 import { copyToClipboard } from '../utils/clipboard'
+import { attachOsc52Copy, type Osc52CopyHandle } from '../lib/terminalOsc52'
 
 import { i18nT } from '../i18n/t'
+import { apiTransport } from '../api/apiTransport'
 /* ── Per-session xterm instance cache ──
  * Keyed by PTY session id. Instances persist across tab switches / chat
  * switches (so scrollback + cursor survive), and are only torn down when the
  * owning terminal TAB is closed (disposeTerminalSession). */
-const termCache = new Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon }>()
+const termCache = new Map<string, { term: Terminal; fit: FitAddon; search: SearchAddon; osc52: Osc52CopyHandle }>()
+/** Each mounted pane's clipboard result receiver, keyed by terminal session. */
+const osc52ResultListeners = new Map<string, (ok: boolean) => void>()
+/** How long the "Copied from terminal" notice stays up. */
+const OSC52_COPIED_NOTICE_MS = 3000
 
 /* ── Terminal theme from CSS custom properties ── */
 function getTermTheme() {
@@ -190,7 +196,7 @@ function openTerminalLink(_event: MouseEvent, uri: string): void {
   window.open(uri, '_blank', 'noopener,noreferrer')
 }
 
-function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon; search: SearchAddon } {
+function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon; search: SearchAddon; osc52: Osc52CopyHandle } {
   let entry = termCache.get(id)
   if (!entry) {
     const font = getTerminalFont()
@@ -209,7 +215,11 @@ function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon; search: S
     term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon(openTerminalLink))
     term.loadAddon(search)
-    entry = { term, fit, search }
+    // Copies requested by programs in the terminal (OSC 52), e.g. tmux or herdr.
+    const osc52 = attachOsc52Copy(term, {
+      onResult: ok => osc52ResultListeners.get(id)?.(ok),
+    })
+    entry = { term, fit, search, osc52 }
     termCache.set(id, entry)
   }
   return entry
@@ -218,6 +228,7 @@ function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon; search: S
 function destroyTerm(id: string) {
   const entry = termCache.get(id)
   if (entry) {
+    entry.osc52.dispose()
     entry.term.dispose()
     termCache.delete(id)
   }
@@ -294,7 +305,7 @@ export function openTerminalSearch(sessionId: string): boolean {
 export function useDeleteTerminalSession() {
   return useMutation({
     mutationFn: async (sessionId: string) => {
-      const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
+      const res = await apiTransport.request(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
       // 404 means the server has no such session any more: the PTY was already
       // reaped (idle sweep, gateway restart, a second close racing this one).
       // The shell is stopped, which is the outcome the user asked for, so this
@@ -374,13 +385,30 @@ function touchSelectHint(status: TouchSelectStatus): string {
 function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen, onToggleFullscreen }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean; onToggleFullscreen?: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
-  const entryRef = useRef<{ term: Terminal; fit: FitAddon; search: SearchAddon } | null>(null)
+  const entryRef = useRef<{ term: Terminal; fit: FitAddon; search: SearchAddon; osc52: Osc52CopyHandle } | null>(null)
   // Floating selection toolbar: anchored to where the drag ended (wrapper-
   // relative px), carrying the captured text so the actions stay valid even
   // after xterm clears its own selection.
   const [sel, setSel] = useState<{ x: number; y: number; text: string } | null>(null)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
   const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle')
+  // The newest OSC 52 copy result: a failure stays until dismissed or replaced,
+  // a success shows briefly and then clears itself.
+  const [osc52Result, setOsc52Result] = useState<'idle' | 'copied' | 'failed'>('idle')
+  useEffect(() => {
+    let copiedTimer: ReturnType<typeof setTimeout> | undefined
+    const onResult = (ok: boolean) => {
+      clearTimeout(copiedTimer)
+      copiedTimer = undefined
+      setOsc52Result(ok ? 'copied' : 'failed')
+      if (ok) copiedTimer = setTimeout(() => setOsc52Result('idle'), OSC52_COPIED_NOTICE_MS)
+    }
+    osc52ResultListeners.set(sessionId, onResult)
+    return () => {
+      clearTimeout(copiedTimer)
+      if (osc52ResultListeners.get(sessionId) === onResult) osc52ResultListeners.delete(sessionId)
+    }
+  }, [sessionId])
   const [sending, setSending] = useState<'idle' | 'busy' | 'failed'>('idle')
   const toolbarRef = useRef<HTMLDivElement>(null)
   // The soft keys exist for one reason — no physical keyboard.
@@ -395,6 +423,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   const connStatus = useTerminalConnStatus(sessionId)
   const invalidCwd = useTerminalInvalidCwd(sessionId)
   const wrongMachine = useTerminalWrongMachine(sessionId)
+  const atLimit = useTerminalAtLimit(sessionId)
   const manualRetry = useTerminalManualRetry(sessionId)
   // The manual "Reconnecting…" state: the user clicked Reconnect and the dial
   // has not yet resolved. On failure the status flips back to 'disconnected'
@@ -411,7 +440,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   if (!entryRef.current) {
     entryRef.current = getOrCreateTerm(sessionId)
   }
-  const { term, fit, search } = entryRef.current
+  const { term, fit, search, osc52 } = entryRef.current
 
   // Scrollback find (#10176): Cmd+F (macOS) / Ctrl+Shift+F (elsewhere) or the dock menu opens the bar, the SearchAddon walks
   // the full buffer (not just the rendered viewport the browser's find sees).
@@ -443,8 +472,8 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   // panel/route unmounts; torn down only on explicit tab close. Unmounting this
   // component does not disconnect — the module-level manager owns the socket.
   useEffect(() => {
-    ensureTerminalConnection(sessionId, term, fit, cwd, remoteSlot, chatSlot)
-  }, [sessionId, term, fit, cwd, remoteSlot, chatSlot])
+    ensureTerminalConnection(sessionId, term, fit, cwd, remoteSlot, chatSlot, osc52)
+  }, [sessionId, term, fit, cwd, remoteSlot, chatSlot, osc52])
 
   // A terminal that has never been opened, while its host asks to wait (the
   // dock is still sliding in): xterm's first open, render and glyph measuring
@@ -643,7 +672,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     // that gap. Fail closed: nothing is inserted unless redaction succeeds.
     let redacted: string
     try {
-      const res = await fetch('/api/terminal/redact', {
+      const res = await apiTransport.request('/api/terminal/redact', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: sel.text }),
@@ -711,6 +740,25 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
         onTouchCancel={touchSelect.onTouchEnd}
       >
         <div ref={containerRef} className="w-full h-full overflow-hidden" />
+        {osc52Result === 'failed' && (
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            testId="cli-panel-osc52-copy-error"
+            className="absolute top-2 right-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-bg-elevated px-2 py-1 shadow-sm"
+            message={i18nT('components.cliPanel.copy_failed')}
+            onDismiss={() => setOsc52Result('idle')}
+          />
+        )}
+        {osc52Result === 'copied' && (
+          <div
+            role="status"
+            data-testid="cli-panel-osc52-copied"
+            className="absolute top-2 right-2 z-20 max-w-[calc(100%-1rem)] rounded-md border border-border bg-bg-elevated px-2 py-1 shadow-sm text-[13px] text-text"
+          >
+            {i18nT('components.cliPanel.osc52_copied')}
+          </div>
+        )}
         {holding && (
           // 16px so iOS does not zoom on focus; on screen and non-zero so
           // Safari has a field to reveal above the keyboard.
@@ -811,7 +859,9 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
                   ? i18nT('components.cliPanel.invalid_cwd_message', { cwd })
                   : wrongMachine
                     ? i18nT('components.cliPanel.wrong_machine_message')
-                    : i18nT('components.cliPanel.disconnected_message')}
+                    : atLimit
+                      ? i18nT('components.cliPanel.at_limit_message')
+                      : i18nT('components.cliPanel.disconnected_message')}
               />
             )}
             <div className="flex shrink-0 flex-wrap items-center gap-2">

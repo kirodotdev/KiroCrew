@@ -287,6 +287,8 @@ class TestCronListFields:
         mock_job.last_status = "ok"
         mock_job.agent_id = ""
         mock_job.channel = "C123"
+        mock_job.channel_type = ""
+        mock_job.target_id = ""
         mock_job.approval_mode = "auto"
         mock_job.silent = True
         mock_job.strict_schedule = False

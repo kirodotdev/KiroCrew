@@ -92,6 +92,16 @@ class EssentialDelivery:
         self._clock = clock
         #: ``None`` until the first stream starts.
         self.request_floor: float | None = None
+        self._report: tuple[str, Callable[[str], None]] | None = None
+
+    def report_next_send(self, prompt: str, report: Callable[[str], None]) -> None:
+        """Call *report* with the text the next :meth:`stream` of *prompt* hands its send.
+
+        Only the next stream, and only for that very object: any other stream (a slash
+        command, or one after a prompt that failed before it got here) drops it.
+        """
+        with self._lock:
+            self._report = (prompt, report)
 
     def bind(
         self,
@@ -166,6 +176,9 @@ class EssentialDelivery:
             candidate = self._pending
             epoch = self._epoch
             acknowledged = self._acknowledged
+            report, self._report = self._report, None
+        if report is not None and report[0] is not message:
+            report = None
         if candidate is not None and candidate.envelope not in message:
             candidate = None
         if candidate is not None:
@@ -177,6 +190,8 @@ class EssentialDelivery:
                 replacement = candidate.envelope
             # Provenance survives the rewrite: the envelope is injected context.
             message = replace_in_injected(message, candidate.envelope, replacement)
+        if report is not None:
+            report[1](message)
         productive = False
         completed = False
         # Before the send, so the stream's first request starts no earlier. Held

@@ -5,7 +5,10 @@
 1. Custom exceptions in `acp/transport_errors.py` (re-exported by `acp/client.py`)
    for ACP protocol/prompt errors, in `acp/session_handle_runtime_contract.py`
    (re-exported by `acp/session_handle.py`) for runtime/transport errors, and in `acp/runtime_session_setup.py` and `acp/runtime_session_create.py` (re-exported by
-   `acp/runtime.py`) for runtime binding and session-start errors
+   `acp/runtime.py`) for runtime binding and session-start errors. Two KAS
+   engine errors live beside the code that raises them: `AcpKasExtractBroken` in
+   `acp/kas_extract_repair.py` and `AcpKasEngineRefused` in
+   `acp/kas_engine_refusal.py`
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
@@ -45,7 +48,8 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 │                            or version-skewed install); non-retryable, and not an
 │                            AcpProcessDied, so the chat shows the reinstall
 │                            message instead of a respawn loop
-├── AcpKasExtractBroken    — kiro-cli's unpacked KAS engine (kas/<version>) is
+├── AcpKasExtractBroken    — (acp/kas_extract_repair.py) kiro-cli's unpacked KAS
+│                            engine (kas/<version>) is
 │                            incomplete and could not be moved aside, or the fresh
 │                            copy failed the same way; non-retryable, not an
 │                            AcpProcessDied, and the message names the directory
@@ -79,6 +83,7 @@ AcpRuntimeError (base, acp/session_handle_runtime_contract.py)
 │                                slice was throttled; transient=False, because
 │                                the remedy is freeing agent memory, not a retry
 └── AcpWorkspaceBindingError  — descriptor-bound runtime cannot serve another cwd
+    │                            (acp/runtime_session_setup.py)
     └── AcpToolSurfaceBindingError — a shared runtime cannot safely serve the
                                      requested tool surface (acp/runtime_session_setup.py)
 ```
@@ -105,14 +110,15 @@ instead of the row simply disappearing.
 
 | Boundary | Strategy |
 |----------|----------|
-| ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
+| ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)`. A session start that the backend refuses can raise `AcpRuntimeError` instead (a KAS engine install that cannot fetch the engine, for one), which is outside the `AcpError` hierarchy, so `kirocrew chat` (`cli_chat._run_chat`) and `kirocrew eval` (which imports both from `agent_sdk.drivers.acp_vocab`) catch both and print the refusal's own text as one line, with the stack trace only in the debug log |
 | Sandbox refusal → CLI and boot logs | `SandboxCeilingUnsealable` and `SandboxUnavailableError` sit outside the `AcpError` hierarchy, and each one's own text names the host's remedy. `kirocrew chat` (`cli_chat._run_chat`) prints that text as one line through `safe_terminal_line` and exits 1; the built-in adoption STAGE pass logs a `SandboxUnavailableError` as one warning carrying it. Neither prints a stack trace |
 | JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
+| KAS HTTP MCP bridge (`kas_http_bridge.Bridge.send`) | A server it cannot reach, or that stops answering mid-answer, is reported on stderr and in each unanswered request's JSON-RPC error with the plain cause `asset_downloader.network_failure_cause` names (`could not be reached (connection refused)`, `stopped answering (timed out)`); any other failure is named by its `reason`, its text or its type |
 | Config load | Invalid JSON → log warning, return defaults |
 | Integer field in a dashboard JSON body | Read through `dashboard/body_numbers.body_int`, which raises `ValueError` for `1e999`/`-1e999` (infinite floats after `json.loads`) where `int()` raises `OverflowError`. The handler's own `except (TypeError, ValueError)` then gives the infinite value the same 400 or fallback any other malformed value gets there, never a 500. A site does not add `OverflowError` to its own except clause instead |
 | Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
-| A host that does not answer (`kirocrew kas login`, the KAS engine manifest fetch) | The message names the host and leads with the cause in plain words. `asset_downloader.network_failure_cause` reads it from the exception types (urllib's `URLError.reason`, aiohttp's `os_error`), never their text: `connection refused`, `the host name could not be resolved` or `timed out`. Any other failure keeps the library's own text, which is then the only clue there is, and so does an aiohttp exception with no `host` (a connect timeout names its host only in its text) |
+| A host that does not answer (`kirocrew kas login`, the KAS engine manifest fetch, `kirocrew update` (its release feed and the manifest and wheel fetch), `kirocrew memory forget`, the policy fetch, a pinned download) | The message names what it was reaching and leads with the cause in plain words. `asset_downloader.network_failure_cause` reads it from the exception types and errno (urllib's `URLError.reason`, aiohttp's `os_error`), never their text: `connection refused`, `the host name could not be resolved`, `timed out`, `the connection was reset`, `the connection was closed`, `the host is unreachable` or `the network is unreachable` (the last four from a socket error's errno, which on Windows is the Winsock number the `errno` names hold there). Any other failure keeps the library's own text, which is then the only clue there is, and so does an aiohttp exception with no `host` (a connect timeout names its host only in its text). A site that already had its own rule keeps it: the policy fetch passes that other text through its sanitizer, `kirocrew update` shows its manifest and wheel failure redacted (`wheel_apply.shown_failure_text`), `kirocrew memory forget` answers a refused or missing dashboard socket at the credential mint with its own sentence pointing at the dashboard Memory page, and a pinned download (`download_to`) reports only the exception's type, because the text can carry a credentialed url |
 | Notes git subprocess (`md_notebook/git_ops.py`) | A non-zero exit reports git's last 3 stderr lines PLUS the first transport-caused line when one sits outside that tail. git ends every fetch/push failure with the same access-rights boilerplate and prints an SSH diagnosis first, so a tail alone reports a permission problem the operator does not have (a host reachable only via `~/.ssh/config` never resolved at all). The extra line widens what the message reports; it does not decide whether the command failed. |
 | Auto-Improvement git step (`auto_improvement/backend/clone_setup.py`) | A failed clone, branch list, checkout or fetch reports git's last 2 stderr lines after dropping blank lines and git's access-rights advisory (`Please make sure you have the correct access rights` / `and the repository exists.`), redacted and then bounded. The advisory follows every transport or auth fatal, so keeping it reports a repository problem in place of the `Permission denied (publickey).` line above it. |
 | App Store install clone, pinned fetch and pull (`apps/registry_pipeline/checkout.py`) | A credential-free (catalog or `index`-tier registry) fetch of an ssh remote whose output holds ssh's own `ssh: Could not resolve hostname` line returns `git_clone_failed_strict_ssh_route` with a fixed sentence: the fetch ran in the strict sandbox, which hides `~/.ssh`, so neither `~/.ssh/config` nor the ssh-agent applied, and a host reachable only through an ssh config route is installed from the operator's own clone with `kirocrew app install <dir>`. It carries no proxy hint, because ssh never reads `HTTPS_PROXY`; an owner-credentialed clone and an HTTPS remote keep the network hint. |
@@ -175,7 +181,7 @@ keeps the draft dirty until the page unmounts, so a second ask was a second live
 confirm — one whose "keep my draft" cancelled a hand-off the first ask had
 already accepted. An ungated caller still asks through the navigator.
 
-A failed run is a hand-off source too, not only a failed request (#7403). An
+A failed run is a hand-off source too, not only a failed request. An
 expanded `failure` or `timeout` row in a scheduled job's history (`LogEntry`)
 renders `AskAgentButton` with a report built by `utils/cronRunReport.prompt.ts`:
 job name and id, run id, trigger, start time, the row's summary, and the TAIL of
@@ -239,7 +245,7 @@ Notable terminal (non-retryable) classes:
   every surface UNDERSTANDS it: `/compact` qualifies because it reaches the
   backend through the prompt transport everywhere, even on Slack, which also
   offers `!compact` as its own alias. The same rule governs the sibling
-  prompt-busy branch, which for the same reason now names no command at all.
+  prompt-busy branch, which for the same reason names no command at all.
 - **Lost backend session**: when `acp_error_is_session_not_found` matches, the
   turn resets the session binding and queues ONE `SYNTHETIC_RECOVERY_KIND` retry
   with a reconnect notice, armed as `ReplayFamily.SESSION_NOT_FOUND`. A Stop that
@@ -372,7 +378,7 @@ available models. Please try again." and `data.errorType`
 `ModelRegistryUnavailableError` when every fetch of the model list failed for a
 reason other than a rejected or denied credential. The frame keeps no HTTP status
 and none of the service's answer, and its cause may persist (a sign-in that sends
-no profile ARN got HTTP 400 `ValidationException` on every call, #26109), so it is
+no profile ARN gets HTTP 400 `ValidationException` on every call), so it is
 never worded as an HTTP 5xx: `acp/model_registry_errors.py` compares
 `data.errorType` exactly (a `data` sent as JSON text is parsed first; the name in
 `message` or other prose matches nothing) and words it as a model list that could
@@ -380,6 +386,17 @@ not load, with the sign-in as the fix when it repeats. Only the wording changes:
 the frame's "Please try again" still gives it the retryable verdict and the
 `http_5xx` classifier kind, which match the engine's own `SERVER_ERROR`, bounded by
 the ladder.
+
+The engine's **refused credential** is a sign-in error. KAS words its
+`AccessDeniedError` as the fixed sentence "Access denied. Please check your
+authentication. (Request ID: …)", with no 401/403 and no expiry wording, and it
+names no place to sign in. `_RE_SESSION_EXPIRED` carries that exact sentence, so
+the turn takes the session-expiry arm: the harness's signed-out message (the Kiro
+sign-in card and, on a terminal, `kirocrew kas login` for KAS; `kiro-cli login`
+for the Kiro CLI harness), terminal, tagged `sign_in_needed` (and `auth_required`
+where the card is the fix), with the request id after the message. Bare
+"access denied" text and a name such as `AccessDeniedError` in prose match
+nothing.
 
 Retry hints are the other wording-only signal, and they are **provider-scoped**:
 `_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
@@ -402,7 +419,7 @@ positive-identity per `AGENTS.md` "Harness parity": only kiro-cli reaches the
 model through Bedrock (`ACP_BACKEND_KIRO`, the empty-string id), so an inline
 `backend == ACP_BACKEND_KIRO` check names Bedrock for it alone and "The model
 provider" for every other harness — a Claude seat, Codex, goose and the rest
-never touch AWS, so naming Bedrock sent their users chasing throttling that does
+never touch AWS, so naming Bedrock would send their users chasing throttling that does
 not exist. The verb stays "throttling" in both forms so
 `llm_helpers._TRANSIENT_MARKERS` ("throttl") still classifies the formatted
 message as transient; the retry verdict is unchanged, only the subject noun moves.
@@ -417,6 +434,21 @@ the text keeps "throttling" for the same `_TRANSIENT_MARKERS` reason.
 `AcpError.server_error` on a transient provider 5xx (`acp_error_is_server_error` reads
 it, with the same text fallback as `acp_error_is_throttle`); the dashboard model
 fallback reads both (`modules/model-fallback.md`).
+
+**Model-switch advice is per row.** The throttle, 5xx and two kiro-cli wrapper rows
+tell the user to switch model because the failure each one matches can belong to the
+selected model alone: a provider throttle (a provider's quotas and capacity are per
+model, as Bedrock's are), a 5xx that keeps coming back, and kiro-cli's "failed to
+generate a response" and "failed to process the request" wrappers (a capacity or
+rollout blip on one model, which another model does not share). Kiro's per-user
+request-rate limit (`acp/user_rate_limit_errors.py`) counts every model against one
+allowance, so its row says a switch will not help. The automatic-retry throttle
+notices (`TRANSIENT_THROTTLE_*_TEXT` in `dashboard/chat_utils.py`, the
+`pages.chat.transientNotice.throttle_*` copy) name no one: the `throttle` tag that
+picks them is set for that per-user limit as well as for a provider throttle, so the
+retrying, resuming and give-up rows (`throttle_give_up`,
+`TRANSIENT_THROTTLE_GIVE_UP_TEXT`) say "Requests are being throttled", which is true
+of both.
 
 A **network-path drop** is the one transient class that waits by time rather
 than by count. `AcpError.connection_failure` is set from the raw frame when the
@@ -485,6 +517,20 @@ the adapter's tool-call, plan and permission frames to AIR shapes. Members of
   report lets the caller queue that steer again.
 - A JSON-RPC error that follows held chunks (codex's `usageLimitExceeded` writes
   the text and fails the prompt) is raised alone, so the failure is reported once.
+
+pi-acp writes nothing at all of a failed model call: the run settles and the
+prompt answers `end_turn` with no text, an empty reply. Crew's gate extension
+inside pi records the failure at `turn_end` (the assistant message's
+`provider`, `model` and `errorMessage`) and, when the run settles still failed
+and not aborted, notifies one `kiro-crew-model-error` envelope under the launch's
+gate nonce; a failure pi retried successfully reports nothing. pi runs on
+`AcpClient`, so each of its read loops (`_dispatch_events`, `send_message_stream`,
+`_read_prompt_response`; `acp/pi_steer_turn.model_error`) holds the envelope back
+from the turn's text and, when the prompt then answers `end_turn`, raises through
+`_raise_acp_error` with
+`pi's model call failed (<provider>/<model>): <error>`. pi is not a member of
+`ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR`: only the envelope is read, never the
+provider's text. A prompt pi rejects before any model call is not affected by this envelope.
 
 The selected model and effort are untouched, and no recovery is added: whether
 the failed turn is retried is decided downstream from the raised error, exactly

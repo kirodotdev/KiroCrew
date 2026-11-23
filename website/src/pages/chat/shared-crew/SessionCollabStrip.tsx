@@ -3,7 +3,7 @@
  *  the composer's context row (`SessionPresence`), who is typing in the locked
  *  composer (`TypingLockBanner`). */
 import { useEffect } from 'react'
-import { capabilityUsable } from '../../../api/sharedCrewUi'
+import { capabilityUsable, sharedCrewPreviewOn } from '../../../api/sharedCrewUi'
 import { isPermissionRefusal } from '../../../api/apiError'
 import ErrorNotice from '../../../components/ErrorNotice'
 import {
@@ -34,8 +34,12 @@ export function SessionCollabStrip({ sessionKey, typing }: { sessionKey: string 
   const attributionOn = capabilityUsable(capabilities.attribution)
   const viewer = useSharedCrewViewer(presenceOn || attributionOn)
   // Own MessageByline's shared reads here, once per chat even with the sidebar closed.
+  // The mode is read with the preview off too: the chat page reads the cached mode
+  // (`sharedCrewInUse`, `cachedViewerIds`), and the gateway answers it without a
+  // catalogue walk then. People is built for the team surfaces only, so it waits
+  // for the preview, as the sidebar does.
   const mode = useSharedCrewMode(attributionOn)
-  const people = useSharedCrewPeople(attributionOn)
+  const people = useSharedCrewPeople(attributionOn && sharedCrewPreviewOn(capabilities))
   const presence = useSessionPresence(sessionKey, presenceOn)
   // Read here so its failure is said once; `useResolvedElsewhere` and `useRaisedBy` use the cache.
   const decisions = useSessionDecisions(sessionKey, attributionOn)

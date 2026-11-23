@@ -17,6 +17,10 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.dashboard.chat_delivery import attachment_meta
 from kiro_crew.dashboard.chat_utils import MODEL_UNAVAILABLE_KIND, TRANSIENT_RETRY_KIND
+from kiro_crew.dashboard.chat_utils_injected_rows import AUTH_REQUIRED_KIND, KIRO_CLI_SIGN_IN_KIND
+from kiro_crew.dashboard.host_sandbox_refusal import host_sandbox_refusal
+from kiro_crew.dashboard.host_sandbox_refusal import row_meta as host_sandbox_row_meta
+from kiro_crew.dashboard.host_sandbox_refusal import row_text as host_sandbox_row_text
 from kiro_crew.security import redact
 from kiro_crew.session_capabilities import CapabilityStartupError
 
@@ -209,7 +213,6 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
     _directive_self_wake = turn._directive_self_wake
     _escalation = turn._escalation
     _message_without_merge_cards = turn._message_without_merge_cards
-    _msg = turn._msg
     _prompt_depth = turn._prompt_depth
     _turn_emitted = turn._turn_emitted
     _turn_priority = turn._turn_priority
@@ -435,17 +438,30 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # Stays English: ``_err_text`` is the entitlement/startup formatter's own
         # output (the provider's rejection story), which a token cannot localize
         # without dropping that text.
+        _card_text = f"Error: {_err_text}"
+        _host_refusal = host_sandbox_refusal(exc)
+        if _host_refusal is not None:
+            # The sandbox launcher failed as the agent started: the same typed row
+            # as a host with no backend, so a non-owner reads one plain line.
+            _card_text = host_sandbox_row_text(_card_text)
+            _unentitled_meta = {**(_unentitled_meta or {}), **host_sandbox_row_meta(_host_refusal)}
         slot.append(
             "error",
-            f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
+            _card_text,
             "msg msg-err",
             meta=_unentitled_meta,
         )
         # The turn ended on a terminal provider/runtime error the user
         # must act on (a 5xx/throttle timeout, an unentitled model, a
         # malformed-request rejection). Ring the bell so an operator in
-        # another session is not left to find the inline card.
-        turn.died_notice = "chat_stopped_error"
+        # another session is not left to find the inline card. A row the
+        # sign-in fix is offered on rings the ``AcpAuthRequired`` arm's
+        # signed-out note, not an unexplained error.
+        turn.died_notice = (
+            "chat_stopped_signed_out"
+            if (_unentitled_meta or {}).get("kind") in (AUTH_REQUIRED_KIND, KIRO_CLI_SIGN_IN_KIND)
+            else "chat_stopped_error"
+        )
         # Record a STRUCTURAL terminal outcome for this slot's last turn,
         # but ONLY for a self-driven nudge fire (``_directive_self_wake``).
         # A malformed-request rejection is deterministic in the payload's
@@ -740,9 +756,17 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
 
     _err_meta: dict | None = None
     _unsent: tuple[str, dict[str, Any]] | None = None
+    _host_refusal = host_sandbox_refusal(exc)
     if isinstance(exc, (_MemoryUnavailable, UnknownMemoryStore)):
         _err_meta = {"code": "memory_unavailable"}
         _unsent = _unsent_resend(turn)
+    elif _host_refusal is not None:
+        # The host cannot build an OS sandbox, so no agent can start. Checked before
+        # the capability arms, which a wrapped refusal would otherwise reach untyped.
+        # The row keeps the owner's whole diagnostic and is typed, so a reader who
+        # is not the machine owner gets one plain line instead (``host_sandbox_refusal``).
+        _err_text = host_sandbox_row_text(redact(str(_host_refusal)))
+        _err_meta = host_sandbox_row_meta(_host_refusal)
     elif isinstance(exc, CapabilityError) and exc.code in _SESSION_START_REFUSAL_TEXT:
         # A session-start capability refusal a retry repeats unchanged. The
         # row names the code's own fix, and the card offers that fix (or
@@ -801,8 +825,9 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     # deterministic config refusal: a memory-unavailable end and a
     # capability/session-start refusal (`_err_meta["code"]`) carry their own
     # guided-fix card and a retry repeats them unchanged, so they are not the
-    # "work silently stopped" case the bell exists for.
-    if not (isinstance(_err_meta, dict) and _err_meta.get("code")):
+    # "work silently stopped" case the bell exists for. A host that cannot build a
+    # sandbox still rings it: the owner is the one who can fix it.
+    if _host_refusal is not None or not (isinstance(_err_meta, dict) and _err_meta.get("code")):
         turn.died_notice = "chat_stopped_error"
     # The SIBLING of the tagged-start report in the AcpError branch (_on_acp_error_card).
     # A session start on the SHARED runtime raises AcpRequestTimeout /

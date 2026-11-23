@@ -38,11 +38,11 @@ _SPECS_STILL_MISSING_ERROR = (
 #: Marker identifying a kiro-cli agent-spec REJECTION in the probe's captured
 #: output, as opposed to any other reason the probe produced text.
 #:
-#: ``kiro-cli agent validate`` exits 0 whether or not it accepted the file — the
-#: verdict is carried only in the message it writes — so the exit status cannot
-#: be used and this match is the whole signal. On acceptance it writes nothing at
-#: all; on rejection it writes ``Error: Json supplied at <path> is invalid:
-#: <reason>``.
+#: The exit status cannot carry the verdict. Older ``kiro-cli agent validate``
+#: builds exit 0 whether or not they accepted the file, and 3.4.0 exits 1 both
+#: for a rejection and for a run that never read the file (signed out, say). The
+#: message is the whole signal: acceptance writes nothing, and a rejection writes
+#: ``Error: Json supplied at <path> is invalid: <reason>``.
 #:
 #: Matching the schema-rejection wording rather than "the probe printed
 #: something" is deliberate and load-bearing in BOTH directions. A probe that
@@ -435,10 +435,13 @@ async def _probe_spec_acceptance(
                 # user-supplied, so it can carry a credential.
                 detail = _sanitize_detail(structural)
             continue
+        # signed_in: validate refuses to run without the sign-in whoami just
+        # confirmed, so it must see Kiro CLI's identity store as whoami does.
         result = await self._audited_probe(
             "probe_agent_spec",
             executable,
             ["agent", "validate", "--path", str(spec_path)],
+            signed_in=True,
         )
         if _SPEC_REJECTION_MARKER not in (result.output or ""):
             continue

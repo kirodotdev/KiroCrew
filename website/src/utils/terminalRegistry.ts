@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
 import { shellBaseName } from './fenceShell'
+import type { Osc52CopyHandle } from '../lib/terminalOsc52'
 
 /**
  * sessionId → shell-ready WebSocket. Each terminal tab owns one entry.
@@ -157,7 +158,7 @@ export function onTerminalReady(
   onFailure?: () => void,
 ): () => void {
   const known = conns.get(sessionId)
-  if (known?.invalidCwd || known?.wrongMachine) { onFailure?.(); return () => {} }
+  if (known?.invalidCwd || known?.wrongMachine || known?.atLimit) { onFailure?.(); return () => {} }
   if (getTerminalWs(sessionId)) { onReady(); return () => {} }
   let set = readyListeners.get(sessionId)
   if (!set) { set = new Set(); readyListeners.set(sessionId, set) }
@@ -193,6 +194,9 @@ export function sendToTerminalSession(
     const input = options?.preserveTrailingWhitespace
       ? code + (/[\r\n]$/.test(code) ? '' : '\n')
       : code.trimEnd() + '\n'
+    // The line bypasses xterm's onData, so close the OSC 52 copy window here:
+    // the command's output must not be able to replace the clipboard.
+    conns.get(sessionId)?.osc52?.closeWindow()
     ws.send(new TextEncoder().encode(submitsWithEnter(sessionId) ? input.replace(/\r?\n/g, '\r') : input))
     return true
   } catch {
@@ -252,6 +256,8 @@ interface Conn {
   cwd?: string | null
   remoteSlot?: string
   chatSlot?: string
+  /** The terminal's OSC 52 copy handling, suspended while a socket replays saved output. */
+  osc52?: Pick<Osc52CopyHandle, 'suspend' | 'resume' | 'closeWindow'>
   ws: WebSocket | null
   disposed: boolean
   retries: number
@@ -262,6 +268,9 @@ interface Conn {
   /** The gateway refused to open this shell on that machine (`terminal_wrong_machine`):
    *  the chat runs elsewhere. */
   wrongMachine?: boolean
+  /** The gateway already runs its most terminals (`terminal_max_sessions`):
+   *  parks until the user closes one and retries. */
+  atLimit?: boolean
   /** Consecutive `terminal_placement_unavailable` refusals. The refused socket
    *  still opens (so `onopen` would reset `retries`); this carries the backoff
    *  across them until a shell is ready. */
@@ -431,6 +440,25 @@ export function useTerminalWrongMachine(sessionId: string): boolean {
   )
 }
 
+/** Whether the gateway refused this shell at its terminal ceiling. */
+export function isTerminalAtLimit(sessionId: string): boolean {
+  return conns.get(sessionId)?.atLimit ?? false
+}
+
+/** Whether the gateway refused this shell at its terminal ceiling, published with the status. */
+export function useTerminalAtLimit(sessionId: string): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      let s = statusListeners.get(sessionId)
+      if (!s) { s = new Set(); statusListeners.set(sessionId, s) }
+      s.add(cb)
+      return () => { s?.delete(cb) }
+    },
+    () => conns.get(sessionId)?.atLimit ?? false,
+    () => false,
+  )
+}
+
 /** Whether the requested cwd was rejected, published with the connection status. */
 export function useTerminalInvalidCwd(sessionId: string): boolean {
   return useSyncExternalStore(
@@ -460,7 +488,7 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
   if (!c || c.disposed) return
   // Only the user re-arms a deliberate handoff or a rejected cwd. Automatic
   // revives must neither displace another window nor retry an unchanged path.
-  if (c.displaced || c.invalidCwd || c.wrongMachine) {
+  if (c.displaced || c.invalidCwd || c.wrongMachine || c.atLimit) {
     if (!manual) return
     // Only explicit recovery from a refused directory can change the target.
     // An empty override asks the server to use its terminal starting directory.
@@ -468,6 +496,7 @@ export function retryTerminalConnection(sessionId: string, manual = true, cwd?: 
     c.displaced = false
     c.invalidCwd = false
     c.wrongMachine = false
+    c.atLimit = false
     notifyStatus(sessionId)
   }
   if (manual) setManualRetry(sessionId, c)
@@ -510,7 +539,7 @@ if (typeof window !== 'undefined') {
 }
 
 function connect(sessionId: string, c: Conn) {
-  if (c.disposed || c.invalidCwd || c.wrongMachine) return
+  if (c.disposed || c.invalidCwd || c.wrongMachine || c.atLimit) return
   if (c.retries >= MAX_RETRIES) {
     // Backoff exhausted: no further dial will happen until a revive event
     // (online / tab foreground) or a manual Reconnect re-arms it. This is the
@@ -538,6 +567,8 @@ function connect(sessionId: string, c: Conn) {
   ws.onopen = () => {
     c.retries = 0
     setConnStatus(sessionId, c, 'connected')
+    // Copies stay off until xterm finishes parsing the output before `replayed`.
+    c.osc52?.suspend()
     // Server replays this session's scrollback on (re)connect; reset first so
     // the cached term's retained screen doesn't stack under the replay.
     c.term.reset()
@@ -574,6 +605,15 @@ function connect(sessionId: string, c: Conn) {
           }
           registerTerminalWs(sessionId, ws)
         }
+        if (m && m.type === 'replayed') {
+          // The server marks the replay boundary independently of shell readiness.
+          // xterm runs this callback once preceding output is parsed, so copies
+          // resume only past the replay, and only for the socket still in use.
+          const osc52 = c.osc52
+          if (osc52 && c.ws === ws) {
+            c.term.write('', () => { if (c.ws === ws) osc52.resume() })
+          }
+        }
         if (m && m.type === 'title' && typeof m.text === 'string') setSessionTitle(sessionId, m.text)
         if (m && m.type === 'cwd' && typeof m.path === 'string') cwds.set(sessionId, m.path)
         if (m && m.type === 'error' && m.code === 'displaced') c.displaced = true
@@ -583,8 +623,9 @@ function connect(sessionId: string, c: Conn) {
           c.placementRefusals = (c.placementRefusals ?? 0) + 1
           c.retries = c.placementRefusals - 1
         }
-        if (m && m.type === 'error' && (m.code === 'terminal_invalid_cwd' || m.code === 'terminal_wrong_machine')) {
+        if (m && m.type === 'error' && (m.code === 'terminal_invalid_cwd' || m.code === 'terminal_wrong_machine' || m.code === 'terminal_max_sessions')) {
           if (m.code === 'terminal_invalid_cwd') c.invalidCwd = true
+          else if (m.code === 'terminal_max_sessions') c.atLimit = true
           else c.wrongMachine = true
           clearTimeout(c.reconnectTimer)
           c.reconnectTimer = undefined
@@ -611,8 +652,8 @@ function connect(sessionId: string, c: Conn) {
       handleShellExit(sessionId, c, { status: null })
       return
     }
-    if (c.displaced || c.invalidCwd || c.wrongMachine) {
-      // A deliberate handoff, rejected cwd or refused machine needs an explicit user retry.
+    if (c.displaced || c.invalidCwd || c.wrongMachine || c.atLimit) {
+      // A deliberate handoff, rejected cwd, refused machine or full gateway needs an explicit user retry.
       clearTimeout(c.reconnectTimer)
       c.reconnectTimer = undefined
       setConnStatus(sessionId, c, 'disconnected')
@@ -663,9 +704,11 @@ export function ensureTerminalConnection(
   remoteSlot?: string,
   /** The chat a LOCAL shell was opened for, so the gateway checks its placement. */
   chatSlot?: string,
+  /** The terminal's OSC 52 copy handling, kept off while a reconnect replays saved output. */
+  osc52?: Pick<Osc52CopyHandle, 'suspend' | 'resume' | 'closeWindow'>,
 ): void {
   if (conns.has(sessionId)) return
-  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
+  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, osc52, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
   conns.set(sessionId, c)
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).

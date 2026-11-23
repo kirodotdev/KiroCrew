@@ -64,7 +64,9 @@ def vault_holds_identity(*, warn: bool = True) -> bool:
     that cannot be read, is still ``True`` (fail closed): the spawn is Crew-owned
     and its first token callback reports "not signed in", never a silent switch to
     kiro-cli's account. Remove the Crew sign-in (``kirocrew kas logout``) to use
-    kiro-cli's. A plain store read -- no refresh, no network -- that never raises.
+    kiro-cli's. A workload-identity host (:mod:`kiro_crew.workload_identity`) is
+    ``True`` without a read. A plain store read -- no refresh, no network -- that
+    never raises.
     Blocking file IO -- call off the loop.
 
     ``warn=False`` logs those diagnostics at DEBUG instead of WARNING, for a
@@ -72,6 +74,13 @@ def vault_holds_identity(*, warn: bool = True) -> bool:
     would repeat on every tick; the verdict is the same either way.
     """
     log = logger.warning if warn else logger.debug
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        # The Crew signs in with its own workload identity, so the spawn is
+        # Crew-owned and the vault is not read. A bad setting fails the first
+        # token callback, never a quiet switch to kiro-cli's account.
+        return True
     # The shared sign-in resolver decides, under the oss policy: a vault entry is the
     # sign-in, lapsed or not, and kiro-cli's only when the vault holds none. The two
     # are never mixed: a lapsed or unreadable vault keeps the spawn Crew-owned, where
@@ -170,7 +179,13 @@ def vault_identity_claims() -> tuple[str, dict[str, str]]:
     Identity Center ``start_url`` the sign-in recorded, when it recorded one, and
     no secret, ARN or registration detail. ``("", {})`` when nothing is stored or
     the vault cannot be read; never raises. Blocking file IO -- call off the loop.
+    A workload-identity host (:mod:`kiro_crew.workload_identity`) answers
+    ``("", {})`` without a read: it has no person sign-in to name.
     """
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        return "", {}
     read: list[tuple[KasToken | None, str]] = []
 
     def _read_token_and_marker() -> None:

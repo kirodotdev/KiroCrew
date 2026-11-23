@@ -62,6 +62,25 @@ PINNED_SKILL_BODIES_CAP = 99_000
 # path's ``PINNED_SKILL_BODIES_CAP`` above is the same number; if this capacity
 # is ever revisited, the two move together.
 SKILL_READ_CAPACITY = 99_000
+# The same bound for a session on KAS. KAS saves any tool result of 30,000
+# characters or more to a file and shows the model only its first and last 500,
+# so a read sized to the ceiling above reaches a KAS model as a file path. Bytes
+# bound characters (a character is at least one UTF-8 byte), and 1,000 are left
+# under 30,000 for anything wrapped around the tool's own response.
+KAS_SKILL_READ_CAPACITY = 29_000
+
+
+def kas_read_capacity(key: str, capacity: int) -> int:
+    """The body bytes a KAS session's read of *key* may carry: *capacity* or less.
+
+    *capacity* stays the ceiling, so a caller that asked for a smaller page gets
+    that page. The KAS bound comes off ``KAS_SKILL_READ_CAPACITY`` less the
+    skill_search response framing, which repeats the key: measured at 637
+    characters for a 14-character key and 1,009 for a 200-character one, so
+    1,000 plus 3 per key character covers it.
+    """
+    return max(1, min(capacity, KAS_SKILL_READ_CAPACITY - 1_000 - 3 * len(key)))
+
 
 # Why an exact-key read delivered no body. Three values because the caller acts
 # differently on each: a key outside the scope is a lookup to correct, an
@@ -82,6 +101,9 @@ class SkillBodyPage(NamedTuple):
     total_lines: int
     total_bytes: int
     next_offset: int | None
+    # The skill's frontmatter description, read from the WHOLE body so a page
+    # past the frontmatter still carries it: the same value a search row shows.
+    description: str = ""
 
 
 class SkillReadRefusal(NamedTuple):
@@ -109,6 +131,7 @@ class _ExactRead(NamedTuple):
     refusal: str
     confined: bool
     incomplete: bool = False
+    description: str = ""
 
 
 def _page_skill_body(
@@ -742,7 +765,10 @@ def read_scoped_skill_page(
         if read.confined and read.refusal == SKILL_READ_OVER_CAPACITY:
             return SkillReadRefusal(read.refusal, PROJECT_SKILL_BODY_CAP, confined=True)
         return SkillReadRefusal(read.refusal, bound, incomplete=read.incomplete)
-    return _page_skill_body(read.content, offset=offset, limit=limit, capacity=capacity)
+    page = _page_skill_body(read.content, offset=offset, limit=limit, capacity=capacity)
+    if isinstance(page, SkillBodyPage):
+        page = page._replace(description=read.description)
+    return page
 
 
 def _read_exact_key(
@@ -795,4 +821,6 @@ def _read_exact_key(
     meta = self._parse_frontmatter_text(content)
     if meta.get("repo_scope") and not self._repo_scope_satisfied(meta["repo_scope"], project_dir):
         return _ExactRead(None, SKILL_READ_OUTSIDE_SCOPE, confined)
-    return _ExactRead(content, "", confined)
+    # The description a search row shows for this key: the frontmatter value,
+    # else the key (``skill_runtime.listing`` builds its rows the same way).
+    return _ExactRead(content, "", confined, description=meta.get("description", key))

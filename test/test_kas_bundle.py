@@ -623,13 +623,14 @@ class TestBundledRoot:
 
 class TestArgv:
     def test_bundle_argv_is_the_engine_cli(self):
-        argv = build_kas_bundle_argv("/n/bin/node", "/e/acp-server.js")
+        argv = build_kas_bundle_argv("/n/bin/node", "/e/acp-server.js", environ={})
         assert argv == [
             "/n/bin/node",
             KAS_BUNDLE_NODE_FLAG,
             "/e/acp-server.js",
             KAS_BUNDLE_TRANSPORT_ARG,
             KAS_BUNDLE_AUTH_ARG,
+            "--cloud-config-endpoint=https://app.kiro.dev",
         ]
         assert "--auth-method" not in " ".join(argv)  # no kiro-cli owner on this route
 
@@ -664,7 +665,7 @@ class TestSpawnRoute:
         ):
             plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
         assert plan.argv == build_kas_bundle_argv(
-            str(installed.node_bin), str(installed.acp_server)
+            str(installed.node_bin), str(installed.acp_server), environ={}
         )
         assert plan.host_auth is True
         assert plan.spawn_label == KAS_BUNDLE_SPAWN_LABEL
@@ -693,7 +694,7 @@ class TestSpawnRoute:
             plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
         assert len(calls) == 1
         assert plan.argv == build_kas_bundle_argv(
-            str(installed.node_bin), str(installed.acp_server)
+            str(installed.node_bin), str(installed.acp_server), environ={}
         )
         assert plan.host_auth is True
 
@@ -1043,6 +1044,26 @@ def _fake_arch(tmp_path: Path, log: Path) -> str:
     return _tool(tmp_path / "arch", f'echo "$1" >> "{log}"\nshift\nexec "$@"\n')
 
 
+def _time_out_x86_64_probes(monkeypatch, *, times: int) -> list[int]:
+    """Make the first *times* ``arch -x86_64 ... --version`` probes time out.
+
+    Returns the list that records each x86_64 probe call; every other
+    subprocess call runs for real.
+    """
+    real_run = kas_bundle.subprocess.run
+    calls: list[int] = []
+
+    def run(argv, *args, **kwargs):
+        if "-x86_64" in argv and argv[-1] == "--version":
+            calls.append(len(calls) + 1)
+            if len(calls) <= times:
+                raise kas_bundle.subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(kas_bundle.subprocess, "run", run)
+    return calls
+
+
 class TestUniversalNode:
     def test_one_root_serves_both_architectures(self, tmp_path):
         src = _darwin_source(tmp_path)
@@ -1086,6 +1107,37 @@ class TestUniversalNode:
         assert (installed.root / "install.json").read_text() == before
         assert [p.name for p in root.iterdir()] == ["0.66.33"]
         assert [p.name for p in installed.node_bin.parent.iterdir()] == ["node"]
+
+    def test_a_slice_probe_that_times_out_once_is_rerun(self, tmp_path, monkeypatch):
+        # Rosetta's first translation of the x86_64 slice can outlast the probe
+        # timeout; the rerun then starts fast. Only the timed-out slice reruns.
+        src = _darwin_source(tmp_path)
+        installed = _darwin_install(src, tmp_path / "kas")
+        log = tmp_path / "arch.log"
+        x86_calls = _time_out_x86_64_probes(monkeypatch, times=1)
+        kas_bundle.make_universal_node(
+            _manifest(src),
+            installed,
+            source=str(src),
+            lipo=_fake_lipo(tmp_path),
+            arch=_fake_arch(tmp_path, log),
+        )
+        assert x86_calls == [1, 2]
+        assert sorted(log.read_text().split()) == ["-arm64", "-x86_64"]
+
+    def test_a_slice_probe_that_keeps_timing_out_fails(self, tmp_path, monkeypatch):
+        src = _darwin_source(tmp_path)
+        installed = _darwin_install(src, tmp_path / "kas")
+        x86_calls = _time_out_x86_64_probes(monkeypatch, times=99)
+        with pytest.raises(kas_bundle.KasBundleError, match="timed out"):
+            kas_bundle.make_universal_node(
+                _manifest(src),
+                installed,
+                source=str(src),
+                lipo=_fake_lipo(tmp_path),
+                arch=_fake_arch(tmp_path, tmp_path / "arch.log"),
+            )
+        assert x86_calls == [1, 2]
 
     def test_a_non_mac_install_is_refused(self, source_dir, tmp_path):
         installed = _install(source_dir, tmp_path / "kas")

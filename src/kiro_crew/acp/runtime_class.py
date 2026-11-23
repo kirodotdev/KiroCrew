@@ -397,6 +397,10 @@ class AcpRuntime:
         # Whether THIS process is Crew's own KAS engine bundle (no kiro-cli),
         # copied from the spawn plan. The turn gates read it for a live session.
         self._kas_engine_bundle = False
+        # The KAS machine-mode settings THIS process was started under
+        # (``agent_sdk/kas_machine.py``), copied from the spawn plan; None for Crew's own
+        # sign-in. A live session's turn gate reads it.
+        self._kas_machine_auth: Any = None
         # Answers this process's ``_kiro/secret/*`` requests when its handshake
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.
@@ -411,6 +415,10 @@ class AcpRuntime:
         # runtime until a callback succeeds or the reason changes: a signed-out
         # engine re-asks about twice a second, and one line says it all.
         self._kas_host_auth_failure_logged: str | None = None
+        # kas_host_auth.token_digest of the last access token this runtime's
+        # callback served, never the token: lets a fail-closed start renew the
+        # very token the engine is holding (kas_host_auth.sign_in_refused).
+        self._kas_served_token_digest: str | None = None
         # The one MCP sign-in in flight on this process, as (session_id,
         # server_name). The engine's consent-URL request names neither, so at
         # most one sign-in runs at a time and its URL goes to the session that
@@ -418,7 +426,8 @@ class AcpRuntime:
         self._mcp_sign_in: tuple[str, str] | None = None
         # MCP re-attempts in flight on this process, as (session_id,
         # server_name): a reset without startOAuth for a server that failed
-        # for want of a credential -- see begin_mcp_reattempt.
+        # for want of a credential or lost its connection -- see
+        # begin_mcp_reattempt.
         self._mcp_reattempts: set[tuple[str, str]] = set()
         # Per session, the hook told when one of its sign-ins ends unconnected,
         # so the chat withdraws the dead link -- see set_mcp_sign_in_ended_hook.
@@ -771,6 +780,9 @@ class AcpRuntime:
         # also the safe default for the classifier, since a spawn that never
         # reached the wrap cannot have been refused by it.
         self._sandbox_wrapped_by_crew = False
+        # Whether the harness said its tools run under its sole engine child
+        # (``SpawnPlan.engine_is_child``), recorded per spawn by the launch.
+        self._engine_is_child = False
         # The mask set this spawn asked for, so a trusted corroboration run can
         # exercise the same mounts rather than a weaker profile.
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
@@ -1026,6 +1038,18 @@ class AcpRuntime:
         return harness
 
     @property
+    def kas_spawn_route(self) -> Any:
+        """The KAS route THIS runtime's process was spawned on, or ``None``.
+
+        ``None`` before a spawn and on every other harness. The sign-in messages
+        for a failure of this runtime name it (``host_auth.signed_out_message``'s
+        ``route``), not the process-wide last spawn, which a second chat's spawn
+        can move between this one's spawn and its error. Reads the cached harness
+        only: asking for a route never resolves one.
+        """
+        return getattr(getattr(self, "_harness_resolved", None), "spawn_route", None)
+
+    @property
     def uses_kiro_identity_store(self) -> bool:
         """True when this runtime's process signs in from kiro-cli's own store.
 
@@ -1035,7 +1059,13 @@ class AcpRuntime:
         declares the same capability under the same name -- letting that sweep
         ask both families one question instead of probing private attributes.
         """
-        return self._acp_backend in backends_retired_by_host_logout()
+        # A KAS machine-mode process reads a host token file, not that store, so a
+        # personal sign-out or switch does not retire it (``agent_sdk/kas_machine.py``).
+        from kiro_crew.agent_sdk.kas_machine import runs_machine_auth
+
+        return self._acp_backend in backends_retired_by_host_logout() and not runs_machine_auth(
+            self
+        )
 
     @property
     def supports_image_prompt(self) -> bool:
@@ -1149,6 +1179,15 @@ class AcpRuntime:
         harness's wording while the layer the operator must change is Crew's.
         """
         return self._sandbox_wrapped_by_crew
+
+    @property
+    def engine_is_child(self) -> bool:
+        """Whether this runtime's harness relays to a sole engine child that runs the tools.
+
+        Read off the last spawn's plan; the stalled-shell cleanup pins that engine as
+        the shell's parent.
+        """
+        return self._engine_is_child
 
     @property
     def sandbox_mode(self) -> str:

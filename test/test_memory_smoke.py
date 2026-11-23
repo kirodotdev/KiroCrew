@@ -680,8 +680,10 @@ class TestLessonEmbeddingStorage:
         # Both lessons survive (different text, sim=1.0 but second is longer → first deleted, second saved)
         assert len(s.get_lessons()) == 1
 
-    def test_lazy_backfill_legacy_lesson(self, tmp_path: Path, opened) -> None:
-        """Legacy lesson without embedding gets backfilled on next write_lesson."""
+    def test_a_write_leaves_a_legacy_lesson_for_the_backfill_sweep(
+        self, tmp_path: Path, opened
+    ) -> None:
+        """A lesson without a vector is embedded by the sweep, never by another lesson's write."""
 
         db = tmp_path / "mem.db"
         s = opened(VectorMemoryStore(db_path=db))
@@ -689,19 +691,22 @@ class TestLessonEmbeddingStorage:
 
         # Write first lesson WITHOUT embed_fn (simulates legacy)
         s.write_lesson("legacy rule without embedding", "preference")
-        row = s.db.execute(
-            "SELECT embedding FROM semantic_memory WHERE key LIKE 'lesson.%'"
-        ).fetchone()
-        assert row["embedding"] is None
+        select = (
+            "SELECT key, embedding FROM semantic_memory "
+            "WHERE key LIKE 'lesson.%' AND is_deleted = 0"
+        )
+        assert s.db.execute(select).fetchone()["embedding"] is None
 
         # Now enable embed_fn and write a second lesson
         s.embed_fn = lambda text: [0.5, 0.5, 0.5]
         s.write_lesson("totally new unrelated rule", "knowledge")
 
-        # Legacy lesson should now have an embedding (backfilled)
-        rows = s.db.execute(
-            "SELECT key, embedding FROM semantic_memory WHERE key LIKE 'lesson.%' AND is_deleted = 0"
-        ).fetchall()
+        rows = {row["key"]: row["embedding"] for row in s.db.execute(select).fetchall()}
+        assert sorted(v is None for v in rows.values()) == [False, True]
+
+        s.backfill_missing_embeddings(pace=False)
+        rows = s.db.execute(select).fetchall()
+        assert len(rows) == 2
         for row in rows:
             assert row["embedding"] is not None, f"{row['key']} missing embedding after backfill"
 
@@ -728,90 +733,3 @@ class TestLessonEmbeddingStorage:
         ]
         assert len(lessons) == 1
         assert "composing objects" in str(lessons[0]["value_json"])
-
-    def test_backfill_cap(self, tmp_path: Path, opened) -> None:
-        """Lazy backfill stops after _MAX_BACKFILLS_PER_CALL legacy lessons."""
-
-        from kiro_crew.vector_memory import _MAX_BACKFILLS_PER_CALL
-
-        db = tmp_path / "mem.db"
-        s = opened(VectorMemoryStore(db_path=db))
-        s.init()
-
-        # Write 7 legacy lessons without embed_fn (unique keywords to avoid topic dedup)
-        topics = [
-            "python type hints improve readability",
-            "docker containers isolate dependencies",
-            "terraform manages infrastructure declaratively",
-            "graphql reduces overfetching bandwidth",
-            "kubernetes orchestrates microservice deployments",
-            "prometheus monitors application metrics",
-            "elasticsearch indexes searchable documents",
-        ]
-        for t in topics:
-            s.write_lesson(t, "knowledge")
-
-        # Enable embed_fn (returns unique orthogonal vectors to avoid cosine dedup)
-        _vecs = {}
-        _dims = [
-            [1, 0, 0, 0, 0, 0, 0, 0],
-            [0, 1, 0, 0, 0, 0, 0, 0],
-            [0, 0, 1, 0, 0, 0, 0, 0],
-            [0, 0, 0, 1, 0, 0, 0, 0],
-            [0, 0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 0, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 0, 0, 1, 0],
-            [0, 0, 0, 0, 0, 0, 0, 1],
-        ]
-        _counter = [0]
-
-        def _orthogonal_embed(text: str) -> list[float]:
-            if text not in _vecs:
-                _vecs[text] = _dims[_counter[0] % len(_dims)]
-                _counter[0] += 1
-            return _vecs[text]
-
-        s.embed_fn = _orthogonal_embed
-        s.write_lesson("redis caches frequently accessed data", "knowledge")
-
-        rows = s.db.execute(
-            "SELECT embedding FROM semantic_memory WHERE key LIKE 'lesson.%' AND is_deleted = 0"
-        ).fetchall()
-        backfilled = sum(1 for r in rows if r["embedding"] is not None)
-        # 5 legacy backfilled + 1 new = 6 with embeddings, 2 legacy without
-        assert backfilled == _MAX_BACKFILLS_PER_CALL + 1
-
-    def test_stale_backfill_purged_on_delete(self, tmp_path: Path, opened) -> None:
-        """Pending backfill is purged when lesson is deleted via semantic dedup."""
-        db = tmp_path / "mem.db"
-        s = opened(VectorMemoryStore(db_path=db))
-        s.init()
-
-        # Write a legacy lesson without embedding
-        s.write_lesson("short rule about composing", "preference")
-        assert (
-            s.db.execute(
-                "SELECT embedding FROM semantic_memory WHERE key LIKE 'lesson.%'"
-            ).fetchone()["embedding"]
-            is None
-        )
-
-        # Enable embed_fn, write longer rule that triggers cosine dedup → deletes short one
-        s.embed_fn = lambda text: [0.9, 0.1, 0.0]
-        s.write_lesson(
-            "a much longer rule about composing objects in software design patterns",
-            "preference",
-        )
-
-        # Only the longer lesson should survive, with embedding
-        rows = s.db.execute(
-            "SELECT key, embedding, is_deleted FROM semantic_memory WHERE key LIKE 'lesson.%'"
-        ).fetchall()
-        alive = [r for r in rows if not r["is_deleted"]]
-        assert len(alive) == 1
-        assert alive[0]["embedding"] is not None
-        assert "longer rule" in str(
-            s.db.execute(
-                "SELECT value_json FROM semantic_memory WHERE key = ?", (alive[0]["key"],)
-            ).fetchone()["value_json"]
-        )

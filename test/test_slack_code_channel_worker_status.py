@@ -22,6 +22,7 @@ from kiro_crew.slack.code_channels import status
 _no_sandbox = _ws._no_sandbox
 _feature_on = _ws._feature_on
 audits = _ws.audits
+_repo_template = _ws._repo_template
 repo = _ws.repo
 
 

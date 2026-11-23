@@ -7,10 +7,12 @@
  * page and app icons use. Dragging reuses the app list's sortable row and
  * sensors, so the two lists reorder with one gesture.
  */
+import { isRelayHostOffline } from '../../utils/relayHostOffline'
+import { useOutageFailure } from '../../hooks/useOutageFailure'
 import { useQuery, useQueryClient, useMutation, type QueryClient } from '@tanstack/react-query'
 import { DndContext, DragOverlay, closestCenter, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useLocation } from 'react-router-dom'
 
@@ -20,10 +22,8 @@ import { MEMBERS_ROSTER_QUERY_KEY, membersRosterQuery } from '../../api/membersQ
 import { crewDisplayName } from '../../components/AgentSelector'
 import CrewAvatar from '../../components/CrewAvatar'
 import ErrorNotice from '../../components/ErrorNotice'
-import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useDndSensors } from '../../hooks/useDndSensors'
-import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { busySlotKeys } from '../../lib/crewMode'
 import { haptic } from '../../lib/haptic'
@@ -37,6 +37,7 @@ import { NAV_ITEMS } from './navItems'
 import { surfaceLabel } from '../../surfaces/registry'
 import { NavToggle, SortableAppNavRow } from './appRail'
 import { NavItem } from './navRow'
+import { MateRowMenu, mateNavId } from './mateRowMenu'
 
 /** Whether the dock's Mates group is unfolded past `DOCK_MATES_LIMIT`,
  *  persisted like the Apps list's `mc-apps-expanded`. */
@@ -58,7 +59,9 @@ function useOpenMember(): string | null {
  * Mates page row never has to stand in for it (`openIsDocked`).
  */
 export function useDockMates() {
-  const { data, isError, error, errorUpdatedAt, dataUpdatedAt } = useQuery(membersRosterQuery)
+  const { data, isError, error, errorUpdatedAt, dataUpdatedAt, refetch } = useQuery(membersRosterQuery)
+  // A read the gateway's outage failed is the offline status's to say.
+  const outage = useOutageFailure(isError, errorUpdatedAt, refetch)
   // A guest session (Shared Crew, a presigned link) is refused the owner's roster.
   // That is "no mates to dock", not a failure: no rows, no notice. The client does
   // not journal it either (`jMembers`). A session-expiry 403 still shows the notice.
@@ -67,7 +70,7 @@ export function useDockMates() {
   const open = useOpenMember()
   const top = ordered.slice(0, DOCK_MATES_LIMIT)
   const pulledIn = open && !top.some(m => m.name === open) ? ordered.filter(m => m.name === open) : []
-  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !notOwner, loadError: error, errorUpdatedAt, dataUpdatedAt }
+  return { ordered, top, pulledIn, open, openIsDocked: !!open && ordered.some(m => m.name === open), loadFailed: isError && !outage && !notOwner && !isRelayHostOffline(error), loadError: error, errorUpdatedAt, dataUpdatedAt }
 }
 
 function isNotOwnerRefusal(error: unknown): boolean {
@@ -132,7 +135,7 @@ function MateNavItem({ m, ...props }: { m: MemberRosterRow } & Omit<ComponentPro
   return (
     <NavItem
       {...props}
-      navId={`mate-${m.slug}`}
+      navId={mateNavId(m)}
       path={`/members?member=${encodeURIComponent(m.name)}`}
       label={crewDisplayName(m)}
       icon={<CrewAvatar seed={m.name} avatar={(m as { avatar?: unknown }).avatar} size={20} working={running ? 'subtle' : undefined} />}
@@ -169,8 +172,7 @@ function DockMatesNotice({ collapsed, isMobile, message, report, testId, onDismi
 /**
  * The same starred mates as tiles on the phone rail, which the chat and Mates
  * pages show beside their drawer. They follow the app tiles in that rail's
- * Apps scroller, behind a divider: the rail already guards a floor of app
- * tiles (`APPS_FLOOR_PX`), and putting mates first would spend it. The Mates
+ * scroll region, so the apps stay first on a short phone. The Mates
  * tile in the pinned top already opens the full roster, so there is no
  * "N more" tile here; the open mate's tile joins the three when it sits past
  * them, as on the wide rail. No drag either: the order is the one set on a
@@ -204,7 +206,16 @@ export function DockMatesTiles({ onActivate }: { onActivate: () => void }) {
   )
 }
 
-export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapsed: boolean; isMobile: boolean; onNavigate?: () => void }) {
+/** The starred mates in the nav rail. The group does not scroll on its own: the
+ *  rail scrolls it together with the rows above and the Apps list below, and
+ *  `onDragActiveChange` tells the rail when a row is being dragged so its
+ *  bottom fade does not dim the drag ghost. */
+export function DockMatesSection({ collapsed, isMobile, onNavigate, onDragActiveChange }: {
+  collapsed: boolean
+  isMobile: boolean
+  onNavigate?: () => void
+  onDragActiveChange?: (active: boolean) => void
+}) {
   const queryClient = useQueryClient()
   const { ordered, top, pulledIn, open, loadFailed, loadError, errorUpdatedAt, dataUpdatedAt } = useDockMates()
   // Folded behind the same "N more" / "Show less" toggle as the Apps list.
@@ -219,14 +230,14 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
   const sortableRows = overflowing ? top : ordered
   const staticRows = overflowing ? pulledIn : []
   const hiddenCount = ordered.length - sortableRows.length - staticRows.length
-  // A short window shrinks the group to its header and one row; the rest
-  // scroll under a hidden scrollbar, so fade the bottom edge while anything
-  // is below the fold. Rows changing inside an already-clipped box resize
-  // nothing the observer watches, hence the explicit remeasure.
-  const [attachScroller, edges, remeasure] = useScrollEdgesY<HTMLDivElement>()
-  useLayoutEffect(() => { remeasure() }, [remeasure, sortableRows.length, staticRows.length, collapsed])
   const sensors = useDndSensors({ distance: 8 })
   const [dragId, setDragId] = useState<string | null>(null)
+  const dragActive = dragId !== null
+  useEffect(() => {
+    onDragActiveChange?.(dragActive)
+  }, [dragActive, onDragActiveChange])
+  // An unmount mid-drag must not leave the rail's fade switched off.
+  useEffect(() => () => onDragActiveChange?.(false), [onDragActiveChange])
   const loadNotice = useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt })
   // Also closes the gap before React publishes the pending mutation state.
   const reorderInFlight = useRef(false)
@@ -254,6 +265,26 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
     },
   })
 
+  // "Remove from the sidebar" on a row's menu: the dock's own unstar, written
+  // the way `reorder` writes. It zeroes `star_order` as the server does, so the
+  // dock order and its drag writes never read a slot the server has cleared.
+  const unstar = useMutation({
+    mutationFn: (m: MemberRosterRow) => api.updateKirocrewAgent(m.name, { starred: false }),
+    onMutate: async (m) => {
+      await queryClient.cancelQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, rows =>
+        rows?.map(r => (r.name === m.name ? { ...r, starred: false, star_order: 0 } : r)))
+    },
+    // Put the row back where it was; the notice says why it came back.
+    onError: async (_err, m) => {
+      await queryClient.cancelQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, rows =>
+        rows?.map(r => (r.name === m.name ? { ...r, starred: m.starred, star_order: m.star_order } : r)))
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }),
+  })
+  const removeFromDock = unstar.mutate
+
   const onDragStart = useCallback((e: DragStartEvent) => {
     if (reorder.isPending || reorderInFlight.current) return
     setDragId(String(e.active.id))
@@ -277,7 +308,9 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
     ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.load_failed')} report={reportForError(loadError)} testId="dock-mates-load-error" onDismiss={loadNotice.dismiss} />
     : reorder.isError
       ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.reorder_failed')} report={reportForError(reorder.error)} testId="dock-mates-reorder-error" onDismiss={() => reorder.reset()} />
-      : null
+      : unstar.isError
+        ? <DockMatesNotice collapsed={collapsed} isMobile={isMobile} message={i18nT('components.matesDock.unstar_failed')} report={reportForError(unstar.error)} testId="dock-mates-unstar-error" onDismiss={() => unstar.reset()} />
+        : null
 
   if (ordered.length === 0) return notice
 
@@ -285,11 +318,21 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
   const row = (m: MemberRosterRow) => (
     <MateNavItem m={m} active={open === m.name} collapsed={collapsed} onClick={onNavigate} />
   )
+  // A list row: on the expanded desktop rail it carries the "..." menu as a
+  // sibling of the row, as navRail.tsx's `renderAppRow` carries the pop-out
+  // action; the drag ghost stays the bare `row()`. Not offered mid-drag.
+  const listRow = (m: MemberRosterRow) => (
+    !collapsed && !isMobile ? (
+      <div className="relative group/approw [&>.nav-item]:pr-9" data-dock-mate-row={mateNavId(m)}>
+        {row(m)}
+        {!dragId && <MateRowMenu m={m} onRemove={removeFromDock} />}
+      </div>
+    ) : row(m)
+  )
   const dragged = dragId ? ordered.find(m => m.name === dragId) : undefined
-  // The drag ghost renders inside this box; a mask would fade or clip it.
 
   return (
-    <div ref={attachScroller} data-testid="dock-mates" aria-busy={reorder.isPending} className={`flex flex-col gap-0.5 px-2 shrink ${collapsed ? 'min-h-[56px]' : 'min-h-[76px]'} overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none [&_.app-icon-nav]:opacity-100 ${edges.bottom && !dragId ? MORE_BELOW_MASK : ''}`} style={{ scrollbarWidth: 'none' }}>
+    <div data-testid="dock-mates" aria-busy={reorder.isPending} className="shrink-0 flex flex-col gap-0.5 px-2 [&_.app-icon-nav]:opacity-100">
       {collapsed
         ? <div aria-hidden="true" className="h-px bg-border mx-2 my-2" />
         : (
@@ -303,12 +346,12 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
         <SortableContext items={sortableRows.map(m => m.name)} strategy={verticalListSortingStrategy}>
           {sortableRows.map(m => (
             <div key={m.name} role="presentation" data-testid={`dock-mate-${m.slug}`}>
-              <SortableAppNavRow id={m.name}>{row(m)}</SortableAppNavRow>
+              <SortableAppNavRow id={m.name}>{listRow(m)}</SortableAppNavRow>
             </div>
           ))}
         </SortableContext>
         {staticRows.map(m => (
-          <div key={m.name} role="presentation" data-testid={`dock-mate-${m.slug}`}>{row(m)}</div>
+          <div key={m.name} role="presentation" data-testid={`dock-mate-${m.slug}`}>{listRow(m)}</div>
         ))}
         <DragOverlay>{dragged ? row(dragged) : null}</DragOverlay>
       </DndContext>

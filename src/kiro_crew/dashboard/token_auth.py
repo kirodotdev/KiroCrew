@@ -81,10 +81,10 @@ from kiro_crew.dashboard.token_auth_callers import (
 from kiro_crew.dashboard.token_auth_paths import (
     _APPS_UI_BYPASS_RE,
     _BYPASS_EXACT,
-    _BYPASS_EXACT_METHODS,
     _BYPASS_PREFIXES,
     _credential_mismatch_detail,
     _deny,
+    _exact_method_bypass,
     _is_spa_shell_request,
     _log_auth,
 )
@@ -611,6 +611,16 @@ def token_auth_middleware(
                     _log_auth(request, "internal", "denied", "no internal secret configured")
                     return _deny(request, "Forbidden")
                 if _ipc_granted or _ct_eq(internal_secret, _provided_secret):
+                    # This branch writes one audit row for the grant and no
+                    # ``_log_auth`` row. That ``dashboard.token_auth`` row would
+                    # name only the literal caller ``internal``, while this one
+                    # names the peer address (empty on a unix socket) or the
+                    # verified tailnet login, the forwarded flag and the
+                    # admitting credential. Every MCP call and keepalive takes
+                    # this branch, so a second row would double the log's
+                    # largest share. The agent-socket gate above writes its own
+                    # capability row, and the secret refusals around this branch
+                    # keep both of their rows.
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -621,7 +631,6 @@ def token_auth_middleware(
                         resources=path,
                         error="agent socket capability" if _ipc_granted else "",
                     )
-                    _log_auth(request, "internal", "granted", "")
                     # Mark the grant so handlers can distinguish "the internal
                     # loopback caller (kiro-cli / MCP) authenticated" from "no
                     # auth ran at all".
@@ -901,10 +910,8 @@ def token_auth_middleware(
             return await handler(request)  # type: ignore[operator]
         if path in _BYPASS_EXACT:
             return await handler(request)  # type: ignore[operator]
-        # Method-scoped exact bypasses. A non-listed method on the same path
-        # falls through to the ordinary token gate rather than bypassing it.
-        _bypass_methods = _BYPASS_EXACT_METHODS.get(path)
-        if _bypass_methods is not None and request.method in _bypass_methods:
+        # Method-scoped exact bypasses; other methods meet the ordinary token gate.
+        if _exact_method_bypass(path, request.method):
             return await handler(request)  # type: ignore[operator]
         # Icon files: anchored regex with bounded digit count to prevent
         # ReDoS and ensure only legitimate PWA icon paths bypass auth.
@@ -1036,6 +1043,7 @@ def token_auth_middleware(
         if not from_cookie:
             _link_nonce = ""
             _embed_parent_port = ""
+            _embed_forward_port = ""
             _no_refresh = False
             _owner_minted = False
             _session_peer_key = ""
@@ -1054,6 +1062,11 @@ def token_auth_middleware(
                 _epp = data.get("embed_parent_port")
                 if isinstance(_epp, str) and _epp:
                     _embed_parent_port = _epp
+                # The pane's own forward port, which binds the app web origin
+                # record below (apps/pane_ports.py) to the port the hub minted for.
+                _efp = data.get("embed_forward_port")
+                if isinstance(_efp, str) and _efp:
+                    _embed_forward_port = _efp
                 # A link minted for a device this dashboard does not control (the
                 # tailnet phone-access QR) says so with this claim, and the
                 # promise it encodes is an EXPIRY: that session ends when its
@@ -1100,6 +1113,8 @@ def token_auth_middleware(
                 _carried: dict[str, str] = {}
                 if _embed_parent_port:
                     _carried["embed_parent_port"] = _embed_parent_port
+                if _embed_forward_port:
+                    _carried["embed_forward_port"] = _embed_forward_port
                 _token_boot = str(data.get("boot", ""))
                 if _token_boot:
                     _carried["boot"] = _token_boot
@@ -1233,6 +1248,12 @@ def token_auth_middleware(
         # the claimless enrollment link would let the child silently drop the
         # just-established device scope.
         request["auth_token"] = session_token
+        if not app_name:
+            # A Remote Crew pane's forward port, recorded from this signed token's
+            # embed-parent claim so app web origins are served on it too.
+            from kiro_crew.apps.pane_ports import note_pane_request
+
+            await note_pane_request(request, session_token)
         # POSITIVE dashboard-user signal for the WS scope gate (see above).
         request["is_dashboard_user"] = not app_name
         # WHICH credential authenticated: the ``?token=`` the caller presented,
@@ -1385,6 +1406,7 @@ def token_auth_middleware(
                         peer_key=_refresh_peer_key,
                         owner_mint=_owner_minted,
                         embed_parent_port=_embed_parent_port,
+                        embed_forward_port=_embed_forward_port,
                     )
                     refresh_remaining = int(refresh_exp - time.time())
                     if refresh_remaining > 0:
@@ -1483,11 +1505,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _403_HTML,
         _APP_WINDOW_EXCLUDED_PATHS,
         _APPS_SPA_EXCLUDED_RE,
+        _BYPASS_EXACT_METHODS,
         _SELF_AUTH_WEBHOOK_METHODS,
         AGENT_HOOK_PATH,
         AGENT_HOOK_STATUS_PATH,
+        CONNECTOR_CONNECT_PATH,
         CREW_OAUTH_CALLBACK_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
+        LOCAL_AUTH_AUTHORIZE_PATH,
+        LOCAL_AUTH_METADATA_PATH,
+        LOCAL_AUTH_REVOKE_PATH,
+        LOCAL_AUTH_TOKEN_PATH,
         RELAY_VIEWER_TOKEN_PATH,
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,
@@ -1498,6 +1526,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401
         _REVOKED_NONCES_FILE,
+        CONNECTOR_AUDIENCE,
+        CONNECTOR_CREDENTIAL_REASON,
         LINK_WINDOW_SECS,
         MAX_CONCURRENT_NONCES,
         RevokedNonceStore,
@@ -1528,6 +1558,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         replace_legacy_app_secret,
         revoke_access_cookie,
         revoke_all_sessions,
+        revoke_all_sessions_async,
         token_embed_parent_port,
         token_owner_minted_unverified,
         try_consume,
@@ -1549,6 +1580,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.origin import (  # noqa: F401
         request_is_unix_socket,
+    )
+    from kiro_crew.dashboard.revocation_gen import (  # noqa: F401
+        persist_next_revocation_gen,
+        publish_revocation_gen,
     )
     from kiro_crew.executors import (  # noqa: F401
         subprocess_executor,

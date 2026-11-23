@@ -282,6 +282,9 @@ _MIME_SUFFIX = {
 #: sync with ``acp.prompt_blocks.IMAGE_MEDIA_TYPES`` by a contract test rather
 #: than an import, so this module's dependency surface stays unchanged.
 _INLINEABLE_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+#: Public name for readers outside this module: a downloaded file that keeps
+#: one of these suffixes was sniffed as that picture type.
+INLINEABLE_IMAGE_SUFFIXES = _INLINEABLE_IMAGE_SUFFIXES
 
 
 def _audit(source: str, operation: str, outcome: str, name: str, error: str = "") -> None:

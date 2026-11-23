@@ -3,9 +3,9 @@ title: In-app dashboard links -- a plain click on a link to a dashboard page ope
 status: draft
 author: peterhieuvu
 created: 2026-11-05
-last-audited: 2026-11-05
-audited-at: 142d40ecfc
-doc-pr: null
+last-audited: 2026-11-19
+audited-at: fc89562d69
+doc-pr: 30791
 implementation-prs: [26450]
 tracking-issues: [26442]
 supersedes: []

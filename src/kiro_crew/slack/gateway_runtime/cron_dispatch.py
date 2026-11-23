@@ -64,7 +64,10 @@ _CRON_POSTTOKEN_CONTINUE_MSG = _TRANSIENT_CONTINUE_MSG
 
 def _defer_cron_before_dispatch(job: CronJob, reason: str) -> None:
     """Retain an undispatched run without counting success or failure."""
-    job.clear_carried_result()
+    # Scoped as close_run's result-less clear: a message job keeps
+    # ``last_result``, the "do NOT repeat" context the next run carries.
+    if job.command or job.script:
+        job.clear_carried_result()
     job.last_status = "error"
     job.last_error = reason
     job.run_never_started = True

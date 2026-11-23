@@ -120,6 +120,10 @@ def published_queued_labels(self: SubagentManager) -> dict[str, dict[str, object
     return self._published_depths.labels()
 
 
+def has_current_execution_for(self: SubagentManager, parent_session_key: str) -> bool:
+    return self._run_events.has_current_execution_for_impl(parent_session_key)
+
+
 def has_in_memory_pending_work_for(
     self: SubagentManager, parent_session_key: str, *, exclude_id: str = ""
 ) -> bool:

@@ -31,6 +31,8 @@ added without amending that rule:
   then host paths and host names out, one line, cut to :data:`STEP_CHARS`.
   With no call in flight, the first line of a fresh progress report, through
   the same passes, or the fixed word :data:`STEP_THINKING`.
+* for a worker someone stopped from the Workers tab, that person's Slack user id
+  and the ``HH:MM`` of the stop, until the worker's next turn (:mod:`.stops`).
 
 Never the acceptance bar, the conductor's decision, the event log, or any other
 transcript text (no model output, no tool result, no arguments beyond the one
@@ -47,7 +49,7 @@ import os
 import re
 import socket
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 #: Longest summary line the board shows.
 SUMMARY_CHARS = 140
@@ -842,6 +844,22 @@ class WorkerRow:
     #: For an ``approval`` wait: a short digest of the pending approval's request
     #: id (never shown), so a second approval in the same report pages again.
     approval_key: str = ""
+    #: The worker's PR: the number it reported (``artifacts["pr"]``), then what the
+    #: workspace refresh read from the channel's own repository (URL, state, CI).
+    pr_number: int = 0
+    pr_url: str = ""
+    pr_state: str = ""
+    pr_ci: str = ""
+    #: ``(passed, total, running)`` for the PR's checks (``None``: not known).
+    pr_checks: tuple[int, int, int] | None = None
+    #: Who stopped this worker from the Workers tab (a Slack user id) and when
+    #: (``HH:MM`` UTC), until its next turn starts (:mod:`.stops`).
+    stopped_by: str = ""
+    stopped_at: str = ""
+
+    @property
+    def stopped(self) -> bool:
+        return bool(self.stopped_by) and not self.settled
 
     @property
     def needs_owner(self) -> bool:
@@ -850,6 +868,18 @@ class WorkerRow:
     @property
     def settled(self) -> bool:
         return self.state in {DONE, CLOSED}
+
+    def with_pr(
+        self,
+        number: int,
+        url: str,
+        state: str,
+        ci: str,
+        checks: tuple[int, int, int] | None = None,
+    ) -> WorkerRow:
+        return replace(
+            self, pr_number=number, pr_url=url, pr_state=state, pr_ci=ci, pr_checks=checks
+        )
 
 
 #: Slack's limit on tasks in one plan block.
@@ -1009,11 +1039,11 @@ def aggregate_line(
     dropped_done: int = 0,
     dropped_closed: int = 0,
 ) -> str:
-    """``"2 working · 1 waiting on you · 1 of 4 done"``: the one-line status.
+    """``"2 working · 1 waiting on you · 1 of 4 done · 1 PR open"``: the one-line status.
 
     Only non-zero counts are named, in urgency order after "working"; the done
-    count always follows. Settled items not kept as rows count too. An empty
-    board says so.
+    count always follows, then the open PRs when there are any. Settled items
+    not kept as rows count too. An empty board says so.
     """
     total = len(rows) + dropped_done + dropped_closed
     if not total:
@@ -1028,6 +1058,9 @@ def aggregate_line(
     if counts[CLOSED]:
         parts.append(f"{counts[CLOSED]} closed")
     parts.append(f"{counts[DONE]} of {total} done")
+    open_prs = sum(1 for r in rows if r.pr_number and r.pr_state in {"open", "draft"})
+    if open_prs:
+        parts.append(f"{open_prs} PR{'' if open_prs == 1 else 's'} open")
     return " · ".join(parts)
 
 
@@ -1073,3 +1106,35 @@ def work_aggregate(snapshot: BoardSnapshot | None) -> dict | None:
     else:
         state = "idle"
     return {"state": state, "label": clean_text(snapshot.aggregate, 200), "counts": counts}
+
+
+def bar_label(snapshot: BoardSnapshot) -> str:
+    """``"2 working · 1 needs you"`` / ``"3 of 3 done"``: the context bar's Workers item.
+
+    The board's own tally (:attr:`BoardSnapshot.counts`, the same rows the
+    board and the channel status read) in the bar's short words: every open
+    state that has rows, most urgent after "working", then the done count once
+    anything is done or nothing is left open. Counts only, so it changes exactly
+    when the board's tally does, never with a worker's summary text. ``""`` with
+    no rows.
+    """
+    if not snapshot.total:
+        return ""
+    counts = snapshot.counts
+    parts: list[str] = []
+    if counts[WORKING]:
+        parts.append(f"{counts[WORKING]} working")
+    if counts[WAITING_ON_YOU]:
+        parts.append(_plural(counts[WAITING_ON_YOU], "needs you", "need you"))
+    for state in (BLOCKED, LOST, IDLE):
+        if counts[state]:
+            parts.append(f"{counts[state]} {STATE_LABELS[state]}")
+    if counts[DONE] or not parts:
+        parts.append(f"{snapshot.done} of {snapshot.total} done")
+    if counts[CLOSED]:
+        parts.append(f"{counts[CLOSED]} closed")
+    return " · ".join(parts)
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"

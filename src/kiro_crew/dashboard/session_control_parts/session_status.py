@@ -15,6 +15,7 @@ from kiro_crew.crew_log.session_tree_projection import projection
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_persistence import _recent_session_slot_name
+from kiro_crew.dashboard.session_activity import session_activity, session_execution_active
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     SessionControlError,
     _audit,
@@ -667,24 +668,33 @@ async def created_session_status(
         queue_depth = len(slot._queue)
         # A restored card waits for a person, so a queue of only those is idle.
         queue_ready = any(not is_held_queue_entry(item) for item in slot._queue)
-        running = bool(slot.running)
-        from kiro_crew import ledger_wake
-        from kiro_crew.autonudge import get_instance as get_nudge
+        activity = session_activity(state, slot)
+        running = session_execution_active(activity)
+        from kiro_crew.dashboard import deferred_steer
 
         link = worker_dashboard_link(key) if via_code_channel else ""
+        steer_receipts = deferred_steer.receipts(slot)
         row = {
             "target": key,
             "title": _bounded_status_title(slot.display_title),
-            "status": "working" if running else ("queued" if queue_ready else "idle"),
+            "status": (
+                "working"
+                if running
+                else "queued" if queue_ready or "subagents_queued" in activity else "idle"
+            ),
             "running": running,
-            # Its own loop will wake it (``ledger_wake.worker_looping``): an
-            # ``idle`` row with it is waiting on something outside, not stopped.
-            "looping": not running and ledger_wake.worker_looping(get_nudge(), key),
+            "activity": list(activity),
+            # An active automation wakes the worker between checks. It remains
+            # distinct from execution, so a loop-only row is idle with this flag.
+            "looping": not running and "automation" in activity,
             "queue_depth": queue_depth,
             "process": process_state(state, slot),
             **_pending_approval_fields(state, slot),
             **(_activity_fields(slot) if via_code_channel else {}),
             **({"dashboard_link": link} if link else {}),
+            # Peer steers held for a tool boundary, and how recent ones settled:
+            # "pending-steer", then "delivered@<ts>" or "queued@<ts>".
+            **({"steer_receipts": steer_receipts} if steer_receipts else {}),
             "source": "+".join(sources),
         }
         if via_code_channel:
@@ -857,6 +867,8 @@ def read_messages(
             row["truncated"] = True
         out.append(row)
 
+    activity = session_activity(state, slot)
+    running = session_execution_active(activity)
     _audit(
         caller_session_key=caller_session_key,
         operation="read",
@@ -868,9 +880,10 @@ def read_messages(
         "ok": True,
         "target": slot.key,
         "title": sanitize_outbound(slot.display_title),
-        # Busy means "more output is coming", which is exactly what a poller needs
-        # to decide whether to wait.
-        "running": bool(slot.running),
+        # Busy means the target still owns execution; ``activity`` names which
+        # kind, ``turn`` for the model turn itself.
+        "running": running,
+        "activity": list(activity),
         # True when the target is mid-reply: rows exist that the cursor
         # deliberately does not cover yet, so "nothing new" here does not mean
         # "nothing happening".
@@ -994,7 +1007,6 @@ async def read_summary(
         )
 
     slot = _authorize(recheck=False)
-    running = bool(slot.running)
 
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     enabled = bool(cfg.session_summary.enabled)
@@ -1014,6 +1026,8 @@ async def read_summary(
             code="target_replaced",
         )
     bounded = _bounded_summary(payload or {})
+    activity = session_activity(state, slot)
+    running = session_execution_active(activity)
 
     _audit(
         caller_session_key=caller_session_key,
@@ -1031,6 +1045,7 @@ async def read_summary(
         "target": slot.key,
         "title": sanitize_outbound(slot.display_title),
         "running": running,
+        "activity": list(activity),
         "enabled": enabled,
         "stale": stale,
         "generated_at": (payload or {}).get("generated_at"),

@@ -46,6 +46,7 @@ from __future__ import annotations
 import logging
 
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.metrics.feature_usage import record_app_credits, record_app_run_time
 from kiro_crew.metrics.harness import ATTR_HARNESS, HARNESS_UNKNOWN
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.metrics.turn_completed import emit_turn_completed
@@ -174,6 +175,7 @@ def emit_turn_duration(
     harness: str = HARNESS_UNKNOWN,
     trigger: str = TRIGGER_OTHER,
     origin: str | None = None,
+    owning_app: str = "",
 ) -> None:
     """Emit one ``kirocrew.turn.duration`` sample (best-effort, never raises).
 
@@ -185,6 +187,11 @@ def emit_turn_duration(
     that passes nothing records ``other``. ``origin`` overrides the origin
     derived from ``session_key``, for a surface whose key does not say where the
     input arrived (a webhook).
+
+    ``owning_app`` is the live provider's trusted ``owning_app``. When it is set,
+    the turn's seconds also go to ``kirocrew.app.run_time``
+    (:func:`kiro_crew.metrics.feature_usage.record_app_run_time`); a turn with no
+    duration adds nothing there, as here.
 
     ``harness`` is the EFFECTIVE harness of the session that ran the turn, as
     :func:`kiro_crew.metrics.harness.harness_of` resolved it from the live
@@ -257,6 +264,7 @@ def emit_turn_duration(
         get_recorder().histogram(TURN_METRIC, value, unit="ms", attrs=attrs)
     except Exception:
         logger.debug("turn metric emit failed", exc_info=True)
+    record_app_run_time(owning_app, value)
 
 
 def _model_attrs(model: str, provider: str) -> dict:
@@ -306,6 +314,7 @@ def emit_turn_usage(
     model: str = "",
     provider: str = "",
     harness: str = HARNESS_UNKNOWN,
+    owning_app: str = "",
 ) -> None:
     """Emit this turn's token / billing samples (best-effort, never raises).
 
@@ -339,6 +348,12 @@ def emit_turn_usage(
     in ``test_provider_bucket_views.py``, which finds histograms by reading the
     first argument of every ``histogram(...)`` call — a loop variable there is
     exactly how an unregistered histogram slips onto OTEL's default buckets.
+
+    ``owning_app`` is the live provider's trusted ``owning_app``, as on
+    :func:`emit_turn_duration`. When it is set, the turn's credits also go to
+    ``kirocrew.app.credits``
+    (:func:`kiro_crew.metrics.feature_usage.record_app_credits`), under the same
+    positive-only gate.
     """
     attrs = {**_model_attrs(model, provider), ATTR_HARNESS: harness}
     tokens_in = _positive(input_tokens)
@@ -370,6 +385,7 @@ def emit_turn_usage(
             get_recorder().histogram(TURN_CREDITS_METRIC, credit_amount, unit="credit", attrs=attrs)
         except Exception:
             logger.debug("turn credits metric emit failed", exc_info=True)
+        record_app_credits(owning_app, credit_amount)
     if usd_amount:
         try:
             get_recorder().histogram(TURN_COST_METRIC, usd_amount, unit="usd", attrs=attrs)

@@ -6,6 +6,7 @@ Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import errno
 import os
@@ -310,7 +311,9 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
         os.close(fd)
 
 
-def safe_file_identity(raw: str) -> tuple[int, int, int, int] | None:
+def safe_file_identity(
+    raw: str, *, hold: contextlib.ExitStack | None = None
+) -> tuple[int, int, int, int] | None:
     """``(st_dev, st_ino, st_mtime_ns, st_size)`` of a file, through the same gate as a read.
 
     Every call screens the path afresh with :func:`validate_file_path` -- no
@@ -321,6 +324,15 @@ def safe_file_identity(raw: str) -> tuple[int, int, int, int] | None:
     name-based ``stat`` that would follow a junction to an attacker-chosen UNC
     target. The descriptor must still be the regular file the screen
     validated, exactly as :func:`safe_read_file_bytes` requires before it reads.
+
+    With *hold* on POSIX, that descriptor stays open and its close goes onto
+    *hold*. A POSIX filesystem may give a freed inode's number to the next file
+    it creates, and a save in the same timestamp tick with the same size then
+    yields an EQUAL identity for a different file; an open descriptor keeps the
+    inode allocated, so no file that replaces this one can share its number
+    while *hold* lives. Windows ignores *hold*: its file ids carry a sequence
+    number that moves when a record is reused, and an open handle there can
+    make a writer's replace of the file fail.
 
     Returns ``None`` when the file does not exist. Raises ``PermissionError``
     when the path is refused or the opened descriptor does not match it, and
@@ -339,13 +351,18 @@ def safe_file_identity(raw: str) -> tuple[int, int, int, int] | None:
         fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     except FileNotFoundError:
         return None
+    held = False
     try:
         if not _opened_file_matches_validated_path(fd, path):
             raise PermissionError("Blocked: opened file no longer matches safe path")
         st = os.fstat(fd)
+        if hold is not None and platform_compat.IS_POSIX:
+            hold.callback(os.close, fd)
+            held = True
         return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
     finally:
-        os.close(fd)
+        if not held:
+            os.close(fd)
 
 
 def safe_read_file_bytes_with_identity(
@@ -600,7 +617,13 @@ def safe_read_prefix(
         os.close(fd)
 
 
-def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
+def safe_copy_file_nolink(
+    raw: str,
+    dest_dir: str,
+    *,
+    links_only: bool = False,
+    refuse: Callable[[str], bool] | None = None,
+) -> str | None:
     """Copy a file into *dest_dir* with the full descriptor-pinned validation
     chain; return the private copy's path, or None if the source is rejected.
 
@@ -626,13 +649,21 @@ def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
     ``os.open`` follows a reparse point at the name AND hands back a CRT descriptor
     in text mode, which truncates a binary payload at its first ``0x1A``. Media
     files — what this function exists for — are exactly the payloads that carry one.
+
+    *links_only* (Windows only) refuses only a reparse point that is a link, so a
+    regular file carrying another tag (a cloud-files placeholder) opens: the read a
+    person-chosen file such as an upload needs. A link or junction is still refused.
+
+    *refuse* is a caller's own extra fence, asked about the same OPENED real path as
+    the sensitive-path check, so a folder swapped for a link after the caller's
+    check cannot carry the copy past it.
     """
     path = validate_file_path(raw)
     if path is None:
         return None
 
     try:
-        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True, links_only=links_only)
     except OSError:
         return None
     tmp_fd = -1
@@ -644,7 +675,7 @@ def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
         fd_real = _fd_real_path(fd)
         if fd_real is None:
             return None  # cannot verify what was opened -> fail closed
-        if is_sensitive_path(fd_real):
+        if is_sensitive_path(fd_real) or (refuse is not None and refuse(fd_real)):
             return None
         tmp_fd, tmp_path = tempfile.mkstemp(
             prefix=".safe-copy-", suffix=os.path.splitext(fd_real)[1], dir=dest_dir

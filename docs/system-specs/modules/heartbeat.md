@@ -42,6 +42,7 @@ While `require_memory_ready()` raises `MemoryStartupUnavailable` (Global memory 
 4. Tasks with `HEARTBEAT_KEEP` in response are retained for next tick (incomplete)
 5. Tasks without the sentinel are removed (complete)
 6. Tasks that raise exceptions are retained automatically (retry)
+7. Tasks whose turn times out, or that Shared Crew fair admission refuses, are retained (they did not finish): the gateway returns `HEARTBEAT_KEEP` for both
 
 ### Task Retention (`HEARTBEAT_KEEP`)
 
@@ -85,7 +86,7 @@ On `asyncio.TimeoutError`:
    blocked on the per-key semaphore (held until our `finally` releases) — they
    pick up the freshly-recreated session.
 2. Log a warning.
-3. Return a graceful incomplete result string (the loop is NOT crashed).
+3. Deliver a notice that the task timed out and runs again next beat, then return it with `HEARTBEAT_KEEP` appended so the task is retained (the loop is NOT crashed).
 4. The `finally` block calls `release(HEARTBEAT_KEY)` ONLY — no per-task reset.
    Cycle-end recycle is owned by `SessionManager.recycle_heartbeat`, called
    once via `HeartbeatService.on_cycle_end` after `asyncio.gather` completes.
@@ -140,7 +141,7 @@ A hook `TOOL_AUTO_APPROVE` that DOES fire in `_resolve_permission` (cron and aut
 
 The allowlist is identity-based and exact-match only — no verb / heuristic fallback, and no fallback to the model-authored title. `event.mcp_identity_trusted` must be set (the `tool_name` / `mcp_server_name` pair came from the adapter's `_meta` channel) and `tool_name` must be non-empty, since a cache hit on empty names also sets the flag; a backend that publishes none (`acp/_dispatch_parts/tool_call_identity.py` names claude-agent-acp and opencode) gets no heartbeat tool approval at all and runs as a text-only poller — intended, not a gap to paper over with a title fallback. Each such denial is audited as `reason=no_trusted_identity` and logs a gateway warning that the backend published no trusted tool identity, so every heartbeat tool call is denied on it. Heartbeat polls untrusted external content (CR comments, ticket bodies) where prompt-injection could try to widen approval via a clever read-shaped tool name (`get_all_credentials`, `list_env_secrets`, etc.). Strict enforcement is auditable and cannot be widened that way; this is deny-by-default per the security-controls guideline.
 
-The allowlist is curated for read-only / observation tools, each matched on its own identity shape (`slack-gateway.md`, Heartbeat Tool Allowlist, has the exact rules): the trusted host built-ins `hooks._HOST_READ_ONLY_BUILTIN_TOOLS` names (`fs_read`, `glob`, `grep`, `web_fetch`, `web_search` — the spellings are the trusted channel's own, not the `Read` / `Grep` / `Glob` / `WorkspaceSearch` titles an earlier allowlist carried), side-effect-free reads from `kirocrew-core` (`learn_list`, `spawn_list`, `spawn_status`, `artifact_list`, `artifact_get`, `artifact_versions`, `local_knowledge_search`), each matched only as its qualified `kirocrew-core` identity, a host shell command whose recovered text classifies read-only and runs no `git` (git reads `.git/config` on invocation and `core.fsmonitor` / `core.hooksPath` name a program there that no text classifier sees; the interactive and cron paths have a human behind them, heartbeat does not), and the `@server/tool` identities an edition pins in `SlackEnterpriseGate.heartbeat_safe_tools()`. Write tools (`send_message`, `file_send`, `cron_add`, `fs_write`) and any shell command the classifier does not confirm read-only are rejected.
+The allowlist is curated for read-only / observation tools, each matched on its own identity shape (`slack-gateway.md`, Heartbeat Tool Allowlist, has the exact rules): the trusted host built-ins `hooks._HOST_READ_ONLY_BUILTIN_TOOLS` names (`fs_read`, `glob`, `grep`, `web_fetch`, `web_search` — the trusted channel's own spellings, not tool titles such as `Read` or `Grep`), side-effect-free reads from `kirocrew-core` (`learn_list`, `spawn_list`, `spawn_status`, `artifact_list`, `artifact_get`, `artifact_versions`, `local_knowledge_search`), each matched only as its qualified `kirocrew-core` identity, a host shell command whose recovered text classifies read-only and runs no `git` (git reads `.git/config` on invocation and `core.fsmonitor` / `core.hooksPath` name a program there that no text classifier sees; the interactive and cron paths have a human behind them, heartbeat does not), and the `@server/tool` identities an edition pins in `SlackEnterpriseGate.heartbeat_safe_tools()`. Write tools (`send_message`, `file_send`, `cron_add`, `fs_write`) and any shell command the classifier does not confirm read-only are rejected.
 
 When a legitimate new read tool needs to run in heartbeat, operators observe SEL `denied` events (or the gateway-log warning `Heartbeat blocked tool call: <name>`) and explicitly add the name to the right set behind the heartbeat allowlist (`_HEARTBEAT_SAFE_CORE_MCP_TOOLS` for a `kirocrew-core` read, or the hooks built-in allowlist). A `no_trusted_identity` denial is a property of the backend, not a missing name.
 
@@ -210,4 +211,4 @@ Slot resolution: `chat-0` → first active slot, `chat-3` → fourth slot. A bus
 
 ### Slack Suppression for Incomplete Tasks
 
-When a task response contains `HEARTBEAT_KEEP`, Slack delivery is suppressed. The task is retained for the next tick without notifying the user. Only completed tasks (no `HEARTBEAT_KEEP`) trigger Slack/dashboard delivery.
+When a task response contains `HEARTBEAT_KEEP`, Slack delivery is suppressed. The task is retained for the next tick without notifying the user. Only completed tasks (no `HEARTBEAT_KEEP`) trigger Slack/dashboard delivery, plus the timeout notice, which is delivered even though the task is retained.

@@ -28,6 +28,8 @@ import { UIModeProvider } from './hooks/useUIMode'
 import ThemeExperienceLayer from './components/ThemeExperienceLayer'
 import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/NavigationLeaveGuard'
 import { RouteHistoryTracker } from './components/NavHistoryArrows'
+import { StandaloneRouteRecorder } from './components/StandaloneRouteRecorder'
+import { restoreStandaloneLastRoute } from './lib/standaloneLastRoute'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
 import { BASE_PATH, appPathname } from './lib/basePath'
@@ -204,6 +206,11 @@ startMemoryWatch('main')
 // element enters the tree on a normal load.
 installCommitProfilerConsoleApi()
 
+// The installed web app opens at the manifest's `/`; reopen the page it last
+// showed instead (#29497). Before the router mounts, so it reads the new URL.
+// A browser tab is left alone. See lib/standaloneLastRoute.ts.
+restoreStandaloneLastRoute()
+
 const appTree = (
   <StrictMode>
     <ErrorBoundary root scope="app-shell">
@@ -229,6 +236,7 @@ const appTree = (
                         no route change unmounts it. Feeds the position store the
                         top-bar arrows and the ⌘/Ctrl+←/→ chords read. */}
                     <RouteHistoryTracker />
+                    <StandaloneRouteRecorder />
                     <Routes>
                       <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
                       <Route
@@ -335,7 +343,8 @@ function boot(startSync: boolean): void {
   // definition for how the language is reconciled first).
   void catalogReady.then(() => {
     announceBoot('render')
-    const root = createRoot(document.getElementById('root')!)
+    const rootEl = document.getElementById('root')!
+    const root = createRoot(rootEl)
     // The first render of the whole app is one long task when it runs
     // synchronously. As a transition React renders it in slices and yields
     // to the browser between them. Nothing is on screen to keep responsive yet,

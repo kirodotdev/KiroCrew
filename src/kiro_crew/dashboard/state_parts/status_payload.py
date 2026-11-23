@@ -2,9 +2,10 @@
 
 Instance fields of ``DashboardState`` this module reads and writes:
 
-Reads only: ``_build_info``, ``context_builder``, ``lessons``, ``messages_received``,
-``no_crons``, ``sessions``, ``slack_client``, ``slack_socket_connected``,
-``start_time``, ``subagents``.
+Reads only: ``_build_info``, ``context_builder``, ``lessons``, ``no_crons``,
+``sessions``, ``slack_client``, ``slack_socket_connected``, ``start_time``,
+``subagents``. The message and tool-call counts come from the process-wide
+``Stats`` counters.
 
 A function whose first parameter is ``self`` is a ``DashboardState`` method: the
 class binds it under the same name (``state_parts/dashboard_state.py``), so it reads
@@ -18,8 +19,10 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.platform.update_capability import runs_in_container
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes
+from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
@@ -30,6 +33,10 @@ if TYPE_CHECKING:
 #: exactly one served bundle per process, and the snapshot that reads it sits
 #: on the hot status path.
 _BUNDLE_ID_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+#: What a person on the host runs to get a sign-in link from a container gateway.
+_CONTAINER_SIGN_IN_COMMAND = "docker exec kirocrew kirocrew token"
 
 
 #: The entry point the gateway serves (``server.py``'s ``_DIST_DIR``).
@@ -149,6 +156,7 @@ def status_snapshot(
     """
     uptime = int(time.time() - self.start_time)
     branch, commit = self._build_info
+    counts = Stats().snapshot()
     return {
         "uptime": _fmt_duration(uptime),
         # Auto-approve modes forbidden by the ``approval_modes`` policy
@@ -157,7 +165,8 @@ def status_snapshot(
         "disabled_approval_modes": cached_disabled_approval_modes(),
         "start_time": self.start_time,
         "sessions": self.sessions.count,
-        "messages": self.messages_received,
+        "messages": counts["messages_received"] + counts["messages_admitted"],
+        "tool_calls": counts["tool_calls"],
         "cron_jobs": cron_jobs,
         "lessons": lessons,
         "subagents": self.subagents.count if self.subagents else 0,
@@ -287,6 +296,10 @@ def status_snapshot(
         # The dashboard uses this to give prerelease users an obvious way to
         # report a bug; see release_channel.py for the full rule.
         "release_channel": _release_channel_of_build(),
+        # The sign-in command the dashboard names in place of its catalog's
+        # ``kirocrew token``, which does not exist on a container's host. ""
+        # keeps the catalog's command.
+        "sign_in_command": _CONTAINER_SIGN_IN_COMMAND if runs_in_container() else "",
         # True only when Socket Mode actually connected this session, not
         # merely that tokens were present at boot. slack_client is set
         # whenever tokens existed, even if connect() then failed

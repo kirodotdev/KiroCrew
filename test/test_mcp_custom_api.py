@@ -760,6 +760,35 @@ class TestMalformedConfigNeverClobbered:
         finally:
             await client.close()
 
+    async def test_add_on_an_unreadable_store_is_coded_unreadable_not_malformed(
+        self, sandbox, fake_sel, monkeypatch
+    ):
+        """A store another program holds may be valid: the add is refused as
+        unreadable, never as malformed with advice to remove the file."""
+        text = json.dumps({"mcpServers": {"keep": {"command": "node"}}})
+        sandbox.kirocrew_json.write_text(text, encoding="utf-8")
+        real_read_text = Path.read_text
+
+        def held_read_text(self, *args, **kwargs):
+            if self == sandbox.kirocrew_json:
+                raise PermissionError(13, "held by another program", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", held_read_text)
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
+            body = await resp.json()
+            assert (resp.status, body) == (
+                500,
+                {"error": "cannot read the Kiro Crew mcp.json", "code": "config_unreadable"},
+            )
+            assert sandbox.kirocrew_json.read_bytes() == text.encode("utf-8")
+            resources = fake_sel.log_api_access.call_args.kwargs["resources"]
+            assert resources == "mcp.json unreadable — write refused"
+        finally:
+            await client.close()
+
     async def test_add_refuses_non_object_mcpservers(self, sandbox, fake_sel):
         sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": ["broken"]}))
         client = await _client()
@@ -1257,6 +1286,19 @@ def _owner_record() -> dict:
     return read_config_for_update().get("connections", {}).get("owner_mcp_servers", {})
 
 
+def _forgotten(monkeypatch) -> list[dict]:
+    """Record what each owner-record write hands the grant cleanup."""
+    from kiro_crew.connections import crew_oauth
+
+    calls: list[dict] = []
+
+    async def _forget(servers):
+        calls.append(dict(servers))
+
+    monkeypatch.setattr(crew_oauth, "forget_owner_grants", _forget)
+    return calls
+
+
 @pytest.mark.asyncio
 class TestOwnerSignInRecord:
     async def test_a_remote_add_records_the_server_at_its_url(self, sandbox, fake_sel):
@@ -1283,6 +1325,40 @@ class TestOwnerSignInRecord:
         finally:
             await client.close()
         assert _owner_record() == {"remote": {"url": "https://mcp.example.com/v2"}}
+
+    @pytest.mark.parametrize(
+        "spec", [{"url": "https://mcp.example.com/v2"}, _STDIO], ids=["moved", "local"]
+    )
+    async def test_an_edit_off_the_recorded_url_forgets_the_old_grant(
+        self, sandbox, fake_sel, monkeypatch, spec
+    ):
+        forgotten = _forgotten(monkeypatch)
+        client = await _client()
+        try:
+            add = await client.post("/api/mcp/custom", json={"servers": {"remote": _REMOTE}})
+            assert add.status == 200
+            for edit in (_REMOTE, spec):
+                assert (
+                    await client.put("/api/mcp/custom/remote", json={"spec": edit})
+                ).status == 200
+        finally:
+            await client.close()
+        # The add and an edit that keeps the url forget nothing.
+        assert forgotten == [{}, {}, {"remote": _REMOTE["url"]}]
+
+    async def test_removing_an_owner_server_forgets_its_grant(self, sandbox, fake_sel, monkeypatch):
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        forgotten = _forgotten(monkeypatch)
+        client = await _client()
+        try:
+            add = await client.post("/api/mcp/custom", json={"servers": {"remote": _REMOTE}})
+            assert add.status == 200
+        finally:
+            await client.close()
+        await mcp_mod._forget_owner_servers(["remote", "never-recorded"])
+        assert _owner_record() == {}
+        assert forgotten == [{}, {"remote": _REMOTE["url"]}]
 
     async def test_a_server_written_straight_to_the_store_is_never_recorded(
         self, sandbox, fake_sel

@@ -29,6 +29,7 @@ four owners, which never import it: the tiers depend on the reader, never the re
 from __future__ import annotations
 
 import bisect
+import contextvars
 import os
 import re
 import shlex
@@ -976,7 +977,129 @@ def _is_self_program(token: str) -> bool:
     return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
 
 
-def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
+# Set for the self floor's EXTRA, additive here-document pass only (see
+# :func:`_shell_payload_walk_uncached`): :func:`_self_tokens` then reads the command
+# with the quote an own-line body leaves open escaped, so the text after the closing
+# line reads unquoted. Off by default, so the ordinary pass reads a body's quotes
+# exactly as origin/main does and this pass can only ADD a denial, never remove one.
+# The ssh floor drives the same reset through its OWN flag (argv_floor_ssh).
+_HEREDOC_RESET = contextvars.ContextVar("self_floor_heredoc_reset", default=False)
+
+
+def _heredoc_body_quotes_literal(command: str) -> str:
+    """The command with every here-document BODY (and its closing tag line) removed,
+    to be read from a FRESH quote state -- the way bash consumes each body as literal
+    data and reads what surrounds it with no quote open. What is kept is everything
+    AROUND the bodies: each opener line, any command written BETWEEN two closing lines,
+    and the final tail. The as-written reading (byte-identical to origin/main) still
+    judges the body text. So a command a body's quote could otherwise pair across its
+    closing line to bury -- between two bodies, or after the last one -- is read here
+    as the command bash runs.
+
+    Removing whole bodies is what closes the two-body case: a quote left open in one
+    body cannot pair with a quote in a later body, because both bodies are gone, so a
+    ``kirocrew restart`` sitting between ``cat <<A`` .. ``A`` and ``cat <<B`` .. ``B``
+    is exposed, not swallowed. A self-restart or an ssh line that sits WITHIN a body
+    (a note written with ``cat > f <<'EOF'``, a commit message fed to
+    ``git commit -F -``) is part of a removed span and stays data, never a command.
+
+    Spans come from :func:`read_commands`, which finds a body and its delimiter line
+    the way bash does. An UNCLOSED body (empty closing text) runs to end-of-text, so
+    there is nothing after it; a DEGENERATE delimiter holding a
+    quote/backslash/substitution character (``<<'a"'``, ``<<"'"``, ``<<$(x)``) needs
+    that character verbatim to match its closing line, so it is left to the as-written
+    reading. A ``<<`` the reader held inside an open ``$(( ))`` / ``(( ))`` is a left
+    SHIFT, not a here-document (``hd.arith_held``): its "body" is a fiction bash never
+    reads, so it opens no text to expose and is skipped.
+
+    Each comment of the kept text (a ``#`` at a word start outside any quote) is
+    removed too, so a quote or a self command in it reads as nothing, as in bash. *command* is the text AS WRITTEN
+    (case and continuations intact): bash matches a closing tag case-sensitively, so
+    an ``eof`` line in an ``EOF`` body is body text, not its end.
+    """
+    from .shell_commands import read_commands  # the reader imports this module
+
+    spans: "list[tuple[int, int]]" = []
+    for cmd in read_commands(command, heredocs=True):
+        for hd in cmd.heredocs:
+            if hd.arith_held:
+                continue
+            end = hd.tail if hd.tail >= 0 else hd.end
+            closing_tag = command[hd.end : end].lstrip("\t ")
+            if end <= hd.start or not closing_tag:
+                continue
+            if any(ch in closing_tag for ch in "'\"`\\$()"):
+                continue
+            spans.append((hd.start, end))
+    if not spans:
+        return command
+    # Remove every confirmed body-plus-closing-line span, keeping what sits AROUND
+    # the bodies: each opener line, any command BETWEEN two closing lines, and the
+    # final tail. bash reads all of those with no quote open, so a quote inside one
+    # body can never pair with a quote in another body or after a closing line to
+    # bury a command written between or after them (`cat <<A` .. `A` .. kirocrew
+    # restart .. `cat <<B` .. `B`). A self-restart or self-ssh written INSIDE a body
+    # is part of a removed span and stays data, as bash leaves it. Only the as-written
+    # reading judges the body text, so this reading can add a denial, never drop one.
+    spans.sort()
+    kept_parts: "list[str]" = []
+    pos = 0
+    for start, end in spans:
+        if start < pos:  # a nested/overlapping span is already inside a removed one
+            pos = max(pos, end)
+            continue
+        kept_parts.append(command[pos:start])
+        pos = end
+    kept_parts.append(command[pos:])
+    text = "".join(kept_parts)
+    # Remove each comment of the kept text, found the way bash finds one: a ``#`` at
+    # a word start outside any quote (the shared quote walk and ``_opens_comment``).
+    # A ``#`` inside quotes or mid-word is data and stays, so a quoted ``# end'``
+    # still closes its quote. A comment's quote opens nothing; it runs to its newline.
+    comment_free: "list[str]" = []
+    pos = 0
+    while True:
+        cut = next(
+            (
+                step.offset
+                for step in _iter_shell_chars(text, start=pos)
+                if step.active and step.char == "#" and _opens_comment(text, step.offset)
+            ),
+            -1,
+        )
+        if cut < 0:
+            comment_free.append(text[pos:])
+            return "".join(comment_free)
+        comment_free.append(text[pos:cut])
+        newline = text.find("\n", cut)
+        pos = len(text) if newline < 0 else newline
+
+
+# Where one gate call keeps the command as submitted, case and continuations intact,
+# for the reset reading of the walk: bash matches a closing tag case-sensitively, so
+# the bodies are found on the words as written. A tuple, since redirect views key on str.
+_SUBMITTED_KEY = ("submitted_command",)
+
+
+def _keep_submitted_command(command: str) -> None:
+    """Keep *command* as submitted for the rest of this gate call (``is_denied``)."""
+    from .shell_commands import _CALL_VIEWS  # circular import: the reader imports this module
+
+    views = _CALL_VIEWS.get()
+    if views is not None:
+        views[_SUBMITTED_KEY] = command
+
+
+def _cased_payload(cased: "str | None", source: str, payload: str) -> "str | None":
+    """*payload* in the case it was written in *cased*, when it sits there verbatim."""
+    at = source.find(payload) if cased is not None else -1
+    found = cased[at : at + len(payload)] if cased is not None and at >= 0 else None
+    return found if found is not None and found.lower() == payload else None
+
+
+def _self_tokens(
+    text_lower: str, *, resolve: bool = True, cased: "str | None" = None
+) -> "list[str]":
     """Tokenize the WHOLE command, resolving quoting before any splitting.
 
     *resolve* False stops before assignment and alias resolution, so a quoted
@@ -1010,6 +1133,22 @@ def _self_tokens(text_lower: str, *, resolve: bool = True) -> "list[str]":
         # commands into one argv. Preserve those boundaries after folding
         # continuations; quoted newlines remain part of their operand.
         command = _fold_line_continuations(text_lower)
+        source = cased if cased is not None and cased.lower() == text_lower else text_lower
+        # ONE reading per call, so the tokens (and every denial they carry) are
+        # exactly what origin/main produces -- no token stream is ever concatenated
+        # with another. The here-document SECOND reading is an independent FULL pass
+        # of the floor, driven by ``_HEREDOC_RESET`` (set by the payload walk) the
+        # same additive way the ssh floor runs its own: when the flag is set and a
+        # here-document is present, the open body quote is escaped so quote-blind
+        # shlex reads the text after the closing line as unquoted, the way bash does.
+        # The default (flag off) reading is byte-identical to origin/main's single
+        # path, so that pass never loses a denial and the reset pass can only ADD one.
+        # The reset reads the bodies on the text as written (*cased* when given), then
+        # lowers and folds what is left; a ``<<`` only the fold forms keeps the folded read.
+        if _HEREDOC_RESET.get() and "<<" in source:
+            command = _fold_line_continuations(_heredoc_body_quotes_literal(source).lower())
+        elif _HEREDOC_RESET.get() and "<<" in command:
+            command = _heredoc_body_quotes_literal(command)
         if "\n" in command:
             command = "".join(
                 " ; " if step.active and step.char == "\n" else step.text
@@ -1120,7 +1259,17 @@ def _mint_verb_in_substitution(tokens: "list[str]", idx: int) -> bool:
     PROGRAM?".  This one answers "does it compute the VERB?", for the spelling that
     hides that half instead (``T=$(printf <verb>); <name> $T``).
     """
-    joined = " ".join(tokens[idx:])
+    return _mint_verb_in_text(" ".join(tokens[idx:]))
+
+
+@once_per_call()
+def _mint_verb_in_text(joined: str) -> bool:
+    """:func:`_mint_verb_in_substitution`'s answer for one suffix text, kept per gate call.
+
+    Pure in its text, so a repeat read is the same answer. Frames of a command whose
+    substitutions never close are suffixes of one another and share their assignment
+    suffixes; without the memo each frame reads each suffix again (cubic in length).
+    """
     for body in _substitution_bodies(joined):
         if any(_is_mint_verb(word) for word in body.split()):
             return True
@@ -1597,12 +1746,16 @@ def _shell_payload_walk(
     key = ("payload_walk", text_lower, literal_single_quotes)  # redirect views' keys are str
     frames = memo.get(key)
     if frames is None:
-        frames = memo[key] = _shell_payload_walk_uncached(text_lower, literal_single_quotes)
+        # The text as the gate call submitted it, when this is that text: only the
+        # reset reading of a ``<<`` line reads it (``_keep_submitted_command``).
+        submitted = memo.get(_SUBMITTED_KEY) if "<<" in text_lower else None
+        cased = submitted if submitted is not None and submitted.lower() == text_lower else None
+        frames = memo[key] = _shell_payload_walk_uncached(text_lower, literal_single_quotes, cased)
     return [(source, list(tokens)) for source, tokens in frames]
 
 
 def _shell_payload_walk_uncached(
-    text_lower: str, literal_single_quotes: bool = True
+    text_lower: str, literal_single_quotes: bool = True, cased: "str | None" = None
 ) -> "list[tuple[str, list[str]]]":
     """``(source, argv)`` for *text_lower* and every nested shell payload in it.
 
@@ -1627,17 +1780,44 @@ def _shell_payload_walk_uncached(
     finite.
     """
     out: list[tuple[str, list[str]]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, bool]] = set()
+    appended: set[tuple[str, tuple[str, ...]]] = set()
     # The third field is whether this frame may perform the ``eval`` argument join.
     # A frame PRODUCED by a join may not, which is what bounds the walk: see
-    # ``_nested_shell_payloads``.
-    pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
+    # ``_nested_shell_payloads``. The fourth is the here-document SECOND reading --
+    # an independent, ADDITIVE full pass, seeded ALONGSIDE the as-written reading
+    # when a ``<<`` is present and read under ``_HEREDOC_RESET`` so ``_self_tokens``
+    # escapes each body's open quote and the quote-blind tokenizer reads the text
+    # after a closing line as unquoted, the way bash does. Every frame carries its
+    # own tokens, alias/assignment resolution and nested descent, so a self/push
+    # command a pairing quote would otherwise bury (``eval '<push>'`` above a
+    # ``cat <<EOF`` body ending in an open quote) is seen as its own frame and
+    # denied. The as-written reading is byte-identical to origin/main, so this
+    # only ADDS frames; a frame it produces identical to one the first reading has
+    # is deduped. The single-reading cost of a command with no ``<<`` is unchanged.
+    # The reset reading also carries each frame's text AS WRITTEN (``cased``), so its
+    # bodies close on their tags with case, as bash closes them; None reads it lowered.
+    pending: "list[tuple[str, int, bool, bool, str | None]]" = [
+        (text_lower, len(text_lower) + 1, True, False, None)
+    ]
+    if "<<" in text_lower:
+        pending.append((text_lower, len(text_lower) + 1, True, True, cased))
     while pending:
-        source, parent_len, allow_join = pending.pop()
-        tokens = _self_tokens(source)
+        source, parent_len, allow_join, reset, source_cased = pending.pop()
+        if reset:
+            marker = _HEREDOC_RESET.set(True)
+            try:
+                tokens = _self_tokens(source, cased=source_cased)
+            finally:
+                _HEREDOC_RESET.reset(marker)
+        else:
+            tokens = _self_tokens(source)
         if not tokens:
             continue
-        out.append((source, tokens))
+        signature = (source, tuple(tokens))
+        if signature not in appended:
+            appended.add(signature)
+            out.append((source, tokens))
         # Every substitution body is itself a command line -- command substitution
         # (``$( )``, backticks) and PROCESS substitution (``<( )``, ``>( )``) alike, since
         # bash runs the inner command in all of them.  Walking them here means the
@@ -1669,11 +1849,13 @@ def _shell_payload_walk_uncached(
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.
+            # The dedup is per reading, so each reading walks every nested payload.
             payload = _decode_printf_escapes(payload)
-            if len(payload) >= parent_len or payload in seen:
+            if len(payload) >= parent_len or (payload, reset) in seen:
                 continue
-            seen.add(payload)
-            pending.append((payload, len(source), payload not in joined_here))
+            seen.add((payload, reset))
+            payload_cased = _cased_payload(source_cased, source, payload) if reset else None
+            pending.append((payload, len(source), payload not in joined_here, reset, payload_cased))
     return out
 
 

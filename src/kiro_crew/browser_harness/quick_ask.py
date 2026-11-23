@@ -24,8 +24,8 @@ So:
 * A fill is ``DOM.focus`` on the bound node, then one call on that node that
   proves it holds focus and inserts the text, in the gateway. Values are never
   logged, published or put in an exception, and are stored only when the person
-  ticked "Save to Secrets store" on the card (:mod:`kiro_crew.browser_harness.vault_fill`,
-  behind the ``secrets_vault`` preview). A login the person picks from the vault
+  ticked "Save to Secrets store" on the card
+  (:mod:`kiro_crew.browser_harness.vault_fill`). A login the person picks from the vault
   there takes this same fill.
 
 Pure validation (:func:`parse_ask`) and the CDP half (:class:`PageProbe`,
@@ -302,9 +302,9 @@ class QuickAsk:
     #: page showed a username box; ``none``: it showed only a password box;
     #: ``optional``: it showed neither yet).
     username_mode: str = ""
-    #: A credentials ask under the ``secrets_vault`` preview: ``(name, username)``
-    #: of each vault login matching ``origin`` (``[]``: none, the card offers to
-    #: save). ``None``: no vault part, the card is as without the preview.
+    #: A credentials ask: ``(name, username)`` of each vault login matching
+    #: ``origin`` (``[]``: none, the card offers to save). ``None``: no vault
+    #: part (the vault could not be read), the plain card.
     vault: list[tuple[str, str]] | None = None
     #: How many more logins matched than ``vault`` holds (the card says so).
     vault_more: int = 0

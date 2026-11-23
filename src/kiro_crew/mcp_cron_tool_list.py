@@ -218,6 +218,12 @@ def _list_tools() -> list[dict[str, Any]]:
                         "id (e.g. 'Veille'). A missing name is created. Empty or omitted "
                         "leaves the job ungrouped.",
                     },
+                    "chat_folder_id": {
+                        "type": "string",
+                        "description": "Files this job's chat in the sidebar chat folder "
+                        "with this id (from chat_folder_tree). Persistent agent jobs only. "
+                        "Not `folder`, the Schedule-page group. Empty or omitted: not filed.",
+                    },
                     "persistent_session": {
                         "type": "boolean",
                         "description": "Whether this cron reuses one agent session across "
@@ -234,6 +240,15 @@ def _list_tools() -> list[dict[str, Any]]:
                         "when that is omitted. Agent crons only; hide_in_chat still wins. "
                         "Use it only for infrequent jobs: every run keeps a tab, so the "
                         "schedule must leave at least 24 hours between runs or it is refused.",
+                    },
+                    "on_tab_close": {
+                        "type": "string",
+                        "enum": ["resume", "fresh"],
+                        "description": "What the job's chat tab shows when a run reopens it "
+                        "after the user closed it: 'resume' (default) brings its history back; "
+                        "'fresh' reopens the tab empty, and messages it hid stay hidden. The "
+                        "agent's memory of earlier runs is unchanged. Applies to the job's own "
+                        "tab (a persistent job).",
                     },
                     "minimal_context": {
                         "type": "boolean",
@@ -347,6 +362,13 @@ def _list_tools() -> list[dict[str, Any]]:
                         "or id. A missing name is created. Empty string moves the job out "
                         "of its folder (ungrouped).",
                     },
+                    "chat_folder_id": {
+                        "type": "string",
+                        "description": "Files this job's chat in the sidebar chat folder "
+                        "with this id (from chat_folder_tree); its existing chat moves too. "
+                        "Persistent agent jobs only. Not `folder`, the Schedule-page group. "
+                        "Empty string: not filed.",
+                    },
                     "thread_ts": {
                         "type": "string",
                         "description": "New thread timestamp to reply in.",
@@ -392,6 +414,15 @@ def _list_tools() -> list[dict[str, Any]]:
                         "when that is omitted; persistent_session true turns it off. "
                         "Use it only for infrequent jobs: every run keeps a tab, so the "
                         "schedule must leave at least 24 hours between runs or it is refused.",
+                    },
+                    "on_tab_close": {
+                        "type": "string",
+                        "enum": ["resume", "fresh"],
+                        "description": "What the job's chat tab shows when a run reopens it "
+                        "after the user closed it: 'resume' (default) brings its history back; "
+                        "'fresh' reopens the tab empty, and messages it hid stay hidden. The "
+                        "agent's memory of earlier runs is unchanged. Applies to the job's own "
+                        "tab (a persistent job).",
                     },
                     "minimal_context": {
                         "type": "boolean",

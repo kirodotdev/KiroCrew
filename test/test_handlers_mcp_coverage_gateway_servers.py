@@ -1090,18 +1090,19 @@ class TestGatewaySetStub:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stub", [True, False])
     async def test_apply_result_is_merged_into_the_response(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, stub: bool
     ) -> None:
         monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
-        apply_cb = AsyncMock(return_value={"applied": True, "sessions_relinked": 2})
+        apply_cb = AsyncMock(return_value={"applied": True, "sessions_reset": 2})
         state = SimpleNamespace(_mcp_gateway_apply_stub=apply_cb)
         resp = await mcp_mod.api_mcp_gateway_set_stub(
-            _request({"name": "ok-mcp", "stub": True}, state=state)
+            _request({"name": "ok-mcp", "stub": stub}, state=state)
         )
         assert resp.status == 200
-        assert _payload(resp)["sessions_relinked"] == 2
-        apply_cb.assert_awaited_once_with()
+        assert _payload(resp)["sessions_reset"] == 2
+        apply_cb.assert_awaited_once_with(launch_approved=stub)
 
     @pytest.mark.asyncio
     async def test_apply_failure_is_500_and_audited(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1255,6 +1256,26 @@ class TestSyncFileLock:
             assert mcp_mod._MCP_LOCK_PATH.exists()
         with mcp_mod._get_mcp_lock_sync():
             pass
+
+    @pytest.mark.asyncio
+    async def test_async_lock_opens_its_file_off_the_event_loop(
+        self, sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The lock file is opened in a worker thread, so a slow mount cannot stall the loop."""
+        loop_thread = threading.get_ident()
+        opened_on: list[int] = []
+        real_open = open
+
+        def recording_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+            if Path(path) == mcp_mod._MCP_LOCK_PATH:
+                opened_on.append(threading.get_ident())
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(mcp_mod, "open", recording_open, raising=False)
+        async with mcp_mod._get_mcp_lock():
+            pass
+        assert len(opened_on) == 1
+        assert opened_on[0] != loop_thread
 
 
 # ── the set-stub eligibility rule ───────────────────────────────────────

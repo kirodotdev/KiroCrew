@@ -5,7 +5,8 @@ changes it would hand the change to the next test; the rootdir conftest puts it 
 Covers the dynamic ``JIRA_TOKEN_<HEX>`` credential keys, the inherited shell preloads
 ``name_grant`` refuses, the logging record factory, logger levels, the CLI log queue
 listener, the environment CLI startup mutates, the hooks dispatcher globals and the
-globals a gateway wires once at boot (relay ingress, the dashboard state's hooks). The
+globals a gateway wires once at boot (relay ingress, the dashboard state's hooks), and
+the skills loaders a test opened. The
 other floor guards are in ``test_host_isolation_floor.py`` and the worker budget in
 ``test_host_isolation_floor_worker_budget.py``; the conftest loader comes from
 ``host_isolation_floor_helpers.py``.
@@ -17,6 +18,7 @@ import io
 import logging
 import os
 import queue
+import random
 import sys
 from logging.handlers import QueueListener
 
@@ -31,10 +33,16 @@ from kiro_crew.log_redaction import install_log_redaction
 # ── driving the floor's own between-test restores ─────────────────────────
 
 
-def _autouse_floor_generator(name: str):
-    """The plain generator function behind one of the rootdir conftest's autouse fixtures.
+def _autouse_marker(definition):
+    return getattr(definition, "_fixture_function_marker", None) or getattr(
+        definition, "_pytestfixturefunction", None
+    )
 
-    The floor tests below drive one setup -> teardown cycle of the REAL fixture code,
+
+def _autouse_floor_generator(name: str):
+    """The plain generator function behind one of the rootdir conftest's per-test floors.
+
+    The floor tests below drive one setup -> teardown cycle of the REAL floor code,
     which is what lets a SINGLE test observe the restore the floor performs between
     tests. An injector/observer pair cannot do that reliably: pytest-split partitions
     the collected suite into shard groups BEFORE xdist runs, so it can place the two
@@ -42,18 +50,34 @@ def _autouse_floor_generator(name: str):
     observer whose meaning depends on which test ran before it is unprovable in a
     sharded run.
 
-    Asserts the attribute still IS an autouse fixture on the way through: the floor's
-    guarantee is that it fires around every test, and a fixture demoted to a plain
-    helper (or one whose ``autouse`` was dropped) would still pass a direct drive.
+    Asserts the floor is still ARMED on the way through: its guarantee is that it
+    fires around every test, and one demoted to a plain helper would still pass a
+    direct drive. Armed means one of two things. It is an autouse fixture of the
+    rootdir conftest; or it is a ``@floor_guard`` the conftest binds, placed in a
+    sealed segment whose fixture is a function-scoped autouse fixture of the conftest.
     """
     definition = getattr(_root, name)
-    marker = getattr(definition, "_fixture_function_marker", None) or getattr(
-        definition, "_pytestfixturefunction", None
-    )
+    marker = _autouse_marker(definition)
+    if marker is not None:
+        assert marker.autouse, f"conftest.{name} is not an autouse fixture, so its floor is unarmed"
+        return getattr(definition, "__wrapped__", definition)
+    floors = _root.FLOORS
+    # A copy of the conftest loaded by path defines its own function objects, so the
+    # floor is matched by its compiled code, which is equal across copies of one source.
+    registered = floors.registry.get(name)
     assert (
-        marker is not None and marker.autouse
-    ), f"conftest.{name} is not an autouse fixture, so the floor it implements is unarmed"
-    return getattr(definition, "__wrapped__", definition)
+        registered is not None and registered.__code__ == definition.__code__
+    ), f"conftest.{name} is not a registered floor"
+    segment = next(
+        (i for i, guards in enumerate(floors.sealed_segments()) if registered in guards), None
+    )
+    assert segment is not None, f"conftest.{name} is in no segment, so nothing runs it"
+    runner = getattr(_root, _root.FLOOR_SEGMENT_FIXTURES[segment])
+    runner_marker = _autouse_marker(runner)
+    assert (
+        runner_marker is not None and runner_marker.autouse and runner_marker.scope == "function"
+    ), f"the fixture that runs conftest.{name} is not autouse around every test"
+    return definition
 
 
 def _listener_thread_alive(listener: QueueListener) -> bool:
@@ -81,6 +105,43 @@ class TestDynamicCredentialEnvironmentIsRestored:
     def test_this_test_starts_without_the_dynamic_token(self) -> None:
         """Which is only true if no earlier test on this worker leaked one."""
         assert "JIRA_TOKEN_AABBCC" not in os.environ
+
+    @pytest.mark.parametrize("seed", range(20))
+    def test_any_mix_of_credential_changes_ends_where_the_test_began(self, seed: int) -> None:
+        """Generated credentials, generated changes: set, replaced, removed and added.
+
+        Every credential the cycle inherited is back with its inherited value, every
+        credential it did not inherit is gone, and a variable that is not a credential
+        keeps whatever the test left in it.
+        """
+        from kiro_crew.config.loader import CREDENTIAL_KEYS
+
+        rng = random.Random(seed)
+        pool = [*CREDENTIAL_KEYS, "JIRA_TOKEN_0A1B", "JIRA_TOKEN_ffee", "JIRA_TOKEN_9"]
+        bystander = "KIROCREW_FLOOR_PROBE_NOT_A_CREDENTIAL"
+        with pytest.MonkeyPatch.context() as mp:
+            for key in pool:
+                mp.delenv(key, raising=False)
+            mp.delenv(bystander, raising=False)
+            for key in rng.sample(pool, rng.randrange(0, len(pool))):
+                mp.setenv(key, f"inherited-{key}")
+            inherited = {key: os.environ[key] for key in pool if key in os.environ}
+
+            cycle = _autouse_floor_generator("_no_credential_env_residue")()
+            next(cycle)
+            # Through ``mp``, which is undone only after the cycle below has ended, so
+            # the floor's teardown sees each of these as left behind by the test.
+            for key in rng.sample(pool, rng.randrange(0, len(pool))):
+                if rng.random() < 0.5:
+                    mp.setenv(key, f"left-by-the-test-{key}")
+                else:
+                    mp.delenv(key, raising=False)
+            mp.setenv(bystander, "left-by-the-test")
+            with pytest.raises(StopIteration):
+                next(cycle)
+
+            assert {key: os.environ[key] for key in pool if key in os.environ} == inherited
+            assert os.environ[bystander] == "left-by-the-test"
 
     def test_an_injected_dynamic_token_is_removed_by_the_floors_own_teardown(self) -> None:
         """One full cycle of the real fixture: snapshot while absent, inject, restore.
@@ -665,3 +726,54 @@ class TestBootWiredGlobalsGoBack:
         with pytest.raises(StopIteration):
             next(cycle)
         assert provider._gateway_ingress is None
+
+
+# ── the skills loaders a test opens are closed at its teardown ────────────
+
+
+def _skills_loader(tmp_path, name: str):
+    from kiro_crew.skills import SkillsLoader
+
+    return SkillsLoader(skills_path=tmp_path / name, install_builtins=False)
+
+
+class TestSkillsLoadersATestOpensAreClosed:
+    """``conftest._close_skills_loaders_the_test_opened``, driven for one real cycle.
+
+    Every loader holds an open SQLite connection (three descriptors). Left to the cyclic
+    collector they pile up per xdist worker until a host with ``ulimit -n 256`` (the
+    macOS default) fails every later test with ``EMFILE``.
+    """
+
+    def test_a_loader_built_during_the_test_is_closed_with_its_index(self, tmp_path) -> None:
+        cycle = _autouse_floor_generator("_close_skills_loaders_the_test_opened")(None, None)
+        next(cycle)
+        loader = _skills_loader(tmp_path, "skills")
+        index = loader._search_index
+        assert not loader._closed
+
+        with pytest.raises(StopIteration):
+            next(cycle)
+        assert loader._closed
+        assert index is None or index._conn is None
+
+    def test_a_loader_alive_before_the_test_stays_open(self, tmp_path, opened) -> None:
+        shared = opened(_skills_loader(tmp_path, "shared"))
+        cycle = _autouse_floor_generator("_close_skills_loaders_the_test_opened")(None, None)
+        next(cycle)
+
+        with pytest.raises(StopIteration):
+            next(cycle)
+        assert not shared._closed
+
+    def test_the_index_of_a_loader_dropped_before_teardown_is_closed(self, tmp_path) -> None:
+        cycle = _autouse_floor_generator("_close_skills_loaders_the_test_opened")(None, None)
+        next(cycle)
+        loader = _skills_loader(tmp_path, "skills")
+        index = loader._search_index
+        assert index is not None and index._db() is not None
+        del loader
+
+        with pytest.raises(StopIteration):
+            next(cycle)
+        assert index._conn is None

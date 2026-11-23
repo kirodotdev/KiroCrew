@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { readAfterRenewal } from '../api/readAfterRenewal'
+import { useViewerIsNotOwner } from '../hooks/sharedCrew/useSharedCrew'
 import { canRenderMobileConnectKind } from './mobileConnectRenderers'
 
 // The dialog is lazy; the renderer registry it consults is NOT (imported at the
@@ -29,7 +31,9 @@ export function useMobileConnect(locationKey: string) {
   useEffect(() => { setMobileConnectOpen(false) }, [locationKey])
   const mobileConnectQuery = useQuery({
     queryKey: ['mobile-connect-methods'],
-    queryFn: api.mobileConnectMethods,
+    // No retry, so a read refused at a lapsed sign-in would hide the row until
+    // the window next gets focus: it is read once more after the renewal.
+    queryFn: () => readAfterRenewal(() => api.mobileConnectMethods()),
     staleTime: 5 * 60_000,
     retry: false,
   })
@@ -37,7 +41,11 @@ export function useMobileConnect(locationKey: string) {
   // registered renderer (`components/mobileConnectRenderers.tsx`). A kind
   // nothing can draw would otherwise show the rail row and then open an empty
   // dialog, so the predicate, not a literal list, is what gates the row.
-  const mobileConnectKinds = (mobileConnectQuery.data?.methods ?? [])
+  // Pairing a phone mints a sign-in for this machine, which only its owner may
+  // hand out, so a teammate gets no row and no dialog. Until the owner check
+  // answers the methods decide, so the owner's row never waits on it.
+  const { notOwner } = useViewerIsNotOwner()
+  const mobileConnectKinds = notOwner ? [] : (mobileConnectQuery.data?.methods ?? [])
     .map(m => m.kind)
     .filter(canRenderMobileConnectKind)
   const hasRenderableMobileConnect = mobileConnectKinds.length > 0

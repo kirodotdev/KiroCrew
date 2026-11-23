@@ -235,6 +235,33 @@ class TestHandleApp:
         captured = capsys.readouterr()
         assert "Usage" in captured.err
 
+    def test_printed_next_steps_keep_a_path_with_a_space_as_one_argument(self, tmp_path, capsys):
+        # A profile folder such as "First Last" puts a space in the path, and an
+        # unquoted hint splits into two arguments when it is pasted.
+        import argparse
+
+        from plugin_import_helpers import _package, _skill
+
+        from kiro_crew.cli_commands import _handle_app, _handle_app_import, _shell_quoted
+
+        work = tmp_path / "First Last" / "work"
+        _handle_app(
+            argparse.Namespace(
+                app_action="init", name="my-app", dir=str(work), backend=False, ui=True, cron=False
+            )
+        )
+        app_dir = work.resolve() / "my-app"
+        root = _package(tmp_path)
+        _skill(root / "skills", "greet")
+        out = tmp_path / "First Last" / "demo-app"
+        _handle_app_import(argparse.Namespace(source=str(root), name=None, out=str(out)))
+
+        lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+        assert _shell_quoted(str(app_dir)) != str(app_dir)
+        assert f"cd {_shell_quoted(f'{app_dir}/ui')}" in lines
+        assert f"kirocrew app install {_shell_quoted(str(app_dir))}" in lines
+        assert f"Run: kirocrew app install {_shell_quoted(str(out))}" in lines
+
 
 class TestFileOnlyInstallRegistration:
     """A file-only `app install` registers nothing, under the gateway's install rule.
@@ -351,6 +378,28 @@ class TestEnableWarnsHooksNeedRestart:
         out = capsys.readouterr().out
         assert "backend hooks" not in out
         assert "restart" not in out
+
+    def test_file_only_enable_of_an_exec_backend_on_windows_says_it_will_not_start(
+        self, tmp_path, app_env, monkeypatch, capsys
+    ):
+        """Native Windows refuses an exec backend, so no restart starts it."""
+        src = _make_app_source(tmp_path)
+        manifest_path = src / APP_MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text())
+        manifest["backend"] = {"type": "exec", "entryPoint": "run.sh"}
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        (src / "run.sh").write_text("#!/bin/sh\necho hi\n")
+        assert install_app(src).ok
+        monkeypatch.setattr("kiro_crew.platform_compat.IS_POSIX", False)
+
+        from kiro_crew.cli_commands import _print_file_only_app_result
+
+        _print_file_only_app_result("cli-test-app", enabled=True)
+
+        out = capsys.readouterr().out
+        assert "declares an exec (shell launcher) backend" in out
+        assert "not supported on native Windows" in out
+        assert "restart the gateway" not in out
 
     def test_notice_helper_tolerates_a_malformed_backend_block(self, tmp_path, app_env):
         """A hand-edited app.json must not turn the notice into a crash.

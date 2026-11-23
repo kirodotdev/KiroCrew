@@ -817,6 +817,13 @@ class TestPrReadiness:
         # silently dropping the trigger.
         approval = yaml.safe_load(_workflow("sensitive-change-review-approval.yml"))
         required.add(approval["name"])
+        # The one lane deliberately not subscribed: Sensitive Change Review
+        # runs on `pull_request_target`, whose events readiness already hears,
+        # and the re-run a comment or review requests is made with
+        # GITHUB_TOKEN, which starts no `workflow_run` (see pr-readiness.yml).
+        sensitive = yaml.safe_load(_workflow("sensitive-change-review.yml"))
+        assert "pull_request_target" in (sensitive.get("on") or sensitive[True])
+        required.discard(sensitive["name"])
 
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         readiness_on = readiness.get("on") or readiness[True]

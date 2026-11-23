@@ -83,6 +83,9 @@ class _Pending:
     verdict: RunVerdict
     cancelled_at: float
     forced: bool = False
+    # A superseded first attempt cancelled only to free its group: no re-run
+    # follows, so its wait runs to the tick's deadline rather than the reserve.
+    cancel_only: bool = False
 
 
 @dataclass
@@ -199,11 +202,26 @@ def heal_runs(
         ):
             outcomes[verdict.run_id] = OUTCOME_LOOKUP_FAILED
             continue
-        if tick.remaining() < RERUN_RESERVE_SECONDS:
+        short_of_reserve = tick.remaining() < RERUN_RESERVE_SECONDS
+        cancel_only = False
+        if short_of_reserve:
             # A cancel is only worth posting if its re-run can still be started
             # and verified inside this tick; otherwise it would discard the
             # run's finished jobs and leave it cancelled until the next tick's
             # recovery pass. Untouched, the run loses nothing by waiting.
+            #
+            # A superseded first attempt is the exception: no re-run follows its
+            # cancel (``_rerun`` declines a superseded run), so the reserve buys
+            # it nothing, and left untouched it keeps its concurrency group's
+            # running slot while every later push is evicted behind it. A later
+            # attempt reached here only because it is current, and a lookup that
+            # cannot answer leaves the reserve rule standing.
+            if verdict.run_attempt == 1:
+                try:
+                    cancel_only = not runner_watchdog.is_current_run(api, policy.repo, verdict)
+                except LookupInconclusive:
+                    cancel_only = False
+        if short_of_reserve and not cancel_only:
             log(
                 f"{_label(verdict)}: only {int(tick.remaining())} s of this tick's budget remain, not "
                 f"enough to cancel and then verify a re-run; left untouched for the next tick"
@@ -226,6 +244,15 @@ def heal_runs(
             outcomes[verdict.run_id] = OUTCOME_HUMAN_REQUIRED
             continue
         verdict.revision_heal_safe = True
+        if cancel_only and tick.remaining() <= 0:
+            # Past the tick's own deadline the job ceiling is close; the next
+            # tick re-reads the run and judges it afresh.
+            log(
+                f"{_label(verdict)}: superseded, but this tick's budget is spent "
+                f"({int(tick.remaining())} s); left untouched for the next tick"
+            )
+            outcomes[verdict.run_id] = OUTCOME_NOT_ATTEMPTED
+            continue
         if policy.dry_run:
             log(f"[dry-run] would cancel and re-run {_label(verdict)}")
             outcomes[verdict.run_id] = OUTCOME_DRY_RUN
@@ -250,7 +277,22 @@ def heal_runs(
             )
         else:
             log(f"cancel accepted for {_label(verdict)}")
-        pending.append(_Pending(verdict=verdict, cancelled_at=tick.clock()))
+        forced = False
+        if cancel_only:
+            # Nobody wants this run's result, so its `always()` steps are not
+            # worth waiting for: force-cancel at once, and own the run until it
+            # completes, since only completion frees the group.
+            try:
+                api.post(f"{run_path}/force-cancel")
+                log(f"force-cancel sent for {_label(verdict)}")
+            except ApiError as exc:
+                log(f"force-cancel refused for {_label(verdict)}: {exc}")
+            forced = True
+        pending.append(
+            _Pending(
+                verdict=verdict, cancelled_at=tick.clock(), forced=forced, cancel_only=cancel_only
+            )
+        )
 
     # The cancel wait stops early enough that every re-run it leads to can still
     # be verified inside the tick: the heal budget, or the reserve, whichever
@@ -259,6 +301,13 @@ def heal_runs(
         tick.clock() + policy.heal_budget.total_seconds(),
         tick.deadline - RERUN_RESERVE_SECONDS,
     )
+    # A cancel-only run has no re-run to leave room for, so it is waited on up
+    # to the tick's own deadline.
+    cancel_only_deadline = min(tick.clock() + policy.heal_budget.total_seconds(), tick.deadline)
+
+    def _deadline_of(item: _Pending) -> float:
+        return cancel_only_deadline if item.cancel_only else deadline
+
     while pending:
         still_pending: list[_Pending] = []
         for item in pending:
@@ -282,6 +331,13 @@ def heal_runs(
                         f"cancel landed; leaving its verdict alone"
                     )
                     outcomes[item.verdict.run_id] = OUTCOME_COMPLETED_ON_ITS_OWN
+                    continue
+                if item.cancel_only and attempt == item.verdict.run_attempt:
+                    log(
+                        f"{_label(item.verdict)} is superseded and its cancel has landed, so its "
+                        f"concurrency group is free; no re-run follows"
+                    )
+                    outcomes[item.verdict.run_id] = OUTCOME_SUPERSEDED
                     continue
                 if attempt != item.verdict.run_attempt:
                     log(
@@ -312,17 +368,29 @@ def heal_runs(
         pending = still_pending
         if not pending:
             break
-        remaining = deadline - tick.clock()
-        if remaining <= 0:
-            for item in pending:
-                outcomes[item.verdict.run_id] = OUTCOME_CANCEL_TIMED_OUT
+        still_waiting: list[_Pending] = []
+        for item in pending:
+            if _deadline_of(item) - tick.clock() > 0:
+                still_waiting.append(item)
+                continue
+            outcomes[item.verdict.run_id] = OUTCOME_CANCEL_TIMED_OUT
+            if item.cancel_only:
                 log(
-                    f"::error::{_label(item.verdict)} was cancelled but did not complete within "
-                    f"this tick's wait budget; it has NOT been re-run. The next tick's recovery pass "
-                    f"re-runs it if it is still the newest run of its branch; otherwise run "
-                    f"`gh run rerun {item.verdict.run_id}` by hand."
+                    f"::error::{_label(item.verdict)} is superseded and was force-cancelled, but "
+                    f"it did not complete within this tick; it still holds its concurrency group. "
+                    f"Run `gh run cancel {item.verdict.run_id} --force` by hand."
                 )
+                continue
+            log(
+                f"::error::{_label(item.verdict)} was cancelled but did not complete within "
+                f"this tick's wait budget; it has NOT been re-run. The next tick's recovery pass "
+                f"re-runs it if it is still the newest run of its branch; otherwise run "
+                f"`gh run rerun {item.verdict.run_id}` by hand."
+            )
+        pending = still_waiting
+        if not pending:
             break
+        remaining = min(_deadline_of(item) for item in pending) - tick.clock()
         tick.sleep(min(10.0, max(1.0, remaining)))
     return outcomes
 

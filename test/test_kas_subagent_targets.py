@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
@@ -164,6 +165,86 @@ async def test_a_target_whose_limits_only_the_gate_applies_is_not_registered(age
 
     assert _ids(extras) == ["delegator"]
     assert "guarded (Kiro Crew applies its shell" in extras.withheld_credentials_notice
+
+
+_REFUSED_DENY = {"capability": "subagent", "match": ["guarded"], "effect": "deny"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_permissions_block", [False, True], ids=["cli-only", "aim-both"])
+async def test_a_refused_target_is_denied_to_the_sub_agent_tool(agents_dir, with_permissions_block):
+    # AIM writes the kiro-cli keys AND a KAS permissions block, and the engine's
+    # own loader runs such a file by name without the target's preToolUse hook.
+    # Unregistered must also mean the sub-agent tool cannot reach it.
+    _write(agents_dir, _delegator("guarded", "slack-agent"))
+    _write(agents_dir, _SLACK)
+    guarded = {
+        **_SLACK,
+        "name": "guarded",
+        "hooks": {"preToolUse": [{"matcher": "*", "command": "exit 2"}]},
+    }
+    if with_permissions_block:
+        guarded["permissions"] = {"rules": [{"capability": "shell", "effect": "deny"}]}
+    _write(agents_dir, guarded)
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", "slack-agent"]
+    parent = extras.custom_agents[0]
+    assert _REFUSED_DENY in parent["permissions"]["rules"]
+    # The registered target stays reachable and is denied nowhere.
+    assert not any(
+        "slack-agent" in (r.get("match") or [])
+        for r in parent["permissions"]["rules"]
+        if r.get("capability") == "subagent" and r.get("effect") == "deny"
+    )
+    assert "start it with spawn_run" in extras.withheld_credentials_notice
+
+
+def test_a_refused_target_deny_is_recorded_in_the_security_event_log(monkeypatch):
+    import types
+
+    import kiro_crew.acp.kas_subagent_targets as targets_mod
+
+    events: list[dict] = []
+    monkeypatch.setattr(
+        targets_mod,
+        "sel",
+        lambda: types.SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+    )
+
+    targets_mod.deny_refused_targets([{"id": "delegator"}], "delegator", ["guarded"])
+
+    [event] = [e for e in events if e["operation"] == "kas_subagent_target_denied"]
+    assert event["source"] == "kas_agent_projection"
+    assert event["resources"] == "sub-agent tool denied guarded for agent delegator"
+
+
+@pytest.mark.asyncio
+async def test_a_name_with_no_spec_adds_no_deny(agents_dir):
+    _write(agents_dir, _delegator("ghost", "slack-*"))
+
+    extras = await _extras()
+
+    rules = extras.custom_agents[0]["permissions"]["rules"]
+    assert not any(r.get("capability") == "subagent" and r.get("match") != ["*"] for r in rules)
+
+
+@pytest.mark.asyncio
+async def test_the_targets_past_the_cap_are_named(agents_dir, monkeypatch):
+    import kiro_crew.acp.kas_subagent_targets as targets_mod
+
+    monkeypatch.setattr(targets_mod, "MAX_SUBAGENT_TARGETS", 1)
+    _write(agents_dir, _delegator("slack-*"))
+    for name in ("slack-agent", "slack-bot"):
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", "slack-agent"]
+    assert "1 more agents its patterns match (slack-bot) (patterns add at most 1" in (
+        extras.withheld_credentials_notice
+    )
 
 
 @pytest.mark.asyncio
@@ -340,6 +421,74 @@ async def test_registration_stops_at_the_cap_and_counts_the_rest(agents_dir):
 
     assert _ids(extras) == ["delegator", *names[:MAX_SUBAGENT_TARGETS]]
     assert "2 more agents" in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_every_agent_the_list_names_outright_is_registered_past_the_cap(agents_dir):
+    from kiro_crew.acp.kas_subagent_targets import MAX_SUBAGENT_TARGETS
+
+    names = [f"helper-{i:02d}" for i in range(MAX_SUBAGENT_TARGETS + 3)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names]
+    assert "more agents" not in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_name_after_a_pattern_that_matched_it_is_tried_past_the_cap(agents_dir):
+    from kiro_crew.acp.kas_subagent_targets import MAX_SUBAGENT_TARGETS
+
+    names = [f"helper-{i:02d}" for i in range(MAX_SUBAGENT_TARGETS + 2)]
+    _write(agents_dir, _delegator("helper-*", names[-1]))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names[:MAX_SUBAGENT_TARGETS], names[-1]]
+    assert "1 more agents its patterns match" in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_named_targets_stop_where_the_backend_batch_is_full(agents_dir):
+    from kiro_crew.acp.kas_agents import KAS_MAX_CUSTOM_AGENTS
+
+    # Fewer entries than one rule carries, more than the backend's batch holds.
+    names = [f"helper-{i:02d}" for i in range(KAS_MAX_CUSTOM_AGENTS + 5)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator", *names[: KAS_MAX_CUSTOM_AGENTS - 1]]
+    left_out = names[KAS_MAX_CUSTOM_AGENTS - 1 :]
+    assert (
+        f"{len(left_out)} more agents ({', '.join(left_out)}) (a chat registers at most "
+        f"{KAS_MAX_CUSTOM_AGENTS}"
+    ) in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
+async def test_a_session_whose_rule_spawns_nothing_registers_no_target(agents_dir):
+    # More distinct entries than one rule carries: the parent's entry denies
+    # every spawn, so a registered target could never be reached.
+    names = [f"helper-{i:02d}" for i in range(65)]
+    _write(agents_dir, _delegator(*names))
+    for name in names:
+        _write(agents_dir, {**_SLACK, "name": name})
+
+    extras = await _extras()
+
+    assert {"capability": "subagent", "effect": "deny"} in (
+        extras.custom_agents[0]["permissions"]["rules"]
+    )
+    assert _ids(extras) == ["delegator"]
+    assert "cannot hand work to" not in extras.withheld_credentials_notice
 
 
 @pytest.fixture
@@ -921,7 +1070,6 @@ async def test_a_switch_back_to_the_delegator_keeps_its_targets_in_the_stale_che
     """KAS keeps the whole batch across a mode switch, so once the session is back
     on the delegator its stale check still counts what its registered target
     auto-approves."""
-    from kiro_crew.acp.session_handle import AcpSessionHandle
     from kiro_crew.acp.types import UPDATE_CURRENT_MODE
     from kiro_crew.agent_sdk import spec_hooks
 
@@ -930,7 +1078,7 @@ async def test_a_switch_back_to_the_delegator_keeps_its_targets_in_the_stale_che
     _write(agents_dir, _FETCHER)
     extras = await _extras()
     assert _ids(extras) == ["delegator", "fetcher"]
-    handle = object.__new__(AcpSessionHandle)
+    handle = bare_session_handle(runtime=None)
     KasHarness().record_session_projection(handle, extras.custom_agents, "delegator")
     handle._last_kas_mode_id = "delegator"
     handle._handle_kas_update(UPDATE_CURRENT_MODE, {"currentModeId": "fetcher"})
@@ -1154,3 +1302,61 @@ async def test_a_list_under_the_use_subagent_key_registers_its_target(agents_dir
 
     assert _ids(extras) == ["delegator", "slack-agent"]
     assert "slack-agent" not in extras.withheld_credentials_notice
+
+
+def _held_read_limit(agents_dir: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew import execution_context
+
+    ledger = agents_dir.parent / "mates" / "migrated.json"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(paths_mod, "kiro_home", lambda: agents_dir.parent)
+    rules = [{"text": "deny reading", "capability": "fs_read"}]
+    ledger.write_text(json.dumps({"held_rules": {"zxc": {"member_id": "m1", "rules": rules}}}))
+    monkeypatch.setattr(
+        execution_context, "read_session_execution", lambda key: SimpleNamespace(member_id="m1")
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_bots_session_whose_spec_cannot_be_narrowed_is_refused(agents_dir, monkeypatch):
+    """Refused with a reason, never started with the pre-approvals its held limits cover."""
+    from kiro_crew.acp.session_handle import AcpAgentUnavailable
+    from kiro_crew.agent_sdk import kas_tool_view
+
+    _held_read_limit(agents_dir, monkeypatch)
+    _write(agents_dir, _delegator("slack-agent"))
+    _write(agents_dir, _SLACK)
+
+    def _boom(_block):
+        raise RuntimeError("narrowing failed")
+
+    monkeypatch.setattr(kas_tool_view, "permissions_block_readable", _boom)
+    with pytest.raises(AcpAgentUnavailable, match="held limits"):
+        await KasHarness().session_extras("delegator", work_dir=None, session_key="k")
+
+
+@pytest.mark.asyncio
+async def test_a_target_whose_spec_cannot_be_narrowed_is_left_out_and_the_rest_register(
+    agents_dir, monkeypatch
+):
+    from kiro_crew import mate_held_rules
+
+    _held_read_limit(agents_dir, monkeypatch)
+    other = {**_SLACK, "name": "notes-agent"}
+    _write(agents_dir, _delegator("slack-agent", "notes-agent"))
+    _write(agents_dir, _SLACK)
+    _write(agents_dir, other)
+    real = mate_held_rules.held_child_spec
+
+    def _child(spec, session_key):
+        if spec.get("name") == "slack-agent":
+            raise mate_held_rules.HeldLimitsNotApplied("could not be applied")
+        return real(spec, session_key)
+
+    monkeypatch.setattr(mate_held_rules, "held_child_spec", _child)
+    extras = await KasHarness().session_extras("delegator", work_dir=None, session_key="k")
+
+    assert _ids(extras) == ["delegator", "notes-agent"]
+    assert "slack-agent (its agent file could not be used)" in extras.withheld_credentials_notice

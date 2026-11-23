@@ -481,7 +481,7 @@ async def test_a_quick_ask_posted_as_the_deny_lands_is_refused(monkeypatch, ceil
     async def _no_stream(*_a: Any, **_k: Any) -> None:
         return None
 
-    async def _ask_put_on_the_card(hub: Any, key: str, args: Any) -> dict[str, Any]:
+    async def _ask_put_on_the_card(hub: Any, key: str, args: Any, **_kw: Any) -> dict[str, Any]:
         ceiling(_DENY_DOC)
         return {"ok": True, "ask_id": "a1"}
 
@@ -578,11 +578,13 @@ GATED_POSTS = (
     "/api/browser/input/claim",
     "/api/browser/input/event",
     "/api/browser/ask/answer",
+    "/api/browser/media",
 )
 GATED_GETS = (
     "/api/browser/live/chat-1/recordings",
     "/api/browser/live/chat-1/recordings/t1",
     "/api/browser/live/chat-1/recordings/t1/frames/0.jpg",
+    "/api/browser/media",
 )
 #: Each only ends something, so a deny must not trap the person in it.
 UNGATED_POSTS = ("/api/browser/input/release", "/api/browser/live/close")

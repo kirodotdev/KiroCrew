@@ -11,7 +11,7 @@ import { LIQUID_GLASS_STORAGE_KEY } from '../utils/liquidGlass'
 import { useLiquidGlass } from '../hooks/useLiquidGlass'
 import { LOOK_PREVIEW_SLOT_KEY, lookPreviewSlotDetail, lookPreviewSlots } from '../utils/lookPreviewFixtures'
 import { api } from '../api/client'
-import { LOOK_PREVIEW_SCROLL_BACK_PX, followParentLiquidGlass, installLookPreviewNetworkFence, installLookPreviewStorageFence, scrollDemoTranscriptUnderDock } from '../utils/lookPreviewBoot'
+import { LOOK_PREVIEW_SCROLL_BACK_PX, followParentLiquidGlass, installLookPreviewFocusFence, installLookPreviewNetworkFence, installLookPreviewStorageFence, scrollDemoTranscriptUnderDock } from '../utils/lookPreviewBoot'
 
 function withSearch(search: string) {
   const spy = vi.spyOn(window, 'location', 'get')
@@ -221,6 +221,28 @@ describe('lookPreview fences', () => {
     const win = { fetch: realFetch } as unknown as Window
     expect(installLookPreviewNetworkFence(win)).toBe(false)
     expect((win as unknown as { fetch: unknown }).fetch).toBe(realFetch)
+  })
+})
+
+describe('lookPreview focus fence', () => {
+  it("inside the frame, the frame's own focus() calls do nothing; outside, nothing changes", () => {
+    const focus = vi.fn()
+    class FakeElement { focus() { focus() } }
+    const winFocus = vi.fn()
+    const win = { HTMLElement: FakeElement, focus: winFocus } as unknown as Window
+    expect(installLookPreviewFocusFence(win)).toBe(false)
+    new FakeElement().focus()
+    expect(focus).toHaveBeenCalledTimes(1)
+    const restore = withSearch(`?${LOOK_PREVIEW_PARAM}=1`)
+    try {
+      expect(installLookPreviewFocusFence(win)).toBe(true)
+      new FakeElement().focus()
+      win.focus()
+      expect(focus).toHaveBeenCalledTimes(1)
+      expect(winFocus).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
   })
 })
 

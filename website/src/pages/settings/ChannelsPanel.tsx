@@ -23,6 +23,10 @@ import { TeamsPanel } from './TeamsPanel'
 import { WeixinPanel } from './WeixinPanel'
 import { IMessagePanel } from './IMessagePanel'
 import { WhatsAppPanel } from './WhatsAppPanel'
+import StatusNotice from '../../components/StatusNotice'
+import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
+import { useViewerIsNotOwner } from '../../hooks/sharedCrew/useSharedCrew'
 
 import { i18nT } from '../../i18n/t'
 /** Minimal status shape every channel config endpoint shares. */
@@ -59,11 +63,14 @@ const CHANNELS: ChannelEntry[] = [
 
 export const CHANNEL_KEYS = CHANNELS.map(c => c.key)
 
-function statusLine(s: ChannelStatus | undefined, isError: boolean): { text: string; color: string; dot: boolean } {
+/** `teammate`: connecting a channel is the machine owner's, so an unconfigured
+ *  one reads "Not set up" rather than a task ("Needs setup") they cannot do. */
+function statusLine(s: ChannelStatus | undefined, isError: boolean, teammate = false): { text: string; color: string; dot: boolean } {
   if (isError) return { text: i18nT('pages.settings.channelsPanel.status_unavailable'), color: 'var(--muted)', dot: false }
   if (!s) return { text: i18nT('pages.settings.channelsPanel.checking'), color: 'var(--muted)', dot: false }
   if (s.connected) return { text: i18nT('pages.settings.channelsPanel.connected'), color: 'var(--ok)', dot: true }
   if (s.configured) return { text: i18nT('pages.settings.channelsPanel.not_connected'), color: 'var(--warn)', dot: true }
+  if (teammate) return { text: i18nT('pages.settings.channelsPanel.not_set_up'), color: 'var(--muted)', dot: false }
   return { text: i18nT('pages.settings.channelsPanel.needs_setup'), color: 'var(--muted)', dot: false }
 }
 
@@ -128,9 +135,12 @@ export function ChannelsPanel({ basePath }: { basePath?: string } = {}) {
   })
   const channelGov = (key: string): ChannelGovState =>
     govState(key, govPolicy, govLoading, govError)
+  // A channel connection holds its token and who may talk to the Crew, which
+  // outlives a teammate's access, so a teammate reads the status but edits nothing.
+  const { notOwner } = useViewerIsNotOwner()
 
   const items = CHANNELS.map((c, i) => {
-    const st = statusLine(statuses[i].data as ChannelStatus | undefined, statuses[i].isError)
+    const st = statusLine(statuses[i].data as ChannelStatus | undefined, statuses[i].isError, notOwner)
     const denied = channelGov(c.key) === 'denied'
     return {
       key: c.key,
@@ -177,6 +187,29 @@ export function ChannelsPanel({ basePath }: { basePath?: string } = {}) {
       {active => {
         const selected = CHANNELS.find(c => c.key === active)
         if (!selected) return null
+        if (notOwner) {
+          // The form stays the owner's; a failed status read is still the
+          // teammate's to see and hand to the agent, as the rail chip promises.
+          const read = statuses[CHANNELS.indexOf(selected)]
+          return (
+            <div key={`${selected.key}-owner-only`} className="space-y-3">
+              {read?.isError && (
+                <ErrorNotice
+                  testId="channel-status-error"
+                  title={i18nT('pages.settings.channelsPanel.status_unavailable')}
+                  message={read.error instanceof Error ? read.error.message : null}
+                  report={reportForError(read.error)}
+                  askAgent
+                />
+              )}
+              <StatusNotice
+                tone="info"
+                testId="channel-owner-only"
+                message={i18nT('pages.settings.channelsPanel.owner_only')}
+              />
+            </div>
+          )
+        }
         // The editable config panel renders ONLY on a confirmed ALLOW; a
         // denied / still-loading / unavailable governance state shows the
         // corresponding notice instead, so a user never edits (or the page

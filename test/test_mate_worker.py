@@ -262,6 +262,31 @@ class TestMateFileForMember:
         spec = mate_worker.resolve_worker_spec(dict(BASE), "pixel")
         assert spec["prompt"] == BASE["prompt"]
 
+    @pytest.mark.parametrize(
+        ("file_model", "warned"),
+        [("example-model-9", 1), ("auto", 0), (None, 0)],
+    )
+    def test_a_model_in_the_bots_own_file_is_logged_once_as_unread(
+        self, monkeypatch, tmp_path, caplog, file_model, warned
+    ):
+        from kiro_crew import crewmate_harness
+
+        self._home(monkeypatch, tmp_path)
+        spec = _mate() if file_model is None else _mate(model=file_model)
+        (paths_mod.mate_agents_dir() / "pixel.json").write_text(json.dumps(spec), encoding="utf-8")
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+        monkeypatch.setattr(crewmate_harness, "_file_model_logged", set(), raising=False)
+        with caplog.at_level("WARNING", logger=crewmate_harness.logger.name):
+            first = mate_worker.resolve_worker_spec(dict(BASE), "pixel")
+            second = mate_worker.resolve_worker_spec(dict(BASE), "pixel")
+        hits = [r for r in caplog.records if "is not read" in r.getMessage()]
+        assert len(hits) == warned
+        if warned:
+            assert hits[0].levelname == "WARNING"
+            assert "'pixel'" in hits[0].getMessage()
+            assert "'example-model-9'" in hits[0].getMessage()
+        assert "model" not in first and first == second
+
     def test_an_approval_revoked_in_approvals_stays_off_though_the_base_grants_it(
         self, monkeypatch, tmp_path
     ):
@@ -331,6 +356,60 @@ class TestMateFileForMember:
         assert fetch not in held and search in held
         other = mate_worker.resolve_worker_spec(dict(base), "")["permissions"]["rules"]
         assert fetch in other
+
+    def test_an_enabled_apps_server_launches_as_the_gateway_registers_it_now(
+        self, monkeypatch, tmp_path
+    ):
+        """The file keeps WHICH app servers it has; an upgrade must not strand their launch line."""
+        self._home(monkeypatch, tmp_path)
+        from kiro_crew import agent
+        from kiro_crew.apps import bridges
+        from kiro_crew.config import paths
+
+        stale = {"command": "/old/slot/bin/python3", "args": ["-m", "srv"], "env": {"A": "old"}}
+        user = {"command": "/home/u/.local/bin/uvx", "args": ["user-mcp"]}
+        mate = _mate(
+            prompt="",
+            allowedTools=[],
+            mcpServers={
+                "acme:srv": {**stale, "disabledTools": ["wipe"]},
+                "acme:off": dict(stale),
+                "mine": dict(user),
+                # The user's ``scope-pkg`` holds the alias an app's ``@scope/pkg`` is
+                # keyed by, so the app's own server is mounted as ``scope-pkg-2``.
+                "scope-pkg": dict(user),
+                "scope-pkg-2": dict(stale),
+            },
+        )
+        (paths.mate_agents_dir() / "pixel.json").write_text(json.dumps(mate), encoding="utf-8")
+        live = {"command": "/new/slot/bin/python3", "args": ["-m", "srv"], "env": {"A": "new"}}
+        monkeypatch.setattr(
+            agent,
+            "_app_owned_mcp_keys",
+            lambda: {"acme:srv": True, "acme:off": False, "scope-pkg": True},
+        )
+        monkeypatch.setattr(
+            bridges,
+            "registered_app_mcp_servers",
+            lambda: {
+                "acme:srv": {**live, "autoApprove": ["wipe", "read"]},
+                "acme:off": dict(live),
+                "mine": {"command": "uvx", "args": ["other"]},
+                "scope-pkg": {"command": "uvx", "args": ["other"]},
+                "scope-pkg-2": dict(live),
+            },
+        )
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+
+        servers = mate_worker.resolve_worker_spec(dict(BASE), "pixel")["mcpServers"]
+
+        # The live entry's approvals stay behind; the file's own tool limit stays.
+        assert servers["acme:srv"] == {**live, "disabledTools": ["wipe"]}
+        assert servers["acme:off"] == stale
+        assert servers["mine"] == user
+        # An alias names a collision family, not one server: both keep the file's line.
+        assert servers["scope-pkg"] == user
+        assert servers["scope-pkg-2"] == stale
 
     def test_an_unreadable_crewmate_file_refuses_the_worker(self, monkeypatch, tmp_path):
         self._home(monkeypatch, tmp_path)

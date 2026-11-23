@@ -253,6 +253,8 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_caller import set_current_tool_call_id  # noqa: F401
     from kiro_crew.mcp_shared_calls import (  # noqa: F401
+        _ANSWER_CODE_CHARS,
+        _ANSWER_CODE_MAX,
         CANCELLED_IDS_MAX,
         DEFERRED_PARKED_MAX,
         DEFERRED_STEP_STUCK_SECS,
@@ -263,6 +265,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         PROGRESS_NOTIFICATION,
         PROGRESS_PHASE_MAX_CHARS,
         ToolCancelled,
+        _answer_code,
         _audit_safe_args,
         _AuditedDeferred,
         _declares_inflight_capability,
@@ -309,6 +312,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _NO_INCLUDE,
         _PACKAGE_DIR,
         _POLICY_DETAIL_MAX_CHARS,
+        _RETIRED_POLICY_CACHE_MAX,
         _STARTUP_RACE_CACHE_TTL,
         _UNRESOLVED_REFUSES_CALL,
         REGISTRY_LOCAL_CONTROL_PLANE_FIELD,
@@ -326,9 +330,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _last_startup_race_time,
         _parse_policy_include,
         _path_is_under,
+        _policy_last_used,
         _policy_session_key,
         _resolve_excluded_tools,
         _resolve_tool_policy,
+        _retired_policy,
+        _retired_policy_by_session,
         external_client_identity_note,
         registry_identity_note,
         serves_managed_tools,

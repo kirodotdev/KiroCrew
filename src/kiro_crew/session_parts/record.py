@@ -189,6 +189,10 @@ class _Session:
     # Consumed one-shot by the next prompt builder to re-inject the skills
     # index so the model can still discover skills post-compaction.
     needs_context_reinjection: bool = False
+    # Set once this record consumed the post-compaction mark. The session map's
+    # copy (``session_map.COMPACTED_FLAG``) stays until a turn lands, so this
+    # keeps the record from reading that copy again on every turn meanwhile.
+    compaction_mark_taken: bool = False
     # The exit-0 stdout of this session's ``agentSpawn`` hooks, kept from the
     # session's first turn so a turn after a compaction can send it again
     # without running the hooks a second time.
@@ -224,6 +228,7 @@ class _Session:
         self.consecutive_failures = 0
         self.prev_turn_cancelled = False
         self.needs_context_reinjection = False
+        self.compaction_mark_taken = False
         # The fresh provider's first turn runs the agentSpawn hooks again.
         self.agent_spawn_context = ()
         # A recycled provider replays history on its first turn, so its first

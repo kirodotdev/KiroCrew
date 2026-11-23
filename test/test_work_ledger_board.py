@@ -14,6 +14,7 @@ differ by a known sign, which back-to-back store writes cannot guarantee.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -58,12 +59,20 @@ def _report(item_id: str, status: str, summary: str = "here is where it is", **k
 
 
 def _slot(*, running: bool = False):
-    return SimpleNamespace(running=running)
+    return SimpleNamespace(key="", linked_session_key="", running=running)
 
 
 def _state(slots: dict | None = None):
     table = dict(slots or {})
-    return SimpleNamespace(_slots=table, get_slot=lambda key: table.get(key), owner_id=OWNER)
+    for key, slot in table.items():
+        slot.key = key
+    return SimpleNamespace(
+        _slots=table,
+        get_slot=lambda key: table.get(key),
+        owner_id=OWNER,
+        subagents=None,
+        workflow_service=None,
+    )
 
 
 def _as_owner(request, caller: str | None = None, app_token: str = ""):
@@ -190,6 +199,38 @@ async def test_events_ride_on_the_row_in_the_store_s_event_shape():
     assert {e["kind"] for e in events} <= wl.EVENT_KINDS
 
 
+@pytest.mark.asyncio
+async def test_every_event_tail_is_read_in_one_executor_hop(monkeypatch):
+    """Each executor hop queues behind the shared pool, so a large board must not
+    take one per item: five items cost the hops one does, each row its own tail."""
+    hops: list[object] = []
+    real = asyncio.to_thread
+
+    async def counting(func, /, *args, **kwargs):
+        hops.append(func)
+        return await real(func, *args, **kwargs)
+
+    async def hops_of_a_read() -> tuple[int, dict]:
+        # Counted on a second read of the same board, so a once-only load on a
+        # first read is never taken for a per-item cost.
+        await _call(_state(), CONDUCTOR)
+        hops.clear()
+        body, _ = await _call(_state(), CONDUCTOR)
+        return len(hops), body
+
+    monkeypatch.setattr(board.asyncio, "to_thread", counting)
+    _item(title="item 0")
+    one_item, _ = await hops_of_a_read()
+    for n in range(1, 5):
+        _item(title=f"item {n}")
+    five_items, body = await hops_of_a_read()
+    assert len(body["items"]) == 5
+    assert five_items == one_item
+    for row in body["items"]:
+        tail = board._tail_events(CONDUCTOR, row["item_id"], board._MAX_EVENT_TAIL)
+        assert row["events"] == [event.to_dict() for event in tail]
+
+
 # ── the "Needs a ruling" band ─────────────────────────────────────────────
 
 
@@ -273,6 +314,84 @@ async def test_alive_is_joined_server_side_from_the_worker_slot():
 
 
 @pytest.mark.asyncio
+async def test_the_board_reports_workflow_activity_owned_by_its_conductor():
+    _item()
+    state = _state({CONDUCTOR: _slot()})
+    state.workflow_service = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == f"dashboard:{CONDUCTOR}")
+    )
+    body, _ = await _call(state, CONDUCTOR)
+    assert body["conductor_working"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_worker_workflow_keeps_its_milestone_live(monkeypatch):
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress")
+    state = _state({WORKER: _slot()})
+    state.workflow_service = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == f"dashboard:{WORKER}")
+    )
+    real = wl.is_stale
+    monkeypatch.setattr(
+        board.work_ledger,
+        "is_stale",
+        lambda item, **kwargs: real(item, **{**kwargs, "window_secs": 0}),
+    )
+    body, _ = await _call(state, CONDUCTOR)
+    assert body["items"][0]["alive"] == "running"
+    assert body["items"][0]["stale"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("turn", "awaits"),
+    [(False, True), (True, False)],
+    ids=["background-work", "model-turn"],
+)
+async def test_only_a_model_turn_clears_the_persons_ask_on_the_board(turn, awaits):
+    """The page's Needs you reads the board's ``awaits_person`` alone: a worker's
+    workflow keeps the item running without answering the person; its next
+    model turn means it moved on."""
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "question", "pick a region", reason="needs_human")
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Pick a region")
+    worker = SimpleNamespace(key="", linked_session_key="", running=turn, turn_running=turn)
+    state = _state({WORKER: worker})
+    state.workflow_service = SimpleNamespace(
+        registry=SimpleNamespace(has_pending_work_for=lambda key: key == f"dashboard:{WORKER}")
+    )
+    body, _ = await _call(state, CONDUCTOR)
+    row = body["items"][0]
+    assert row["alive"] == "running"
+    assert row["awaits_person"] is awaits
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_activity_probe_does_not_hide_a_stale_worker(monkeypatch):
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress")
+    state = _state({WORKER: _slot()})
+
+    def unreadable(_key):
+        raise RuntimeError("unreadable")
+
+    state.subagents = SimpleNamespace(running_agents_for=unreadable)
+    real = wl.is_stale
+    monkeypatch.setattr(
+        board.work_ledger,
+        "is_stale",
+        lambda item, **kwargs: real(item, **{**kwargs, "window_secs": 0}),
+    )
+    body, _ = await _call(state, CONDUCTOR)
+    assert body["items"][0]["alive"] == "idle"
+    assert body["items"][0]["stale"] is True
+
+
+@pytest.mark.asyncio
 async def test_a_reported_worker_whose_session_closed_reads_stale_at_once():
     """The badge reads the gate's own resolver, so it does not wait out the window.
 
@@ -331,6 +450,38 @@ async def test_an_unbound_item_is_closed_not_running():
     assert body["items"][0]["alive"] == "closed"
 
 
+def _accept(item_id: str) -> None:
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted", decision="ok")
+
+
+@pytest.mark.asyncio
+async def test_a_busy_worker_runs_only_the_item_it_is_bound_to_now():
+    """One chat bound to v1, then v2, then v3: its turn is for v3 alone.
+
+    v1 and v2 are accepted and still name the chat, but its one binding names v3.
+    """
+    ids = []
+    for title in ("v1", "v2", "v3"):
+        ids.append(_item(title=title))
+        _bind(ids[-1])
+        if title != "v3":
+            _accept(ids[-1])
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    alive = {row["title"]: row["alive"] for row in body["items"]}
+    assert alive == {"v1": "idle", "v2": "idle", "v3": "running"}
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_item_whose_worker_works_on_it_again_is_running():
+    """An accepted item its worker is still bound to runs when the worker does."""
+    item_id = _item(title="done once")
+    _bind(item_id)
+    _accept(item_id)
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    assert body["items"][0]["alive"] == "running"
+
+
 # ── terminal and orphaned ─────────────────────────────────────────────────
 
 
@@ -375,6 +526,17 @@ async def test_a_report_the_harness_never_delivered_is_on_the_board_without_the_
     flag = body["items"][0]["report_undelivered"]
     assert set(flag) == {"tool", "at"} and flag["tool"] == "work_report"
     assert WORKER not in response.body.decode()
+
+
+@pytest.mark.asyncio
+async def test_a_hosted_discussion_reaches_the_board_row():
+    """The Board's "discussing" row reads `discussion` from this payload."""
+    item_id = _item()
+    _bind(item_id)
+    _report(item_id, "progress", discussion={"phase": "talking", "round": 2, "agreed": ["ship A"]})
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    talk = body["items"][0]["discussion"]
+    assert (talk["phase"], talk["round"], talk["agreed"]) == ("talking", 2, ["ship A"])
 
 
 @pytest.mark.asyncio

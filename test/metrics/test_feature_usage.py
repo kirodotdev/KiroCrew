@@ -51,9 +51,7 @@ def _named(rec, name):
 def test_value_lists_are_pinned():
     assert fu.MEMORY_PATH_VALUES == ("tool", "context")
     assert fu.LESSON_RECEIPT_KINDS == ("lessons", "turn_lessons")
-    assert fu.APP_TASK_OUTCOME_VALUES == ("ok", "error", "other")
     assert fu.CHANNEL_VALUES == tuple(CHANNEL_SESSION_NAMESPACES) + ("other",)
-    assert len(fu.CHANNEL_VALUES) == 12
     assert fu.UI_CONTROL_VALUES == (
         "option_chip",
         "question_card_answer",
@@ -105,50 +103,41 @@ def test_a_nested_shipped_skill_is_sent_by_its_nested_id():
 
 
 def test_labelling_reads_no_directory():
-    """The id lists are spelled out, so labelling a skill or an app on the
-    gateway loop does no filesystem work."""
+    """The id list is spelled out, so labelling a skill on the gateway loop does
+    no filesystem work."""
     with (
         patch("pathlib.Path.iterdir") as iterdir,
         patch("pathlib.Path.rglob") as rglob,
         patch("pathlib.Path.is_file") as is_file,
     ):
-        app = next(iter(fu.OFFICIAL_APP_IDS))
         labels = [
             fu.skill_label("kirocrew-dev/writing-tests"),
             fu.skill_label("my-own-skill"),
-            fu.app_label(app),
         ]
-    assert labels == ["kirocrew-dev/writing-tests", "custom", app]
+    assert labels == ["kirocrew-dev/writing-tests", "custom"]
     iterdir.assert_not_called()
     rglob.assert_not_called()
     is_file.assert_not_called()
 
 
-def test_official_app_ids_are_builtin_apps_and_cover_every_report():
-    from kiro_crew.apps.builtins import BUILTIN_NAMES
-
-    root = SRC / "apps" / "builtins"
-    dirs = {p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))}
-    assert fu.OFFICIAL_APP_IDS == set(BUILTIN_NAMES)
-    assert fu.OFFICIAL_APP_IDS <= dirs
-    assert "private" not in fu.OFFICIAL_APP_IDS
-    reported = set()
-    for path in SRC.rglob("*.py"):
-        if path.name == "feature_usage.py":
-            continue
-        text = path.read_text(encoding="utf-8")
-        if "record_app_task(" not in text:
-            continue
-        for node in ast.walk(ast.parse(text)):
-            if (
-                isinstance(node, ast.Call)
-                and getattr(node.func, "id", getattr(node.func, "attr", "")) == "record_app_task"
-            ):
-                first = node.args[0]
-                assert isinstance(first, ast.Constant), f"{path}:{node.lineno}"
-                reported.add(first.value)
-    assert reported, "expected at least one app to report a unit of work"
-    assert reported <= fu.OFFICIAL_APP_IDS, "every reporting app is a shipped built-in"
+def test_public_app_id_reads_no_file(monkeypatch):
+    """``app_public_id`` and ``app_public_version`` read the map the gateway filled; no file."""
+    monkeypatch.setattr(
+        fu, "_public_app_ids", {"auto-improvement": "1.0.0", "weather-app": "2.1.0"}
+    )
+    with (
+        patch("pathlib.Path.iterdir") as iterdir,
+        patch("pathlib.Path.is_file") as is_file,
+        patch("pathlib.Path.read_text") as read_text,
+    ):
+        apps = ("auto-improvement", "weather-app", "mine", 7)
+        labels = [fu.app_public_id(a) for a in apps]
+        versions = [fu.app_public_version(a) for a in apps]
+    assert labels == ["auto-improvement", "weather-app", "private", "other"]
+    assert versions == ["1.0.0", "2.1.0", "private", "other"]
+    iterdir.assert_not_called()
+    is_file.assert_not_called()
+    read_text.assert_not_called()
 
 
 def test_memory_recalled(rec):
@@ -267,18 +256,6 @@ def test_every_lazy_load_emit_names_its_skill():
         assert "skill" in {k.arg for k in call.keywords}, call.lineno
 
 
-def test_app_task(rec):
-    official = sorted(fu.OFFICIAL_APP_IDS)[0]
-    fu.record_app_task(official, "ok")
-    fu.record_app_task("someone-elses-app", "error")
-    fu.record_app_task(official, "exploded")
-    assert [c["attrs"] for c in _named(rec, fu.APP_TASK_COMPLETED)] == [
-        {"app": official, "outcome": "ok"},
-        {"app": "private", "outcome": "error"},
-        {"app": official, "outcome": "other"},
-    ]
-
-
 @pytest.mark.parametrize(
     "key,label",
     [
@@ -393,14 +370,3 @@ def test_tool_recall_is_recorded_after_the_receipt_commit():
         n.lineno for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id == "commit_receipt"
     ]
     assert rec_line > commit_line
-
-
-# -- app tasks ----------------------------------------------------------------
-
-
-def test_an_app_not_in_the_list_is_private(rec):
-    assert "my-own-app" not in fu.OFFICIAL_APP_IDS
-    fu.record_app_task("my-own-app", "ok")
-    assert [c["attrs"] for c in _named(rec, fu.APP_TASK_COMPLETED)] == [
-        {"app": "private", "outcome": "ok"}
-    ]

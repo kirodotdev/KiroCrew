@@ -97,6 +97,7 @@ export type ErrorNoticeNoHandoff =
     askAgentLabel?: never
     onHandoff?: never
     onStage?: never
+    gate?: never
   }
 
 export type ErrorNoticeImpact = 'blocking' | 'partial' | 'minor'
@@ -198,6 +199,7 @@ export default function ErrorNotice({
   footer,
   onHandoff,
   onStage,
+  gate,
   className = '',
   messageClassName = '',
   messageTooltip,
@@ -335,6 +337,14 @@ export default function ErrorNotice({
    * Ignored when `askAgent` is off.
    */
   onStage?: (prompt: string) => void
+  /**
+   * Runs the hand-off through the host's own leave guard (`useGuardedLeave`'s
+   * `leave`, forwarded to `AskAgentButton`): for a notice next to an unsaved
+   * draft whose host HAS that guard. The guard asks before the navigation, so
+   * the hand-off cannot discard the draft silently; a veto stages nothing.
+   * Ignored when `askAgent` is off.
+   */
+  gate?: (proceed: () => void) => void
   className?: string
   /**
    * Classes for the `message` span only — e.g. `font-mono` when the message is
@@ -416,6 +426,7 @@ export default function ErrorNotice({
       message={message}
       onHandoff={onHandoff}
       onStage={onStage}
+      gate={gate}
       label={askAgentLabel}
       tone="inherit"
     />
@@ -436,7 +447,9 @@ export default function ErrorNotice({
         {showIcon && <LevelIcon size={14} className="shrink-0" aria-hidden="true" />}
         {title && <strong className={`min-w-0 ${impact === 'minor' ? level.title : 'font-semibold'}`} style={{ overflowWrap: 'anywhere' }}>{title}</strong>}
         <span ref={messageRef} className={`min-w-0 ${messageBelow ? `basis-full text-[11px] font-normal ${body}` : ''}${phoneBelow ? ' grow basis-[calc(100%-2rem)] sm:grow-0 sm:basis-auto' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
-        {handoff && <span className={`inline-flex ${link}`}>{handoff}</span>}
+        {/* shrink-0: the button inside never shrinks, so a wrapper that did
+            would let the hand-off overflow the row; the message wraps instead. */}
+        {handoff && <span className={`inline-flex shrink-0 ${link}`}>{handoff}</span>}
         {!askAgent && handoffHint && (
           <span className="min-w-0 text-[11px] font-normal text-muted" data-testid="error-notice-handoff-hint">{handoffHint}</span>
         )}

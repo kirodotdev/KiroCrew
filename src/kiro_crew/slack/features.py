@@ -1,7 +1,8 @@
 """Slack Code: whether each Slack Code switch runs, and the code-channel defaults.
 
-The switches are the ones registered in :data:`kiro_crew.slack_manifest.FEATURE_SCOPES`
-(``agent_sessions``, ``code_channels``); everything here is keyed by that name, so registering
+The switches are the ones registered in :data:`kiro_crew.slack_manifest.FEATURES`
+(``agent_sessions``, ``code_channels``, and the manifest-only ``slack_mcp``, which has a
+toggle and nothing to run); everything here is keyed by that name, so registering
 a switch there is all this module needs. Two layers decide whether one runs, and
 both are read here so every caller answers "is it on?" the same way:
 
@@ -71,10 +72,13 @@ _HEX = frozenset("0123456789abcdef")
 #: runtime creates it through the sidebar's own folder-create path the first time
 #: a code channel needs it.
 AUTO_FOLDER_NAME = "Code channels"
-#: The ``default_agent`` the auto folder is created with, so a code channel with
-#: no settings touched runs the conductor. Once the folder exists its own
-#: ``default_agent`` is what applies (the user may change or clear it).
-AUTO_FOLDER_AGENT = "kirocrew-conductor"
+#: The ``default_agent`` earlier releases created the auto folder with. The auto
+#: folder is now created with none, so a code channel with no settings touched
+#: runs the owner's default agent. A folder record keeps no edit history, so an
+#: auto folder still holding exactly this value is read as never edited: it
+#: counts as no folder agent. Any other value, or a cleared one, is the owner's.
+#: Read-time only; the stored folder is not rewritten.
+LEGACY_AUTO_FOLDER_AGENT = "kirocrew-conductor"
 
 
 @dataclass(frozen=True)
@@ -87,12 +91,20 @@ class CodeChannelDefaults:
     reasoning_effort: str | None = None
     #: ``trust_reads`` / ``trust``; ``None`` is ``ask`` (Normal).
     approval_mode: str | None = None
+    #: "Always use conductor mode" as stored; it applies only where conductor
+    #: mode is offered (:func:`code_channel_conductor_agent`).
+    conductor_mode: bool = False
 
     @property
     def is_empty(self) -> bool:
         """True when no default is set at all."""
         return not (
-            self.folder or self.agent or self.model or self.reasoning_effort or self.approval_mode
+            self.folder
+            or self.agent
+            or self.model
+            or self.reasoning_effort
+            or self.approval_mode
+            or self.conductor_mode
         )
 
 
@@ -101,7 +113,8 @@ class ResolvedCodeChannelSession:
     """The effective start state of a new code-channel session.
 
     ``*_source`` names where each value came from (``"default"``, ``"folder"``,
-    ``"slack"``, ``"origin"`` or ``""`` for nothing), so the settings page can
+    ``"slack"``, ``"origin"``, ``"conductor"`` for "Always use conductor mode", or ``""``
+    for nothing), so the settings page can
     explain the outcome and a runtime can log it without re-deriving it.
     """
 
@@ -121,9 +134,8 @@ class ResolvedCodeChannelSession:
     folder_path: str | None = None
     #: True when the session belongs in the auto folder and NO top-level folder
     #: of that name exists yet: ``folder_id`` is ``None`` and the runtime must create
-    #: :data:`AUTO_FOLDER_NAME` (top level, ``default_agent`` =
-    #: :data:`AUTO_FOLDER_AGENT`) through the sidebar's folder-create path, then
-    #: file the session into the new folder's id.
+    #: :data:`AUTO_FOLDER_NAME` (top level, no ``default_agent``) through the
+    #: sidebar's folder-create path, then file the session into the new folder's id.
     folder_auto_create: bool = False
     #: ``ask`` / ``trust_reads`` / ``trust``: the approval mode the session is
     #: created in. Always set, so every reader sees one of the three values.
@@ -139,9 +151,10 @@ def toggle(cfg: Any, feature: str) -> bool:
     """A registered switch's toggle (``slack.<feature>``), capability aside.
 
     An unregistered name, a config without the field, and anything but a real
-    ``True`` all read as off.
+    ``True`` all read as off. ``slack_mcp`` has a toggle and no capability: it is
+    in ``slack_manifest.FEATURES`` and not in ``FEATURE_SCOPES``.
     """
-    if feature not in REQUIRED_SCOPE:
+    if feature not in slack_manifest.FEATURES:
         return False
     return getattr(_slack_section(cfg), feature, False) is True
 
@@ -368,7 +381,36 @@ def code_channel_defaults(cfg: Any) -> CodeChannelDefaults:
         model=_opt_str(getattr(raw, "model", None)),
         reasoning_effort=effort if is_valid_effort(effort) else None,
         approval_mode=approval,
+        # Only a real ``True``: a missing or malformed value reads as off.
+        conductor_mode=getattr(raw, "conductor_mode", None) is True,
     )
+
+
+def conductor_mode_offered() -> bool:
+    """Whether this build offers conductor mode: every build but LTS.
+
+    The server side of the dashboard's ``crewModeEnabled()``, which reads the same
+    edition lock (the LTS build locks Feature previews, and conductor mode with them).
+    """
+    from kiro_crew.edition_locks import local_enable_locked
+
+    return not local_enable_locked("feature_previews")
+
+
+def code_channel_conductor_agent(cfg: Any, *, agent_cfg: Any = None) -> str | None:
+    """The agent "Always use conductor mode" runs new code channels on, or ``None`` when off.
+
+    On only while ``code_channel_defaults.conductor_mode`` is ``True`` in *cfg* AND
+    this build offers conductor mode; then it is the conductor mode agent
+    (:func:`kiro_crew.crew_mode.crew_mode_agent`, ``agent.crew_mode_agent``), read
+    from *agent_cfg* when given (a caller whose *cfg* keeps only its own section
+    live passes the live config), else from *cfg*.
+    """
+    if not code_channel_defaults(cfg).conductor_mode or not conductor_mode_offered():
+        return None
+    from kiro_crew import crew_mode
+
+    return _opt_str(crew_mode.crew_mode_agent(cfg if agent_cfg is None else agent_cfg))
 
 
 def looks_like_folder_id(ref: str) -> bool:
@@ -464,6 +506,7 @@ def resolve_code_channel_session(
     slack_agent: str | None = None,
     origin_project_dir: str | None = None,
     default_agent_available: bool | None = None,
+    conductor_agent: str | None = None,
 ) -> ResolvedCodeChannelSession:
     """Apply the code-channel resolution order to one new session.
 
@@ -471,12 +514,16 @@ def resolve_code_channel_session(
       configured folder missing from the sidebar is no folder (``folder_missing``),
       not the auto folder: the user chose one, and the settings page says it is
       gone. An auto folder that does not exist yet resolves as if it had been
-      created with ``default_agent`` = :data:`AUTO_FOLDER_AGENT`, with
-      ``folder_auto_create`` set so the runtime creates it. Two top-level
-      folders of that name are ambiguous: no folder, and nothing to create, so
-      the runtime files the session unfiled rather than into either duplicate;
-    * agent: ``defaults.agent`` > the folder's ``default_agent`` > *slack_agent*
-      (the agent Slack already uses for the originating conversation). A saved
+      created (with no ``default_agent``), with ``folder_auto_create`` set so the
+      runtime creates it. Two top-level folders of that name are ambiguous: no
+      folder, and nothing to create, so the runtime files the session unfiled
+      rather than into either duplicate;
+    * agent: with *conductor_agent* (the caller's :func:`code_channel_conductor_agent`:
+      "Always use conductor mode" on, where conductor mode is offered) that agent, over
+      every other source (``agent_source`` ``"conductor"``). Otherwise
+      ``defaults.agent`` > the folder's ``default_agent`` > *slack_agent* (the
+      agent Slack already uses for the originating conversation). The auto
+      folder's :data:`LEGACY_AUTO_FOLDER_AGENT` counts as no folder agent. A saved
       default the caller found missing (*default_agent_available* ``False``) is
       skipped, as a missing folder is; ``None`` means it could not be checked;
     * model / effort: ``defaults`` only -- unset means the agent's own;
@@ -499,15 +546,21 @@ def resolve_code_channel_session(
     folder_id = str(folder.get("id")) if folder is not None else None
     if folder is not None:
         folder_agent = _opt_str(folder.get("default_agent"))
+        if folder_agent == LEGACY_AUTO_FOLDER_AGENT and folder in auto_folder_matches(listed):
+            # The auto folder as an earlier release created it, never edited --
+            # however it is reached (the runtime files into it by id once made).
+            folder_agent = None
         folder_path: str | None = folder_paths(listed).get(str(folder_id), AUTO_FOLDER_NAME)
     elif auto_create:
-        folder_agent, folder_path = AUTO_FOLDER_AGENT, AUTO_FOLDER_NAME
+        folder_agent, folder_path = None, AUTO_FOLDER_NAME
     else:
         folder_agent, folder_path = None, None
 
     slack_choice = _opt_str(slack_agent)
     agent: str | None
-    if defaults.agent and default_agent_available is not False:
+    if _opt_str(conductor_agent):
+        agent, agent_source = _opt_str(conductor_agent), "conductor"
+    elif defaults.agent and default_agent_available is not False:
         agent, agent_source = defaults.agent, "default"
     elif folder_agent:
         agent, agent_source = folder_agent, "folder"

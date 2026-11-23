@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         record_deferred_dismissal,
         redact_credentials,
         redact_exfiltration_urls,
+        refused_durable_ids,
         remember_unknown_row_fields,
         retry_owed_unstamp,
         sel,
@@ -272,6 +273,7 @@ def _materialise_slot_from_history(
     # consumes capacity for the process lifetime. ``slot`` may be unbound if
     # ``get_or_create_slot`` itself raised (e.g. the under-construction create
     # guard), so the rollback is conditional on it existing.
+    from kiro_crew.dashboard.relay_archive import mark_cron_run_read_only
     from kiro_crew.dashboard.slot_persistence import metadata_codec
 
     slot = None
@@ -328,6 +330,8 @@ def _materialise_slot_from_history(
             mint_missing_mids=mint_missing_mids,
             keeps_mode=keeps_mode,
         )
+        read = disk_meta_observed and bool(meta or all_messages)
+        mark_cron_run_read_only(slot, history_key=history_key, app=app, transcript_read=read)
     except BaseException:
         # ``slot`` is None if ``get_or_create_slot`` itself raised (nothing was
         # reserved). Otherwise release the construction count, drop the slot from
@@ -543,24 +547,35 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         return web.json_response(await _live_slot_resume_payload(state, outcome.slot))
     slot, total = outcome.slot, outcome.total
     recent = slot.messages[-200:] if len(slot.messages) > 200 else slot.messages
+    # `total` is the effective hydrated length (durable rows plus a recovered
+    # interruption row when one was appended), so this is the raw index the
+    # next older page starts from.
+    from kiro_crew.dashboard.display_floor import clip_page_off_loop
+
+    recent, next_before, floor_reached = await clip_page_off_loop(
+        state.conversation_log, slot_history_key(slot), recent, total - len(recent)
+    )
+    from kiro_crew.dashboard.responsive_chat import written_queue_ids
+
     return web.json_response(
         {
             "ok": True,
             "key": slot.key,
             "history_key": slot_history_key(slot),
-            # `total` is the effective hydrated length (durable rows plus a
-            # recovered interruption row when one was appended), so this is
-            # the raw index the next older page starts from.
-            "next_before": total - len(recent),
+            "next_before": next_before,
             "messages": _prepare_messages(
                 recent,
                 slot.running,
                 live_child=_live_child_instance(state, slot),
                 workspace=slot.workspace,
             ),
-            "queue": queue_view(slot._queue),
+            "queue": queue_view(
+                slot._queue,
+                refused_durable_ids(slot.durable_source()),
+                written_queue_ids(slot),
+            ),
             "total": total,
-            "has_more": total > len(recent),
+            "has_more": next_before > 0 and not floor_reached,
             "memory_mode": slot.memory_mode,
             "mode": slot.mode,
             "surface": slot.mode,

@@ -87,7 +87,8 @@ def _full_bundle(tmp_path: Path, *, components: bool = True) -> Path:
 def _restore(bundle: Path, home: Path, monkeypatch, *extra: str) -> int:
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("KIROCREW_HOME", str(home))
-    return restore_main([str(bundle), "--force", *extra] + unpinnable_argv())
+    mode = [] if "--mode" in extra else ["--mode", "replace"]
+    return restore_main([str(bundle), "--force", *mode, *extra] + unpinnable_argv())
 
 
 def _jobs(home: Path) -> dict[str, dict]:

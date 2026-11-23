@@ -1,0 +1,2 @@
++237
+Read text after a here-document's closing line as unquoted, as an ADDED independent reading so a self-restart / self-ssh there cannot be lost; adds the self/ssh heredoc-reset passes, the reader's arith_held provenance flag, and the facade manifest entry for the ssh floor's _HEREDOC_RESET. The reset finds bodies on the command as submitted (case-sensitive closing tags) and removes comments by bash's quote-aware rule.

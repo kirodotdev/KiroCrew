@@ -17,8 +17,12 @@ import functools
 import pathlib
 
 import pytest
+import source_corpus
 
 _TEST_DIR = pathlib.Path(__file__).resolve().parent
+
+#: One worker owns the ``test/`` scan that ``_spawning_modules`` caches.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_subagent_spawn_host_pin")
 
 #: The fixture in ``test/conftest.py`` that pins the floor reading. A rename that
 #: misses this file turns every module below into an unpinned one, so the
@@ -27,6 +31,7 @@ _FIXTURE = "healthy_host_memory"
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def _spawning_modules() -> tuple[tuple[str, bool], ...]:
     """Every ``test/`` module that reaches ``spawn``, paired with whether it is pinned.
 
@@ -134,6 +139,7 @@ class TestTheSpawnHostMemoryPinRatchet:
 
 
 @functools.lru_cache(maxsize=1)
+@source_corpus.untraced()
 def _pinned_modules_that_undo() -> tuple[str, ...]:
     """Pinned spawning modules that also call a bare ``monkeypatch.undo()``.
 

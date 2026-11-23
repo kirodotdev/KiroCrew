@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useId } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
-import { Brain, Hourglass, CheckCircle, RefreshCw, Search, AlertTriangle, Check, CircleOff, CircleHelp, X } from 'lucide-react'
+import { Brain, Circle, Hourglass, CheckCircle, RefreshCw, Search, AlertTriangle, Check, CircleOff, CircleHelp, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
@@ -413,9 +413,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
 
   const confidenceBadge = (c: number) => {
     const v = typeof c === 'number' ? c.toFixed(2) : c
-    if (c >= 0.95) return <Badge variant="ok">● {v}</Badge>
-    if (c >= 0.8) return <Badge variant="warn">● {v}</Badge>
-    return <Badge variant="err">● {v}</Badge>
+    if (c >= 0.95) return <Badge variant="ok"><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} /> {v}</Badge>
+    if (c >= 0.8) return <Badge variant="warn"><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} /> {v}</Badge>
+    return <Badge variant="err"><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} /> {v}</Badge>
   }
 
   const active = !enabling && ((stats != null && ((stats.semantic_active ?? 0) > 0 || (stats.episodic_active ?? 0) > 0)) || (embStatus?.provider && embStatus.provider !== 'none'))

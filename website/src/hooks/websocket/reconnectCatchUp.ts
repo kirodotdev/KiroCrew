@@ -15,6 +15,7 @@ import { consumeUpdateRestartLatch } from './bundleReload'
 import { refreshServerStateAfterReconnect } from './serverState'
 import type { SocketConnection } from './connection'
 import type { StreamBuffers } from './streamBuffers'
+import { newestServerRowTs } from '../../lib/slotReadRelay'
 import { replaySlotFrames, subagentReplaySlots } from '../../lib/subagentReplayScope'
 
 export interface CatchUpContext {
@@ -27,6 +28,7 @@ export interface CatchUpContext {
   syncPendingQuestions: () => Promise<void>
   syncWorkflowRuns: () => Promise<void>
   focusedSlot: () => string | null
+  recordShown: (slot: string, ts: string | undefined) => void
   reconnectSnapshot: ReconnectSnapshotWait
 }
 
@@ -198,7 +200,9 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   // still is, see `createReconnectSnapshotWait`).
   ctx.reconnectSnapshot.arm()
   buffers.dropForReconnect()
-  markGatewayConnected(dispatch)
+  // After a host-silent or Remote Control off close the open alone proves nothing: the first frame
+  // marks it connected (`SocketConnection.noteFrame`).
+  if (!socket.awaitsFirstFrame()) markGatewayConnected(dispatch)
   refreshServerStateAfterReconnect(queryClient)
   ctx.seedAutomations()
   dispatch(fetchNotifications()).then(() => ctx.syncPendingApprovals())
@@ -213,7 +217,11 @@ export function runReconnectCatchUp(ws: WebSocket, ctx: CatchUpContext): void {
   void dispatch(resyncWaitingSideConversations())
   // Re-fetch active slot messages to recover from missed chunks
   const active = store.getState().chat.activeSlot
-  if (active) dispatch(refreshSlot(active))
+  if (active) void dispatch(refreshSlot(active)).then(result => {
+    if (!result.payload || store.getState().chat.activeSlot !== active) return
+    const shownTs = newestServerRowTs(store.getState().chat.messages)
+    if (shownTs) ctx.recordShown(active, shownTs)
+  })
   // refreshSlot self-guards to the ACTIVE slot, but the queue event family
   // (queue_push/cancel/edit/reorder) is broadcast fire-and-forget with no
   // replay — a mutation that happened while the socket was down never

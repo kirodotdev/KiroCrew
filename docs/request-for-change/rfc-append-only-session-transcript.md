@@ -3,8 +3,8 @@ title: Append-Only Session Transcript — revision records instead of window rew
 status: draft
 author: zezhexu
 created: 2026-08-16
-last-audited: 2026-08-16
-audited-at: 2a665e735
+last-audited: 2026-11-20
+audited-at: fc89562d69
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -13,7 +13,9 @@ superseded-by: []
 ---
 # RFC: Append-Only Session Transcript — revision records instead of window rewrites
 
-- Status: draft — nothing implemented. All four phases are proposals.
+- Status: draft — nothing implemented. All four phases are proposals (checked at
+  `fc89562d69`: no revision record type on main; `history_rewrite.py` still has
+  `rewrite_session` and `_rewrite_session_locked`).
 - Author: zezhexu
 - Created: 2026-08-16
 - Related: `docs/system-specs/modules/history.md`,

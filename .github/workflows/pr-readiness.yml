@@ -31,7 +31,7 @@ on:
       - Fast Gate
       - Build
       - Code Review
-      # Blocking: the title, body and commit-count checks. Runs on
+      # Blocking: the title and body checks. Runs on
       # `pull_request` with `edited`, so a description edit re-judges it.
       - PR Hygiene
       # Blocking: a PR that declares no triaged issue reds it. Runs on
@@ -423,12 +423,26 @@ jobs:
             fi
           }
 
+          # with_read_token <command...>: runs a READ on the pool the "Select
+          # the token pool for reads" step chose. Every `gh_retry` call is a
+          # read and goes through it. A write never does: a status, label or
+          # comment written with any token but GITHUB_TOKEN starts workflow
+          # runs of its own.
+          with_read_token() {
+            if [ -n "${READINESS_READ_TOKEN:-}" ] \
+              && [ "$(cat "$RUNNER_TEMP/readiness-read-pool" 2>/dev/null)" = readiness ]; then
+              GH_TOKEN="$READINESS_READ_TOKEN" "$@"
+            else
+              "$@"
+            fi
+          }
+
           gh_retry() {
             local attempt out err rc=1
             for attempt in 1 2 3; do
               # `bounded` caps a HANGING attempt (gh applies no HTTP request
               # timeout of its own); rc 124 is just another retryable failure.
-              if out="$(bounded "$@" 2>"$RUNNER_TEMP/gh-retry-err")"; then
+              if out="$(with_read_token bounded "$@" 2>"$RUNNER_TEMP/gh-retry-err")"; then
                 cat "$RUNNER_TEMP/gh-retry-err" >&2
                 printf '%s\n' "$out"
                 return 0
@@ -537,10 +551,42 @@ jobs:
           }
           HELPER
 
+      # Reads can draw on a pool of their own, so lane traffic on the shared
+      # installation pool cannot starve the verdict. The step is identical in
+      # pr-readiness-sweep.yml; test_readiness_read_token.py pins that.
+      - name: Select the token pool for reads
+        env:
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
+          READ_POOL_FLOOR: "50"
+        run: |
+          # Which pool this job reads from. PR_READINESS_READ_TOKEN is a
+          # separate, read-only token. It is used only when it answers
+          # `/rate_limit` (not counted against the quota) with at least
+          # READ_POOL_FLOOR requests left. Unset, refused or nearly spent,
+          # reads stay on GITHUB_TOKEN. Only counts are printed, never a token.
+          pool=shared
+          if [ -z "${READINESS_READ_TOKEN:-}" ]; then
+            echo "readiness reads: token pool -- shared (GITHUB_TOKEN); PR_READINESS_READ_TOKEN is not set"
+          else
+            bound=""
+            if command -v timeout >/dev/null 2>&1; then bound="timeout 60"; fi
+            left="$(GH_TOKEN="$READINESS_READ_TOKEN" $bound gh api rate_limit \
+              --jq '.resources.core | "\(.remaining)/\(.limit)"' 2>/dev/null || true)"
+            if [[ "$left" =~ ^([0-9]+)/[0-9]+$ ]] && [ "${BASH_REMATCH[1]}" -ge "$READ_POOL_FLOOR" ]; then
+              pool=readiness
+              echo "readiness reads: token pool -- readiness (PR_READINESS_READ_TOKEN), $left remaining"
+            else
+              [[ "$left" =~ ^[0-9]+/[0-9]+$ ]] || left="no reading"
+              echo "::warning::PR_READINESS_READ_TOKEN is set but its pool is unreadable or under $READ_POOL_FLOOR requests ($left); reads use the shared GITHUB_TOKEN pool."
+            fi
+          fi
+          echo "$pool" > "$RUNNER_TEMP/readiness-read-pool"
+
       - name: Resolve current pull request revision
         id: context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           INPUT_PR: ${{ inputs.pr }}
@@ -706,6 +752,10 @@ jobs:
             echo "stack_trunk=$STACK_TRUNK"
             echo "ci_on_release=$CI_ON_RELEASE"
             echo "author=$PR_AUTHOR"
+            # For the docs-only rule (.github/scripts/docs_only.py): the base
+            # the PR's own diff is measured from, and how many files it lists.
+            echo "base_sha=$(jq -r '.base.sha' <<<"$pr_rest")"
+            echo "changed_files=$(jq -r '.changed_files' <<<"$pr_rest")"
             echo "default_branch=$DEFAULT_BRANCH"
             # (head repository, head branch) is how a monitored workflow run is
             # bound back to this PR below. Both fields are populated on a fork
@@ -727,6 +777,7 @@ jobs:
         if: steps.context.outputs.stale != 'true' && steps.context.outputs.state != 'OPEN'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
         run: |
@@ -784,6 +835,7 @@ jobs:
           && steps.context.outputs.state == 'OPEN'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           SHA: ${{ steps.context.outputs.sha }}
           URL: ${{ steps.context.outputs.url }}
@@ -865,7 +917,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || github.ref_name }}
-          sparse-checkout: src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts
+          # The docs-only classifier comes from the default branch too, so a
+          # pull request cannot change the rule it is judged by.
+          sparse-checkout: |
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/
+            .github/scripts/docs_only.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       # Issue #6658: the one-lane / one-rationale-per-finding disposition rule
@@ -905,6 +962,9 @@ jobs:
           && steps.context.outputs.state == 'OPEN'
           && steps.hold.outputs.held != 'true'
         env:
+          # GITHUB_TOKEN only, never the readiness read token: the evaluator
+          # asks for each record author's collaborator permission, and a token
+          # refused that read makes every author a non-writer.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
@@ -1010,6 +1070,9 @@ jobs:
           && steps.hold.outputs.held != 'true'
           && steps.context.outputs.author != 'dependabot[bot]'
         env:
+          # GITHUB_TOKEN only, never the readiness read token: the evaluator
+          # asks for each record author's collaborator permission, and a token
+          # refused that read makes every author a non-writer.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
@@ -1054,6 +1117,7 @@ jobs:
           && steps.hold.outputs.held != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
@@ -1065,6 +1129,9 @@ jobs:
           STACK_TRUNK: ${{ steps.context.outputs.stack_trunk }}
           CI_ON_RELEASE: ${{ steps.context.outputs.ci_on_release }}
           DEFAULT_BRANCH: ${{ steps.context.outputs.default_branch }}
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          CHANGED_FILES: ${{ steps.context.outputs.changed_files }}
+          DOCS_ONLY_SCRIPT: ${{ github.workspace }}/.github/scripts/docs_only.py
           TRIGGER_EVENT: ${{ github.event_name }}
           TRIGGER_ACTION: ${{ github.event.action }}
           # The edit's time on an `edited` run, read by the `edited_lanes` check.
@@ -1164,6 +1231,11 @@ jobs:
           # entry: `PR Readiness` is the one required status, so a lane this
           # list omits is a gate that can go red without reddening the PR.
           workflow_specs+=("issue-gate.yml|Issue Gate")
+          # Sensitive Change Review runs on `pull_request_target` for every PR,
+          # whatever its base, so its run executes the default branch's file.
+          # The loop reads it from those runs alone: a PR can add a workflow
+          # that posts a check of the same name, never a run of this kind.
+          workflow_specs+=("sensitive-change-review.yml|Sensitive Change Review")
 
           # True only for a fork PR into a non-default base (see below).
           fork_base_hold=false
@@ -1218,8 +1290,24 @@ jobs:
               "checkrun:Security Scope Review|Security Scope Review|scope-pr-|fast-gate.yml"
             )
           else
+            # A pull request that changes nothing but prose docs skips the
+            # CodeQL scan (codeql.yml), so no results check is owed: list it
+            # as not eligible rather than wait for one. The rule is the default
+            # branch's own classifier over the compare listing, and any read or
+            # parse failure answers "not docs-only", which keeps the lane.
+            docs_only=false
+            if [ "$codeql_ineligible" != "true" ] && [ -f "${DOCS_ONLY_SCRIPT:-}" ] \
+              && [ -n "${BASE_SHA:-}" ] && [ "${CHANGED_FILES:-0}" -le 250 ] 2>/dev/null; then
+              if compare="$(gh_retry gh api "repos/$REPO/compare/$BASE_SHA...$SHA?per_page=300")" \
+                && answer="$(printf '%s' "$compare" \
+                  | python3 "$DOCS_ONLY_SCRIPT" classify --expect-files "$CHANGED_FILES")"; then
+                [ "$answer" = "docs_only=true" ] && docs_only=true
+              fi
+            fi
             if [ "$codeql_ineligible" = "true" ]; then
               skipped+=("CodeQL (only runs on PRs to $DEFAULT_BRANCH)")
+            elif [ "$docs_only" = "true" ]; then
+              skipped+=("CodeQL (docs-only PR)")
             else
               workflow_specs+=("dynamic/github-code-scanning/codeql|CodeQL")
             fi
@@ -1394,9 +1482,10 @@ jobs:
             fi
           }
 
-          # The monitored workflows whose `pull_request` trigger lists `edited`.
+          # The monitored workflows whose `pull_request` (or, for Sensitive
+          # Change Review, `pull_request_target`) trigger lists `edited`.
           # test_pr_readiness_evaluate.py pins this list to those triggers.
-          edited_lanes=" codex-review.yml issue-gate.yml pr-hygiene.yml "
+          edited_lanes=" codex-review.yml issue-gate.yml pr-hygiene.yml sensitive-change-review.yml "
 
           # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
           # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
@@ -1636,6 +1725,16 @@ jobs:
                 codeql_source=advanced
               fi
             else
+              src="$pr_runs"
+              # The one lane that is not a `pull_request` run (see its spec).
+              if [ "$file" = "sensitive-change-review.yml" ]; then
+                src="$(gh_head_runs "$REPO" "$SHA" pull_request_target "$pr_runs")" || {
+                  rc=$?
+                  if [ "$rc" -eq 22 ]; then exit 1; fi
+                  transport_failed=true
+                  break
+                }
+              fi
               # Bind the run to this PR by (head repository, head branch), NOT
               # by `.pull_requests`: that array is empty on every fork run, so
               # filtering on it matched nothing and reported each already-green
@@ -1663,8 +1762,7 @@ jobs:
                           and .head_repository.full_name == $head_repo
                           and .head_branch == $head_ref)]
                 | max_by(.id) // empty
-              ' <<<"$pr_runs")"
-              src="$pr_runs"
+              ' <<<"$src")"
             fi
             # Fork approval can start runs out of id order, so the max-id twin gets
             # cancelled; the latest-started same-head run wins (ties: whole seconds).
@@ -2078,7 +2176,11 @@ jobs:
             # collaborator"; any other failed read is unknown, so pending.
             while IFS= read -r reviewer; do
               [ -n "$reviewer" ] || continue
-              if permission="$(gh_retry gh api \
+              # Read with GITHUB_TOKEN whatever pool was selected: the
+              # answer depends on what the asking token may see, and a token
+              # that may not see collaborators would read as "not a
+              # collaborator" and drop the block.
+              if permission="$(READINESS_READ_TOKEN="" gh_retry gh api \
                 "repos/$REPO/collaborators/$reviewer/permission" \
                 --jq '.permission // "none"' 2>"$RUNNER_TEMP/review-permission-err")"; then
                 case "$permission" in
@@ -2228,6 +2330,7 @@ jobs:
             echo "label=$label"
             echo "status_state=$status_state"
             echo "description=$description"
+            echo "docs_only=${docs_only:-false}"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -2287,6 +2390,7 @@ jobs:
           && steps.hold.outputs.held != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.context.outputs.pr }}
           SHA: ${{ steps.context.outputs.sha }}
@@ -2295,6 +2399,7 @@ jobs:
           TARGET_LABEL: ${{ steps.verdict.outputs.label }}
           STATUS_STATE: ${{ steps.verdict.outputs.status_state }}
           DESCRIPTION: ${{ steps.verdict.outputs.description }}
+          DOCS_ONLY: ${{ steps.verdict.outputs.docs_only }}
           FORK: ${{ steps.context.outputs.fork }}
           HEAD_REPO: ${{ steps.context.outputs.head_repo }}
           HEAD_REF: ${{ steps.context.outputs.head_ref }}
@@ -2320,8 +2425,9 @@ jobs:
           # that started since would otherwise be published over as success --
           # the one write that lets armed auto-merge land while a lane runs,
           # and the write a re-run's hold cannot defend against: the hold lands
-          # in seconds and this publish lands after it. One read, on every
-          # success; any open monitored lane downgrades this publish to
+          # in seconds and this publish lands after it. One runs-page read (and
+          # the sensitive lane's, below), on every success; any open monitored
+          # lane downgrades this publish to
           # pending, and a failed read does too (stamped, so the self-heal
           # sweep re-fires it).
           #
@@ -2337,16 +2443,23 @@ jobs:
           # it cannot see is the seven Stage-2 fork review lanes, which run from
           # the default branch and report as check-runs on the head SHA; those
           # get their own read further down.
+          #
+          # Sensitive Change Review is not a `pull_request` run: it is re-read
+          # from its own `pull_request_target` runs, bound and collapsed the
+          # way evaluation reads it, so a re-run that turned red (or is
+          # running) since the evaluation is not published over as success.
           if [ "$STATUS_STATE" = "success" ]; then
             # The page is kept: the fork arm below reads Fast Gate's newest run
             # from it rather than spending a second request.
             runs_page=""
             if runs_page="$(gh_head_runs "$REPO" "$SHA" pull_request)" \
+              && pt_page="$(gh_head_runs "$REPO" "$SHA" pull_request_target "$runs_page")" \
               && recheck="$(jq -rs --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" --arg lanes "$MONITORED_LANES" '
                 ($lanes | split(" ") | map(select(. != "")) | map(".github/workflows/" + .)) as $l
-                | [.[].workflow_runs[]
-                   | select((.path | IN($l[]))
-                            and (.head_repository.full_name // "") == $repo
+                | [(.[0].workflow_runs[] | select(.path | IN($l[]))),
+                   (.[1].workflow_runs[]
+                    | select(.path == ".github/workflows/sensitive-change-review.yml"))
+                   | select((.head_repository.full_name // "") == $repo
                             and (.head_branch // "") == $ref)]
                 # Newest run per lane, collapsed exactly as the verdict step
                 # collapses it: max id, and a cancelled max-id run yields to a
@@ -2368,7 +2481,7 @@ jobs:
                         | (.name // .path)) | join(", ")) as $red
                 | (map(select(.status != "completed") | (.name // .path)) | join(", ")) as $open
                 | "\($red)|\($open)"
-              ' <<<"$runs_page")"; then
+              ' <<<"$runs_page"$'\n'"$pt_page")"; then
               IFS='|' read -r red_lanes open_lanes <<<"$recheck"
               # A red lane publishes red: a pending here would overwrite the
               # failure that lane's own evaluation already published.
@@ -2389,7 +2502,7 @@ jobs:
               DESCRIPTION="[read-failed] Readiness could not be re-checked before publishing success; it will be re-evaluated"
             fi
             # CodeQL is a `dynamic` run, so the re-check above -- filtered to
-            # `event=pull_request` and MONITORED_LANES -- is structurally blind
+            # MONITORED_LANES and Sensitive Change Review -- is structurally blind
             # to it. Without this, a CodeQL re-run had no
             # way to hold the publish: the delayed publisher saw only green
             # pull-request lanes and wrote success over the pending that re-run's
@@ -2410,7 +2523,9 @@ jobs:
             # evaluation rejected, or blocking a verdict it passed. A fork head
             # cannot run the managed default-setup CodeQL (the verdict step
             # lists it skipped), so this read is same-repo only.
-            if [ "$STATUS_STATE" = "success" ] && [ "${FORK:-}" = "false" ]; then
+            # A docs-only head owes no CodeQL result: the verdict step listed
+            # it not eligible, so this re-check reads it the same way.
+            if [ "$STATUS_STATE" = "success" ] && [ "${FORK:-}" = "false" ] && [ "${DOCS_ONLY:-}" != "true" ]; then
               if codeql_state="$(gh_head_runs "$REPO" "$SHA" dynamic "$runs_page" \
                 | jq -r '
                   [.workflow_runs[]
@@ -2721,13 +2836,20 @@ jobs:
             printf "rest-calls: workflow=%s job=%s rest=%d graphql=%d paginated=%d other=%d basis=gh-invocations\n",
               wf, job, c["rest"], c["graphql"], c["paginate"], c["other"] }' "$f" || true
 
-      # One line for measuring this workflow's draw on the shared pool.
+      # One line for measuring this workflow's draw on the shared pool, and one
+      # for the readiness pool when the reads used it.
       # `GET /rate_limit` is not counted against the limit it reports.
       - name: Log the remaining REST budget
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          READINESS_READ_TOKEN: ${{ secrets.PR_READINESS_READ_TOKEN }}
         run: |
           timeout 60 gh api rate_limit --jq '.resources.core
             | "pr-readiness: core rate limit -- \(.remaining)/\(.limit) remaining, resets \(.reset | todate)"' \
             || echo "pr-readiness: core rate limit could not be read"
+          if [ "$(cat "$RUNNER_TEMP/readiness-read-pool" 2>/dev/null)" = readiness ]; then
+            GH_TOKEN="$READINESS_READ_TOKEN" timeout 60 gh api rate_limit --jq '.resources.core
+              | "pr-readiness: readiness pool rate limit -- \(.remaining)/\(.limit) remaining, resets \(.reset | todate)"' \
+              || echo "pr-readiness: readiness pool rate limit could not be read"
+          fi

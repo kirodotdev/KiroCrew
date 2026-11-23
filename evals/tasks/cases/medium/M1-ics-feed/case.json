@@ -1,0 +1,27 @@
+{
+  "id": "M1-ics-feed",
+  "version": 2,
+  "kind": "code",
+  "tier": "medium",
+  "seed": "Work in the git repository at {repo}. Two bugs in `ics_feed.parse_ics`, which reads an iCalendar feed for a meetings dashboard; fix both.\n\n1. Cancelled meetings are still listed. The parser never reads the `STATUS` property, and calendar servers usually keep a called-off meeting in the feed with `STATUS:CANCELLED` instead of removing it, so the dashboard shows it as upcoming and the poller prepares a folder for a meeting that will not happen. Repro: a feed with one future event `SUMMARY:Cancelled customer review` and `STATUS:CANCELLED` returns that event; it should return nothing. Events marked `TENTATIVE` or `CONFIRMED`, and events with no status, stay listed.\n\n2. A large feed can hide the nearest meetings. The parser keeps events in feed order and stops reading once it holds `MAX_CALENDAR_EVENTS` (500), sorting by start only after that. iCalendar does not require events in time order, so when 500 later events come before a nearer one, the nearer one is never read. Repro: 500 events six days out followed by one event five minutes out, parsed with `days=7`, returns 500 events without the near one. It should return the 500 nearest events, including that one, sorted by start. Feeds can be several megabytes, so do not hold more events in memory than the cap needs.\n\nKeep the existing tests passing and add tests for both fixes. Commit your change on trunk.",
+  "rounds": 1,
+  "timeout_minutes": 60,
+  "spend_cap": {"credits": 80, "usd": 8},
+  "expected_wall_minutes": 15,
+  "tools": ["Read", "Edit", "Write", "Bash", "Glob", "Grep"],
+  "check_parts": [
+    "test_a_cancelled_event_is_not_listed",
+    "test_cancelled_is_read_trimmed_and_in_any_case",
+    "test_tentative_and_confirmed_events_stay_listed",
+    "test_the_cap_keeps_the_nearest_events_whatever_the_feed_order",
+    "test_a_reversed_feed_over_the_cap_returns_the_nearest_in_order",
+    "test_the_visible_tests_still_pass"
+  ],
+  "provenance": {
+    "source_prs": [28655, 28651],
+    "issues": [28652, 28572],
+    "merged": "2026-11",
+    "source_files": ["src/kiro_crew/apps/builtins/meetings/backend/providers/calendar.py"]
+  },
+  "canary": "kirocrew-eval-canary 4b81d0c6-m1-ics-feed"
+}

@@ -95,18 +95,70 @@ def _member_identity(db: sqlite3.Connection) -> tuple[str, str]:
     return str(row[1]), str(row[2])
 
 
+#: ``resolved path -> (file stamp, identity)`` for files that passed every check.
+_IDENTITY_CACHE: dict[Path, tuple[tuple, tuple[str, str]]] = {}
+#: Member stores per host are few; past this many the cache starts over.
+_IDENTITY_CACHE_MAX = 1024
+#: Each retained identity string is bounded independently of the entry count.
+_IDENTITY_CACHE_MAX_CHARS = 256
+
+
+def _file_stamp(path: Path) -> tuple:
+    """The database file's and its WAL's stat identity; any write or replacement moves it.
+
+    ctime is included because a write cannot set it back, so a damaged file that
+    kept its size and mtime still shows. A missing WAL and an empty one hold no
+    frames and stamp the same, because opening a WAL database creates an empty one.
+    """
+    stamps: list[tuple[int, int, int, int, int] | None] = []
+    for candidate in (path, path.with_name(path.name + "-wal")):
+        try:
+            st = candidate.stat()
+        except FileNotFoundError:
+            stamps.append(None)
+            continue
+        if candidate is not path and st.st_size == 0:
+            stamps.append(None)
+            continue
+        stamps.append((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+    return tuple(stamps)
+
+
 def read_member_database_identity(path: Path) -> tuple[str, str]:
-    """Inspect only an existing file; missing and old-format files are errors."""
+    """Inspect only an existing file; missing and old-format files are errors.
+
+    The full check (``PRAGMA quick_check`` reads every page) is cached per file
+    stamp when both identity strings fit ``_IDENTITY_CACHE_MAX_CHARS``. Longer
+    identities are returned uncached. The answer is kept while the database and
+    its WAL keep the same device, inode, size, mtime and ctime. A replaced,
+    rewritten or damaged file moves the stamp and is checked again. Only a file
+    that passed is kept, so a failure raises again on every call. A missing file
+    raises before the cache is read.
+    """
 
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
     sqlite3 = vm.sqlite3
 
-    db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    resolved = Path(path).resolve()
+    before = _file_stamp(resolved)
+    if before[0] is not None:
+        kept = _IDENTITY_CACHE.get(resolved)
+        if kept is not None and kept[0] == before:
+            return kept[1]
+    db = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)
     try:
-        return _member_identity(db)
+        identity = _member_identity(db)
     finally:
         db.close()
+    if any(len(value) > _IDENTITY_CACHE_MAX_CHARS for value in identity):
+        return identity
+    # Kept only when nothing wrote the file while it was checked.
+    if before[0] is not None and _file_stamp(resolved) == before:
+        if len(_IDENTITY_CACHE) >= _IDENTITY_CACHE_MAX:
+            _IDENTITY_CACHE.clear()
+        _IDENTITY_CACHE[resolved] = (before, identity)
+    return identity
 
 
 def create_member_database(path: Path, *, member_id: str, store_id: str) -> None:
@@ -749,9 +801,7 @@ def apply_consolidation(
             if metadata_rejected:
                 receipt["metadata_rejected"] = metadata_rejected
             if kind_routing is not None:
-                record_kind_routing_in_transaction(
-                    self, kind_routing, source, session_key=session_key
-                )
+                record_kind_routing_in_transaction(self, kind_routing, source)
             if dedup.mode != lesson_dedup.MODE_OFF:
                 dedup.count("lessons", receipt["lessons"] + receipt.get("lessons_merged", 0))
                 lesson_dedup.remember_pending_in_transaction(self.db, new_lessons)

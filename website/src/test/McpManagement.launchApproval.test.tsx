@@ -13,7 +13,8 @@
 // - below md, the paused row's two buttons take a full-width line under the
 //   server's name, so they cannot squeeze the name column
 // - a refusal with no approvable identity has no approve control, only a
-//   Remove button that takes the mark off (stub=false), never an approval
+//   Remove button that takes the mark off (stub=false), never an approval;
+//   one over the per-server launch cap names the cap
 // - an older gateway that sends no `launch_refused` keeps the plain states
 //
 // Every label is read from the catalog.
@@ -211,6 +212,26 @@ describe('a refused launch', () => {
     await waitFor(() => expect(shown()).toBe(false), { timeout: 5000 })
   })
 
+  it('asks to turn sharing on after a Review approval while sharing is off, as the table does', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
+      status({ enabled: false, launch_refused: { 'alpha-mcp': changed } }) as never,
+    )
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue({
+      name: 'alpha-mcp', commands: [['npx', '-y', 'alpha-mcp@2']], envs: [['MODE=fast']], complete: true, expected_launch: 'a:b',
+    } as never)
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: true } as never)
+
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: M('review_approve') }, { timeout: 5000 }))
+    const review = await screen.findByRole('dialog', undefined, { timeout: 5000 })
+    fireEvent.click(within(review).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'a:b'), { timeout: 5000 })
+    // Approving only clears the refusal; sharing itself is still off, so the
+    // same turn-on confirm the table's share action opens must follow.
+    expect(await screen.findByRole('button', { name: M('confirm_turn_on') }, { timeout: 5000 })).toBeTruthy()
+  })
+
   it('keeps the error path for a moved-past refusal that brings no launch to show', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
@@ -265,6 +286,23 @@ describe('a refused launch', () => {
     await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', false, undefined), { timeout: 5000 })
   })
 
+  it('says a row over the launch cap is past the approval limit, with no approve control', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
+      status({ launch_refused: { 'alpha-mcp': { reason: 'too_many_launches', complete: false, launch_cap: 64 } } }) as never,
+    )
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+
+    mount()
+    expect(await screen.findByRole('button', { name: rowName('remove_mark') }, { timeout: 5000 })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: rowName('new_command_button') })).toBeNull()
+    expect(screen.queryByRole('button', { name: rowName('approve_button') })).toBeNull()
+    expect(screen.getByText(M('approval_over_launch_cap', { cap: 64 }))).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: M('details_aria', { name: 'alpha-mcp' }) }))
+    expect(screen.getByText(M('approval_not_approvable_here'))).toBeTruthy()
+    expect(screen.getAllByText(M('approval_over_launch_cap', { cap: 64 })).length).toBe(1)
+  })
+
   it('closes the Turn on sharing confirm on Escape and turns nothing on', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ enabled: false }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
@@ -272,7 +310,7 @@ describe('a refused launch', () => {
     const setStub = vi.spyOn(api, 'mcpGatewaySetStub')
 
     mount()
-    const sharing = await screen.findByRole('switch', { name: M('hero_title') }, { timeout: 5000 })
+    const sharing = await screen.findByRole('switch', { name: M('share_switch_label') }, { timeout: 5000 })
     await waitFor(() => expect((sharing as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 })
     fireEvent.click(sharing)
     const dialog = await screen.findByRole('dialog', undefined, { timeout: 5000 })

@@ -41,6 +41,9 @@ def ui_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for ext in sorted(app_routes._ALLOWED_EXTENSIONS):
         (ui / f"asset{ext}").write_bytes(f"bytes-for-{ext}".encode())
     (ui / "chunks" / "lazy.mjs").write_bytes(b"chunk-bytes")
+    # An app the gateway installed: the UI route serves its scripts from the copy
+    # taken of every installed app (``protected_app_ui``).
+    (root / APP / "installed.json").write_text('{"name": "demo-app"}', encoding="utf-8")
     monkeypatch.setattr(app_routes, "apps_dir", lambda: root)
     return ui
 
@@ -162,6 +165,64 @@ async def test_a_LINKED_ui_root_still_serves_under_the_dev_grant(
     status, body = await _get(f"/apps/{APP}/ui/index.mjs")
     assert status == 200
     assert body == b"dev-bytes"
+
+
+@pytest.mark.asyncio
+async def test_a_live_dev_script_is_opened_under_the_root_that_was_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The root judged for the dev exemption is the root opened, never a re-resolve."""
+    from kiro_crew.apps import protected_app_ui
+
+    monkeypatch.setattr(protected_app_ui, "enabled", lambda: True)
+    root = tmp_path / "apps"
+    (root / APP).mkdir(parents=True)
+    real = tmp_path / "source-ui"
+    real.mkdir()
+    (real / "index.mjs").write_bytes(b"dev-bytes")
+    make_dir_link(root / APP / "ui", real)
+    monkeypatch.setattr(app_routes, "apps_dir", lambda: root)
+    monkeypatch.setattr(dev_mode, "apps_dir", lambda: root)
+    dev_mode._write_dev_grants({APP: os.path.realpath(real)})
+    monkeypatch.setattr(dev_mode, "is_dev_mode", lambda name: name == APP)
+    swapped = root / APP / "inside"
+    swapped.mkdir()
+    (swapped / "index.mjs").write_bytes(b"swapped-in")
+    real_realpath = os.path.realpath
+    calls = {"n": 0}
+
+    def _swap_after_first(p, *a, **k):  # type: ignore[no-untyped-def]
+        out = real_realpath(p, *a, **k)
+        if str(p).endswith(f"{APP}/ui") or str(p).endswith(f"{APP}\\ui"):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                return str(swapped)
+        return out
+
+    monkeypatch.setattr(app_routes.os.path, "realpath", _swap_after_first)
+    status, body = await _get(f"/apps/{APP}/ui/index.mjs")
+    assert b"swapped-in" not in body
+    assert (status, body) == (200, b"dev-bytes")
+
+
+@pytest.mark.asyncio
+async def test_a_dev_grant_INSIDE_the_install_still_serves_scripts_from_the_copy(
+    ui_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dev-mode root inside the install is the sandbox-writable tree itself: the
+    toggle route grants it without the operator's host-side confirmation."""
+    from kiro_crew.apps import protected_app_ui
+
+    monkeypatch.setattr(protected_app_ui, "enabled", lambda: True)
+    status, _ = await _get(f"/apps/{APP}/ui/asset.mjs")  # the copy is taken
+    assert status == 200
+    monkeypatch.setattr(dev_mode, "apps_dir", app_routes.apps_dir)
+    dev_mode._write_dev_grants({APP: os.path.realpath(ui_root)})
+    monkeypatch.setattr(dev_mode, "is_dev_mode", lambda name: name == APP)
+    (ui_root / "asset.mjs").write_bytes(b"changed-on-disk")
+    status, body = await _get(f"/apps/{APP}/ui/asset.mjs")
+    assert status == 200
+    assert body == b"bytes-for-.mjs"
 
 
 @pytest.mark.asyncio
@@ -471,6 +532,14 @@ def test_a_NUL_in_the_final_name_is_refused_at_the_resolver(ui_root: Path) -> No
     PARENT). Asserted at the resolver because a NUL does not survive the HTTP
     round trip."""
     assert app_routes._open_ui_file(APP, "bad\x00.js") in ("invalid", "not_found")
+
+
+def test_a_NUL_in_the_app_name_is_refused_not_raised(ui_root: Path) -> None:
+    """Resolving the ui root raises ``ValueError`` for a name with a NUL on POSIX; the
+    resolver refuses it (400 or 404, as before scripts could be served from a copy)
+    instead of letting the request end as a 500."""
+    assert app_routes._open_ui_file("demo\x00", "asset.css") in ("invalid", "not_found")
+    assert app_routes._open_ui_file("demo\x00", "index.mjs") in ("invalid", "not_found")
 
 
 def test_the_windows_branch_also_refuses_an_unencodable_name(
@@ -895,3 +964,37 @@ async def test_a_file_truncated_mid_stream_never_completes_a_gzip_body(
         assert resp.headers["Content-Encoding"] == "gzip"
         with pytest.raises(ClientPayloadError):
             await resp.read()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "%5C%5Chost.invalid%5Cshare%5Cx.js",  # \\host\share\x.js: UNC, drops the ui root
+        "%5C%5C%3F%5CUNC%5Chost.invalid%5Cshare%5Cx.js",  # \\?\UNC\host\share\x.js
+        "chunks%5Cx.js",  # any backslash
+        "C%3A/Windows/x.js",  # a drive drops the ui root too
+        "asset.js%3Azone",  # an NTFS stream name
+    ],
+)
+async def test_a_backslash_or_colon_path_is_refused_before_any_filesystem_call(
+    ui_root: Path, monkeypatch: pytest.MonkeyPatch, encoded: str
+) -> None:
+    """On Windows the join and the resolve of a UNC name open SMB to its host."""
+    reached: list[str] = []
+
+    def tripwire(name: str, file_path: str) -> str:
+        reached.append(file_path)
+        return "not_found"
+
+    monkeypatch.setattr(app_routes, "_open_ui_file", tripwire)
+    status, _ = await _get(f"/apps/{APP}/ui/{encoded}")
+    assert status == 400
+    assert reached == []
+
+
+@pytest.mark.asyncio
+async def test_a_forward_slash_asset_still_serves_beside_the_screen(ui_root: Path) -> None:
+    status, body = await _get(f"/apps/{APP}/ui/chunks/lazy.mjs")
+    assert status == 200
+    assert body == b"chunk-bytes"

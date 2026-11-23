@@ -1,10 +1,11 @@
 /**
- * Settings -> Remote Crew -> Set up a new one: the size and provisioner cards,
- * the prerequisite rows, the launch progress card, the "Setting up" row, the
+ * Settings -> Remote Crew -> Add Crew -> Set up a new Crew: the size and
+ * provisioner cards, the prerequisite rows, the launch progress card, the
+ * "Setting up" row of My Crews (its status opens the steps and Cancel), the
  * launch cancel, and the device-code sign-in block that both the progress card
  * and a crew row render. One of the owners `RemoteCrewPanel.tsx` composes.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   Rocket,
   RefreshCw,
@@ -16,6 +17,8 @@ import {
   ExternalLink,
   Loader2,
   KeyRound,
+  ChevronDown,
+  SkipForward,
   X,
 } from 'lucide-react'
 import {
@@ -23,32 +26,39 @@ import {
   type RemoteProvisioner,
 } from '../../api/client'
 import { Card, Btn, Badge } from '../../components/ui'
+import { BUILTIN_PROVISIONER_ID } from '../../utils/remoteCrew'
 import ErrorNotice from '../../components/ErrorNotice'
 import type { ErrorReport } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
+import { fmtCurrency, fmtElapsed } from '../../i18n/format'
+import { useSecondClock } from '../../hooks/useSecondClock'
 import {
-  isTerminal, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, type SizeTier,
-  tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice,
+  isTerminal, isRemoving, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, signinSkipped, type SizeTier,
+  tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice, HOURS_PER_MONTH, SIZE_FLAG,
+  launchCardDismissable,
 } from './remoteCrewPanelModel'
 
 /** One selectable size card. Shared by the arm64 ladder and the x86 lane so the
  *  disclosure offers real choices rather than describing sizes it cannot select. */
 export function SizeCard({ tier, on, onPick }: { tier: SizeTier; on: boolean; onPick: (k: SizeTier['key']) => void }) {
+  const priceId = useId()
   return (
     <button
       type="button"
       onClick={() => onPick(tier.key)}
       aria-pressed={on}
       aria-label={`${tierLabel(tier.family)} · ${tier.arch}`}
+      aria-describedby={priceId}
       className={`w-full text-left flex items-start gap-3 rounded-md border p-3.5 transition-all ${on ? 'border-accent bg-accent-subtle shadow-[0_0_0_3px_var(--accent-glow)]' : 'border-border-strong bg-bg-elevated hover:border-border-strong'}`}
     >
       <span className={`mt-0.5 w-4 h-4 shrink-0 rounded-full border-[1.5px] ${on ? 'border-accent bg-accent' : 'border-border-strong'}`} />
       <span className="min-w-0">
-        <span className="font-bold text-[13px] text-text-strong flex items-center gap-2">
+        <span className="font-bold text-[13px] text-text-strong flex flex-wrap items-center gap-2">
           {tierLabel(tier.family)}
           {tier.recommended && <Badge variant="aim">{i18nT('pages.settings.remoteCrewPanel.default_tag')}</Badge>}
           <span className="font-normal text-muted">· {i18nT('pages.settings.remoteCrewPanel.subagents', { n: tier.subagents })}</span>
+          <code translate="no" className="font-mono font-normal text-[12px] text-muted">{SIZE_FLAG} {tier.key}</code>
         </span>
         <span className="block font-mono text-[12px] text-muted mt-1">
           {i18nT('pages.settings.remoteCrewPanel.tier_spec', {
@@ -57,6 +67,12 @@ export function SizeCard({ tier, on, onPick }: { tier: SizeTier; on: boolean; on
             vcpu: tier.vcpu,
             ramGb: tier.ramGb,
             diskGb: tier.diskGb,
+          })}
+        </span>
+        <span id={priceId} className="block text-[12px] text-text mt-1">
+          {i18nT('pages.settings.remoteCrewPanel.tier_price', {
+            hourly: fmtCurrency(tier.approxUsdPerHr, 'USD', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            monthly: fmtCurrency(tier.approxUsdPerHr * HOURS_PER_MONTH, 'USD', { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
           })}
         </span>
         <span className="block text-[12px] text-text mt-1.5">{tierWhy(tier.family)}</span>
@@ -107,7 +123,7 @@ export function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetchin
   notice?: SigninNotice | null
   compact?: boolean
   /** The crew this block belongs to, when nothing directly above the block names
-   *  it. In `Your crews` the block sits among several rows, and an unnamed
+   *  it. In `My Crews` the block sits among several rows, and an unnamed
    *  "This crew" there attributes the sign-in to whichever row the reader
    *  happened to be looking at. The setup card names the crew in its own header,
    *  so it passes nothing and keeps the shorter title. */
@@ -474,56 +490,165 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
   )
 }
 
-export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel: (id: string) => void; cancelling: boolean }) {
-  const total = job.steps.length || 4
-  const current = Math.min(total, job.steps.filter(s => s.state === 'done').length + 1)
-  const active = job.steps.find(s => s.state === 'active')
+/** The built-in lane's "Ready in about 6 minutes" estimate, in seconds. */
+const BUILTIN_ESTIMATE_S = 6 * 60
+
+/** Whether `step` is the running provision step, the one long wait of a launch. */
+function isRunningProvision(step: LaunchJob['steps'][number] | undefined): boolean {
+  return step?.key === 'provision' && step.state === 'active'
+}
+
+/** "4m 12s so far" while the provision step runs, measured from Launch
+ *  (`created_at`). Past the 6-minute estimate a built-in job says so; another
+ *  provisioner made no such estimate, so it keeps the plain line. */
+function ProvisionElapsed({ job, className }: { job: LaunchJob; className: string }) {
+  const startMs = job.created_at * 1000
+  // Clamped: a gateway clock ahead of this browser's must not read as negative time.
+  const seconds = useSecondClock(nowMs => Math.max(0, Math.floor((nowMs - startMs) / 1000)))
+  const elapsed = fmtElapsed(seconds * 1000, { wholeSeconds: true })
+  const builtin = (job.provider_id ?? BUILTIN_PROVISIONER_ID) === BUILTIN_PROVISIONER_ID
   return (
-    // Stacked below `sm`, side by side above it. The cancel label names its blast
-    // radius ("Cancel and remove the crew"), and that long string in a
-    // `shrink-0` slot left the crew name and the step line one word per line on a
-    // phone -- for the whole provisioning wait. Wrapping the label instead would
-    // keep the squeeze; the button gets its own line.
-    <div className="flex flex-col sm:flex-row items-stretch sm:items-start sm:justify-between gap-2 sm:gap-3 py-2.5 border-b border-border last:border-b-0">
-      <div className="flex items-start gap-3 min-w-0">
-        <span className="mt-0.5 w-8 h-8 shrink-0 grid place-items-center rounded-md bg-accent-subtle text-accent">
-          <Rocket size={16} />
-        </span>
-        <div className="min-w-0">
-          <div className="text-text-strong text-sm font-medium flex items-center gap-2 flex-wrap">
-            <span className="inline-block w-2 h-2 rounded-full bg-accent" aria-hidden />
-            {i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })}
-            <Badge variant="aim">{i18nT('pages.settings.remoteCrewPanel.setting_up')}</Badge>
-          </div>
-          <div className="text-[12px] text-muted mt-0.5">
-            {job.region}
-            {job.instance_id ? ` · ${job.instance_id}` : ''}
-          </div>
-          <div className="mt-1.5 rounded-md border border-accent-subtle bg-bg-elevated px-2.5 py-2">
-            <div className="text-[12px] text-text-strong font-medium flex items-center gap-1.5">
-              <RefreshCw size={12} className="animate-spin" />
-              {i18nT('pages.settings.remoteCrewPanel.step_progress', { current, total })}
-              {active?.label ? ` — ${active.label}` : ''}
-            </div>
-            <div className="text-[11px] text-muted mt-0.5">{i18nT('pages.settings.remoteCrewPanel.keeps_running')}</div>
-          </div>
-        </div>
-      </div>
-      <div className="sm:shrink-0 flex items-center gap-2 flex-wrap">
-        {/* Names what it removes. Only unregistered launches reach this row (a
-            sign-in retry is a crew row below), so this is always the teardown
-            case — but it reads the same test as the card rather than hardcoding
-            the answer, so the copy cannot drift from the filter above it. */}
-        <CancelLaunchBtn job={job} onCancel={onCancel} cancelling={cancelling} />
-      </div>
+    <div className={className} data-testid="provision-elapsed">
+      {builtin && seconds > BUILTIN_ESTIMATE_S
+        ? i18nT('pages.settings.remoteCrewPanel.provision_past_estimate', { elapsed })
+        : i18nT('pages.settings.remoteCrewPanel.provision_elapsed', { elapsed })}
     </div>
   )
 }
 
-/** One AWS prerequisite row (ok / failed) with optional command + actions.
+export function SettingUpRow({
+  job, onCancel, cancelling, onRestartSignin, restartingSignin, onFetchSignin, fetchingSignin, signinNotice,
+}: {
+  job: LaunchJob
+  onCancel: (id: string) => void
+  cancelling: boolean
+  onRestartSignin: (id: string) => void
+  restartingSignin: boolean
+  onFetchSignin: (id: string) => void
+  fetchingSignin: boolean
+  signinNotice: SigninNotice | null
+}) {
+  const total = job.steps.length || 4
+  const current = Math.min(total, job.steps.filter(s => s.state === 'done').length + 1)
+  const [open, setOpen] = useState(false)
+  const name = i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })
+  const nameId = useId()
+  const stepsId = useId()
+  // The launch is waiting on the reader, not on the machine. The code box sits
+  // outside the disclosure: a reader who comes back to My Crews must see the
+  // code without first guessing that a "Setting up" pill hides it.
+  const waitingOnYou = job.status === 'awaiting_signin'
+  return (
+    <div className="py-2.5 border-b border-border last:border-b-0" data-testid="setting-up-row">
+      <div className="flex items-start gap-3 min-w-0 pl-[1.875rem]">
+        <span className="mt-0.5 w-8 h-8 shrink-0 grid place-items-center rounded-md bg-accent-subtle text-accent">
+          <Rocket size={16} />
+        </span>
+        <div className="min-w-0">
+          <div id={nameId} className="text-text-strong text-sm font-medium truncate">{name}</div>
+          <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[12px] text-muted">
+            {/* The status is the disclosure: it opens the launch steps and Cancel. */}
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={stepsId}
+              aria-describedby={nameId}
+              onClick={() => setOpen(v => !v)}
+              className={`inline-flex items-center gap-1 rounded-full font-semibold px-2 py-px focus-ring ${waitingOnYou ? 'bg-warn-subtle text-warn-text' : 'bg-accent-subtle text-accent'}`}
+              data-testid="setting-up-status"
+            >
+              {waitingOnYou
+                ? <><KeyRound size={12} aria-hidden /> {i18nT('pages.settings.remoteCrewPanel.awaiting_sign_in_progress', { current, total })}</>
+                : i18nT('pages.settings.remoteCrewPanel.setting_up_progress', { current, total })}
+              <ChevronDown size={12} aria-hidden className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+            </button>
+            {/* The built-in lane makes an EC2 crew reached over SSM; another lane's
+                transport is its own, so it names none here. */}
+            {(job.provider_id ?? BUILTIN_PROVISIONER_ID) === BUILTIN_PROVISIONER_ID && (
+              <>
+                <span aria-hidden>·</span>
+                <Badge variant="muted">{i18nT('pages.settings.remoteCrewPanel.source_ec2')} · {i18nT('pages.settings.remoteCrewPanel.type_ssm')}</Badge>
+              </>
+            )}
+            <span>{job.region}{job.instance_id ? ` · ${job.instance_id}` : ''}</span>
+          </div>
+          {job.steps.some(isRunningProvision) && <ProvisionElapsed job={job} className="text-[11px] text-muted mt-0.5" />}
+        </div>
+      </div>
+      {waitingOnYou && (
+        <div className="ml-[4.25rem]">
+          {/* Announced once per code: the text changes only when a new code
+              arrives, and a polite region speaks only on a change. */}
+          <span role="status" className="sr-only" data-testid="setting-up-signin-announce">
+            {job.signin ? i18nT('pages.settings.remoteCrewPanel.sign_in_code_announce', { name, code: job.signin.code }) : ''}
+          </span>
+          <SigninPromptBlock
+            job={job}
+            onRestart={onRestartSignin}
+            restarting={restartingSignin}
+            onFetch={onFetchSignin}
+            fetching={fetchingSignin}
+            notice={signinNotice}
+            compact
+            crewName={name}
+          />
+        </div>
+      )}
+      {open && (
+        <div id={stepsId} className="mt-2 ml-[4.25rem] text-[12px]">
+          <div className="text-[13px] text-text-strong font-medium mb-1.5">
+            {i18nT('pages.settings.remoteCrewPanel.launching_crew', { name })}
+          </div>
+          <ol className="m-0 p-0 list-none space-y-1">
+            {job.steps.map(step => (
+              <li key={step.key} className="flex items-center gap-2">
+                {waitingOnYou && step.key === 'signin' && step.state !== 'done' && step.state !== 'failed'
+                  // The reader's turn, not the machine's: a spinner here said
+                  // there was nothing to do.
+                  ? <KeyRound size={13} className="text-warn shrink-0" data-testid="setting-up-step-waiting-signin" />
+                  : step.state === 'done'
+                  ? <CheckCircle size={13} className="text-ok shrink-0" />
+                  : step.state === 'failed'
+                    ? <AlertTriangle size={13} className="text-danger shrink-0" />
+                    : step.state === 'active'
+                      ? <Loader2 size={13} className="text-accent animate-spin shrink-0" />
+                      : <span className="inline-block w-[13px] h-[13px] rounded-full border border-border-strong shrink-0" />}
+                <span className={step.state === 'pending' ? 'text-muted' : 'text-text'}>{step.label}</span>
+              </li>
+            ))}
+          </ol>
+          <div className="text-[11px] text-muted mt-1.5">{i18nT('pages.settings.remoteCrewPanel.keeps_running')}</div>
+          {/* Names what it removes. Only unregistered launches reach this row (a
+              sign-in retry is a crew row above), so this is always the teardown
+              case — but it reads the same test as the card rather than hardcoding
+              the answer, so the copy cannot drift from the filter around it. */}
+          <CancelLaunchBtn className="mt-2" job={job} onCancel={onCancel} cancelling={cancelling} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A prerequisite row's next step: plain text, then an optional external link. */
+function RowSteps({ steps }: { steps?: { text: string; link?: { href: string; label: string } } }) {
+  if (!steps) return null
+  return (
+    <>
+      <p className="mt-1.5 text-[12px] text-text">{steps.text}</p>
+      {steps.link ? (
+        <a className="mt-1 w-fit flex items-center gap-1 text-[12px] text-accent font-medium hover:underline" href={steps.link.href} target="_blank" rel="noreferrer">
+          {steps.link.label} <ExternalLink size={12} aria-hidden="true" />
+        </a>
+      ) : null}
+    </>
+  )
+}
+
+/** One AWS prerequisite row (ok / failed / not checked / still checking) with optional command + actions.
  *  Every row gates Launch, so a failed one is drawn as an error, not a warning. */
 export function PrereqRow({
   ok,
+  pending,
   stale,
   title,
   detail,
@@ -540,7 +665,11 @@ export function PrereqRow({
   steps,
   commandNote,
 }: {
-  ok: boolean
+  /** `null`: not checked, because a check it depends on failed. Drawn as a
+   *  hollow ring, also while `stale`: there is no verdict to grey out. */
+  ok: boolean | null
+  /** The check is still running: a spinner in a hollow ring in place of the `ok` mark. */
+  pending?: boolean
   /** The profile or Region changed since this verdict: its mark is greyed,
    *  while its text and actions stay readable and live. */
   stale?: boolean
@@ -577,8 +706,8 @@ export function PrereqRow({
 }) {
   return (
     <li className="flex items-start gap-3 py-2.5 border-b border-border last:border-b-0">
-      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${stale ? 'bg-border-strong text-muted' : ok ? 'bg-ok text-ok-fg' : 'bg-danger text-danger-fg'}`}>
-        {ok ? <Check size={11} /> : <X size={11} />}
+      <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 grid place-items-center rounded-full ${pending ? 'border border-border-strong text-muted' : ok === null ? 'border border-border-strong' : stale ? 'bg-border-strong text-muted' : ok ? 'bg-ok text-ok-fg' : 'bg-danger text-danger-fg'}`}>
+        {pending ? <RefreshCw size={11} className="animate-spin" /> : ok === null ? null : ok ? <Check size={11} /> : <X size={11} />}
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text-strong">{title}</div>
@@ -602,18 +731,14 @@ export function PrereqRow({
             ) : (
               <ErrorNotice variant="inline" showIcon={false} messageClassName="whitespace-pre-wrap" message={failure} report={failureReport} askAgent />
             )}
-            {steps ? (
-              <>
-                <p className="mt-1.5 text-[12px] text-text">{steps.text}</p>
-                {steps.link ? (
-                  <a className="mt-1 w-fit flex items-center gap-1 text-[12px] text-accent font-medium hover:underline" href={steps.link.href} target="_blank" rel="noreferrer">
-                    {steps.link.label} <ExternalLink size={12} aria-hidden="true" />
-                  </a>
-                ) : null}
-              </>
-            ) : null}
+            <RowSteps steps={steps} />
           </div>
-        ) : detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{detail}</div> : null}
+        ) : (
+          <>
+            {detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{detail}</div> : null}
+            <RowSteps steps={steps} />
+          </>
+        )}
         {command ? (
           <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
             {command}
@@ -658,8 +783,11 @@ export function PrereqRow({
 /** The launch-in-progress card (setup tab): 4 steps + device-code sign-in. */
 export function LaunchProgressCard({
   job, onCancel, onRestartSignin, restartingSignin, onFetchSignin, fetchingSignin, signinNotice, cancelling,
+  onSkipSignin, skippingSignin, onDismiss,
 }: {
   job: LaunchJob
+  /** Close the card of a launch that needs nothing more; absent, no close button. */
+  onDismiss?: (id: string) => void
   onCancel: (id: string) => void
   onRestartSignin: (id: string) => void
   restartingSignin: boolean
@@ -667,8 +795,16 @@ export function LaunchProgressCard({
   fetchingSignin: boolean
   signinNotice: SigninNotice | null
   cancelling: boolean
+  /** Go on to Connect without the Kiro sign-in, while a launch signs in. */
+  onSkipSignin: (id: string) => void
+  skippingSignin: boolean
 }) {
   const terminal = isTerminal(job)
+  const skipped = signinSkipped(job)
+  // Only a launch that has not registered its crew yet: on a registered crew
+  // the sign-in is a retry, and its Cancel already keeps the crew.
+  const canSkip = !terminal && !skipped && !isRegistered(job)
+    && job.steps.some(st => st.key === 'signin' && st.state === 'active')
   // The gateway deliberately KEEPS job.signin when the sign-in wait ran out (it is
   // cleared only once sign-in is confirmed, or when a restart reaps the job), so the
   // user can still finish from the dashboard. Gating the block on `awaiting_signin`
@@ -681,7 +817,7 @@ export function LaunchProgressCard({
   // A surviving code stays visible on ANY terminal job, `needsSignin` or not: the
   // gateway keeps it precisely so setup can be finished here, and a job whose
   // steps do not name the connect step would otherwise lose it.
-  const showSignin = job.status === 'awaiting_signin' || unsigned || signinInFlight || (terminal && !!job.signin)
+  const showSignin = !skipped && (job.status === 'awaiting_signin' || unsigned || signinInFlight || (terminal && !!job.signin))
   return (
     <Card>
       <div className="flex items-center gap-2 flex-wrap mb-3">
@@ -689,6 +825,8 @@ export function LaunchProgressCard({
           ? unsigned
             ? <Badge variant="warn" title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}><KeyRound className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.needs_sign_in')}</Badge>
             : <Badge variant="ok">{i18nT('pages.settings.instancesPanel.connect')}</Badge>
+          : job.status === 'cancelled'
+            ? <Badge variant="muted">{i18nT('pages.settings.remoteCrewPanel.launch_cancelled')}</Badge>
           : job.status === 'failed'
             ? <Badge variant="err">{i18nT('pages.settings.remoteCrewPanel.launch_failed_title')}</Badge>
             // "Launching…" under a card whose whole body is asking the reader to
@@ -713,12 +851,27 @@ export function LaunchProgressCard({
               // card read as two states the reader had to reconcile.
               : <Badge variant="aim">{i18nT('pages.settings.remoteCrewPanel.setting_up')}</Badge>}
         <span className="text-text-strong text-sm font-medium">{i18nT('pages.settings.remoteCrewPanel.cloud_crew_name', { tag: job.tag })}</span>
+        {/* A custom-type launch names the type it runs, not a tier it did not use. */}
+        {job.instance_type && (
+          <span className="text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.custom_type_job', { instanceType: job.instance_type })}</span>
+        )}
         {/* A sign-in retry and a launch both show this button, and they destroy
             very different things — the reader "would not dare click it" without
             knowing which. Split on the same `isRegistered` test the rest of the
             card uses. */}
         {!terminal && (
           <CancelLaunchBtn className="ml-auto" job={job} onCancel={onCancel} cancelling={cancelling} />
+        )}
+        {onDismiss && launchCardDismissable(job) && (
+          <Btn
+            className="ml-auto"
+            onClick={() => onDismiss(job.id)}
+            data-testid="launch-card-dismiss"
+          >
+            {/* Visible words, not a bare X: on a card about a paid machine an X
+                reads as "delete the crew". The card's done line says it stays. */}
+            <X size={14} aria-hidden="true" /> {i18nT('pages.settings.remoteCrewPanel.hide_launch_card')}
+          </Btn>
         )}
       </div>
       <ol className="m-0 p-0 list-none space-y-2">
@@ -739,7 +892,11 @@ export function LaunchProgressCard({
                   sign-in lands -- a warn-tinted hollow circle, so the reader does
                   not see the same key on a status and a step and read them as
                   one thing. */}
-              {waiting && step.key === 'signin' && (step.state === 'skipped' || step.state === 'pending')
+              {skipped && step.key === 'signin' && step.state === 'skipped'
+                // Skipped by choice: not the waiting key, which says the reader
+                // still owes something, and not a failure.
+                ? <SkipForward size={15} className="text-muted" data-testid="step-skipped-signin" aria-hidden="true" />
+                : waiting && step.key === 'signin' && (step.state === 'skipped' || step.state === 'pending')
                 ? <KeyRound size={15} className="text-warn" data-testid="step-waiting-signin" />
                 : waiting && step.key === 'connect' && step.state === 'done'
                 ? <Circle size={15} className="text-warn" data-testid="step-waiting-connect" aria-hidden="true" />
@@ -759,6 +916,15 @@ export function LaunchProgressCard({
                   `detail`), and `job.error` renders through the ErrorNotice below.
                   Painting it red here too would show one failure twice. */}
               {step.detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{step.detail}</div> : null}
+              {isRunningProvision(step) && <ProvisionElapsed job={job} className="text-[12px] text-muted mt-0.5" />}
+              {step.key === 'signin' && canSkip && (
+                <Btn className="mt-1.5" onClick={() => onSkipSignin(job.id)} disabled={skippingSignin} data-testid="signin-skip">
+                  <SkipForward className="lucide-inline" aria-hidden="true" />{' '}
+                  {skippingSignin
+                    ? i18nT('pages.settings.remoteCrewPanel.skipping_sign_in')
+                    : i18nT('pages.settings.remoteCrewPanel.skip_sign_in')}
+                </Btn>
+              )}
             </div>
           </li>
         ))}
@@ -775,18 +941,28 @@ export function LaunchProgressCard({
         />
       )}
 
+      {/* The one place that says where to sign in later; the crew row stays plain. */}
+      {skipped && (
+        <p className="mt-3 text-[12px] text-muted" data-testid="signin-skipped-note">
+          {i18nT('pages.settings.remoteCrewPanel.sign_in_skipped_note')}
+        </p>
+      )}
+
       {/* No hand-off: this card sits in the setup flow whose form fields
           (name, host, size) are still live — navigating away discards them. */}
       {job.error ? <ErrorNotice message={job.error} className="mt-3" /> : null}
-      <p className="mt-3 text-[12px] text-muted">
-        {job.status === 'done'
-          ? unsigned
-            // "your new instance is ready" under a Needs sign-in badge is the
-            // exact claim this whole card exists to stop making.
-            ? i18nT('pages.settings.remoteCrewPanel.launch_done_unsigned')
-            : i18nT('pages.settings.remoteCrewPanel.launch_done')
-          : i18nT('pages.settings.remoteCrewPanel.runs_on_gateway')}
-      </p>
+      {/* A cancelled launch has nothing left to run once its removal ends. */}
+      {(job.status !== 'cancelled' || isRemoving(job)) && (
+        <p className="mt-3 text-[12px] text-muted">
+          {job.status === 'done'
+            ? unsigned
+              // "your new instance is ready" under a Needs sign-in badge is the
+              // exact claim this whole card exists to stop making.
+              ? i18nT('pages.settings.remoteCrewPanel.launch_done_unsigned')
+              : i18nT('pages.settings.remoteCrewPanel.launch_done')
+            : i18nT('pages.settings.remoteCrewPanel.runs_on_gateway')}
+        </p>
+      )}
     </Card>
   )
 }

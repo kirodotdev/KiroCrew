@@ -4,7 +4,7 @@ import { isStopEvent } from '../../lib/stopEvent'
 import { isRetryNotice } from '../../lib/retryNotice'
 import { isNoteRow } from '../../lib/noteContract'
 import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
-import { findLastOptionMarker, stripOptionMarkers } from './optionMarker'
+import { findLastOptionMarker, stripMarkersForDisplay, optionsOf } from './optionMarker'
 import { extractInlineThinking } from './inlineThinking'
 import { hasGrillCard } from './grillMarker'
 
@@ -31,15 +31,16 @@ export function parseOptions(content: string): ParsedOptions {
   // exactly one pair is defined per match. `??` (not `||`) so an empty label
   // string from the matched branch is kept rather than falling through.
   const multi = !!(last[1] ?? last[3]) // [OPTIONS:] is the multi-select syntax; [OPTION:] is single
-  const labels = (last[2] ?? last[4]) ?? ''
-  const sep = labels.includes('|') ? '|' : ','
-  const options = labels.split(sep).map(o => o.trim()).filter(Boolean)
+  // `optionsOf`, not a local split: `stripMarkersForDisplay` asks the SAME question to
+  // decide whether this marker renders anything, and two copies of the split are how a
+  // marker that offers nothing was treated as its own renderer.
+  const options = optionsOf(last)
   // Strip ALL accepted markers from the displayed text (not just the last) so a stray
   // earlier marker can't leak as raw "[OPTION: …]" syntax to the user; options still
-  // come from the LAST marker (computed above). A REFUSED candidate is deliberately
-  // left in place — it is prose the user should still see, and removing it is the
-  // defect the check exists to prevent.
-  const text = stripOptionMarkers(content).trim()
+  // come from the LAST marker. A REFUSED candidate is deliberately left in place — it is
+  // prose the user should still see, and removing it is the defect the check exists to
+  // prevent. `searchableText` uses the same helper so screen and search agree.
+  const text = stripMarkersForDisplay(content).trim()
   return { text, options, multi }
 }
 
@@ -191,8 +192,10 @@ export function deriveFollowUpOptions(
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
     // A say-nothing reply (a quiet patrol cycle's bare U+200B) is not drawn, so the
     // question above it is still the newest thing the user reads: its chips stay.
-    // Same rule the transcript and the assistant footer use to skip that row.
-    if (isHiddenInvisibleAssistantRow(m)) continue
+    // Same rule the transcript and the assistant footer use to skip that row. A
+    // reply that is only a steering note asks nothing either; a steer the user
+    // sent left a user row, which ends this scan before it gets here.
+    if (isHiddenInvisibleAssistantRow(m, { steerChip: false })) continue
     // A note may carry options, so a zero-token cron can offer an action without an LLM turn.
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
     if (m.role === 'inject' && isNoteRow(m) && m.content) {

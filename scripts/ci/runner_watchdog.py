@@ -37,11 +37,15 @@ run's jobs and calls a run ORPHANED when at least one job is still ``queued``,
 carries a ``codebuild-`` label, and has waited longer than
 ``Policy.orphan_after`` (15 minutes). CodeBuild's measured queue-to-start on this
 repository is under a minute, so a quarter of an hour is far outside any
-legitimate wait. For each orphaned run, oldest first across every watched
-workflow and at most ``Policy.max_runs`` (5) per invocation as one global cap,
-it cancels the run, waits for the cancellation to land, then
-re-runs it. The re-run creates a new run attempt, which produces fresh
-``workflow_job.queued`` webhooks and a fresh runner label.
+legitimate wait. For each orphaned run, push runs first and oldest first within
+each event, across every watched workflow and at most ``Policy.max_runs`` (5) per
+invocation as one global cap, it cancels the run, waits for the cancellation to
+land, then re-runs it. With both kinds waiting and two or more slots free, the
+last slot goes to the oldest non-push run. A superseded first attempt is only
+cancelled (and force-cancelled at once), which frees its concurrency group; that
+cancel needs no re-run reserve, only time left in the tick. The re-run creates a
+new run attempt, which produces fresh ``workflow_job.queued`` webhooks and a fresh
+runner label.
 
 The watched set is a fixed tuple, not read from disk, and it is a client-side
 FILTER on the repo-wide listing rather than a set of endpoints to poll: a
@@ -256,6 +260,8 @@ WATCHED_WORKFLOWS: tuple[str, ...] = (
     "release-lts.yml",
     "release.yml",
     "sensitive-change-review.yml",
+    # Calls build-wheel.yml, whose fleet job runs in this caller's run.
+    "verify-cli-publish.yml",
 )
 # Put the workflows that carry routine pull-request traffic ahead of release
 # and audit workflows when looking for recent fleet starts.
@@ -1198,7 +1204,21 @@ def run_watchdog(
     )
     slots_left = max(0, policy.max_runs - slots_used)
 
-    orphaned = [v for v in verdicts if v.verdict == ORPHANED]
+    # Push runs take the cap first, oldest first within each event. `ci.yml` and
+    # `fast-gate.yml` cancel in progress only on `pull_request`, so a stuck push
+    # run keeps its group's running slot and every later push to its branch is
+    # evicted behind it, while a stuck pull-request run is cancelled by its pull
+    # request's next push. Oldest first across both would spend a burst's cap on
+    # pull-request runs and leave `main` held. When both kinds wait and at least
+    # two slots are free, the last slot goes to the oldest other run, so push
+    # orphans that are left untouched every tick cannot starve the rest.
+    orphaned = sorted(
+        (v for v in verdicts if v.verdict == ORPHANED), key=lambda v: v.event != "push"
+    )
+    oldest_other = next((v for v in orphaned if v.event != "push"), None)
+    if oldest_other is not None and slots_left >= 2 and oldest_other not in orphaned[:slots_left]:
+        orphaned.remove(oldest_other)
+        orphaned.insert(slots_left - 1, oldest_other)
     to_heal, deferred = orphaned[:slots_left], orphaned[slots_left:]
 
     fresh: dict[str, Any] = {}

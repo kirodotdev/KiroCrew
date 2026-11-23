@@ -91,6 +91,7 @@ from kiro_crew.security import (
     is_sensitive_path,
     path_contains_sensitive,
     redact,
+    refuses,
 )
 from kiro_crew.sel import sel
 
@@ -300,10 +301,11 @@ def _scanned_bitmap_bytes(b64_body: str) -> tuple[bytes | None, bool]:
     if not _has_bitmap_signature(raw):
         return None, False
     # Scan the decoded bytes exactly as the text pass would: `redact` operating on a
-    # lossy-decoded copy tells us whether the redactor finds anything in there. Only
-    # a blob it leaves untouched is safe to exempt.
+    # lossy-decoded copy tells us whether the redactor finds anything in there, and
+    # `refuses` adds the exfil scan for a URL it leaves as written. Only a blob both
+    # pass is safe to exempt.
     probe = raw.decode("utf-8", errors="replace")
-    if redact(probe) != probe:
+    if refuses(probe, redact):
         return None, True
     # And scan the ENCODED text, which is the form actually served. See the docstring:
     # a credential appended to a real raster's body decodes to noise (so the check

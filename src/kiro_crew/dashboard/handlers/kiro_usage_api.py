@@ -115,6 +115,7 @@ from kiro_crew.identity_stores import (
     parse_token_expiry,
     sqlite_dbs,
 )
+from kiro_crew.sqlite_uri import read_only_uri
 
 logger = logging.getLogger(__name__)
 
@@ -465,7 +466,7 @@ def _token_from_sqlite(db: Path, now: datetime) -> _StoreToken | None:
     try:
         if db.is_symlink() or not db.exists():
             return None
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con = sqlite3.connect(read_only_uri(db), uri=True)
     except (sqlite3.Error, OSError):
         # OSError covers db.exists() on a permission-denied path — the
         # fail-closed contract must hold for it too.
@@ -918,6 +919,69 @@ def _nested_bonuses(credit: dict) -> list[dict[str, object]]:
     return out
 
 
+def _plan_pool(breakdowns: list[dict]) -> dict | None:
+    """The breakdown entry read as the plan: the first ``CREDIT``-typed one.
+
+    Legacy/untyped responses omit resourceType, so with no ``CREDIT`` entry the
+    first untyped one is accepted, but never a typed non-CREDIT entry (e.g. a
+    TOKEN quota), which would display an unrelated number as the credit total.
+    """
+    for b in breakdowns:
+        if b.get("resourceType") == "CREDIT":
+            return b
+    for b in breakdowns:
+        if not b.get("resourceType"):
+            return b
+    return None
+
+
+def _pool_used(pool: dict) -> float | None:
+    """A pool's used amount: the precision field when it is a valid number, else the legacy one."""
+    used = _bounded(pool.get("currentUsageWithPrecision"))
+    return used if used is not None else _bounded(pool.get("currentUsage"))
+
+
+def _limit_absent(node: object, depth: int = 0) -> bool:
+    """True when no ``usageLimit*`` value inside ``node`` is a limit.
+
+    Every such key down to a bounded depth (a pool, a grant nested in it, a trial
+    block) must be null or exactly zero. Strict on purpose: any other value, readable
+    or not, is a limit this module cannot rule out, and so is a shape nested deeper.
+    """
+    if depth > 6:
+        return False
+    if isinstance(node, list):
+        return all(_limit_absent(item, depth + 1) for item in node)
+    if not isinstance(node, dict):
+        return True
+    for key, value in node.items():
+        if key.startswith("usageLimit") and value is not None:
+            try:
+                if float(value) != 0:
+                    return False
+            except (TypeError, ValueError, OverflowError):
+                return False
+        if not _limit_absent(value, depth + 1):
+            return False
+    return True
+
+
+def _plan_without_limit(data: object) -> bool:
+    """True when the service reports a used amount and no credit limit at all.
+
+    The plan pool is the one :func:`_map_response` picks and must carry a used
+    amount, and the whole answer must be :func:`_limit_absent`: a limit anywhere in
+    it (a second pool, a bonus or trial grant, expired or not, another quota) keeps
+    the generic no-reading message rather than claim there is none.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("usageBreakdownList"), list):
+        return False
+    pool = _plan_pool([b for b in data["usageBreakdownList"] if isinstance(b, dict)])
+    if not pool or _pool_used(pool) is None:
+        return False
+    return _limit_absent(data)
+
+
 def _map_response(data: dict) -> dict | None:
     """Translate a GetUsageLimits response into KiroCrew's canonical usage dict.
 
@@ -944,19 +1008,7 @@ def _map_response(data: dict) -> dict | None:
     # AttributeError and strand the caller on {"available": False} instead of
     # the text fallback.
     breakdowns = [b for b in breakdowns if isinstance(b, dict)]
-    credit = None
-    for b in breakdowns:
-        if b.get("resourceType") == "CREDIT":
-            credit = b
-            break
-    if credit is None:
-        # Legacy/untyped responses omit resourceType — accept a single untyped
-        # entry, but never a typed non-CREDIT entry (e.g. a TOKEN quota), which
-        # would display an unrelated number as the credit total.
-        for b in breakdowns:
-            if not b.get("resourceType"):
-                credit = b
-                break
+    credit = _plan_pool(breakdowns)
     if not credit:
         return None
 
@@ -967,26 +1019,27 @@ def _map_response(data: dict) -> dict | None:
     # by list order and displace the real plan pool — a latent, unobserved case
     # with no captured payload. When more than one entry satisfies the plan-pool
     # test we record the SHAPE so a maintainer can choose a remedy (fail-closed
-    # vs deterministic pick) against real evidence. Log resource types and
-    # counts only, never balances or identifiers (billing-adjacent). Additive:
-    # nothing about which pool wins changes.
+    # vs deterministic pick) against real evidence. Log resource types, counts
+    # and per-pool booleans only, never balances or identifiers
+    # (billing-adjacent). Additive: nothing about which pool wins changes.
     _credit_typed = [b for b in breakdowns if b.get("resourceType") == "CREDIT"]
     if len(_credit_typed) > 1:
         logger.warning(
             "Kiro usage API: %d CREDIT-typed pools in usageBreakdownList "
             "(resource types %s); plan pool selected by list order at index %d "
-            "— a second CREDIT-typed pool may be displacing the real plan pool",
+            "— a second CREDIT-typed pool may be displacing the real plan pool "
+            "(per CREDIT pool: no limit %s, used amount %s)",
             len(_credit_typed),
             [str(b.get("resourceType")) for b in breakdowns],
             breakdowns.index(credit),
+            [_limit_absent(b) for b in _credit_typed],
+            [_pool_used(b) is not None for b in _credit_typed],
         )
 
     # Prefer the *-WithPrecision fields only when they are valid numbers; a
     # present-but-null/malformed precision value must fall back to the legacy
     # currentUsage/usageLimit rather than reject an otherwise-valid response.
-    used = _bounded(credit.get("currentUsageWithPrecision"))
-    if used is None:
-        used = _bounded(credit.get("currentUsage"))
+    used = _pool_used(credit)
     plan = _bounded(credit.get("usageLimitWithPrecision"))
     if plan is None:
         plan = _bounded(credit.get("usageLimit"))
@@ -1156,6 +1209,9 @@ class UsageResult(NamedTuple):
     usage: dict | None
     auth_state: str
     user_id: str | None = None
+    #: The service answered with a used amount and no credit limit anywhere
+    #: (:func:`_plan_without_limit`), so there is no balance to read.
+    plan_without_limit: bool = False
 
 
 class _Attempt(NamedTuple):
@@ -1240,8 +1296,13 @@ def _get_usage(
     if mapped is None:
         # A shape problem, not an auth one: another token would return the same
         # body, so the caller stops here.
-        _note_api_outcome(False, "no usable CREDIT breakdown in response")
-        return _Attempt(UsageResult(None, AUTH_OTHER))
+        without_limit = _plan_without_limit(body)
+        _note_api_outcome(
+            False,
+            "no usable CREDIT breakdown in response"
+            + ("; credits used and no credit limit" if without_limit else ""),
+        )
+        return _Attempt(UsageResult(None, AUTH_OTHER, plan_without_limit=without_limit))
     # WHO the plan belongs to: the profile display name the ARN probe cached.
     # Absent for individual Builder ID accounts, which have no profile.
     account = _account_name(token, name_anchor)

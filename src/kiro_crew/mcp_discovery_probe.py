@@ -60,6 +60,7 @@ from kiro_crew.mcp_gateway.read_limits import resolve_read_buffer_limit
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
     SandboxUnavailableError,
+    app_backend_secret_mask_targets,
     classify_declared_temp_env,
     classify_declared_temp_path,
     create_subprocess_limited,
@@ -369,6 +370,27 @@ def _temp_refusal_records(refused: dict[str, tuple[str, str]]) -> list[dict[str,
         {"key": key, "path": _redact_temp_refusal_text(path), "cause": cause}
         for key, (path, cause) in sorted(refused.items())
     ]
+
+
+def _with_post_scrub_markers(argv: list[str], managed_env: Mapping[str, str]) -> list[str]:
+    """Prefix *argv* with a trusted ``env`` that sets the scrub-listed *managed_env* keys.
+
+    A ``sandbox.min_level`` floor can raise the probe to a tier whose launcher scrubs
+    these keys from the environment it is handed; set as ``env`` assignments they are
+    applied after that scrub, and ``env`` execs the server in place. Returns *argv*
+    unchanged when no trusted ``env`` exists or the server path would read as an
+    assignment.
+    """
+    from kiro_crew.sandbox_argv import _resolve_agent_executable, _unset_env_argv
+    from kiro_crew.sandbox_tiers import _AGENT_DENIED_ENV_KEYS
+
+    env_argv = _unset_env_argv(())
+    server = _resolve_agent_executable(argv[0])
+    if env_argv is None or "=" in server:
+        return argv
+    denied = tuple(_AGENT_DENIED_ENV_KEYS)
+    assignments = [f"{key}={value}" for key, value in managed_env.items() if key.startswith(denied)]
+    return [*env_argv, *assignments, server, *argv[1:]]
 
 
 async def probe_server(
@@ -699,19 +721,32 @@ async def probe_server(
         )
         # The wrap shows a centrally governed host's policy cache read-only
         # (``sandbox_tiers.enterprise_policy_cache_view``); the cache-only marker
-        # that makes the child read it is re-derived after the wrap below.
+        # that makes the child read it is re-derived after the wrap below, and
+        # carried on the argv too for a tier whose launcher scrubs it.
         managed_env: dict[str, str] = {}
+        _spawn_argv = [resolved, *_spawn_args]
         if first_party_fixed_argv:
             from kiro_crew.agent import policy_cache_only_env
+            from kiro_crew.platform.policy_distribution import POLICY_CACHE_ONLY_ENV
 
             managed_env = policy_cache_only_env()
+            if POLICY_CACHE_ONLY_ENV in managed_env:
+                _spawn_argv = await asyncio.to_thread(
+                    _with_post_scrub_markers, _spawn_argv, managed_env
+                )
+        # A third-party server is code the gateway does not control; only the
+        # package's own managed server (fixed argv) may be left unmasked.
+        secret_mask: tuple[str, ...] = ()
+        if not first_party_fixed_argv:
+            secret_mask = await asyncio.to_thread(app_backend_secret_mask_targets)
         wrapped_argv, env, sandbox_cleanup = await sandboxed_spawn_argv_async(
-            [resolved, *_spawn_args],
+            _spawn_argv,
             mode="standard",
             env=env,
             strip_python_env=True,
             extra_writable_dirs=((str(probe_scratch),) if probe_scratch is not None else ()),
             first_party_fixed_argv=first_party_fixed_argv,
+            extra_hidden_dirs=secret_mask,
             _prepare=sandboxed_spawn_argv,
         )
         if first_party_fixed_argv:

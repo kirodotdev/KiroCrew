@@ -110,6 +110,26 @@ def _dashboard_canonical_redirect(local_only: bool, state: DashboardState) -> An
     )
 
 
+def _relay_origin_middleware(ssm_gate: Any) -> Any:
+    """The relayed-Crew router, imported on the first request for a ``kcr-`` host,
+    so a gateway whose viewer is off never imports the relay viewer at startup."""
+    # relay_viewer.browser_origin.RELAY_ORIGIN_PREFIX, pinned equal by its tests.
+    prefix = "kcr-"
+    built: list[Any] = []
+
+    @web.middleware  # type: ignore[misc]
+    async def relay_origin(request: web.Request, handler: Any) -> web.StreamResponse:
+        if not request.headers.get("Host", "").lower().startswith(prefix):
+            return await handler(request)  # type: ignore[no-any-return]
+        if not built:
+            from kiro_crew.relay_viewer.browser_origin import build_relay_origin_middleware
+
+            built.append(build_relay_origin_middleware(ssm_gate))
+        return await built[0](request, handler)  # type: ignore[no-any-return]
+
+    return relay_origin
+
+
 def _install_dashboard_middlewares(
     app: web.Application,
     *,
@@ -263,6 +283,9 @@ def _install_dashboard_middlewares(
         # It runs before token auth's SSM gate, so it is built with the same
         # holder and refuses a request on the SSM listener by its socket.
         build_app_web_origin_middleware(ssm_gate),
+        # The same for a relayed Crew in a browser tab (``kcr-<sid>.localhost``,
+        # relay_viewer/browser_origin.py).
+        _relay_origin_middleware(ssm_gate),
         host_canonical_redirect,
         host_validation_middleware,
         # Compressed request bodies are refused outright (415): the hardened

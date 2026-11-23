@@ -38,6 +38,7 @@ def test_registrar_tuple_is_explicit_and_not_alphabetical() -> None:
         "browser_live",
         "shared_crew",
         "crew_api",
+        "local_authorization",
     )
     assert list(routes_pkg.REGISTRAR_NAMES) != sorted(
         routes_pkg.REGISTRAR_NAMES

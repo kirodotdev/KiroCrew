@@ -400,7 +400,7 @@ _SIGNATURES: dict[str, str] = {
     "_effort_marker_path": "(directory: 'Path', level: 'str') -> 'Path'",
     "_entry_cache_bounds": "() -> 'tuple[int, int]'",
     "_foreign_tail_ts": "(foreign_lines: 'list[str]') -> 'str | None'",
-    "_frozen_prefix_and_foreign_appends": "(slot: '_ChatSlot', path, disk_older: 'int', window_entries: 'list[dict]', *, collect_foreign: 'bool' = True, bound_prefix: 'Callable[[list[str]], list[str]] | None' = None, archive_dedup: 'Callable[[list[str]], object]', retired_entries: 'list[dict] | None' = None) -> 'tuple[str, list[str], list[str]]'",
+    "_frozen_prefix_and_foreign_appends": "(slot: '_ChatSlot', path, disk_older: 'int', window_entries: 'list[dict]', *, collect_foreign: 'bool' = True, bound_prefix: 'Callable[[list[str]], list[str]] | None' = None, archive_dedup: 'Callable[[list[str]], object]', retired_entries: 'list[dict] | None' = None, stream: 'bool' = False) -> 'tuple[str | PrefixSource, list[str], list[str]]'",
     "_has_validated_effort_marker": "(raw: 'object') -> 'bool'",
     "_interleave_foreign_lines": "(window_entries: 'list[dict]', window_lines: 'list[str]', foreign_lines: 'list[str]') -> 'list[str]'",
     "_is_app_owned_channel_row": "(meta: 'dict', history_key: 'str') -> 'bool'",
@@ -1311,7 +1311,7 @@ _GOLDEN: dict[str, dict] = {
     },
     "empty_window_merge": {
         "file": (
-            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "muted": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "turn_timeout_secs": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "crew_mode_agent": "", "app_agent_owner": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "closed_id": "golden-close-id", "dismissed_source_links": [], "deferred_notes": []}\n'
+            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "muted": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "turn_timeout_secs": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "crew_mode_agent": "", "app_agent_owner": "", "project": "", "project_picked": false, "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "closed_id": "golden-close-id", "dismissed_source_links": [], "deferred_notes": []}\n'
         ),
         "ok": True,
     },

@@ -15,6 +15,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
+        _PERSISTED_TRUNCATION_REPORTED,
         _SPAWN_STATUS_MAX_GREP_LEN,
         _SPAWN_STATUS_MAX_LINES,
         INVALID_WAIT_CODE,
@@ -627,16 +628,26 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         # bridge logs the transition once.
         payload["queued_truncated"] = True
     if persisted.overflow or persisted.overflow_is_lower_bound:
-        # Said out loud once per listing, to the operator rather than the client:
+        # Said out loud once per change to the operator rather than the client:
         # a listing of 50 of 51 eligible runs otherwise reads exactly like a
         # listing of all 50 there were. The WARNING carries the count, and it is
         # the whole report: a truncation refuses nobody, so it is not a permission
         # decision and does not belong in the SEL deny stream beside the ownership
         # refusals an operator has to be able to see there. No client reads a
-        # count it cannot act on, so it stays out of the payload too.
+        # count it cannot act on, so it stays out of the payload too. A repeat of
+        # a reported state drops to DEBUG. Only a non-internal listing is
+        # remembered, because an internal caller's listing is scoped to its own
+        # session, so a shared memory would let two sessions end each other's
+        # report; an internal caller warns on every truncated listing.
         # A saturated scan window reports even at a count of zero, because that
         # is the case where the count itself cannot see what was left out.
-        logger.warning(
+        newly = True
+        if not internal:
+            previous = _PERSISTED_TRUNCATION_REPORTED.get(auditee)
+            newly = previous is None or (persisted.overflow_is_lower_bound and not previous)
+            _PERSISTED_TRUNCATION_REPORTED[auditee] = persisted.overflow_is_lower_bound
+        report = logger.warning if newly else logger.debug
+        report(
             "persisted spawn listing truncated: %s%d eligible run(s) past the %d cap%s",
             "at least " if persisted.overflow_is_lower_bound else "",
             persisted.overflow,
@@ -647,4 +658,6 @@ async def api_spawn_list(request: web.Request) -> web.Response:
                 else ""
             ),
         )
+    elif not internal and _PERSISTED_TRUNCATION_REPORTED.pop(auditee, None) is not None:
+        logger.info("persisted spawn listing complete again")
     return web.json_response(payload)

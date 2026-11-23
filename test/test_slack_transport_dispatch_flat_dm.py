@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from slack_sdk.errors import SlackApiError
 from slack_transport_dispatch_helpers import (
     _MSG_TS,
     FakeSessions,
@@ -25,7 +27,14 @@ from slack_transport_dispatch_helpers import (
     make_event,
 )
 
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
+    EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
+    STOP_REASON_END_TURN,
+)
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session import BACKGROUND_KEY
 from kiro_crew.slack import handler as slack_handler
@@ -66,6 +75,22 @@ class _LinkCapturingSessions(FakeSessions):
         # write raised TypeError and the assertions below failed for the wrong
         # reason instead of showing the offending link.
         self.links.append((key, thread_ts, channel_id))
+
+
+class _EditRefusingSlack(RecordingSlackClient):
+    """Slack that refuses every ``chat.update``, as an org edit window does."""
+
+    def __init__(self):
+        super().__init__()
+        self.blocks: list = []
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
+        self.blocks.append((text, blocks, thread_ts))
+        return await super().post_blocks(channel, blocks, text, thread_ts)
+
+    async def update_message(self, channel, ts, text="", blocks=None):
+        self._rec("update_message", channel=channel, ts=ts, text=text, blocks=blocks)
+        raise SlackApiError("edit_window_closed", {"ok": False, "error": "edit_window_closed"})
 
 
 class TestFlatDmSessionKey:
@@ -350,3 +375,112 @@ class TestFlatDmTransportWiring:
             text=f"{token} do it",
         )
         assert (canonical_key(thread_ts), thread_ts, "D0AP0870FFH") in sessions.links
+
+
+class TestFlatDmReplyDelivery:
+    """A top-level flat-DM reply has no stream, so it is sealed into a placeholder."""
+
+    _ANSWER = (
+        "Here is what I found:\n- [Open](https://example.com/a)\n- <https://example.com/b|Open>"
+    )
+
+    def test_a_refused_edit_still_delivers_the_whole_answer_at_the_dm_root(self, monkeypatch):
+        TestFlatDmTransportWiring()._prep(monkeypatch)
+        slack = _EditRefusingSlack()
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_THINKING_CHUNK, text="Let me check the tracker."),
+                make_event(EVENT_TEXT_CHUNK, text="I'll read the tracker first."),
+                make_event(EVENT_TOOL_CALL, tool_call_id="t1", title="Read a.md", tool_kind="read"),
+                make_event(EVENT_TOOL_RESULT, tool_call_id="t1", text="ok"),
+                make_event(EVENT_TEXT_CHUNK, text=self._ANSWER),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=FakeSessions(provider),
+                channel="D0AP0870FFH",
+                text="read two files",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+                show_thinking=True,
+                dm_single_session=True,
+            )
+        )
+        sent = [kw.get("text", "") for _m, kw in slack.transcript]
+        assert transport_dispatch._TRANSPORT_ERROR_TEXT not in sent
+        # The refused edit's reply went out as its own message, at the DM root.
+        replies = [(b, t) for text, b, t in slack.blocks if self._ANSWER in text]
+        assert len(replies) == 1 and replies[0][1] is None, slack.transcript
+        # Markdown, as the threaded reply's stream renders it: in mrkdwn ``text``
+        # (``chat.update`` defaults to ``parse=client``) these links would show raw.
+        edits = [kw["blocks"] for m, kw in slack.transcript if m == "update_message"]
+        for blocks in edits + [b for b, _t in replies]:
+            assert blocks == [{"type": "markdown", "text": blocks[0]["text"]}], blocks
+            assert self._ANSWER in blocks[0]["text"]
+
+    def test_a_post_that_may_have_landed_is_not_repeated_by_the_rescue(self, monkeypatch):
+        """A refused edit's post that times out may show; the dying turn never posts it again."""
+        TestFlatDmTransportWiring()._prep(monkeypatch)
+        answer = self._ANSWER
+
+        class _PostTimingOutSlack(_EditRefusingSlack):
+            async def post_blocks(self, channel, blocks, text, thread_ts=None):
+                ts = await super().post_blocks(channel, blocks, text, thread_ts)
+                if answer in text:
+                    raise asyncio.TimeoutError()
+                return ts
+
+        slack = _PostTimingOutSlack()
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="I'll read the tracker first."),
+                make_event(EVENT_TOOL_CALL, tool_call_id="t1", title="Read a.md", tool_kind="read"),
+                make_event(EVENT_TOOL_RESULT, tool_call_id="t1", text="ok"),
+                make_event(EVENT_TEXT_CHUNK, text=answer),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=FakeSessions(provider),
+                channel="D0AP0870FFH",
+                text="read two files",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+                show_thinking=True,
+                dm_single_session=True,
+            )
+        )
+        sent = [kw.get("text", "") for m, kw in slack.transcript if m != "update_message"]
+        assert sum(answer in text for text in sent) == 1, slack.transcript
+        assert transport_dispatch._TRANSPORT_ERROR_TEXT in sent
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            SlackApiError("chat.update", {"ok": False, "error": "internal_error"}),
+            SlackApiError("chat.update", {"ok": False, "error": "fatal_error"}),
+            SlackApiError("chat.update", SimpleNamespace(status_code=503, data={})),
+            asyncio.TimeoutError(),
+        ],
+        ids=["internal_error", "fatal_error", "http_503", "timeout"],
+    )
+    def test_an_edit_that_may_have_landed_is_not_posted_again(self, error):
+        """Only a refused edit is posted: after these the placeholder may show the answer."""
+        from kiro_crew.slack.no_stream_reply import seal_placeholder
+
+        slack = AsyncMock()
+        slack.update_message.side_effect = error
+        with pytest.raises(type(error)):
+            asyncio.run(seal_placeholder(slack, "D0AP0870FFH", "1.0", self._ANSWER, None))
+        slack.post_blocks.assert_not_called()

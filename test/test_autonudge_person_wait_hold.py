@@ -76,6 +76,8 @@ def ledger(monkeypatch):
         return True
 
     monkeypatch.setattr(firing, "_ledger_person_wait_fp", lambda _key, *_a: state["fp"])
+    state["asked"] = True
+    monkeypatch.setattr(firing, "_ledger_person_wait_asked", lambda _key: state["asked"])
     monkeypatch.setattr(firing, "_ledger_has_open_items", _open)
     monkeypatch.setattr(AutoNudgeService, "_observes_work_ledger", lambda self, loop: True)
     return state
@@ -137,6 +139,50 @@ async def test_an_all_person_wait_ledger_holds_the_loop(svc, _nosleep, ledger):
 
 
 @pytest.mark.asyncio
+async def test_every_held_tick_announces_the_deadline_it_sets(svc, _nosleep, ledger):
+    """The dashboard reads a passed deadline as due and disables Nudge now, so each
+    held tick's re-arm must reach it, the first one's included."""
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    frames: list[tuple[str, float]] = []
+    svc.subscribe(lambda ev, lp: frames.append((ev, lp.next_due_ts)))
+
+    for _ in range(2):
+        frames.clear()
+        await _tick(svc, loop)
+        deadline = svc._loops[loop.id].next_due_ts
+        assert deadline > 0
+        assert frames and frames[-1] == ("updated", deadline), "the moved deadline is sent"
+    assert len(fired) == 1
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_release_announces_its_held_re_arm(svc, _nosleep, ledger, monkeypatch):
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert svc._loops[loop.id].waiting_on_person is True
+
+    async def _refuse(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", _refuse)
+    frames: list[tuple[str, float]] = []
+    svc.subscribe(lambda ev, lp: frames.append((ev, lp.next_due_ts)))
+    ledger["fp"] = "fp-b"
+    await _tick(svc, loop)
+
+    refreshed = svc._loops[loop.id]
+    assert refreshed.waiting_on_person is True, "the store still says held"
+    assert frames and frames[-1] == ("updated", refreshed.next_due_ts)
+    assert len(fired) == 1
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
 async def test_a_new_report_releases_the_hold(svc, _nosleep, ledger):
     ledger["fp"] = "fp-a"
     fired: list = []
@@ -156,6 +202,86 @@ async def test_a_new_report_releases_the_hold(svc, _nosleep, ledger):
     await _tick(svc, loop)
     assert len(fired) == 2, "unchanged again after that turn, so it holds again"
     assert svc._loops[loop.id].waiting_on_person is True
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_remote_report_pulled_on_the_tick_releases_the_hold_that_tick(
+    svc, _nosleep, ledger
+):
+    """The tick pulls its board's remote reports BEFORE the hold reads the ledger."""
+    pulls: list[str] = []
+
+    async def pull(key: str) -> None:
+        pulls.append(key)
+        if len(pulls) == 3:
+            ledger["fp"] = "fp-remote"  # the pull filed a remote worker's report
+
+    svc._remote_report_puller = pull
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert svc._loops[loop.id].waiting_on_person is True and len(fired) == 1
+
+    await _tick(svc, loop)
+    assert pulls == [CONDUCTOR] * 3, "one pull per tick, for the loop's own board"
+    assert len(fired) == 2, "the report the pull filed fires on the same tick"
+    assert svc._loops[loop.id].ledger_seen_fp == "fp-remote"
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_push_during_the_pull_does_not_cancel_the_tick(svc, _nosleep, ledger):
+    """A report the pull files pushes a pull-forward; that push must not kill this tick."""
+    pushes: list[tuple] = []
+
+    async def pull(key: str) -> None:
+        # What ``conductor_wake`` does for a report filed mid-pull.
+        pushes.append(await svc.fire_now(loop.id, defer_if_firing=True))
+        ledger["fp"] = "fp-remote"
+
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert svc._loops[loop.id].waiting_on_person is True and len(fired) == 1
+    svc._remote_report_puller = pull
+    await _tick(svc, loop)
+    assert pushes and pushes[0][2] == 409, "the push is refused while the tick pulls"
+    assert loop.id not in svc._pulled_forward, "this tick reads the report itself"
+    assert loop.id not in svc._firing
+    assert len(fired) == 2, "the same tick delivers the pulled report"
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_pull_never_fails_the_tick(svc, _nosleep, ledger):
+    async def pull(_key: str) -> None:
+        raise RuntimeError("tunnel broke")
+
+    svc._remote_report_puller = pull
+    ledger["fp"] = "fp-a"
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert len(fired) == 1 and svc._loops[loop.id].waiting_on_person is True
+    await _drain(svc)
+
+
+@pytest.mark.asyncio
+async def test_a_loop_that_watches_no_ledger_pulls_nothing(svc, _nosleep, monkeypatch):
+    monkeypatch.setattr(AutoNudgeService, "_observes_work_ledger", lambda self, loop: False)
+    pulls: list[str] = []
+
+    async def pull(key: str) -> None:
+        pulls.append(key)
+
+    svc._remote_report_puller = pull
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert pulls == [] and len(fired) == 2
     await _drain(svc)
 
 
@@ -380,6 +506,12 @@ def _item(title: str) -> str:
     return created["item"].item_id
 
 
+def _asked(*item_ids: str) -> None:
+    """The conductor relays each item's question: only then does the person own it."""
+    for item_id in item_ids:
+        wl.apply_ask_record(CONDUCTOR, item_id, what="answer the worker")
+
+
 def test_the_fingerprint_needs_every_open_item_waiting_on_a_person():
     first, second = _item("a"), _item("b")
     wl.apply_worker_report(CONDUCTOR, first, status="blocked", summary="x", reason="approval")
@@ -411,6 +543,7 @@ def test_conductor_writes_leave_the_fingerprint_alone_and_reports_move_it(monkey
     # A conductor that writes every turn must still be able to stay held.
     wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="ask the user")
     wl.apply_conductor_action(CONDUCTOR, "goal", goal="ship it again", round_number=2)
+    _asked(item_id)
     assert probe.person_wait_fingerprint(CONDUCTOR) == first
     # The same blocked report again is news: its report stamp moves.
     wl.apply_worker_report(CONDUCTOR, item_id, status="blocked", summary="x", reason="approval")
@@ -448,6 +581,38 @@ def test_an_item_whose_worker_is_gone_is_not_a_person_wait():
     assert (
         probe.person_wait_fingerprint(CONDUCTOR, worker_closed=lambda k: k == "chat-9-999") is None
     )
+
+
+def test_a_person_reason_item_with_no_current_ask_does_not_hold_the_patrol():
+    """The Board lists a person wait only with a current ask record, so the hold
+    does too: a question the conductor never relayed with ``work_ask_record``, or one
+    a newer report superseded, is still the conductor's, and its patrol must run. The
+    ask write itself leaves the fingerprint alone, so the hold engages on the next
+    tick after the relay turn rather than one turn later."""
+    item_id = _item("a")
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="which?", reason="needs_human"
+    )
+    fp = probe.person_wait_fingerprint(CONDUCTOR)
+    assert fp and probe.person_wait_asked(CONDUCTOR) is False, "never relayed"
+    _asked(item_id)
+    assert probe.person_wait_fingerprint(CONDUCTOR) == fp, "the ask write moves nothing"
+    assert probe.person_wait_asked(CONDUCTOR) is True, "relayed: the person owns it"
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="and now?", reason="needs_human"
+    )
+    assert probe.person_wait_asked(CONDUCTOR) is False, "a newer report supersedes it"
+
+
+@pytest.mark.asyncio
+async def test_the_timer_does_not_hold_a_person_wait_nobody_relayed(svc, _nosleep, ledger):
+    ledger["fp"], ledger["asked"] = "fp-a", False
+    fired: list = []
+    loop = await _armed(svc, fired)
+    await _tick(svc, loop)
+    assert len(fired) == 2, "no current ask: the conductor's patrol keeps running"
+    assert svc._loops[loop.id].waiting_on_person is False
+    await _drain(svc)
 
 
 def test_the_fingerprint_is_none_without_a_ledger_or_open_items():

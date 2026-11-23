@@ -17,6 +17,7 @@ import functools
 from pathlib import Path
 
 import pytest
+import source_corpus
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src" / "kiro_crew"
@@ -74,8 +75,9 @@ def _source_files() -> list[tuple[str, str]]:
 @functools.lru_cache(maxsize=1)
 def _all_hold_readers() -> frozenset[str]:
     readers: set[str] = set()
-    for rel, source in _source_files():
-        readers |= hold_flag_readers(source, rel)
+    with source_corpus.untraced():
+        for rel, source in _source_files():
+            readers |= hold_flag_readers(source, rel)
     return frozenset(readers)
 
 

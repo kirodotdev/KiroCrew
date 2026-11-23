@@ -163,6 +163,25 @@ def _load(stem: str) -> ModuleType:
     return importlib.import_module(stem)
 
 
+#: Modules whose scan imports and calls production code to resolve a receiver
+#: (``_returns_the_facade`` imports the module and calls its lazy helper). Their
+#: scan stays traced: lines first run untraced would never be reported.
+_SCANS_THAT_RUN_PRODUCT_CODE = frozenset({"test_projection_facade"})
+
+
+def _corpus_patched_names(module: ModuleType):
+    """``module._corpus_patched_names()``, with the coverage tracer paused.
+
+    Each module's scan reads the whole test tree; the read is test-side code that
+    coverage does not report, and under CI's ``--cov`` the tracer multiplied its
+    cost several times over.
+    """
+    if module.__name__ in _SCANS_THAT_RUN_PRODUCT_CODE:
+        return module._corpus_patched_names()
+    with source_corpus.untraced():
+        return module._corpus_patched_names()
+
+
 # --------------------------------------------------------------------------- #
 # Discovery
 # --------------------------------------------------------------------------- #
@@ -194,14 +213,14 @@ def test_every_opted_in_module_runs_in_its_own_xdist_group() -> None:
 def test_the_patch_scan_finds_every_known_seam(stem: str) -> None:
     """Non-vacuity: a scan that finds nothing would pass the reach test over nothing."""
     module = _load(stem)
-    assert sorted(module._KNOWN_SEAMS - module._corpus_patched_names()) == []
+    assert sorted(module._KNOWN_SEAMS - _corpus_patched_names(module)) == []
 
 
 @_each("known_seams_by_target")
 def test_the_patch_scan_finds_every_known_seam_of_each_target(stem: str) -> None:
     """The same, for a module patched both through its facade and through its package."""
     module = _load(stem)
-    found = module._corpus_patched_names()
+    found = _corpus_patched_names(module)
     missing = {
         target: sorted(seams - found[target]) for target, seams in module._KNOWN_SEAMS.items()
     }
@@ -224,7 +243,8 @@ def test_the_patch_scan_reads_every_spelling_and_nothing_else(stem: str) -> None
 @functools.lru_cache(maxsize=1)
 def _corpus_gates() -> frozenset[str]:
     root = source_corpus.repo_root()
-    return frozenset(importlib.import_module("leaf_test_scope").corpus_gates(root))
+    with source_corpus.untraced():
+        return frozenset(importlib.import_module("leaf_test_scope").corpus_gates(root))
 
 
 @pytest.mark.xdist_group(name="tree_scan_facade_shared_checks")
@@ -255,7 +275,7 @@ def test_the_test_tree_walk_reaches_every_collected_tree(stem: str) -> None:
 @_each("reach_routing")
 def test_every_scanned_name_is_routed_to_every_owner_holding_it(stem: str) -> None:
     module = _load(stem)
-    assert module._reach_gaps(set(module._corpus_patched_names()), module._index()) == []
+    assert module._reach_gaps(set(_corpus_patched_names(module)), module._index()) == []
 
 
 @_each("reach_scan_can_fail")
@@ -273,7 +293,7 @@ def test_every_scanned_name_reaches_every_module_reading_it(stem: str) -> None:
     """The structural half of the reach the unsplit module had, for every patched name
     by either spelling: the mirror routes the name, and nothing reads it unbound."""
     module = _load(stem)
-    corpus = module._corpus_patched_names()
+    corpus = _corpus_patched_names(module)
     names = corpus[module.FACADE] | corpus[module.PACKAGE]
     namespaces = {m.__name__: vars(m) for m in module._family()}
     problems = module.reach_problems(names, module._index(), module._family_sources(), namespaces)

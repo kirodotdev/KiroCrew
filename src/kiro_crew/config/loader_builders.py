@@ -18,7 +18,6 @@ from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
     _raw_agent_section,
     _raw_stt_provider,
-    kas_bundle_build_default,
     unsandboxed_exec_platform_default,
 )
 from kiro_crew.config.loader_locations import config_path
@@ -102,6 +101,9 @@ _JSON_TYPE_LABELS: dict[str, str] = {
 }
 
 
+_POD_ENV = "KIROCREW_POD"
+
+
 def resolve_loop_stall_exit_after(
     dashboard_data: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
@@ -121,11 +123,12 @@ def resolve_loop_stall_exit_after(
             LOOP_STALL_EXIT_AFTER_MAX,
         )
     source = os.environ if environ is None else environ
-    # The generated service definition is the sole launch-class authority.
-    # Inferring from systemd metadata is ambiguous because descendants inherit
-    # INVOCATION_ID; old definitions are reported by ``kirocrew doctor`` with
-    # the one-time regeneration command instead.
-    managed = source.get(_MANAGED_SERVICE_ENV) == "1"
+    # The generated service definition is the live service's launch-class
+    # authority; systemd metadata is ambiguous because descendants inherit
+    # INVOCATION_ID. A pod gateway is booted by its own service manager with no
+    # desktop app watching it, so the pod marker its boot sets counts too; that
+    # boot never sets the live marker, which the restart checks also read.
+    managed = source.get(_MANAGED_SERVICE_ENV) == "1" or source.get(_POD_ENV) == "1"
     return LOOP_STALL_EXIT_AFTER_MANAGED_DEFAULT if managed else LOOP_STALL_EXIT_AFTER_DEFAULT
 
 
@@ -137,16 +140,19 @@ def consume_managed_service_launch_environment(
     The generated service definition sets this marker for the gateway itself.
     Consuming it before the dashboard starts app backends or child terminals
     prevents those descendants from being misclassified as managed services.
+    A pod marker is copied into the result but left in place, since every
+    descendant of a pod gateway is still in that pod.
     """
     source = os.environ if environ is None else environ
+    launch = {_POD_ENV: "1"} if source.get(_POD_ENV) == "1" else {}
     value = source.pop(_MANAGED_SERVICE_ENV, None)
     if value is None:
-        return {}
+        return launch
     if environ is None:
         # Consumed for descendants only: the gateway's own exec successor (an
         # in-app restart) is the same service launch and gets it back.
         platform_compat.keep_for_reexec(_MANAGED_SERVICE_ENV, value)
-    return {_MANAGED_SERVICE_ENV: value}
+    return {**launch, _MANAGED_SERVICE_ENV: value}
 
 
 def launched_as_managed_service() -> bool:
@@ -478,24 +484,31 @@ def _clamp_security_bounds(data: dict) -> None:
             )
 
 
-def _session_start_concurrency(raw: object, ceiling: int = 64) -> int | str:
-    """A start width: ``"auto"`` or an int clamped to ``1..ceiling``.
+def _session_start_concurrency(
+    raw: object, default: int | str, lo: int | None = None, hi: int | None = None
+) -> int | str:
+    """A start width: ``"auto"`` or an int clamped to ``lo..hi``.
 
-    ``agent.session_start_concurrency`` uses the default ceiling of 64;
-    ``agent.cold_start_concurrency`` and ``agent.runtime_spawn_concurrency`` pass
-    32. Anything that is neither (missing, a bool, a non-integral float, a
-    non-numeric string) falls back to the ``"auto"`` default, as a junk value of
-    any other int knob falls back to its default.
+    A ``SectionReader.read`` coercer, so its bounds are the read's and a stored value
+    they change is logged: ``agent.session_start_concurrency`` reads with ``1, 64``,
+    ``agent.cold_start_concurrency`` and ``agent.runtime_spawn_concurrency`` with
+    ``1, 32``. Anything that is neither (a bool, a non-integral float, a non-numeric
+    string) falls back to *default*, the field's ``"auto"``, as a junk value of any
+    other int knob falls back to its default.
     """
-    if _session_start_is_auto(raw) or isinstance(raw, bool):
+    if _session_start_is_auto(raw):
         return _SESSION_START_AUTO
-    if isinstance(raw, float) and not raw.is_integer():
-        return _SESSION_START_AUTO
+    if isinstance(raw, bool) or (isinstance(raw, float) and not raw.is_integer()):
+        return default
     try:
         value = int(raw)  # type: ignore[call-overload]
     except (TypeError, ValueError, OverflowError):
-        return _SESSION_START_AUTO
-    return max(1, min(ceiling, value))
+        return default
+    if lo is not None:
+        value = max(lo, value)
+    if hi is not None:
+        value = min(hi, value)
+    return value
 
 
 def _read_backend_choice(
@@ -568,14 +581,14 @@ def _read_backend_choice(
 
 
 def _resolved_kas_bundle(agent_data: Mapping[str, object]) -> bool:
-    """``agent.kas_bundle`` as loaded: the stored value, else the build's default.
+    """``agent.kas_bundle`` as loaded: the SAVED value, else ``False``.
 
-    An undeclared key reads :func:`kas_bundle_build_default` (on in a nightly build
-    only), not the field's ``False``, the way ``sandbox_allow_unsandboxed_exec``
-    reads its platform default; ``save()`` keeps the undeclared key off disk.
+    An unset key is not resolved into the field: a packaged build only prefers the
+    engine for it, per spawn (``acp.kas_build_default``, ``kas_route`` rule 1b), so
+    every reader of the loaded field still reads "the user chose the engine".
+    ``save()`` keeps the undeclared key off disk, so that preference stays live.
     """
-    default = kas_bundle_build_default()
-    return _safe_bool(agent_data.get("kas_bundle", default), default)
+    return _safe_bool(agent_data.get("kas_bundle", False), False)
 
 
 #: Whether the member-backend remap was logged in this process (see below).
@@ -809,6 +822,12 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         kas_sso_start_url=str(section.get("kas_sso_start_url") or "").strip(),
         kas_sso_region=str(section.get("kas_sso_region") or "").strip(),
+        kas_auth=section.get("kas_auth"),
+        kas_token_path=section.get("kas_token_path"),
+        kas_endpoint=section.get("kas_endpoint"),
+        kas_control_plane_endpoint=section.get("kas_control_plane_endpoint"),
+        kas_region=section.get("kas_region"),
+        kas_machine_env_drop=section.get("kas_machine_env_drop"),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
         crew_mode_agent=_crew_mode_agent_or_default(section.get("crew_mode_agent")),
@@ -877,6 +896,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         apps_builtin_adoption=_builtin_adoption_markers(section.get("apps_builtin_adoption")),
         apps_builtin_adoption_nav=_builtin_adoption_nav(section.get("apps_builtin_adoption_nav")),
         apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
+        apps_ui_protected_copy=section.read("apps_ui_protected_copy", _safe_bool),
         jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
         yolo_duration=section.read("yolo_duration", _normalize_yolo_duration),
@@ -991,8 +1011,8 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # Session-start gate (acp/runtime_start.py SessionStartGate).
         # "auto" (default) is sized from the host once per process by
         # session_start_sizing; an explicit integer keeps the 1..64 clamp.
-        session_start_concurrency=_session_start_concurrency(
-            agent_data.get("session_start_concurrency", "auto")
+        session_start_concurrency=section.read(
+            "session_start_concurrency", _session_start_concurrency, 1, 64
         ),
         # Env defaults for spawned kiro-cli children (acp/child_env_defaults.py).
         # Through the module alias: the loader's import list is a frozen snapshot.
@@ -1001,11 +1021,11 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         env=_sections.coerce_agent_env(section.get("env")),
         # Cold-start queues (session_allocation _start_sem, acp/runtime_start
         # spawn admission); resolved by cold_start_sizing.
-        cold_start_concurrency=_session_start_concurrency(
-            agent_data.get("cold_start_concurrency"), ceiling=32
+        cold_start_concurrency=section.read(
+            "cold_start_concurrency", _session_start_concurrency, 1, 32
         ),
-        runtime_spawn_concurrency=_session_start_concurrency(
-            agent_data.get("runtime_spawn_concurrency"), ceiling=32
+        runtime_spawn_concurrency=section.read(
+            "runtime_spawn_concurrency", _session_start_concurrency, 1, 32
         ),
         # Adaptive controller (adaptive/policy.py params_from_config).
         adaptive_concurrency=section.read("adaptive_concurrency", _safe_bool),
@@ -1171,6 +1191,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             lo=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
             hi=_sections.IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
         ),
+        worker_context_cap=bool(section.get("worker_context_cap")),
         # Clamped on the read, like the sibling floats: 0 is the sentinel for
         # "use the built-in budget" and any positive value is the wait, so a
         # hand-edited negative collapses to 0 (fallback) and an oversized value
@@ -1210,6 +1231,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _sections.SEARCH_SCAN_WINDOW_MIN,
             _sections.SEARCH_SCAN_WINDOW_MAX,
         ),
+        semantic_search=section.read("semantic_search", _safe_bool),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
         watchdog_end_leftovers_mid_turn=section.read("watchdog_end_leftovers_mid_turn", _safe_bool),
         harness_background_hold_secs=_load_background_hold_secs(section),
@@ -1395,6 +1417,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         feature_previews=section.read("feature_previews", _feature_previews),
         dynamic_dashboard_cards=section.read("dynamic_dashboard_cards", _safe_bool),
         audit_secret_reads=section.read("audit_secret_reads", _safe_bool),
+        turn_cache_estimate=section.read("turn_cache_estimate", _safe_bool),
         qr_session_until_restart=section.read("qr_session_until_restart", _safe_bool),
         qr_session_persist_across_restart=section.read(
             "qr_session_persist_across_restart", _safe_bool
@@ -1415,6 +1438,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             _sections.UPLOAD_MAX_MB_MIN,
             _sections.UPLOAD_MAX_MB_MAX,
         ),
+        attachment_sheet_digest=section.read("attachment_sheet_digest", _safe_bool),
         mcp_probe_timeout_secs=section.read(
             "mcp_probe_timeout_secs", _safe_int, MCP_PROBE_TIMEOUT_MIN, MCP_PROBE_TIMEOUT_MAX
         ),
@@ -1443,6 +1467,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         cautious_boot=section.read("cautious_boot", _safe_bool),
         auto_open_browser=section.get("auto_open_browser"),
         prevent_sleep=section.read("prevent_sleep", _safe_bool),
+        warm_task_brief=section.read("warm_task_brief", _safe_bool),
         quick_send=section.get("quick_send"),
         model_picker_configured=(
             section.read("model_picker_configured", _safe_bool)
@@ -1464,6 +1489,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         auto_open_git_panel=section.read("auto_open_git_panel", _safe_bool),
         side_panel_always_open=section.read("side_panel_always_open", _safe_bool),
         side_panel_pin_summary=section.read("side_panel_pin_summary", _safe_bool),
+        auto_open_conductor_board=section.read("auto_open_conductor_board", _safe_bool),
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
         new_chat_crew_mode=section.read("new_chat_crew_mode", _safe_bool),
@@ -1482,8 +1508,11 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             section.get("default_session_folder")
         ),
         theme_mode=section.get("theme_mode"),
+        theme_schedule_light=section.get("theme_schedule_light"),
+        theme_schedule_dark=section.get("theme_schedule_dark"),
         sso_login_flags=str(section.get("sso_login_flags")),
         theme_color=section.get("theme_color"),
+        instance_label=_sanitize_bot_name(section.get("instance_label")),
         language=str(section.get("language")),
         recent_tint_count=section.read(
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
@@ -1540,6 +1569,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         milestones_enabled=section.read("milestones_enabled", _safe_bool),
         folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
+        folder_suggestions_auto_apply=section.read("folder_suggestions_auto_apply", _safe_bool),
         project_tags_enabled=section.read("project_tags_enabled", _safe_bool),
         topic_tags_enabled=section.read("topic_tags_enabled", _safe_bool),
         tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),
@@ -1605,3 +1635,10 @@ def _registry_entry(raw: dict) -> ExternalRegistryConfig:
         # field existed keeps the credential-free posture it had.
         trust=str(entry.get("trust")),
     )
+
+
+def _market_registry_ids(raw: object) -> list[str]:
+    """``market_registries``: the string ids, de-duplicated in file order; else ``[]``."""
+    if not isinstance(raw, list):
+        return []
+    return list(dict.fromkeys(i.strip() for i in raw if isinstance(i, str) and i.strip()))

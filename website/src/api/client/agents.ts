@@ -124,10 +124,6 @@ export interface MemberRosterRow {
    *  in one click. Absent on an older gateway, which has no such switch, or when
    *  the crewmate never opted in: read it as off. */
   dashboard_card_send?: boolean
-  /** Whether the chats this Bot's thread opens also show in the person's
-   *  Sessions list. Off by default (absent reads as off): they show only on the
-   *  Bot's Sessions tab. */
-  show_sessions_in_list?: boolean
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved
@@ -251,7 +247,9 @@ export interface MemberGoal {
 }
 
 /** The check-in switches and their shared timing. weekday: 0 = Sunday.
- *  The heartbeat runs every `interval` minutes (30, 60, 120 or 240; 60 by default), not at `time`. */
+ *  The heartbeat runs every `interval` minutes (30, 60, 120 or 240; 60 by default), not at `time`,
+ *  and only in its active hours: whole hours from `active_from` (0-23) up to, not including,
+ *  `active_to` (1-24); 0 and 24, the default, are the whole day. */
 export interface GoalSchedules {
   time: string
   timezone: string
@@ -262,6 +260,8 @@ export interface GoalSchedules {
   month_day: number
   heartbeat: boolean
   interval: number
+  active_from: number
+  active_to: number
 }
 
 /** A saved weekly report or monthly review (an artifact). */

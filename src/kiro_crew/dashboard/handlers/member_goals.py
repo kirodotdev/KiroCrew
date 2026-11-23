@@ -25,7 +25,8 @@ Two halves, split the way :mod:`handlers.member_self` is:
   - ``DELETE /api/members/{slug}/goals/key-results/{kr_id}`` and
     ``POST .../{kr_id}/restore`` -- remove one key result, and its one Undo.
   - ``PUT /api/members/{slug}/goals/schedules`` -- ``{member, daily?, weekly?,
-    monthly?, heartbeat?, time?, timezone?, weekday?, month_day?, interval?}``:
+    monthly?, heartbeat?, time?, timezone?, weekday?, month_day?, interval?,
+    active_from?, active_to?}``:
     the four check-in switches, each keeping exactly one schedule of its own in
     step (:mod:`kiro_crew.dashboard.goal_reminder`). This route and the
     ``crewmate.check_ins`` card it applies are the only writers of a switch, so
@@ -500,6 +501,9 @@ async def api_member_goals_key_results(request: web.Request) -> web.Response:
             from kiro_crew.dashboard import goal_setup
 
             goal_setup.schedule_milestones_nudge(request.app.get("state"), *written[0])
+            from kiro_crew.dashboard.mate_user_actions import REQ_CARD_OWN_WAKE
+
+            request[REQ_CARD_OWN_WAKE] = True
     return resp
 
 
@@ -555,7 +559,8 @@ async def api_member_goals_schedules(request: web.Request) -> web.Response:
     """PUT /api/members/{slug}/goals/schedules — the check-in switches and their timing.
 
     Body: ``{member, daily?, weekly?, monthly?, heartbeat?, time?, timezone?,
-    weekday?, month_day?, interval?}``. Turning a switch on needs a goal (409 ``no_goal``).
+    weekday?, month_day?, interval?, active_from?, active_to?}`` (the last two are
+    the heartbeat's active hours). Turning a switch on needs a goal (409 ``no_goal``).
     The record is written first, then the schedules are made to match it; when
     they cannot be written the switches turned on by this request are turned back
     off and the answer is 503, so no switch shows a check-in nothing will send.

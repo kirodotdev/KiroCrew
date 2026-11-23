@@ -44,8 +44,7 @@ the chat's own effort, so the chat's next reply uses the Bot's values. This
 happens on every save from the Bot's editor, which always sends both fields,
 so renaming the Bot or saving it unchanged resets them too. A change made
 outside the dashboard, with `kirocrew agent update --model` or by editing
-`config.json`, does not reset the chat's own model or effort yet
-([#36614](https://github.com/kirodotdev/KiroCrew/issues/36614)); save the Bot
+`config.json`, does not reset the chat's own model or effort; save the Bot
 in its editor to bring the chat back onto it. A `/model` typed in the chat
 after the save wins again until the next save.
 Other chats and the sessions the Bot starts keep their own picks.
@@ -278,12 +277,19 @@ A Bot's **Goals** tab (Profile card) holds what it works toward:
   it is what wakes the Bot on its own rather than a goal check-in. While it is on,
   the Bot wakes in its own chat every 30 minutes, hour (the default),
   2 hours or 4 hours, looks for what it can move forward toward its goals,
-  and does it. It works quietly: what it did shows on its **Dashboard** tab and
+  and does it. Under the interval, **Only between** limits the wakes to a
+  window of whole hours (for example 08:00 to 20:00), in the zone the
+  schedule runs in, so the Bot does not wake all night. The
+  whole day is the default; the window does not cross midnight and has no
+  weekdays, and it is set only on this tab, not by the Bot's card. It works quietly: what it did shows on its **Dashboard** tab and
   its task list, and it writes in the chat only when it needs your decision,
   when something you asked for is done, or when something needs your attention
   now. When it has nothing to move, it ends the wake without a word. Anything
   it does write during a wake shows in the chat. A wake is skipped while the chat is busy or a monitor loop is running in it. Each run uses credits. The
   Bot can suggest turning it on with a card; only you can press it.
+  A wake cannot reset the bot's conversation, because no person sent it; to keep
+  a long chat small, set **Summarize old messages at** under **Settings** on the
+  bot's **Profile** tab.
 - **Reports.** The newest weekly reports and monthly reviews, each linking its
   artifact.
   When the monthly review finds the goal or its key results no longer fit the
@@ -299,11 +305,14 @@ card's goal as its goal; its description stays empty until it or you write one.
 What the Bot is working on right now is its task list on the Crew board,
 not part of the goal.
 
-Creating a Bot allocates its memory store for it. That store cannot later
+Creating a Bot allocates its memory store for it, unless it takes over a
+deleted Bot's kept memory (below). That store cannot later
 be pointed somewhere else or shared with another Bot — `kirocrew agent
 update --memory-store` refuses it — because a Bot's memory is its identity.
 Deleting a Bot removes it, along with its picture and its goal check-ins. Its
-workspace, its memory and its past chats are kept.
+workspace, its memory and its past chats are kept. A new Bot can take that
+memory over: pick it under **Memory** in the New Bot dialog's **Advanced
+settings**, and the new Bot owns that store and its past chats.
 
 ## Memory
 
@@ -341,6 +350,10 @@ so it cannot message other sessions; its result comes back to the bot's thread
 as a worker report. To hand work to another session at a set time, have the
 scheduled turn report back, and send the message from the bot's thread when
 that report arrives.
+
+From a Discord DM, `!bot` connects the conversation to the bot's own thread
+instead of opening a new chat, so the bot keeps its worker there
+([discord-integration.md](discord-integration.md)).
 
 Slack is the exception worth knowing. Its per-thread `!ta <name>` (`!ta off`
 clears it) resolves the name against the agent spec files in `~/.kiro/agents/`,

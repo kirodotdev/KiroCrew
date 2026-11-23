@@ -26,6 +26,7 @@ from kiro_crew.cron import (
     job_zone_name,
     load_cron_folders,
 )
+from kiro_crew.cron_history import keep_ends
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -340,7 +341,7 @@ def _render_cron_list_full(jobs: list[Any]) -> str:
     now = time.time()
     tz_name, local_tz = get_local_tz()
     for j in jobs:
-        status = "✅ active" if j.enabled else "⏸️ paused"
+        status = "active" if j.enabled else "paused"
         sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
         next_line = _sanitize(_format_next_run(j, now, local_tz))
         san_name = _sanitize(j.name)
@@ -350,7 +351,7 @@ def _render_cron_list_full(jobs: list[Any]) -> str:
         entry = f"• {san_name} ({status}) [{kind}]\n  ID: {j.id} | {san_sched}{next_line}\n  → {san_msg}"
         if j.last_status == "error" and j.last_error:
             san_err = _sanitize(j.last_error)
-            entry += f"\n  ⚠️ last error: {san_err}"
+            entry += f"\n  Warning: last error: {san_err}"
         elif (
             j.last_status == "ok"
             and (j.script or j.command)
@@ -392,7 +393,7 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
     now = time.time()
     tz_name, local_tz = get_local_tz()
     for j in jobs:
-        status = "✅" if j.enabled else "⏸️"
+        status = "active" if j.enabled else "paused"
         sched = format_schedule(j.schedule, tz_name=job_zone_name(j) or tz_name)
         next_line = _sanitize(_format_next_run(j, now, local_tz))
         san_name = _sanitize(j.name)
@@ -430,11 +431,8 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
         # Show last_error preview when in error; otherwise last_result for
         # script/command jobs whose result isn't the trivial "ok".
         if last_status == "error" and isinstance(j.last_error, str) and j.last_error:
-            san_err = _sanitize(j.last_error)
-            err_short = (
-                san_err if len(san_err) <= _ERR_PREVIEW_LEN else san_err[:_ERR_PREVIEW_LEN] + "…"
-            )
-            extras.append(f"err={err_short}")
+            # Start and end both kept: a refusal names its rule at the end.
+            extras.append(f"err={keep_ends(_sanitize(j.last_error), _ERR_PREVIEW_LEN)}")
         elif (
             last_status == "ok"
             and (getattr(j, "script", "") or getattr(j, "command", ""))

@@ -185,6 +185,23 @@ def test_a_thrown_primitive_still_yields_a_message():
     assert c.errors[0].message == "Uncaught boom"
 
 
+@pytest.mark.parametrize(
+    ("thrown", "expected"),
+    [
+        ({"type": "object", "subtype": "null", "value": None}, "Uncaught null"),
+        ({"type": "boolean", "value": False}, "Uncaught false"),
+        ({"type": "boolean", "value": True}, "Uncaught true"),
+    ],
+)
+def test_a_thrown_null_or_boolean_reads_as_javascript_spells_it(thrown, expected):
+    c = _Collector()
+    params = _exception("", 1)
+    params["exceptionDetails"]["exception"] = thrown
+    c.on_event("Runtime.exceptionThrown", params)
+
+    assert c.errors[0].message == expected
+
+
 def test_an_error_from_a_script_that_is_not_the_page_has_no_position():
     """A line number inside someone else's file would point at the wrong place."""
     c = _Collector()
@@ -614,11 +631,28 @@ def test_a_typo_on_a_page_that_loads_a_library_is_still_the_pages_own_error():
         # Words every URL on the two CDNs carries name no library.
         ("ajax", "https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js", False),
         ("npm", "https://cdn.jsdelivr.net/npm/chart.js@4", False),
+        ("libs", "https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js", False),
         ("L", "https://cdn.jsdelivr.net/npm/chart.js@4", False),
     ],
 )
 def test_a_library_url_suggests_the_names_it_defines(name, url, defines):
     assert dashboard_verify._defined_by(name, url) is defines
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("jsyaml", "https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js"),
+        ("jsyaml", "https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"),
+        ("videojs", "https://cdn.jsdelivr.net/npm/video.js@8/dist/video.min.js"),
+    ],
+)
+def test_a_page_that_stops_at_a_library_named_with_js_is_skipped_not_failed(name, url):
+    """``js`` is filler on its own, but js-yaml defines ``jsyaml`` and video.js ``videojs``."""
+    v = _verdict(_after_a_refused_library(f"ReferenceError: {name} is not defined", urls=(url,)))
+
+    assert (v.status, [e.message for e in v.errors]) == (STATUS_SKIPPED, [])
+    assert f"'{name} is not defined'" in v.reason
 
 
 def test_a_missing_library_that_the_page_caught_and_logged_is_recognised_too():
@@ -959,6 +993,17 @@ def test_no_browser_skips_with_a_reason_the_agent_can_read(monkeypatch):
 
     assert v.status == STATUS_SKIPPED
     assert "no system-installed Chromium or Chrome" in v.reason
+    assert "install Google Chrome or the distribution's Chromium package" in v.reason
+
+
+@LINUX_ONLY
+def test_the_no_browser_reason_names_every_accepted_install_path(monkeypatch):
+    monkeypatch.setattr(dashboard_verify, "find_browser", lambda: None)
+
+    reason = dashboard_verify.verify_page("<p>x</p>", _read()).reason
+
+    for path in dashboard_verify._SYSTEM_BROWSERS:
+        assert path in reason, path
 
 
 @LINUX_ONLY
@@ -970,6 +1015,18 @@ def test_no_launcher_python_skips_with_a_reason(monkeypatch):
 
     assert v.status == STATUS_SKIPPED
     assert "no system-installed Python" in v.reason
+    assert "install the distribution's python3 package system-wide" in v.reason
+
+
+@LINUX_ONLY
+def test_the_no_launcher_python_reason_names_every_accepted_path(monkeypatch):
+    monkeypatch.setattr(dashboard_verify, "find_browser", lambda: "/opt/chrome")
+    monkeypatch.setattr(dashboard_verify, "find_launcher_python", lambda: None)
+
+    reason = dashboard_verify.verify_page("<p>x</p>", _read()).reason
+
+    for path in dashboard_verify._SYSTEM_PYTHONS:
+        assert path in reason, path
 
 
 def test_a_host_that_is_not_linux_skips_before_looking_for_a_browser(monkeypatch):

@@ -16,6 +16,11 @@
  * - Update All: SEQUENTIAL loop with `{done,total}` progress, failure
  *   aggregation into one `failed_to_update` message, and a per-success
  *   `announceAppsChanged` once per settled batch (and per single update).
+ * - notice routing: with `setNotice` given, Update All's consent lines reach
+ *   it, and failures, refused updates and refused backends stay on `setError`;
+ *   every new update or batch clears both. Without it every line goes to
+ *   `setError`. `trustHandoff` lists, per notice, the apps it sends to their
+ *   details.
  * - re-entrance guards: `runUpdate` and a second `updateAll` are both no-ops
  *   while a batch is running.
  *
@@ -229,6 +234,28 @@ describe('useAppUpdates — recorded-source routing (runUpdate)', () => {
     await expect(retryUpdate('radar')).rejects.toThrow('boom')
   })
 
+  it('the trust retry hands a local-only refusal to the detail page instead of failing', async () => {
+    const onTrustDenied = vi.fn()
+    apiUpdateApp.mockRejectedValueOnce(Object.assign(new Error('app execution denied'), {
+      code: 'app_execution_denied',
+    }))
+    const { result, updateAppNav, setError, announce } = setup({ rowUpdatesInPlace: true, onTrustDenied })
+    await act(async () => { await result.current.runUpdate('notes') })
+    const [, retryUpdate] = onTrustDenied.mock.calls[0]
+
+    // The grant the dialog just saved covers the folder copy only, so the
+    // registry update it retries is refused as local-only. That is the next
+    // consent step, offered on the detail page, not a failed retry.
+    apiUpdateApp.mockRejectedValueOnce(Object.assign(new Error('trusted for its local source only'), {
+      body: JSON.stringify({ code: 'app_trust_local_only', trustRepository: 'https://github.com/acme/notes' }),
+    }))
+    await act(async () => { await expect(retryUpdate('notes')).resolves.toBeUndefined() })
+    expect(apiUpdateApp).toHaveBeenLastCalledWith('notes', 'registry:notes')
+    expect(updateAppNav).toHaveBeenCalledWith('notes')
+    expect(announce).toHaveBeenCalled()
+    expect(setError).not.toHaveBeenCalledWith(expect.stringContaining('local source'))
+  })
+
   it('the trust retry opens detail when the update needs new consent', async () => {
     const onTrustDenied = vi.fn()
     apiUpdateApp.mockRejectedValueOnce(Object.assign(new Error('denied'), {
@@ -253,6 +280,18 @@ describe('useAppUpdates — recorded-source routing (runUpdate)', () => {
     act(() => { void result.current.runUpdate('ghost') })
     expect(updateAppNav).toHaveBeenCalledExactlyOnceWith('ghost')
     expect(apiUpdateApp).not.toHaveBeenCalled()
+  })
+
+  it('a row update clears the consent notice too, as it clears the error notice', async () => {
+    apiUpdateApp.mockResolvedValueOnce(undefined)
+    const setNotice = vi.fn()
+    const { result, setError, setSuccess } = setup({ updatables: [], setNotice })
+
+    await act(async () => { await result.current.runUpdate('notes') })
+
+    expect(setNotice.mock.calls).toEqual([['']])
+    expect(setError.mock.calls).toEqual([['']])
+    expect(setSuccess).toHaveBeenCalledWith(expect.stringContaining('pages.appsPage.synced_from_its_source_directory'))
   })
 
   it('reports a failed in-place update through setError and clears pending', async () => {
@@ -429,6 +468,124 @@ describe('useAppUpdates — Update All', () => {
     // No mid-batch hand-off to the detail page, and no success toast.
     expect(updateAppNav).not.toHaveBeenCalled()
     expect(setSuccess).not.toHaveBeenCalled()
+    // The page gets the apps that notice names, keyed on its exact text, so it
+    // can offer each app's details from the notice itself.
+    expect(result.current.trustHandoff).toEqual([{ message: notice, apps: [{ name: 'notes', label: 'Notes', rerunUpdate: true }] }])
+  })
+
+  it('links a chat-control consent app from its own notice without rerunning its update', async () => {
+    apiUpdateApp
+      .mockRejectedValueOnce(Object.assign(new Error('trusted for its local source only'), {
+        body: JSON.stringify({ code: 'app_trust_local_only', trustRepository: 'https://github.com/acme/notes' }),
+      }))
+      .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+    const setNotice = vi.fn()
+    const { result, setError } = setup({ setNotice })
+
+    await act(async () => { await result.current.updateAll() })
+
+    // Both lines tell the reader to open the app's details, so both apps get a
+    // link, each from the notice that names it. Docs is already updated: its
+    // link opens the page, not another update.
+    const trustLine = 'pages.appsPage.update_needs_repository_trust {"name":"Notes"}'
+    const consentLine = 'pages.appsPage.updated_needs_session_approval_consent {"name":"Docs"}'
+    expect(setError).toHaveBeenLastCalledWith(trustLine)
+    expect(setNotice).toHaveBeenLastCalledWith(consentLine)
+    expect(result.current.trustHandoff).toEqual([
+      { message: trustLine, apps: [{ name: 'notes', label: 'Notes', rerunUpdate: true }] },
+      { message: consentLine, apps: [{ name: 'docs', label: 'Docs', rerunUpdate: false }] },
+    ])
+  })
+
+  it('names no trust hand-off for a batch that met no local-only refusal', async () => {
+    apiUpdateApp
+      .mockRejectedValueOnce(Object.assign(new Error('trusted for its local source only'), {
+        body: JSON.stringify({ code: 'app_trust_local_only', trustRepository: 'https://github.com/acme/notes' }),
+      }))
+      .mockResolvedValueOnce(undefined)
+    const { result } = setup()
+    await act(async () => { await result.current.updateAll() })
+    expect(result.current.trustHandoff).not.toEqual([])
+
+    // A later batch starts clean: its notice names no app needing repository trust.
+    apiUpdateApp.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(undefined)
+    await act(async () => { await result.current.updateAll() })
+    expect(result.current.trustHandoff).toEqual([])
+  })
+
+  it('a failed app and a consent request land on separate notices', async () => {
+    apiUpdateApp
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+    const setNotice = vi.fn()
+    const { result, setError, setSuccess } = setup({ setNotice })
+
+    await act(async () => { await result.current.updateAll() })
+
+    // The red error notice carries the failure and nothing else; the consent
+    // request reports an update that landed, so it goes to the other notice.
+    expect(setError.mock.calls.filter(([m]) => m)).toEqual([
+      ['pages.appsPage.failed_to_update {"names":"Notes"}'],
+    ])
+    expect(setNotice.mock.calls.filter(([m]) => m)).toEqual([
+      ['pages.appsPage.updated_needs_session_approval_consent {"name":"Docs"}'],
+    ])
+    expect(setSuccess).not.toHaveBeenCalled()
+  })
+
+  it('a batch whose only outcome is a consent request raises no error at all', async () => {
+    apiUpdateApp
+      .mockResolvedValueOnce({ notice: 'session_approval_reconsent' })
+      .mockResolvedValueOnce(undefined)
+    const setNotice = vi.fn()
+    const { result, setError, setSuccess } = setup({ setNotice })
+
+    await act(async () => { await result.current.updateAll() })
+
+    // Only the batch-start clear reaches setError; no message ever does.
+    expect(setError.mock.calls).toEqual([['']])
+    expect(setNotice).toHaveBeenLastCalledWith(
+      'pages.appsPage.updated_needs_session_approval_consent {"name":"Notes"}',
+    )
+    expect(setSuccess).not.toHaveBeenCalled()
+  })
+
+  it('keeps refused updates and a refused backend on the error notice, one line each', async () => {
+    apiUpdateApp
+      .mockRejectedValueOnce(Object.assign(new Error('app execution denied'), { code: 'app_execution_denied' }))
+      .mockRejectedValueOnce(Object.assign(new Error('trusted for its local source only'), {
+        body: JSON.stringify({ code: 'app_trust_local_only', trustRepository: 'https://github.com/acme/docs' }),
+      }))
+      .mockResolvedValueOnce({ backend_refused: 'shell launcher on Windows' })
+    const setNotice = vi.fn()
+    const { result, setError, setSuccess } = setup({
+      setNotice,
+      updatables: [pathApp, docsApp, registryApp] as unknown as AppsData['updatables'],
+    })
+
+    await act(async () => { await result.current.updateAll() })
+
+    // Each comes from a refused request or a backend that did not start, so
+    // each is an error by where it comes from, worded as its next step.
+    expect(setError).toHaveBeenLastCalledWith(
+      'pages.appsPage.update_needs_trust {"name":"Notes"}\n'
+      + 'pages.appsPage.update_needs_repository_trust {"name":"Docs"}\n'
+      + 'pages.appsPage.backend_refused_notice {"name":"Radar","reason":"shell launcher on Windows"}',
+    )
+    expect(setNotice.mock.calls).toEqual([['']])
+    expect(setSuccess).not.toHaveBeenCalled()
+  })
+
+  it('a clean batch clears the consent notice and shows success', async () => {
+    apiUpdateApp.mockResolvedValue(undefined)
+    const setNotice = vi.fn()
+    const { result, setError, setSuccess } = setup({ setNotice })
+
+    await act(async () => { await result.current.updateAll() })
+
+    expect(setNotice.mock.calls).toEqual([['']])
+    expect(setError.mock.calls).toEqual([['']])
+    expect(setSuccess).toHaveBeenCalledWith(expect.stringContaining('pages.appsPage.updated_app'))
   })
 
   it('blocks runUpdate and a second updateAll while a batch is running', async () => {

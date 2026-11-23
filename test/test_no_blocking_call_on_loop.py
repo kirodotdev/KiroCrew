@@ -63,6 +63,7 @@ must carry a reason so the exception is auditable in review and greppable
 later. (In practice the deterministic tier should need none -- none of these
 calls has a legitimate on-loop use.)
 """
+
 from __future__ import annotations
 
 import ast
@@ -70,7 +71,7 @@ import io
 import pathlib
 import tokenize
 
-from source_corpus import parsed_candidates, src_root
+from source_corpus import parsed_candidates, src_root, untraced
 
 # module name -> attribute names that block when run on the loop AND have no
 # legitimate on-loop use (so a hard failure is always correct).
@@ -249,15 +250,16 @@ def collect_repo_violations() -> list[tuple[str, int, str]]:
     """Scan every ``kiro_crew/**/*.py`` for on-loop blocking calls."""
     base = _src_root().parent
     out: list[tuple[str, int, str]] = []
-    for py, src, tree in parsed_candidates(_REQUIRE_ALL):
-        # A syntactically-invalid module is the compiler's problem, not this
-        # gate's, so `parsed_candidates` skips it rather than masking the real
-        # build error.
-        try:
-            rel = str(py.relative_to(base))
-        except ValueError:
-            rel = str(py)
-        out.extend(find_violations(src, rel, tree=tree))
+    with untraced():
+        for py, src, tree in parsed_candidates(_REQUIRE_ALL):
+            # A syntactically-invalid module is the compiler's problem, not this
+            # gate's, so `parsed_candidates` skips it rather than masking the real
+            # build error.
+            try:
+                rel = str(py.relative_to(base))
+            except ValueError:
+                rel = str(py)
+            out.extend(find_violations(src, rel, tree=tree))
     return out
 
 

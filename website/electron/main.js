@@ -53,6 +53,7 @@ const { describeChromiumSandboxOff, showChromiumSandboxNotice } = require("./chr
 const { findKirocrewBin } = require("./find-bin");
 const { resolveLinuxInstall, readExternallyManaged, runStartupApply } = require("./auto-update");
 const { createStartupGatewayProbe } = require("./runtime/update/gateway-probe");
+const { createInstallSplash } = require("./runtime/update/install-splash");
 const { reregisterBundleIfManaged } = require("./mac-launch-services");
 const { initNativeLogging } = require("./native-logging");
 const { watchSessionLock } = require("./session-lock");
@@ -164,6 +165,9 @@ const store = new Store({
     closeAction: "background",
     // Only false hides it, and only while the close button quits. See tray-icon.js.
     showTrayIcon: true,
+    // Only true hides a minimized window, and only while a tray icon can bring
+    // it back. See minimize-to-tray.js.
+    minimizeToTray: false,
     linuxFrameless: null,
     // Written by gpu-crash-fallback.js when the GPU process dies at startup;
     // read before Chromium initializes on the next launch.
@@ -313,6 +317,13 @@ let desktopMetricsRecorder = null;
 let windows = null;
 // The kirocrew:// deep-link handler (armed by the single-instance winner below).
 let deepLinks = null;
+// The window a start-time update apply shows while its command runs.
+const installSplash = createInstallSplash({
+  BrowserWindow,
+  page: path.join(__dirname, "loading.html"),
+  log: glog,
+  isQuitting: () => isQuitting,
+});
 
 /** The main window's dashboard view webContents, or null while there is none. */
 function mainDashboardContents() {
@@ -521,13 +532,19 @@ if (!app.requestSingleInstanceLock()) {
   deepLinks.handleArgv(process.argv);
 
   app.on("second-instance", (_event, argv) => {
-    // On Windows and Linux a kirocrew:// link launches a second copy with the
-    // URL in argv; route to it. Otherwise a relaunch is explicit intent to see
-    // the existing window. The window owner cancels a pending fullscreen/tray
-    // hide before restore/show/focus.
+    // During a start-time update apply the install window is the only one, so
+    // it is what a relaunch brings forward. On Windows and Linux a kirocrew://
+    // link launches a second copy with the URL in argv; route to it. Otherwise
+    // a relaunch is explicit intent to see the existing window. The window owner
+    // cancels a pending fullscreen/tray hide before restore/show/focus.
+    installSplash.raise();
     if (deepLinks && deepLinks.handleArgv(argv)) return;
     windows?.showMainWindow({ focus: true });
   });
+  // macOS reopens a running app (Dock, Finder) through `activate`, not
+  // `second-instance`, and the boot's own activate handler exists only after
+  // the apply.
+  app.on("activate", () => installSplash.raise());
 }
 
 // Factories are created at module load, before any renderer can change settings.
@@ -617,6 +634,7 @@ const ipcRegistrar = createIpcRegistrar({
   closeCrewCompanionForUpdate,
   reopenCrewCompanionAfterUpdate,
   crashScan: scanCrashArtifacts,
+  nativeLoggingStatus: () => nativeLogging,
   downloadExpectations,
   readInternalSecret,
   fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
@@ -794,10 +812,11 @@ app.whenReady().then(async () => {
   }
 
   // An update the user armed whose quit-time apply was interrupted or failed is
-  // finished HERE: before the gateway spawns and before any window opens, so the
-  // gateway and the app are never on different versions. On success the app
-  // relaunches once into the new bundle and this launch ends; on failure the
-  // installed version starts and the updater shows the error.
+  // finished HERE: before the gateway spawns and before the main window opens, so
+  // the gateway and the app are never on different versions. While its command
+  // runs, the install window says so. On success the app relaunches once into
+  // the new bundle and this launch ends; on failure the installed version starts
+  // and the updater shows the error.
   const startupApply = await runStartupApply({
     app,
     store,
@@ -811,6 +830,7 @@ app.whenReady().then(async () => {
       stopCommand: `kirocrew stop --port ${PORT}`,
     }),
     Notification: electron.Notification,
+    showApplying: (version) => installSplash.show(version),
   });
   if (startupApply.outcome === "relaunching") return;
 
@@ -821,6 +841,9 @@ app.whenReady().then(async () => {
   ipcRegistrar.registerShell();
   windows.syncTray();
   const mainWindow = windows.createMainWindow();
+  // Only now: destroying the hidden install window while it is the last one
+  // fires window-all-closed, which quits the app on Windows and Linux.
+  installSplash.close();
 
   // An AppImage whose AppRun added --no-sandbox says why and how to fix it.
   // Shown before the gateway boot, not awaited, so a gateway that never
@@ -969,8 +992,9 @@ app.whenReady().then(async () => {
     glog("app-window-host: init failed — " + (error && error.message));
   }
 
-  // Preserve the historical registration point: activation starts being
-  // handled only after boot and optional companion initialization finish.
+  // Preserve the historical registration point: the main window's activation
+  // starts being handled only after boot and optional companion initialization
+  // finish.
   app.on("activate", () => {
     windows.activateMainWindow();
   });

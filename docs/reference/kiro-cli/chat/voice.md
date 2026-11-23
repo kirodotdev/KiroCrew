@@ -5,7 +5,8 @@
 
 Kiro Crew supports hands-free interaction through voice input (speech-to-text)
 and voice output (text-to-speech). Input works in the dashboard and on supported
-messaging attachments; output works in the dashboard, Slack, and Telegram.
+messaging attachments; output works in the dashboard, Slack, Telegram, and
+WhatsApp.
 
 ## Voice Input (Speech-to-Text)
 
@@ -120,7 +121,7 @@ default needs nothing installed:
 | `system` (default) | nothing on macOS and Windows | The host's own engine: `say` on macOS, `System.Speech` through Windows PowerShell on Windows, `espeak-ng` (or legacy `espeak`) on Linux/BSD when installed. Linux is the one platform where it can be missing; install `espeak-ng` or pick another provider. |
 | `polly` | the `aws` CLI, AWS credentials, network | Paid AWS service, and it asks you to confirm the account first. |
 
-The `piper` provider was removed ([#23154](https://github.com/kirodotdev/KiroCrew/issues/23154)): its engine and voice models were installed unpinned and unverified, and the engine is GPL-licensed. A config that still names `piper`, or still carries `piper_model`, speaks with `system` and logs one warning per gateway start; set `provider` to `system` (or `polly`) in `config.json` to silence it. The `piper_*` keys are ignored and nothing on disk is removed; delete a Piper install or voice files yourself if you no longer want them.
+There is no `piper` provider: its engine and voice models would be installed unpinned and unverified, and the engine is GPL-licensed. A config that still names `piper`, or still carries `piper_model`, speaks with `system` and logs one warning per gateway start; set `provider` to `system` (or `polly`) in `config.json` to silence it. The `piper_*` keys are ignored and nothing on disk is removed; delete a Piper install or voice files yourself if you no longer want them.
 
 Two playback modes are available:
 
@@ -164,11 +165,21 @@ The legacy `!voice` inline commands still work but are deprecated:
 | Command | Effect |
 |---------|--------|
 | `!voice on` | Enable voice replies in this thread |
-| `!voice off` | Disable voice replies |
+| `!voice off` | Clear this thread's `!voice on` and its voice settings. It does not silence a thread while `voice_reply.enabled` is `true` |
+| `!voice global` | Turn global voice replies on or off. Saved to `voice_reply.enabled` in `config.json`, like the Voice settings, so it survives a restart. Like `enabled`, it also moves the `auto_reply_to_voice` default when that key is unset. When `config.local.json` sets `voice_reply.enabled`, that value still wins and the reply says so |
 | `!voice Ruth` | Switch to a specific Polly voice |
 | `!voice engine generative` | Change engine type |
 | `!voice speed 120%` | Adjust speech rate |
 | `!voice pitch +10%` | Adjust pitch (neural/standard engines only) |
+
+A Slack reply is spoken when any of these holds: `voice_reply.enabled` is `true`,
+the thread ran `!voice on` (or set a voice, engine, speed or pitch), or the message
+was a voice memo and `auto_reply_to_voice` is on. Setting `voice_reply.enabled` to
+`false` turns off the default for every thread; a thread that ran `!voice on`, and a
+voice memo under an explicit `auto_reply_to_voice: true`, still get audio. A running
+gateway picks up a `voice_reply` change in `config.json` without a restart, read with
+`config.local.json` merged over it. An edit that touches only `config.local.json` is
+not picked up live; a restart applies it.
 
 Voice replies are uploaded to the Slack thread alongside the text response.
 File format depends on the provider (MP3 for Polly, WAV for the built-in engine).
@@ -217,13 +228,13 @@ Settings are in **Settings > Voice**, or directly in
 | `enabled` | `false` | Turn on voice replies for **every** Kiro Crew response (text-triggered). Also seeds the `auto_reply_to_voice` default — see below. |
 | `provider` | `"system"` | TTS backend: `"system"` (the host's built-in engine, nothing to install) or `"polly"` (AWS, cloud, and billed). An unrecognized value falls back to `system` with a warning logged: reaching for a paid service is not a choice a typo may make for you. The removed `"piper"`, or an absent key beside a leftover `piper_model`, also resolves to `system`, with one warning. |
 | `auto_reply_to_voice` | _follows `enabled`_ | **Voice-triggered**: when the user sends a voice memo, auto-respond with voice. Defaults to whatever `enabled` is — set explicitly to override. |
-| `rate` | `100%` | 50%–200%. Shared by `polly` and `system` |
+| `rate` | `100%` | A percentage such as `120%`; Settings offers 80%–150%, and a malformed value falls back to `100%`. Shared by `polly` and `system` |
 | **Built-in-engine-specific** | | ignored by the other providers |
 | `system_voice` | _(OS default)_ | The engine's own voice selector: a voice name for `say` and Windows, a language code for `espeak-ng`. Pick one in **Settings > Voice** rather than typing it |
 | **Polly-specific** | | ignored by the other providers |
 | `voice_id` | `Ruth` | Any [Amazon Polly voice](https://docs.aws.amazon.com/polly/latest/dg/voicelist.html) |
 | `engine` | `generative` | `generative`, `neural`, `long-form`, `standard` |
-| `pitch` | `+0%` | -20% to +20% (neural/standard only) |
+| `pitch` | `+0%` | A signed percentage such as `+10%`; Slack offers -20% to +20% (neural/standard only) |
 | `aws_profile` | _(empty)_ | AWS CLI profile; empty = default credentials |
 | `region` | _(empty)_ | AWS region for Polly; empty = CLI default |
 ### Voice-in → voice-out (symmetric voice)

@@ -250,6 +250,27 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     status=409,
                 )
             if request.method == "PATCH" and patch_body is not None:
+                from kiro_crew.config.paths import mate_agents_dir
+
+                in_mates = await asyncio.to_thread(
+                    lambda: f.parent.resolve() == mate_agents_dir().resolve()
+                )
+                if in_mates:
+                    # A crewmate file has one writer, the crewmate editor: it
+                    # records approval revocations, and the crewmate's model
+                    # lives on its binding, not in this file. A generic write
+                    # here would skip both, so refuse before reading further.
+                    return web.json_response(
+                        {
+                            "error": (
+                                f"'{name}' belongs to a Bot, and the template "
+                                "editor does not change Bots; change it on "
+                                "the Bots page"
+                            ),
+                            "code": "crewmate_editor_required",
+                        },
+                        status=409,
+                    )
                 try:
                     # Either lookup spelling can resolve this same file; a
                     # hand-edited name cannot hide its enrolled stem.
@@ -305,16 +326,17 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                 async with _get_config_lock():
                     # Re-read under the lock: the copy above was read before
                     # the lock and a concurrent PATCH may have superseded it.
-                    # The branch writes this data back, so fence the file
-                    # against the folder the scan found it in -- the
-                    # user-level or the crewmate folder; the scan lists each
-                    # root flat, so that is ``f.parent`` -- and apply the
-                    # stricter no-symlink / no-escape fence before the
-                    # hardened read.  Keep the filesystem work off the event
-                    # loop while the shared config lock is held.
+                    # The branch writes this data back, so bind the same
+                    # agents directory and apply the stricter no-symlink /
+                    # no-escape fence before the hardened read.  Crewmate
+                    # files were refused above, so only the user-level
+                    # folder reaches here.  Keep the filesystem work off the
+                    # event loop while the shared config lock is held.
+                    agents_dir = kiro_agents_dir_path()
+
                     def _reread_under_lock(
                         spec_file: Path = f,
-                        root: Path = f.parent,
+                        root: Path = agents_dir,
                     ) -> dict[str, Any] | None:
                         if not _spec_path_is_safe(spec_file, root):
                             return None

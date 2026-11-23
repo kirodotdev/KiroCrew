@@ -15,7 +15,9 @@ import pathlib
 
 import pytest
 
+from kiro_crew import model_registry
 from kiro_crew.config import loader as L
+from kiro_crew.config import resolution as _resolution
 from kiro_crew.config.loader import KiroCrewConfig
 
 
@@ -91,6 +93,84 @@ def test_several_sections_at_once(cfg_home):
     assert d["agent"]["gone_a"] == 1
     assert d["session"]["gone_b"] == "two"
     assert d["telemetry"]["gone_c"] == {"nested": True}
+
+
+def test_repeated_loads_of_an_unchanged_file_log_each_line_once(cfg_home, caplog):
+    """The gateway loads config several times a second. An unchanged file names its
+    unmodelled keys, and an unregistered model id it sets, on the first load only;
+    a key set the file did not carry before is named when it appears."""
+    _write(
+        cfg_home,
+        {
+            "agent": {"fallback_model": "unregistered-model-for-this-test"},
+            "dashboard": {"legacy_toggle": True},
+            "agents": {"my-agent": {"model": "auto", "retired_flag": True}},
+        },
+    )
+    loggers = ("kiro_crew.config.loader", model_registry.__name__)
+
+    def lines() -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.name in loggers]
+
+    with caplog.at_level(logging.DEBUG, logger=loggers[0]):
+        with caplog.at_level(logging.DEBUG, logger=loggers[1]):
+            for _ in range(4):
+                KiroCrewConfig.load()
+            first = lines()
+            doc = json.loads(cfg_home.read_text(encoding="utf-8"))
+            doc["dashboard"]["another_toggle"] = 1
+            _write(cfg_home, doc)
+            KiroCrewConfig.load()
+            KiroCrewConfig.load()
+
+    assert (
+        first.count("config: preserving unmodelled dashboard key(s) on round-trip: legacy_toggle")
+        == 1
+    )
+    assert (
+        first.count(
+            "config: preserving unmodelled agents record key(s) on round-trip: my-agent.retired_flag"
+        )
+        == 1
+    )
+    assert (
+        first.count(
+            "Model 'unregistered-model-for-this-test' not in registry for provider acp; passing through"
+        )
+        == 1
+    )
+    assert (
+        lines()[len(first) :].count(
+            "config: preserving unmodelled dashboard key(s) on round-trip: another_toggle, legacy_toggle"
+        )
+        == 1
+    )
+
+
+def test_the_unmodelled_key_log_memory_is_bounded(monkeypatch, caplog):
+    """A config write can carry any key names, so neither the number of remembered key
+    sets nor the size of one can grow with the input."""
+    monkeypatch.setattr(_resolution, "_LOGGED_EXTRA_KEY_SETS_MAX", 2, raising=False)
+    cfg = KiroCrewConfig()
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.config.loader"):
+        for i in range(5):
+            _resolution.capture_extra_section_keys({"dashboard": {f"gone_{i}": 1}}, cfg)
+        _resolution.capture_extra_section_keys({"dashboard": {"k" * 100_000: 1}}, cfg)
+    assert 0 < len(_resolution._logged_extra_key_sets) <= 2
+    assert all(len(repr(entry)) < 200 for entry in _resolution._logged_extra_key_sets)
+
+
+def test_a_load_while_debug_is_off_does_not_silence_a_later_one(cfg_home, caplog):
+    """A gateway loads its config before it raises the log level, so a load the level
+    filtered out must not count as having named the keys."""
+    _write(cfg_home, {"dashboard": {"legacy_toggle": True}})
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        KiroCrewConfig.load()
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.config.loader"):
+        KiroCrewConfig.load()
+        KiroCrewConfig.load()
+    line = "config: preserving unmodelled dashboard key(s) on round-trip: legacy_toggle"
+    assert [r.getMessage() for r in caplog.records].count(line) == 1
 
 
 # ── What must NOT be captured ──────────────────────────────────────────────
@@ -349,7 +429,7 @@ def _assert_retired_knowledge_keys_dropped(cfgp) -> dict:
 @pytest.mark.asyncio
 async def test_a_settings_patch_drops_the_retired_knowledge_keys(cfg_home):
     """The Settings PATCH edits the raw document instead of going through
-    save(), so it must drop the retired knowledge keys itself."""
+    save(), and the locked writer it goes through drops the retired knowledge keys."""
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
     from dashboard_owner_helpers import as_owner
@@ -390,6 +470,58 @@ def test_cli_config_set_drops_the_retired_knowledge_keys(cfg_home):
     ):
         _config_cmd(args)
     assert _assert_retired_knowledge_keys_dropped(cfg_home)["auto_ingest_artifacts"] is False
+
+
+def test_config_defaults_adopt_drops_the_retired_keys_but_leaves_the_overlay(cfg_home):
+    """`kirocrew config defaults --adopt` rewrites config.json through the locked
+    writer without naming the retired keys, and the write still drops them, so the
+    load-time "dropped on the next save" warning stops. A RENAMED spelling is still
+    read and stays; config.local.json is the operator's own file and keeps them."""
+    import argparse
+    from unittest.mock import patch
+
+    from kiro_crew.cli_config import _config_cmd
+
+    _write(
+        cfg_home,
+        {
+            "session": {"autocompact_pct": 90.0},
+            "dashboard": {"use_builtin_browser": False, "browser_view_port": 7912},
+            "knowledge": {"auto_ingest_doc_links": True},
+        },
+    )
+    overlay = L.config_local_path()
+    overlay_text = json.dumps({"dashboard": {"browser_view_port": 9222}})
+    overlay.write_text(overlay_text, encoding="utf-8")
+    args = argparse.Namespace(
+        config_action="defaults", keys=["session.autocompact_pct"], adopt=True, keep=False
+    )
+    with (
+        patch("kiro_crew.cli_config.config_path", return_value=cfg_home),
+        patch("kiro_crew.cli_config.config_local_path", return_value=overlay),
+        patch("kiro_crew.cli_config.sel"),
+    ):
+        _config_cmd(args)
+
+    written = json.loads(cfg_home.read_text(encoding="utf-8"))
+    assert "autocompact_pct" not in written["session"]
+    assert "use_builtin_browser" not in written["dashboard"]
+    assert "browser_view_port" not in written["dashboard"]
+    assert written["knowledge"]["auto_ingest_doc_links"] is True
+
+    L.update_config_locked(overlay, mutate=lambda doc: doc, stamp_meta=False)
+    assert json.loads(overlay.read_text(encoding="utf-8")) == json.loads(overlay_text)
+
+
+def test_a_locked_write_to_config_json_under_another_spelling_drops_the_retired_keys(cfg_home):
+    """The settings import's Merge names config.json under the raw KIROCREW_HOME, which
+    can spell the data home differently from config_path(); its write drops them too."""
+    (cfg_home.parent / "sub").mkdir()
+    _write(cfg_home, {"dashboard": {"use_builtin_browser": False, "browser_view_port": 7912}})
+
+    L.update_config_locked(cfg_home.parent / "sub" / ".." / "config.json", mutate=lambda doc: doc)
+
+    assert json.loads(cfg_home.read_text(encoding="utf-8")).get("dashboard", {}) == {}
 
 
 def test_the_retired_conductor_skill_flag_is_purged(cfg_home):

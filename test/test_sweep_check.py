@@ -25,6 +25,7 @@ from push_guard_helpers import (
     _land_on_main,
     _load_push_guard,
     _run_push_guard,
+    copy_repo_pair,
 )
 from skill_script_helpers import load_skill_script
 
@@ -45,10 +46,12 @@ def _mod():
     return load_skill_script("sweep_check_under_test", SCRIPT)
 
 
-@pytest.fixture
-def clone(repo_pair):
-    """A feature branch that fixes a.py; b.py still names hooksPath; one test is added."""
-    clone_dir, _ = repo_pair
+@pytest.fixture(scope="module")
+def _clone_template(tmp_path_factory, _repo_pair_template) -> tuple[str, str]:
+    """The ``clone`` state, built once per module; ``clone`` hands each test a copy."""
+    clone_dir, origin_dir = copy_repo_pair(
+        _repo_pair_template, tmp_path_factory.mktemp("sweep-check-clone")
+    )
     _land_on_main(
         clone_dir,
         {A: "x = 1\nhooksPath = 1\n", B: "def f():\n    return core.hooksPath\n"},
@@ -60,6 +63,14 @@ def clone(repo_pair):
         {A: "x = 1\nhooks_path = 1\n", "test/test_a.py": "def test_hooks():\n    pass\n"},
         "fix: a",
     )
+    _git(clone_dir, "reset", "--hard", "HEAD")  # the ORIG_HEAD and reflog line a copy starts with
+    return clone_dir, origin_dir
+
+
+@pytest.fixture
+def clone(tmp_path, _clone_template):
+    """A feature branch that fixes a.py; b.py still names hooksPath; one test is added."""
+    clone_dir, _ = copy_repo_pair(_clone_template, tmp_path)
     return clone_dir
 
 

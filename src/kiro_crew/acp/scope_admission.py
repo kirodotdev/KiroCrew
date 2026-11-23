@@ -19,8 +19,9 @@ layer after systemd-run can be Python as well.
 A host where the check cannot run counts as admitted and goes on to ``initialize``
 as it would without the stage: at once for a permission error or a file it cannot
 parse, and after :data:`MISSING_PID_GRACE_S` for a pid that procfs does not list (no
-procfs, or one for another pid namespace). ``runtime_spawn_launch._admit_scope``
-runs the wait before anything is written to the agent's stdin, and raises its errors.
+procfs, or one for another pid namespace). Both drivers run the wait before anything
+is written to the agent's stdin, and raise its errors: ``runtime_spawn_launch._admit_scope``
+for ``AcpRuntime`` and ``client_start._admit_scope`` for ``AcpClient``.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -181,9 +182,8 @@ async def exit_evidence(runtime: AcpRuntime) -> tuple[str, str]:
     A death is seen before the stderr drain and the reap have run, so the reason
     would often name no code and an empty tail. Both are waited for first: the drain
     under ``settle_stderr``'s bound, the exit under ``_KILL_REAP_TIMEOUT``. The tail
-    is published only through ``safe_stderr_tail``, the gate the death summary uses,
-    and a runtime that may not record shows ``<not retained>``. Shared by the
-    ``initialize`` death path and this stage.
+    is :func:`published_stderr_tail`, and a runtime that may not record shows
+    ``<not retained>``. Shared by the ``initialize`` death path and this stage.
     """
     await runtime.settle_stderr()
     process = runtime._process
@@ -193,13 +193,21 @@ async def exit_evidence(runtime: AcpRuntime) -> tuple[str, str]:
         except Exception:
             logger.debug("AcpRuntime: exit status unread after a failed start", exc_info=True)
     rc = runtime._returncode_label()
-    if runtime.recording_allowed:
-        from kiro_crew.acp.stderr_tail import safe_stderr_tail
+    return rc, published_stderr_tail(runtime._stderr_lines if runtime.recording_allowed else None)
 
-        tail = safe_stderr_tail(runtime._stderr_lines[-5:], " | ") or "<none>"
-    else:
-        tail = "<not retained>"
-    return rc, tail
+
+def published_stderr_tail(stderr_lines: Sequence[str] | None) -> str:
+    """The last five stderr lines as a start death names them.
+
+    Published only through ``safe_stderr_tail``, the gate the death summary uses.
+    *stderr_lines* is ``None`` for a process whose stderr may not be recorded, which
+    shows ``<not retained>``. No retained line shows ``<none>``.
+    """
+    if stderr_lines is None:
+        return "<not retained>"
+    from kiro_crew.acp.stderr_tail import safe_stderr_tail
+
+    return safe_stderr_tail(list(stderr_lines)[-5:], " | ") or "<none>"
 
 
 def timeout_message(scope_unit: str, pid: int, bound_s: float) -> str:
@@ -229,13 +237,21 @@ def died_message(scope_unit: str, pid: int, returncode: str, stderr_tail: str, r
 
 
 def log_stage(
-    admission: Admission, *, bound_s: float, pid: int, unit: str, returncode: str | None = None
+    admission: Admission,
+    *,
+    bound_s: float,
+    pid: int,
+    unit: str,
+    returncode: str | None = None,
+    log: logging.Logger = logger,
 ) -> None:
     """One ``acp_startup_stage`` record for this stage, in ``runtime_wire``'s key=value shape.
 
     ``unchecked`` is logged as ``admitted`` with ``proc_check=unavailable``: the
     spawn goes on as it would without the stage. An admission slower than
-    :data:`SLOW_ADMISSION_S` logs at WARNING, as do a timeout and an exit.
+    :data:`SLOW_ADMISSION_S` logs at WARNING, as do a timeout and an exit. *log* is
+    the driver's logger: the runtime's by default, ``kiro_crew.acp.client`` for
+    ``AcpClient``.
     """
     outcome = ADMITTED if admission.outcome == UNCHECKED else admission.outcome
     extra = ""
@@ -247,7 +263,7 @@ def log_stage(
         extra += f" returncode={returncode}"
     slow = admission.waited_s > SLOW_ADMISSION_S
     level = logging.INFO if outcome == ADMITTED and not slow else logging.WARNING
-    logger.log(
+    log.log(
         level,
         "acp_startup_stage stage=scope_admission outcome=%s duration_ms=%.1f budget_s=%g "
         "pid=%s scope=%s%s",

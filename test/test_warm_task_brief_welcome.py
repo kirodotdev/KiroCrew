@@ -51,12 +51,15 @@ def _live(n, **facts):
             "read_at": "06:00", **facts}  # fmt: skip
 
 
-def _render(items, *, awaits=(), live=(), waiting=(), language="en", goal="Ship the widget"):
+def _render(
+    items, *, awaits=(), checking=(), live=(), waiting=(), language="en", goal="Ship the widget"
+):
     return welcome.render(
         language=language,
         goal=goal,
         items=items,
         awaits={i["item_id"]: i["item_id"] in awaits for i in items},
+        checking=set(checking),
         waiting=waiting,
         live=live,
         checked_at="06:01",
@@ -110,15 +113,6 @@ def same_day(monkeypatch):
     )
 
 
-def test_a_waiting_item_with_no_record_points_at_its_question_by_time(same_day):
-    item = {**_item(1, status="question"), "last_report_at": "2026-11-14T18:30:00+00:00"}
-    text = _render([item], awaits={item["item_id"]})
-    assert "- Item 1 (waiting on you, checked 06:01)\n  - See the question at 18:30." in text
-    assert "not written" not in text
-    untimed = _render([_item(1, status="question")], awaits={"it_00000001"})
-    assert "  - See the question in this chat." in untimed
-
-
 REPLY_AT = "2026-11-14T18:40:00+00:00"
 REPLY = {
     "kind": "options",
@@ -132,21 +126,37 @@ def _waiting_item(n, **extra):
     return {**_item(n, status="question"), "last_report_at": "2026-11-14T18:30:00+00:00", **extra}
 
 
-def test_the_one_waiting_item_quotes_the_open_reply_with_its_time(same_day):
-    item = _waiting_item(1)
-    text = _render([item], awaits={item["item_id"]}, waiting=[REPLY])
-    assert (
-        "- Item 1 (waiting on you, checked 06:01)\n  - Asked at 18:40: Merge or hold?\n"
-        "  - Merge\n  - Hold" in text
-    )
-    # The reply is that item's question now, not a second entry.
-    assert text.count("Merge or hold?") == 1 and "buttons below" not in text
+WHAT_ONLY = {"what": "Pick a region", "written_at": "2026-11-14T18:35:00+00:00"}
 
 
-def test_the_digest_render_of_a_quoted_time_does_not_change_with_the_date(monkeypatch):
+def test_a_record_with_only_its_what_points_at_its_question_by_time(same_day):
+    item = {
+        **_item(1, status="question", ask=WHAT_ONLY),
+        "last_report_at": "2026-11-14T18:30:00+00:00",
+    }
+    text = _render([item], awaits={item["item_id"]})
+    assert "- Pick a region (waiting on you, checked 06:01)\n  - See the question at 18:30." in text
+    assert "not written" not in text
+    untimed = _render([_item(1, status="question", ask=WHAT_ONLY)], awaits={"it_00000001"})
+    assert "  - See the question in this chat." in untimed
+
+
+def test_an_item_the_main_chat_is_still_checking_never_needs_you():
+    """A worker named a person but the question was not relayed with a record: it
+    reads under Being done now, and an open reply's choices stay their own entry."""
+    item = _item(1, status="question")
+    text = _render([item], checking={item["item_id"]}, waiting=[REPLY])
+    assert "- Item 1 (main chat is on it, checked 06:01)" in text
+    assert "waiting on you" not in text
+    assert "**Needs you**\n- Merge or hold?\n  - The choices are in the buttons below." in text
+    quiet = _render([item], checking={item["item_id"]})
+    assert "**Needs you**\nNothing needs you right now." in quiet
+
+
+def test_the_digest_render_of_a_question_time_does_not_change_with_the_date(monkeypatch):
     """The digest render's times read neither "now" nor the zone, so an unchanged
     welcome stays the quiet line on a later day."""
-    item = _waiting_item(1)
+    item = _waiting_item(1, ask=WHAT_ONLY)
 
     def render_on(day, clock):
         now = datetime(2026, 11, day, 19, 0, tzinfo=timezone.utc)
@@ -180,22 +190,6 @@ async def test_only_the_digest_render_uses_the_digest_clock(monkeypatch):
     for epoch in (warm_task_brief._DIGEST_EPOCH, 1_794_682_000.0):
         await warm_task_brief._compose(None, slot, snap, (), "en", epoch)
     assert seen == [warm_task_brief._digest_clock, inputs.clock]
-
-
-def test_a_written_record_wins_over_the_reply():
-    item = _waiting_item(1, ask=RECORD)
-    text = _render([item], awaits={item["item_id"]}, waiting=[REPLY])
-    assert "  - Why: Only you can merge\\." in text and "Asked at" not in text
-
-
-def test_the_reply_is_not_paired_with_two_waiting_items_or_after_a_newer_report():
-    one, two = _waiting_item(1), _waiting_item(2)
-    text = _render([one, two], awaits={one["item_id"], two["item_id"]}, waiting=[REPLY])
-    assert "Asked at" not in text
-    assert "- Merge or hold?\n  - The choices are in the buttons below." in text
-    later = _waiting_item(1, last_report_at="2026-11-14T18:50:00+00:00")
-    text = _render([later], awaits={later["item_id"]}, waiting=[REPLY])
-    assert "Asked at" not in text and "- Merge or hold?\n  - The choices" in text
 
 
 def test_a_pick_that_is_not_one_of_the_labels_is_not_shown():
@@ -625,7 +619,7 @@ def test_an_event_only_write_changes_the_digest_the_final_re_read_compares(monke
 
 
 def _question_item():
-    item = _item(1, status="question")
+    item = _item(1, status="question", ask=RECORD)
     item["reason"] = "needs_human"
     return item
 
@@ -647,7 +641,7 @@ async def test_a_worker_turn_ending_during_the_reads_renders_the_question_it_lef
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     posted = [row["content"] for row in slot.rows if row["role"] == "assistant"]
-    assert len(posted) == 1 and "**Needs you**\n- Item 1 (waiting on you" in posted[0]
+    assert len(posted) == 1 and "**Needs you**\n- Merge PR 7? (waiting on you" in posted[0]
     assert "Nothing needs you right now." not in posted[0]
 
 

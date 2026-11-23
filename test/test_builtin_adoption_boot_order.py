@@ -25,7 +25,6 @@ _AFTER_APPLY = (
     "register_builtin_apps",
     "_warm_builtin_app_names",
     "_warm_materialized_agents",
-    "_reconcile_app_resources",
     "_start_app_backends",
     "_kick_default_app_installs",
     "_kick_builtin_adoption_staging",

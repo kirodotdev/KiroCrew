@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew import steering_plan as plan
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
 from kiro_crew.dashboard import chat_handlers
@@ -55,7 +56,7 @@ def home(tmp_path, monkeypatch):
 
 def _verdict(**overrides):
     kwargs = dict(
-        provider_type="opencode",
+        provider_type="deepseek",
         native_steering=False,
         project=None,
         agent=None,
@@ -250,7 +251,7 @@ def test_a_folder_document_is_listed_once_as_delivered():
     rows = plan.chat_steering_plan(
         listed=listed,
         folder_documents=("~/.kiro/steering/style.md", "~/standards/own.md"),
-        provider_type="opencode",
+        provider_type="deepseek",
         native_steering=False,
         project=None,
         agent=None,
@@ -267,7 +268,7 @@ def test_a_folder_document_the_section_cap_leaves_out_is_not_included(home, tmp_
     from kiro_crew import context as ctx
     from kiro_crew.folder_steering import SteeringCollection
 
-    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: "kirocrew")
+    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: ("kirocrew", False))
     root = tmp_path / "standards"
     cap = ctx._resolve_caps(None).steering
     # The collection is stubbed: this pins the section-cap verdicts, not the collector.
@@ -315,7 +316,7 @@ def test_the_folder_skips_what_the_launch_record_delivers(home, tmp_path, monkey
 
     monkeypatch.setattr(ctx.acp_driver, "inherits_default_resources", lambda _p: False)
     monkeypatch.setattr(ctx, "collect_folder_steering", collect)
-    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: "kirocrew")
+    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: ("kirocrew", False))
     launched = (str(tmp_path / "standards" / "a.md"),)
     chat_steering._plan_blocking(
         _ChatSlot("main"), "main", None, (str(tmp_path),), PROVIDER_ACP, False, launched
@@ -348,7 +349,7 @@ def test_a_tree_file_the_folder_cap_cuts_says_so():
         listed=listed,
         folder_documents=(),
         folder_cut=("~/.kiro/steering/style.md",),
-        provider_type="opencode",
+        provider_type="deepseek",
         native_steering=False,
         project=None,
         agent=None,
@@ -373,7 +374,9 @@ def _config(monkeypatch, backend: str, kiro_agent: str = "kirocrew") -> None:
     monkeypatch.setattr(
         selection,
         "resolve_session_agent_bindings",
-        lambda *_a, **_k: SimpleNamespace(kiro_agent=kiro_agent),
+        lambda *_a, **_k: SimpleNamespace(
+            kiro_agent=kiro_agent, execution_context=None, selection_kind="", resolved_alias=""
+        ),
     )
 
 
@@ -405,13 +408,18 @@ async def _get(state: DashboardState, slot: str, app_name: str = "") -> tuple[in
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("backend", "reaches", "reason"),
-    [("codex", "yes", ""), ("opencode", "no", "harness_has_no_path")],
+    [
+        ("codex", "yes", ""),
+        ("opencode", "yes", ""),
+        ("pi", "yes", ""),
+        ("deepseek", "no", "harness_has_no_path"),
+    ],
 )
 async def test_a_cold_chat_lists_global_steering_as_its_harness_receives_it(
     home, monkeypatch, backend, reaches, reason
 ):
     """The route answers for a cold chat on the harness it would start on: Crew's
-    steering load reaches Codex, and OpenCode has no path for the trees."""
+    steering load reaches Codex, OpenCode and Pi, and DeepSeek has no path for the trees."""
     _config(monkeypatch, backend)
     status, data = await _get(_state(_ChatSlot("main")), "main")
     assert status == 200
@@ -506,7 +514,7 @@ def test_a_stored_switch_off_does_not_change_the_cap_on_a_harness_that_ignores_i
     from kiro_crew.folder_steering import SteeringCollection
 
     monkeypatch.setattr(ctx.acp_driver, "inherits_default_resources", lambda _p: False)
-    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: "kirocrew")
+    monkeypatch.setattr(chat_steering, "_resolved_agent", lambda *_a: ("kirocrew", False))
     root = tmp_path / "standards"
     cap = ctx._resolve_caps(None).steering
     documents = [(str(root / "a.md"), "a" * (cap + 500)), (str(root / "b.md"), "small")]
@@ -736,6 +744,156 @@ def test_a_relocated_claude_config_dir_memory_link_offers_no_switch(home, tmp_pa
     )
     always = next(r for r in rows if r["name"] == "always.md")
     assert always["switch"] == plan.SWITCH_NONE
+
+
+def _claude_code_switches(project: Path) -> dict[str, str]:
+    """The ``switch`` per listed tree file for a Claude Code chat on *project*."""
+    from kiro_crew.context_assembly.agent_spec import steering_resource_documents
+
+    rows = plan.chat_steering_plan(
+        listed=list_steering_blocking(str(project))["files"],
+        folder_documents=(),
+        loader_documents=[
+            (str(p), r, b is not None) for p, r, b in steering_resource_documents(str(project))
+        ],
+        provider_type=PROVIDER_CLAUDE_CODE,
+        native_steering=False,
+        project=str(project),
+        agent=None,
+        is_member=False,
+    )
+    return {r["name"]: r["switch"] for r in rows if r["source"] != "agent"}
+
+
+def test_a_tree_file_a_claude_memory_file_imports_offers_no_switch(home, tmp_path, monkeypatch):
+    """A project ``CLAUDE.md`` that imports a tree file with ``@path``: Claude Code
+    reads that file by itself, so no switch is offered; other files keep theirs."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    project = tmp_path / "project"
+    _write(project / ".kiro" / "steering" / "style.md", "# Style\n")
+    _write(project / "CLAUDE.md", "# Project\n\n@.kiro/steering/style.md\n")
+    switch = _claude_code_switches(project)
+    assert switch["style.md"] == plan.SWITCH_NONE
+    assert switch["always.md"] == plan.SWITCH_ON
+
+
+@pytest.mark.parametrize(
+    ("memory", "name", "expected"),
+    [
+        pytest.param(
+            {".claude/CLAUDE.md": "@~/.kiro/steering/always.md\n"},
+            "always.md",
+            plan.SWITCH_NONE,
+            id="home-import",
+        ),
+        pytest.param(
+            {
+                "project/CLAUDE.md": "See @notes/team.md\n",
+                "project/notes/team.md": "@../.kiro/steering/style.md\n",
+            },
+            "style.md",
+            plan.SWITCH_NONE,
+            id="two-hops-relative-to-importer",
+        ),
+        pytest.param(
+            {"project/CLAUDE.md": "```\n@.kiro/steering/style.md\n```\n"},
+            "style.md",
+            plan.SWITCH_ON,
+            id="fenced-block",
+        ),
+        pytest.param(
+            {"project/CLAUDE.md": "Write `@.kiro/steering/style.md` to import it.\n"},
+            "style.md",
+            plan.SWITCH_ON,
+            id="backtick-quoted",
+        ),
+        pytest.param(
+            {
+                "project/CLAUDE.md": "@a.md\n",
+                "project/a.md": "@CLAUDE.md\n@b.md\n",
+                "project/b.md": "@a.md\n@.kiro/steering/style.md\n",
+            },
+            "style.md",
+            plan.SWITCH_NONE,
+            id="cycle",
+        ),
+    ],
+)
+def test_claude_memory_imports_follow_claude_codes_rules(
+    home, tmp_path, monkeypatch, memory, name, expected
+):
+    """``~/`` reaches the home, a nested import resolves against its own file, an
+    ``@path`` in a fenced block or quoted in backticks is not an import, and a cycle
+    ends."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    project = tmp_path / "project"
+    _write(project / ".kiro" / "steering" / "style.md", "# Style\n")
+    for rel, body in memory.items():
+        _write((tmp_path if rel.startswith("project/") else home) / rel, body)
+    assert _claude_code_switches(project)[name] == expected
+
+
+def test_a_credential_file_an_import_names_is_never_read(home):
+    """An ``@path`` can name a credential file; the scan reads through the
+    sensitive-path gate, so that file's text is never scanned."""
+    credential = _write(home / ".aws" / "notes.md", "@config\n")
+    assert list(plan._claude_imports([credential])) == []
+
+
+def test_an_import_target_the_path_gate_refuses_is_not_counted(home, tmp_path, monkeypatch):
+    """An import's target is file text, so it passes the path gate before any stat;
+    on Windows that gate keeps a UNC target from an SMB lookup of its host."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    project = tmp_path / "project"
+    credential = _write(home / ".aws" / "config", "[default]\n")
+    notes = _write(home / "notes.md", "# Notes\n")
+    _write(project / "CLAUDE.md", "@~/.aws/config\n@~/notes.md\n")
+    found = plan._claude_memory_targets(str(project))
+    assert notes.resolve() in found
+    assert credential.resolve() not in found
+
+
+def test_the_import_walk_judges_a_bounded_number_of_targets(home, tmp_path, monkeypatch):
+    """A memory file's text sets how many targets the walk would judge, so the walk
+    stops at its cap: later imports are not followed and nothing more is checked."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    # raising=False: without the cap the count below fails, not this patch.
+    monkeypatch.setattr(plan, "_CLAUDE_IMPORT_TARGETS", 3, raising=False)
+    judged: list[str] = []
+    gate = plan.validate_file_path
+
+    def counting(raw: str, **kwargs):
+        judged.append(raw)
+        return gate(raw, **kwargs)
+
+    monkeypatch.setattr(plan, "validate_file_path", counting)
+    project = tmp_path / "project"
+    for name in ("a", "b", "c", "d"):
+        _write(project / f"{name}.md", "# Note\n")
+    _write(project / "CLAUDE.md", "@a.md @b.md @c.md @d.md\n" + "@a.md " * 1000 + "\n")
+    found = plan._claude_memory_targets(str(project))
+    assert len(judged) == 3
+    assert (project / "c.md").resolve() in found
+    assert (project / "d.md").resolve() not in found
+
+
+@pytest.mark.parametrize(
+    "build_pump",
+    # Three backticks a unit: a cubic scan then fails at the 2 000-unit pump instead
+    # of running for minutes at 20 000.
+    [lambda n: "x" + "`" * (3 * n), lambda n: "@" + "\\ " * n + "x"],
+    ids=["backtick-run", "escaped-spaces"],
+)
+def test_a_memory_file_line_is_scanned_in_linear_time(tmp_path, build_pump):
+    """The steering list reads every memory file on each request, so a line built to
+    make a pattern backtrack must cost time in proportion to its length."""
+    holder = tmp_path / "CLAUDE.md"
+
+    def scan(text: str) -> None:
+        holder.write_text(text, encoding="utf-8")
+        assert len(list(plan._claude_imports([holder]))) <= 1
+
+    assert_rejected_without_backtracking(scan, build_pump)
 
 
 def test_a_link_to_a_switched_off_file_reads_switched_off_too(home, tmp_path):

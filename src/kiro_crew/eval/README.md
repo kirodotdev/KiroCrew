@@ -49,7 +49,12 @@ nothing runs; so is a name two files share.
 `--agent` takes a crew member or an agent name, resolved as `kirocrew chat --agent`
 resolves it. `--model` is the explicit pick for every scenario session and outranks
 the agent's own model. Both apply to the sessions the scenario drives; the memory
-consolidation between sessions keeps its default agent and model.
+consolidation between sessions keeps its default agent and model. A `--model` that a
+scenario session refuses when it starts (the backend does not serve it) stops the run
+before that session's first turn: it prints
+`Error: <name> is not a model this backend offers` and exits 1, with nothing scored
+or saved, instead of scoring the backend default under that name. `--model auto` pins
+nothing, so it is never stopped this way.
 
 With `--repeat N` each scenario runs N times in a row. The report shows the runs
 passed (`Runs passed: 2/3`), the scenario counts as passed only when every run did,
@@ -99,7 +104,18 @@ exit code are what they were.
 
 The command exits 0 only when every scenario passes. It exits 1 when any
 scenario fails (the report is still written first) or when a scenario name is
-unknown (nothing runs), so `kirocrew eval && next` stops on a failure.
+unknown (nothing runs), so `kirocrew eval && next` stops on a failure. A backend
+that refuses to start a session (a signed-out kiro-cli, for one) also exits 1:
+it prints the refusal's own message as one line and writes no report or
+`--junit` file.
+
+## Task cases across harnesses
+
+`kirocrew eval run --suite tasks` runs real coding cases from `evals/tasks/`
+unattended on Crew chat, Crew conductor mode and Claude Code, each run in its
+own eval home, and scores them PASSED / FAILED / VOID (`tasks.py`, `arms.py`).
+`--check` proves each case without a model. See
+[`evals/tasks/README.md`](../../../evals/tasks/README.md).
 
 ## Available Scenarios
 
@@ -151,18 +167,18 @@ Running: smoke_test (2 turns)
 |-----------|--------|-------|------|
 | memory_recall | 1 | 2 | 50% |
 
-## ❌ smoke_test
+## FAIL smoke_test
 _Minimal 2-session smoke test. Teach one fact, recall it next session._
 Assertions: 1/2 | Time: 30.2s
 Dimensions: memory_recall
 
-### ✅ Session 1: teach
-  ✅ Turn 1: `Remember: my favorite fruit is mango.`
-     ✅ contains: `mango`
+### PASS Session 1: teach
+  PASS Turn 1: `Remember: my favorite fruit is mango.`
+     PASS contains: `mango`
 
-### ❌ Session 2: recall
-  ❌ Turn 1: `What is my favorite fruit?`
-     ❌ contains: `mango`
+### FAIL Session 2: recall
+  FAIL Turn 1: `What is my favorite fruit?`
+     FAIL contains: `mango`
      Response: I don't have any information about your favorite fruit.
               I don't have access to personal preferences unless you've
               shared them with me in this conversation. What is it?

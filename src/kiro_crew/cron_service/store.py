@@ -338,6 +338,8 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         ),
         channel=_guard_opt_str("channel"),
         thread_ts=_guard_opt_str("thread_ts"),
+        channel_type=_guard_str("channel_type"),
+        target_id=_guard_str("target_id"),
         # Derived from user_paused/auto_paused, not the stored `enabled`, so
         # an auto-pause survives a restart (a recurring job's `enabled` is
         # not persisted on failure).
@@ -377,6 +379,8 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         silent=j.get("silent", False),
         session_key=_guard_str("session_key"),
         person_owner_key=_guard_str("person_owner_key"),
+        owner_member_id=_guard_str("owner_member_id"),
+        owner_approval_mode=_guard_str("owner_approval_mode"),
         last_posted_hash=_guard_str("last_posted_hash"),
         consecutive_dupes=_guard_num("consecutive_dupes", 0),
         last_posted_at=_guard_num("last_posted_at", 0.0),
@@ -389,6 +393,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         minimal_context=j.get("minimal_context", False),
         hide_in_chat=j.get("hide_in_chat", False),
         new_chat_per_run=j.get("new_chat_per_run") is True,
+        on_tab_close="fresh" if j.get("on_tab_close") == "fresh" else "resume",
         folder_id=_guard_str("folder_id"),
         chat_folder_id=_guard_str("chat_folder_id"),
         project_path=_guard_str("project_path"),
@@ -609,6 +614,9 @@ def job_record(j: CronJob) -> dict[str, Any]:
         record["app_manifest_digest"] = j.app_manifest_digest
     if j.person_owner_key:
         record["person_owner_key"] = j.person_owner_key
+    if j.owner_member_id or j.owner_approval_mode:
+        record["owner_member_id"] = j.owner_member_id
+        record["owner_approval_mode"] = j.owner_approval_mode
     # The per-entry ack ids follow the same rule: a job whose acks carry no id
     # (every ack before this key, and every Slack ack) writes nothing new.
     if any(j.acked_item_ids):
@@ -622,18 +630,26 @@ def job_record(j: CronJob) -> dict[str, Any]:
         record["new_chat_per_run"] = True
     if j.secret_env_resurfaced_pin:
         record["secret_env_resurfaced_pin"] = j.secret_env_resurfaced_pin
+    if j.on_tab_close == "fresh":
+        record["on_tab_close"] = "fresh"
+    # The pinned channel destination, as a pair, by the same rule.
+    if j.channel_type or j.target_id:
+        record["channel_type"] = j.channel_type
+        record["target_id"] = j.target_id
     return record
 
 
 #: Every key :func:`job_record` can write, read off the encoder itself so the two
 #: cannot drift: a job that sets each conditionally written key
 #: (``user_pause_generation``, ``user_pause_requested``, ``managed_by``, ``app_manifest_digest``,
-#: ``person_owner_key``, ``acked_item_ids`` with ``acked_item_ids_digest``,
-#: ``project_path``, ``new_chat_per_run``, ``secret_env_resurfaced_pin``, and a
-#: non-default ``auto_pause_after_failures`` and ``alert_after_failures``, which
-#: are omitted at the default). A record key outside this set came from a newer
-#: build. A key inside it is this build's to write or to omit, so a value this
-#: build cleared stays cleared.
+#: ``person_owner_key``, ``owner_member_id`` with ``owner_approval_mode``,
+#: ``acked_item_ids`` with ``acked_item_ids_digest``,
+#: ``project_path``, ``new_chat_per_run``, ``secret_env_resurfaced_pin``,
+#: ``on_tab_close``, ``channel_type`` with ``target_id``, and a non-default
+#: ``auto_pause_after_failures`` and ``alert_after_failures``, which are omitted
+#: at the default). A record key outside this set came from a newer build. A key
+#: inside it is this build's to write or to omit, so a value this build cleared
+#: stays cleared.
 _KNOWN_JOB_KEYS = frozenset(
     job_record(
         CronJob(
@@ -646,9 +662,13 @@ _KNOWN_JOB_KEYS = frozenset(
             managed_by="-",
             app_manifest_digest="-",
             person_owner_key="-",
+            owner_member_id="-",
             project_path="-",
             new_chat_per_run=True,
             secret_env_resurfaced_pin="-",
+            on_tab_close="fresh",
+            channel_type="-",
+            target_id="-",
             auto_pause_after_failures=0,
             alert_after_failures=2,
             acked_item_ids=["-"],

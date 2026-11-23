@@ -40,6 +40,7 @@ class _Provider:
 def _result(exit_code=0, stdout="", stderr="", refused=False, detail=""):
     return SimpleNamespace(
         hook_name="probe",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
         exit_code=exit_code,
         stdout=stdout,
         stderr=stderr,
@@ -361,6 +362,19 @@ def test_a_hook_store_error_does_not_break_the_turn(monkeypatch):
     assert provider.messages == ["[built prompt] hello"]
 
 
+def test_a_failed_hook_with_an_empty_stderr_logs_one_warning(caplog):
+    from kiro_crew.hooks import ScriptHookResult
+
+    failed = ScriptHookResult(
+        hook_id="h1", hook_name="h", event=HOOK_EVENT_USER_PROMPT_SUBMIT, exit_code=3, stderr=""
+    )
+    with caplog.at_level("WARNING", logger=script_hooks.logger.name):
+        assert script_hooks._hook_context([failed]) == []
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
+        "Hook h (UserPromptSubmit) failed: exited with code 3"
+    ]
+
+
 def test_a_replay_of_the_same_message_does_not_rerun_prompt_submit(store):
     """A compaction replay builds a second driver for the same message: the hook
     ran once, and the replay's prompt carries the first run's context."""
@@ -442,3 +456,30 @@ def test_a_timed_out_hook_with_a_detached_child_does_not_hang_the_turn(tmp_path,
     # The hook's own timeout fired first, then the reap bound did.
     assert expired == [1, reap]
     assert results[0].error.startswith("Timed out")
+
+
+def test_hook_context_keeps_an_assembled_prompts_segments():
+    """Hook output goes in front as injected text; the prompt's own segments stay as they were,
+    so an image path in an injected lesson is never read as one the user sent."""
+    from kiro_crew.prompt_segments import SOURCE_INJECTED, SOURCE_USER, SegmentedPrompt, segments_of
+
+    prompt = SegmentedPrompt(
+        [(SOURCE_INJECTED, "[Lesson] see /tmp/a.png\n"), (SOURCE_USER, "hello")]
+    )
+    out = asyncio.run(script_hooks.with_hook_context(prompt, ["from a hook"]))
+
+    assert isinstance(out, SegmentedPrompt)
+    assert str(out).endswith(str(prompt))
+    # The hook block joins the injected lesson; only the user's own text is a user segment.
+    assert [(s.source, s.text) for s in segments_of(out)] == [
+        (
+            SOURCE_INJECTED,
+            "[Hook context]\nfrom a hook\n[End hook context]\n\n[Lesson] see /tmp/a.png\n",
+        ),
+        (SOURCE_USER, "hello"),
+    ]
+
+
+def test_hook_context_on_a_plain_prompt_reads_as_before():
+    out = asyncio.run(script_hooks.with_hook_context("hello", ["from a hook"]))
+    assert out == "[Hook context]\nfrom a hook\n[End hook context]\n\nhello"

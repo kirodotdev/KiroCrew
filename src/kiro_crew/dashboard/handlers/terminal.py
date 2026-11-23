@@ -29,6 +29,7 @@ import subprocess
 import sys as _sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -69,6 +70,7 @@ from kiro_crew.dashboard.handlers.terminal_placement import (
 from kiro_crew.dashboard.handlers.terminal_session import (
     _MAX_SESSION_ID_LEN,
     _MAX_SESSIONS,
+    _TERMINAL_MAX_SESSIONS,
     _completion_cfg,
     _completion_disabled,
     _get_config,
@@ -85,6 +87,7 @@ from kiro_crew.dashboard.handlers.terminal_shell import (
     _resolve_shell,
 )
 from kiro_crew.dashboard.handlers.terminal_transport import (
+    _TAKEOVER_READY_TIMEOUT_S,
     _close_terminal_ws_bounded,
     _record_and_forward_terminal_output,
     _release_terminal_ws_identity,
@@ -651,7 +654,14 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     # At the cap, the longest-detached shell gives up its slot in the same step;
     # it ends only once this open goes ahead, and returns to its slot otherwise.
     evicted = None if existing else _take_shell_to_evict(registry, max_sessions, time.monotonic())
-    if not existing and len(registry) >= max_sessions:
+    at_cap = not existing and len(registry) >= max_sessions
+
+    # Reserve a placeholder so concurrent requests see the slot as taken
+    placeholder = not existing and not at_cap
+    if placeholder:
+        registry[session_id] = None
+
+    if at_cap:
         _sel().log_api_access(
             caller=caller,
             operation="terminal.ws.open",
@@ -659,12 +669,17 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             source="dashboard",
             resources=f"max_sessions={max_sessions}",
         )
-        return web.Response(status=409, text=f"Max {max_sessions} terminal sessions")
-
-    # Reserve a placeholder so concurrent requests see the slot as taken
-    placeholder = not existing
-    if placeholder:
-        registry[session_id] = None
+        # A browser cannot read a refused handshake's body, so the dashboard
+        # would redial and end on a bare "disconnected". Accept and send the
+        # coded refusal instead; no slot was reserved.
+        refusal_ws = web.WebSocketResponse(heartbeat=30, timeout=300)
+        await refusal_ws.prepare(request)
+        await _close_terminal_ws_bounded(
+            refusal_ws,
+            error_message=f"Max {max_sessions} terminal sessions",
+            error_code=_TERMINAL_MAX_SESSIONS,
+        )
+        return refusal_ws
 
     try:
         ws = ws_heartbeat.LagTolerantWebSocketResponse(heartbeat=30, timeout=300)
@@ -1018,6 +1033,22 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             )
             return ws
 
+    if not existing:
+        # A fresh session has no saved output. Mark the live boundary before
+        # starting its PTY reader, independently of the shell's readiness hook.
+        try:
+            async with sess.send_lock:
+                if sess.ws is ws and not ws.closed:
+                    await asyncio.wait_for(
+                        ws.send_str(json.dumps({"type": "replayed"})),
+                        timeout=_TAKEOVER_READY_TIMEOUT_S,
+                    )
+        except (ConnectionResetError, RuntimeError, OSError, asyncio.TimeoutError):
+            # Keep draining the PTY for a reconnect, but send no live bytes to
+            # a socket that does not have its replay boundary.
+            _release_terminal_ws_identity(sess, ws)
+            await _close_terminal_ws_bounded(ws)
+
     # --- Read loop: PTY → WebSocket ---
     notification_bus: NotificationBus | None = getattr(
         request.app.get("state"), "notification_bus", None
@@ -1025,6 +1056,10 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
 
     async def read_pty():
         reader_ended = False
+        # The shell's own thread, never the default executor: an idle shell parks
+        # this read for as long as it lives, so enough open tabs would hold every
+        # default worker and stop each to_thread caller in the gateway.
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mc-pty-reader")
         try:
             loop = asyncio.get_running_loop()
             if sess.winpty is not None:
@@ -1032,7 +1067,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             else:
                 reader = lambda: os.read(sess.master_fd, 4096)  # noqa: E731  # wokeignore:rule=master
             while True:
-                data = await loop.run_in_executor(None, reader)
+                data = await loop.run_in_executor(pool, reader)
                 if not data:
                     reader_ended = True
                     break
@@ -1041,6 +1076,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             # EIO: the child exited, or a teardown closed the fd under us.
             # _handle_pty_reader_end tells those apart.
             reader_ended = True
+        finally:
+            # A read still parked frees its thread when the shell ends.
+            pool.shutdown(wait=False)
         if reader_ended:
             await _handle_pty_reader_end(registry, sess, bus=notification_bus)
 
@@ -1588,7 +1626,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _STALE_OWNER_ERROR_CODE,
         _STALE_OWNER_ERROR_MESSAGE,
         _TAKEOVER_CATCH_UP_ROUNDS,
-        _TAKEOVER_READY_TIMEOUT_S,
         _TAKEOVER_REPLAY_SEND_TIMEOUT_S,
         _TERMINAL_WS_CLEANUP_TIMEOUT_S,
         _consume_ready_marker,

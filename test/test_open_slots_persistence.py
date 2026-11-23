@@ -163,22 +163,44 @@ def test_restore_open_slots_skips_already_loaded(tmp_path, monkeypatch):
     assert "chat-1-foo" in state2._slots
 
 
-def test_persist_open_slots_handles_write_failure_gracefully(tmp_path, monkeypatch):
-    """A permission failure while writing the snapshot is logged, not raised.
+def test_persist_open_slots_handles_write_failure_gracefully(tmp_path, monkeypatch, caplog):
+    """A refused snapshot write keeps the old file, is logged, and the next flush lands.
 
-    atomic_write calls os.fchmod on the open descriptor, not os.chmod, so that is the
-    seam patched here.
+    The refusal comes from the coordinator's own writer: ``fchmod_safe`` skips
+    ``os.fchmod`` on Windows and catches its error on POSIX, so a failure injected
+    there never fails the write.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
+    state.open_slots_restored = True  # steady state: the boot restore has run
     state.get_or_create_slot("chat-1-foo")
-    with patch("kiro_crew.atomic_write.os.fchmod", side_effect=OSError("read-only filesystem")):
-        # Should not raise
-        state._persist_open_slots()
-    # fchmod_safe logs a permission failure and the write goes on, so the
-    # snapshot still lands.
-    snapshot = json.loads((tmp_path / "open_slots.json").read_text())
-    assert snapshot["keys"] == ["chat-1-foo"]
+    state._persist_open_slots()
+    snapshot_path = tmp_path / "open_slots.json"
+    previous = snapshot_path.read_bytes()
+
+    coordinator = state._persistence_coordinator
+    real_provider = coordinator._atomic_write_provider
+
+    def _refusing_writer(path, content, **kwargs):
+        raise PermissionError(13, "simulated refusal", str(path))
+
+    state.get_or_create_slot("chat-2-bar")
+    monkeypatch.setattr(coordinator, "_atomic_write_provider", lambda: _refusing_writer)
+    with caplog.at_level("DEBUG", logger="kiro_crew.dashboard.state"):
+        state._persist_open_slots()  # must not raise
+
+    assert snapshot_path.read_bytes() == previous
+    assert any(
+        record.getMessage() == "Failed to persist open_slots.json"
+        and record.exc_info is not None
+        and isinstance(record.exc_info[1], PermissionError)
+        for record in caplog.records
+    )
+
+    monkeypatch.setattr(coordinator, "_atomic_write_provider", real_provider)
+    state._persist_open_slots()
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert set(snapshot["keys"]) == {"chat-1-foo", "chat-2-bar"}
 
 
 def test_restore_open_slots_rejects_path_separator_keys(tmp_path, monkeypatch):
@@ -1287,3 +1309,35 @@ def test_non_object_metadata_line_does_not_abort_the_whole_restore(tmp_path, mon
     state2._persist_open_slots()
     persisted = set(json.loads((tmp_path / "open_slots.json").read_text())["keys"])
     assert persisted == {"chat-0-ok", "chat-2-ok"}
+
+
+def test_a_persons_folder_pick_survives_a_restart(tmp_path, monkeypatch):
+    """A Bot worker restored after a restart still keeps the folder a person picked."""
+    import asyncio
+
+    from kiro_crew import crewmate_worktree as cw
+    from kiro_crew.dashboard import crewmate_worktree_scope as scope
+    from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    proj = tmp_path / "picked"
+    proj.mkdir()
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-picked")
+    slot = state.get_or_create_slot("chat-1-picked")
+    slot.project = str(proj)
+    slot._project_picked = True
+    assert _save_slot_to_history(state, slot, force=True)
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-picked"], "ts": 0.0}))
+
+    state2 = _make_state(tmp_path / "sessions")
+    assert state2._slots == {}
+    assert restore_open_slots(state2) == 1
+    restored = state2._slots["chat-1-picked"]
+    assert (restored.project, restored._project_picked) == (str(proj), True)
+
+    hit = cw.CrewmateWorktree(repo=str(proj), path="/ws/wt", branch="crew/a/p", cwd="/ws/wt")
+    monkeypatch.setattr(scope, "_worker_crewmate", lambda *_a: "Atlas")
+    monkeypatch.setattr(scope, "resolve_worker_project", lambda *_a: hit)
+    assert asyncio.run(scope.scope_worker_turn(state2, restored, None, None, "")) == ""
+    assert restored.project == str(proj)

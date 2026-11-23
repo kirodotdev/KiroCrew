@@ -25,17 +25,20 @@ interface ChatEmptyStateProps {
   newSlotMutation: UseMutationResult<ChatSlot, Error, void, unknown>
   setNewSlotFailed: Dispatch<SetStateAction<boolean>>
   setSidError: Dispatch<SetStateAction<string>>
-  /** A popout whose own session the server confirmed closed outside this window. */
+  /** The session this pane showed, which the server confirmed closed outside it. */
   closedElsewhere?: boolean
+  /** A popout window: it offers Close window and names the other window. */
+  inPopout?: boolean
 }
 
 /**
  * The pane with no session open: the empty state and its Start a new chat button (which retries a failed create).
- * In a popout whose session was closed outside it, it says so instead and
- * offers Close window first.
+ * When the session it showed was closed outside it, it says so instead: a
+ * popout offers Close window first, and a tab says the chat may have been
+ * closed by another person in the Crew.
  */
 export default function ChatEmptyState({
-  mode, dispatch, pendingAgent, pendingAgentKindRef, pendingModel, newSessionRef, newSlotFailed, newSlotMutation, setNewSlotFailed, setSidError, closedElsewhere,
+  mode, dispatch, pendingAgent, pendingAgentKindRef, pendingModel, newSessionRef, newSlotFailed, newSlotMutation, setNewSlotFailed, setSidError, closedElsewhere, inPopout = true,
 }: ChatEmptyStateProps) {
   // A failed create from this button has no session pane to report into, so
   // the failure is shown here, beside the button that retries it.
@@ -45,6 +48,7 @@ export default function ChatEmptyState({
   // The composer that held focus unmounted with the session, which leaves
   // focus on <body>. Put a keyboard user on the notice's first action, but
   // never take focus from a control they moved to themselves.
+  const popoutNotice = !!closedElsewhere && inPopout
   useEffect(() => {
     if (!closedElsewhere) return
     const active = document.activeElement
@@ -88,27 +92,34 @@ export default function ChatEmptyState({
         // A live region inserted already filled is often not announced, and
         // focus lands on Close window at once, so that button names the
         // notice as its description too.
-        <div role="status" id={noticeId} data-testid="popout-session-closed">
-          <EmptyState icon={<MessageSquareOff className="lucide-inline" />} title={i18nT('pages.chatPage.session_closed_in_another_window')} testId="popout-session-closed-notice" />
-        </div>
+        popoutNotice ? (
+          <div role="status" id={noticeId} data-testid="popout-session-closed">
+            <EmptyState icon={<MessageSquareOff className="lucide-inline" />} title={i18nT('pages.chatPage.session_closed_in_another_window')} testId="popout-session-closed-notice" />
+          </div>
+        ) : (
+          <div role="status" id={noticeId} data-testid="tab-session-closed">
+            <EmptyState icon={<MessageSquareOff className="lucide-inline" />} title={i18nT('pages.chatPage.session_closed_elsewhere')} testId="tab-session-closed-notice" />
+          </div>
+        )
       ) : (
         <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.chatPage.what_can_i_do_for_you')} />
       )}
       <div className="flex flex-wrap items-center justify-center gap-2">
-        {closedElsewhere && (
+        {popoutNotice && (
           <Btn ref={closeRef} primary onClick={closeSelf} aria-describedby={noticeId} data-testid="popout-session-closed-close">
             {i18nT('pages.chatPage.close_window')}
           </Btn>
         )}
         {/* One render site for both labels: the ui-location index allows one per marker. */}
         <Btn
-          primary={!closedElsewhere}
+          primary={!popoutNotice}
           disabled={newSlotMutation.isPending}
-          {...uiLocation('chat.start-new-chat')}
+          {...uiLocation('chat.start-new-chat', closedElsewhere && !inPopout ? closeRef : undefined)}
           onClick={startNewChat}
-          data-testid={closedElsewhere ? 'popout-session-closed-new' : undefined}
+          aria-describedby={closedElsewhere && !inPopout ? noticeId : undefined}
+          data-testid={popoutNotice ? 'popout-session-closed-new' : closedElsewhere ? 'tab-session-closed-new' : undefined}
         >
-          {closedElsewhere ? i18nT('pages.chatPage.start_a_new_chat_here') : i18nT('pages.chatPage.start_a_new_chat')}
+          {popoutNotice ? i18nT('pages.chatPage.start_a_new_chat_here') : i18nT('pages.chatPage.start_a_new_chat')}
         </Btn>
       </div>
       {/* The hand-off loses nothing: no session exists yet, so nothing is unsaved. */}

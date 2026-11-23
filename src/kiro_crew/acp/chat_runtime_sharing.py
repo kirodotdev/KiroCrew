@@ -206,12 +206,19 @@ def kas_chat_sharing_ready(pin: str = "") -> bool:
     no installed engine and the chat keeps its own process. *pin* is the
     session's own Bot pin, which decides the route as the spawn decides it.
     An unreadable version or route answers False: absence of evidence keeps the
-    session on its own process. Each refusal is logged with its cause. Blocking
-    (reads config and files, may run ``kiro-cli --version`` once); call it off
-    the event loop.
+    session on its own process. KAS machine mode (``agent_sdk/kas_machine.py``)
+    answers False too: the sharing key does not carry its token file and cell, so
+    a start under it neither founds nor joins a shared process. Each refusal is
+    logged with its cause. Blocking (reads config and files, may run
+    ``kiro-cli --version`` once); call it off the event loop.
     """
     try:
         from kiro_crew.acp.kas_route import resolve_kas_route
+        from kiro_crew.agent_sdk.kas_machine import configured_machine_auth
+
+        if configured_machine_auth() is not None:
+            logger.info("chat-runtime-sharing: KAS machine mode; not sharing")
+            return False
 
         route = resolve_kas_route(pin=pin)
         if route.bundle:
@@ -498,8 +505,16 @@ class ChatRuntimeKey:
         holding only the founder's row, and the joiner runs at its own model's
         default. Keying effort alone does not close that.
     ``sandbox_mode``
-        Chooses the wrap, the credential mask and whether the host's internal
-        sandbox is delegated to.
+        The EFFECTIVE tier (``effective_sandbox_mode``, the governed
+        ``sandbox.min_level`` floor applied), which chooses the wrap, the
+        credential mask and whether the host's internal sandbox is delegated to.
+        A floor raised after a spawn makes two keys of one configured value.
+    ``spawn_sandbox_mode``
+        The raw ``agent.sandbox`` value the spawn starts with, which the runtime
+        reports as its ``sandbox_mode``. A stricter configured value recycles a
+        session whose runtime reports a looser raw one, even where a floor makes
+        both effective tiers equal, so the successor must not rejoin that runtime:
+        two raw values are two keys.
     ``extra_env``
         The child's environment, which one process has exactly one of.
     ``acp_backend``
@@ -619,6 +634,7 @@ class ChatRuntimeKey:
     agent: str
     model: str
     sandbox_mode: str
+    spawn_sandbox_mode: str
     extra_env: tuple[tuple[str, str], ...]
     acp_backend: str
     tool_search: tuple[object, ...]
@@ -664,6 +680,7 @@ class ChatRuntimeKey:
         member_id: str | None = None,
         memory_store: str | None = None,
         tool_surface_pinned: bool = False,
+        spawn_sandbox_mode: str | None = None,
     ) -> "ChatRuntimeKey":
         """Build the key from the values a caller is about to spawn with.
 
@@ -688,6 +705,7 @@ class ChatRuntimeKey:
             agent="" if "agent" in per_session else agent or "",
             model="" if "model" in per_session else model or "",
             sandbox_mode=sandbox_mode or "",
+            spawn_sandbox_mode=spawn_sandbox_mode or "",
             extra_env=_freeze_env(extra_env),
             acp_backend=acp_backend or "",
             tool_search=_freeze_tool_search(tool_search),

@@ -29,7 +29,7 @@ from kiro_crew.eval.scenario import (
     ToolCall,
     Turn,
 )
-from kiro_crew.llm_helpers import _steer_host_deny
+from kiro_crew.llm_helpers import _steer_host_deny, provider_model_pin_refused
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.permission_floor import (
@@ -50,6 +50,18 @@ from kiro_crew.skills import SkillsLoader
 from kiro_crew.terminal_safe import safe_terminal_line
 
 logger = logging.getLogger(__name__)
+
+
+class ModelNotOffered(RuntimeError):
+    """A session refused, at start, the model the run asked for, so it would run on the default.
+
+    Scoring that session would credit the default with the named model's results,
+    so the run stops before the first turn instead.
+    """
+
+    def __init__(self, model: str) -> None:
+        super().__init__(f"{model} is not a model this backend offers")
+
 
 #: What the model is told when the eval harness refuses a tool it does not know
 #: to be read-only. The eval SURFACE refuses the call -- nothing about the call
@@ -413,6 +425,11 @@ class EvalRunner:
     #: to the agent ``provider_kwargs`` runs the sessions as, so that agent's own
     #: governance profile applies; empty judges them as the default agent.
     gate_agent: str = ""
+    #: The model the run was asked for (``kirocrew eval --model``), or ``""`` for none
+    #: and for ``auto``. A scenario session that refuses it at start stops the run
+    #: (``ModelNotOffered``); a pin the caller did not ask for (the configured default,
+    #: a crew member's own, kiro-cli's inherited default) is not judged here.
+    requested_model: str = ""
 
     async def run_scenario(self, scenario: Scenario) -> ScenarioResult:
         """Run a single scenario with fresh state.
@@ -576,7 +593,7 @@ class EvalRunner:
         for scenario in scenarios:
             result = await self.run_scenario(scenario)
             results.append(result)
-            status = "✅" if result.passed else "❌"
+            status = "PASS" if result.passed else "FAIL"
             # A log line reaches the console with `-v`, and scenario text can come from a
             # file someone else wrote: every value is shown through `safe_terminal_line`.
             logger.info(
@@ -601,6 +618,11 @@ class EvalRunner:
         session_key = f"eval_{session_def.name}_{time.monotonic_ns()}"
         provider = factory(session_key, **self.provider_kwargs)
         await provider.start()
+        if self.requested_model and provider_model_pin_refused(provider):
+            # The session stays on the backend default and says nothing; every
+            # turn from here would be scored as the model that was asked for.
+            await provider.shutdown()
+            raise ModelNotOffered(self.requested_model)
 
         # Build memory context once for the first turn of non-first sessions
         memory_context = ""
@@ -719,6 +741,25 @@ class EvalRunner:
                     # with the gate's own reason so the class remediation can
                     # key off it.
                     await _steer_host_deny(provider, event, reason, cause=DENY_CAUSE_POLICY)
+                    await provider.reject_tool(event.request_id)
+                    continue
+
+                # An organisation's ``ask`` on a KAS web call (``web_ask_rule``): an
+                # eval run has nobody to ask, so it is refused.
+                from kiro_crew.web_ask_rule import unattended_refusal
+
+                _web_refusal = unattended_refusal(event)
+                if _web_refusal:
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        tool_name=event.title,
+                        outcome="denied",
+                        source="eval_runner",
+                        error="web_ask_rule",
+                    )
+                    await _steer_host_deny(
+                        provider, event, _web_refusal, cause=DENY_CAUSE_SURFACE_POLICY
+                    )
                     await provider.reject_tool(event.request_id)
                     continue
 
@@ -858,7 +899,7 @@ def format_results(results: list[ScenarioResult]) -> str:
         lines.append("")
 
     for r in results:
-        status = "✅" if r.passed else "❌"
+        status = "PASS" if r.passed else "FAIL"
         lines.append(f"## {status} {r.name}")
         if r.description:
             lines.append(f"_{r.description}_")
@@ -872,22 +913,22 @@ def format_results(results: list[ScenarioResult]) -> str:
             lines.append(f"Dimensions: {', '.join(r.dimensions)}")
         if r.consolidation_failures > 0:
             lines.append(
-                f"⚠️  {r.consolidation_failures} consolidation failure(s) — "
+                f"Warning: {r.consolidation_failures} consolidation failure(s) — "
                 f"cross-session memory may be incomplete"
             )
         lines.append("")
 
         for si, sr in enumerate(r.sessions):
-            s_status = "✅" if sr.passed else "❌"
+            s_status = "PASS" if sr.passed else "FAIL"
             lines.append(f"### {s_status} Session {si + 1}: {sr.name}")
             for ti, tr in enumerate(sr.turns):
-                t_status = "✅" if tr.passed else "❌"
+                t_status = "PASS" if tr.passed else "FAIL"
                 lines.append(f"  {t_status} Turn {ti + 1}: `{tr.user_message[:60]}`")
                 if tr.tool_calls:
                     names = ", ".join(_tool_label(n) for n in tr.tool_calls[:5])
                     lines.append(f"     Tools: {names}")
                 for i, (assertion, ok) in enumerate(tr.assertion_results):
-                    a_status = "✅" if ok else "❌"
+                    a_status = "PASS" if ok else "FAIL"
                     label = safe_terminal_line(_redacted(assertion.label))[:50]
                     note = tr.assertion_notes[i] if i < len(tr.assertion_notes) else ""
                     lines.append(

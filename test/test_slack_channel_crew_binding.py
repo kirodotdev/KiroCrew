@@ -26,11 +26,19 @@ from slack_transport_dispatch_helpers import (
     make_event,
 )
 
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    EVENT_TEXT_CHUNK,
+    STOP_REASON_END_TURN,
+)
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config import live, loader
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig, WorkspaceConfig
 from kiro_crew.messaging.link import canonical_key
+from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack import channel_crew, transport_dispatch
 from kiro_crew.slack.channel_crew import ChannelCrew, resolve_channel_crew
 
@@ -222,6 +230,12 @@ async def _empty_stream(*a, **kw):
     yield  # makes this an async generator
 
 
+async def _one_permission_request(*a, **kw):
+    yield LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST, title="Say hi", tool_kind="execute", request_id="r1"
+    )
+
+
 def _native_mocks():
     slack = AsyncMock()
     slack.update_message = AsyncMock(return_value="1234.5678")
@@ -268,13 +282,17 @@ def _native_agent_cache():
 
 @pytest.mark.usefixtures("_native_agent_cache")
 class TestNativeTurnHonorsChannelCrew:
-    async def _run(self, channel_agent, thread_agent=None):
+    async def _run(self, channel_agent, thread_agent=None, stream=_empty_stream, backend=None):
         from kiro_crew.slack import handler
         from kiro_crew.slack.handler import handle_message
 
         if thread_agent is not None:
             handler._thread_agents[canonical_key(_MSG_TS)] = thread_agent
         slack, sessions, ctx = _native_mocks()
+        client = sessions.get_or_create.return_value[0]
+        client.stream = stream
+        if backend is not None:
+            client.capabilities = capabilities_for(backend)
         with patch("kiro_crew.slack.handler.publish_turn_identity"):
             await handle_message(
                 slack=slack,
@@ -300,6 +318,24 @@ class TestNativeTurnHonorsChannelCrew:
         assert kw["cwd"] == str(tree)
         # The context builder takes the record's template, not its name.
         assert ctx.build_message.call_args.kwargs.get("agent") == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_crew_bound_channel_gates_on_the_spec_of_the_agent_the_record_runs(
+        self, crew_cfg, monkeypatch
+    ):
+        """A record's name has no agent spec: the permission step reads its template's."""
+        from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
+        from kiro_crew.slack import handler
+
+        asked: list[str] = []
+
+        async def spec_turn(_client, agent_name):
+            asked.append(agent_name)
+            return TurnSpecHooks([], None, False, False)
+
+        monkeypatch.setattr(handler, "spec_turn", spec_turn)
+        await self._run("web-frontend", stream=_one_permission_request, backend=ACP_BACKEND_KAS)
+        assert asked == ["kirocrew"]
 
     @pytest.mark.asyncio
     async def test_dashboard_linked_session_gives_the_builder_the_template(self, crew_cfg):

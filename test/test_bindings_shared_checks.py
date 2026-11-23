@@ -201,10 +201,23 @@ def test_the_test_tree_walk_reaches_every_collected_tree(contract: str) -> None:
 @functools.lru_cache(maxsize=1)
 def _corpus_gates() -> frozenset[str]:
     root = source_corpus.repo_root()
-    return frozenset(importlib.import_module("leaf_test_scope").corpus_gates(root))
+    with source_corpus.untraced():
+        return frozenset(importlib.import_module("leaf_test_scope").corpus_gates(root))
 
 
-@_each("leaf_test_scope_derives_this_file_as_a_corpus_gate")
+#: One group for every param, unlike the other shared checks: this check reads only
+#: ``leaf_test_scope``'s answer, not the contract module's own memo, and the tree-scan
+#: release empties ``_corpus_gates`` whenever the next test is in another group, so a
+#: group per contract recomputes the whole-tree derivation for every param.
+@pytest.mark.xdist_group(name="tree_scan_bindings_shared_checks")
+@pytest.mark.parametrize(
+    "contract",
+    sorted(
+        stem
+        for stem, checks in _OPTED_IN.checks.items()
+        if "leaf_test_scope_derives_this_file_as_a_corpus_gate" in checks
+    ),
+)
 def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
     contract: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

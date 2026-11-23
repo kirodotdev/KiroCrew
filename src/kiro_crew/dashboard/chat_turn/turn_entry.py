@@ -14,11 +14,13 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
+from kiro_crew.dashboard.relay_archive import is_cron_run_read_only
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
 from kiro_crew.llm_helpers import _NO_PRIOR_STATS
 from kiro_crew.metrics.usage_attrs import set_current_trigger, trigger_for_dashboard_turn
 from kiro_crew.security import StreamRedactor
 from kiro_crew.start_priority import StartPriority, person_priority
+from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -223,16 +225,27 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # before reaching here, but they are many and a new one is easy to add. This
     # is the single place that makes running one on this machine impossible
     # regardless of caller. An error row + ``chat_done`` matches the shape a
-    # refused turn takes, so the composer unblocks rather than hanging.
-    if getattr(slot, "executor", "") == "remote":
-        logger.warning("refusing to run relay archive %s", slot.key)
-        slot.append(
-            "error",
-            "This chat ran on a remote crew and is read-only now. Open the "
-            "crew's own session to keep going.",
-            "msg msg-err",
-            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY),
-        )
+    # refused turn takes, so the composer unblocks rather than hanging. A cron
+    # run's transcript the History resume marked read-only is refused the same
+    # way: its tab has no transcript a reply could be saved to.
+    if getattr(slot, "executor", "") == "remote" or is_cron_run_read_only(slot):
+        logger.warning("refusing to run read-only chat %s", slot.key)
+        if is_cron_run_read_only(slot):
+            slot.append(
+                "error",
+                "This cron run's transcript can be read here but not replied to. "
+                "Start a new chat to follow up on it.",
+                "msg msg-err",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CRON_RUN_READ_ONLY),
+            )
+        else:
+            slot.append(
+                "error",
+                "This chat ran on a remote crew and is read-only now. Open the "
+                "crew's own session to keep going.",
+                "msg msg-err",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY),
+            )
         # The one exit with no tail: an archive's queue must never drain here.
         turn_exit.handed_off = True
         await _send_chat_done(state, slot)
@@ -252,6 +265,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         slot._turn_channel_narrowed = False
         slot._turn_channel_origin = bool(_directive_channel_origin)
         slot._turn_user_sent = bool(_directive_user_origin) and not _directive_channel_origin
+        # A retry or continuation the runner queued, and a script cron's
+        # `ctx.send_to_session`, carry user origin but are not a new message.
+        if slot._turn_user_sent and not _synthetic_recovery_turn and _turn_actor != "cron":
+            Stats().inc_message_admitted()
         # The owner mark comes from THIS turn's own call (`_directive_owner_origin`,
         # passed by a dashboard handler or the queue drain), never from the slot: a
         # dispatch that declares nothing (`openai_compat`, the spec-builder
@@ -521,6 +538,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # double-stream text or re-run a side-effecting tool.
     _turn_emitted = False
     turn._turn_emitted = _turn_emitted
+    # Whether this turn's own native sub-agents reported in (a roster or a child's
+    # frame). Not a turn-emit, but a child may have acted, so a stall probe of the
+    # turn continues it instead of sending the message again.
+    turn._turn_native_activity = False
     # Did this turn stream text the user has ALREADY READ, which a later tool
     # boundary then flushed out of `assistant_text`? The three tool-boundary flushes
     # (_on_text_chunk's post-tool-group text in stream_chunks, _on_tool_call in tool_rows,
@@ -716,6 +737,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # call time.
     _seen_tool_identity: dict[str, tuple[str, str]] = {}
     turn._seen_tool_identity = _seen_tool_identity
+    # Identified call key -> digests of the (title, kind) the SEL last recorded
+    # for it, so a tool_call_update that changes neither writes no `refined` row.
+    # Keyed like `_failed_write_calls`, so the first-source map bounds the count,
+    # and the digests bound each entry's size.
+    turn._sel_tool_labels = {}
     # tool_call_id -> the receipt selector of a ``session_send`` call
     # (``session_send_receipts.call_selector`` over its raw arguments), so its
     # completed result can pick up what the gateway delivered.
@@ -1009,6 +1035,11 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # the member section instead of running the member with no bounds.
     _member_session_start_pending = False
     turn._member_session_start_pending = _member_session_start_pending
+    # A slim resume (a new provider session over a restored history) owes the
+    # lessons and steering its compacted history may have lost. Armed at the
+    # session claim and narrowed at prompt assembly; the settle re-arms the
+    # reinjection when the owed blocks were not delivered.
+    turn._slim_resume_pending = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
     # recorded during this turn as (redacted_title, reason). Each deny also gets
     # its reason steered in-band (see _refusal_notices); this ledger is what the

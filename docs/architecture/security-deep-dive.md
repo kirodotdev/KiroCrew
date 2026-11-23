@@ -55,7 +55,8 @@ DNS rebinding, unauthenticated remote access, and the rest) is in
 | Operator ceiling ↔ agent | keystone files under the data home | every agent read/write path | `security.is_sensitive_path` / `is_sensitive_write_path` |
 | Agent output ↔ any human or external service | nothing | all agent-derived text | `redact_credentials` / `redact_exfiltration_urls` / `StreamRedactor` |
 | Browser ↔ dashboard | authenticated session | any other origin or host | token auth, CSRF Origin check, Host allowlist |
-| Slack workspace ↔ gateway | owner + allowlisted users | every other Slack sender | owner lock, `is_allowed_user`, Enterprise Grid check |
+| Slack workspace ↔ gateway | owner, plus `slack.shared_access` users when the owner turns it on (off by default; they act as the owner) | every other Slack sender | owner lock, `is_allowed_user` / `is_shared_user`, Enterprise Grid check |
+| Remote gateway ↔ a connected computer (preview `connected_computers`) | the local user's native consent and the one folder it picked | every request the remote gateway sends | local grant store + OS fence per command (`bwrap` + seccomp on Linux; none, so unavailable, on macOS and Windows), scoped credential proof-of-possession (bearer never sent) plus nonce-bound, directional sequenced MACs on every frame after `hello` on its own connect route (exempt from the dashboard gate only while the preview is on; off, that path meets the gate and then 404s like any unserved path), and authenticated heartbeats so a relay dropping the tail cannot hold a connection open (a missed deadline interrupts, never refuses); only an authenticated `admitted` resets back-off and only an authenticated `refusal` naming an explicit end (revoked, removed, replaced, another computer) ends a grant (close codes and upgrade statuses are relay-forgeable and never read); sharing renews automatically over SSH, before or after expiry, presenting the old credential, accepted iff the device record is still active at that credential's `cgen`; Disconnect, Remove and a local Off's queued forget write the revocation on the record at once, and a dashboard logout neither accepts, revokes nor ends a connector credential (every dashboard sink refuses its audience); terminal states persist on the grant, a failed write retried while it stays stopped ([providers](../system-specs/modules/providers.md#connected-computers-handshake-and-confinement)) |
 
 The single most important structural property: **the PreToolUse gate is
 Kiro Crew's own gate, not the agent's.** Denied commands and the governance
@@ -188,9 +189,9 @@ described honestly for the tier it runs at:
   `is_sensitive_bash_command` deliberately matches no paths: a text matcher
   cannot hold against `python -c open(...)`, `awk`, a variable or a `cd`, and
   every spelling it did close denied ordinary commands whenever the fenced
-  spelling appeared as data. The path regexes were removed for that reason
-  (#9183), and the recovered command of a sandboxed shell is exempt from the
-  path tier (#11223). The enforcement point for a shell's `open()` is the OS
+  spelling appeared as data. The path regexes were removed for that reason,
+  and the recovered command of a sandboxed shell is exempt from the
+  path tier. The enforcement point for a shell's `open()` is the OS
   sandbox.
 - The OS sandbox's **default `standard` tier leaves `~/.aws`, `~/.ssh` and
   `~/.kube` visible** (`sandbox._STANDARD_DIRS` omits them on purpose) so the
@@ -741,6 +742,15 @@ assembled at runtime (string concatenation, a base64 blob, an indirect `eval
 the signing credential is the keystone path floor, which these rules do not
 replace.
 
+**A connected computer runs whatever turn its chat runs.** A chat bound to the
+owner's own computer (feature preview `connected_computers`) is bound by the
+owner alone, but each later turn in it is not re-checked against who sent it, so
+a shared-crew collaborator, an app agent or a channel message admitted into that
+chat reaches the computer's shared folder through the same approval gate. The
+obvious fix, refusing every turn whose initiator is not the owner, needs the
+initiator on every turn path, which unattributed single-user turns do not carry
+yet; it is an open decision, not an oversight.
+
 **No audit dashboard.** SEL events are queryable over the API
 (`/api/sel/events`, `/api/sel/verify`) but there is no UI to browse, filter or
 alert on them, so tamper detection and anomaly spotting are manual.
@@ -776,10 +786,8 @@ not thread, semantics). macOS and Linux hosts without delegation have no hard
 per-subtree process/memory ceiling; they retain the file-descriptor cap and
 post-failure reapers. See [`resource-protection.md`](resource-protection.md).
 
-**Launcher self-poisoning by the same user is accepted, not defended (CWE-345;
-tracked as CWE-778 by
-[#371](https://github.com/kirodotdev/KiroCrew/pull/371) /
-[#417](https://github.com/kirodotdev/KiroCrew/issues/417)).** The resolved
+**Launcher self-poisoning by the same user is accepted, not defended (CWE-345,
+also classed as CWE-778).** The resolved
 `kiro-cli` launcher is executed in place with no signature, hash, ownership or
 install-source check — the only gate is `platform_compat.is_executable_file`
 (`kiro_cli.py`) — so an agent running as the invoking user can overwrite its own
@@ -825,7 +833,11 @@ Chromium performs its own resolution to connect. `route.continue()` in
 validated, so a name that answers public then private across those two
 resolutions is the window. It cannot be closed at the route layer without
 aborting **all** cross-origin subresources, which would drop legitimate CDN
-fonts and images from the rendered screenshot. **Status: ACCEPTED, bounded.**
+fonts and images from the rendered screenshot. A WebSocket to a host other than
+the pinned base has the same window: the guard's `routeWebSocket` handler checks
+the host once and then calls `ws.connectToServer()`, which also takes no
+address, so the browser resolves the name again to connect
+(accepted as the same class). **Status: ACCEPTED, bounded.**
 Reaching it requires an attacker to control both a critiqued page and a rebinding
 DNS name; the base-host and same-host vectors are already closed. The complete
 fix is below-the-browser egress filtering independent of Chromium's resolver — a
@@ -836,8 +848,7 @@ mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
 privilege model, and fail-open vs fail-closed when the layer is unavailable), so
 it is tracked as a design item on #17748 rather than shipped here.
 
-**A sandboxed command's detached descendants are not bound to its lifetime
-([#5883](https://github.com/kirodotdev/KiroCrew/issues/5883)).** The Linux
+**A sandboxed command's detached descendants are not bound to its lifetime.** The Linux
 launcher unshares only the user and mount namespaces. It deliberately adds no
 PID namespace: an earlier PID-namespace version broke session identity, which is
 keyed on host pids, and seccomp denies the host-wide `kill(-1)` broadcast

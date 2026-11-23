@@ -34,7 +34,9 @@ from kiro_crew.acp.runtime import AcpRuntime
 _SPAWN_INPUT_KEYED = {
     "work_dir": "work_dir",
     "agent": "agent",
-    "sandbox_mode": "sandbox_mode",
+    # The raw value the runtime spawns with and reports; ``sandbox_mode`` in the
+    # key is the effective tier observed from it (_OBSERVED_KEYED).
+    "sandbox_mode": "spawn_sandbox_mode",
     "extra_env": "extra_env",
     "mcp_gateway_overlay": "mcp_gateway_overlay",
     "mcp_gateway_socket": "mcp_gateway_socket",
@@ -117,6 +119,11 @@ _SETTINGS_KEYED = {
 #: it. Neither population above can carry these, and a field with no producer at
 #: all is dead weight in a compatibility key -- so each names its source here.
 _OBSERVED_KEYED = {
+    "sandbox_mode": (
+        "The effective tier: the raw sandbox_mode parameter clamped by the governed "
+        "sandbox.min_level floor, which wrap_argv reads at spawn rather than taking "
+        "from the caller; a floor raised after a spawn makes two keys of one raw value."
+    ),
     "spawn_identity": (
         "The account era the allocator read immediately before start(). The process "
         "authenticates once, at spawn, and every parameter a session passes is "
@@ -159,6 +166,12 @@ _HANDSHAKE_NOT_KEYED = {
     "with_telemetry_opt_out": (
         "A pure transform of the capabilities dict by the boolean the read above "
         "produced; it reads nothing of its own, so it adds no input."
+    ),
+    "kiro_cli_code_intelligence_enabled": (
+        "A feature setting, not a privacy opt-out: read when the KAS process "
+        "starts, so a changed value applies to the next process. Its workspace "
+        "file follows work_dir, which is keyed, and Crew's gate still answers "
+        "every code call a joiner's session makes."
     ),
 }
 _HANDSHAKE_MODULE = "src/kiro_crew/acp/runtime_spawn_launch.py"

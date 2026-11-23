@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 import conductor_agent_checks
-from skill_script_helpers import load_skill_script
+from skill_script_helpers import load_skill_script, skill_text
 
 from kiro_crew import agent
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
@@ -454,7 +454,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         assert "Call the `accept_eval` tool with no arguments" in prompt
         assert "It never evaluates an item that is not `done`" in prompt
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert "Call the `accept_eval` tool with NO arguments" in body
         assert "It evaluates `done` items only" in body
         assert "Never hand the evaluator an unfiltered `accept_batch`" in body
@@ -476,7 +476,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert one_write in prompt
         assert "A wake naming a `done` item needs no read" in prompt
         assert "Each answer carries `reported`" in prompt
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert one_write in body
         assert "A wake that names a `done` item is the one exception" in body
         assert "returns the worker's report beside the verdict" in body
@@ -495,7 +495,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert "`work_brief` before you plan" in prompt
         assert "`work_report` `status: progress`" in prompt
         assert "not_bound" in prompt
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert "When a conductor dispatched you" in body
         assert "`work_brief` before Round 0" in body
         assert "`work_report` at round boundaries" in body
@@ -510,7 +510,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         mandatory and fix the interval at 300 s, the gateway's one patrol interval.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert 'Always pass `watch="work-ledger"`' in prompt
         assert '`watch="work-ledger"` is mandatory' in body
         for text in (prompt, body):
@@ -528,7 +528,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         stops it, and a question parks one item instead of stopping the loop.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert "Rounds run back to back" in prompt
         assert "Do not wait for the user between rounds" in body
         assert "propose the next round. Then wait." not in body
@@ -549,7 +549,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         default would be taken unattended, so the risk check must lead.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         for text in (prompt, body):
             assert text.index("Is it one of the ask cases") < text.index(
                 "Not risky? Pick a default"
@@ -563,7 +563,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         item total has no cap and no notice; it stays readable as ``goal_items_used``.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         for text in (prompt, body):
             assert "they are bounded" in text
             assert "two rounds in a row" in text
@@ -598,7 +598,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         Read-first is checked on both sides: a wake carries a pointer to the ledger,
         not the board, so neither may say a turn arrives holding the board.
         """
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         assert "Bind BEFORE you seed" in body
         assert "Never leave `agent` unset" in body
@@ -618,7 +618,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         ``agent_kind: "template"`` for every dispatch and say no setting changes it.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         for text in (prompt, body):
             assert 'Always dispatch `kirocrew-worker` with `agent_kind: "template"`' in text
             assert "Re-send" not in text
@@ -635,7 +635,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         assert "`session_close` (close a child once its item is terminal;" in prompt
-        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        body = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert "Closing the item and closing its session happen together" in body
         assert "`session_close` archives (reopenable); it never deletes" in body
         assert "`session_close` each one whose item is terminal" in body
@@ -651,7 +651,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         the shell, which ``execute_bash`` then runs after one approval. A quoted
         heredoc is the one form the shell copies to stdin without interpreting.
         """
-        skill = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        skill = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert "a quoted heredoc only, never `printf` or `echo`" in skill
         body = (SKILL_DIR / "references" / "accept-eval-fallback.md").read_text(encoding="utf-8")
         assert "<<'ACCEPT_BATCH'" in body
@@ -735,8 +735,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-dashboard/session_status",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
-            "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_ask_record",
+            "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
             "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
@@ -931,8 +931,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-dashboard/session_status",
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
-            "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_ask_record",
+            "@kirocrew-work/work_ledger_rebuild",
             "@kirocrew-work/work_brief",
             "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
@@ -947,7 +947,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         conductor could have assumed and let the user correct. Pinned as a doc
         ratchet because the instruction, not the code, is what would drift.
         """
-        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        text = skill_text((SKILL_DIR / "SKILL.md"))
         # What the conductor can settle itself is an assumption, not a question.
         assert "Decide, do not ask" in text
         assert "Assumptions" in text
@@ -965,7 +965,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         prompts" or "nothing prompts" would have the conductor sizing its nudge
         interval around approvals it does not pay — or walking into ones it does.
         """
-        text = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        text = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert "**What prompts.** Granted by name" in text
         # Own-child sends and closes are auto-approved (tool_approval._conductor_own_child_call).
         assert (
@@ -987,7 +987,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         the loop for up to 30 minutes; an unassertable item gets a report to check
         instead of an invented ask.
         """
-        skill = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        skill = " ".join(skill_text((SKILL_DIR / "SKILL.md")).split())
         assert "references/rare-cases.md` before you act on it" in skill
         text = " ".join(
             (SKILL_DIR / "references" / "rare-cases.md").read_text(encoding="utf-8").split()
@@ -1007,7 +1007,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         Items also encoded into ``session_ledger`` artifacts would be a second record
         that can disagree with the one ``work_ledger_read`` returns.
         """
-        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        text = skill_text((SKILL_DIR / "SKILL.md"))
         assert "Do not encode items into `session_ledger` artifacts" in text
         assert "ledger_entry" not in text
         # ``session_ledger`` still holds the conductor's OWN goal/phase/next, so
@@ -1034,7 +1034,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         """
         assert SKILL_DIR.is_dir()
         assert not (_BUILTIN_SKILLS_DIR / "conductor").exists()
-        assert "name: goal-conductor" in (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        assert "name: goal-conductor" in skill_text((SKILL_DIR / "SKILL.md"))
 
     def test_skill_gives_no_folder_guidance(self):
         """Dispatchers stop managing folders (rfc-crewmate-workers-under-the-crewmate.md,
@@ -1045,7 +1045,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         call a verb its spec does not auto-approve, on a patrol cycle with nobody
         at the keyboard.
         """
-        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        text = skill_text((SKILL_DIR / "SKILL.md"))
         assert "chat_folder_" not in text
         assert "<goal folder>" not in text and "<goal>/<agent>" not in text
         dispatch = (SKILL_DIR / "references" / "manual-dispatch.md").read_text(encoding="utf-8")
@@ -1078,7 +1078,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         what makes the worker follow it. Pinned as an OPTIONAL hint, not a mandate: a user
         who does not want kirocrew-prepare-pr must not have it forced on every worker.
         """
-        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        text = skill_text((SKILL_DIR / "SKILL.md"))
         dispatch = text.split("### Dispatch a round")[1].split("### Patrol")[0]
         flat = " ".join(dispatch.split())
         assert "`<crew-home>/skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md`" in flat
@@ -1468,7 +1468,7 @@ class TestDraftPullRequest:
         verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
         assert verdict == "refused", "the ratchet below pins the doc to THIS word"
 
-        body = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8") + (
+        body = skill_text((SKILL_DIR / "SKILL.md")) + (
             SKILL_DIR / "references" / "acceptance-kinds.md"
         ).read_text(encoding="utf-8")
         draft_sentences = [

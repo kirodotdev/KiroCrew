@@ -608,7 +608,7 @@ class TestDeliverResult:
             ("assistant", "Title\n\nresult")
         ]
         # The heartbeat seeds the slot's title from the task summary.
-        assert slot.title == "💓 task"
+        assert slot.title == "task"
         ds.notify.assert_called_once_with(
             "heartbeat", "Title", "task\n\nresult", meta={"slot": "new-slot"}
         )

@@ -199,6 +199,17 @@ def test_unc_root_is_refused_before_resolution(monkeypatch):
     assert err and "local directory" in err
 
 
+def test_a_root_that_resolves_to_a_share_is_refused(monkeypatch):
+    # Windows realpath turns a mapped network drive into its share path.
+    monkeypatch.setattr(
+        chat_folders, "_validate_project_dir", lambda _raw: ("\\\\server\\share\\work", None)
+    )
+    assert validate_session_folder_root("Z:\\work") == (
+        "",
+        "Session folder root must be a local directory",
+    )
+
+
 def test_data_home_overlap_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(
         chat_folders, "voice_runtime_workspace_conflict", lambda _p: "overlaps the data home"

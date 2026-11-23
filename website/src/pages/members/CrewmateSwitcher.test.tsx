@@ -553,3 +553,13 @@ describe('CrewmateUnreadColumn', () => {
     expect(pills()[0].className).toContain('mt-1.5')
   })
 })
+
+describe('CrewmateSwitcher focus ring', () => {
+  it('draws each row\'s focus ring inside the row, where the scrolling list cannot clip it', async () => {
+    setup()
+    const list = await open()
+    // The rows sit in the scrolling listbox, which clips anything drawn past them.
+    expect(screen.getByTestId('crewmate-switcher-listbox').className).toContain('overflow-y-auto')
+    for (const o of options(list)) expect(o).toHaveClass('focus-visible:outline-offset-[-2px]')
+  })
+})

@@ -1,7 +1,7 @@
 "use strict";
 
 const { findKirocrewBin } = require("../../find-bin");
-const { forceStopPort, isKirocrewCommand } = require("../../gateway-stop");
+const { confirmedFree, forceStopPort, isKirocrewCommand } = require("../../gateway-stop");
 const {
   canonicalWindowsPath,
   windowsGatewayExecutablePaths,
@@ -95,8 +95,9 @@ function descendantPids(rootPid, psTable) {
  * @param {object} deps
  * @param {() => string[]} deps.getSpawnedExecutablePaths  executables the
  *        CURRENT child was spawned from, read at call time.
- * @param {(port:number) => Promise<boolean>} [deps.isPortBindable]  Windows
- *        force-stop's bind check for an empty netstat answer.
+ * @param {(port:number) => Promise<boolean>} [deps.isPortBindable]  force-stop's
+ *        bind check for an empty netstat answer on Windows, and for an lsof
+ *        probe that could not run on macOS and Linux.
  * @param {(ms:number) => Promise<void>} [deps.sleep]  the wait between bind
  *        checks while that answer stays refused.
  */
@@ -159,6 +160,15 @@ function createPortHolders({
       getWindowsPids: winListenPids,
       getPosixPids: lsofListenPids,
     });
+  }
+
+  // The local mint's listener proof. The mint refuses when it cannot be taken,
+  // so on Windows one failed or slow netstat run must not decide that: two
+  // bounded attempts, rejecting with how the last one failed so the refusal can
+  // say so. Force-stop's three of 10 s would hold a boot connect for ~31 s.
+  function mintPortPids(probePort) {
+    if (!IS_WIN) return snapshotGatewayPortPids(probePort);
+    return windowsListenPidsRetrying(probePort, { execFileFn: execFile, attempts: 2, timeoutMs: 5000, sleep });
   }
 
   function unverifiedIncumbent(pids) {
@@ -314,10 +324,11 @@ function createPortHolders({
   /**
    * @param {number} probePort
    * @param {{ onBindWait?: () => void, isAborted?: () => boolean }} [o]
-   *        `onBindWait` is called once when an ownerless port refuses a bind and
-   *        recovery starts waiting for it to free; `isAborted` ends that wait.
+   *        `onBindWait` is called once when a port with no known owner refuses
+   *        a bind and recovery starts waiting for it to free; `isAborted` ends
+   *        that wait.
    */
-  function forceStopGatewayPort(probePort, { onBindWait = null, isAborted = null } = {}) {
+  async function forceStopGatewayPort(probePort, { onBindWait = null, isAborted = null } = {}) {
     if (IS_WIN) {
       return forceStopPort(probePort, {
         // Recovery fails closed on a probe error, so one slow netstat spawn
@@ -344,7 +355,7 @@ function createPortHolders({
         log: glog,
       });
     }
-    return forceStopPort(probePort, {
+    const result = await forceStopPort(probePort, {
       getListenPids: lsofListenPids,
       getCommand: psCommand,
       getPpid: psPpid,
@@ -352,8 +363,24 @@ function createPortHolders({
       isLaunchdJob: processObj.platform === "darwin" ? isLaunchdJob : null,
       kill: (pid, signal) => processObj.kill(pid, signal),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      failClosedOnProbeError: true,
       log: glog,
     });
+    if (!result.probeFailed) return result;
+    // lsof can be missing for good, so a failed probe is settled with a real
+    // bind: a port that opens within the wait the splash already allows is
+    // free, and one that never does goes to the restart-required dialog.
+    const bindable = await confirmedFree(probePort, {
+      confirmFree: (p) => isPortBindable(p),
+      waitMs: LOCAL_GATEWAY_WAIT_MS,
+      sleep,
+      onWait: onBindWait,
+      isAborted,
+      log: glog,
+    });
+    if (!bindable) return result;
+    const { probeFailed: _probeFailed, ...probed } = result;
+    return { ...probed, freed: true };
   }
 
   return {
@@ -368,6 +395,7 @@ function createPortHolders({
     launchdJobPids,
     isLaunchdJob,
     snapshotGatewayPortPids,
+    mintPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,
     forceStopGatewayPort,

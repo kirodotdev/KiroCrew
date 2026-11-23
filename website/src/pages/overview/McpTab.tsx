@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces, ToggleLeft, ToggleRight } from 'lucide-react'
+import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces, Lock, ToggleLeft, ToggleRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
@@ -28,7 +28,7 @@ function isToday(epochSecs: number): boolean {
   return new Date(epochSecs * 1000).toDateString() === new Date().toDateString()
 }
 import SortableHeader from '../../components/SortableHeader'
-import { connectionProviderForServer, providerOwningRow } from '../connections/registry'
+import { connectionProviderForServer, providerOwningRow, vendorPendingProviderForServer } from '../connections/registry'
 import { settingsPath } from '../../components/settingsPath'
 import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import McpRowSignIn, { type McpSignInTarget } from './McpRowSignIn'
@@ -94,8 +94,16 @@ function pruneStagedScopes(servers: McpServer[], prev: Record<string, PendingCha
   const byName = new Map(servers.map(s => [s.name, s]))
   const next: Record<string, PendingChange> = {}
   let dropped = false
-  for (const [name, p] of Object.entries(prev)) {
+  for (const [name, entry] of Object.entries(prev)) {
     const s = byName.get(name)
+    let p = entry
+    // One of Kiro Crew's own servers cannot be turned off or uninstalled, so a
+    // restored draft that stages either for one is dropped, not resubmitted.
+    if (s?.builtin === true && (p.uninstall || p.scopes?.kirocrew === false)) {
+      const { kirocrew: _off, ...scopes } = p.scopes ?? {}
+      p = { scopes }
+      dropped = true
+    }
     if (s && (p.uninstall || hasPendingScopeChange(s, p))) next[name] = p
     else dropped = true
   }
@@ -257,6 +265,7 @@ function ScopeBadge({
   pendingChange,
   disabled,
   disabledInConfig,
+  builtinLocked,
   onClick,
 }: {
   label: string
@@ -266,19 +275,23 @@ function ScopeBadge({
   disabled: boolean
   /** The badge is inert because the shared config disables the row (not a pending uninstall). */
   disabledInConfig?: boolean
+  /** The badge is locked ON: the row is one of Kiro Crew's own servers. */
+  builtinLocked?: boolean
   onClick: () => void
 }) {
   // Every state of the title starts with the scope's own label: three inert
   // badges on one row that all read the same label-free sentence are, to a
   // screen reader, three identical unnamed buttons.
-  const title = disabled
+  const title = builtinLocked
+    ? i18nT('pages.overview.mcpTab.scope_builtin', { label })
+    : disabled
     ? (disabledInConfig
       ? i18nT('pages.overview.mcpTab.scope_disabled_in_config', { label })
       : i18nT('pages.overview.mcpTab.pending_uninstall', { label }))
     : pendingChange
       ? i18nT(active ? 'pages.overview.mcpTab.scope_switch_pending_on' : 'pages.overview.mcpTab.scope_switch_pending_off', { label })
       : i18nT(active ? 'pages.overview.mcpTab.scope_switch_on' : 'pages.overview.mcpTab.scope_switch_off', { label })
-  const bg = disabled
+  const bg = disabled && !builtinLocked
     ? 'bg-bg-elevated text-muted'
     : active
       ? 'bg-ok/20 text-ok-text border border-ok/40'
@@ -293,7 +306,9 @@ function ScopeBadge({
   // An inert switch (shared-config disable or a staged uninstall) is off
   // whatever its presence says: the server will not load either way, so the
   // switch state, glyph and accessible name must all read off together.
-  const checked = active && !disabled
+  // A locked built-in switch is the one inert switch that reads on: the server
+  // loads, and only the off direction is refused.
+  const checked = active && (!disabled || !!builtinLocked)
   const Glyph = checked ? ToggleRight : ToggleLeft
   return (
     <button
@@ -304,10 +319,12 @@ function ScopeBadge({
       onClick={onClick}
       title={title}
       aria-label={title}
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono cursor-pointer transition-colors ${bg} ${pendingRing}`}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono cursor-pointer ${builtinLocked ? 'disabled:cursor-default' : ''} transition-colors ${bg} ${pendingRing}`}
       data-scope={scope}
     >
       <Glyph className="lucide-inline" aria-hidden="true" data-testid="mcp-scope-switch-glyph" data-on={checked ? 'true' : 'false'} />
+      {/* The glyph keeps showing on; the lock beside it says it cannot be turned off. */}
+      {builtinLocked && <Lock className="lucide-inline" aria-hidden="true" data-testid="mcp-scope-switch-lock" />}
       {label}
     </button>
   )
@@ -421,23 +438,29 @@ function signInTargetFor(
  * server's own `oauth` block to the engine, except a block that names a client
  * secret or keeps nothing Crew sends (`oauthWithheld`, from
  * `mcp_oauth_projection.oauth_withheld`), so neither the chat guidance nor Sign in
- * could finish for that one. A Connections provider is left to its card, and a
- * sign-in Crew holds is Crew's, not the harness's.
+ * could finish for that one. The same holds at the url of a provider whose vendor
+ * has not admitted Kiro yet (`vendorPending`), unless the entry brings its own
+ * `clientId`: the vendor refuses the engine's client, so no chat sign-in can
+ * finish. A Connections provider is left to its card, and a sign-in Crew holds is
+ * Crew's, not the harness's.
  * shortcut: an engine older than 0.66.104 drops every block, and this row cannot
  * see the engine version; the chat notice covers that case. Read the version
  * here if the gateway ever reports it per row.
  */
-function kasCannotSignIn(s: McpServer, managedProvider: unknown, onKas: boolean): boolean {
-  return onKas && !managedProvider && !!s.oauthWithheld && !s.authCrewHeld
+function kasCannotSignIn(s: McpServer, managedProvider: unknown, onKas: boolean, vendorPending: unknown): boolean {
+  return onKas && !managedProvider && (!!s.oauthWithheld || !!vendorPending) && !s.authCrewHeld
 }
 
-/** The row's sentence for a sign-in KAS cannot do. It offers no harness switch:
- *  a Kiro CLI pick runs on KAS wherever kiro-cli offers its v3 engine
- *  (`kiro_cli_pick_backend`), so the switch would not reach the sign-in either. */
-function KasSignInUnsupported() {
+/** The row's sentence for a sign-in KAS cannot do, naming the vendor when it is
+ *  the vendor that refuses. It offers no harness switch: a Kiro CLI pick runs on
+ *  KAS wherever kiro-cli offers its v3 engine (`kiro_cli_pick_backend`), so the
+ *  switch would not reach the sign-in either. */
+function KasSignInUnsupported({ vendor }: { vendor?: string }) {
   return (
     <span className="text-warn text-[12px]" data-testid="mcp-sign-in-unsupported">
-      {i18nT('pages.overview.mcpTab.sign_in_unsupported_on_kas')}
+      {vendor
+        ? i18nT('pages.overview.mcpTab.sign_in_unsupported_vendor_pending', { provider: vendor })
+        : i18nT('pages.overview.mcpTab.sign_in_unsupported_on_kas')}
     </span>
   )
 }
@@ -502,8 +525,8 @@ function mcpStatusHint(
   // row past the consecutive-failure threshold is ALSO "outdated", because
   // every probe pass skips it (docs/system-specs/modules/mcp-probe-quarantine.md
   // §3), and refresh alone does nothing for it. That row always carries the
-  // Failing badge in the same cell, whose tip says probing stopped and names
-  // Reset count, so this badge stays silent there rather than repeat it or
+  // Quarantined badge and its Retry server button in the same cell, whose tip
+  // says probing stopped, so this badge stays silent there rather than repeat it or
   // send the reader to a refresh that will not work (#15516).
   //
   // An `outdated` row that carries an `error` is a probe refused before any
@@ -790,20 +813,48 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     mutationFn: () => api.mcpProbe(),
     onSuccess: (data) => {
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], data)
+      // These rows are a fresh check, so a Retry server failure notice that
+      // said "the status shown is from the last check" is no longer true.
+      // Only a FAILED Retry is reset: resetting one still running would detach
+      // it from the row, and its failure would then never be shown.
+      if (resetFailures.isError) resetFailures.reset()
     },
     onError: () => {
       refetch()
     },
   })
 
-  // Release is a REFETCH, not an optimistic edit: the badge has to disappear
-  // because the server actually came back, and the same request rebuilt the
-  // agent config. Painting the row clean locally would claim a remount the
-  // backend may have failed to perform (it answers 500 in that case).
+  // Retry server: clear the quarantine, then probe that one server, so one click
+  // does what used to take Reset count plus the page's refresh button. The row
+  // shown after it is the backend's fresh probe, not an optimistic edit: the
+  // badge disappears only because the server answered. A failed clear throws
+  // before the probe, so the badge stays.
   const resetFailures = useMutation({
-    mutationFn: (name: string) => api.mcpResetProbeFailures(name),
+    mutationFn: async (name: string) => {
+      await api.mcpResetProbeFailures(name)
+      return api.mcpProbeOne(name)
+    },
+    onSuccess: (row) => {
+      queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
+        prev?.map(x => (x.name === row.name ? row : x)))
+    },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
+    },
+  })
+
+  // Test one server: the answer is that row's fresh probe, which replaces only that
+  // row, so the other rows keep the state the user is looking at.
+  const testOne = useMutation({
+    mutationFn: (name: string) => api.mcpProbeOne(name),
+    onSuccess: (row) => {
+      // The row is fully annotated server-side, so it replaces the old one: a merge
+      // would keep a stale failing badge or sign-in note the response no longer carries.
+      queryClient.setQueryData<McpServer[]>(['mcp-servers'], prev =>
+        prev?.map(x => (x.name === row.name ? row : x)))
+      // A fresh check of the row a Retry server failure was about makes that
+      // notice untrue; one about another row stays.
+      if (resetFailures.isError && resetFailures.variables === row.name) resetFailures.reset()
     },
   })
 
@@ -937,7 +988,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const base = s.presence || DEFAULT_PRESENCE
             const hasToolOverrides = pendingTools[s.name] && Object.keys(pendingTools[s.name]).length > 0
             const managedProvider = connectionProviderForServer(s)
-            const signInUnsupported = kasCannotSignIn(s, managedProvider, onKas)
+            const vendorPending = s.clientId ? undefined : vendorPendingProviderForServer(s)?.name
+            const signInUnsupported = kasCannotSignIn(s, managedProvider, onKas, vendorPending)
             const signInTarget = signInUnsupported ? undefined : signInTargetFor(s, managedProvider, connectionsUi)
             // A configured card whose Crew sign-in is off: its setup line stands in
             // for the sign-in controls only, never for the probe error or the tools.
@@ -1004,6 +1056,12 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             // A row off because of an INVALID value is not dimmed at all: grey
             // reads as "deliberately off", and this one is an error to repair.
             const dimmedCell = disabledInConfig && !invalidValue && !pendingUninstall ? { opacity: 0.6 } : undefined
+            // One of Kiro Crew's own servers: its Kiro Crew switch is
+            // locked on and it has no Uninstall, and the backend refuses both.
+            // The lock reads the SAVED state: a built-in that is off keeps a
+            // live switch, so it can be turned back on and a staged turn-on
+            // can be clicked back.
+            const builtinLocked = s.builtin === true && base.kirocrew && !pendingUninstall && !disabledInConfig
             return (
               <tr key={s.name} className={`group/mcprow hover:bg-bg-hover transition-colors align-top ${rowBorder}`} style={{ opacity: pendingUninstall ? 0.5 : 1 }} data-disabled-in-config={disabledInConfig ? 'true' : undefined}>
                 <td className="px-2.5 py-2 border-b border-border text-sm min-w-[180px]" style={dimmedCell}>
@@ -1028,6 +1086,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       >
                         {i18nT(invalidValue ? 'pages.overview.mcpTab.disabled_in_config_invalid' : 'pages.overview.mcpTab.disabled_in_config')}
                       </Badge>
+                    )}
+                    {s.builtin === true && (
+                      <span className="inline-flex items-center gap-1">
+                        <Badge variant="muted" className="text-[10px] px-1.5 py-0.5 font-body" style={{ color: 'var(--text)' }} data-testid="mcp-builtin-chip">
+                          {i18nT('pages.overview.mcpTab.builtin')}
+                        </Badge>
+                        <InfoTip text={i18nT('pages.overview.mcpTab.builtin_help')} placement="top" />
+                      </span>
                     )}
                     {managedProvider && (onManagedProviderClick ? (
                       <button
@@ -1054,8 +1120,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     scope="kirocrew"
                     active={eff.kirocrew}
                     pendingChange={!pendingUninstall && !!p?.scopes && 'kirocrew' in p.scopes}
-                    disabled={pendingUninstall || disabledInConfig}
+                    disabled={pendingUninstall || disabledInConfig || builtinLocked}
                     disabledInConfig={disabledInConfig && !pendingUninstall}
+                    builtinLocked={builtinLocked}
                     onClick={() => toggleScope(s.name, 'kirocrew', !eff.kirocrew, base)}
                   />
                 </td>
@@ -1168,9 +1235,10 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         className="whitespace-nowrap text-[11px] text-accent hover:text-accent-hover cursor-pointer transition-colors disabled:cursor-not-allowed disabled:text-muted"
                         onClick={() => resetFailures.mutate(s.name)}
                         disabled={resetFailures.isPending}
-                        title={i18nT('pages.overview.mcpTab.reset_failures_help')}
                       >
-                        {i18nT('pages.overview.mcpTab.reset_failures')}
+                        {resetFailures.isPending && resetFailures.variables === s.name
+                          ? i18nT('pages.overview.mcpTab.testing_server')
+                          : i18nT('pages.overview.mcpTab.reset_failures')}
                       </button>
                     </div>
                   )}
@@ -1185,6 +1253,19 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {i18nT('pages.overview.mcpTab.last_probed')}: {isToday(s.probedAt) ? fmtTime(s.probedAt * 1000) : fmtDateTime(s.probedAt * 1000)}
                     </div>
                   )}
+                  {!disabledInConfig && (
+                    <div className="mt-0.5 flex flex-col items-start gap-1">
+                      <Btn
+                        onClick={() => testOne.mutate(s.name)}
+                        disabled={testOne.isPending}
+                        title={i18nT('pages.overview.mcpTab.test_server_help')}
+                      >
+                        {testOne.isPending && testOne.variables === s.name
+                          ? i18nT('pages.overview.mcpTab.testing_server')
+                          : i18nT('pages.overview.mcpTab.test_server')}
+                      </Btn>
+                    </div>
+                  )}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full" style={dimmedCell}>
                   {disabledInConfig && (
@@ -1194,6 +1275,17 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        that carries a failing row's error), rather than in a
                        `title` a keyboard or touch user never reaches (#13075). */
                     <DisabledWhereLine whereKey={whereKey} file={s.disabledInFile ?? null} reason={s.disabledReason} text={disabledInConfigWhereText} />
+                  )}
+                  {testOne.isError && testOne.variables === s.name && (
+                    /* The pressed Test failed, so no probe ran: the wording says the
+                       row's status is the last check's. In the wide cell, wrapping its
+                       hand-off under the text, so it neither breaks mid-word nor clips. */
+                    <ErrorNotice variant="inline" className="flex-wrap" message={i18nT('pages.overview.mcpTab.test_server_failed')} testId="mcp-test-server-failed" askAgent />
+                  )}
+                  {resetFailures.isError && resetFailures.variables === s.name && (
+                    /* Retry server failed at the clear or at the probe after it, so the
+                       row shows the last check's status: say so, like Test does. */
+                    <ErrorNotice variant="inline" className="flex-wrap" message={i18nT('pages.overview.mcpTab.retry_server_failed')} testId="mcp-retry-server-failed" askAgent />
                   )}
                   {s.tempRefusals?.map(r => (
                     /* The probe still answered with the managed temp, so the status
@@ -1261,7 +1353,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           that stopped working (expired, revoked, or minted for other
                           scopes). Signing in again is the remedy the row can offer. */}
                       {!!s.authChallenge && !s.headers && signInUnsupported && (
-                        <span className="block mt-0.5"><KasSignInUnsupported /></span>
+                        <span className="block mt-0.5"><KasSignInUnsupported vendor={vendorPending} /></span>
                       )}
                       {!!s.authChallenge && !s.headers && !signInUnsupported && signInNotice && (
                         <span className="block mt-1">{signInNotice}</span>
@@ -1289,7 +1381,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        IS something the panel can do) and names the probe step that
                        repaints the row. */
                     signInUnsupported ? (
-                      <KasSignInUnsupported />
+                      <KasSignInUnsupported vendor={vendorPending} />
                     ) : signInTarget ? (
                       <McpRowSignIn target={signInTarget} serverName={s.name} kasChatNote={s.kasChatSignIn} />
 
@@ -1320,7 +1412,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                   ) : mcpAuthState(s) === 'signed_in' && signInUnsupported ? (
                     /* A held grant is Kiro CLI's, which a KAS chat does not use, so
                        the row says the same as one nobody signed in to. */
-                    <KasSignInUnsupported />
+                    <KasSignInUnsupported vendor={vendorPending} />
                   ) : mcpAuthState(s) === 'signed_in' && signInNotice && !s.tools?.length && !s.authCrewHeld ? (
                     /* Where Sign in again would be: setup or URL normalization
                        must go through Settings before this row can sign in. */
@@ -1406,7 +1498,9 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           hover text says exactly that; a re-enable stays out (a
                           separate decision), but a removal the user asks for is not
                           a re-enable. */}
-                      <Btn danger onClick={() => stageUninstall(s.name)} title={disabledInConfig ? i18nT('pages.overview.mcpTab.uninstall_disabled_in_config_help') : undefined}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
+                      {s.builtin !== true && (
+                        <Btn danger onClick={() => stageUninstall(s.name)} title={disabledInConfig ? i18nT('pages.overview.mcpTab.uninstall_disabled_in_config_help') : undefined}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
+                      )}
                     </div>
                   )}
                 </td>

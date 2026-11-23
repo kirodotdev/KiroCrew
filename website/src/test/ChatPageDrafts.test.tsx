@@ -24,6 +24,8 @@ import {
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { __resetSteerTakeBacksForTests } from '../hooks/useSteerRetract'
 import { api } from '../api/client'
+import { DRAFTS_KEY, __resetForTests as resetDrafts } from '../utils/chatDrafts'
+import { addStashEntry, loadPromptStash, makeStashEntry } from '../utils/promptStash'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -129,7 +131,10 @@ async function renderAndWaitForInput(store: ReturnType<typeof makeStore>, mode?:
 }
 
 const messageInput = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
-const TAKE_BACK_NOW = Date.parse('2026-10-23T14:00:00Z')
+// Anchored to the real clock: the drafts store prunes by a real-clock TTL, so a
+// fixed calendar date here expires every draft it stamps once that date is
+// older than the TTL.
+const TAKE_BACK_NOW = Date.now() // flake-ok: read once, then pinned with vi.spyOn(Date, 'now') in primeEditedSteerTakeBack
 const SLOT_A_FILE = '/tmp/a.txt'
 const SLOT_B_FILE = '/tmp/b.txt'
 const RESTORED_FILE = '/tmp/steer.txt'
@@ -168,6 +173,9 @@ beforeEach(() => {
   localStorage.clear()
   __resetNavSeamForTests()
   __resetSteerTakeBacksForTests()
+  // The drafts store keeps its TTL stamps in module memory, so a stamp written
+  // under one test's mocked clock would otherwise prune the next test's draft.
+  resetDrafts()
   vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue({
     messages: [{ role: 'assistant', content: 'hi', cls: '' }],
     running: false, has_more: false, total: 1,
@@ -1097,6 +1105,33 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
       return s
     })
     expect(saved['new-slot']).toBeUndefined()
+  })
+
+  it('keeps the restored stash entry when the normal debounced draft save hits quota', async () => {
+    const restoredText = 'safe restored draft'
+    expect(addStashEntry('slot-a', makeStashEntry(restoredText, []))).toBe(true)
+
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    const originalSetItem = Storage.prototype.setItem
+    let failedDraftWrites = 0
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key: string, value: string) {
+      if (key === DRAFTS_KEY && value.includes(restoredText)) {
+        failedDraftWrites += 1
+        throw new DOMException('quota', 'QuotaExceededError')
+      }
+      return originalSetItem.call(this, key, value)
+    })
+
+    const input = screen.getByLabelText('Message input')
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 's', ctrlKey: true })
+      await Promise.resolve()
+    })
+
+    expect(input).toHaveValue(restoredText)
+    await waitFor(() => expect(failedDraftWrites).toBeGreaterThan(0))
+    expect(loadPromptStash('slot-a').map(entry => entry.text)).toEqual([restoredText])
   })
 
   it('restores draft to localStorage on connection error', async () => {

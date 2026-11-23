@@ -137,6 +137,8 @@ describe('ProjectsPage', () => {
     expect(ws).toBeInTheDocument()
     // Untouched field stays empty → "no override" (preserves per-run isolation).
     expect(ws.value).toBe('')
+    // The field is too narrow for a long path, so its tooltip starts with the full one.
+    expect(ws.title.startsWith('/home/u/ws\n\n')).toBe(true)
   })
 
   it('threads the typed workspace dir into planTask on Run', async () => {

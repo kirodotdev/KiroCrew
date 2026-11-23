@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from kiro_crew import __version__, code_fingerprint, platform_compat, release_channel
-from kiro_crew.cloud import aws, sizes
+from kiro_crew.cloud import aws, ec2_failure, github_tag_probe, sizes
 from kiro_crew.deploy import profiles as profiles_mod
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
@@ -100,7 +100,7 @@ _REF_SPEC = FieldSpec(name="ref", type=str, max_len=128, pattern=_REF_RE)
 #: instance will clone (``test_launch_engine_ref.py::TestPublicRepoUrl`` pins the two
 #: spellings together).
 PUBLIC_REPO_URL = "https://github.com/kirodotdev/KiroCrew.git"
-#: Budget for one ``git ls-remote`` round trip to that remote. A launch already
+#: Budget for one tag-probe round trip to that remote. A launch already
 #: waits minutes on CloudFormation, so a slow answer costs little; a hung one
 #: must not hang the launch, and a miss is never worse than today's ``main``.
 _REF_PROBE_TIMEOUT_SECONDS = 15.0
@@ -365,12 +365,11 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
         return
     detail = "; ".join(f"{host} is inside private zone {zone}" for host, zone in hits)
     raise aws.AWSError(
-        f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap "
-        f"must download from ({detail}). Inside this VPC that name resolves to "
-        "NXDOMAIN instead of falling through to public DNS, so the install would "
-        "fail several minutes from now with a misleading error. Launch into a VPC "
-        "without that zone via `--subnet <subnet-id>`, or remove the zone from this "
-        "VPC, then retry.",
+        f"VPC {vpc_id} has a private hosted zone that shadows a host the bootstrap must download "
+        f"from ({detail}). Launch into a VPC without that zone by giving one of its subnets "
+        "(the Subnet ID field, or `--subnet <subnet-id>`), or remove the zone from this VPC, "
+        "then retry. Inside this VPC that name resolves to NXDOMAIN instead of falling through to "
+        "public DNS, so the install would fail several minutes from now with a misleading error.",
         action="route53:ListHostedZonesByVPC",
     )
 
@@ -414,6 +413,7 @@ def discover_network(
     region: str,
     instance_type: str = "",
     on_fallback: Optional[Callable[[str], None]] = None,
+    skip_zones: frozenset[str] = frozenset(),
 ) -> tuple[str, str, str]:
     """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
 
@@ -434,6 +434,9 @@ def discover_network(
     With no default VPC it falls back to the Region's only VPC, a choice the user
     did not make, so ``on_fallback`` is then called with one sentence naming the
     VPC, subnet and egress picked and how to choose another.
+
+    ``skip_zones`` leaves out subnets in those AZs: ``deploy`` passes the zones
+    EC2 already said have no capacity for the size.
     """
     vpcs = aws.checked_json(
         ["ec2", "describe-vpcs", "--filters", "Name=isDefault,Values=true"],
@@ -451,8 +454,9 @@ def discover_network(
         vpc_list = allv.get("Vpcs", []) if isinstance(allv, dict) else []
         if len(vpc_list) != 1:
             raise aws.AWSError(
-                "no default VPC found — create one (`aws ec2 create-default-vpc`) "
-                "or pass `--subnet <subnet-id>`, then retry.",
+                f"no default VPC in {region}, and {len(vpc_list)} other VPCs, so Kiro Crew can't "
+                "pick one. Give a subnet with internet access (the Subnet ID field, or `--subnet`)"
+                " or create a default VPC (`aws ec2 create-default-vpc`), then retry.",
                 action="ec2:DescribeVpcs",
             )
     vpc_id = vpc_list[0]["VpcId"]
@@ -476,7 +480,8 @@ def discover_network(
             ok_azs = set()  # non-fatal — fall back to any subnet
 
     def _az_ok(s: dict[str, Any]) -> bool:
-        return not ok_azs or s.get("AvailabilityZone", "") in ok_azs
+        az = s.get("AvailabilityZone", "")
+        return (not ok_azs or az in ok_azs) and az not in skip_zones
 
     candidates = [s for s in subnet_list if _az_ok(s)]
     if not candidates:
@@ -526,8 +531,8 @@ def discover_network(
     raise aws.AWSError(
         f"no subnet in VPC {vpc_id} has a verified internet egress route (internet "
         f"gateway or NAT).{dead_note} Kiro Crew needs outbound access to install packages and "
-        "reach SSM. Add or repair an internet gateway or NAT default route, or pass a "
-        "subnet that has one via `--subnet`, then retry.",
+        "reach SSM. Add or repair an internet gateway or NAT default route, or give a "
+        "subnet that has one (the Subnet ID field, or `--subnet`), then retry.",
         action="ec2:DescribeRouteTables",
     )
 
@@ -554,7 +559,7 @@ def resolve_explicit_subnet(
     subnet_list = data.get("Subnets", []) if isinstance(data, dict) else []
     if not subnet_list:
         raise aws.AWSError(
-            f"subnet {subnet_id} not found in {region} — check the id and --region.",
+            f"subnet {subnet_id} not found in {region}: check the Subnet ID and Region (--region).",
             action="ec2:DescribeSubnets",
         )
     subnet = subnet_list[0]
@@ -695,19 +700,17 @@ def release_tag_exists(ref: str, repo: str = "") -> bool:
     :func:`platform_compat.trusted_git_bin`, never a bare ``PATH`` lookup: the
     gateway's ``PATH`` can lead with an agent-writable directory, and a shim
     there would run with the gateway's privileges on every packaged launch.
-    Any way of not getting a definite "yes" — no trusted ``git`` on this
-    machine, no network, a 128 from the remote, a timeout — answers ``False``:
-    the caller then keeps the template default rather than asking the instance
-    to clone a tag that may not be there, which would fail the boot inside the
-    stack.
+    With no trusted ``git`` the default public repo is asked over HTTPS instead
+    (:func:`github_tag_probe.public_tag_exists`, no spawn); a fork cannot be. Any other
+    way of not getting a definite "yes" (no network, a 128 from the remote, a timeout)
+    answers ``False``: the caller then keeps the template default rather than asking the
+    instance to clone a tag that may not be there, which would fail the boot in the stack.
     """
     git = platform_compat.trusted_git_bin()
     if git is None:
-        logger.warning(
-            "no trusted git on this machine; cannot probe %s for tag %s",
-            repo or PUBLIC_REPO_URL,
-            ref,
-        )
+        if repo in ("", PUBLIC_REPO_URL):
+            return github_tag_probe.public_tag_exists(ref, _REF_PROBE_TIMEOUT_SECONDS)
+        logger.warning("no trusted git on this machine; cannot probe %s for tag %s", repo, ref)
         return False
     argv = [
         git,
@@ -769,7 +772,8 @@ def resolve_public_ref(repo: str = "") -> str:
         if release_tag_exists(ref, repo):
             return ref
     logger.warning(
-        "no release tag %s for Kiro Crew %s; the instance will run main",
+        "could not confirm release tag %s for this Kiro Crew %s, so the cloud crew will install"
+        " the development build from main, which this Kiro Crew may refuse to pair with",
         " / ".join(refs),
         __version__,
     )
@@ -785,31 +789,6 @@ def _account_of_policy_arn(arn: str) -> str:
             action="iam:GetPolicy",
         )
     return parts[4]
-
-
-def _account_refusal(failures: list[dict[str, str]], tier: sizes.SizeTier) -> str:
-    """The plain-words cause and next step when EC2 refused the instance on an
-    account limit, else ``""``.
-
-    Matched on EC2's own message: CloudFormation's resource handler drops EC2's
-    error code from the event reason.
-    """
-    reasons = " ".join(f["reason"] for f in failures)
-    if "current vCPU limit" in reasons:
-        smaller = any(t.vcpu < tier.vcpu for t in sizes.all_tiers())
-        return (
-            f"this AWS account's vCPU quota in this Region has no room for the {tier.vcpu} "
-            f"vCPU of the {tier.label} size: request a higher Running On-Demand Standard "
-            "instances quota (L-1216C47A) in Service Quotas"
-            + (", or pick a smaller size," if smaller else "")
-            + " and retry"
-        )
-    if "in this region is being validated" in reasons:
-        return (
-            "this AWS account is still being validated for launches in this Region: AWS "
-            "emails you when it is done (usually within minutes, up to 4 hours), then retry"
-        )
-    return ""
 
 
 def build_deploy_argv(
@@ -889,6 +868,35 @@ def build_deploy_argv(
     ]
 
 
+def _network_in_another_zone(
+    tag: str,
+    tier: sizes.SizeTier,
+    profile: str,
+    region: str,
+    refused_zones: list[str],
+    notify: Optional[Callable[[str], None]],
+) -> Optional[tuple[str, str, str]]:
+    """Delete the stack EC2 refused for capacity and pick a subnet in another zone.
+
+    ``None`` when the delete does not confirm or no untried zone has a subnet.
+    """
+    try:
+        if not destroy(tag, profile, region).get("destroyed"):
+            return None
+        picked = discover_network(
+            profile, region, tier.instance_type, skip_zones=frozenset(refused_zones)
+        )
+    except aws.AWSError as exc:
+        logger.info("no other zone to retry %s in: %s", tier.instance_type, exc)
+        return None
+    if notify is not None:
+        notify(
+            f"AWS has no {tier.instance_type} capacity in {refused_zones[-1]} right now, "
+            f"so this launch is trying again in subnet {picked[1]}."
+        )
+    return picked
+
+
 def deploy(
     *,
     tag: str,
@@ -907,6 +915,7 @@ def deploy(
     extra_packages: str = "",
     ssm_kms_key_arn: str = "",
     on_network_fallback: Optional[Callable[[str], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
 ) -> DeployResult:
     """Provision (or update) the KiroCrew stack. Idempotent by stack name.
 
@@ -926,6 +935,9 @@ def deploy(
     boundary and no KMS grant, byte-identical to a launch before the flag existed.
     ``on_network_fallback`` is handed to :func:`discover_network`, so a caller can
     show which network a launch with no default VPC picked before the stack exists.
+    ``cancelled`` is asked before a capacity refusal is retried in another zone,
+    and again after the refused stack is deleted: once it answers True, no new
+    stack is created and the refusal is raised.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
@@ -1041,6 +1053,7 @@ def deploy(
             except Exception:  # pragma: no cover - best effort
                 logger.info("could not remove uploaded source after failed launch")
 
+    explicit_subnet = bool(subnet_id)
     # Any failure from here to a successful deploy orphans the uploaded source —
     # network discovery/validation included — so clean it up on the way out.
     try:
@@ -1059,74 +1072,68 @@ def deploy(
     except Exception:
         _cleanup_uploaded_source()
         raise
-    argv = build_deploy_argv(
-        tag=tag,
-        tier=tier,
-        vpc_id=vpc_id,
-        subnet_id=subnet_id,
-        # A NAT-routed (private) subnet must NOT get a public IP — it is unused
-        # surface and can violate SCPs that deny RunInstances-with-public-IP.
-        # An IGW subnet REQUIRES one for egress.
-        associate_public_ip="false" if egress_kind == "nat" else "true",
-        permissions_boundary_arn=boundary_arn,
-        repo="" if ship_source else repo,
-        ref="" if ship_source else ref,
-        allow_ssh_cidr=allow_ssh_cidr,
-        source_bucket=source_bucket,
-        source_key=source_key,
-        ami_id=ami_id,
-        extra_packages=extra_packages,
-        ssm_kms_key_arn=ssm_kms_key_arn,
-        extra_managed_policy_arns=extra_managed_policy_arns,
-    )
-    # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
-    # on the gateway being healthy). "No changes" exits 0 with a message on reuse.
-    if disable_rollback:
-        argv = [*argv, "--disable-rollback"]
-    rc, out, err = aws.run_aws(argv, profile, region, timeout=_DEPLOY_TIMEOUT, proc_sink=proc_sink)
-    if rc != 0 and "No changes to deploy" not in (out + err):
+    refused_zones: list[str] = []  # zones EC2 said have no capacity for the size
+    while True:
+        argv = build_deploy_argv(
+            tag=tag,
+            tier=tier,
+            vpc_id=vpc_id,
+            subnet_id=subnet_id,
+            # A NAT-routed (private) subnet must NOT get a public IP — it is unused
+            # surface and can violate SCPs that deny RunInstances-with-public-IP.
+            # An IGW subnet REQUIRES one for egress.
+            associate_public_ip="false" if egress_kind == "nat" else "true",
+            permissions_boundary_arn=boundary_arn,
+            repo="" if ship_source else repo,
+            ref="" if ship_source else ref,
+            allow_ssh_cidr=allow_ssh_cidr,
+            source_bucket=source_bucket,
+            source_key=source_key,
+            ami_id=ami_id,
+            extra_packages=extra_packages,
+            ssm_kms_key_arn=ssm_kms_key_arn,
+            extra_managed_policy_arns=extra_managed_policy_arns,
+        )
+        # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
+        # on the gateway being healthy). "No changes" exits 0 with a message on reuse.
+        if disable_rollback:
+            argv = [*argv, "--disable-rollback"]
+        rc, out, err = aws.run_aws(
+            argv, profile, region, timeout=_DEPLOY_TIMEOUT, proc_sink=proc_sink
+        )
+        if rc == 0 or "No changes to deploy" in (out + err):
+            break
         # The `aws cloudformation deploy` error is generic ("Failed to
         # create/update the stack"); the real cause is in the stack's FAILED
-        # events (which now include the on-box bootstrap log tail). Fetch and
-        # attach them so the caller sees WHY it failed, not just THAT it did.
+        # events (which include the on-box bootstrap log tail).
         failures = get_stack_failures(tag, profile, region)
-        detail = ""
-        if failures:
-            lines = "; ".join(f"{f['resource']}: {f['reason']}" for f in failures[:4])
-            detail = f" — root cause: {lines}"
-        missing = aws.map_missing_action(err)
-        # The whole stderr, so its describe-stack-events command keeps the full
-        # stack name. The remedy leads, as in aws.checked, so the dashboard's
-        # 400-character cut keeps it.
-        cause = err.strip()
-        if extra_managed_policy_arns and "iam:AttachRolePolicy" in (err + detail):
-            # A denied attach of the edition's host policies means the second
-            # launcher policy was never applied; the first already grants the one
-            # attach it allows, so its grant line would not fix this.
-            cause = (
-                "this build attaches host policies to the instance role: apply the second "
-                "launcher policy from `kirocrew cloud iam-policy --host-policies` and retry"
-                f" — {cause}"
+        zone = ec2_failure.capacity_zone(failures)
+        repeat = zone in refused_zones
+        if zone is not None and not repeat:
+            refused_zones.append(zone)
+        picked = None
+        # A new stack on a subnet the launcher picked moves to an untried zone; each
+        # pass skips one more zone. --keep-on-failure keeps the stack, so no retry.
+        stop = cancelled if cancelled is not None else (lambda: False)
+        if zone and not repeat and not (reused or explicit_subnet or disable_rollback or stop()):
+            picked = _network_in_another_zone(
+                tag, tier, profile, region, refused_zones, on_network_fallback
             )
-        else:
-            # A denial CloudFormation meets creating a resource (iam:PassRole for the
-            # instance) is only in the events. The WaitCondition's reason is the
-            # instance's own setup log, so a denial there is not the launcher's grant.
-            for f in failures:
-                if not missing and f["resource"] != "WaitCondition":
-                    missing = aws.map_missing_action(f["reason"])
-            if missing:
-                cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
-            elif refusal := _account_refusal(failures, tier):
-                cause = f"{refusal} — {cause}"
-        _cleanup_uploaded_source()
-        raise aws.AWSError(
-            f"cloudformation deploy failed: {cause}{detail}",
-            action="cloudformation:CreateStack",
-            missing_action=missing,
-            returncode=rc,
-            stderr=err,
-        )
+            # The delete takes minutes; a cancel in that time launches nothing new.
+            if picked is not None and stop():
+                picked = None
+        if picked is None:
+            _cleanup_uploaded_source()
+            raise ec2_failure.deploy_error(
+                rc=rc,
+                err=err,
+                failures=failures,
+                tier=tier,
+                extra_managed_policy_arns=extra_managed_policy_arns,
+                capacity_zones=refused_zones if zone is not None else [],
+                explicit_subnet=explicit_subnet,
+            )
+        vpc_id, subnet_id, egress_kind = picked
 
     st = describe(tag, profile, region)
     return DeployResult(
@@ -1193,9 +1200,9 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
     tags = {t.get("Key"): t.get("Value") for t in stack.get("Tags", [])}
     if tags.get(MANAGED_TAG_KEY) != "true":
         raise aws.AWSError(
-            f"a CloudFormation stack named {stack_name(tag)} already exists but is "
-            f"NOT tagged {MANAGED_TAG_KEY}=true — refusing to touch it (it wasn't "
-            "created by KiroCrew). Use a different --tag, or remove that stack.",
+            f"a CloudFormation stack named {stack_name(tag)} already exists but is NOT tagged "
+            f"{MANAGED_TAG_KEY}=true — refusing to touch it (Kiro Crew didn't create it). Remove "
+            "it, launch again from the dashboard (it picks a new name), or use a different --tag.",
             action="cloudformation:DescribeStacks",
         )
     # Also require the instance tag to match THIS tag. A managed stack that
@@ -1207,9 +1214,9 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
     inst = tags.get(INSTANCE_TAG_KEY)
     if inst is not None and inst != tag:
         raise aws.AWSError(
-            f"stack {stack_name(tag)} is {MANAGED_TAG_KEY}=true but its "
-            f"{INSTANCE_TAG_KEY} tag is '{inst}', not '{tag}' — refusing to touch "
-            "it (it isn't this launch's stack). Use the correct --tag.",
+            f"stack {stack_name(tag)} is {MANAGED_TAG_KEY}=true but its {INSTANCE_TAG_KEY} tag is "
+            f"'{inst}', not '{tag}' — refusing to touch it (it isn't this launch's stack). Launch "
+            "again from the dashboard (it picks a new name), or pass the correct --tag.",
             action="cloudformation:DescribeStacks",
         )
     return stack

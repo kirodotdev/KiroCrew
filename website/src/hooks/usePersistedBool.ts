@@ -9,7 +9,7 @@ import { safeSetItem } from '../utils/safeStorage'
  * surfaces). One shared event name carrying `{ key, value }` in `detail`;
  * listeners filter by key.
  */
-const SYNC_EVENT = 'mc:persisted-bool'
+export const SYNC_EVENT = 'mc:persisted-bool'
 
 type SyncDetail = { key: string; value: boolean }
 

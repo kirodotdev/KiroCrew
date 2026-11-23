@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from kiro_crew import change_card_mcp_server as _mcp_server_kind
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
 from kiro_crew.acp_backends import CHAT_RUNTIME_SHARING_HARNESSES
@@ -53,6 +54,9 @@ KIND_TEMPLATE_MCP_SERVER = "template.mcp_server"
 KIND_MCP_INSTALL = "mcp.install"
 KIND_MCP_ADD_CUSTOM = "mcp.add_custom"
 KIND_MCP_TOGGLE = "mcp.toggle"
+#: Add, change or remove one server on the MCP page (:mod:`kiro_crew.change_card_mcp_server`),
+#: raised only by ``request_server``.
+KIND_MCP_SERVER = _mcp_server_kind.KIND_MCP_SERVER
 KIND_CONNECTION_CONNECT = "connection.connect"
 KIND_SECRET_SAVE = "secret.save"
 KIND_TRUST_APP = "trust.app"
@@ -81,8 +85,11 @@ SELF_ONLY_KINDS = frozenset({KIND_CREWMATE_DASHBOARD_PAGE})
 #: loaded servers or the official registry plan), so an agent never names them
 #: through ``propose_change``: a caller-supplied entry would be a launch line the
 #: agent wrote. Raised only by ``POST /api/cards/agent/request-server``;
-#: :func:`list_kinds` leaves them out.
-GATEWAY_RESOLVED_KINDS = frozenset({KIND_TEMPLATE_MCP_SERVER})
+#: :func:`list_kinds` leaves them out. ``mcp.server`` and ``mcp.add_custom`` are here
+#: for the same refusal: an agent asks to change an MCP registry only through
+#: ``request_server``, which raises ``mcp.server``; ``mcp.add_custom`` cards already
+#: raised still render and apply.
+GATEWAY_RESOLVED_KINDS = frozenset({KIND_TEMPLATE_MCP_SERVER, KIND_MCP_SERVER, KIND_MCP_ADD_CUSTOM})
 #: Where a ``template.mcp_server`` entry came from (``mate_capability_catalog``'s sources).
 TEMPLATE_SERVER_SOURCES = ("gateway", "registry")
 #: The ``.crewmate`` ``formatVersion`` values this version reads. Any added
@@ -186,6 +193,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     "agent.sandbox": ("strict", "auto", "off"),
     "agent.yolo_duration": ("30m", "1h", "6h", "12h", "24h", "until_shutdown"),
     "agent.sandbox_allow_no_isolation": (False, True),
+    # On, an agent that mounts the kirocrew-dashboard server may open, read,
+    # message, stop and close the person's other sessions.
+    "agent.session_control": (False, True),
     "dashboard.tailscale.enabled": (False, True),
     "dashboard.tailscale.trust_identity": (False, True),
     "dashboard.tailscale.bind_refresh_chains": (True, False),
@@ -212,6 +222,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # Kiro's own Chromium holds none of the person's logins; ``auto`` and
     # ``user_chrome`` hand the agent the person's Chrome, signed in.
     "browser.choice": ("headless", "kiro_chromium", "auto", "user_chrome"),
+    # ``shared`` lets a chat use whatever the one browser is already signed in
+    # to; ``per_session`` gives each chat a container no other chat can see.
+    "browser.isolation": ("per_session", "shared"),
     # Off, password boxes show in the live picture.
     "browser.live.mask_passwords": (True, False),
     # On, Kiro's Chromium starts signed in to the edition's sites.
@@ -222,6 +235,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # How many live sessions one creator may hold: a higher number lets an agent
     # that opens sessions hold more of them without asking.
     "session.max_per_creator": tuple(range(MAX_PER_CREATOR_MIN, MAX_PER_CREATOR_MAX + 1)),
+    # On, a new KAS session reuses a stored remote MCP sign-in without asking.
+    "agent.kas_persist_mcp_sign_in": (False, True),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen
@@ -266,7 +281,10 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "computer_use.max_tree_nodes",
         "computer_use.screenshot_max_px",
         # A list, so no card reaches it (see ``skills.extra_paths``). Loopback
-        # ``host:port`` entries only, for the Preview tab, which no agent drives.
+        # ``host:port`` entries for the Preview tab, and also the only loopback
+        # addresses the agent's ``browser`` tool may open, so adding one widens
+        # what an agent may reach: if cards ever carry list values this moves to a
+        # widening class.
         "dashboard.browser_local_origins",
         # Which surface the quick-search shortcut opens; both show only what the
         # dashboard already shows this person.
@@ -305,6 +323,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.user_role",
         "dashboard.user_role_other",
         "dashboard.user_technical_level",
+        "dashboard.warm_task_brief",
         "decisions.bucket",
         "decisions.model_route.complex",
         "decisions.model_route.medium",
@@ -509,12 +528,14 @@ KINDS: dict[str, KindDef] = {
         ),
         KindDef(
             KIND_CREWMATE_CREATE,
-            "Create a Bot that owns a goal, optionally on a daily/cron schedule.",
+            "Create a Bot that owns a goal, optionally on a daily/cron schedule and "
+            "pinned to a `model` (an id from the model list; omitted or 'auto' inherits).",
             _obj(
                 {
                     "name": {"type": "string", "maxLength": _CREWMATE_NAME_MAX},
                     "goal": {"type": "string", "maxLength": _CREWMATE_GOAL_MAX},
                     "schedule": _obj(dict(_CRON_FIELDS), ["cron_expr"]),
+                    "model": {"type": "string", "maxLength": 64},
                 },
                 ["name", "goal"],
             ),
@@ -697,6 +718,13 @@ KINDS: dict[str, KindDef] = {
             ("enabled",),
         ),
         KindDef(
+            KIND_MCP_SERVER,
+            "Add, change or remove one MCP server on the MCP page. Raised only by "
+            "request_server.",
+            _mcp_server_kind.params_schema(),
+            _mcp_server_kind.EDITABLE,
+        ),
+        KindDef(
             KIND_TEMPLATE_MCP_SERVER,
             "Add one MCP server to an agent template, for every session on it. Raised "
             "only by request_server; the gateway resolves the server entry.",
@@ -844,6 +872,12 @@ def list_kinds() -> list[dict[str, Any]]:
         and k.id not in GATEWAY_RESOLVED_KINDS
     ]
 
+
+#: Where a ``crewmate.check_ins`` snapshot keeps the Heartbeat's active hours:
+#: the card reads them for its daily bound and never writes them, so they are
+#: neither a field below nor part of what the conflict checks compare
+#: (``dashboard.change_cards_readers.comparable_state``).
+HEARTBEAT_HOURS_KEY = "heartbeat_hours"
 
 #: The fields a ``crewmate.check_ins`` card may set.
 CHECK_IN_FIELDS = (
@@ -1386,11 +1420,17 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
             f["timezone"] = _clean_str(fields, "timezone", max_len=64, allow_empty=True) or ""
         return {"id": job_id, "fields": f}
     if kind == KIND_CREWMATE_CREATE:
-        _only(p, {"name", "goal", "schedule"})
+        _only(p, {"name", "goal", "schedule", "model"})
         out = {
             "name": _member_name(p, "name", max_len=_CREWMATE_NAME_MAX),
             "goal": _clean_str(p, "goal", max_len=_CREWMATE_GOAL_MAX),
         }
+        # Entitlement is judged where the pin is written: the create POST runs
+        # the same model check crewmate.update's PUT does, so an id this account
+        # cannot serve fails the card's first step and no Bot is made.
+        model = _clean_str(p, "model", required=False, max_len=64, allow_empty=True)
+        if model:
+            out["model"] = model
         schedule = p.get("schedule")
         if schedule is not None:
             if not isinstance(schedule, dict):
@@ -1480,6 +1520,10 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
                 raise _fail("invalid_param", "operation action must be set, remove or inherit")
             if not isinstance(op.get("section"), str) or not isinstance(op.get("id"), str):
                 raise _fail("invalid_param", "operation needs section and id")
+            if op["section"] == "toolsSettings":
+                # A Bot's tool settings (its blocked commands among them) come off
+                # only by a person's own Remove in its Abilities settings.
+                raise _fail("invalid_param", "a Bot's tool settings are not changed by a card")
             if op["action"] == "set" and "value" not in op:
                 raise _fail("invalid_param", "a set operation needs a value")
             clean_ops.append(copy.deepcopy(op))
@@ -1658,6 +1702,8 @@ def validate_params(kind: str, params: Any) -> dict[str, Any]:
         if not isinstance(enable, bool):
             raise _fail("invalid_param", "'enable' must be a boolean")
         return {"servers": clean, "enable": enable}
+    if kind == KIND_MCP_SERVER:
+        return _mcp_server_kind.clean_params(p)
     if kind == KIND_MCP_TOGGLE:
         _only(p, {"name", "server", "tool", "enabled"})
         enabled = _clean_bool(p, "enabled")

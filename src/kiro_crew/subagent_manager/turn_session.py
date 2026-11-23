@@ -2,13 +2,14 @@
 
 ``run_turn._run_inner_impl`` calls these in order: the tool-approval policy the run
 inherits (``resolve_parent_policy``), the session it runs on, shared or dedicated
-(``acquire_session``), the cleanup identity of that session (``capture_cleanup_identity``),
+(``acquire_session``, which holds a new session until its agent spec's MCP servers report,
+at most ``UNATTENDED_MCP_WAIT_SECS``), the cleanup identity of that session (``capture_cleanup_identity``),
 the child's memory, crew activity and folder steering (``prepare_child_context``), the
 records and the spawn event a restart and the panel read (``persist_spawn_records``), and
 the ``AgentSpawn`` and ``UserPromptSubmit`` hooks with their clock bookkeeping
 (``fire_prompt_hooks``). Each takes the run's ``RunEventCoordinator`` as ``self``, except
-``spec_builtin_tools_notice``, the line naming what of a named agent's ``tools`` and
-``model`` a claude session does not apply, which needs only the session.
+``spec_builtin_tools_notice``, the line naming a named agent's ``model`` pin a claude
+session does not apply, which needs only the session.
 
 The turn body runs on ``kiro_crew.subagent``'s globals (``bind_component_globals``), and
 tests patch names there (``sel``, ``time``, ``_redact``, the session re-projection
@@ -31,6 +32,8 @@ import sys
 from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
+
+from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_declared_mcp
 
 if TYPE_CHECKING:
     from ..subagent import SubagentInfo
@@ -373,6 +376,11 @@ async def acquire_session(
             self._manager._sessions, session_key, agent, await _claim(), _claim
         )
         is_cc = self._manager._is_cc_provider(client)
+    if is_new:
+        # A spawn prompts the moment its session opens, and nobody reconnects a
+        # slow server mid-run: hold the first prompt (bounded) for the agent
+        # spec's servers, as every other unattended run does.
+        await wait_for_declared_mcp(client, UNATTENDED_MCP_WAIT_SECS)
     return client, is_new, _resumed, is_cc, use_session_sharing
 
 
@@ -720,7 +728,7 @@ async def spec_builtin_tools_notice(
     client: Any, info: SubagentInfo, session_key: str, *, fresh: bool
 ) -> str:
     """The block a spawn's new session's first prompt carries when its claude session
-    leaves the named agent's ``tools`` limit or ``model`` pin unapplied
+    leaves the named agent's ``model`` pin unapplied
     (``agent_sdk.spec_builtin_tools``).
 
     Only on a *fresh* session, so a continuation or a respawn does not repeat it.

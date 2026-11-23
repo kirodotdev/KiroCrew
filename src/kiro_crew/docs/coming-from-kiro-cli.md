@@ -12,7 +12,7 @@ sessions.
 
 | From kiro-cli | In Kiro Crew |
 |---|---|
-| Your login (`kiro-cli login`) | Used as is. On the default harness you can instead sign in to Kiro from **Settings → Agent Harness**, and Crew then holds that sign-in itself. |
+| Your login (`kiro-cli login`) | Used as is. On the default harness you can instead sign in to Kiro from the **Kiro account** tab in Settings, and Crew then holds that sign-in itself. |
 | Agents in `~/.kiro/agents/` and a project's `.kiro/agents/` | Switch a chat to one with `/agent <name>`; agents in `~/.kiro/agents/` are also offered by the agent chip under the message box. A project agent needs the chat to have that project as its folder. A JSON agent runs on both Kiro harnesses; a markdown agent needs the default one ([Agents](agents.md#markdown-agents)). |
 | MCP servers in `~/.kiro/settings/mcp.json` | Merged into the default `kirocrew` agent. A custom agent keeps its own `mcpServers`; on the Kiro CLI harness it also loads `~/.kiro/settings/mcp.json` unless it sets `"includeMcpJson": false`. On the default harness it loads `~/.kiro/settings/mcp.json` and the workspace `.kiro/settings/mcp.json` only when it sets `"includeMcpJson": true` (or `useLegacyMcpJson`). An agent file you already had when this rule reached KAS, and that sets neither key, keeps loading those servers on KAS. Add more on the **MCP Servers** page (`/mcp`, see [Connections](connections.md)). |
 | Steering in `~/.kiro/steering/` and `<project>/.kiro/steering/` | Loaded by kiro-cli, as in the terminal. Project steering needs the chat to have that project as its folder (see below). |

@@ -81,7 +81,7 @@ def refuse_boot(failed: str, fix: str) -> NoReturn:
     desktop user.
     """
     logger.critical("LTS boot refused: %s. %s", failed, fix)
-    print(f"❌ Kiro Crew cannot start: {failed}.\n   {fix}", file=sys.stderr, flush=True)
+    print(f"Error: Kiro Crew cannot start: {failed}.\n   {fix}", file=sys.stderr, flush=True)
     raise SystemExit(EXIT_CODE)
 
 

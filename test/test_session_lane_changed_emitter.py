@@ -14,6 +14,7 @@ test that passes dicts of its own making.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from unittest.mock import patch
 
 import chat_tags_helpers
@@ -447,3 +448,75 @@ class TestTheRouteActuallyFiresTheEvent:
             with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
                 resp = await client.put("/api/chat/slots/s1/tags", json={"tags": [done["id"]]})
             assert resp.status == 200
+
+
+class TestANewSessionInheritingAFolderLane:
+    """``POST /api/chat/slots`` is the third emit site.
+
+    A new session filed into a folder copies the folder's tags, and a status tag
+    among them puts it in that lane with neither tag route running. Driven
+    through the create route with the vocabulary built by the real tag route, for
+    the id-versus-object reason in the module docstring.
+    """
+
+    @staticmethod
+    async def _lane_folder(client, state, *, status: bool) -> str:
+        tag = await (
+            await client.post("/api/chat/tags", json={"name": "Done", "status": status})
+        ).json()
+        label = await (await client.post("/api/chat/tags", json={"name": "plain"})).json()
+        state._folders.append(
+            {"id": "f1", "name": "Review", "order": 0, "tags": [tag["id"], label["id"]]}
+        )
+        return tag["id"]
+
+    @staticmethod
+    def _app(state):
+        from kiro_crew.dashboard.chat import api_chat_slot_create
+
+        app = _make_tags_app(state)
+        app.router.add_post("/api/chat/slots", api_chat_slot_create)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_inheriting_a_folder_lane_fires_once(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        _store, seen = _recording_store(tmp_path, monkeypatch)
+        async with TestClient(TestServer(self._app(state))) as client:
+            done = await self._lane_folder(client, state, status=True)
+            resp = await client.post("/api/chat/slots", json={"name": "fresh", "folder_id": "f1"})
+            assert resp.status == 200
+            rows = await _fired(seen)
+        assert len(rows) == 1, f"expected exactly one fire, got {rows}"
+        assert rows[0]["slot"] == "fresh"
+        assert rows[0]["added"] == [done]
+        assert rows[0]["removed"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "case", ["no lane in the folder", "already-open session", "save failed"]
+    )
+    async def test_a_create_that_enters_no_lane_fires_nothing(self, tmp_path, monkeypatch, case):
+        """A label-only folder is no lane change, an already-open session inherits
+        nothing, and a save the create swallowed is a lane entry not on disk."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        _store, seen = _recording_store(tmp_path, monkeypatch)
+        async with TestClient(TestServer(self._app(state))) as client:
+            if case == "already-open session":
+                first = await client.post("/api/chat/slots", json={"name": "fresh"})
+                assert first.status == 200
+            await self._lane_folder(client, state, status=case != "no lane in the folder")
+            failing_save = patch(
+                "kiro_crew.dashboard.chat_persistence._save_slot_to_history",
+                side_effect=OSError("disk went away"),
+            )
+            with failing_save if case == "save failed" else contextlib.nullcontext():
+                resp = await client.post(
+                    "/api/chat/slots", json={"name": "fresh", "folder_id": "f1"}
+                )
+            assert resp.status == 200
+            assert await _fired(seen) == []
+        if case == "save failed":
+            assert state._slots["fresh"]._dirty is True

@@ -1,8 +1,8 @@
 """The Kiro telemetry destination the public build ships (``metrics/kiro_export.py``).
 
-In the public, non-LTS build it exports under the recording default, once the
-notice that names it (version 3) was shown. What
-already worked and must keep working, pinned here:
+In the public, non-LTS build it exports whenever local recording is on, the
+recording default included, with no acknowledgement waited for. What must keep
+working, pinned here:
 
 * An operator's own entries still need the written opt-in, and keep their place
   first (``TestWhoSends``, ``TestProvider``).
@@ -18,7 +18,6 @@ loopback receiver standing in for the endpoint.
 
 from __future__ import annotations
 
-import asyncio
 import gzip
 import hashlib
 import http.server
@@ -68,21 +67,11 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     pm.reset_for_testing()
 
 
-def _write_config(
-    home: Path,
-    telemetry: dict,
-    ack: int = kiro_export.NOTICE_VERSION,
-    kiro_ack: "int | None" = None,
-) -> None:
-    """Write *telemetry*, with the privacy notice acknowledged at version *ack*.
-
-    *kiro_ack* is the Kiro-specific acknowledgement, the same as *ack* unless given.
-    """
-    dashboard = {
-        "privacy_ack_version": ack,
-        "kiro_telemetry_ack_version": ack if kiro_ack is None else kiro_ack,
-    }
-    doc = {"telemetry": telemetry, "dashboard": dashboard}
+def _write_config(home: Path, telemetry: dict, dashboard: "dict | None" = None) -> None:
+    """Write *telemetry* (and *dashboard*, when given) as the whole config file."""
+    doc: dict = {"telemetry": telemetry}
+    if dashboard is not None:
+        doc["dashboard"] = dashboard
     (home / "config.json").write_text(json.dumps(doc), encoding="utf-8")
 
 
@@ -99,29 +88,16 @@ def _built(monkeypatch, home: Path) -> "tuple[bool, list[str]]":
 class TestWhoSends:
     """One row per line of the table in docs/guides/telemetry-otlp-export.md."""
 
-    def test_a_new_install_exports_once_the_notice_was_shown(self, home, monkeypatch):
+    def test_a_new_install_exports_with_no_acknowledgement(self, home, monkeypatch):
         assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
 
-    def test_a_notice_ack_that_did_not_name_it_does_not_count(self, home, monkeypatch):
-        """Acknowledged under a non-default home, where the chapter never named it."""
-        _write_config(home, {}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
-        assert _built(monkeypatch, home) == (True, [])
-
-    def test_nothing_is_sent_before_the_notice(self, home, monkeypatch):
-        _write_config(home, {}, ack=kiro_export.NOTICE_VERSION - 1)
-        assert _built(monkeypatch, home) == (True, [])
-
-    def test_the_printed_headless_kiro_notice_counts(self, home, monkeypatch):
-        _write_config(home, {}, ack=0)
-        (home / "kiro_telemetry_notice_shown").write_text(f"{kiro_export.NOTICE_VERSION}\n")
+    @pytest.mark.parametrize("ack", [0, 2, 3, 4])
+    def test_a_stored_acknowledgement_changes_nothing(self, home, monkeypatch, ack):
+        """Configs written by builds that showed a dashboard notice still load."""
+        dashboard = {"privacy_acked": False, "privacy_ack_version": ack}
+        dashboard["kiro_telemetry_ack_version"] = ack
+        _write_config(home, {}, dashboard)
         assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
-
-    @pytest.mark.parametrize("stamp", ["1\n", f"{kiro_export.NOTICE_VERSION}\n"])
-    def test_the_generic_cli_stamp_does_not_count(self, home, monkeypatch, stamp):
-        """It is also written by a dashboard start and by the local-only line."""
-        _write_config(home, {}, ack=0)
-        (home / "usage_notice_shown").write_text(stamp)
-        assert _built(monkeypatch, home) == (True, [])
 
     def test_an_upgrade_with_the_heartbeat_on_exports(self, home, monkeypatch):
         _write_config(home, {"beacon_enabled": True})
@@ -130,11 +106,6 @@ class TestWhoSends:
     def test_an_upgrade_with_the_heartbeat_off_records_nothing(self, home, monkeypatch):
         _write_config(home, {"beacon_enabled": False})
         assert _built(monkeypatch, home) == (False, [])
-
-    def test_a_written_true_under_an_older_notice_sends_nothing(self, home, monkeypatch):
-        """Settings wrote it when the switch said metrics stay on this machine."""
-        _write_config(home, {"enabled": True}, ack=kiro_export.NOTICE_VERSION - 1)
-        assert _built(monkeypatch, home) == (True, [])
 
     def test_a_written_true_exports(self, home, monkeypatch):
         _write_config(home, {"enabled": True})
@@ -169,21 +140,10 @@ class TestWhoSends:
         _write_config(home, {"enabled": True, "otlp_endpoints": [{"name": "ops", "endpoint": OPS}]})
         assert _built(monkeypatch, home) == (True, ["ops", kiro_export.DESTINATION_NAME])
 
-    def test_the_fingerprint_reads_the_snapshot_the_build_used(self, home):
-        """An acknowledgement written mid-build must still move the next recheck."""
-        _write_config(home, {}, ack=kiro_export.NOTICE_VERSION - 1)
-        snapshot = KiroCrewConfig.load()
-        before = pm._endpoints_key(snapshot.telemetry, full_cfg=snapshot)
-        _write_config(home, {})
-        assert pm._endpoints_key(snapshot.telemetry, full_cfg=snapshot) == before
-        fresh = KiroCrewConfig.load()
-        assert pm._endpoints_key(fresh.telemetry, full_cfg=fresh) != before
-
-    def test_showing_the_notice_moves_the_rebuild_fingerprint(self, home):
-        _write_config(home, {}, ack=kiro_export.NOTICE_VERSION - 1)
+    def test_the_rebuild_fingerprint_ignores_the_dashboard_section(self, home):
         before = pm._endpoints_key(TelemetryConfig())
-        _write_config(home, {})
-        assert pm._endpoints_key(TelemetryConfig()) != before
+        _write_config(home, {}, {"privacy_ack_version": 4, "kiro_telemetry_ack_version": 4})
+        assert pm._endpoints_key(TelemetryConfig()) == before
 
 
 class TestSwitches:
@@ -220,28 +180,22 @@ class TestSwitches:
         _built(monkeypatch, home)
         assert kiro_export.last_build_kept() is True
         pm.reset_for_testing()
-        _write_config(home, {}, ack=0)
+        monkeypatch.setenv("CI", "true")
         _built(monkeypatch, home)
         assert kiro_export.last_build_kept() is False
 
-    @pytest.mark.parametrize("terminal", [True, False])
-    def test_cli_enable_turns_recording_on_and_names_it(self, home, monkeypatch, capsys, terminal):
-        """The Kiro acknowledgement is written only after its line reached a terminal."""
+    def test_cli_enable_turns_recording_on_and_names_it(self, home, monkeypatch, capsys):
+        """It writes the two switches and records no acknowledgement."""
         import argparse
-        import sys
 
         from kiro_crew import cli_commands as cc
 
         monkeypatch.setattr(beacon, "is_governance_pinned_off", lambda **kw: False)
-        monkeypatch.setattr(sys.stdout, "isatty", lambda: terminal)
-        _write_config(home, {"enabled": False}, ack=0)
+        _write_config(home, {"enabled": False})
         cc._telemetry(argparse.Namespace(telemetry_action="enable"))
         stored = json.loads((home / "config.json").read_text(encoding="utf-8"))
-        assert stored["telemetry"]["enabled"] is True
-        assert stored["dashboard"]["privacy_ack_version"] == beacon.PRIVACY_NOTICE_VERSION
-        assert stored["dashboard"]["kiro_telemetry_ack_version"] == (
-            beacon.PRIVACY_NOTICE_VERSION if terminal else 0
-        )
+        assert stored["telemetry"] == {"enabled": True, "beacon_enabled": True}
+        assert "dashboard" not in stored
         assert "sent to Kiro telemetry" in capsys.readouterr().out
 
     def test_cli_enable_beside_a_waiting_collector_names_the_kiro_export(
@@ -259,73 +213,25 @@ class TestSwitches:
         assert "Product usage metrics are sent to Kiro telemetry" in out
 
 
-class _Terminal(io.StringIO):
-    """A stream that reports itself as a terminal, as an interactive stderr does."""
-
-    def isatty(self) -> bool:
-        return True
-
-
 class TestNotice:
-    def test_the_current_notice_names_this_destination(self):
-        assert beacon.PRIVACY_NOTICE_VERSION >= kiro_export.NOTICE_VERSION
+    """The start-up line is a disclosure, never a gate on this destination."""
 
-    def test_a_headless_start_names_it_and_stamps_it(self, home):
+    def test_a_start_names_it_and_stamps_it(self, home):
         from kiro_crew.metrics import notice
 
-        _write_config(home, {}, ack=0)
-        out = _Terminal()
-        assert notice.maybe_print_notice(stream=out, headless=True) is True
+        out = io.StringIO()
+        assert notice.maybe_print_notice(stream=out) is True
         assert out.getvalue().strip() == notice.NOTICE_TEXT_KIRO
         assert notice.stamped_version() == beacon.PRIVACY_NOTICE_VERSION
-        assert notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == kiro_export.NOTICE_VERSION
-        assert kiro_export.notice_shown() is True
-        assert notice.maybe_print_notice(stream=io.StringIO(), headless=True) is False
+        assert notice.maybe_print_notice(stream=io.StringIO()) is False
 
-    def test_a_headless_line_into_a_log_does_not_count_as_told(self, home):
-        """``docker logs``, a journal or a redirected file: nobody saw it."""
+    def test_export_does_not_wait_for_the_line(self, home, monkeypatch):
         from kiro_crew.metrics import notice
 
-        _write_config(home, {}, ack=0)
-        assert notice.maybe_print_notice(stream=io.StringIO(), headless=True) is True
-        assert notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == 0
-        assert kiro_export.notice_shown() is False
+        assert notice.stamped_version() == 0
+        assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
 
-    def test_a_line_into_a_log_is_not_repeated_on_every_start(self, home):
-        """A cron job or a service prints it once, not at every run."""
-        from kiro_crew.metrics import notice
-
-        _write_config(home, {}, ack=0)
-        assert notice.maybe_print_notice(stream=io.StringIO(), headless=True) is True
-        assert notice.maybe_print_notice(stream=io.StringIO(), headless=True) is False
-        # A person at a terminal later still gets the Kiro line.
-        out = _Terminal()
-        assert notice.maybe_print_notice(stream=out, headless=True) is True
-        assert out.getvalue().strip() == notice.NOTICE_TEXT_KIRO
-        assert kiro_export.notice_shown() is True
-
-    def test_a_generic_ack_still_owes_the_kiro_line(self, home):
-        """A redirected `telemetry enable` wrote privacy_ack_version but named nothing."""
-        from kiro_crew.metrics import notice
-
-        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
-        out = _Terminal()
-        assert notice.maybe_print_notice(stream=out, headless=True) is True
-        assert out.getvalue().strip() == notice.NOTICE_TEXT_KIRO
-        assert kiro_export.notice_shown() is True
-
-    def test_the_chapter_shows_again_while_kiro_telemetry_is_owed(self, home):
-        from kiro_crew.dashboard.handlers import core as core_handlers
-
-        _write_config(home, {}, ack=beacon.PRIVACY_NOTICE_VERSION, kiro_ack=0)
-        assert core_handlers._theme_payload(KiroCrewConfig.load())["privacy_ack_version"] == 0
-        _write_config(home, {})
-        assert (
-            core_handlers._theme_payload(KiroCrewConfig.load())["privacy_ack_version"]
-            == beacon.PRIVACY_NOTICE_VERSION
-        )
-
-    def test_a_failed_print_does_not_count_as_told(self, home):
+    def test_a_failed_print_still_stamps_and_exports(self, home, monkeypatch):
         from kiro_crew.metrics import notice
 
         class _Closed:
@@ -335,175 +241,48 @@ class TestNotice:
             def flush(self):
                 raise BrokenPipeError
 
-            def isatty(self):
-                return True
+        assert notice.maybe_print_notice(stream=_Closed()) is True
+        assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
 
-        _write_config(home, {}, ack=0)
-        notice.maybe_print_notice(stream=_Closed(), headless=True)
-        assert notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == 0
-        assert kiro_export.notice_shown() is False
-
-    def test_a_headless_start_after_a_dashboard_start_still_tells(self, home):
+    def test_the_local_only_line_where_it_is_not_listed(self, home, monkeypatch):
         from kiro_crew.metrics import notice
 
-        _write_config(home, {}, ack=0)
-        assert notice.maybe_print_notice(stream=io.StringIO()) is True
-        out = _Terminal()
-        assert notice.maybe_print_notice(stream=out, headless=True) is True
-        assert out.getvalue().strip() == notice.NOTICE_TEXT_KIRO
-        assert kiro_export.notice_shown() is True
-
-    def test_a_dashboard_start_does_not_count_as_told(self, home):
-        """The stderr line of a desktop or dashboard gateway goes to a log."""
-        from kiro_crew.metrics import notice
-
-        _write_config(home, {}, ack=0)
-        assert notice.maybe_print_notice(stream=io.StringIO()) is True
-        assert notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == 0
-        assert kiro_export.notice_shown() is False
-
-    def test_the_local_only_line_does_not_count_as_told(self, home, monkeypatch):
-        from kiro_crew.metrics import notice
-
-        _write_config(home, {}, ack=0)
         monkeypatch.setenv("CI", "true")
         out = io.StringIO()
-        assert notice.maybe_print_notice(stream=out, headless=True) is True
+        assert notice.maybe_print_notice(stream=out) is True
         assert out.getvalue().strip() == notice.NOTICE_TEXT
-        assert notice.stamped_version(notice.KIRO_NOTICE_STAMP_FILE) == 0
 
     def test_an_older_stamp_prints_again(self, home):
         from kiro_crew.metrics import notice
 
-        _write_config(home, {}, ack=0)
         (home / notice.NOTICE_STAMP_FILE).write_text("1\n")
         assert notice.maybe_print_notice(stream=io.StringIO()) is True
 
-    def test_an_unreadable_config_is_not_shown(self, home, monkeypatch):
-        def boom(cls):
-            raise OSError("unreadable")
-
-        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(boom))
-        assert kiro_export.notice_shown() is False
-
-
-class TestOffOffer:
-    """Off only by a written false older builds put in every new config."""
-
-    @pytest.fixture(autouse=True)
-    def _default_home(self, _floor_monkeypatch):
-        # The offer is asked only on the default data home, and the private test home
-        # is not one, so these tests fake it. The shared ``home`` fixture does not:
-        # ``destinations()`` lists the destination on any home.
-        _floor_monkeypatch.setattr(beacon, "is_default_home", lambda: True)
-
-    def _old_default(self, home, **telemetry):
-        _write_config(home, {"enabled": False, **telemetry}, ack=2, kiro_ack=0)
-
-    def test_it_is_due_and_changes_nothing(self, home, monkeypatch):
-        from kiro_crew.dashboard.handlers import core as core_handlers
-
-        self._old_default(home)
-        cfg = KiroCrewConfig.load()
-        assert kiro_export.off_offer_due(cfg) is True
-        # The chapter shows: the boot payload reports the stored, older version.
-        assert core_handlers._theme_payload(cfg)["privacy_ack_version"] < kiro_export.NOTICE_VERSION
-        assert _built(monkeypatch, home) == (False, [])
-
-    def test_the_collection_status_reports_it(self, home):
-        from aiohttp.test_utils import make_mocked_request
-
-        from kiro_crew.dashboard.handlers import telemetry as tel
-
-        self._old_default(home)
-        resp = asyncio.run(tel.api_collection_status(make_mocked_request("GET", "/x")))
-        assert json.loads(resp.body)["off_offer"] is True
-
-    @pytest.mark.parametrize(
-        "case",
-        [
-            "dnt",
-            "env",
-            "heartbeat_env",
-            "heartbeat_off",
-            "acked",
-            "unset",
-            "lts",
-            "ci",
-            "home",
-            "collector",
-            "overlay",
-            "policy",
-        ],
-    )
-    def test_it_is_not_due(self, home, monkeypatch, case):
-        from kiro_crew.dashboard.handlers import core as core_handlers
-
-        self._old_default(home)
-        if case == "dnt":
-            monkeypatch.setenv("DO_NOT_TRACK", "1")
-        elif case == "env":
-            monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
-        elif case == "heartbeat_env":
-            monkeypatch.setenv("KIROCREW_TELEMETRY_DISABLED", "1")
-        elif case == "heartbeat_off":
-            self._old_default(home, beacon_enabled=False)
-        elif case == "acked":
-            _write_config(home, {"enabled": False}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
-        elif case == "unset":
-            _write_config(home, {}, ack=2, kiro_ack=0)
-            monkeypatch.setattr(pm, "_consent_enabled", lambda tel: False)
-        elif case == "lts":
-            monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
-        elif case == "ci":
-            monkeypatch.setenv("CI", "true")
-        elif case == "home":
-            # Dev homes still export (destinations() stays listed); they are not asked.
-            listed_rows = kiro_export.destinations()
-            assert listed_rows
-            monkeypatch.setattr(kiro_export, "destinations", lambda: listed_rows)
-            monkeypatch.setattr(beacon, "is_default_home", lambda: False)
-        elif case == "collector":
-            self._old_default(home, otlp_endpoints=[{"name": "ops", "endpoint": OPS}])
-        elif case == "overlay":
-            (home / "config.local.json").write_text(json.dumps({"telemetry": {"enabled": False}}))
-        else:
-            monkeypatch.setattr(beacon, "is_governance_pinned_off", lambda **kw: True)
-        cfg = KiroCrewConfig.load()
-        assert kiro_export.off_offer_due(cfg) is False
-        if case not in ("unset", "lts"):
-            assert core_handlers._theme_payload(cfg)["privacy_ack_version"] >= 3
-
-    def test_turn_on_records_and_exports(self, home, monkeypatch):
-        _write_config(home, {"enabled": True}, ack=kiro_export.NOTICE_VERSION)
-        assert kiro_export.off_offer_due() is False
-        assert _built(monkeypatch, home) == (True, [kiro_export.DESTINATION_NAME])
-
-    def test_keep_off_is_not_asked_again_and_sends_nothing(self, home, monkeypatch):
-        _write_config(home, {"enabled": False}, ack=kiro_export.NOTICE_VERSION, kiro_ack=0)
-        assert kiro_export.off_offer_due() is False
-        assert _built(monkeypatch, home) == (False, [])
-
-    def test_a_headless_terminal_start_prints_the_line_once(self, home):
+    def test_a_current_stored_acknowledgement_counts_as_told(self, home):
         from kiro_crew.metrics import notice
 
-        self._old_default(home)
-        out = _Terminal()
-        assert notice.maybe_print_notice(stream=out, headless=True) is True
-        assert out.getvalue().strip() == notice.OFFER_TEXT
-        assert "kirocrew telemetry enable" in notice.OFFER_TEXT
-        assert notice.maybe_print_notice(stream=_Terminal(), headless=True) is False
+        _write_config(home, {}, {"privacy_ack_version": beacon.PRIVACY_NOTICE_VERSION})
+        assert notice.maybe_print_notice(stream=io.StringIO()) is False
+
+    @pytest.mark.parametrize("value", [False, None])
+    def test_recording_off_prints_nothing(self, home, value):
+        """A written false (an older build's default included) stays off, unasked."""
+        from kiro_crew.metrics import notice
+
+        _write_config(home, {"enabled": value})
+        out = io.StringIO()
+        assert notice.maybe_print_notice(stream=out) is False
+        assert out.getvalue() == ""
         stored = json.loads((home / "config.json").read_text(encoding="utf-8"))
-        assert stored["telemetry"]["enabled"] is False
+        assert stored["telemetry"]["enabled"] is value
 
-    @pytest.mark.parametrize("headless", [True, False])
-    def test_no_line_into_a_log_or_on_a_dashboard_start(self, home, headless):
+    def test_the_removed_gates_are_gone(self):
         from kiro_crew.metrics import notice
 
-        self._old_default(home)
-        stream = io.StringIO() if headless else _Terminal()
-        assert notice.maybe_print_notice(stream=stream, headless=headless) is False
-        assert stream.getvalue() == ""
+        for name in ("notice_shown", "off_offer_due", "NOTICE_VERSION"):
+            assert not hasattr(kiro_export, name)
+        for name in ("KIRO_NOTICE_STAMP_FILE", "OFFER_TEXT", "OFFER_STAMP_FILE"):
+            assert not hasattr(notice, name)
 
 
 class TestProvider:

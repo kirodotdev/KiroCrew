@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,6 +17,7 @@ from browser_live_helpers import (
 )
 
 from kiro_crew.browser_harness import screencast as sc
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── wire shape ─────────────────────────────────────────────────────────────
 
@@ -70,7 +72,7 @@ def test_the_ladder_is_fps_steps_times_pictures() -> None:
     assert sc.LADDER[0] == sc.Rung(60, 60, 1280)
     assert sc.LADDER[sc.rung_index(2, 6)] == sc.Rung(5, 40, 800)
     # Takeover caps the frame rate only: the picture is the sharpest one.
-    assert sc.LADDER[sc.TAKEOVER_RUNG] == sc.Rung(15, 60, 1280)
+    assert sc.LADDER[sc.TAKEOVER_RUNG] == sc.Rung(60, 60, 1280)
 
 
 def test_live_config_reads_browser_live_with_defaults() -> None:
@@ -85,7 +87,7 @@ def test_live_config_reads_browser_live_with_defaults() -> None:
     # max_fps 30 floors the frame rate at its step; quality "low" floors the picture.
     assert (live.fps_floor(), live.picture_floor()) == (2, 2)
     assert live.best_rung() == sc.rung_index(2, 2) and live.settles is False
-    assert sc.LiveConfig(max_fps=15).fps_floor() == sc.TAKEOVER_FPS_STEP
+    assert sc.LiveConfig(max_fps=30).fps_floor() == sc.FPS_STEPS.index(30)
     assert sc.LiveConfig().settles and sc.LiveConfig(quality="high").settles
     assert not sc.LiveConfig(quality="medium").settles
     bad = SimpleNamespace(browser=SimpleNamespace(live=SimpleNamespace(max_fps=7, quality="x")))
@@ -122,6 +124,34 @@ def test_late_frames_on_a_fast_link_lower_the_fps_one_step_and_keep_the_picture(
     assert (ctrl.picture, ctrl.fps_step) == (0, 1)
 
 
+def test_a_busy_card_that_acks_some_frames_late_never_drops_a_fast_link_below_30_fps() -> None:
+    """r19 (video review, GitHub undo while the Bot worked): the dashboard, busy with
+    the Bot's turn, acked a quarter of the frames late; the window's average read as a
+    slow link and the loopback stream fell to 5 fps. The link is what the fast frames
+    show, and late acks alone never take the rate below 30 fps."""
+    ctrl = sc.AdaptiveController()
+    for _ in range(6):
+        _feed(ctrl, 45, 40_000, 0.002)
+        _feed(ctrl, 15, 40_000, 0.3)  # the card was busy
+        ctrl.tick()
+    assert sc.FPS_STEPS[ctrl.fps_step] >= 30, sc.FPS_STEPS[ctrl.fps_step]
+
+
+@pytest.mark.asyncio
+async def test_every_ack_late_steps_below_30_fps_however_fast_the_socket_write() -> None:
+    """A slow remote link takes every frame into the socket buffer at once and acks
+    each one late. The link is read from the acks, so the rate falls below 30 fps
+    and the bottom step can lower the picture."""
+    stream, relay, _clock, _sink = make_stream(
+        ack_on_arrival=False, config=sc.LiveConfig(mask_passwords=False)
+    )
+    await stream.start()
+    for _ in range(4):
+        await relay.on_event(frame_event(make_jpeg(1280, 768)))
+    stream.controller.tick()
+    assert sc.FPS_STEPS[stream.controller.fps_step] < 30, sc.FPS_STEPS[stream.controller.fps_step]
+
+
 def test_a_slow_link_costs_frame_rate_and_leaves_the_picture() -> None:
     ctrl = sc.AdaptiveController()
     # 40 kB frames taking 50 ms each: an 800 kB/s link. 60 fps would need 2.4 MB/s.
@@ -150,6 +180,41 @@ def test_a_bursty_high_rtt_link_never_changes_the_picture() -> None:
             pictures.add(ctrl.picture)
     assert pictures == {0}
     assert sc.FPS_STEPS[ctrl.fps_step] == 5
+
+
+def test_still_windows_after_a_busy_page_bring_the_frame_rate_back_on_a_fast_link() -> None:
+    """r19 (video review, GitHub undo, Paul Graham jump in the pod): a rung stepped
+    down while the page was busy stayed down through every still second, so the next
+    action played at 5 fps (0.65 s before its first change showed). Still windows
+    count as calm against the link last measured: on a fast link the rate climbs back."""
+    ctrl = sc.AdaptiveController()
+    ctrl.restore(0, len(sc.FPS_STEPS) - 1)  # left at 5 fps by a busy stretch
+    _feed(ctrl, 2, 40_000, 0.004)  # one window of a few fast frames: a 10 MB/s link
+    ctrl.tick()
+    assert sc.FPS_STEPS[ctrl.fps_step] == 5
+    for _ in range(sc.CALM_WINDOWS_UP):  # then the page is still
+        assert ctrl.tick().frames == 0
+    assert ctrl.fps_step == 0, sc.FPS_STEPS[ctrl.fps_step]
+
+
+@pytest.mark.asyncio
+async def test_the_first_frame_after_a_still_spell_and_every_input_run_at_the_fastest_step() -> (
+    None
+):
+    """r19 (video review, u5r13b f261, f281-298): a page that started moving after a
+    still spell, and a pointer moving over the page, played their first frames on the
+    slow step the stillness left. Both put the stream on its fastest step at once."""
+    stream, relay, clock, _sink = make_stream(config=sc.LiveConfig(mask_passwords=False))
+    await stream.start()
+    await relay.on_event(frame_event(make_jpeg(640, 384)))  # a fast link measured
+    stream.controller.tick()
+    stream.controller.restore(0, len(sc.FPS_STEPS) - 1)  # left on 5 fps
+    clock.now += 2.0  # nothing moved
+    await relay.on_event(frame_event(make_jpeg(640, 384)))
+    assert stream.controller.fps_step == 0, sc.FPS_STEPS[stream.controller.fps_step]
+    stream.controller.restore(0, len(sc.FPS_STEPS) - 1)
+    stream.note_input()
+    assert stream.controller.fps_step == 0, sc.FPS_STEPS[stream.controller.fps_step]
 
 
 def test_an_idle_window_is_no_evidence_and_changes_nothing() -> None:
@@ -212,13 +277,14 @@ def test_fps_climbs_only_as_far_as_the_link_covers() -> None:
 
 def test_controller_floors_clamp_the_position() -> None:
     ctrl = sc.AdaptiveController()
-    assert ctrl.set_floors(fps_floor=sc.TAKEOVER_FPS_STEP) == sc.TAKEOVER_RUNG
+    thirty = sc.FPS_STEPS.index(30)
+    assert ctrl.set_floors(fps_floor=thirty) == sc.rung_index(0, thirty)
     for _ in range(2):
         _feed(ctrl, 15, 10_000, 0.001)
         ctrl.tick()
-    assert ctrl.rung == sc.TAKEOVER_RUNG  # never climbs past the floor
-    assert ctrl.set_floors(fps_floor=0) == sc.TAKEOVER_RUNG
-    assert ctrl.set_floors(picture_floor=2) == sc.rung_index(2, sc.TAKEOVER_FPS_STEP)
+    assert ctrl.rung == sc.rung_index(0, thirty)  # never climbs past the floor
+    assert ctrl.set_floors(fps_floor=0) == sc.rung_index(0, thirty)
+    assert ctrl.set_floors(picture_floor=2) == sc.rung_index(2, thirty)
     assert ctrl.restore(0, 0) == sc.rung_index(2, 0)
 
 
@@ -499,6 +565,37 @@ async def test_no_isolated_world_keeps_the_last_boxes_and_records_no_frame_as_ma
 
 
 @pytest.mark.asyncio
+async def test_while_the_person_drives_the_card_box_query_never_holds_a_frame_back() -> None:
+    """r19 (craigslist u6m7 in the pod): the press's first frame waited 260 ms for the
+    card's box query and the thumb stood 13 frames. While the person drives the frame
+    goes with the boxes read up to a query ago, and the query runs beside it."""
+    stream, relay, clock, sink = make_stream(config=sc.LiveConfig(mask_passwords=True))
+    relay.answers["Runtime.evaluate"] = {"result": {"value": [[10, 10, 20, 20]]}}
+    await stream.start()
+    await relay.on_event(frame_event(make_jpeg(1280, 768)))
+    gate = asyncio.Event()
+    real_send = relay.send
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        if method == "Runtime.evaluate":
+            await gate.wait()
+        return await real_send(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    relay.answers["Runtime.evaluate"] = {"result": {"value": [[30, 30, 20, 20]]}}
+    clock.now += 1
+    stream.note_input()
+    clock.now += sc.MASK_MIN_INTERVAL_S + 0.05
+    await asyncio.wait_for(relay.on_event(frame_event(make_jpeg(1280, 768))), FALLBACK_TIMEOUT_SECS)
+    assert len(sink.frames) == 2 and sink.frames[1][0]["mask"] == [[10, 10, 21, 21]]
+    gate.set()
+    await asyncio.wait_for(stream._mask_refresh, FALLBACK_TIMEOUT_SECS)
+    clock.now += 0.1
+    await relay.on_event(frame_event(make_jpeg(1280, 768)))
+    assert sink.frames[2][0]["mask"] == [[30, 30, 21, 21]]
+
+
+@pytest.mark.asyncio
 async def test_mask_off_in_config_never_asks_the_page() -> None:
     stream, relay, _clock, sink = make_stream(config=sc.LiveConfig(mask_passwords=False))
     await stream.start()
@@ -507,11 +604,14 @@ async def test_mask_off_in_config_never_asks_the_page() -> None:
 
 
 @pytest.mark.asyncio
-async def test_takeover_caps_the_stream_at_fifteen_fps_and_releases_after() -> None:
+async def test_takeover_runs_the_stream_at_sixty_fps_and_releases_after() -> None:
+    """r19 (craigslist u6r13b): capped at 30 fps the acks went out on a 33 ms grid,
+    each frame waited 40-60 ms for its slot, and a dragged thumb trailed the pointer."""
     stream, relay, _clock, _sink = make_stream(config=sc.LiveConfig(mask_passwords=False))
     await stream.start()
     await stream.set_takeover(True)
     assert stream.rung == sc.TAKEOVER_RUNG
+    assert sc.LADDER[stream.rung].fps == 60
     # Frame rate only: the picture the person works on stays sharp, no restart.
     assert len(relay.methods("Page.startScreencast")) == 1
     await stream.set_takeover(False)
@@ -866,6 +966,25 @@ async def test_a_secret_field_in_a_closed_shadow_root_is_never_recorded_as_maske
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reply", ["raise", {"root": {"nodeName": 7}}])
+async def test_an_unreadable_whole_document_is_unknown_never_no_secret(reply: Any) -> None:
+    """A whole-document read that fails, or answers a tree the census cannot read,
+    is unknown (``None``): the frame is never recorded as masked."""
+    calls: list[str] = []
+
+    async def send(method: str, params: dict[str, Any]) -> Any:
+        calls.append(method)
+        if method == "DOM.getDocument" and params.get("depth") == -1:
+            if reply == "raise":
+                raise RuntimeError("target closed")
+            return reply
+        return {}
+
+    assert await sc.closed_secrets(send) is None
+    assert calls[-1] == "DOM.disable"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("named", "ok", "rec"),
     [
@@ -959,3 +1078,40 @@ async def test_an_opaque_frame_that_moved_or_went_between_queries_is_not_kept(
     await stream._mask_rects(1280, 768, force=True)
     await stream._mask_rects(1280, 768, force=True)
     assert stream._mask_ok is ok
+
+
+@pytest.mark.asyncio
+async def test_chrome_hiding_the_tab_is_logged_once_and_a_shown_report_is_not(caplog) -> None:
+    """Chrome draws no frame of a hidden tab (a covered or minimised window), so the
+    card waits whatever it asks; the log line is how a report of that is traced."""
+    stream, relay, _clock, sink = make_stream()
+    await stream.start()
+    caplog.set_level("INFO", logger=sc.logger.name)
+    shown = {"method": "Page.screencastVisibilityChanged", "params": {"visible": True}}
+    hidden = {"method": "Page.screencastVisibilityChanged", "params": {"visible": False}}
+    await relay.on_event({**shown, "sessionId": SESSION})
+    await relay.on_event({**hidden, "sessionId": "another-tab"})
+    assert "hides the tab" not in caplog.text
+    await relay.on_event({**hidden, "sessionId": SESSION})
+    assert caplog.text.count("hides the tab") == 1 and sink.frames == []
+
+
+@pytest.mark.asyncio
+async def test_a_restart_whose_card_goes_during_the_stop_leaves_the_cast_stopped() -> None:
+    """The last card hides while the restart's stop is in flight: the hide finds no
+    cast to stop, so the restart itself must not start one again."""
+    stream, relay, _clock, _sink = make_stream()
+    await stream.start()
+    send = relay.send
+
+    async def hide_during_stop(method: str, params: Any = None, session_id: Any = None) -> Any:
+        answer = await send(method, params, session_id)
+        if method == "Page.stopScreencast":
+            await stream.set_visible(False)
+        return answer
+
+    relay.send = hide_during_stop  # type: ignore[method-assign]
+    starts = len(relay.methods("Page.startScreencast"))
+    await stream.restart()
+    assert stream.casting is False
+    assert len(relay.methods("Page.startScreencast")) == starts

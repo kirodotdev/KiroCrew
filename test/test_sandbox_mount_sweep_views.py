@@ -228,16 +228,35 @@ class TestOneReadPerView:
         # pid 1, the leader, and its two threads (the leader's own tid is skipped).
         assert len(reads) == 4
 
-    @pytest.mark.skipif(not os.path.isdir("/proc/self/fd"), reason="needs /proc/self/fd")
-    def test_no_descriptor_outlives_the_scan(self, tmp_path: Path):
+    def test_no_descriptor_outlives_the_scan(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         tree = _Tree(tmp_path)
         tree.group("500", table=TABLE_A, ns="sandbox", root="/", threads=2)
         tree.group("600", table=TABLE_AB, ns="other", root="/", threads=1)
-        before = sorted(os.listdir("/proc/self/fd"))
+        # Spy the scan's own os.open/os.close pairing rather than diffing the worker's
+        # fd table, whose other threads open and close descriptors on their own.
+        proc = str(tree.proc)
+        opened: list[int] = []
+        outstanding: set[int] = set()
+        real_open, real_close = os.open, os.close
+
+        def _open(path, *args, **kwargs):  # noqa: ANN001, ANN202
+            fd = real_open(path, *args, **kwargs)
+            if os.fspath(path).startswith(proc):
+                opened.append(fd)
+                outstanding.add(fd)
+            return fd
+
+        def _close(fd):  # noqa: ANN001, ANN202
+            real_close(fd)
+            outstanding.discard(fd)
+
+        monkeypatch.setattr(os, "open", _open)
+        monkeypatch.setattr(os, "close", _close)
 
         _scan(tree)
 
-        assert sorted(os.listdir("/proc/self/fd")) == before
+        assert opened, "the scan held no view, so nothing here was checked"
+        assert outstanding == set(), f"descriptors the scan opened and never closed: {outstanding}"
 
 
 @pytest.mark.usefixtures("views_resolve")

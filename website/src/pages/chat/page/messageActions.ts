@@ -89,7 +89,7 @@ interface MessageActionsOptions {
   setSidebarPinned: Dispatch<SetStateAction<boolean>>
   sidebarAutoHidden: MutableRefObject<boolean | null>
   sidebarWidth: number
-  /** The `/embed/chat` frame, its own document with no session sidebar (not a companion chat in the main window). */
+  /** The `/embed/chat` frame or the pop-out session window: its own document with no session sidebar (not a companion chat). */
   embedChatFrame: boolean
   setRegenerating: Dispatch<SetStateAction<boolean>>
 }
@@ -164,7 +164,9 @@ export function useMessageActions({
     caseSensitive: search.caseSensitive,
     currentMessageIdx: search.currentMessageIdx,
     currentOccurrenceIdx: search.currentOccurrenceIdx,
-  }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx])
+    reveal: search.reveal,
+    revealLedger: search.revealLedger,
+  }), [search.term, search.caseSensitive, search.currentMessageIdx, search.currentOccurrenceIdx, search.reveal, search.revealLedger])
 
   const renderUserContentCb = useCallback(
     // The session triple matches what the assistant / note rows hand
@@ -248,9 +250,9 @@ export function useMessageActions({
   // sidebarWidth is the width ChatSidebar reports its root paints at, already
   // held to this view and this window (see sidebarPaintWidth); the stored
   // preference stays with the sidebar for a wider window or for board view.
-  // The embed chat frame mounts no sidebar, so the shared stored width takes no
-  // room from its row (#37165). A companion chat keeps it: it sits in the main
-  // window, whose chrome is really beside it.
+  // The embed chat frame and the pop-out session window mount no sidebar, so the
+  // shared stored width takes no room from their row. A companion chat keeps it:
+  // in the main window that chrome is really beside it.
   const effectiveSidebarWidth = embedChatFrame ? 0 : clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
   const toggleAct = useCallback(() => {
     // Opening with no tabs shows the empty-state launcher grid (no seeded

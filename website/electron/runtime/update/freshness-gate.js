@@ -1,11 +1,11 @@
 // The feed lane's check lifecycle and its freshness gate: the state that
 // describes the one electron-updater check that can be in flight (who claimed
 // it, who is waiting on it, whether anyone gave up on it), the operations that
-// move that state, and the pre-install verdict `verifyStageIsLatest` reads out
-// of it. feed-lane.js composes one gate per lane and reads the flags through it;
-// the stage (`updateReady`, `stagedVersion`, `stagedChannel`) and the feed's
-// channel stay the lane's, handed in as readers, because the gate judges them
-// and never owns them.
+// move that state, and the pre-install verdict `verifyStageIsLatest`, which
+// reads the feed itself or waits for the check in flight. feed-lane.js composes
+// one gate per lane and reads the flags through it; the stage (`updateReady`,
+// `stagedVersion`, `stagedChannel`) and the feed's channel stay the lane's,
+// handed in as readers, because the gate judges them and never owns them.
 
 // How long the pre-install freshness check (verifyStageIsLatest) may take
 // before the install proceeds on the stage it already has. Bounded on BOTH
@@ -43,7 +43,8 @@ async function withinFreshnessBound(promise) {
  * `checkSettled`; the fields are shared state, not a snapshot.
  *
  * @param {object} deps
- * @param {{checkForUpdates: Function}} deps.autoUpdater
+ * @param {{checkForUpdates: Function, isUpdaterActive: Function,
+ *   getUpdateInfoAndProvider: Function, isUpdateAvailable: Function}} deps.autoUpdater
  * @param {{info: Function, error: Function}} deps.log
  * @param {() => string} deps.currentChannel the channel the user follows now
  * @param {() => string|null} deps.feedChannel the channel the LAST configureFeed()
@@ -53,6 +54,9 @@ async function withinFreshnessBound(promise) {
  * @param {() => string} deps.configureFeed re-point the updater at the followed
  *   channel's feed
  * @param {() => Promise<void>} deps.safeCheck the lane's ordinary check
+ * @param {(version: string|null) => "not-newer"|"staged"|"newer"} deps.offerVerdict
+ *   what an offer of `version` from the followed lane means for the stage: the
+ *   verdict the lane's `update-available` handler acts on
  * @param {(state: string, extra?: object) => void} deps.emit report an update
  *   state to the renderer
  */
@@ -64,6 +68,7 @@ function createFreshnessGate({
   stage,
   configureFeed,
   safeCheck,
+  offerVerdict,
   emit,
 }) {
   const gate = {
@@ -87,9 +92,10 @@ function createFreshnessGate({
     // re-entrancy guard, for the same reason `verifyingStage` is the install
     // path's: the gate awaits the feed BEFORE `downloading` is set.
     preparingDownload: false,
-    // Suppress the automatic download of a newer build for the CURRENT verify.
-    // Set only by the quit-time caller: discovering a newer release seconds
-    // before the process exits must not start a ~350MB fetch the exit will kill.
+    // Suppress the automatic download of a newer build found by the check a
+    // verify JOINED (the gate's own read downloads nothing). Set only for the
+    // quit-time caller: discovering a newer release seconds before the process
+    // exits must not start a ~350MB fetch the exit will kill.
     verifyQuiet: false,
     // A freshness check whose bounded WAIT expired while its request stayed in
     // flight (see verifyStageIsLatest). The fail-open contract sends that caller
@@ -140,10 +146,10 @@ function createFreshnessGate({
 
   /**
    * Release the state a check owns FOR ITS WHOLE LIFETIME. Called only by the
-   * check's owner (safeCheck's finally, or verifyStageIsLatest once the request
-   * settles), never from an event handler: electron-updater emits a check's
-   * outcome before it releases its own in-flight promise, so a waiter woken
-   * inside the emit would be handed the same request back. Idempotent.
+   * check's owner (safeCheck's finally), never from an event handler:
+   * electron-updater emits a check's outcome before it releases its own
+   * in-flight promise, so a waiter woken inside the emit would be handed the
+   * same request back. Idempotent.
    */
   function checkSettled() {
     gate.checking = false;
@@ -188,11 +194,12 @@ function createFreshnessGate({
     gate.checkInFlight = new Promise((resolve) => { releaseCheckInFlight = resolve; });
   }
   /**
-   * A freshness gate is waiting on the check in flight. Its `checking`, its
-   * failure, and its restatement of the offer stay internal: the gate's own
-   * next state (`downloading`, `installing`, or the handlers' verdict) is what
-   * the renderer needs, and each of those interim states would unmount or
-   * replace the surface the user just clicked.
+   * A freshness gate is waiting on the check in flight. Its failure and its
+   * restatement of the offer stay internal (and, for the Download click's own
+   * check, its `checking`): the gate's own next state (`downloading`,
+   * `installing`, or the handlers' verdict) is what the renderer needs, and each
+   * of those interim states would unmount or replace the surface the user just
+   * clicked.
    */
   function ownsCheck() {
     return gate.preparingDownload || gate.verifyingStage;
@@ -213,18 +220,19 @@ function createFreshnessGate({
    * deferred-install-on-quit path needs it most, since nothing between "Later"
    * and the quit consults the feed otherwise.
    *
-   * It drives an ORDINARY check rather than parsing the feed itself, so the
-   * verdict comes from exactly the logic every other check goes through — the
-   * direction gate, the retraction path in `update-not-available`, and the
-   * supersede path in `update-available` that drops a stale stage. The answer
-   * is therefore read back out of the state those handlers left behind, which
-   * is also what keeps this from becoming a second, divergent copy of the
-   * "is this worth installing" rule.
+   * It READS the feed rather than driving a check (see readOffer): the stage,
+   * the renderer and the check flags stay as they are, so nothing has to be
+   * suppressed while it asks or made inert if it is given up on. Two rules decide
+   * what the answer means, and neither is copied here: the library's own
+   * "is there an update" rule, and `offerVerdict`, the lane's verdict that its
+   * `update-available` handler acts on. A build the library would not offer is
+   * read as the retraction `update-not-available` handles.
    *
-   * A check ALREADY in flight is waited for rather than re-issued (safeCheck
-   * refuses to re-enter one), bounded by the same timeout: its answer is the one
-   * this gate needs, and returning "unknown" without waiting would leave that
-   * check live at the dispatch, where the quit path then refuses to install.
+   * A check ALREADY in flight is waited for rather than read past, bounded by the
+   * same timeout: its handlers are about to act on the stage anyway, so its
+   * answer is the verdict, read back out of the stage they leave behind; and
+   * returning "unknown" without waiting would leave that check live at the
+   * dispatch, where the quit path then refuses to install.
    *
    * FAIL-OPEN by contract. "unknown" — feed unreachable, or no answer inside
    * `FRESHNESS_CHECK_TIMEOUT_MS` — means install what we have: bytes the user
@@ -269,11 +277,11 @@ function createFreshnessGate({
       gate.verifyingStage = true;
       try {
         if (await withinFreshnessBound(gate.checkInFlight) === "timeout") {
-          // Abandon the joined check exactly as an own check is abandoned below:
-          // its late outcome becomes inert, so the install this "unknown"
-          // promises proceeds instead of being aborted at the post-stopGateway
-          // `checking` guard after the gateway was already stopped for it.
-          // safeCheck's catch records its rejection for the identity match.
+          // Abandon the joined check: its late outcome becomes inert, so the
+          // install this "unknown" promises proceeds instead of being aborted
+          // at the post-stopGateway `checking` guard after the gateway was
+          // already stopped for it. safeCheck's catch records its rejection
+          // for the identity match.
           abandonCheck();
           if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
           log.info(`[update] the check in flight did not answer in ${FRESHNESS_CHECK_TIMEOUT_MS}ms — installing the staged ${staged}`);
@@ -286,52 +294,59 @@ function createFreshnessGate({
       return stageVerdict(staged, { quiet });
     }
     gate.verifyingStage = true;
-    gate.verifyQuiet = quiet;
-    claimCheck();
     try {
       configureFeed();
-      const settled = autoUpdater.checkForUpdates();
+      // An updater the library holds inactive (an unpackaged build) sends no
+      // request for a check, so none is sent for the read: the stage stands.
+      if (!autoUpdater.isUpdaterActive()) return stageVerdict(staged, { quiet });
       // The rejection is folded into the race rather than left to the catch
-      // below: a check that fails AFTER the timeout already won would
-      // otherwise be an unhandled rejection.
-      const outcome = await withinFreshnessBound(settled.then(() => "checked", () => "failed"));
-      if (outcome === "timeout") {
-        // Only the WAIT ended; the request is still running. Its flags describe
-        // that request, not this wait, so they stay held until it lands —
-        // clearing `checking` here would let its outcome slip past the
-        // post-stopGateway abort and fire the host's gateway recovery in the
-        // middle of the bundle swap, and clearing `verifyQuiet` would let a
-        // newer version it discovers start a ~350MB fetch as the app exits.
-        // Marked abandoned so that outcome is inert (see abandonedCheck) rather
-        // than aborting the install the fail-open contract just promised. The
-        // rejection continuation KEEPS the error rather than just releasing the
-        // flags: it is what lets the shared `error` handler tell this request's
-        // own failure from an installer's, whichever order they arrive in.
-        abandonCheck();
-        settled.then(checkSettled, (err) => { gate.abandonedError = err; checkSettled(); });
+      // below: a read that fails AFTER the timeout already won would otherwise
+      // be an unhandled rejection. A read given up on needs nothing else: its
+      // answer reaches nothing whenever it lands.
+      const answer = await withinFreshnessBound(
+        readOffer().then((offered) => ({ offered }), (err) => ({ failed: true, err })),
+      );
+      if (answer === "timeout" || answer.failed) {
         if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
-        log.info(`[update] freshness check did not answer in ${FRESHNESS_CHECK_TIMEOUT_MS}ms — installing the staged ${staged}`);
+        if (answer === "timeout") {
+          log.info(`[update] the feed did not answer in ${FRESHNESS_CHECK_TIMEOUT_MS}ms — installing the staged ${staged}`);
+        } else {
+          log.error(`[update] freshness read failed — installing the staged ${staged}`, answer.err);
+        }
         return "unknown";
       }
-      checkSettled();
-      if (outcome !== "checked") {
-        if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
-        log.info(`[update] freshness check failed — installing the staged ${staged}`);
-        return "unknown";
-      }
+      // Once the feed has answered, the stage's own channel does not decide: the
+      // followed lane either offers that very build, which makes the stage its
+      // own (a promoted release is the same bytes on both channels), or it does
+      // not, and the stage is superseded. Only a switch since the read was sent
+      // still refuses.
+      if (refuseFromChangedChannel(null, { quiet })) return "channel-changed";
+      return answer.offered !== null && offerVerdict(answer.offered) === "staged" ? "latest" : "superseded";
     } catch (err) {
-      // configureFeed() threw, so no request went out and no `error` event fired.
-      // A feed we could not reach is not evidence that the stage is stale: the
-      // failure is logged and folded into "unknown", and the renderer is not told,
-      // as with every gate's own check failure (see the lane's `error` handler).
-      checkSettled();
+      // configureFeed() threw, so no request went out. A feed we could not
+      // reach is not evidence that the stage is stale: the failure is logged
+      // and folded into "unknown", and the renderer is not told.
       if (refuseStageFromChangedChannel({ quiet })) return "channel-changed";
       log.error(`[update] freshness check failed — installing the staged ${staged}`, err);
       return "unknown";
     } finally {
       gate.verifyingStage = false;
     }
-    return stageVerdict(staged, { quiet });
+  }
+
+  /**
+   * Ask the followed channel's feed what it offers, with none of a check's
+   * side effects: electron-updater's own fetch and its own "is there an update"
+   * rule (the version comparison, the build's minimum OS version and the
+   * staged-rollout share), but no `checking-for-update`, `update-available` or
+   * `update-not-available`, and nothing a later downloadUpdate() would fetch
+   * (electron-updater-error-identity.test.js pins both against the installed
+   * library). Resolves to the offered version, or null when the library would
+   * report no update.
+   */
+  async function readOffer() {
+    const { info } = await autoUpdater.getUpdateInfoAndProvider();
+    return (await autoUpdater.isUpdateAvailable(info)) ? info.version : null;
   }
 
   /**

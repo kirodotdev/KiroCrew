@@ -35,6 +35,8 @@ class _Scripted:
         self._replies = replies
 
     cwd = ""
+    #: Declared on ``LLMProvider``: no pin refused at start, so a ``--model`` run goes on.
+    model_pin_refused = ""
 
     async def start(self) -> None:
         pass
@@ -150,13 +152,14 @@ class TestParser:
         return root.parse_args(["eval", *argv])
 
     def test_new_flags_default_off(self) -> None:
+        # --repeat defaults to None: one run here, the tier's k for `eval run`.
         args = self._parse([])
         assert (args.eval_dir, args.eval_file, args.agent, args.model, args.repeat) == (
             None,
             None,
             None,
             None,
-            1,
+            None,
         )
 
     def test_new_flags_parse(self) -> None:

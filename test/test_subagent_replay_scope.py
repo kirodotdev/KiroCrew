@@ -568,7 +568,7 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
             async def prepare(self, request):
                 return None
 
-            async def send_json(self, payload):
+            def _record(self, payload: dict) -> None:
                 self.sent.append(payload)
                 # Done once every expected card has been sent to the socket.
                 if _drawn(self.sent) >= expect_ids:
@@ -576,8 +576,12 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
                     if wake:
                         wake["event"].set()
 
+            async def send_json(self, payload):
+                self._record(payload)
+
+            # Cards reach the socket pre-serialized, so this path must end the wait too.
             async def send_str(self, payload):
-                self.sent.append(json.loads(payload))
+                self._record(json.loads(payload))
 
             def __aiter__(self):
                 return self
@@ -609,6 +613,9 @@ class TestTheHandlerReplaysOnlyWhatTheSocketViews:
                 self.app = {"state": state}
 
         asyncio.run(dashboard_ws.api_ws(Request()))  # type: ignore[arg-type]
+        # api_ws swallows the receive loop's errors, so a wait that ran out would
+        # otherwise end the socket as if every card had been sent.
+        assert done.is_set(), f"expected cards never sent: {expect_ids - _drawn(fake.sent)}"
         return replayed, active["peak"], fake
 
     def test_subscribe_focus_and_replay_each_fold_only_their_own_slots(self, monkeypatch, folds):

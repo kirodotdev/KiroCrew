@@ -36,11 +36,13 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import os
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, cast
 
 from kiro_crew.dashboard.chat_utils_slots import slot_history_key
 from kiro_crew.dashboard.slot_persistence.write_guards import session_was_deleted
+from kiro_crew.messaging.attachments import INLINEABLE_IMAGE_SUFFIXES
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -76,12 +78,20 @@ async def store_for_slot(
     conv_log = getattr(state, "conversation_log", None)
     if conv_log is None:
         return text
+    # Only files the ingest proved are pictures: it renames any other download
+    # that carries a raster suffix, so a raster suffix here means a sniffed
+    # picture. Other files (an SVG among them) keep their lines.
+    pictures = tuple(
+        f for f in files if os.path.splitext(f)[1].lower() in INLINEABLE_IMAGE_SUFFIXES
+    )
+    if not pictures:
+        return text
     try:
         stored = await asyncio.to_thread(
             conv_log.store_ingested_images,
             slot_history_key(slot),
             text,
-            files,
+            pictures,
             # Read under the session lock: a session deleted before the copy
             # stores nothing, so its attachments are never recreated.
             refuse=lambda: session_was_deleted(cast("DashboardState", state), slot),

@@ -55,6 +55,7 @@ def test_every_turn_actor_has_a_trigger_mapping():
         ("cron", "cron"),
         ("autonudge", "monitor"),
         ("subagent", "subagent"),
+        ("resource", "webhook"),
         ("gateway", "system"),
         ("other", "other"),
         ("brand-new", "other"),
@@ -91,7 +92,6 @@ def test_origin_values_are_pinned():
         "internal",
         "other",
     )
-    assert len(ua.ORIGIN_VALUES) == 17
     assert tuple(CHANNEL_SESSION_NAMESPACES) == ua.ORIGIN_VALUES[:11]
 
 

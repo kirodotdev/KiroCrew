@@ -169,7 +169,7 @@ def test_config_edit_editor_exec_denial_is_not_relabelled(home):
     from kiro_crew.cli_config import _config_cmd
 
     with patch(
-        "kiro_crew.cli_config.os.execvp",
+        "kiro_crew.cli_config._run_editor",
         side_effect=PermissionError(errno.EACCES, "denied", "vi"),
     ):
         with pytest.raises(PermissionError):

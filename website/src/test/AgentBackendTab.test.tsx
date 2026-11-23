@@ -58,19 +58,17 @@ vi.mock('../components/settingRef/useConfigSchema', () => ({
   useConfigSchema: () => schemaMock(),
 }))
 
-// The card under the switch is a sentinel: its own behaviour (status query,
-// chooser, sign-out) is pinned in KiroSignInCard.test.tsx, and the real card
-// would need the kas-login API this file does not mock. Unlike the real card it
-// renders unconditionally, so its absence in a test can only be the tab's gate.
-vi.mock('../pages/developer/KiroSignInCard', () => ({
-  KiroSignInCard: ({ compact }: { compact?: boolean }) => (
-    <div data-testid="kiro-sign-in-card" data-compact={compact ? 'true' : 'false'} />
-  ),
+// The Kiro account line in the KAS detail is a sentinel: its behaviour is pinned
+// in KiroAccountStatusLine.test.tsx, and the real line would need the kas-login
+// API this file does not mock.
+vi.mock('../pages/developer/KiroAccountStatusLine', () => ({
+  KiroAccountStatusLine: () => <div data-testid="kiro-account-status-line" />,
 }))
 
 // Same sentinel treatment for the engine card under it: its behaviour is pinned in
 // KasBundleCard.test.tsx, and the real card would need the kas-bundle API.
-vi.mock('../pages/developer/KasBundleCard', () => ({
+vi.mock('../pages/developer/KasBundleCard', async importOriginal => ({
+  ...(await importOriginal<typeof import('../pages/developer/KasBundleCard')>()),
   KasBundleCard: () => <div data-testid="kas-bundle-card" />,
 }))
 
@@ -439,7 +437,7 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
         ?.closest('.sr-only') as HTMLElement
       // A sentence that already names its agent is not led by the name again.
       expect([...block.children].map(p => `${p.tagName} ${p.textContent}`)).toEqual([
-        'P Kiro Agent：デフォルト。',
+        'P Kiro Agent：推奨。新しくインストールすると、このエージェントで始まります。',
         'P Kiro CLI はインストール済みで、すぐに使用できます。',
         'P Claude Code：使用中。このマシンにありません: claude-agent-acp',
       ])
@@ -902,15 +900,18 @@ describe('AgentBackendTab status strip', () => {
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Kiro Agent')
-    expect(detail().textContent).toContain('Default.')
+    expect(detail().textContent).toContain('Recommended. New installs start on this agent.')
+    expect(detail().textContent).not.toContain('Default.')
     highlight('Claude Code')
     expect(detail().textContent).toContain('Experimental')
     expect(screen.queryByText(/OS sandbox|Anthropic|steered mid-turn/)).toBeNull()
   })
 
-  it('puts the default line on DEFAULT_ACP_BACKEND, not on Kiro CLI', async () => {
+  it('tags DEFAULT_ACP_BACKEND Recommended, not Kiro CLI', async () => {
     // New installs run KAS. A page that called Kiro CLI the default and tagged KAS
     // Experimental would tell a new user the harness they are on is the risky one.
+    // An installed default reads like any installed harness plus the tag: a bare
+    // "Default." under the agent the user already picked explained nothing.
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('kiro', card()), probeRow('kas', card()), probeRow('claude', card())],
     })
@@ -919,34 +920,41 @@ describe('AgentBackendTab status strip', () => {
     expect(DEFAULT_ACP_BACKEND).toBe('kas')
 
     highlight('Kiro Agent')
-    await waitFor(() => expect(detail().textContent).toContain('Default.'))
+    await waitFor(() =>
+      expect(detail().textContent).toContain('Kiro Agent is installed and ready to use.'),
+    )
+    expect(panel().getByText('Recommended')).toBeInTheDocument()
+    expect(detail().textContent).not.toContain('Default.')
     expect(panel().queryByText('Experimental')).toBeNull()
-    expect(document.getElementById('agent-backend-row-status-kas')?.textContent).toBe('Default.')
+    expect(document.getElementById('agent-backend-row-status-kas')?.textContent).toBe(
+      'Recommended. New installs start on this agent.',
+    )
 
     // Kiro CLI is the stable floor: neither the default nor Experimental.
     highlight('Kiro CLI')
     await waitFor(() =>
       expect(detail().textContent).toContain('Kiro CLI is installed and ready to use.'),
     )
-    expect(detail().textContent).not.toContain('Default.')
+    expect(detail().textContent).not.toContain('Recommended')
+    expect(detail().textContent).toContain("Uses the kiro-cli installed on this machine, with kiro-cli's own sign-in.")
     expect(panel().queryByText('Experimental')).toBeNull()
     const kiroStatus = document.getElementById('agent-backend-row-status-kiro')?.textContent ?? ''
-    expect(kiroStatus).not.toMatch(/Default|Experimental/)
+    expect(kiroStatus).not.toMatch(/Recommended|Experimental/)
 
     // Any other harness is still Experimental.
     highlight('Claude Code')
     await waitFor(() => expect(panel().getByText('Experimental')).toBeInTheDocument())
-    expect(detail().textContent).not.toContain('Default.')
+    expect(detail().textContent).not.toContain('Recommended')
     expect(document.getElementById('agent-backend-row-status-claude')?.textContent).toBe(
       'Experimental',
     )
   })
 
-  it('says neither Default nor Experimental for Kiro CLI with no probe answer', async () => {
+  it('says neither Recommended nor Experimental for Kiro CLI with no probe answer', async () => {
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Kiro CLI')
-    expect(detail().textContent).not.toMatch(/Default\.|Experimental/)
+    expect(detail().textContent).not.toMatch(/Recommended|Experimental/)
   })
 
   it('says what to install and offers the install command to copy', async () => {
@@ -1057,6 +1065,10 @@ describe('AgentBackendTab status strip', () => {
     expect(panel().getByText('Install Kiro CLI on the gateway host.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull()
     expect(screen.queryByText('Install command')).toBeNull()
+    // With no command, the card links Kiro CLI's install guide (Bug Bash row 66).
+    const guide = panel().getByRole('link', { name: /Open Kiro CLI setup/ })
+    expect(guide).toHaveAttribute('href', 'https://kiro.dev/cli/')
+    expect(guide).toHaveAttribute('target', '_blank')
   })
 
   it('leaves the switch ENABLED when the install check could not be completed', async () => {
@@ -1452,6 +1464,7 @@ describe('AgentBackendTab shared probe eligibility', () => {
     ['missing', { installed: 'missing', missing_components: ['claude-agent-acp'] }, false],
     ['restart required', { restart_required: true }, false],
     ['check failed', { installed: 'unknown' }, true],
+    ['sandbox refused', { sandbox_refusal: 'host' }, false],
   ] as const)('%s: Use enabled = %s', async (_label, over, enabled) => {
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('kiro'), probeRow('claude', { ...over })],
@@ -1461,6 +1474,24 @@ describe('AgentBackendTab shared probe eligibility', () => {
     highlight('Claude Code')
     if (enabled) await waitFor(() => expect(useButton('Claude Code')).toBeEnabled())
     else await waitFor(() => expect(useButton('Claude Code')).toBeDisabled())
+  })
+
+  // The host case is also not installed: the refusal, not an install command,
+  // is what the row says, because installing cannot make the harness start here.
+  it.each([
+    ['host', { installed: 'missing', missing_components: ['claude-agent-acp'] }, 'This host cannot provide that sandbox', "Host can't sandbox"],
+    ['setting', {}, 'the sandbox is turned off', 'Sandbox turned off'],
+  ] as const)('a %s sandbox refusal names its cause on the row and in the detail', async (cause, over, why, badge) => {
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('kiro'), probeRow('claude', { ...over, sandbox_refusal: cause })],
+    })
+    wrap()
+    await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
+    highlight('Claude Code')
+    await waitFor(() => expect(detail().textContent).toContain(why))
+    expect(rowLabel('Claude Code').textContent).toContain(badge)
+    expect(panel().queryByText(/New sessions switch from/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
   })
 
   it('unselectable: not offered at all', async () => {

@@ -44,6 +44,6 @@ def test_a_cancelled_run_replaces_the_running_snapshot(tmp_path):
 
     text = (tmp_path / PROGRESS_FILE).read_text(encoding="utf-8")
     assert "**Status:** cancelled" in text
-    assert "🔄" not in text
+    assert "Running" not in text
     # The passed step still reads as the resume checkpoint; cancelled ones do not.
     assert load_checkpoint(tmp_path / "spec.md") == {"step 1"}

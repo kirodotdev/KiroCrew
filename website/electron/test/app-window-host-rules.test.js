@@ -17,6 +17,7 @@ const {
   approvedCapabilities,
   canonicalAccelerator,
   desktopDeclarations,
+  hostOwnsAppWindows,
   keyPressChords,
   parseDesktopDeclaration,
   pressedChord,
@@ -198,6 +199,38 @@ test("only enabled, available apps with a valid block are served", () => {
   assert.deepStrictEqual(lines, ["app-window-host: bad: desktop declaration refused"]);
   assert.deepStrictEqual([...desktopDeclarations({ apps: rows }).keys()], ["on"]);
   assert.strictEqual(desktopDeclarations("nope").size, 0);
+  assert.strictEqual(served.get("on").enabledHere, true);
+});
+
+test("disabledToo lists an app switched off here, marked so; nothing else joins", () => {
+  const rows = [
+    { name: "on", enabled: true, manifest: { desktop: VALID } },
+    { name: "off", enabled: false, manifest: { desktop: VALID } },
+    { name: "unset", manifest: { desktop: VALID } },
+    { name: "skipped", enabled: false, unavailable: { reason: "x" }, manifest: { desktop: VALID } },
+    { name: "plain", enabled: false, manifest: {} },
+    { name: "bad", enabled: false, manifest: { desktop: { windows: "no" } } },
+  ];
+  const listed = desktopDeclarations(rows, () => {}, { disabledToo: true });
+  assert.deepStrictEqual([...listed.keys()], ["on", "off", "unset"]);
+  assert.deepStrictEqual([...listed.values()].map((d) => d.enabledHere), [true, false, false]);
+  assert.deepStrictEqual([...desktopDeclarations(rows).keys()], ["on"], "the default is enabled only");
+});
+
+test("the window host owns an app's windows exactly when its record declares a desktop block", () => {
+  const rows = [
+    { name: "hosted", enabled: true, manifest: { desktop: VALID } },
+    { name: "hosted-off", enabled: false, manifest: { desktop: VALID } },
+    // A block this shell refuses (a newer grammar) still says the record is the host's.
+    { name: "newer", enabled: true, manifest: { desktop: { windows: [{ id: "w", entry: "w.mjs", kind: "future" }] } } },
+    { name: "legacy", enabled: true, manifest: { name: "legacy" } },
+    { name: "no-manifest", enabled: true },
+  ];
+  for (const name of ["hosted", "hosted-off", "newer"]) assert.strictEqual(hostOwnsAppWindows(rows, name), true, name);
+  for (const name of ["legacy", "no-manifest", "absent"]) assert.strictEqual(hostOwnsAppWindows(rows, name), false, name);
+  assert.strictEqual(hostOwnsAppWindows({ apps: rows }, "hosted"), true);
+  // A body this shell cannot read is not an answer either way.
+  for (const body of [null, "nope", {}, { apps: "x" }]) assert.strictEqual(hostOwnsAppWindows(body, "hosted"), null);
 });
 
 test("a capability is served only when the manifest declares it AND the row approves it", () => {

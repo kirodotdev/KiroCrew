@@ -27,8 +27,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 
 import kiro_crew._facade_mirror as _facade_mirror
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, released_sessions, sandbox_launch_mark
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.claude_transcripts import (
     delete_claude_session_files,
     is_claude_provider_label,
@@ -103,6 +104,8 @@ from kiro_crew.subagent_persistence_state import (
     write_run_agent,
 )
 from kiro_crew.subagent_persistence_tombstones import (
+    PARENT_END_TOMBSTONE_CAUSE,
+    RESTART_TOMBSTONE_CAUSE,
     _finite_time,
     clear_leaked_process,
     clear_tombstone,
@@ -118,6 +121,7 @@ from kiro_crew.subagent_persistence_tombstones import (
     settle_delivered_batch,
     write_finished_result,
     write_tombstone,
+    write_tombstone_if_absent,
 )
 
 #: The one tombstone cause that marks a run whose result reached its parent.
@@ -589,6 +593,9 @@ def _tombstone_cleanup_identities(
 #: three stats a sweep instead of a full evaluation. See ``_unreclaimable_evidence``.
 _UNRECLAIMABLE_MEMO: dict[str, tuple[tuple[object, ...], float]] = {}
 
+#: Not-yet-due runs: agent id -> (tombstone identity, death time, delivered).
+_NOT_DUE_MEMO: dict[str, tuple[tuple[int, int, int], int | float, bool]] = {}
+
 
 def _file_identity(path: str) -> tuple[int, int, int] | None:
     """Inode, size and modification time of *path*, or None when absent.
@@ -631,9 +638,34 @@ def _provider_cleanup_has_route(provider: str) -> bool:
     """
     return (
         provider == PROVIDER_LABEL_DEFAULT
+        or provider == ACP_BACKEND_KAS
         or is_claude_provider_label(provider)
         or is_codex_provider_label(provider)
     )
+
+
+def _schedule_kas_session_delete(session_id: str) -> bool:
+    """Hand a KAS session's record to the engine's own delete. Blocking.
+
+    The record belongs to the KAS engine, under a folder Crew does not record, so
+    it is queued in ``released_sessions`` for the next cleanup tick, which sends
+    ``_kiro/session/delete`` while KAS is the chat backend. True once the entry is
+    written; False when it cannot be (a bad id, a write error, or a sandboxed
+    process, where ``released-sessions/`` is masked), so the run is kept and
+    tried again.
+    """
+    if sandbox_launch_mark.launched_in_sandbox():
+        return False
+    try:
+        released_sessions.schedule(session_id, backend=ACP_BACKEND_KAS, delay_secs=0.0)
+    except (OSError, ValueError):
+        logger.warning(
+            "_cleanup_session_files_sync: could not schedule the delete of KAS session %s",
+            session_id,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 def _identity_cleanup_has_route(provider: str, codex_home: str = "") -> bool:
@@ -694,6 +726,13 @@ def prune_stale_tombstones(
                 continue
             del _UNRECLAIMABLE_MEMO[d.name]
         ts_path = d / "tombstone.json"
+        # Sampled before the read, so a write that lands during it shows next sweep.
+        ts_identity = _file_identity(os.fspath(ts_path))
+        not_due = _NOT_DUE_MEMO.pop(d.name, None)
+        if not_due is not None and ts_identity is not None and not_due[0] == ts_identity:
+            if not_due[1] > (delivered_cutoff if not_due[2] else default_cutoff):
+                _NOT_DUE_MEMO[d.name] = not_due
+                continue
         if not ts_path.exists():
             continue
         try:
@@ -707,8 +746,12 @@ def prune_stale_tombstones(
                 continue
             if keep is not None and keep(d.name, ts):
                 continue
-            cutoff = delivered_cutoff if ts.get("cause") == "delivered" else default_cutoff
+            delivered = ts.get("cause") == _DELIVERED_CAUSE
+            cutoff = delivered_cutoff if delivered else default_cutoff
             died = _tombstone_died(ts, ts_path, now)
+            if died > cutoff and ts_identity is not None:
+                # On a forward clock _tombstone_died's fallbacks only move later: no skip ends late.
+                _NOT_DUE_MEMO[d.name] = (ts_identity, died, delivered)
             if died <= cutoff:
                 # Sampled before any of it is read, so a write that lands during the
                 # evaluation leaves this unequal to the next sweep's sample.
@@ -914,6 +957,8 @@ def prune_stale_tombstones(
             logger.debug("prune: tombstone processing failed for %s", d.name)
     for gone in _UNRECLAIMABLE_MEMO.keys() - seen:
         del _UNRECLAIMABLE_MEMO[gone]
+    for gone in _NOT_DUE_MEMO.keys() - seen:
+        del _NOT_DUE_MEMO[gone]
     return pruned
 
 
@@ -935,9 +980,10 @@ def _cleanup_session_files_sync(
     retry instead of making the leaked transcript permanently unreachable.
 
     The kiro-cli backend's replay log, Claude Code's own store (spelled from the
-    recorded *cwd*, ``agent_sdk.claude_transcripts``) and Codex's rollout under
-    the recorded *codex_home* (``agent_sdk.codex_transcripts``) are the
-    transcripts this function can reach. A Codex record without *codex_home*
+    recorded *cwd*, ``agent_sdk.claude_transcripts``), Codex's rollout under
+    the recorded *codex_home* (``agent_sdk.codex_transcripts``) and a KAS
+    session record (:func:`_schedule_kas_session_delete`) are the transcripts
+    this function can reach. A Codex record without *codex_home*
     cannot say which store its child wrote, so its cleanup is not done. Any
     other *provider* is logged and its files are left in place, since reporting
     success without deleting anything hides the leak.
@@ -987,6 +1033,8 @@ def _cleanup_session_files_sync(
                         exc_info=True,
                     )
             return succeeded
+        if provider == ACP_BACKEND_KAS:
+            return _schedule_kas_session_delete(session_id)
         if is_claude_provider_label(provider):
             return delete_claude_session_files(session_id, cwd)
         if is_codex_provider_label(provider):

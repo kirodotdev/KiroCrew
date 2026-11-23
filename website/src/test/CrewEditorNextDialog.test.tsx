@@ -81,6 +81,11 @@ const mockApi = vi.hoisted(() => ({
   saveMemoryProjects: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
+const sendErrorToChat = vi.hoisted(() => vi.fn((_prompt: string, _opts?: unknown) => true))
+vi.mock('../utils/errorReport', async (orig) => ({
+  ...(await orig<typeof import('../utils/errorReport')>()),
+  sendErrorToChat,
+}))
 
 /* The capabilities API drives both the Built From inspectors and the Approvals
    editor. Mock the module so we hand back a realistic view. */
@@ -149,6 +154,7 @@ vi.mock('../components/CrewAvatarBuilder', () => ({
 
 import CrewEditorModal from '../components/crew/CrewEditorModal'
 import { useCrewEditor } from '../components/crew/useCrewEditor'
+import { NavigationLeaveGuardProvider, useGuardedLeave, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import type { KiroCrewAgent } from '../api/types'
 import { acpBackendName } from '../api/acpBackend'
 
@@ -494,6 +500,40 @@ describe('CrewEditorNextDialog — section rail', () => {
     expect(draft.operations).toEqual([{ section: 'mcpServers', id: 'github', action: 'remove' }])
   })
 
+  it("lists a tool's carried settings under Tool settings and removes them on confirm", async () => {
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [{
+        section: 'toolsSettings', id: 'shell', label: 'shell', state: 'local', present: true,
+        value: { deniedCommands: ['(touch|mkdir).*'] }, managed: false, shared_reference: false,
+        remove: { section: 'toolsSettings', id: 'shell' },
+      }] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1', unenforced_denies: ['(touch|mkdir).*'] })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const added = await within(dialog).findByTestId('next-band-added')
+    expect(await within(dialog).findByTestId('worker-kit-unenforced-current')).toBeInTheDocument()
+    expect(within(added).getByTestId('next-band-added-group-toolsSettings')).toHaveTextContent('Tool settings')
+    // The row and its confirm name what goes in words, never the file's keys.
+    const row = within(added).getByTestId('next-band-added-row')
+    expect(row).toHaveTextContent('Terminal')
+    expect(row).toHaveTextContent('blocked commands')
+    expect(row).not.toHaveTextContent('deniedCommands')
+    expect(row).not.toHaveTextContent('shell')
+    fireEvent.click(within(added).getByTestId('next-band-remove-toolsSettings-shell'))
+    const ask = await screen.findByRole('dialog', { name: 'Remove “Terminal: blocked commands”?' })
+    expect(ask).toHaveTextContent("This bot stops applying these settings and every limit that comes from them, such as blocked terminal commands. Anything they allow goes through this bot's approvals again. This is saved right away.")
+    expect(ask).not.toHaveTextContent('deniedCommands')
+    expect(ask).not.toHaveTextContent('shell')
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r2', unenforced_denies: [] })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(mockCaps.save).toHaveBeenCalled())
+    expect(mockCaps.preview.mock.calls[0][1].operations).toEqual([{ section: 'toolsSettings', id: 'shell', action: 'remove' }])
+    // The notice it lifted goes with it, without reopening the editor.
+    await waitFor(() => expect(within(dialog).queryByTestId('worker-kit-unenforced-current')).toBeNull())
+  })
+
   it('removes against the revision shown when Remove was pressed, not a fresh read', async () => {
     const view: CapabilityView = {
       ...CAPS_VIEW, mode: 'mate', revision: 'r1',
@@ -712,6 +752,129 @@ describe('CrewEditorNextDialog — Capabilities view (read-only two bands)', () 
     const notice = await within(dialog).findByTestId('next-builtfrom-error')
     expect(notice).toHaveTextContent(/load this bot.s capabilities/)
     expect(notice).not.toHaveTextContent(/capabilities_unavailable|deadline exceeded/)
+  })
+
+  it.each([
+    ['the gateway timed it out', new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}')],
+    ['the dashboard deadline ended it', Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })],
+  ])('says why a read that ran out of time failed when %s, and where the log is', async (_case, error) => {
+    mockCaps.get.mockRejectedValue(error)
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    expect(notice).toHaveTextContent(/did not finish loading in time/)
+    expect(notice).toHaveTextContent(/many added abilities/)
+    expect(notice).toHaveTextContent(/gateway log names the bot/)
+  })
+
+  it('points any other unavailable read at the gateway log', async () => {
+    mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    expect(notice).toHaveTextContent('The gateway log has the details.')
+    expect(notice).not.toHaveTextContent(/in time/)
+  })
+
+  it('reads the capabilities again on Try again and shows them once they load', async () => {
+    mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const retry = await within(dialog).findByTestId('next-builtfrom-retry')
+    const readsBefore = mockCaps.get.mock.calls.length
+    mockCaps.get.mockResolvedValue(CAPS_VIEW)
+    fireEvent.click(retry)
+    expect(await within(dialog).findByTestId('next-band-comes-with')).toBeInTheDocument()
+    expect(within(dialog).queryByTestId('next-builtfrom-error')).toBeNull()
+    expect(mockCaps.get.mock.calls.length).toBeGreaterThan(readsBefore)
+  })
+
+  it('hands the load error to the agent only through the editor leave guard', async () => {
+    mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}'))
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    // The guard vetoes, as it does when the user keeps an unsaved draft.
+    leaveSpy.mockImplementationOnce(() => {})
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(leaveSpy).toHaveBeenCalledTimes(1)
+    // A vetoed hand-off leaves the editor and its notice where they were.
+    expect(within(dialog).getByTestId('next-builtfrom-error')).toBeInTheDocument()
+  })
+
+  // The Bots page's own wiring: its registered guard refuses a leave over
+  // unsaved panes and only raises the editor's discard confirm, so the
+  // hand-off must ride that confirm instead of the page guard.
+  function PageHost({ pendingWrite = false }: { pendingWrite?: boolean }) {
+    const [editingCrew, setEditingCrew] = useState('oncall')
+    const crewAgentsQuery = useQuery({ queryKey: ['kirocrew-agents'], queryFn: () => mockApi.kirocrewAgents() })
+    const leave = useGuardedLeave()
+    const ctl = useCrewEditor({
+      editingName: editingCrew,
+      agents: (crewAgentsQuery.data?.agents || []) as KiroCrewAgent[],
+      agentsLoaded: crewAgentsQuery.data !== undefined,
+      defaultAgent: crewAgentsQuery.data?.default_agent || '',
+      refetchAgents: () => {},
+      onClose: () => setEditingCrew(''),
+      leave,
+    })
+    const { dirtyPanes, requestClose } = ctl
+    useRegisterNavigationLeaveGuard(() => {
+      // A write of the page's own (a Heartbeat save) still in flight refuses.
+      if (pendingWrite) return false
+      if (!editingCrew || dirtyPanes.size === 0) return true
+      requestClose()
+      return false
+    })
+    return <CrewEditorModal ctl={ctl} />
+  }
+
+  async function openOnBotsPage(pendingWrite = false) {
+    mockCaps.get.mockRejectedValue(new ApiError(503, 'capabilities_unavailable', '{"error":"capabilities_unavailable","code":"capabilities_unavailable","reason":"timed_out"}'))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = configureStore({ reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer } })
+    render(
+      <QueryClientProvider client={qc}><Provider store={store}><MemoryRouter>
+        <NavigationLeaveGuardProvider><PageHost pendingWrite={pendingWrite} /></NavigationLeaveGuardProvider>
+      </MemoryRouter></Provider></QueryClientProvider>,
+    )
+    return screen.findByTestId('crew-editor-next-dialog')
+  }
+
+  it('on the Bots page, hands off at once when nothing is unsaved', async () => {
+    const dialog = await openOnBotsPage()
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(sendErrorToChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('on the Bots page, hands off over unsaved edits only after the discard is confirmed', async () => {
+    const dialog = await openOnBotsPage()
+    fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    expect(sendErrorToChat).not.toHaveBeenCalled()
+    // Keep editing: nothing is handed off, and a later close does not hand off either.
+    fireEvent.click(await screen.findByTestId('crew-sched-discard-keep'))
+    expect(sendErrorToChat).not.toHaveBeenCalled()
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
+    expect(sendErrorToChat).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByTestId('crew-editor-next-dialog')).toBeNull())
+  })
+
+  it('on the Bots page, still asks the page guard after the editor discard is confirmed', async () => {
+    const dialog = await openOnBotsPage(true)
+    fireEvent.change(within(dialog).getByTestId('display-name-input'), { target: { value: 'Renamed' } })
+    fireEvent.click(within(dialog).getByTestId('next-rail-builtFrom'))
+    const notice = await within(dialog).findByTestId('next-builtfrom-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+    fireEvent.click(await screen.findByTestId('crew-sched-discard-confirm'))
+    await waitFor(() => expect(screen.queryByTestId('crew-editor-next-dialog')).toBeNull())
+    // Discarding the editor's edits does not waive the page's pending write.
+    expect(sendErrorToChat).not.toHaveBeenCalled()
   })
 
   it('lists comes-with tools, MCP servers and skills in collapsible kind groups, none removable', async () => {
@@ -1092,6 +1255,15 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     fireEvent.click(await within(dialog).findByTestId('next-delete-crew'))
     fireEvent.click(await within(dialog).findByTestId('next-confirm-delete-crew'))
     await waitFor(() => expect(mockApi.deleteKirocrewAgent).toHaveBeenCalled())
+  })
+
+  it('says the deleted bot\u2019s memory is kept and a new bot can take it over', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-danger'))
+    const pane = await within(dialog).findByTestId('next-pane-danger')
+    expect(pane).toHaveTextContent('memory and past chats are kept. A new bot can take that memory over')
+    fireEvent.click(within(dialog).getByTestId('next-delete-crew'))
+    expect(pane).toHaveTextContent('A new bot can start from its memory.')
   })
 
   it('cancels the armed danger delete', async () => {

@@ -178,11 +178,12 @@ describe('resolveGatewayNotice', () => {
     expect(resolveGatewayNotice(retrying, withTool, 0)?.text).toBe(COPY.restored)
   })
 
-  it('words a throttle retry as the provider throttling, never as the connection', () => {
-    // A throttle is the provider's answer: the network was fine, so neither the
-    // pending card nor either settled card may speak of a connection.
+  it('words a throttle retry as throttling, never as the connection or the provider', () => {
+    // A throttle is an answer: the network was fine, so neither the pending card
+    // nor either settled card may speak of a connection. The same token covers
+    // Kiro's per-user request limit, so no card may blame the model provider.
     const throttled = withNotice('transient_throttle_retrying', 'transient_retry')
-    expect(COPY.throttle_retrying).toBe('The model provider is throttling requests — retrying…')
+    expect(COPY.throttle_retrying).toBe('Requests are being throttled — retrying…')
     expect(resolveGatewayNotice(throttled, [throttled], 0)).toEqual({ text: COPY.throttle_retrying, card: 'notice', tone: 'warn' })
     const answered = [throttled, throttled, msg('assistant', { content: 'ok' })]
     for (const i of [0, 1]) {
@@ -199,7 +200,7 @@ describe('resolveGatewayNotice', () => {
     expect(resolveGatewayNotice(throttleResuming, [throttleResuming, msg('assistant', { content: 'ok' })], 0)?.text).toBe(COPY.throttle_restored)
     expect(resolveGatewayNotice(throttleResuming, [throttleResuming, throttleGiveUp], 0)?.text).toBe(COPY.throttle_interrupted)
     for (const text of [COPY.throttle_retrying, COPY.throttle_restored, COPY.throttle_interrupted, COPY.throttle_give_up, COPY.throttle_resuming]) {
-      expect(text).not.toMatch(/connection/i)
+      expect(text).not.toMatch(/connection|provider/i)
     }
     // A plain 5xx in the same ladder keeps its own connection wording.
     const mixed = [throttled, retrying, msg('assistant', { content: 'ok' })]
@@ -470,6 +471,16 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     // A notice wording on an error row is not ours.
     expect(resolveGatewayNotice(legacy('error', 'ℹ Auto-continue cancelled — your message takes over.'), [], 0)).toBeNull()
   })
+
+  it('localizes the resource-subscription budget pause from its token or its pre-token wording', () => {
+    const args = { subscription: 'rsub_7', server: 'crux (fake)', limit: 48, day: '2026-11-01' }
+    const text =
+      'Resource subscription rsub_7 on crux (fake) reached its 48 wakes for 2026-11-01 (UTC) and is paused until the next UTC day. ' +
+      'Updates meanwhile are folded into one wake after the pause.'
+    expect(resolveGatewayNotice(row('notice', 'resource_wake_budget_paused', args), [], 0)).toEqual({ card: 'notice', text, tone: 'info' })
+    const legacy = msg('notice', { content: text })
+    expect(resolveGatewayNotice(legacy, [], 0)).toEqual({ card: 'notice', text, tone: 'info' })
+  })
 })
 
 describe('the status rows composed outside the dashboard', () => {
@@ -694,14 +705,14 @@ describe('the KAS signed-out row', () => {
       meta: { kind: 'auth_required', notice: 'kas_signed_out', ...(args ? { notice_args: args } : {}) },
     } as Partial<ChatMessage>)
 
-  it('names the route and points at the sign-in button when the card has one', () => {
-    renderWith(mergeRenderers(createTranscriptRenderers({ slot: 's1', onOpenSignIn: () => undefined })), row({ route: 'relay' }))
+  it('shows one line and a Sign in button when the card has one', () => {
+    renderWith(mergeRenderers(createTranscriptRenderers({ slot: 's1', onOpenSignIn: () => undefined })), row({ route: 'bundle' }))
     const card = screen.getByTestId('error-card')
     expect(card).toHaveAttribute('data-auth-required', 'true')
-    expect(card).toHaveTextContent(lead(RELAY, GN.kas_signed_out_sign_in_below))
-    // Plain words: no engine jargon reaches the reader.
-    expect(card).not.toHaveTextContent(/relay|KAS/)
-    expect(screen.getByTestId('error-card-sign-in')).toBeInTheDocument()
+    expect(card).toHaveTextContent('Sign in to Kiro to keep chatting')
+    // Plain words: no engine jargon or Settings path reaches the reader.
+    expect(card).not.toHaveTextContent(/relay|KAS|Settings/)
+    expect(screen.getByTestId('kiro-sign-in-open')).toBeInTheDocument()
     cleanup()
   })
 
@@ -710,7 +721,7 @@ describe('the KAS signed-out row', () => {
     expect(resolveGatewayNotice(r, [r], 0)).toEqual({ text: lead(BUNDLE, GN.kas_signed_out), card: 'error' })
     renderWith(defaultMessageRenderers, r)
     expect(screen.getByTestId('error-card')).toHaveTextContent(lead(BUNDLE, GN.kas_signed_out))
-    expect(screen.queryByTestId('error-card-sign-in')).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-open')).toBeNull()
     cleanup()
   })
 
@@ -734,6 +745,7 @@ describe('the KAS signed-out row', () => {
   })
 
   it.each([
+    'Settings → Kiro account',
     'Settings → Agent Harness → Kiro Agent → Kiro sign-in',
     'Settings → Agent Harness → Kiro sign-in',
   ])('recognises the current "send your message again" ending on a token-less row naming %s, as the side panel writes it', card => {

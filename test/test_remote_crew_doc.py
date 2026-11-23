@@ -60,12 +60,12 @@ def test_every_config_key_the_tuning_table_names_is_still_on_the_record(doc_text
         assert f"`instances.{key}`" in doc_text, f"the page no longer names instances.{key}"
 
 
-def test_the_opt_in_is_still_off_by_default(doc_flat: str) -> None:
-    """The page opens by saying the feature is off until you turn it on."""
+def test_the_page_says_it_is_on_by_default(doc_flat: str) -> None:
+    """The page opens by saying the feature is on until you turn it off."""
     from kiro_crew.config.sections import InstancesConfig
 
-    assert InstancesConfig().enabled is False, "the page says Remote Crew is opt-in"
-    assert "off by default" in doc_flat
+    assert InstancesConfig().enabled is True, "the page says Remote Crew is on by default"
+    assert "on by default" in doc_flat
 
 
 def test_the_defaults_the_tuning_table_quotes_are_the_real_ones(doc_flat: str) -> None:
@@ -173,6 +173,7 @@ def test_the_diagnosis_codes_the_troubleshooting_table_quotes_still_exist(doc_fl
     )
     for code in (
         "ssh_unreachable",
+        "ssh_client_missing",
         "ssm_unreachable",
         "ssm_target_missing",
         "ssm_access_denied",

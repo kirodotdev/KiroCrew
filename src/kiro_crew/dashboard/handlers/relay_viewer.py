@@ -1,21 +1,33 @@
 """The relay viewer's gateway routes: the desktop app lists remote Crews and opens one.
 
-Off unless ``tunnel.relay_viewer_enabled`` is set: both routes answer 404
-``RELAY_VIEWER_OFF`` while it is off. Neither is reachable through the relay
-(``kiro_relay.limits`` refuses everything under ``/api/relay-viewer``).
+On with no setting. A build that locks the ``tunnel`` control (LTS) keeps it
+off: every route answers 404 ``RELAY_VIEWER_OFF`` there. None is reachable
+through the relay (``kiro_relay.limits`` refuses everything under
+``/api/relay-viewer``).
 
 * ``GET /api/relay-viewer/crews``: the owner's dashboard reads the Crews this
-  person can open. The answer carries no token.
+  person can open. The answer carries no token, and names the kind of account
+  it was listed for only when the vault proves it unchanged across the call. A
+  read that succeeded also rings the bell once for a team Crew new to this
+  person (``relay_viewer.crew_notices``).
+* ``POST /api/relay-viewer/crews/seen``: the owner's dashboard records that the
+  person saw or opened those Crews, which clears their dot.
 * ``POST /api/relay-viewer/token``: the desktop app's main process gets an access
   token for one of them. Admitted like ``/api/token/local``: loopback (or the
   dashboard's unix socket from this user), the local secret, and a verified host
   process. A dashboard session alone is refused, so a page cannot call it.
+* ``POST /api/relay-viewer/browser-open``: a browser tab's open. Owner-only and
+  straight from this machine. The same mint as ``/token``, but the gateway keeps
+  the grant (``relay_viewer.browser_origin``) and answers only the URL of the
+  origin it relays that one open on.
 
-Both calls to the control plane go through :mod:`kiro_crew.relay_viewer.cps` with
-the person's Kiro sign-in from the gateway's own vault, or the test credential
-``tunnel.relay_viewer_credential`` names. They go to ``tunnel.relay_viewer_cps_url``
-when it is set, else to the built-in control plane for the sign-in's region. No
-token, sign-in or credential value is logged or put in an error. Every answer is
+Both calls to the control plane go through :mod:`kiro_crew.relay_viewer.cps`, to
+the built-in control plane for the sign-in's region, with the person's Kiro
+sign-in from the gateway's own vault. ``tunnel.relay_viewer_enabled`` is a dev
+switch: only while it is on are ``tunnel.relay_viewer_cps_url``, the test
+credential ``tunnel.relay_viewer_credential`` names and (with the URL)
+``tunnel.relay_viewer_relay_domain`` used instead. No token, sign-in or
+credential value is logged or put in an error. Every answer is
 ``Cache-Control: no-store``.
 """
 
@@ -27,6 +39,7 @@ import logging
 import time
 from contextvars import copy_context
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -34,13 +47,14 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
 from kiro_crew.dashboard.origin import is_loopback
 from kiro_crew.dashboard.token_auth import _ct_eq
+from kiro_crew.edition_locks import local_enable_locked
 from kiro_crew.executors import local_auth_executor, relay_viewer_executor
 
 if TYPE_CHECKING:
     from kiro_crew.relay_viewer import cps
 
 # The control plane client and the relay modules are imported inside the handlers,
-# after the setting check, so a gateway with the viewer off loads none of them.
+# after the edition check, so a build with the viewer locked off loads none of them.
 
 logger = logging.getLogger(__name__)
 
@@ -123,18 +137,28 @@ async def _off_loop(func: Callable[..., _T], /, *args: Any) -> _T:
 
 
 async def _settings() -> Optional[tuple[str, str, str]]:
-    """``(cps_url, credential_ref, crew_domain)`` while the viewer is on, else ``None``."""
+    """``(cps_url, credential_ref, crew_domain)``, or ``None`` in a build that locks ``tunnel``.
+
+    The viewer needs no setting. The three values are dev settings, read only while
+    ``tunnel.relay_viewer_enabled`` is the boolean ``True``, and the domain only
+    with a control plane URL, so a leftover value cannot hide every Crew or send
+    the sign-in somewhere else. Otherwise all three are "": the built-in control
+    plane, the person's sign-in, and the relay host rule in ``relay_viewer.cps``.
+    """
+    if local_enable_locked("tunnel"):
+        return None
     tunnel = await _off_loop(_load_tunnel)
     if getattr(tunnel, "relay_viewer_enabled", False) is not True:
-        return None
-    url = getattr(tunnel, "relay_viewer_cps_url", "")
-    ref = getattr(tunnel, "relay_viewer_credential", "")
-    domain = getattr(tunnel, "relay_viewer_relay_domain", "")
-    return (
-        url.strip() if isinstance(url, str) else "",
-        ref.strip() if isinstance(ref, str) else "",
-        domain.strip() if isinstance(domain, str) else "",
+        return "", "", ""
+    url, ref, domain = (
+        value.strip() if isinstance(value, str) else ""
+        for value in (
+            getattr(tunnel, "relay_viewer_cps_url", ""),
+            getattr(tunnel, "relay_viewer_credential", ""),
+            getattr(tunnel, "relay_viewer_relay_domain", ""),
+        )
     )
+    return url, ref, domain if url else ""
 
 
 def _control_plane(cps_url: str, profile_arn: str) -> str:
@@ -191,6 +215,12 @@ async def _bearer(ref: str, rejected: str = "") -> tuple[str, str, str]:
             return await _off_loop(read_lease_credential, ref), "", ""
         except LeaseCredentialError:
             raise cps.CpsRefused(cps.NOT_SET_UP, "the relay viewer credential can't be read")
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        # A workload host never reads, renews or sends a person's sign-in, so it
+        # lists no Crews of a person (``workload_identity``).
+        raise cps.CpsRefused(cps.SIGNED_OUT, "this Crew runs on its workload identity")
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
@@ -253,6 +283,10 @@ async def _sign_in_marker(ref: str) -> Optional[str]:
     """
     if ref:
         return None
+    from kiro_crew import workload_identity
+
+    if workload_identity.active():
+        return None
     from kiro_crew.auth.bridge import vault_identity_fingerprint
 
     fingerprint = await _off_loop(vault_identity_fingerprint)
@@ -261,7 +295,7 @@ async def _sign_in_marker(ref: str) -> Optional[str]:
     return hashlib.sha256(b"relay-viewer-sign-in\n" + fingerprint.encode()).hexdigest()[:16]
 
 
-def _entry(crew: cps.CrewEndpoint) -> dict[str, Optional[str | int]]:
+def _entry(crew: cps.CrewEndpoint, unseen: bool = False) -> dict[str, Optional[str | int | bool]]:
     seen = crew.last_seen_at
     return {
         "endpointId": crew.endpoint_id,
@@ -271,7 +305,50 @@ def _entry(crew: cps.CrewEndpoint) -> dict[str, Optional[str | int]]:
         "relayConnectionStatus": crew.relay_connection_status,
         "crewUrl": crew.crew_url,
         "lastSeenAt": None if seen is None else int(seen),
+        # A team Crew announced to this person that they have not opened or seen
+        # listed yet (``relay_viewer.crew_notices``).
+        "unseen": unseen,
     }
+
+
+async def _announce(request: web.Request, crews: tuple[cps.CrewEndpoint, ...]) -> frozenset[str]:
+    """Ring the bell for team Crews new to this person; the IDs still unseen.
+
+    Only a list read that succeeded gets here. Never raises: the list answers
+    either way, and a failure here only means no note and no dot.
+    """
+    state = request.app.get("state")
+    if state is None:
+        return frozenset()
+    from kiro_crew.relay_viewer import crew_notices
+
+    try:
+        new, unseen = await _off_loop(crew_notices.reconcile, crews)
+        crew_notices.publish(state, new)
+    except Exception:  # noqa: BLE001 - the notice must never fail the list
+        logger.warning("relay viewer: could not announce new Crews", exc_info=True)
+        return frozenset()
+    return unseen
+
+
+def _account(before: str, after: str, fields: dict[str, object]) -> Optional[dict[str, str]]:
+    """``{accountType, startUrl?}`` for the account the list was read for, or ``None``.
+
+    *before* and *after* are the vault fingerprints read either side of the list
+    call, *fields* the identity fields of the *after* read. Kept only when both
+    fingerprints are the same non-empty value (the credits reading's guard), so it
+    can't name an account a sign-in replaced mid-call. ``None`` for an unlabelled
+    slot. ``startUrl`` only for Identity Center, already capped by the vault read.
+    No token, ARN, e-mail or fingerprint. Never logged.
+    """
+    account_type = fields.get("account_type")
+    if not before or after != before or not isinstance(account_type, str) or not account_type:
+        return None
+    account = {"accountType": account_type}
+    start_url = fields.get("start_url")
+    if account_type == "IamIdentityCenter" and isinstance(start_url, str) and start_url:
+        account["startUrl"] = start_url
+    return account
 
 
 async def api_relay_viewer_crews(request: web.Request) -> web.Response:
@@ -288,7 +365,11 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     if denied is not None:
         denied.headers.update(_NO_STORE)
         return denied
+    from kiro_crew.dashboard.handlers.kiro_vault_identity import vault_identity_snapshot
+
     cps_url, ref, crew_domain = settings
+    # The test credential names no vault account, so it gets no account field.
+    before = "" if ref else (await vault_identity_snapshot())[0]
     try:
         crews = await _with_sign_in(
             ref,
@@ -297,28 +378,89 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
                 bearer,
                 crew_domain=crew_domain,
                 token_type=token_type,
+                profile_arn=profile_arn,
             ),
         )
     except cps.CpsRefused as exc:
         logger.info("relay viewer: crews -> %s", exc.code)
         return _refused(exc)
     logger.info("relay viewer: crews -> %d listed", len(crews))
-    return _ok({"crews": [_entry(c) for c in crews]})
+    after = await vault_identity_snapshot() if before else None
+    unseen = await _announce(request, crews)
+    body: dict[str, Any] = {"crews": [_entry(c, c.endpoint_id in unseen) for c in crews]}
+    if crews.off_domain:
+        # Listed Crews the dev relay domain setting alone left out: the setting is
+        # wrong for this relay, and the dashboard says so rather than showing none.
+        body["offDomain"] = crews.off_domain
+    account = _account(before, *after) if after else None
+    if account is not None:
+        body["account"] = account
+    return _ok(body)
 
 
-def _audit(request: web.Request, outcome: str, resources: str) -> None:
+#: The most endpoint IDs one seen request may name, well above any real list.
+_MAX_SEEN_IDS = 200
+
+
+async def api_relay_viewer_crews_seen(request: web.Request) -> web.Response:
+    """POST /api/relay-viewer/crews/seen: the person saw these Crews, so drop their dot.
+
+    Body ``{"endpointIds": [...]}``. Owner-only like the list; an ID the state
+    file does not hold is ignored, so the answer says nothing about which exist.
+    """
+    settings = await _settings()
+    if settings is None:
+        return _off()
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
+    from kiro_crew.relay_client.protocol import ENDPOINT_ID_RE
+    from kiro_crew.relay_viewer import crew_notices
+
+    if published_relay_caller(request) is not None:
+        return _error("Not available through the relay.", "relay_local_credential", 403)
+    denied = await require_owner_dashboard_request(request, "relay_viewer.crews_seen")
+    if denied is not None:
+        denied.headers.update(_NO_STORE)
+        return denied
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    ids = body.get("endpointIds") if isinstance(body, dict) else None
+    if (
+        not isinstance(ids, list)
+        or len(ids) > _MAX_SEEN_IDS
+        or not all(isinstance(i, str) and ENDPOINT_ID_RE.match(i) for i in ids)
+    ):
+        return _error("endpointIds must be a list of Crew endpoint IDs.", "INVALID_REQUEST", 400)
+    if not await _off_loop(crew_notices.mark_seen, ids):
+        return _error("Couldn't save that these Crews were seen.", "NOT_SAVED", 503)
+    return _ok({"ok": True})
+
+
+def _audit(
+    request: web.Request,
+    outcome: str,
+    resources: str,
+    operation: str = "relay_viewer.token",
+    source: str = "local-bootstrap",
+) -> None:
     try:
         from kiro_crew.sel import sel as _sel
 
         _sel().log_api_access(
             caller=request.remote or "unknown",
-            operation="relay_viewer.token",
+            operation=operation,
             outcome=outcome,
-            source="local-bootstrap",
+            source=source,
             resources=resources,
         )
     except Exception:  # pragma: no cover - audit must never change the outcome
-        logger.debug("SEL audit for relay_viewer.token failed", exc_info=True)
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _audit_browser_open(request: web.Request, outcome: str, resources: str) -> None:
+    """One SEL row per browser-open decision; it names the Crew, never a ``sid``."""
+    _audit(request, outcome, resources, "relay_viewer.browser_open", "dashboard")
 
 
 async def _local_main_refusal(request: web.Request) -> Optional[web.Response]:
@@ -345,37 +487,18 @@ async def _local_main_refusal(request: web.Request) -> Optional[web.Response]:
     return None
 
 
-async def api_relay_viewer_token(request: web.Request) -> web.Response:
-    """POST /api/relay-viewer/token: an access token for one Crew, for main only."""
-    refusal = await _local_main_refusal(request)
-    if refusal is not None:
-        return refusal
-    settings = await _settings()
-    if settings is None:
-        return _off()
-    from kiro_crew.relay_client.protocol import ENDPOINT_ID_RE
+async def _mint_checked(
+    settings: tuple[str, str, str], endpoint_id: str, expected: Optional[str]
+) -> tuple[cps.CrewEndpoint, cps.CrewAccessToken, Optional[str]]:
+    """List, then mint a token for *endpoint_id*, under the sign-in *expected* names.
+
+    Answers ``(crew, grant, marker)``; raises :class:`cps.CpsRefused`. *expected* is
+    the marker a page was opened under (``None`` for a first open). Shared by the
+    desktop's token route and the browser's open route, so both refuse the same.
+    """
     from kiro_crew.relay_viewer import cps
 
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001 - any unreadable body is the same bad request
-        body = None
-    endpoint_id = body.get("endpointId") if isinstance(body, dict) else None
-    if not isinstance(endpoint_id, str) or not ENDPOINT_ID_RE.match(endpoint_id):
-        return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a Crew endpoint ID"))
-    # The sign-in marker the window was opened under; none on a first open.
-    expected = body.get("signInMarker")
-    if expected is not None and not (
-        isinstance(expected, str) and len(expected) == 16 and set(expected) <= _HEX
-    ):
-        return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a sign-in marker"))
     cps_url, ref, crew_domain = settings
-    # The desktop app opens only https://<endpointId>.<relay domain>, so with no
-    # domain no token is minted: the answer says what is missing instead.
-    if not crew_domain:
-        return _refused(
-            cps.CpsRefused(cps.NOT_SET_UP, "tunnel.relay_viewer_relay_domain is not set")
-        )
 
     async def _list_then_mint(
         bearer: str, token_type: str, profile_arn: str
@@ -387,7 +510,11 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
             (
                 c
                 for c in await cps.list_crew_endpoints(
-                    url, bearer, crew_domain=crew_domain, token_type=token_type
+                    url,
+                    bearer,
+                    crew_domain=crew_domain,
+                    token_type=token_type,
+                    profile_arn=profile_arn,
                 )
                 if c.endpoint_id == endpoint_id
             ),
@@ -421,37 +548,69 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         )
 
     before = await _sign_in_marker(ref)
+    # (a) An empty read can't tell, so it skips this (b): a sign-out then
+    # answers SIGNED_OUT from the bearer read.
+    if expected and before is not None and before != expected:
+        raise _changed()
     try:
-        # (a) An empty read can't tell, so it skips this (b): a sign-out then
-        # answers SIGNED_OUT from the bearer read.
-        if expected and before is not None and before != expected:
-            raise _changed()
-        try:
-            crew, grant = await _with_sign_in(ref, _list_then_mint)
-        except cps.CpsRefused as exc:
-            # (c) A switch that landed after the first read, refused by the new
-            # account's CPS answer.
-            if expected and exc.code != cps.SIGNED_OUT:
-                now = await _sign_in_marker(ref)
-                if now is not None and now != expected:
-                    raise _changed() from None
-            raise
-        marker = await _sign_in_marker(ref)
-        # (d) A window's renewal needs its own marker back; a first open needs
-        # the two reads to agree.
-        if expected:
-            if marker is None:
-                raise _straddled()
-            if marker != expected:
-                raise _changed()
-        elif marker != before:
+        crew, grant = await _with_sign_in(ref, _list_then_mint)
+    except cps.CpsRefused as exc:
+        # (c) A switch that landed after the first read, refused by the new
+        # account's CPS answer.
+        if expected and exc.code != cps.SIGNED_OUT:
+            now = await _sign_in_marker(ref)
+            if now is not None and now != expected:
+                raise _changed() from None
+        raise
+    marker = await _sign_in_marker(ref)
+    # (d) A window's renewal needs its own marker back; a first open needs
+    # the two reads to agree.
+    if expected:
+        if marker is None:
             raise _straddled()
+        if marker != expected:
+            raise _changed()
+    elif marker != before:
+        raise _straddled()
+    return crew, grant, marker
+
+
+async def api_relay_viewer_token(request: web.Request) -> web.Response:
+    """POST /api/relay-viewer/token: an access token for one Crew, for main only."""
+    refusal = await _local_main_refusal(request)
+    if refusal is not None:
+        return refusal
+    settings = await _settings()
+    if settings is None:
+        return _off()
+    from kiro_crew.relay_client.protocol import ENDPOINT_ID_RE
+    from kiro_crew.relay_viewer import cps
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - any unreadable body is the same bad request
+        body = None
+    endpoint_id = body.get("endpointId") if isinstance(body, dict) else None
+    if not isinstance(endpoint_id, str) or not ENDPOINT_ID_RE.match(endpoint_id):
+        return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a Crew endpoint ID"))
+    # The sign-in marker the window was opened under; none on a first open.
+    expected = body.get("signInMarker")
+    if expected is not None and not (
+        isinstance(expected, str) and len(expected) == 16 and set(expected) <= _HEX
+    ):
+        return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a sign-in marker"))
+    try:
+        crew, grant, marker = await _mint_checked(settings, endpoint_id, expected)
     except cps.CpsRefused as exc:
         logger.info("relay viewer: mint %s -> %s", endpoint_id, exc.code)
         _audit(request, "denied", f"{endpoint_id} {exc.code}")
         return _refused(exc)
     logger.info("relay viewer: mint %s -> done", endpoint_id)
     _audit(request, "success", endpoint_id)
+    # No dev relay domain: pin the window to the exact host the control plane listed for
+    # this Crew. The list kept only https://<endpointId>.<host> with no port.
+    crew_domain = settings[2]
+    relay_domain = crew_domain or (urlsplit(crew.crew_url).hostname or "")[len(endpoint_id) + 1 :]
     return _ok(
         {
             "accessToken": grant.access_token,
@@ -460,9 +619,119 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
             "serverDate": grant.server_date,
             "crewUrl": crew.crew_url,
             # The desktop app sends the token only to exactly
-            # https://<endpointId>.<relayDomain>, so it opens no Crew while this is empty.
-            "relayDomain": crew_domain,
+            # https://<endpointId>.<relayDomain>.
+            "relayDomain": relay_domain,
             "name": crew.name,
             "signInMarker": marker,
         }
     )
+
+
+def _expires_in(grant: cps.CrewAccessToken) -> float:
+    """Seconds until *grant* ends, on the control plane's clock when it sent one."""
+    now = grant.server_date if grant.server_date is not None else time.time()
+    return max(0.0, grant.expires_at - now)
+
+
+def _renew_in(grant: cps.CrewAccessToken) -> float:
+    """Seconds until *grant* should be renewed: the control plane's, else a minute before it ends."""
+    if grant.renew_in_seconds is not None and grant.renew_in_seconds > 0:
+        return float(grant.renew_in_seconds)
+    now = grant.server_date if grant.server_date is not None else time.time()
+    return max(0.0, grant.expires_at - now - 60.0)
+
+
+async def api_relay_viewer_browser_open(request: web.Request) -> web.Response:
+    """POST /api/relay-viewer/browser-open: open one Crew in a browser tab.
+
+    For a dashboard with no desktop shell. Owner-only, straight from this machine,
+    never through the relay. Mints as ``/token`` does, keeps the grant in the
+    gateway (``relay_viewer.browser_origin``) and answers only the tab's URL, an
+    origin of its own for this one open. No token or marker is in the answer.
+    """
+    settings = await _settings()
+    if settings is None:
+        _audit_browser_open(request, "denied", OFF_CODE)
+        return _off()
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
+    from kiro_crew.dashboard.origin import _split_authority, is_direct_local_request
+    from kiro_crew.relay_client.protocol import ENDPOINT_ID_RE
+    from kiro_crew.relay_viewer import browser_origin, cps
+
+    if published_relay_caller(request) is not None:
+        _audit_browser_open(request, "denied", "relay_local_credential")
+        return _error("Not available through the relay.", "relay_local_credential", 403)
+    denied = await require_owner_dashboard_request(request, "relay_viewer.browser_open")
+    if denied is not None:
+        denied.headers.update(_NO_STORE)
+        return denied
+    # The tab's name resolves to the browser's own loopback, so only a browser on
+    # this machine reaches it (an ssh -L forward on a served port included).
+    if not is_direct_local_request(request):
+        _audit_browser_open(request, "denied", "BROWSER_NOT_LOCAL")
+        return _error(
+            "Open this Crew from a browser on the machine that runs this Crew.",
+            "BROWSER_NOT_LOCAL",
+            403,
+        )
+    from kiro_crew.apps.app_web_origin import _served_ports, dashboard_loopback_origins
+
+    # The tab is served only on a dashboard port, so refuse a forward on another
+    # one here, before any mint, rather than open a tab that cannot load.
+    parts = _split_authority(request.headers.get("Host", ""))
+    port = parts[1] if parts is not None else ""
+    served = _served_ports(dashboard_loopback_origins(request.app.get("allowed_origins") or ()))
+    if (port[1:] or "80") not in served:
+        _audit_browser_open(request, "denied", "BROWSER_PORT_NOT_SERVED")
+        return _error(
+            "This port is not one the dashboard serves: forward the dashboard's own port,"
+            " or list this one in KIROCREW_ALLOWED_LOOPBACK_PORTS.",
+            "BROWSER_PORT_NOT_SERVED",
+            403,
+        )
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - any unreadable body is the same bad request
+        body = None
+    endpoint_id = body.get("endpointId") if isinstance(body, dict) else None
+    if not isinstance(endpoint_id, str) or not ENDPOINT_ID_RE.match(endpoint_id):
+        _audit_browser_open(request, "denied", cps.INVALID_REQUEST)
+        return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a Crew endpoint ID"))
+    at = browser_origin.epoch()
+    try:
+        crew, grant, marker = await _mint_checked(settings, endpoint_id, None)
+    except cps.CpsRefused as exc:
+        logger.info("relay viewer: browser open %s -> %s", endpoint_id, exc.code)
+        _audit_browser_open(request, "denied", f"{endpoint_id} {exc.code}")
+        return _refused(exc)
+    ref = settings[1]
+
+    async def renew(expected: Optional[str]) -> tuple[str, float, float, Optional[str]]:
+        # Read again: the viewer turned off since the open ends it.
+        current = await _settings()
+        if current is None:
+            raise cps.CpsRefused(cps.NOT_SET_UP, "the relay viewer is turned off")
+        _crew, fresh, now = await _mint_checked(current, endpoint_id, expected)
+        return fresh.access_token, _renew_in(fresh), _expires_in(fresh), now
+
+    async def marker_now() -> Optional[str]:
+        return await _sign_in_marker(ref)
+
+    sid = browser_origin.register(
+        at,
+        endpoint_id,
+        crew.crew_url,
+        grant.access_token,
+        _renew_in(grant),
+        _expires_in(grant),
+        marker,
+        renew,
+        marker_now,
+    )
+    if sid is None:
+        logger.info("relay viewer: browser open %s -> closed while minting", endpoint_id)
+        _audit_browser_open(request, "denied", f"{endpoint_id} {cps.SIGNED_OUT}")
+        return _refused(cps.CpsRefused(cps.SIGNED_OUT, "your Kiro sign-in changed, open it again"))
+    logger.info("relay viewer: browser open %s -> done", endpoint_id)
+    _audit_browser_open(request, "success", endpoint_id)
+    return _ok({"url": f"http://{browser_origin.relay_host(sid)}{port}/"})

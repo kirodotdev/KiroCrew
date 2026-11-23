@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,17 +87,33 @@ def _git(repo: Path, *args: str) -> str:
     return out.stdout.strip()
 
 
-def _repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    (repo / "mod.py").write_text("def last_char(s):\n    return s[len(s) - 2]\n")
-    (repo / "test_mod.py").write_text(
+_TEMPLATE: list[Path] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _repo_template(tmp_path_factory):
+    """Build the base repo once per module; ``_repo`` copies it for each test.
+
+    Safe to share because no test is handed the template, only a copy of it.
+    """
+    root = tmp_path_factory.mktemp("prove-line-seed") / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    (root / "mod.py").write_text("def last_char(s):\n    return s[len(s) - 2]\n")
+    (root / "test_mod.py").write_text(
         "from mod import last_char\n\n\ndef test_smoke():\n    assert last_char('abc') == 'b'\n"
     )
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-qm", "base")
-    _git(repo, "checkout", "-q", "-b", "feature")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "base")
+    _git(root, "checkout", "-q", "-b", "feature")
+    _TEMPLATE.append(root)
+    yield
+    _TEMPLATE.remove(root)
+
+
+def _repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    shutil.copytree(_TEMPLATE[-1], repo)
     return repo
 
 

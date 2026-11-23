@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
+import { SettingsCard, SettingsGroupHeader, SettingsSection, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Btn } from '../../components/ui'
 import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
@@ -44,6 +44,7 @@ import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
 import { i18nT } from '../../i18n/t'
 import { useProvider } from '../../providers'
 import { useModelsAuthRequired, useModelsDegradedReason } from '../../providers/modelListHealth'
+import { KiroCliSignInButton, useKiroCliCanRunHere, useKiroCliSignInInTerminal } from '../../components/KiroCliSignInInTerminal'
 import ErrorNotice from '../../components/ErrorNotice'
 import { parseWholeNumber } from '../../utils/wholeNumber'
 
@@ -160,6 +161,14 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       qc.invalidateQueries({ queryKey: ['session-summary'] })
     },
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_summaries')),
+  })
+
+  // ── Since you left briefs (server-side; read on each qualifying return) ──
+  const warmTaskBrief = mcCfg?.dashboard?.warm_task_brief ?? true
+  const warmTaskBriefMut = useMutation({
+    mutationFn: (v: boolean) => api.patchConfig('dashboard.warm_task_brief', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_warm_task_brief')),
   })
 
   // ── Auto-title refresh cadence (server-side; one background call per refresh) ──
@@ -325,8 +334,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const dashDisabled = !dashQ.isSuccess
-  // The conductor mode default is shown wherever conductor mode is: in an LTS build
-  // no chat offers it, so the setting would change nothing.
+  // The conductor mode settings are shown wherever conductor mode is: in an LTS
+  // build no chat offers it, so they would change nothing.
   const crewModeOffered = useCrewMode()
 
   // Second-level rail groups. Order = rail order; the first item (Transcript)
@@ -354,14 +363,20 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // one happened to host them when the page was one scroll.
   // When the model list is degraded because kiro-cli's login expired or is
   // signed out, the MODEL-LIST banner's notice says the one thing that fixes it
-  // (run `kiro-cli login`) instead of the generic "Failed to load config." The
+  // (sign kiro-cli in, through the button beside it that runs the sign-in in the
+  // Terminal panel) instead of the generic "Failed to load config." The
   // flag is set where the /api/models error is formed (providers/adapters/acp.ts),
   // so this reads one boolean rather than the refusal code; it feeds only the
   // availableModelsQ banner, since the dashboard/roster reads do not carry it.
   const kiroSignInRequired = useModelsAuthRequired(provider.id)
   const modelsDegradedReason = useModelsDegradedReason(provider.id)
+  const kiroCliSignIn = useKiroCliSignInInTerminal()
+  // Settings runs outside every chat, so the app-wide Terminal receiver answers.
+  const kiroCliCanRun = useKiroCliCanRunHere(true)
   const configLoadMessage = kiroSignInRequired
-    ? i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')
+    ? kiroCliCanRun
+      ? i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out')
+      : i18nT('pages.settings.chatPanel.failed_to_load_config_kiro_signed_out_copy')
     : i18nT('pages.settings.chatPanel.failed_to_load_config')
   const banner = (
     <>
@@ -423,13 +438,15 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           {/* No hand-off: the editable drafts in this panel stay mounted while
               the catalog retry runs; navigating away could discard them. This is
               the one banner whose cause the sign-in flag describes, so it shows
-              the "run kiro-cli login" message when the model list is degraded by
-              an expired / signed-out login. The failed fetch's own error sits
-              under either lead. */}
+              the kiro-cli sign-in message and its button when the model list is
+              degraded by an expired / signed-out login. Other failures keep
+              the failed fetch's own error under the generic lead. */}
           <ErrorNotice
             className="flex-1 min-w-[16rem]"
-            {...loadFailure(configLoadMessage, modelsDegradedReason)}
+            {...loadFailure(configLoadMessage, kiroSignInRequired ? '' : modelsDegradedReason)}
           />
+          {kiroSignInRequired && <KiroCliSignInButton signIn={{ run: kiroCliSignIn.askToSignIn, command: kiroCliSignIn.command, canRun: kiroCliCanRun }} />}
+          {kiroCliSignIn.dialog}
           <Btn onClick={() => availableModelsQ.refetch()}>{i18nT('pages.settings.chatPanel.retry')}</Btn>
         </div>
       )}
@@ -612,8 +629,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </div>
 
         <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_background')}</h4>
-        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_for_background_lite_heartbeat_work')}</div>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.role_background')} description={i18nT('pages.settings.chatPanel.model_for_background_lite_heartbeat_work')} />
         <SettingsCard index={1}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.background_model')}
@@ -637,10 +653,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </div>
 
         <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.role_subagents')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.role_subagents')} />
         {/* The memory cost of a pin, at the place the pin is chosen: a pinned
             subagent cannot share its parent chat's runtime. */}
-        <div className="text-[12px] text-muted mb-1" data-testid="subagent-pin-runtime-cost">
+        <div className="text-[12px] text-muted -mt-1 mb-2 px-4 max-w-[720px]" data-testid="subagent-pin-runtime-cost">
           {i18nT('pages.settings.chatPanel.subagent_pin_runtime_cost')}
         </div>
         <SettingsCard index={2}>
@@ -665,11 +681,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </SettingsCard>
         </div>
 
-        <h4 className="text-base font-semibold text-text-strong mb-2">{i18nT('pages.settings.chatPanel.fallbacks')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.fallbacks')} />
         <KiroHarnessFallbackNote cfg={mcCfg} />
         <div className="mb-8">
-        <h5 className="text-sm font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.throttle_fallback')}</h5>
-        <div className="text-[12px] text-muted mb-1">{i18nT('pages.settings.chatPanel.model_tried_when_your_current_model_stays_rate_li')}</div>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.throttle_fallback')} description={i18nT('pages.settings.chatPanel.model_tried_when_your_current_model_stays_rate_li')} size="sm" />
         <SettingsCard index={3}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.fallback_model')}
@@ -685,8 +700,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         </div>
 
         <div>
-        <h5 className="text-sm font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</h5>
-        <div className="text-[12px] text-muted mb-1">
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.refusal_fallback')} size="sm" />
+        <div className="text-[12px] text-muted -mt-1 mb-2 px-4 max-w-[720px]">
           {i18nT('pages.settings.chatPanel.refusal_fallback_desc')}{' '}
           {i18nT('pages.settings.chatPanel.refusal_fallback_same_model_note')}
         </div>
@@ -745,7 +760,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       <>
       {/* Same treatment as Model: headings and spacing mark the groups, no boxes. */}
       <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.power')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.power')} />
         <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.chatPanel.prevent_sleep_while_running')}
@@ -759,7 +774,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       </div>
 
       <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.turns')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.turns')} />
         <SettingsCard index={1}>
           <SettingsInput
             label={i18nT('pages.settings.chatPanel.turn_time_limit')}
@@ -793,7 +808,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       </div>
 
       <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.context')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.context')} />
         <SettingsCard index={2}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
@@ -860,7 +875,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       </div>
 
       <div>
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.subagents')}</h4>
+        <SettingsGroupHeader title={i18nT('pages.settings.chatPanel.subagents')} />
         <SettingsCard index={3}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.completion_event_truncation')}
@@ -963,6 +978,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'transcript':
           return (
+        <>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_messages')}>
         <SettingsCard>
           <SettingsButtonGroup
             label={i18nT('pages.settings.chatPanel.text_streaming_style')}
@@ -990,11 +1007,19 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             onDecrement={() => setChat('messageFontSize', Math.max(MIN_MESSAGE_FONT_SIZE, chatCfg.messageFontSize - 1))}
           />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.minimap_location')} hint={i18nT('pages.settings.chatPanel.minimap_location_desc')} value={chatCfg.minimapSide} options={[{ value: "left", label: i18nT('pages.settings.chatPanel.minimap_side_left') }, { value: "right", label: i18nT('pages.settings.chatPanel.minimap_side_right') }]} onChange={v => setChat('minimapSide', v as ChatConfig['minimapSide'])} />
+        </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_steps')}>
+        <SettingsCard index={1}>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_thinking_inline')} hint={i18nT('pages.settings.chatPanel.show_intermediate_reasoning_text_between_tool_ca')} checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_last_prompt')} hint={i18nT('pages.settings.chatPanel.pin_last_prompt_desc')} checked={chatCfg.pinLastPrompt} onChange={v => setChat('pinLastPrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} hint={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.tool_calls_start_expanded')} hint={i18nT('pages.settings.chatPanel.tool_calls_start_expanded_desc')} checked={chatCfg.toolCallsStartExpanded} onChange={v => setChat('toolCallsStartExpanded', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.reasoning_starts_expanded')} hint={i18nT('pages.settings.chatPanel.reasoning_starts_expanded_desc')} checked={chatCfg.reasoningStartsExpanded} onChange={v => setChat('reasoningStartsExpanded', v)} />
+        </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_files_links')}>
+        <SettingsCard index={2}>
           <SettingsSelect label={i18nT('pages.settings.chatPanel.file_change_chips')} hint={i18nT('pages.settings.chatPanel.how_file_diff_chips_appear_below_assistant_messa')} value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={[i18nT('pages.settings.chatPanel.expanded_icon_name_stats'), i18nT('pages.settings.chatPanel.minimal_stats_only_name_on_hover')]} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />
           {/* Sits beside File change chips because it governs the same surface —
               how a diff reads in the transcript. Phrased as "plain diffs ON"
@@ -1019,12 +1044,22 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw_summary')} hint={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
           <LinkPatternsEditor label={i18nT('pages.settings.chatPanel.link_patterns')} hint={i18nT('pages.settings.chatPanel.link_patterns_desc', { placeholder: '{match}' })} configKey="dashboard.link_patterns" rules={dashCfg.link_patterns ?? []} onSave={next => dashMut.mutateAsync({ link_patterns: next })} disabled={dashDisabled} draft={linkPatternsDraft} />
+        </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_replies')}>
+        <SettingsCard index={3}>
           <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} hint={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={[i18nT('pages.settings.chatPanel.more_encourage_widgets'), i18nT('pages.settings.chatPanel.less_only_when_needed')]} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} hint={i18nT('pages.settings.chatPanel.response_verbosity_hint')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.answer_only_details_on_request')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.preferred_language')} hint={i18nT('pages.settings.chatPanel.preferred_language_hint')} value={asPreferredLanguage(dashCfg.preferred_language)} options={PREFERRED_LANGUAGE_OPTIONS} optionLabels={preferredLanguageLabels()} onChange={v => setDash({ preferred_language: v })} disabled={dashDisabled} />
+        </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title={i18nT('pages.settings.chatPanel.group_context')}>
+        <SettingsCard index={4}>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_context_percentage')} hint={i18nT('pages.settings.chatPanel.display_usage_percentage_next_to_the_context_pro')} checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_token_usage')} hint={i18nT('pages.settings.chatPanel.display_used_and_total_tokens_next_to_the_contex')} checked={chatCfg.showContextTokens} onChange={v => setChat('showContextTokens', v)} />
         </SettingsCard>
+        </SettingsSection>
+        </>
           )
 
         case 'sidepanel':
@@ -1034,6 +1069,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} hint={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_always_open')} hint={i18nT('pages.settings.chatPanel.side_panel_always_open_hint')} configKey="dashboard.side_panel_always_open" checked={dashCfg.side_panel_always_open ?? false} onChange={v => setDash({ side_panel_always_open: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_pin_summary')} description={pinSummaryNeedsSummaries ? i18nT('pages.settings.chatPanel.side_panel_pin_summary_needs_session_summaries') : undefined} hint={i18nT('pages.settings.chatPanel.side_panel_pin_summary_hint')} configKey="dashboard.side_panel_pin_summary" checked={dashCfg.side_panel_pin_summary ?? false} onChange={v => setDash({ side_panel_pin_summary: v })} disabled={dashDisabled} />
+          {crewModeOffered && (
+            <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_conductor_board')} hint={i18nT('pages.settings.chatPanel.auto_open_conductor_board_hint')} configKey="dashboard.auto_open_conductor_board" checked={dashCfg.auto_open_conductor_board ?? true} onChange={v => setDash({ auto_open_conductor_board: v })} disabled={dashDisabled} />
+          )}
         </SettingsCard>
           )
 
@@ -1117,6 +1155,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} hint={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab')} hint={i18nT('pages.settings.chatPanel.sidebar_click_opens_tab_desc')} checked={chatCfg.sidebarClickOpensTab} onChange={v => setChat('sidebarClickOpensTab', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.compact_empty_folders')} hint={i18nT('pages.settings.chatPanel.a_folder_with_no_chats_takes_one_row_instead_of')} checked={chatCfg.hideEmptyFolderBody} onChange={v => setChat('hideEmptyFolderBody', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.hide_empty_folders')} hint={i18nT('pages.settings.chatPanel.hide_empty_folders_description')} checked={chatCfg.hideEmptyFolders} onChange={v => setChat('hideEmptyFolders', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders')} hint={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders_description')} checked={chatCfg.countSubfolderContents} onChange={v => setChat('countSubfolderContents', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.full_titles_on_scroll')} hint={i18nT('pages.settings.chatPanel.full_titles_on_scroll_description')} checked={chatCfg.fullTitlesOnScroll} onChange={v => setChat('fullTitlesOnScroll', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.needs_me_hover_card')} hint={i18nT('pages.settings.chatPanel.needs_me_hover_card_hint')} checked={chatCfg.needsMeHoverCard} onChange={v => setChat('needsMeHoverCard', v)} />
@@ -1169,6 +1208,15 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} hint={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} hint={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_hint')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
+          <SettingsToggle
+            label={i18nT('pages.settings.chatPanel.warm_task_brief')}
+            description={i18nT('pages.settings.chatPanel.warm_task_brief_desc')}
+            hint={i18nT('pages.settings.chatPanel.warm_task_brief_hint')}
+            checked={warmTaskBrief}
+            onChange={v => warmTaskBriefMut.mutate(v)}
+            disabled={!mcQ.isSuccess || warmTaskBriefMut.isPending}
+            configKey="dashboard.warm_task_brief"
+          />
           {/* 0 is the built-in schedule and reads as "Default", so + leaves it
               for the minimum cadence, − at the minimum returns to it, and − at
               Default is disabled: there is nothing below it. A plain +/− stepper
@@ -1189,6 +1237,11 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_title_lines')} hint={i18nT('pages.settings.chatPanel.session_title_lines_desc')} value={String(chatCfg.sessionTitleLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionTitleLines', n) }} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.session_preview_lines')} hint={i18nT('pages.settings.chatPanel.session_preview_lines_desc')} value={String(chatCfg.sessionPreviewLines)} options={[...CARD_LINE_OPTIONS]} onChange={v => { const n = Number(v); if (isCardLineCount(n)) setChat('sessionPreviewLines', n) }} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
+          {/* A refinement of the toggle above, shown only while it is on (the
+              Restore window pattern), so the two can never disagree. */}
+          {dashCfg.folder_suggestions_enabled && (
+            <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions_auto_apply')} description={i18nT('pages.settings.chatPanel.folder_suggestions_auto_apply_desc')} configKey="dashboard.folder_suggestions_auto_apply" checked={dashCfg.folder_suggestions_auto_apply ?? false} onChange={v => setDash({ folder_suggestions_auto_apply: v })} disabled={dashDisabled} />
+          )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.project_tags')} description={i18nT('pages.settings.chatPanel.project_tags_desc')} configKey="dashboard.project_tags_enabled" checked={dashCfg.project_tags_enabled ?? true} onChange={v => setDash({ project_tags_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.topic_tags')} description={i18nT('pages.settings.chatPanel.topic_tags_desc')} configKey="dashboard.topic_tags_enabled" checked={dashCfg.topic_tags_enabled ?? false} onChange={v => setDash({ topic_tags_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>

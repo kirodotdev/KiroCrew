@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         is_structured_monitor_loop,
         logger,
         monitor_state_public_dict,
+        payload_from_legacy,
         reason_in,
         redact_credentials,
         redact_exfiltration_urls,
@@ -611,24 +612,21 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
         await asyncio.to_thread(append_and_surface, state, slot, "notice", text, "msg msg-info")
 
     def _worker_slot_running(session_key: str) -> bool:
-        """Bind the wake gate's liveness question to this gateway's slot table.
+        """Whether the worker owns proven current or queued session work.
 
-        The logic is ``ledger_wake.worker_running``, not a copy of it here: a
-        closure inside this constructor is unreachable from a test, and the one
-        hop the probe cannot make for itself is exactly the hop that should not
-        be the untested one. This keeps only the binding, which is what a
-        gateway is for.
-
-        Imported HERE rather than at module scope, matching
-        ``_monitor_owner_session_id`` below. ``ledger_wake`` reaches the
-        work-ledger store, and every gateway boots whether or not any conductor
-        has ever opened a ledger, so a module-level import would put an optional
-        subsystem on the startup path of every install to serve a callable that
-        only runs once a work-ledger watch ticks.
+        The work-ledger read, Board and patrol use the same session activity
+        snapshot, so a workflow or sub-agent cannot look live on one surface and
+        stalled on another. An unreadable probe suppresses no wake.
         """
-        from kiro_crew import ledger_wake
+        state = self.dashboard_state
+        if state is None:
+            return False
+        from kiro_crew.dashboard.session_activity import (
+            session_activity_for_key,
+            session_work_pending,
+        )
 
-        return ledger_wake.worker_running(self.dashboard_state, session_key)
+        return session_work_pending(session_activity_for_key(state, session_key))
 
     def _worker_slot_closed(session_key: str) -> bool:
         """Bind the wake gate's "is this worker gone" question to the slot table.
@@ -643,6 +641,19 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
 
         return ledger_wake.worker_closed(self.dashboard_state, session_key)
 
+    async def _pull_remote_reports(conductor_key: str) -> None:
+        """Bind the patrol tick's remote report pull to this gateway's dashboard.
+
+        The logic is ``remote_puller.on_patrol_tick``; imported here so a gateway
+        with no remote dispatch never loads it on its startup path.
+        """
+        state = self.dashboard_state
+        if state is None:
+            return
+        from kiro_crew.dashboard.handlers import remote_puller
+
+        await remote_puller.on_patrol_tick(state, conductor_key)
+
     self.autonudge_svc = AutoNudgeService(
         base_dir=data_home(),
         on_fire=_fire,
@@ -651,6 +662,7 @@ async def _init_autonudge(self: GatewayOrchestrator) -> None:
         emit_judge_notice=_emit_judge_notice,
         worker_running=_worker_slot_running,
         worker_closed=_worker_slot_closed,
+        pull_remote_reports=_pull_remote_reports,
     )
 
     def _monitor_owner_session_id(loop: NudgeLoop) -> str:
@@ -769,12 +781,26 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
         # Dashboard loops bind on the BARE slot key, so re-qualify those to
         # get a working jump-to-source slot link.
         meta = None if is_channel_key(key) else self._notif_meta(f"dashboard:{key}")
+        state = self.dashboard_state
+
+        def _emit(title: str, body: str, *, merged: bool) -> None:
+            if not merged:
+                state.notify("agent", title, body, meta=meta, channel=MONITOR_CHANNEL)
+                return
+            # A merge needs nothing from the user, so it lands in the feed without a
+            # banner, sound or unread count. Every other stop keeps the channel's
+            # priority: each one either asks for a decision or reports a goal unmet.
+            payload = payload_from_legacy("agent", title, body, meta, channel=MONITOR_CHANNEL)
+            payload.priority = "passive"
+            state.notification_bus.push(payload)
+
         if is_structured_monitor_loop(loop):
             monitor = loop.monitor
             assert monitor is not None
             outcome = monitor.outcome
             reason = monitor.stopped_reason
-            if outcome is MonitorOutcome.SUCCESS and reason == "pull_request_merged":
+            merged = outcome is MonitorOutcome.SUCCESS and reason == "pull_request_merged"
+            if merged:
                 title = "Pull request monitor finished — pull request merged"
                 body = "The pull request was merged. No action needed for this watch."
             elif outcome is MonitorOutcome.SUCCESS:
@@ -859,7 +885,7 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
             body = f"{body}\n\n{monitor.target}"
             body, _ = redact_exfiltration_urls(body)
             body, _ = redact_credentials(body)
-            self.dashboard_state.notify("agent", title, body, meta=meta, channel=MONITOR_CHANNEL)
+            _emit(title, body, merged=merged)
             return True
         capped_out = loop.max_cycles and loop.cycle_count >= loop.max_cycles
         # Every branch below except the terminal one explains why the loop stopped
@@ -894,6 +920,7 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
                 or ""
             )
         terminal = loop.stopped_reason == MONITOR_TERMINAL_REASON or bool(owed)
+        merged = False
         if not terminal and not capped_out and runtime_budget_exceeded(loop):
             title = "Monitoring loop spent its time budget"
             body = (
@@ -945,7 +972,8 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
         elif terminal:
             settled = getattr(loop.monitor, "outcome", None) if loop.monitor else None
             decided = getattr(settled, "value", settled) or owed
-            if decided == "success":
+            merged = decided == "success"
+            if merged:
                 title = "Monitoring loop finished — what it was watching is done"
                 body = (
                     f"The loop stopped after {loop.cycle_count} cycles because "
@@ -976,7 +1004,7 @@ def _notify_nudge_expired(self: GatewayOrchestrator, loop: NudgeLoop) -> bool:
                 "goal may still be unmet. Reopen the goal popover to raise "
                 "the cap or restart it."
             )
-        self.dashboard_state.notify("agent", title, body, meta=meta, channel=MONITOR_CHANNEL)
+        _emit(title, body, merged=merged)
         return True
     except Exception:
         logger.debug("AutoNudge expiry notification failed", exc_info=True)

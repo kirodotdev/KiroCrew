@@ -108,7 +108,6 @@ import logging
 import os
 import re
 import threading
-import time
 import unicodedata
 import zlib
 from pathlib import Path
@@ -116,7 +115,7 @@ from typing import TYPE_CHECKING, Iterable, Iterator, NamedTuple, Sequence
 
 from kiro_crew._sqlite_compat import fts5_available, is_cjk_char, sqlite3
 from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
-from kiro_crew.sqlite_wal import enable_wal
+from kiro_crew.sqlite_wal import enable_wal, wal_truncated
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.history_search import SearchNeedle
@@ -235,9 +234,6 @@ _CONNECT_TIMEOUT_SECS = 30
 #: refused deletion. What they must never do is turn a persistent BUSY into a
 #: reported success.
 _LOGGER = logging.getLogger(__name__)
-
-_WAL_TRUNCATE_ATTEMPTS = 3
-_WAL_TRUNCATE_RETRY_SECS = 0.05
 
 _SQLITE_INT_MIN = -(1 << 63)
 _SQLITE_INT_MAX = (1 << 63) - 1
@@ -660,21 +656,8 @@ class SessionSearchIndex:
             return False
 
     def _truncate_wal(self, conn: sqlite3.Connection) -> bool:
-        """Truncate the WAL, reporting whether it actually happened.
-
-        ``PRAGMA wal_checkpoint(TRUNCATE)`` does NOT raise when it cannot proceed:
-        it returns ``(busy, log_pages, checkpointed_pages)`` with ``busy=1``, so a
-        caller that ignores the row reports an erasure it did not perform. A reader
-        outliving ``busy_timeout`` is what makes it busy, so a few short retries
-        clear the ordinary case without weakening the verdict.
-        """
-        for attempt in range(_WAL_TRUNCATE_ATTEMPTS):
-            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-            if row is None or int(row[0]) == 0:
-                return True
-            if attempt + 1 < _WAL_TRUNCATE_ATTEMPTS:
-                time.sleep(_WAL_TRUNCATE_RETRY_SECS)
-        return False
+        """Truncate the WAL, reporting whether it actually happened (:func:`wal_truncated`)."""
+        return wal_truncated(conn)
 
     def store_exists(self) -> bool:
         """Whether an index file is on disk, regardless of :attr:`available`.

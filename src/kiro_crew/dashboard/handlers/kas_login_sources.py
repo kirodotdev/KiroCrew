@@ -151,6 +151,14 @@ async def api_kas_login_sources(request: web.Request) -> web.Response:
     """GET /api/kas-login/sources -- which stored sign-in sessions run as."""
     from kiro_crew import edition, lts_sign_in
 
+    # Same audited gate as the sign-in routes it describes: the owner and
+    # Shared Crew teammates with owner rights pass; app and internal callers get
+    # a SEL-recorded 403 before any store read or ``whoami``.
+    from kiro_crew.dashboard.handlers.kas_login import _require_owner
+
+    denied = await _require_owner(request, "kas_login_sources")
+    if denied is not None:
+        return denied
     try:
         stored, crew_fields, relay = await asyncio.to_thread(_read_stores)
     except Exception:  # noqa: BLE001 - never an anonymous 500 for a status read

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         SshTunnelManager,
         TunnelState,
+        _sweep_remote_closes,
         logger,
         register_pre_exec_stop,
         shutdown_event,
@@ -63,6 +64,10 @@ async def _retake_hops_then_revive(
                 sorted(unheld),
             )
     await _revive_intended_instances(registry, manager, state)
+    if state is not None:
+        # Remote dispatch (preview): close retired remote worker slots once, now that
+        # the revived crews read connected. Off, it does nothing.
+        await _sweep_remote_closes(state)
 
 
 async def _revive_intended_instances(
@@ -141,7 +146,7 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
 
     The registry + SSH tunnel manager are created lazily inside the startup
     hook (which fires during ``runner.setup()``), gated on ``instances.enabled``
-    (default off). We then auto-reconnect every instance the operator left
+    (default on). We then auto-reconnect every instance the operator left
     connected (``was_connected``) via :func:`_revive_intended_instances`, which
     isolates per-instance failures so a down host's tab persists in an error
     state instead of vanishing; the user re-authenticates and retries from the

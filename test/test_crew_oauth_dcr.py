@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import urllib.parse
 
 import pytest
@@ -279,6 +280,42 @@ def test_disconnect_revokes_with_rfc7009_and_keeps_the_client(vendor):
     assert ClientStore().read("stripe")[0] is not None
 
 
+def test_dcr_revoke_also_revokes_access_token_when_refresh_present(vendor):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/revoke"] = [(200, {}, ""), (200, {}, "")]
+    assert asyncio.run(crew_oauth.disconnect("stripe")) == {"removed": True, "revoked": True}
+    posted = {call[2]["token"] for call in vendor.calls if call[1].endswith("/revoke")}
+    assert {"r", "a"} <= posted
+
+
+def test_a_failed_access_revoke_still_revokes_the_refresh_token(vendor, monkeypatch):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/revoke"] = [(200, {}, "")]
+    real_post = crew_oauth_dcr._post
+    seen: list[str] = []
+
+    async def _flaky(url, **kwargs):
+        if url.endswith("/revoke"):
+            seen.append(kwargs["form"]["token"])
+            if len(seen) == 1:
+                raise CrewOAuthError("token_unreachable")
+        return await real_post(url, **kwargs)
+
+    monkeypatch.setattr(crew_oauth_dcr, "_post", _flaky)
+    assert asyncio.run(crew_oauth.disconnect("stripe")) == {"removed": True, "revoked": False}
+    assert seen == ["a", "r"]
+
+
+def test_dcr_error_text_from_the_vendor_is_sanitized(vendor):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
+        (400, {"error": "bad\nforged line\x1b[31m", "error_description": "free text"}, "")
+    ]
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth.access_token("stripe", force=True))
+    assert re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", err.value.code)
+
+
 def test_without_a_revocation_endpoint_disconnect_deletes_locally(vendor):
     vendor.docs["https://access.stripe.com/.well-known/oauth-authorization-server/mcp"][
         "revocation_endpoint"
@@ -427,7 +464,12 @@ def test_forget_kas_grant_deletes_only_that_urls_entries(tmp_path):
 
     vault = SecretVault(tmp_path)
     digest = kas_connection_hash(STRIPE_MCP)
-    for name in (f"kiro.mcp.{digest}.tokens", f"kiro.mcp.{digest}.client", "kiro.mcp.other.tokens"):
+    for name in (
+        f"kiro.mcp.{digest}.tokens",
+        f"kiro.mcp.{digest}.client",
+        f"kiro.mcp.{digest}.kiro-path-client",
+        "kiro.mcp.other.tokens",
+    ):
         vault.set_sync(name, "v")
     asyncio.run(forget_kas_grant(STRIPE_MCP, store_root=tmp_path))
     assert vault.list_names() == ["kiro.mcp.other.tokens"]

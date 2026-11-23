@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew import session_cleanup_leftovers as _leftovers
 from kiro_crew import session_cleanup_spare as _spare
+from kiro_crew import session_cleanup_token_sweep as _token_sweep
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.metrics.events import SESSION_RUNTIME_RECONCILE
 from kiro_crew.process_identity import (
@@ -201,6 +202,8 @@ class CleanupState:
     scope_reap_failure_warned_at: float | None = None
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
+    # When the session-token mapping prune last ran (``SESSION_TOKEN_PRUNE_INTERVAL_SECS``).
+    last_session_token_prune: float | None = None
     active_dashboard_slots: set[str] | None = None
     # Every session key a dashboard slot has owned since boot, which is what
     # makes "this session's owner is gone" answerable for a key of ANY shape.
@@ -771,6 +774,11 @@ class SessionCleanup:
                     "Runtime reconcile: could not notify %s", key, exc_info=True
                 )
 
+    def session_runtime_pids(self) -> list[tuple[str, int, SessionEntry]]:
+        """(key, runtime pid, session) per live session, under owner._lock; RSS tick + memory guard."""
+        pairs = ((k, self._owner.get_pid(k), s) for k, s in self._owner._sessions.items())
+        return [(k, pid, s) for k, pid, s in pairs if pid is not None]
+
     async def _rss_threshold_check(self) -> None:
         if not self.state.rss_max_mb:
             return
@@ -784,12 +792,10 @@ class SessionCleanup:
         persistent_keys = self._deps.get_persistent_keys()
         channel_prefix = self._deps.get_channel_prefix()
         async with self._owner._lock:
-            for key, session in self._owner._sessions.items():
+            for key, pid, session in self.session_runtime_pids():
                 if key in persistent_keys or key.startswith(channel_prefix):
                     continue
-                pid = self._owner.get_pid(key)
-                if pid is not None:
-                    (busy if session.semaphore.locked() else candidates).append((key, pid, session))
+                (busy if session.semaphore.locked() else candidates).append((key, pid, session))
         prune_rss_records(self.state, now, {pid for _key, pid, _session in candidates + busy})
 
         # The warm-pool spare is owned by no session, so its own pass
@@ -941,6 +947,7 @@ class SessionCleanup:
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
 
         await _leftovers.report_busy_sessions(self, busy, measure, rss_by_pid, loop)
+        _spare.note_tick_sizes(candidates + busy, rss_by_pid)  # the conductor's growth wake
         # The warm-pool spare(s): same ceiling and discard action, on a runtime no session owns.
         if spare_providers and measure is not None:
             await _spare.recycle_over_ceiling_spares(self, spare_providers, measure, loop)
@@ -1220,7 +1227,7 @@ class SessionCleanup:
             await self._sweep_session_roots()
             await self._sweep_sandbox_artifacts()
             await self._sweep_session_pid_mappings()
-            await self._sweep_session_token_mappings()
+            await self._maybe_sweep_session_token_mappings()
             await self._sweep_member_pid_bindings()
             await self._sweep_session_staging_temps()
             await self._sweep_shell_audit_log()
@@ -1315,38 +1322,12 @@ class SessionCleanup:
                 type(exc).__name__,
             )
 
+    async def _maybe_sweep_session_token_mappings(self) -> None:
+        await _token_sweep.maybe_sweep_session_token_mappings(self)
+
     async def _sweep_session_token_mappings(self) -> None:
-        """Retract ``session_token_*.sig`` mappings unrefreshed past their age limit.
-
-        Every started session publishes one, and the pass that removes them,
-        ``session_pid._prune_stale_session_token_files``, is otherwise reached
-        only from ``cleanup_orphaned_sessions`` (startup and graceful shutdown).
-        A gateway that keeps running, or that is only ever stopped by a kill,
-        would hold one file per session it has started. The pass needs nothing
-        added, only a caller on a bounded cadence, which this tick is.
-
-        Age is the pass's only signal and it is safe at any cadence: a live
-        session republishes its mapping at the start of every turn, before
-        anything in that turn can call a tool, so the TTL never costs a
-        live session its identity. Blocking glob and unlinks over the same-uid
-        agent-writable data home, so it runs on the maintenance executor like
-        the session-pid mapping sweep.
-        """
-        try:
-            removed = await asyncio.get_running_loop().run_in_executor(
-                self._deps.get_maintenance_executor(),
-                self._deps.prune_session_token_mappings,
-            )
-            if removed:
-                self._deps.logger.info(
-                    "Periodic sweep: retracted %d stale session-token mappings",
-                    removed,
-                )
-        except Exception as exc:
-            self._deps.logger.debug(
-                "session token mapping sweep failed: %s",
-                type(exc).__name__,
-            )
+        """Retract aged ``session_token_*.sig`` mappings (``session_cleanup_token_sweep``)."""
+        await _token_sweep.sweep_session_token_mappings(self)
 
     async def _sweep_member_pid_bindings(self) -> None:
         """Collect aged per-pid member-memory binding records.

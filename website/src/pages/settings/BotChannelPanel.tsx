@@ -63,6 +63,8 @@ export interface BotChannelConfigData {
   sdk_installed?: boolean
   sdk_install_supported?: boolean
   sdk_install_command?: string
+  /** The desktop app installs the SDK itself; see ``sdkExtra.install``. */
+  sdk_install_in_app?: boolean
 }
 
 /** Writable fields shared by every bot-token channel save endpoint. */
@@ -278,6 +280,8 @@ export interface BotChannelSpec {
   sdkExtra?: {
     /** Distribution name as the user would type it, e.g. "lark-oapi". */
     packageLabel: string
+    /** The gateway's own installer, used where ``sdk_install_in_app`` is true. */
+    install?: () => Promise<{ restart_required?: boolean }>
   }
   /** API calls. */
   getConfig: () => Promise<BotChannelConfigData>
@@ -342,6 +346,35 @@ function draftFrom(c: BotChannelConfigData): Draft {
     session_folder_on: !!c.session_folder,
     session_folder: c.session_folder ?? '',
   }
+}
+
+/**
+ * The folder name a save sends for this draft. Off sends "" (the field's
+ * off-state); on with a blank name falls back to the channel's own name, which
+ * is what the toggle's description promises.
+ */
+function savedSessionFolder(d: Draft, channelName: string): string {
+  return d.session_folder_on ? (d.session_folder.trim() || channelName) : ''
+}
+
+/**
+ * Whether the form holds edits the server has not stored: the draft, read the
+ * way a save would send it, differs from what the last read reports. So a
+ * folder name kept while its toggle is off, "80.0" against a stored 80, or a
+ * folder name with surrounding spaces are not edits once saved.
+ */
+function draftDiffers(draft: Draft, server: BotChannelConfigData, channelName: string): boolean {
+  const norm = (d: Draft) => {
+    // Text that is not a whole number stays as typed, so it still reads as an
+    // edit: a save would refuse it rather than store anything.
+    const pct = parseWholeNumber(d.soft_threshold_pct)
+    return {
+      ...d,
+      soft_threshold_pct: pct === null ? d.soft_threshold_pct : String(pct),
+      session_folder: savedSessionFolder(d, channelName),
+    }
+  }
+  return JSON.stringify(norm(draft)) !== JSON.stringify(norm(draftFrom(server)))
 }
 
 /** Status pill mirroring the run state of the channel. */
@@ -428,6 +461,18 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   const [saveError, setSaveError] = useState('')
   const [thresholdError, setThresholdError] = useState('')
   const thresholdErrorId = useId()
+  // Tag editors whose add box holds typed text not yet Added. That text lives
+  // in the editor, not in `draft`, so it is tracked here for the restart hold.
+  const [pendingTagEditors, setPendingTagEditors] = useState<ReadonlySet<string>>(() => new Set())
+  const tagPending = useCallback((key: string) => (pending: boolean) => {
+    setPendingTagEditors(prev => {
+      if (prev.has(key) === pending) return prev
+      const next = new Set(prev)
+      if (pending) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  }, [])
 
   // Sync the local draft when server config first arrives. Only the initial
   // load seeds it: a background refetch or a save's invalidation must not
@@ -526,11 +571,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       payload.reactions_enabled = draft.reactions_enabled
       payload.show_thinking = draft.show_thinking
     }
-    // Off sends "" (the field's off-state); on with a blank name falls back to
-    // the channel's own name, which is what the toggle's description promises.
-    payload.session_folder = draft.session_folder_on
-      ? (draft.session_folder.trim() || spec.name)
-      : ''
+    payload.session_folder = savedSessionFolder(draft, spec.name)
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
     if (spec.secondCredential) {
@@ -557,6 +598,12 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
   const ro = data.read_only
   const startupError = connectError(spec, data)
   const hint = connectionHint(spec, data)
+  // A credential typed or cleared but not saved, an ID typed into a tag
+  // editor but not yet Added, or any other draft edit. The SDK card holds
+  // back its restart while this is true: the app's restart repaints the
+  // window and would drop these drafts.
+  const hasUnsavedChanges = !!botToken.trim() || botClear || !!botId.trim() || botIdClear
+    || pendingTagEditors.size > 0 || draftDiffers(draft, data, spec.name)
 
   return (
     <>
@@ -617,7 +664,14 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
 
       {/* ── Missing optional SDK ── */}
       {spec.sdkExtra && (
-        <OptionalSdkCard channel={spec.name} packageLabel={spec.sdkExtra.packageLabel} status={data} />
+        <OptionalSdkCard
+          channel={spec.name}
+          packageLabel={spec.sdkExtra.packageLabel}
+          status={data}
+          onInstall={spec.sdkExtra.install}
+          onInstalled={() => qc.invalidateQueries({ queryKey: [spec.queryKey] })}
+          hasUnsavedChanges={hasUnsavedChanges}
+        />
       )}
 
       {/* ── Required ── */}
@@ -681,7 +735,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
                 onChange={v => upd({ allow_all_users: v })}
                 disabled={ro}
               />
-              <div className="border-t border-border mt-4 pt-4" />
+              <div className="border-t border-border mt-3 pt-3" />
             </>
           )}
           <TagListEditor
@@ -690,6 +744,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             values={draft.allowed_user_ids}
             placeholder={spec.allowlistPlaceholder}
             onChange={v => upd({ allowed_user_ids: v })}
+            onPendingChange={tagPending('allowed_user_ids')}
             validate={spec.allowlistValidate ?? (v => /^\d+$/.test(v))}
             readOnly={ro}
           />
@@ -697,13 +752,14 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             <p className="text-[12px] text-muted mt-2 mb-0">{spec.allowAll.bypassNote}</p>
           )}
           {spec.threadAllowlist && (
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <TagListEditor
                 label={spec.threadAllowlist.label}
                 description={spec.threadAllowlist.description}
                 values={draft.allowed_thread_ids}
                 placeholder={spec.threadAllowlist.placeholder}
                 onChange={v => upd({ allowed_thread_ids: v })}
+                onPendingChange={tagPending('allowed_thread_ids')}
                 validate={v => /^\d+$/.test(v)}
                 readOnly={ro}
               />
@@ -729,6 +785,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               values={draft.allowed_channel_ids}
               placeholder={spec.sharedChannels.placeholder}
               onChange={v => upd({ allowed_channel_ids: v })}
+              onPendingChange={tagPending('allowed_channel_ids')}
               validate={v => /^\d+$/.test(v)}
               readOnly={ro}
             />
@@ -739,7 +796,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               <AlertTriangle size={13} className="flex-none mt-0.5" />
               <span>{spec.sharedChannels.warning}</span>
             </p>
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <SettingsToggle
                 label={spec.sharedChannels.autoThreadLabel}
                 hint={spec.sharedChannels.autoThreadDescription}
@@ -770,13 +827,14 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               onChange={v => upd({ allow_forum: v })}
               disabled={ro}
             />
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <TagListEditor
                 label={spec.forum.allowlistLabel}
                 description={spec.forum.allowlistDescription}
                 values={draft.allowed_forum_chat_ids}
                 placeholder={spec.forum.allowlistPlaceholder}
                 onChange={v => upd({ allowed_forum_chat_ids: v })}
+                onPendingChange={tagPending('allowed_forum_chat_ids')}
                 // Supergroup chat_ids are negative — allow an optional leading
                 // minus (a digits-only check would reject every valid id).
                 validate={v => /^-?\d+$/.test(v)}
@@ -790,7 +848,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               )}
             </div>
             {spec.forum.activation && (
-              <div className="border-t border-border mt-4 pt-4">
+              <div className="border-t border-border mt-3 pt-3">
                 <SettingsSelect
                   label={spec.forum.activation.label}
                   description={spec.forum.activation.description}
@@ -818,13 +876,14 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
               onChange={v => upd({ allow_group: v })}
               disabled={ro}
             />
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <TagListEditor
                 label={spec.groupChats.allowlistLabel}
                 description={spec.groupChats.allowlistDescription}
                 values={draft.allowed_group_ids}
                 placeholder={spec.groupChats.allowlistPlaceholder}
                 onChange={v => upd({ allowed_group_ids: v })}
+                onPendingChange={tagPending('allowed_group_ids')}
                 validate={spec.groupChats.allowlistValidate}
                 readOnly={ro}
               />
@@ -872,7 +931,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             </>
           )}
           {spec.showThinking && (
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <SettingsToggle
                 label={spec.showThinking.label}
                 description={spec.showThinking.summary}
@@ -884,7 +943,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
             </div>
           )}
           {spec.voiceReplies && (
-            <div className="border-t border-border mt-4 pt-4">
+            <div className="border-t border-border mt-3 pt-3">
               <SettingsToggle
                 label={spec.voiceReplies.label}
                 description={spec.voiceReplies.summary}
@@ -897,7 +956,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
           )}
           {/* Optional per-channel session filing. Off by default: sessions from
               this channel stay unfiled in the sidebar, as before. */}
-          <div className="border-t border-border mt-4 pt-4">
+          <div className="border-t border-border mt-3 pt-3">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
               hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: spec.name })}
@@ -930,7 +989,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       </SettingsSection>
 
       {/* ── Save (hidden on read-only remote sessions) ── */}
-      {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
+      {!ro && <div className="flex flex-row-reverse flex-wrap items-center gap-3 mt-3 mb-4 max-w-[720px]">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
           {saveMut.isPending ? i18nT('pages.settings.botChannelPanel.saving') : i18nT('pages.settings.botChannelPanel.save_channel_settings', { channel: spec.name })}
         </Btn>

@@ -295,6 +295,23 @@ describe('visibility: the OR of every card instance showing the current turn, an
     expect(writes.visibility.mock.calls.at(-1)).toEqual([S, true])
     spy.mockRestore()
   })
+
+  it.each([
+    ['a write that did not arrive is sent again', new Error('offline'), 3],
+    ['a closed chat\'s unknown_session is not sent again', Object.assign(new Error('gone'), { status: 404, body: '{"code":"unknown_session"}' }), 2],
+  ])('%s on the next tab switch', async (_name, refusal, calls) => {
+    browserLiveStore.applyEvent(ev())
+    browserLiveStore.setVisible(S, 'card-1', true, 't1')
+    writes.visibility.mockRejectedValueOnce(refusal)
+    browserLiveStore.setVisible(S, 'card-1', false, 't1')
+    // The store's own catch was attached first, so it has run once this settles.
+    await expect(writes.visibility.mock.results[1].value).rejects.toBe(refusal)
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    spy.mockRestore()
+    expect(writes.visibility).toHaveBeenCalledTimes(calls)
+    expect(writes.visibility.mock.calls.at(-1)).toEqual([S, false])
+  })
 })
 
 describe('claim and release', () => {
@@ -456,6 +473,16 @@ describe('a session no card shows', () => {
     browserLiveStore.setVisible(S, 'card-1', true, 't1')
     for (let i = 1; i <= UNSEEN_FRAMES_BEFORE_PAUSE * 2; i++) browserLiveStore.applyFrame(frame(i))
     expect(writes.visibility.mock.calls).toEqual([[S, true]])
+  })
+
+  it('a new turn reports hidden again, since the gateway may hold a fresh session for it', () => {
+    browserLiveStore.applyEvent(ev())
+    for (let i = 1; i <= UNSEEN_FRAMES_BEFORE_PAUSE; i++) browserLiveStore.applyFrame(frame(i))
+    expect(writes.visibility.mock.calls).toEqual([[S, false]])
+    // The chat closed and was reopened on the key: its next turn starts a new stream.
+    browserLiveStore.applyEvent(ev({ turn_id: 't2' }))
+    for (let i = 1; i <= UNSEEN_FRAMES_BEFORE_PAUSE; i++) browserLiveStore.applyFrame(frame(i, 's2'))
+    expect(writes.visibility.mock.calls).toEqual([[S, false], [S, false]])
   })
 })
 

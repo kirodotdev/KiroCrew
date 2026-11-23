@@ -144,6 +144,15 @@ describe('zh-CN punctuation (style/zh-CN.md §1)', () => {
     expect(bad, report(bad)).toEqual([])
   })
 
+  it('keeps no line break and indentation from the source layout', () => {
+    // A JSX literal wrapped across lines leaves `\n` plus its indent in the
+    // value, which renders as a space between two Chinese characters.
+    const bad = prose
+      .filter(([, value]) => /\n[ \t]+/.test(value))
+      .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
+    expect(bad, report(bad)).toEqual([])
+  })
+
   it('keeps parentheses balanced within a value', () => {
     // A half-width opener married to a full-width closer renders as `(…）`.
     const bad: string[] = []

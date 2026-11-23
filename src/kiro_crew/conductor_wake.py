@@ -21,6 +21,11 @@ the only thing that ever covered a worker whose process died with its slot still
 A close carried no statement either, so it went with the turn end rather than keeping a
 second gate that would have to stay in step with this one.
 
+ONE HOST TRIGGER. A change of the host's combined memory-and-disk posture pulls every
+watched board forward too (:func:`wake_for_posture_change`,
+``docs/request-for-change/rfc-host-memory-guard.md`` §5.2); the tick's probe reads the
+live posture and decides the wake, so this path also decides nothing.
+
 A FURTHER TRIGGER IS STILL LIKELY (an item's acceptance promoted by a human, say), and
 this module is where it goes: finding the conductor's loop, checking it is the right kind
 and still active, and firing it is the part no trigger should own a copy of.
@@ -1034,6 +1039,46 @@ def wake_for_undelivered_report(conductor_slot_key: str, item_id: str) -> "Any |
         return asyncio.run_coroutine_threadsafe(_fire(svc, conductor_slot_key, item_id), running)
     except Exception:  # noqa: BLE001 - a push must never reach the worker's turn
         logger.debug("conductor wake: could not schedule an undelivered-report push")
+        return None
+
+
+#: The item id a host posture change pulls a loop forward under. Not an item id (those
+#: start ``it_``), so it spends its own hourly budget (:func:`_admit`), which also bounds
+#: a posture that flaps at a threshold.
+POSTURE_ITEM = "_host_posture"
+
+
+async def _fire_watched(svc: Any, item_id: str) -> "list[str]":
+    """Fire every watched board's work-ledger loop for *item_id*. ON THE LOOP."""
+    fired = []
+    for board in sorted(_watched_boards(svc)):
+        loop_id = await _fire(svc, board, item_id)
+        if loop_id:
+            fired.append(loop_id)
+    return fired
+
+
+def wake_for_posture_change() -> "Any | None":
+    """Pull every watching conductor's work-ledger tick forward: the host posture changed.
+
+    The third trigger (rfc-host-memory-guard.md §5.2). Only boards with an active
+    work-ledger loop are pulled (:func:`_watched_boards`). The tick's probe reads the
+    live posture and wakes once per level change, so this moves a deadline and decides
+    nothing. Callable from any thread; returns the scheduled future or ``None``. Never
+    raises.
+    """
+    try:
+        from kiro_crew import autonudge
+
+        svc = autonudge.get_instance()
+        if svc is None:
+            return None
+        running = _service_loop(svc)
+        if running is None:
+            return None
+        return asyncio.run_coroutine_threadsafe(_fire_watched(svc, POSTURE_ITEM), running)
+    except Exception:  # noqa: BLE001 - a push must never reach the notifier
+        logger.debug("conductor wake: could not schedule a posture-change push")
         return None
 
 

@@ -49,7 +49,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import pinned_fs, platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.platform_compat import IS_LINUX, IS_MACOS, IS_WINDOWS, file_lock, open_lock_file
 from kiro_crew.pod import env_overrides, launchd
@@ -290,15 +290,41 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
     reading it as ``{}`` would launch the pod without the operator's variables,
     and :func:`write_env_file` would then overwrite the file it could not read.
     """
-    # Imported here: the config loader is a heavy import the pod CLI does not
-    # otherwise need at module load.
-    from kiro_crew.config.loader import EnvFileWideEncodingError, decode_env_bytes
-
     path = cfg.env_file(name)
     try:
         raw = path.read_bytes()
     except OSError:
         return {}
+    return _decode_env_file(path, raw)
+
+
+def _read_env_bytes_for_write(path: Path) -> bytes | None:
+    """The env file's bytes, ``None`` when it does not exist, else :class:`PodError`.
+
+    The base of a merge-write must be the file's real contents: merging onto the
+    ``{}`` that :func:`read_env_file` answers for an unreadable file would publish
+    only the update and drop ``CHECKOUT``, ``PORT``, ``SEED`` and ``APPROVAL``,
+    and a dropped ``APPROVAL`` lands the next boot on auto-approve. So the read
+    rides out a Windows sharing hold (:func:`read_bytes_with_retry`), and any
+    other failure than a missing file is refused before anything is written.
+    """
+    try:
+        return read_bytes_with_retry(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PodError(
+            f"pod env file {path} cannot be read ({exc.strerror or exc}); "
+            "it was left unchanged, run the command again"
+        ) from exc
+
+
+def _decode_env_file(path: Path, raw: bytes) -> dict[str, str]:
+    """Decode and parse env-file *raw* bytes read from *path* (see :func:`read_env_file`)."""
+    # Imported here: the config loader is a heavy import the pod CLI does not
+    # otherwise need at module load.
+    from kiro_crew.config.loader import EnvFileWideEncodingError, decode_env_bytes
+
     try:
         # The product writes this file as UTF-8, so a file without a mark is
         # read as UTF-8 first; only bytes that are not valid UTF-8 (a file saved
@@ -358,7 +384,9 @@ def write_env_file(cfg: PodConfig, name: str, updates: dict[str, str]) -> None:
         if not env_overrides.is_single_line_env_value(val):
             raise PodError(f"pod env value for {key!r} must be single-line")
     with pod_name_mutex(cfg, name):
-        data = read_env_file(cfg, name)
+        path = cfg.env_file(name)
+        raw = _read_env_bytes_for_write(path)
+        data = {} if raw is None else _decode_env_file(path, raw)
         data.update(updates)
         for key, val in data.items():
             if not env_overrides.is_single_line_env_value(val):
@@ -1292,6 +1320,10 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
     if not isinstance(data, dict):
         return None
     _apply_seed_config_floor(data)
+    # A copied instance label names the seed's gateway, not this pod: kept, the
+    # pod's tab and its transfers would claim to be that gateway.
+    if isinstance(data.get("dashboard"), dict):
+        data["dashboard"].pop("instance_label", None)
     return data
 
 

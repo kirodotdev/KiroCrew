@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
+import { Upload, Circle, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
 import { api, type AwsConsentStatus } from '../../api/client'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import BedrockKbLiveChip from './BedrockKbLiveChip'
@@ -25,6 +25,7 @@ import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButt
 import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 /** A site name as the gateway compares it: lowercase, no trailing dot. */
 function normalizeSite(site: string): string {
@@ -664,6 +665,22 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     commitTypedProfile(profile)
   }
 
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  const handleDelete = async (source: Source) => {
+    if (confirmOpen || (deleteMutation.isPending && deleteMutation.variables === source.id)) return
+    const id = source.id
+    // A Live row ingests nothing, so the shared "and all its ingested items"
+    // confirm would promise a deletion that cannot happen.
+    const ok = await confirm({
+      title: i18nT('pages.knowledge.sourcesList.remove_source'),
+      body: i18nT(source.source_type === 'bedrock_kb'
+        ? 'pages.knowledge.sourcesList.remove_this_live_source'
+        : 'pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'),
+      confirmLabel: i18nT('pages.knowledge.sourcesList.remove_source'),
+    })
+    if (ok) deleteMutation.mutate(id)
+  }
+
   const handleAdd = () => {
     // A press while the add is in flight is ignored: the button stays
     // focusable (aria-disabled, not native disabled) so a keyboard user does
@@ -796,10 +813,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     </div>
   )
 
-  if (loading) return <ContentSkeleton />
+  if (loading) return <>{confirmDialog}<ContentSkeleton /></>
 
   return (
     <div className="space-y-3">
+      {confirmDialog}
       {/* Stated unconditionally rather than only on the add-source dialog: the cost
           is ongoing, and a user who inherits a configured folder never sees that
           dialog at all. It also carries the fact that the charge is gradual, which
@@ -1104,9 +1122,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     {s.source_type}{s.uri ? ` · ${s.uri}` : ''}
                   </span>
                   {s.source_type === 'local_file'
-                    ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}>{i18nT('pages.knowledge.sourcesList.auto')}</span>
+                    ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} />{i18nT('pages.knowledge.sourcesList.auto')}</span>
                     : isFolderType
-                    ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
+                    ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}><Circle className="lucide-inline scale-75" fill="currentColor" strokeWidth={0} />{isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
                     : isLiveSource
                     ? <BedrockKbLiveChip source={s} onReviewConsent={openKbConsent} />
                     : s.source_type === 'agent'
@@ -1114,7 +1132,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     // so it comes from the row's type; "manual" would point at a Sync
                     // button the gateway does not offer here.
                     ? <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.updates_when_the_agent_adds_a_document')}>{i18nT('pages.knowledge.sourcesList.added_by_agent')}</span>
-                    : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}>{i18nT('pages.knowledge.sourcesList.manual')}</span>}
+                    : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}><Circle className="lucide-inline scale-75" />{i18nT('pages.knowledge.sourcesList.manual')}</span>}
                   {/* The count names a problem whose detail (which files, and why)
                       lives in the row's expanded view, so on folder rows it is the
                       way in rather than inert text. It lives on this meta line — a
@@ -1224,9 +1242,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     : <><RefreshCw size={12} /> {i18nT('pages.knowledge.sourcesList.sync')}</>}
                 </button>
               )}
-              {/* A Live row ingests nothing, so the shared "and all its ingested
-                  items" confirm would promise a deletion that cannot happen. */}
-              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { if (confirm(i18nT(isLiveSource ? 'pages.knowledge.sourcesList.remove_this_live_source' : 'pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'))) deleteMutation.mutate(s.id) }}
+              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { void handleDelete(s) }}
                 disabled={isDeleting}
                 className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated text-danger/70 hover:text-danger disabled:opacity-50 flex items-center gap-0.5">
                 {isDeleting ? <RefreshCw size={12} className="animate-spin" /> : <X size={12} />}

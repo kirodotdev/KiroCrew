@@ -165,6 +165,17 @@ class TestPagedRead:
         assert "one\ntwo\n" in out
         assert "next page" not in out and "last page" not in out
 
+    @pytest.mark.parametrize("paging", [{}, {"offset": 4}])
+    def test_a_read_shows_the_description_a_search_shows(self, skills_root: Path, paging: dict):
+        """A read printed ``(`key`): `` with nothing after it: neither read path
+        filled the description. A page past the frontmatter still carries it."""
+        _skill(skills_root, "small", "one\ntwo\n")
+        searched = _call_tool("skill_search", {"query": "small"})
+        assert "(`small`): desc for small\n" in searched
+        out = _read("small", **paging)
+        assert not out.startswith("Error:")
+        assert "- **small** (`small`): desc for small\n" in out
+
     def test_an_offset_past_the_end_is_an_empty_last_page_naming_the_count(self, skills_root: Path):
         _skill(skills_root, "small", "one\ntwo\n")
         out = _read("small", offset=99)
@@ -297,12 +308,30 @@ class TestGatewayContract:
         _read("k", offset=4, limit=2)
         assert bodies[2]["offset"] == 4 and bodies[2]["limit"] == 2
 
+    def test_the_tool_renders_the_description_the_gateway_returns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            mcp_core, "require_strict_session_key", lambda *_a: ("dashboard:signed", None)
+        )
+        monkeypatch.setattr(
+            mcp_core,
+            "_post",
+            lambda *_a, **_kw: {
+                "matches": [
+                    {"key": "k", "name": "k", "description": "About  k.\n", "content": "body\n"}
+                ]
+            },
+        )
+        assert "- **k** (`k`): About k.\n" in _read("k")
+
     def test_a_page_sized_to_the_requested_capacity_fits_the_response_for_any_key(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """The framing repeats the key, so the capacity the tool asks for must
-        already leave room for it: a page of exactly that many bytes, wrapped,
-        stays under the response cap and loses no line to the tail cut."""
+        """The framing repeats the key and prints the description, so the capacity
+        the tool asks for must already leave room for both: a page of exactly
+        that many bytes, wrapped, stays under the response cap and loses no line
+        to the tail cut."""
         key = "/".join(f"segment-{n:03d}" for n in range(90))
         monkeypatch.setattr(
             mcp_core, "require_strict_session_key", lambda *_a: ("dashboard:signed", None)
@@ -318,6 +347,8 @@ class TestGatewayContract:
                     {
                         "key": key,
                         "name": key,
+                        # Wider than the clamp: the frame must budget for it.
+                        "description": "d " * 1_000,
                         "content": content,
                         "page": {
                             "line_offset": body["offset"],
@@ -437,6 +468,7 @@ class TestGatewayContract:
             return json.loads((await prompts.api_skills(request)).body)
 
         whole = await get(key="small")
+        assert whole["matches"][0]["description"] == "desc for small"
         assert (
             whole["matches"][0]["content"]
             == "---\nname: small\ndescription: desc for small\n---\none\ntwo\n"
@@ -464,6 +496,8 @@ class TestGatewayContract:
 
         limited = (await get(key="small", offset=1, limit=1))["matches"][0]
         assert limited["content"] == "name: small\n"
+        assert limited["description"] == "desc for small"
+        assert "description" not in limited["page"]
         assert limited["page"]["next_offset"] == 2
 
         assert (await get(key="absent"))["refusal"]["reason"] == "outside_scope"
@@ -483,6 +517,66 @@ class TestGatewayContract:
         assert "capacity" not in narrow["page"]
         wide = await get(key=_KEY, capacity=10**9)
         assert wide["refusal"]["capacity"] == _CAPACITY
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider, whole", [("kas", False), ("acp", True)])
+    async def test_a_kas_session_reads_in_pages_under_its_result_cut(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opened, provider: str, whole: bool
+    ):
+        """KAS saves a tool result of 30,000 characters or more to a file, so a KAS
+        session's page, framing included, stays under that; other sessions keep
+        the 99,000-byte page and get a 40,000-byte body in one read."""
+        from aiohttp import web
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.handlers import prompts
+        from kiro_crew.mcp_tools import skills as skill_tool
+
+        root = tmp_path / "skills"
+        text = _skill(root, _KEY, _body_over(40_000)).read_text(encoding="utf-8")
+        loader = opened(SkillsLoader(skills_path=root, install_builtins=False))
+        monkeypatch.setattr(prompts, "_read_session_key", lambda request: "dashboard:scoped")
+        monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *a, **kw: None)
+        monkeypatch.setattr(prompts, "_get_skills", lambda state: loader)
+        monkeypatch.setattr(prompts, "requesting_slot_project", lambda *args: None)
+        monkeypatch.setattr(prompts, "_named_slot", lambda *args: SimpleNamespace(agent="custom"))
+        monkeypatch.setattr(prompts, "session_skill_globs", lambda *args, **kw: None)
+        monkeypatch.setattr(prompts, "served_provider_label", lambda served: provider)
+        app = web.Application()
+        app["state"] = SimpleNamespace(
+            sessions=SimpleNamespace(get_agent=lambda key: None, get_provider=lambda key: object())
+        )
+
+        async def post(**body):
+            payload = json.dumps({"scope": "installed", "action": "read", **body}).encode()
+            request = make_mocked_request(
+                "POST",
+                "/api/skills/-/discover",
+                headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+                payload=BodyStreamPayload(payload),
+                app=app,
+            )
+            return json.loads((await prompts.api_skills(request)).body)
+
+        capacity = skill_tool._read_capacity(_KEY, 0)
+        first = await post(key=_KEY, capacity=capacity)
+        assert bool(first["matches"]) is whole
+        if whole:
+            assert first["matches"][0]["content"] == text
+            return
+        assert first["refusal"]["reason"] == "over_capacity"
+        pages: list[str] = []
+        offset: int | None = 0
+        while offset is not None:
+            page = (await post(key=_KEY, offset=offset, capacity=capacity))["matches"][0]
+            assert len(skill_tool._render_read(_KEY, page, offset)) < 30_000
+            pages.append(page["content"])
+            offset = page["page"]["next_offset"]
+        assert len(pages) == 2
+        assert "".join(pages) == text
+        # A caller's smaller page stays its ceiling; the KAS bound only lowers it.
+        narrow = (await post(key=_KEY, offset=0, capacity=10_000))["matches"][0]
+        assert 0 < len(narrow["content"].encode("utf-8")) <= 10_000
 
 
 class TestLoaderContract:

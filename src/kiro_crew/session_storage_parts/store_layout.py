@@ -203,6 +203,9 @@ class TrashBatch:
     #: (:func:`list_trash`), which describes what a batch CONTAINS; this field is
     #: about what one move DECLINED, which only the move itself knows.
     revived: tuple[str, ...] = ()
+    #: The sessions this move took, in move order. Empty for a batch read back
+    #: off disk, like :attr:`revived`: it records what one move did.
+    moved: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -211,7 +214,8 @@ class StorageReport:
 
     Deliberately carries no per-store breakdown: a session is one thing with one
     size, and splitting the number would expose an implementation detail the
-    reader cannot act on.
+    reader cannot act on. ``claude_code_*`` is not such a split: it is a lower bound
+    on another program's store, which Storage never moves, and no other field counts it.
     """
 
     total_bytes: int
@@ -225,6 +229,8 @@ class StorageReport:
     trash_batches: int
     trash_same_filesystem: bool
     reclaim_blocked_reason: str = ""
+    claude_code_bytes: int = 0
+    claude_code_sessions: int = 0
 
 
 def trash_root() -> Path:

@@ -723,14 +723,18 @@ def ensure_node(timeout: float = 180.0) -> str | None:
 
 @functools.lru_cache(maxsize=1)
 def is_toolbox_install() -> bool:
-    """Return True if the running kirocrew binary was installed via Toolbox."""
+    """Return True if the running kirocrew binary was installed via Toolbox.
+
+    Toolbox installs every tool under its root: ``~/.toolbox`` on POSIX, and on
+    Windows ``%LOCALAPPDATA%\\Toolbox`` (:func:`_windows_toolbox_root`).
+    """
     exe = Path(sys.executable).resolve()
-    toolbox_dir = (Path.home() / ".toolbox").resolve()
-    try:
-        exe.relative_to(toolbox_dir)
-        return True
-    except ValueError:
-        return False
+    roots = [Path.home() / ".toolbox"]
+    if platform_compat.IS_WINDOWS and (
+        windows_root := _windows_toolbox_root(os.path.expanduser("~"), None)
+    ):
+        roots.append(Path(windows_root))
+    return any(exe.is_relative_to(root.resolve()) for root in roots)
 
 
 @functools.lru_cache(maxsize=1)
@@ -778,6 +782,20 @@ def _own_kirocrew_dirs() -> list[str]:
     return env_own_kirocrew.own_kirocrew_dirs(_validated_bin_dir)
 
 
+def _windows_toolbox_root(resolved_home: str, pinned_home: str | None) -> str | None:
+    """Builder Toolbox's Windows root, ``%LOCALAPPDATA%\\Toolbox``.
+
+    The Windows counterpart of ``~/.toolbox``: its ``bin`` directory
+    (:func:`_windows_toolbox_bin_dir`) and the tools Toolbox installs live under it.
+
+    ``LOCALAPPDATA`` names the account running this process, so a caller that
+    pinned another account's *pinned_home* gets that home's ``AppData\\Local``.
+    """
+    local = os.environ.get("LOCALAPPDATA", "") if pinned_home is None else ""
+    base = local or os.path.join(resolved_home, "AppData", "Local")
+    return _validated_bin_dir(os.path.join(base, "Toolbox"))
+
+
 def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
     """Builder Toolbox's Windows bin dir, ``%LOCALAPPDATA%\\Toolbox\\bin``.
 
@@ -787,12 +805,10 @@ def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str
     that edit (or by a launcher that does not read it) never sees. So the Agent
     Harness probe reported a Toolbox-installed Claude Code as not installed.
 
-    ``LOCALAPPDATA`` names the account running this process, so a caller that
-    pinned another account's *pinned_home* gets that home's ``AppData\\Local``.
+    It is ``bin`` under :func:`_windows_toolbox_root`, which resolves the account.
     """
-    local = os.environ.get("LOCALAPPDATA", "") if pinned_home is None else ""
-    base = local or os.path.join(resolved_home, "AppData", "Local")
-    return _validated_bin_dir(os.path.join(base, "Toolbox", "bin"))
+    root = _windows_toolbox_root(resolved_home, pinned_home)
+    return os.path.join(root, "bin") if root else None
 
 
 def user_tool_bin_dirs(home: str) -> list[str]:
@@ -1084,8 +1100,69 @@ def spec_env_path(env_path: str) -> str:
     if not isinstance(env_path, str):
         logger.debug("ignoring non-string MCP spec PATH: %s", type(env_path).__name__)
         env_path = ""
-    parts = [*_spec_path_entries(env_path), augmented_path(os.environ.get("PATH", ""))]
-    return dedup_path(os.pathsep.join(filter(None, parts)))
+    return _joined_spec_path(_spec_path_entries(env_path), gateway_spec_path())
+
+
+#: The gateway part this process is fixed to (:func:`pin_gateway_spec_path`).
+_PINNED_GATEWAY_SPEC_PATH: str | None = None
+
+
+def gateway_spec_path() -> str:
+    """The part of an expanded spec ``PATH`` that comes from this process.
+
+    :func:`spec_env_path` appends it after the spec's own entries. It is this
+    process's own ``PATH`` plus the well-known MCP directories, so it moves when
+    the service unit is re-rendered or a package installer adds a version
+    directory, while the spec's own entries stay as written. The launch
+    approval hash (``mcp_gateway.hashing``) reads it from here, so the writer
+    and the hash use one composition. A pinned part stays fixed whatever this
+    process's ``PATH`` does, so a live ``.env`` ``PATH`` edit or an added ``ffmpeg``
+    directory reaches a declared spec ``PATH`` at the next gateway start, as it
+    reaches a pooled backend's inherited env.
+    """
+    if _PINNED_GATEWAY_SPEC_PATH is not None:
+        return _PINNED_GATEWAY_SPEC_PATH
+    return augmented_path(os.environ.get("PATH", ""))
+
+
+def pin_gateway_spec_path(value: str) -> None:
+    """Fix this process's gateway part to *value*.
+
+    The gateway pins it when its MCP broker starts and hands it to gatewayd,
+    so the rewriter, the dashboard and gatewayd fold one composition
+    (:func:`spec_path_own_entries`) for the life of the daemon.
+    """
+    global _PINNED_GATEWAY_SPEC_PATH
+    _PINNED_GATEWAY_SPEC_PATH = value
+
+
+def pinned_gateway_spec_path() -> str | None:
+    """The part :func:`pin_gateway_spec_path` fixed, or ``None``; never scans."""
+    return _PINNED_GATEWAY_SPEC_PATH
+
+
+def _joined_spec_path(own: list[str], gateway_part: str) -> str:
+    return dedup_path(os.pathsep.join(filter(None, [*own, gateway_part])))
+
+
+def spec_path_own_entries(value: str, gateway_part: str) -> list[str] | None:
+    """The spec's own leading entries of an expanded *value*, or ``None``.
+
+    The shortest prefix of *value* that :func:`spec_env_path`, given
+    *gateway_part* as this process's part, expands back to exactly *value*.
+    ``None`` when no prefix does, so *value* is not this composition (a
+    hand-written ``PATH``, or one expanded under another gateway ``PATH``).
+    Shortest, so a spec entry that also leads *gateway_part* in the same order
+    counts as the gateway's; that can only cost a re-approval later, since the
+    child's ``PATH`` is the same either way.
+    """
+    if not gateway_part:
+        return None
+    entries = value.split(os.pathsep)
+    for k in range(len(entries) + 1):
+        if _joined_spec_path(entries[:k], gateway_part) == value:
+            return entries[:k]
+    return None
 
 
 def mcp_search_path(env_path: str) -> str:

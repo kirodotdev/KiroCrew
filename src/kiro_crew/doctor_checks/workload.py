@@ -33,6 +33,10 @@ _STALL_CURRENT_SECS = 24 * 3600
 #: gateway costs a short pause, never a hung diagnostic.
 _ADAPTIVE_READ_TIMEOUT_SECS = 2
 
+#: How much of a refusal's body the controller read parses for its code. An auth
+#: refusal is a small JSON object; reading more than this is never needed.
+_ADAPTIVE_ERROR_BODY_BYTES = 4096
+
 #: The loopback host the controller read dials. The local credential is
 #: resolved for this same host, so it pairs with the listener actually reached.
 _LOOPBACK_HOST = "127.0.0.1"
@@ -343,7 +347,19 @@ def _gateway_adaptive_state() -> tuple[int, dict[str, Any] | None, str]:
     except _GatewayPeerRefused:
         return port, None, "the answering process is not proven to be this install's gateway"
     except urllib.error.HTTPError as exc:
-        return port, None, f"the gateway refused the read (HTTP {exc.code})"
+        # The auth layer refuses with a bare "Forbidden" and a code; the code names
+        # the cause (a credential from another instance, most often), so say that.
+        import http.client
+
+        from kiro_crew.auth_refusal_text import auth_refusal_text
+
+        why = f"the gateway refused the read (HTTP {exc.code})"
+        try:
+            body = json.loads(exc.read(_ADAPTIVE_ERROR_BODY_BYTES))
+        except (OSError, ValueError, http.client.HTTPException):
+            body = None
+        explained = auth_refusal_text(body.get("code")) if isinstance(body, dict) else None
+        return port, None, f"{why}: {explained}" if explained else why
     except (urllib.error.URLError, OSError) as exc:
         # Only a bare read timeout (the connection was accepted and the gateway
         # then stalled -- a loop thread starved of the GIL) means it is up but
@@ -607,3 +623,32 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
         print(f"  dump dir:    {dumps_dir}")
     except Exception as exc:
         print(f"  crash dumps: ⚠️  check failed ({exc})")
+
+
+def _doctor_session_tree_checkpoint(issues: list[str]) -> None:
+    """Render the ``Session Tree Checkpoint`` section: whether the last save of the
+    checkpoint was refused or failed, which leaves the next start replaying the crew log
+    from an older one. Reads the marker the projection leaves beside the checkpoint, so
+    it needs no running gateway."""
+    from kiro_crew.crew_log.session_tree_projection import checkpoint_refusal
+
+    print("\nSession Tree Checkpoint")
+    try:
+        refusal = checkpoint_refusal()
+        if refusal is None:
+            print("  checkpoint:  ✅ the last save landed, or none has been refused")
+            return
+        reason = refusal.get("reason")
+        if reason == "over_ceiling":
+            what = (
+                f"the tree is {refusal.get('bytes')} bytes, "
+                f"past the {refusal.get('ceiling')}-byte ceiling"
+            )
+        else:
+            what = "the write failed; the gateway log has the error"
+        print(f"  checkpoint:  ⚠  not being saved: {render._safe_display(what)}")
+        print("               The next start replays the crew log from the last checkpoint that")
+        print("               was written, or rebuilds the session tree from scratch.")
+        issues.append("session tree checkpoint is not being saved")
+    except Exception as exc:
+        print(f"  checkpoint:  ⚠  check failed ({exc})")

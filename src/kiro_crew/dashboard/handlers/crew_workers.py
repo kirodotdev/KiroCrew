@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -44,7 +45,13 @@ from kiro_crew import crew_mode
 from kiro_crew.dashboard.conditional_get import conditional_json_response
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.members import _deny_app_caller
+from kiro_crew.dashboard.session_activity import (
+    SessionActivity,
+    session_activity,
+    session_execution_active,
+)
 from kiro_crew.dashboard.slot_projection import summary_rows
+from kiro_crew.dashboard.slot_row_memo import is_posted_note_row
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +81,12 @@ async def _stamped_rows(state: Any) -> list[dict[str, Any]]:
 
     Yielding pass: with a few hundred open sessions a synchronous pass holds the
     loop past the stall budget, and the stall alarm restarts the gateway.
+
+    The bare audience: these routes are owner-only and send no source link, so
+    the pass decides no chip status for anyone. The dashboard-user audience would
+    write a public-status SEL row per link for a non-owner who never asked.
     """
-    return list(await state.serialize_slots_yielding(dashboard_user=True))
+    return list(await state.serialize_slots_yielding())
 
 
 #: The two kinds of root these routes answer: a Crew Mode conductor, and a crewmate
@@ -138,12 +149,12 @@ def _not_root() -> web.Response:
     )
 
 
-def _status(row: Mapping[str, Any]) -> str:
+def _status(row: Mapping[str, Any], activity: tuple[SessionActivity, ...] = ()) -> str:
     if row.get("pending_approval"):
         return STATUS_NEEDS_APPROVAL
     if row.get("needs_input"):
         return STATUS_ASKING
-    if row.get("running"):
+    if row.get("running") or row.get("subagents_running") or session_execution_active(activity):
         return STATUS_WORKING
     return STATUS_IDLE
 
@@ -186,8 +197,9 @@ NO_LEDGER = LedgerFacts()
 def _group(status: str, progress: str = "", looping: bool = False) -> str:
     """The side panel group from real signals only.
 
-    A tool approval is ``approval``; a running turn is ``working``; a closed tab, a
-    closed ledger item, or a worker that reported ``done`` is ``done``; a worker
+    A tool approval is ``approval``; a running turn or attached sub-agent is
+    ``working``; a closed tab, a closed ledger item, or a worker that reported
+    ``done`` is ``done``; a worker
     that reported ``blocked`` or ``question`` (whatever its ``reason``), or one with
     an open question card, waits on its conductor: ``with_conductor``. An idle
     worker whose own loop will wake it (*looping*, ``ledger_wake.worker_looping``:
@@ -280,6 +292,8 @@ def _closed_workers(root: str, live: set[str]) -> list[str]:
 #: How long a kept answer is trusted without being read again: a closed worker's
 #: title, a ledger read under an unmoved change mark. Only this process's writes move
 #: a mark, so this bounds what a store written elsewhere (a CLI sweep) can leave stale.
+#: Each store's read keeps its own age, so an aged root entry hands its stores on and
+#: only a store read longer ago than this is checked again (:func:`_board_reader`).
 CACHE_MAX_AGE_SECS = 300.0
 #: Roots whose answers are kept at once, least recently read dropped first.
 CACHE_ROOTS = 64
@@ -289,6 +303,19 @@ CACHE_ROOTS = 64
 CACHE_ROOT_SESSIONS = 10_000
 #: The longest closed-worker title or agent name kept; a longer one is read each time.
 CACHE_TITLE_CHARS = 512
+
+
+class _Board(NamedTuple):
+    """One crew store's kept read (:func:`_board_reader`)."""
+
+    #: The store's change mark before the read.
+    mark: int
+    facts: dict[str, LedgerFacts]
+    #: ``time.monotonic()`` before the read, or before the last stat that found the
+    #: store still absent.
+    read_at: float
+    #: The store's directory was absent after the read, so an aged check is one stat.
+    absent: bool
 
 
 class _RootCache:
@@ -301,13 +328,14 @@ class _RootCache:
         #: answer, and the closed keys' creators. One tuple, so a concurrent read never
         #: pairs one walk's key with another's.
         self.walk: tuple[int, frozenset[str], list[str], dict[str, str]] | None = None
-        #: ``(members, mark, items)``: the crew's merged ledger facts, the members they
-        #: were read for, and the newest change mark of any store before the read.
-        self.ledger: tuple[tuple[str, ...], int, dict[str, LedgerFacts]] | None = None
-        #: Ledger slot key -> (its change mark before the read, its facts), for the
-        #: crew's own stores only: rebuilt on every merge, so a store that left the
-        #: crew is dropped, and gone with the whole entry.
-        self.boards: dict[str, tuple[int, dict[str, LedgerFacts]]] = {}
+        #: ``(members, mark, items, read_at)``: the crew's merged ledger facts, the
+        #: members they were read for, the newest change mark of any store before the
+        #: read, and the oldest of its stores' read times, so it ages with them.
+        self.ledger: tuple[tuple[str, ...], int, dict[str, LedgerFacts], float] | None = None
+        #: Ledger slot key -> its kept read, for the crew's own stores only: rebuilt on
+        #: every merge, so a store that left the crew is dropped. Handed on to the
+        #: entry that replaces this one (:func:`_root_cache`): each read ages alone.
+        self.boards: dict[str, _Board] = {}
         #: Closed key -> (title, agent), and the conversation log they were read from.
         self.log: Any = None
         self.titles: dict[str, tuple[str, str]] = {}
@@ -329,8 +357,12 @@ def _root_cache(root: str) -> _RootCache:
     with _cache_lock:
         entry = _root_caches.get(root)
         if entry is None or now - entry.born > CACHE_MAX_AGE_SECS:
-            entry = _RootCache(now)
-            _root_caches[root] = entry
+            fresh = _RootCache(now)
+            if entry is not None:
+                # Each store's read keeps its own age (:func:`_board_reader`), so the
+                # stores are checked one by one rather than all read again.
+                fresh.boards = entry.boards
+            entry = _root_caches[root] = fresh
         _root_caches.move_to_end(root)
         while len(_root_caches) > CACHE_ROOTS:
             _root_caches.popitem(last=False)
@@ -380,25 +412,52 @@ def _closed_and_parents(
 
 
 def _board_reader(
-    kept: dict[str, tuple[int, dict[str, LedgerFacts]]],
-    out: dict[str, tuple[int, dict[str, LedgerFacts]]],
+    kept: dict[str, _Board], out: dict[str, _Board]
 ) -> Callable[[str], dict[str, LedgerFacts]]:
     """A one-store reader for :func:`_crew_ledger_items`: *kept*'s facts while the
-    store's change mark has not moved, else a fresh read; every answer lands in *out*.
+    store's change mark has not moved and its read is younger than
+    :data:`CACHE_MAX_AGE_SECS`, else a fresh read; every answer lands in *out*. An
+    aged read of a store whose directory was absent costs one stat while it still is.
     BLOCKING on a miss."""
     from kiro_crew import session_ledger
     from kiro_crew.work_ledger import change_mark
 
     def read(key: str) -> dict[str, LedgerFacts]:
         ledger = session_ledger.ledger_key(key)
-        # Read BEFORE the store: a write landing during the read moves the mark past it.
-        mark = change_mark(ledger)
+        # Read BEFORE the store: a write landing during the read moves the mark past
+        # it, and one from another process lands after the read time.
+        mark, now = change_mark(ledger), time.monotonic()
         hit = kept.get(ledger)
-        facts = hit[1] if hit is not None and hit[0] == mark else _ledger_items(key)
-        out[ledger] = (mark, facts)
+        if hit is not None and hit.mark == mark:
+            if now - hit.read_at <= CACHE_MAX_AGE_SECS:
+                out[ledger] = hit
+                return hit.facts
+            if hit.absent and not _store_present(ledger):
+                out[ledger] = hit._replace(read_at=now)
+                return hit.facts
+        facts = _ledger_items(key)
+        out[ledger] = _Board(mark, facts, now, not facts and not _store_present(ledger))
         return facts
 
     return read
+
+
+def _store_present(ledger: str) -> bool:
+    """Whether *ledger*'s work-ledger directory may exist: one unresolved stat.
+
+    Only ``False`` is trusted: :func:`_board_reader` keeps an empty read on it. Any
+    other answer, a live symlink included, reads the store through the board's seam,
+    which keeps its own containment check. BLOCKING.
+    """
+    from kiro_crew import work_ledger
+
+    try:
+        os.stat(work_ledger._work_ledger_root() / work_ledger._store_name(ledger))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        pass
+    return True
 
 
 def _cached_crew_ledger_items(
@@ -406,8 +465,9 @@ def _cached_crew_ledger_items(
 ) -> dict[str, LedgerFacts]:
     """:func:`_crew_ledger_items` with each store's read kept. BLOCKING on a miss.
 
-    The merged answer is served again while no store was written here since and the
-    members are the same; otherwise each store is read again only if its own mark moved.
+    The merged answer is served again while no store was written here since, the
+    members are the same and none of its reads aged; otherwise each store is read
+    again only if its own mark moved or its own read aged.
     """
     from kiro_crew.work_ledger import last_change_mark
 
@@ -417,15 +477,21 @@ def _cached_crew_ledger_items(
     mark = last_change_mark()
     key = tuple(members)
     kept = entry.ledger
-    if kept is not None and kept[0] == key and kept[1] == mark:
+    if (
+        kept is not None
+        and kept[0] == key
+        and kept[1] == mark
+        and time.monotonic() - kept[3] <= CACHE_MAX_AGE_SECS
+    ):
         return kept[2]
-    boards: dict[str, tuple[int, dict[str, LedgerFacts]]] = {}
+    boards: dict[str, _Board] = {}
     items = _crew_ledger_items(root, members, read=_board_reader(entry.boards, boards))
-    if sum(len(facts) for _mark, facts in boards.values()) > CACHE_ROOT_SESSIONS:
+    if sum(len(board.facts) for board in boards.values()) > CACHE_ROOT_SESSIONS:
         # Stores whose items outnumber the budget (a long history of closed items).
         entry.boards, entry.ledger = {}, None
     else:
-        entry.boards, entry.ledger = boards, (key, mark, items)
+        oldest = min(board.read_at for board in boards.values())
+        entry.boards, entry.ledger = boards, (key, mark, items, oldest)
     return items
 
 
@@ -652,15 +718,23 @@ def _is_seed(text: str) -> bool:
 def _last_reply(slot: Any) -> str:
     """The newest assistant line in *slot*'s transcript, ``""`` when it has none.
 
+    A system notice (``system_notices.is_system_notice``), such as the reload
+    notice, is not the worker's reply, so it is skipped.
+
     The live window holds raw content, so the line goes through the same display
     redaction as the sidebar preview: its first line, markdown stripped, then
     redacted.
     """
     # circular import: chat_utils_display imports dashboard.state.
     from kiro_crew.dashboard.chat_utils_display import _redacted_preview
+    from kiro_crew.dashboard.system_notices import is_system_notice
 
     for message in reversed(summary_rows(slot) if slot is not None else []):
-        if isinstance(message, Mapping) and message.get("role") == "assistant":
+        if (
+            isinstance(message, Mapping)
+            and message.get("role") == "assistant"
+            and not is_system_notice("assistant", message.get("meta"))
+        ):
             text = message.get("content")
             if isinstance(text, str) and text.strip():
                 # The whole first line: _redacted_preview strips markdown,
@@ -668,6 +742,25 @@ def _last_reply(slot: Any) -> str:
                 first = next(line for line in text.splitlines() if line.strip())
                 return _redacted_preview(first.strip(), WORKER_LINE_MAX)
     return ""
+
+
+def _newest_line_is_note(slot: Any) -> bool:
+    """Whether the row behind *slot*'s sidebar preview is a posted note.
+
+    The preview counts a note (``slot_row_memo.summarize_rows``), but a note is
+    not the worker's own line, so the card falls back to its last reply.
+    """
+    from kiro_crew.dashboard.system_notices import is_system_notice
+
+    for message in reversed(summary_rows(slot) if slot is not None else []):
+        if not isinstance(message, Mapping) or not message.get("content"):
+            continue
+        if is_posted_note_row(message):
+            return True
+        role = message.get("role")
+        if role in ("user", "assistant") and not is_system_notice(role, message.get("meta")):
+            return False
+    return False
 
 
 def _worker_line(row: Mapping[str, Any], ledger_line: str, slot: Any = None) -> str:
@@ -681,7 +774,7 @@ def _worker_line(row: Mapping[str, Any], ledger_line: str, slot: Any = None) -> 
     last = row.get("last_message")
     if not isinstance(last, str):
         return ""
-    if _is_seed(last):
+    if _is_seed(last) or _newest_line_is_note(slot):
         return _last_reply(slot)
     return _one_line(last)
 
@@ -758,7 +851,9 @@ async def api_crew_workers(request: web.Request) -> web.Response:
     get_slot = getattr(state, "get_slot", None)
     for row in live:
         key = str(row.get("key"))
-        status = _status(row)
+        live_slot = get_slot(key) if callable(get_slot) else None
+        activity = session_activity(state, live_slot) if live_slot is not None else ()
+        status = _status(row, activity)
         facts = items.get(key, NO_LEDGER)
         item, line = facts.item, facts.line
         workers.append(
@@ -770,7 +865,7 @@ async def api_crew_workers(request: web.Request) -> web.Response:
                 "group": _group(status, facts.progress, status == STATUS_IDLE and _looping(key)),
                 "last_activity": _last_activity(row),
                 "ledger_item": item,
-                "summary": _worker_line(row, line, get_slot(key) if callable(get_slot) else None),
+                "summary": _worker_line(row, line, live_slot),
                 "created_by": str(row.get("created_by") or ""),
                 "dispatched_by": _dispatcher_of(row),
                 "approval": _approval_of(row),

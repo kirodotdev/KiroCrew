@@ -1,12 +1,12 @@
 ---
 title: A conversation's trust follows its founder, not its continuer
-status: in-progress
+status: implemented
 author: Billy Gerhard
 created: 2026-09-30
-last-audited: 2026-10-03
-audited-at: 8ef5ea40e5
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr: 15457
-implementation-prs: [13109]
+implementation-prs: [30632]
 tracking-issues: [13244]
 supersedes: []
 superseded-by: []
@@ -14,16 +14,19 @@ superseded-by: []
 
 # RFC: A conversation's trust follows its founder, not its continuer
 
-- Status: `in-progress` -- the change this document records is live in an open
-  PR, [#13109](https://github.com/kirodotdev/KiroCrew/pull/13109), the same
-  reading the index gives `rfc-composable-layout-mechanism` and
-  `rfc-solo-spawn-gate`. The design was reviewed and accepted by maintainer
+- Status: `implemented`. [#13109](https://github.com/kirodotdev/KiroCrew/pull/13109)
+  closed unmerged on 2026-11-02; the decision shipped instead in
+  [#30632](https://github.com/kirodotdev/KiroCrew/pull/30632), merged
+  2026-11-06: `resolve_parent_policy` in
+  `src/kiro_crew/subagent_manager/turn_session.py` keeps the continuing chat's
+  `auto` only when the founding session (`_founding_session`) has it too, and
+  otherwise asks under the founder. Main is one step looser than the text below:
+  a continuation is still auto-approved when both chats have Trust on. Checked
+  at `c157748343`. The design was reviewed and accepted by maintainer
   bolichen97 on 2026-10-01, in
   [this document's PR](https://github.com/kirodotdev/KiroCrew/pull/15457#issuecomment-5927219425):
   "reviewed for a security regression and accepted as designed: it only
-  narrows when chat-level trust auto-approves". The status stays
-  `in-progress` rather than `accepted` because the index reads `in-progress`
-  for a decision whose implementation is in flight rather than on main.
+  narrows when chat-level trust auto-approves".
 - Changed default: a subagent conversation continued from a chat other than the
   one that started it no longer runs under the continuing chat's trust. No
   chat's trust answers for such a continuation, so every request it raises that

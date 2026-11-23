@@ -1068,6 +1068,34 @@ def test_each_part_belongs_to_the_conftest_its_name_says() -> None:
     assert suite_parts == on_disk - floor
 
 
+def test_every_fixture_a_part_defines_is_bound_by_its_conftest() -> None:
+    """Pytest collects a fixture from the conftest's namespace, never from a part's.
+
+    So a part's fixture that the conftest's ``from conftest_* import`` block leaves out
+    never runs, autouse or not, and nothing at runtime says so.
+    """
+    unbound = []
+    for conftest in _CONFTESTS:
+        bound = {
+            alias.asname or alias.name
+            for node in ast.walk(ast.parse(_text(_REPO / conftest)))
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        }
+        for part in conftest_family(_REPO, conftest)[1:]:
+            unbound += [
+                f"{part}::{node.name}"
+                for node in ast.parse(_text(_REPO / part)).body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and any(
+                    ast.unparse(getattr(d, "func", d)).endswith("fixture")
+                    for d in node.decorator_list
+                )
+                and node.name not in bound
+            ]
+    assert not unbound, f"fixtures a conftest part defines that its conftest never binds: {unbound}"
+
+
 def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

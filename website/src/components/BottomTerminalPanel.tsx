@@ -11,10 +11,8 @@ import { useKeyboardLift } from '../hooks/useKeyboardLift'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { beginPanelSlide } from '../utils/panelSlide'
 import { isTerminalFullscreenAllowed, findKeycap, fullscreenKeycap } from '../utils/terminalFullscreen'
-import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2, Maximize2, Minimize2, Search } from 'lucide-react'
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-} from './ui/dropdown-menu'
+import { TerminalSquare, Plus, X, XSquare, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom, Loader2, Maximize2, Minimize2, Search } from 'lucide-react'
+import { DropdownMenuItem } from './ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { Input } from './ui'
 import { AllTabsMenu } from './AllTabsMenu'
@@ -31,7 +29,7 @@ import {
   useBottomTerminal, useTerminalHydratePending, addTab, removeTab, hasTab, setActiveTab, setTabsOrder,
   renameTab, capTerminalName,
   openBottomTerminal, closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
-  toggleTerminalPosition, toggleTerminalFullscreen, setTerminalFullscreen, useTerminalFullscreen, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
+  toggleTerminalPosition, toggleTerminalFullscreen, setTerminalFullscreen, useTerminalFullscreen, MIN_WIDTH, MAX_VH, MAX_VW,
   setTerminalCloseFailed, useTerminalCloseFailed,
   type TermTab,
 } from '../hooks/useBottomTerminal'
@@ -537,7 +535,21 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
     for (const t of tabs) disposeTerminalConnection(t.id)
   }, [tabs])
 
-  const atCap = tabs.length >= MAX_TERMINALS
+  const tabListProps = {
+    groups: [{ id: 'terminals', rows: tabs.map(t => ({ id: t.id, glyph: <TerminalSquare size={13} />, title: <TermTabRowTitle tab={t} /> })) }],
+    currentId: activeId,
+    onSelect: (id: string) => { if (id === activeId) reveal(id); else setActiveTab(id) },
+    label: i18nT('pages.chat.sidePanel.all_tabs'),
+    // The one place that closes every tab without a right-click or a long-press
+    // on a chip, so phones have it too. With one tab its own × closes it, so
+    // the action shows from two.
+    footer: tabs.length >= 2 ? {
+      label: i18nT('components.tabCloseMenu.close_all_terminals'),
+      icon: <XSquare size={13} />,
+      onSelect: () => closeTabs(tabs.map(tab => tab.id)),
+      testId: 'terminal-tabs-close-all',
+    } : undefined,
+  }
 
   if (hydratePending) return null
 
@@ -599,44 +611,43 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
         </div>
         {/* + opens a new terminal tab instantly (no menu). */}
         <button
-          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
           onClick={() => addTab(activeSlotProject)}
-          disabled={atCap}
-          title={atCap ? i18nT('components.bottomTerminalPanel.maximum_terminals', { n: MAX_TERMINALS }) : i18nT('components.bottomTerminalPanel.new_terminal')}
+          title={i18nT('components.bottomTerminalPanel.new_terminal')}
           aria-label={i18nT('components.bottomTerminalPanel.new_terminal')}
         >
           <Plus size={15} />
         </button>
-        <AllTabsMenu
-          groups={[{ id: 'terminals', rows: tabs.map(t => ({ id: t.id, glyph: <TerminalSquare size={13} />, title: <TermTabRowTitle tab={t} /> })) }]}
-          currentId={activeId}
-          onSelect={id => { if (id === activeId) reveal(id); else setActiveTab(id) }}
-          label={i18nT('pages.chat.sidePanel.all_tabs')}
-        />
+        {/* The popout has no More actions menu, so its tab list keeps the
+            chevron beside +, without Close all (a chip's menu has it there). */}
+        {variant === 'popout' && <AllTabsMenu {...tabListProps} footer={undefined} />}
         {variant === 'dock' ? (
           <div className="flex items-center gap-0.5 ml-auto shrink-0">
-            <DropdownMenu guideScope="menu:shell.terminal-more">
-              <DropdownMenuTrigger asChild>
+            {/* One menu for the dock: the tab list, the panel's actions, then
+                Close all. A second chevron beside + read as a twin of Hide. */}
+            <AllTabsMenu
+              {...tabListProps}
+              guideScope="menu:shell.terminal-more"
+              guideProbe
+              trigger={
                 <button
-                  className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+                  className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 data-[state=open]:bg-bg-hover data-[state=open]:text-text"
                   aria-label={i18nT('components.bottomTerminalPanel.more_actions')}
                   title={i18nT('components.bottomTerminalPanel.more_actions')}
+                  data-testid="terminal-more-trigger"
                   {...uiLocation('shell.terminal-more')}
                 >
                   <MoreHorizontal size={14} />
                 </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="min-w-[180px]"
-                onCloseAutoFocus={(e) => {
-                  // Find hands focus to the find bar's input: keep the menu from
-                  // restoring it to the trigger once its focus trap releases.
-                  if (!menuFindRef.current) return
-                  menuFindRef.current = false
-                  if (activeId && openTerminalSearch(activeId)) e.preventDefault()
-                }}
-              >
+              }
+              onCloseAutoFocus={(e) => {
+                // Find hands focus to the find bar's input: keep the menu from
+                // restoring it to the trigger once its focus trap releases.
+                if (!menuFindRef.current) return
+                menuFindRef.current = false
+                if (activeId && openTerminalSearch(activeId)) e.preventDefault()
+              }}
+            >
                 {/* Find in the active terminal's scrollback. On Linux/Windows the
                     shell keeps Ctrl+F (readline forward-char, less/vim paging),
                     so this item and Ctrl+Shift+F are the ways in; macOS also has
@@ -683,8 +694,7 @@ export function TerminalTabsView({ variant, deferOpen = false }: { variant: 'doc
                   {i18nT('components.bottomTerminalPanel.hide_terminal_panel')}
                 </DropdownMenuItem>
                 )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            </AllTabsMenu>
             {/* While fullscreen covers the content area (and the resize grip is
                 gone), the header's second slot is a visible Exit fullscreen
                 button in place of Hide: on Linux/Windows there is no fullscreen

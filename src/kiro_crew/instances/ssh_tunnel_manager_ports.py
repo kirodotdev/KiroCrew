@@ -194,11 +194,12 @@ def _verify_and_reclaim_forwarder(
     reaped by SIGKILL time, the group cannot be re-addressed through the
     existing pid-keyed helpers; the TERM broadcast has already reached every
     member, and a member that ignores it keeps the port — reported truthfully
-    as not reclaimed (the port stays excluded from allocation). The ssh child
-    is spawned WITHOUT a new group: after a gateway hard-kill it sits in the
-    DEAD gateway's process group, where a group signal could hit unrelated
-    survivors — so it gets a pid-scoped signal only, which suffices because
-    ``ssh -N`` holds the forward itself and spawns no descendants of its own.
+    as not reclaimed (the port stays excluded from allocation). An ssh orphan
+    gets a pid-scoped signal only: one left by an older gateway was spawned
+    WITHOUT a new group and sits in the DEAD gateway's process group, where a
+    group signal could hit unrelated survivors. That still frees the port,
+    because ``ssh -N`` holds the forward itself, and ssh hangs up its
+    ``ProxyCommand`` when it exits on the signal.
 
     Returns one of: ``"reclaimed"`` (identity confirmed, process/group gone,
     port released), ``"identity_mismatch"`` (nothing was ever signalled),

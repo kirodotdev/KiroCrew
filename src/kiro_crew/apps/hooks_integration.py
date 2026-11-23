@@ -38,9 +38,16 @@ from kiro_crew.apps.execution import (
 from kiro_crew.apps.job_routes import register_job_routes
 from kiro_crew.apps.job_sdk import forget_sdk, get_sdk, reconcile_all, register_sdk
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
-from kiro_crew.apps.manager import app_dir, approved_manifest_permissions, list_apps
+from kiro_crew.apps.manager import (
+    app_dir,
+    app_lifecycle_lock,
+    approved_manifest_permissions,
+    get_app,
+    list_apps,
+)
 from kiro_crew.apps.module_loader import clear_all_shutdown_callables
 from kiro_crew.apps.route_registry import RouteRegistry
+from kiro_crew.apps.sel_routes import register_sel_routes
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.token_auth import replace_legacy_app_secret
 from kiro_crew.executors import subprocess_executor
@@ -117,7 +124,7 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
     rels = sorted(
         {
             spec.split(":", 1)[0].replace(".", "/") + ".py"
-            for key in ("on_startup", "on_shutdown", "routes")
+            for key in ("on_startup", "on_shutdown", "routes", "on_browser_media_ended")
             if (spec := hooks.get(key, ""))
             if spec.split(":", 1)[0]
         }
@@ -303,6 +310,7 @@ def init_hooks_system(
     # /api/apps/{app_name}/{path:.*} would otherwise swallow every _jobs request
     # and answer it from the app's own dispatch table.
     register_job_routes(app)
+    register_sel_routes(app)
 
     _route_registry = RouteRegistry(app)
     _route_registry.ensure_catch_all()
@@ -325,6 +333,46 @@ def get_route_registry() -> RouteRegistry | None:
 def get_lifecycle_dispatcher() -> LifecycleDispatcher | None:
     """Get the global LifecycleDispatcher instance."""
     return _lifecycle_dispatcher
+
+
+#: How long an app event waits for its app's lifecycle lock (held while the app is
+#: being enabled, disabled, updated or uninstalled) before it is dropped.
+_EVENT_ADMIT_TIMEOUT_SEC = 10.0
+
+
+async def dispatch_app_event(app_name: str, hook_name: str, event: dict[str, Any]) -> bool:
+    """Hand *event* to *app_name*'s ``backend.hooks.<hook_name>``; ``True`` when it ran.
+
+    Only to an app whose hooks this gateway has loaded, that is still enabled and
+    still allowed to execute: a disabled, uninstalled or untrusted app gets nothing.
+    The checks and the start run under the app's lifecycle lock, the lock disable,
+    uninstall and trust withdrawal hold around their teardown, and the started hook
+    is owned like a retained startup hook, so that teardown waits for it. An event
+    that cannot take the lock within ``_EVENT_ADMIT_TIMEOUT_SEC`` is dropped.
+    """
+    dispatcher = _lifecycle_dispatcher
+    if dispatcher is None or app_name not in _loaded_hook_signatures:
+        return False
+    lock = app_lifecycle_lock(app_name)
+    try:
+        await asyncio.wait_for(lock.acquire(), _EVENT_ADMIT_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        return False
+    try:
+        if app_name not in _loaded_hook_signatures:
+            return False
+        if await asyncio.to_thread(hook_enable_denied, app_name):
+            return False
+        app_info = await asyncio.to_thread(get_app, app_name)
+        if not app_info or not app_info.get("enabled"):
+            return False
+        task = await dispatcher.start_event(app_info, hook_name, event)
+    finally:
+        lock.release()
+    if task is None:
+        return False
+    hook_path = dispatcher._get_hook(app_info, hook_name)
+    return await dispatcher.finish_event(app_name, hook_name, hook_path, task)
 
 
 async def stop_retained_startup_hooks(app_name: str, *, bounded: bool) -> bool:

@@ -19,16 +19,18 @@ from kiro_crew import guide_catalog, mcp_guide, ui_index
 from kiro_crew.dashboard.guide_runs import REASON_NOT_FOUND, GuideError, GuideStore
 
 
+@pytest.fixture(scope="module")
+def _no_auto_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One missing auto tier for the whole module. The index and catalog caches key on
+    each source's path and stat, so a fixed path lets them hit from case to case, and a
+    case that points ``_UI_INDEX_PATH`` at its own index changes the key itself."""
+    return tmp_path_factory.mktemp("guide-ui-find") / "no-auto.json"
+
+
 @pytest.fixture(autouse=True)
-def _no_auto_tier(_floor_monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
-    _floor_monkeypatch.setattr(guide_catalog, "_UI_AUTO_INDEX_PATH", tmp_path / "no-auto.json")
-    _floor_monkeypatch.setattr(ui_index, "AUTO_INDEX_PATH", tmp_path / "no-auto.json")
-    guide_catalog.ui_find_routes.cache_clear()
-    guide_catalog.guidable_settings.cache_clear()
-    ui_index._cache.update(key=None, index=None)
-    yield
-    guide_catalog.ui_find_routes.cache_clear()
-    ui_index._cache.update(key=None, index=None)
+def _no_auto_tier(_floor_monkeypatch: pytest.MonkeyPatch, _no_auto_path: Path) -> None:
+    _floor_monkeypatch.setattr(guide_catalog, "_UI_AUTO_INDEX_PATH", _no_auto_path)
+    _floor_monkeypatch.setattr(ui_index, "AUTO_INDEX_PATH", _no_auto_path)
 
 
 def _find(**params: Any) -> dict[str, Any]:

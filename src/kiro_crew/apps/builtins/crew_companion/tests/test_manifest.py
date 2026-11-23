@@ -64,7 +64,7 @@ def test_manifest_validates_with_no_errors() -> None:
 def test_identity() -> None:
     m = _manifest()
     assert m.name == "crew-companion"
-    assert m.version == "1.0.0"
+    assert m.version == "1.0.1"
     assert m.displayName == "Crew Companion"
     assert m.author == "kirocrew"
 

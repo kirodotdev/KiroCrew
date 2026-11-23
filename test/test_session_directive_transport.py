@@ -169,8 +169,8 @@ class TestRefusalMarkerSurvivesTransport:
 
     def test_refusal_marker_is_pure_ascii_and_survives_the_sanitizer(self):
         # The prose carries an em dash, but the framing TOKEN must stay ASCII —
-        # the sanitizer strips category Cf, which is what destroyed an earlier
-        # invisible-separator prefix on the directive marker.
+        # the sanitizer strips category Cf, so an invisible-separator prefix on
+        # the directive marker would be destroyed.
         assert sd._REFUSAL_SENTINEL.isascii()
         refusal = self._refusal()
         assert strip_hidden_unicode(refusal) == refusal
@@ -207,10 +207,10 @@ class TestMcpAppMarkerSurvivesResultCuts:
     def test_marker_survives_long_single_block(self):
         # Drive the marker through the real producer ``append_marker`` on a
         # LONG (>4000-char) first block, then feed the marked envelope through
-        # the parser. The producer decides the marker's byte offset, so this
-        # regresses the fix: with the prepend it sits at offset 0 and rides the
-        # per-part 4000-char cut, but the old end-append put it past 20000 chars
-        # where the ``[:4000]`` slice drops it and ``find_marker`` returns None.
+        # the parser. The producer decides the marker's byte offset: prepended,
+        # it sits at offset 0 and survives the per-part 4000-char cut; appended,
+        # it would sit past 20000 chars, where the ``[:4000]`` slice drops it and
+        # ``find_marker`` returns None.
         marked = append_marker({"content": [{"type": "text", "text": "x" * 20000}]}, self._id())
         update = {
             "toolCallId": "tc-long",

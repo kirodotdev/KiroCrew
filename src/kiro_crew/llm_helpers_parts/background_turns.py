@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -83,6 +83,15 @@ def _raise_if_unfinished(event: object, text: str) -> None:
     raise error
 
 
+class BackgroundAdmissionRefused(RuntimeError):
+    """A background helper was not started because host memory is critical.
+
+    A ``RuntimeError``, so every caller's existing failure path still catches it;
+    its own type lets a caller that must not record the failure as an ordinary
+    one (the knowledge pool) tell it apart.
+    """
+
+
 async def _refuse_while_memory_critical(what: str) -> None:
     """Raise instead of starting background helper work while host memory is critical.
 
@@ -98,7 +107,9 @@ async def _refuse_while_memory_critical(what: str) -> None:
     decision = await asyncio.to_thread(admission_check)
     if not decision.admitted:
         logger.info("Background helper %s not started: %s", what, decision.reason)
-        raise RuntimeError(f"background helper {what!r} not started: {decision.reason}")
+        raise BackgroundAdmissionRefused(
+            f"background helper {what!r} not started: {decision.reason}"
+        )
 
 
 @trace_surfaces.rooted(trace_surfaces.TRIGGER_BACKGROUND)
@@ -117,9 +128,15 @@ async def run_bg_oneliner(
     retry_rejected_model: bool = True,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     memory_gate: bool = True,
+    confirm_session: Callable[[Any], Awaitable[None]] | None = None,
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
+
+    ``confirm_session`` is awaited with the acquired session after its model is
+    set and before anything is sent; raising refuses the turn, and the session
+    is destroyed as after any other failure. For a caller that must judge what
+    this session itself consumed, which a check before acquisition cannot see.
 
     ``start_priority`` orders the session's start; FOREGROUND only for a caller a
     person is waiting on (rule: ``kiro_crew.start_priority``). A BACKGROUND call
@@ -220,6 +237,8 @@ async def run_bg_oneliner(
             raise RuntimeError(
                 "run_bg_oneliner(strict_model=True) requires a session with set_model()"
             )
+        if confirm_session is not None:
+            await confirm_session(session)
         # A one-liner's prompt is text ABOUT a session, so an image path in it is
         # quoted history, not an attachment. Inlining it would send image blocks
         # that a text-only background model rejects, so the turn goes out
@@ -519,6 +538,22 @@ async def _start_fresh_conversation(sessions: Any, key: str, client: Any) -> Non
     logger.info("Background session %s: reset to a new runtime for a fresh conversation", key)
 
 
+async def repair_lite_spec(sessions: Any) -> None:
+    """Repair the ``kirocrew-lite`` spec and reset the sessions that may have loaded it.
+
+    The one way to repair that file: it counts the rewrite (``_lite_rewrites``), so a
+    ``background_turn`` whose pre-spawn read raced it stops vouching for its session,
+    and it is shielded, so a cancelled caller cannot leave the count open or skip the
+    resets. Raises nothing but a cancellation.
+    """
+    _lite_rewrites["begun"] += 1
+    _lite_rewrites["running"] += 1
+    repair = asyncio.ensure_future(_rewrite_lite_spec(sessions))
+    _lite_rewrite_tasks.add(repair)
+    repair.add_done_callback(_lite_rewrite_tasks.discard)
+    await asyncio.shield(repair)
+
+
 async def _rewrite_lite_spec(sessions: Any) -> None:
     """Repair the ``kirocrew-lite`` spec, then reset the sessions that may have loaded the old one.
 
@@ -544,8 +579,31 @@ async def _rewrite_lite_spec(sessions: Any) -> None:
         _lite_rewrites["running"] -= 1
 
 
+def _background_spawn_backend(sessions: Any) -> str | None:
+    """The backend a background session on *sessions* starts under, or ``None``.
+
+    ``agent.acp_backend``, read the way the background runtime reads it
+    (``_configured_bg_backend_raw``). ``None`` when it cannot be read, which the
+    pre-spawn check treats as "not KAS", so it judges the file as before.
+    """
+    read = getattr(sessions, "_configured_bg_backend_raw", None)
+    if not callable(read):
+        return None
+    try:
+        backend = read()
+    except Exception:
+        return None
+    return backend if isinstance(backend, str) else None
+
+
 async def _lite_spec_unconfirmed(
-    sessions: Any, key: str, client: Any, *, agent: str, authored_before_spawn: bool
+    sessions: Any,
+    key: str,
+    client: Any,
+    *,
+    agent: str,
+    authored_before_spawn: bool,
+    before_spawn_backend: str | None = None,
 ) -> bool:
     """True when a ``kirocrew-lite`` session's spec cannot be confirmed tool-less.
 
@@ -556,8 +614,11 @@ async def _lite_spec_unconfirmed(
     with the read taken before the spawn and the spec the harness loaded, read
     after it (``effective_spec_declares_zero_tools``). Any other agent, or a
     backend that reads no spec of Crew's, answers False. Never raises.
+
+    The pre-spawn read only vouches for a session on the backend it was taken for
+    (*before_spawn_backend*, when the caller passes it).
     """
-    from kiro_crew.agent_sdk.backends import Routing, routing_for
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, Routing, routing_for
     from kiro_crew.session import BACKGROUND_AGENT  # circular import
 
     try:
@@ -570,6 +631,9 @@ async def _lite_spec_unconfirmed(
     backend = getattr(acp, "backend", None)
     if not isinstance(backend, str) or routing_for(backend) is not Routing.AGENT_SPEC:
         return False
+    read_for_kas = before_spawn_backend == ACP_BACKEND_KAS
+    if before_spawn_backend is not None and read_for_kas != (backend == ACP_BACKEND_KAS):
+        authored_before_spawn = False
     confirm = getattr(acp, "effective_spec_declares_zero_tools", None)
     if not callable(confirm):
         return True
@@ -579,6 +643,17 @@ async def _lite_spec_unconfirmed(
         logger.warning("kirocrew-lite spec confirmation failed", exc_info=True)
         return True
     return confirmed is not True
+
+
+def _lite_spec_refusal(key: str) -> RuntimeError:
+    """The error a background turn raises when its spec mounts something."""
+    from kiro_crew.agent_spec_injections import WRITE_BACK_CAUSE
+    from kiro_crew.session import BACKGROUND_AGENT  # circular import
+
+    return RuntimeError(
+        f"background session {key!r} not acquired: the {BACKGROUND_AGENT} spec "
+        f"could not be confirmed to mount nothing. {WRITE_BACK_CAUSE}"
+    )
 
 
 @asynccontextmanager
@@ -651,23 +726,23 @@ async def background_turn(
     resolved_agent = agent if agent is not None else BACKGROUND_AGENT
     lite_before_spawn = False
     rewrites_begun = _lite_rewrites["begun"]
+    spawn_backend = _background_spawn_backend(sessions)
     if resolved_agent == BACKGROUND_AGENT:
         from kiro_crew.agent_sdk.agent_specs import authored_spec_toolless_verdict
 
-        verdict = await asyncio.to_thread(authored_spec_toolless_verdict, BACKGROUND_AGENT)
+        verdict = await asyncio.to_thread(
+            authored_spec_toolless_verdict, BACKGROUND_AGENT, backend=spawn_backend
+        )
         # Only this first read can vouch for a live session, and not while a rewrite
         # runs: a session started before one may have loaded the old file.
         lite_before_spawn = verdict is True and not _lite_rewrites["running"]
         if verdict is False:
             # Another tool may have written its server into Crew's own file; put the
             # template back and let a second read decide.
-            _lite_rewrites["begun"] += 1
-            _lite_rewrites["running"] += 1
-            repair = asyncio.ensure_future(_rewrite_lite_spec(sessions))
-            _lite_rewrite_tasks.add(repair)
-            repair.add_done_callback(_lite_rewrite_tasks.discard)
-            await asyncio.shield(repair)
-            verdict = await asyncio.to_thread(authored_spec_toolless_verdict, BACKGROUND_AGENT)
+            await repair_lite_spec(sessions)
+            verdict = await asyncio.to_thread(
+                authored_spec_toolless_verdict, BACKGROUND_AGENT, backend=spawn_backend
+            )
         if verdict is False:
             # A spec that mounts something is refused before ``get_or_create``:
             # starting the session would run what it names (an MCP server's startup
@@ -682,10 +757,7 @@ async def background_turn(
             )
             if memory_store:
                 await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
-            raise RuntimeError(
-                f"background session {key!r} not acquired: the {BACKGROUND_AGENT} spec "
-                "could not be confirmed to mount nothing"
-            )
+            raise _lite_spec_refusal(key)
     try:
         if agent is None:
             client, _new, _resumed = await sessions.get_or_create(key)
@@ -702,7 +774,12 @@ async def background_turn(
     # provider in ``_lite_resets_failed``, refused on its next turn.
     try:
         unconfirmed = await _lite_spec_unconfirmed(
-            sessions, key, client, agent=resolved_agent, authored_before_spawn=lite_before_spawn
+            sessions,
+            key,
+            client,
+            agent=resolved_agent,
+            authored_before_spawn=lite_before_spawn,
+            before_spawn_backend=spawn_backend,
         )
         if not unconfirmed and lite_before_spawn and _lite_rewrites["begun"] != rewrites_begun:
             # A rewrite begun since the pre-spawn read can hide what this session loaded.
@@ -746,10 +823,7 @@ async def background_turn(
                 logger.debug("background session release failed task=%s", task, exc_info=True)
         if memory_store:
             await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
-        raise RuntimeError(
-            f"background session {key!r} not acquired: the {BACKGROUND_AGENT} spec "
-            "could not be confirmed to mount nothing"
-        )
+        raise _lite_spec_refusal(key)
     # The stats object as it stands BEFORE this turn. The shared session serves
     # many turns, and the runner replaces this object only once a turn actually
     # begins, so identity is what separates a turn that ran from one whose

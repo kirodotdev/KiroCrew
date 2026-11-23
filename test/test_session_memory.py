@@ -719,7 +719,7 @@ def test_slot_spend_cache_invalidates_on_shard_growth(
     assert third["dashboard:chat-7-333"]["turns"] == 2
 
 
-# ── Regression: Sessions table and Spend tab share the same window ─────────
+# ── Sessions table and Spend tab share the same window ─────────────────────
 
 
 def test_slot_spend_window_matches_cost_breakdown_window() -> None:

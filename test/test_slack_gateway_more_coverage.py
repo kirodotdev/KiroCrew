@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -106,6 +107,22 @@ def _mock_dashboard_state() -> MagicMock:
     ds.get_slot = MagicMock(return_value=None)
     ds.channel_transports = {}
     return ds
+
+
+def _monitor_notice(ds: MagicMock) -> tuple[str, str, dict | None, str | None]:
+    """``(title, body, meta, priority)`` of the one monitor notice *ds* received.
+
+    A merged pull request is pushed on the bus as a passive payload; every other
+    notice goes through ``notify`` at the channel's priority (``None`` here).
+    """
+    pushes = ds.notification_bus.push.call_args_list
+    notifies = ds.notify.call_args_list
+    assert len(pushes) + len(notifies) == 1, (pushes, notifies)
+    if pushes:
+        payload = pushes[0].args[0]
+        return payload.title, payload.body, payload.meta or None, payload.priority
+    call = notifies[0]
+    return call.args[1], call.args[2], call.kwargs["meta"], None
 
 
 def _mock_slack(*, dm: str | None = "D1") -> MagicMock:
@@ -265,18 +282,24 @@ class TestWarnIfKiroCliOutdated:
         would mean the dashboard never comes up at all.
         """
         orch = _make_orchestrator()
+        release = threading.Event()
 
         def _hang(**kwargs: Any) -> str:
-            time.sleep(5)  # outlives the budget pinned below
+            # Held until the asserts are done, so it outlives the budget pinned below.
+            # The loop's teardown joins this worker thread, so it must not outlive the test.
+            release.wait(30)
             return "/opt/pinned/bin/kiro-cli"
 
-        with caplog.at_level("WARNING"):
-            with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
-                with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_hang):
-                    with patch("asyncio.create_subprocess_exec") as spawn:
-                        await orch._warn_if_kiro_cli_outdated()
-        spawn.assert_not_called()
-        assert "exceeded" in caplog.text
+        try:
+            with caplog.at_level("WARNING"):
+                with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
+                    with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_hang):
+                        with patch("asyncio.create_subprocess_exec") as spawn:
+                            await orch._warn_if_kiro_cli_outdated()
+            spawn.assert_not_called()
+            assert "exceeded" in caplog.text
+        finally:
+            release.set()
 
     @pytest.mark.asyncio
     async def test_unspawnable_binary_is_silent(self, capsys):
@@ -1139,12 +1162,13 @@ class TestNotifyNudgeExpired:
 
         orch._notify_nudge_expired(loop)
 
-        ds.notify.assert_called_once()
-        body = ds.notify.call_args.args[2]
+        _title, body, meta, priority = _monitor_notice(ds)
         assert expected in body
         assert forbidden not in body
         assert loop.monitor.target in body
-        assert ds.notify.call_args.kwargs["meta"] is None
+        assert meta is None
+        # Only a merge needs nothing from the user; every other stop rings.
+        assert priority == ("passive" if reason == "pull_request_merged" else None)
 
     def test_a_stalled_suppressed_red_is_not_described_as_fine(self):
         """The dominant stall is an ALREADY-ALERTED red, so the copy must not deny it.
@@ -1335,7 +1359,7 @@ class TestNotifyNudgeExpired:
 
         orch._notify_nudge_expired(loop)
 
-        body = ds.notify.call_args.args[2]
+        _title, body, _meta, _priority = _monitor_notice(ds)
         assert "was merged" in body
         assert target not in body
         assert "ghp_" not in body
@@ -1458,8 +1482,11 @@ class TestNotifyNudgeExpired:
 
         assert orch._notify_nudge_expired(loop) is True
 
-        assert ds.notify.call_args.args[1] == expected_title
-        assert expected_body in ds.notify.call_args.args[2]
+        title, body, _meta, priority = _monitor_notice(ds)
+        assert title == expected_title
+        assert expected_body in body
+        # The merge lands in the feed only; closed-unmerged still rings.
+        assert priority == ("passive" if (pending or delivered) == "success" else None)
 
     def test_a_legacy_cap_with_no_owed_turn_still_reports_the_cap(self):
         orch = _make_orchestrator()

@@ -57,6 +57,10 @@ def env_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
+    # The surface, not hook handling: skip the three-git hook scan before every git
+    # read, at both names that bind it; test_git_config_hooks.py covers both.
+    monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
+    monkeypatch.setattr(git_ops, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
     # No workspace service left installed by an earlier test (a gateway start in
     # another module installs one with its own store): cleanup reads the
     # default store these tests write, unless a test installs its own.
@@ -96,7 +100,9 @@ def env_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     e.slack.post_blocks = post_blocks
     e.slack.update_message = update_message
     commands._seen = None
-    surface._archived_here.clear()
+    # Fresh per test and put back after it: an archive a test makes never
+    # fences the next test's channel (surface.archived_now).
+    monkeypatch.setattr(surface, "_archived_here", set())
     wrapup._requests.clear()
     wrapup._carrying.clear()
     wrapup._recoveries.clear()

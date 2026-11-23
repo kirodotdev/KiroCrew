@@ -33,7 +33,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
-import { useBottomTerminal, __resetBottomTerminal, removeTab, addTab, MAX_TERMINALS } from '../hooks/useBottomTerminal'
+import { useBottomTerminal, __resetBottomTerminal, removeTab, addTab } from '../hooks/useBottomTerminal'
 import { unregisterTerminalWs } from '../utils/terminalRegistry'
 import * as terminalRegistry from '../utils/terminalRegistry'
 import { i18nT } from '../i18n/t'
@@ -1044,37 +1044,38 @@ describe('ChatPage window-event listeners', () => {
   })
 })
 
-describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
-  /** Drive the real registry through upgrade/error/reconnect without a PTY. */
-  const terminalSockets = () => {
-    const sockets: Socket[] = []
-    class Socket {
-      static OPEN = 1
-      static CONNECTING = 0
-      static CLOSING = 2
-      static CLOSED = 3
-      readyState = Socket.CONNECTING
-      onopen: (() => void) | null = null
-      onmessage: ((event: { data: string }) => void) | null = null
-      onclose: ((event: { code: number }) => void) | null = null
-      send = vi.fn()
-      constructor() { sockets.push(this) }
-      open() { this.readyState = Socket.OPEN; this.onopen?.() }
-      message(payload: unknown) { this.onmessage?.({ data: JSON.stringify(payload) }) }
-      close() { this.readyState = Socket.CLOSED; this.onclose?.({ code: 1006 }) }
-    }
-    vi.stubGlobal('WebSocket', Socket)
-    const connect = (sessionId: string) => {
-      const term = { reset: vi.fn(), onData: vi.fn(), onResize: vi.fn() }
-      terminalRegistry.ensureTerminalConnection(
-        sessionId,
-        term as unknown as Parameters<typeof terminalRegistry.ensureTerminalConnection>[1],
-        { fit: vi.fn() } as unknown as Parameters<typeof terminalRegistry.ensureTerminalConnection>[2],
-      )
-      sockets.at(-1)!.open()
-    }
-    return { sockets, connect }
+/** Drive the real registry through upgrade/error/reconnect without a PTY. */
+const terminalSockets = () => {
+  const sockets: Socket[] = []
+  class Socket {
+    static OPEN = 1
+    static CONNECTING = 0
+    static CLOSING = 2
+    static CLOSED = 3
+    readyState = Socket.CONNECTING
+    onopen: (() => void) | null = null
+    onmessage: ((event: { data: string }) => void) | null = null
+    onclose: ((event: { code: number }) => void) | null = null
+    send = vi.fn()
+    constructor() { sockets.push(this) }
+    open() { this.readyState = Socket.OPEN; this.onopen?.() }
+    message(payload: unknown) { this.onmessage?.({ data: JSON.stringify(payload) }) }
+    close() { this.readyState = Socket.CLOSED; this.onclose?.({ code: 1006 }) }
   }
+  vi.stubGlobal('WebSocket', Socket)
+  const connect = (sessionId: string) => {
+    const term = { reset: vi.fn(), onData: vi.fn(), onResize: vi.fn() }
+    terminalRegistry.ensureTerminalConnection(
+      sessionId,
+      term as unknown as Parameters<typeof terminalRegistry.ensureTerminalConnection>[1],
+      { fit: vi.fn() } as unknown as Parameters<typeof terminalRegistry.ensureTerminalConnection>[2],
+    )
+    sockets.at(-1)!.open()
+  }
+  return { sockets, connect }
+}
+
+describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
 
   const collect = () => {
     const results: { reqId?: string; ok?: boolean }[] = []
@@ -1684,7 +1685,7 @@ describe('ChatPage run-in-terminal reuse-current (#11641)', () => {
     // possibly partially typed command is NEVER concatenated with a snippet;
     // the command is copied for the user to paste after they inspect the shell.
     let existingId = ''
-    act(() => { existingId = addTab() ?? '' })
+    act(() => { existingId = addTab() })
     await waitFor(() => expect(dock.result.current.tabs.length).toBe(1))
     expect(existingId).toBeTruthy()
 
@@ -1764,36 +1765,33 @@ describe('ChatPage run-in-terminal reuse-current (#11641)', () => {
     }
   })
 
-  it('surfaces an ErrorNotice when the terminal cap blocks the fresh-tab fallback (F3)', async () => {
-    // Reuse on, no reusable tab, and the cap is already full: no fresh tab can
-    // be minted, so the command is neither copied nor run. Say so through
-    // ErrorNotice rather than only the button glyph (errors-use-error-notice).
-    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({
-      dashboard: { terminal: { reuse_current: false } },
-    })
+  it('surfaces an ErrorNotice when the gateway refuses the fresh tab at its terminal limit (F3)', async () => {
+    // The fresh tab opens (no dock cap); the gateway refuses its shell at its
+    // ceiling, so the command is neither copied nor run: say so through
+    // ErrorNotice, not only the button glyph (errors-use-error-notice).
+    apiMocks.kirocrewConfig = vi.fn().mockResolvedValue({ dashboard: { terminal: { reuse_current: false } } })
+    const { sockets, connect } = terminalSockets()
     await renderTurn()
     const dock = renderHook(() => useBottomTerminal())
-    // Fill to the cap so addDockTerminal returns null.
-    act(() => { for (let i = 0; i < MAX_TERMINALS; i++) addTab() })
-    await waitFor(() => expect(dock.result.current.tabs.length).toBe(MAX_TERMINALS))
-
     const { results, stop } = collect()
     try {
       act(() => {
-        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
-          detail: { code: 'aws s3 ls', reqId: 're-cap' },
-        }))
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'aws s3 ls', reqId: 're-cap' } }))
+      })
+      const sessionId = dock.result.current.tabs[0].id
+      act(() => {
+        connect(sessionId)
+        sockets[0].message({ type: 'error', message: 'Max 12 terminal sessions', code: 'terminal_max_sessions' })
       })
       const notice = await screen.findByTestId('action-error')
       expect(notice).toHaveAttribute('role', 'alert')
       expect(notice.textContent).toContain('too many are already open')
-      await waitFor(() => expect(results.length).toBe(1))
-      expect(results[0]).toMatchObject({ reqId: 're-cap', ok: false })
-      // No tab beyond the cap was minted.
-      expect(dock.result.current.tabs.length).toBe(MAX_TERMINALS)
+      await waitFor(() => expect(results).toEqual([{ reqId: 're-cap', ok: false }]))
+      expect(terminalRegistry.isTerminalAtLimit(sessionId)).toBe(true)
+      terminalRegistry.disposeTerminalConnection(sessionId)
     } finally {
       stop()
-      for (const t of dock.result.current.tabs) unregisterTerminalWs(t.id)
+      vi.unstubAllGlobals()
     }
   })
 

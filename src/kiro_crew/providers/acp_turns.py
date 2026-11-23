@@ -97,6 +97,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # with no reason.
         mcp_identity_unreadable_reason=e.mcp_identity_unreadable_reason,
         kas_builtin_ids=e.kas_builtin_ids,
+        # Dropping this would let trust answer KAS's ask on an organisation's web
+        # rule when the policy record is missing (``web_ask_rule``).
+        kas_managed_ask=e.kas_managed_ask,
         # Dropping it hides the reason box on a KAS card, and the reason with it.
         takes_rejection_reason=e.takes_rejection_reason,
         # Dropping this would leave every spec-granted KAS built-in prompting on
@@ -132,6 +135,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         child_calls_marked=e.child_calls_marked,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
+        # Dropping this would cost a claude worker's Crew wait its trusted identity,
+        # so the stall monitor could read a long wait as stuck.
+        claude_mcp_tool_name=e.claude_mcp_tool_name,
         # Dropping this would let a READ_ONLY turn on an unproved dsh
         # composition reach the gate's other read-only proofs.
         deepseek_read_only_issue=e.deepseek_read_only_issue,
@@ -385,7 +391,7 @@ def agent_turn_pending(self: AcpProvider) -> bool:
     """Whether a turn the agent started is waiting to be read by :func:`stream_unsolicited`."""
     client = self._client
     if isinstance(client, AcpClient):
-        return client._agent_turn_pending()
+        return client.has_pending_agent_turn()
     from kiro_crew.acp.session_provider import AcpSessionProvider
 
     return isinstance(client, AcpSessionProvider) and client.agent_turn_pending()

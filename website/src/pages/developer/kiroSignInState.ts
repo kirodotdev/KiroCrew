@@ -1,9 +1,10 @@
 /**
  * The one verdict on whether the stored Kiro sign-in still works, shared by the
- * sign-in card (Settings > Agent Harness) and the app-level sign-in notice so the
- * two cannot disagree. A pure predicate over the token-free `/api/kas-login`
- * status, kept out of the card's module so the always-mounted notice does not
- * pull the card's component graph (the OIDC chooser) into its chunk.
+ * sign-in card (Settings > Kiro account), the app-level sign-in notice and
+ * Overview's health line so they cannot disagree. A pure predicate over the
+ * token-free `/api/kas-login` status, kept out of the card's module so the
+ * always-mounted notice does not pull the card's component graph (the OIDC
+ * chooser) into its chunk.
  */
 import type { KasLoginStatus } from '../../api/client'
 
@@ -18,4 +19,14 @@ import type { KasLoginStatus } from '../../api/client'
  */
 export function signInLapsed(status: KasLoginStatus): boolean {
   return !status.usable || status.refresh_rejected
+}
+
+/**
+ * Whether an agent started now would find the sign-in working: signed in, the
+ * access token outside the refresh margin, and not lapsed. Stricter than
+ * `!signInLapsed`, which reads an expired token as usable whenever a refresh
+ * token is stored, even one whose renewal cannot run.
+ */
+export function signedInNow(status: KasLoginStatus): boolean {
+  return status.authenticated && !status.expired && !signInLapsed(status)
 }

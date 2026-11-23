@@ -27,12 +27,12 @@ mapping to get wrong. `test_publish_feed_contract.py` pins the channel set
 against `publish-cli.yml`, and `cli.sh` rejects anything outside it before
 touching the CDN.
 
-Nightly builds also run Kiro Crew's own KAS engine by default: `nightly.yml`
-passes `build_channel: nightly` to `build-wheel.yml`, `build-desktop.yml` and
-`build-windows.yml`, `scripts/stamp-distribution.sh` bakes it into
-`_build_info.BUILD_CHANNEL`, and an unset `agent.kas_bundle` reads that stamp
-(`config.loader_document.kas_bundle_build_default`). `release.yml` passes no
-lane, so insider and stable builds keep the default off. Pinned by
+Every packaged build prefers Kiro Crew's own KAS engine for an unset
+`agent.kas_bundle`: the decision reads the distribution `scripts/stamp-distribution.sh`
+bakes (`beacon.baked_distribution()`, anything but `source`), not the lane, so
+nightly, insider and stable behave alike and a stable that ships the insider
+candidate's bytes behaves exactly as that candidate did
+(`acp/kas_build_default.kas_bundle_preferred_by_build`). Pinned by
 `test_kas_bundle_nightly_default.py`.
 
 Channel is derived from the tag, and nothing else. `release.yml`'s `version` job
@@ -332,14 +332,15 @@ concurrency group, and their version derivation.
 |---|---|---|
 | `nightly.yml` | trigger (schedule + dispatch) | Derives the date stamp, then calls everything below. `concurrency: nightly-build`; only a scheduled run cancels the run in progress (`cancel-in-progress: ${{ github.event_name == 'schedule' }}`), so a manual dispatch waits behind the scheduled nightly instead of cancelling it. |
 | `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle. A bare tag verifies the same-commit successful prerelease run, then rebuilds under the bare version by default; `STABLE_PROMOTE_BYTES` opts one base into exact-byte reuse. Then it creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
-| `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. |
+| `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. On a release every build job needs it; on a nightly every **publish** job needs it and no build job does, so a slow registry delays publication rather than failing the build. Its own daily `schedule:` run at 22:00 UTC gates nothing: it is the early warning that files a `scheduled-failure` issue eight hours before the nightly. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
+| `build-platform-wheels.yml` | reusable build | Turns the `cli-wheel` pure wheel into one `py3-none-<tag>` wheel per host the pinned KAS engine runs on, each leg on its own host, and gates each (`scripts/kas_platform_wheel.py verify` + a clean install). Uploads `cli-wheel-<tag>`. Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
 | `build-windows.yml` | reusable build | `kirocrew-windows-4-core` on this repository and `windows-latest` on a fork, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
 | `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. A stable release repeats the first two for insider with an insider-signed manifest when the insider guard advances, and always adds its wheel to the insider index. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
-| `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. Called THREE TIMES by each trigger: once for the universal DMG (`feed/<channel>/latest-mac.yml`) and once per single-arch DMG with `mac_variant: arm64 \| x64` + `mac_artifact`, which suffixes every shared key, artifact and in-artifact zip name with the arch and writes `feed/<channel>/<arch>/latest-mac.yml`. All three are required lanes on `release.yml`, and the promotion bundle carries all three zip/DMG pairs (`mac_zip[_<arch>]` / `dmg[_<arch>]` roles). |
+| `sign-and-notarize.yml` | reusable publish | Four chained jobs (`sign`, `notarize`, `blockmap`, `publish`) covering the whole macOS trust chain and the mac feed write. `blockmap` holds no credentials and builds the differential-update blockmap from the notarized zip with the pinned electron-builder; `publish` writes it beside the zip before the feed, only when it was built from the bytes the CDN serves, and goes on without it when it is missing (that version's updates are then full downloads). Called THREE TIMES by each trigger: once for the universal DMG (`feed/<channel>/latest-mac.yml`) and once per single-arch DMG with `mac_variant: arm64 \| x64` + `mac_artifact`, which suffixes every shared key, artifact and in-artifact zip name with the arch and writes `feed/<channel>/<arch>/latest-mac.yml`. All three are required lanes on `release.yml`, and the promotion bundle carries all three zip/DMG pairs (`mac_zip[_<arch>]` / `dmg[_<arch>]` roles). |
 | `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. A stable release also moves `:insider` when the insider guard advances. |
 | `publish-installer.yml` | independent publish | Publishes `cli.sh` to the distribution bucket root. Triggered by a push to `main` touching `cli.sh` (path-filtered), plus manual dispatch. **Not** part of a channel release. |
 
@@ -351,6 +352,7 @@ Release-adjacent, deliberately outside the release path:
 | `docker-smoke.yml` | PR gate on the container contract (amd64, load-to-daemon, no push). |
 | `pages.yml` | Deploys the marketing site in `site/` to GitHub Pages on `main`, path-scoped to `site/**`. |
 | `ship-report.yml` | Daily (3am PDT) merged-PR summary to Slack. Not a release step. |
+| `build-ffmpeg-decoder.yml` | Builds the minimal audio-only ffmpeg decoder the desktop app ships, per platform; manual dispatch publishes it as its own GitHub release, which the desktop build pins by size and SHA-256. Cut once per ffmpeg bump, never on a schedule. |
 
 ## Where artifacts land
 
@@ -378,6 +380,7 @@ cli/<channel>/<version>/cli-manifest.json                    immutable
 desktop/<channel>/<version>/KiroCrew.zip                     immutable
 desktop/<channel>/<version>/KiroCrew.dmg                     immutable (universal)
 desktop/<channel>/<version>/KiroCrew-{arm64,x64}.{zip,dmg}   immutable (single-arch)
+desktop/<channel>/<version>/KiroCrew[-{arm64,x64}].zip.blockmap immutable (optional)
 desktop/<channel>/<version>/KiroCrew-x86_64.AppImage         immutable
 desktop/<channel>/<version>/KiroCrew-aarch64.AppImage        immutable
 desktop/<channel>/<version>/KiroCrew-x86_64.deb              immutable
@@ -620,9 +623,55 @@ only bare links would publish a page holding just its own link and drop the
 channel's whole version history. So a release branch cut before links carried
 attributes takes the attribute-keeping merge pattern before its next tag.
 
+### Platform wheels carry the KAS engine
+
+Beside the pure `kirocrew-<v>-py3-none-any.whl`, every fresh build publishes one
+wheel per host the KAS engine runs on (#39623): `kirocrew-<v>-py3-none-<tag>.whl`
+for `manylinux_2_28_x86_64`, `manylinux_2_28_aarch64`, `macosx_11_0_arm64` and
+`macosx_11_0_x86_64`. Each is the pure wheel plus the pinned engine and its Node
+at `kiro_crew/_kas_engine/<pin>/`, so install and update need no engine download
+and code and engine switch together. Windows and every other host keep the pure
+wheel and `kirocrew kas install`, which stays the fallback and migration path.
+
+- **Build.** `build-platform-wheels.yml` (after `build-wheel.yml` in the same run), one leg per tag on the host
+  it is for: `scripts/kas_platform_wheel.py build` stages the engine with the
+  backend's own installer (every byte against the pinned manifest, the staged Node
+  run once) and `trim_for_shipping`, then writes the wheel. Each leg is also its
+  wheel's gate: `verify` fails unless the wheel holds the pinned engine with the
+  manifest's digests and a Node for its tag, and a clean install must report
+  `(built into the wheel)` with nothing downloaded. A failed leg fails the
+  reusable workflow, so the release publishes nothing.
+- **Publish.** `publish-cli.yml` re-runs `verify` over all four (a missing tag
+  fails the job), attests them, and for each writes `<prefix>/<wheel>`,
+  `<prefix>/cli-manifest-<tag>.json` and, when the pure feed advanced,
+  `feed/<channel>/latest-cli-<tag>.json`: the same signed schema as
+  `latest-cli.json`, naming that tag's wheel. `latest-cli.json` itself is never
+  changed, because released clients refuse any field they do not know. The
+  checksums go to `<prefix>/SHA256SUMS-platform`, and the channel's PEP 503 page
+  lists the platform wheels too, so `pip install kirocrew --extra-index-url ...`
+  takes the platform wheel by tag on its own.
+- **Clients.** `wheel_engine.fetch_verified_manifest` and `cli.sh` read
+  `latest-cli.json` first: it names the channel's version. On a host with a tag
+  (`wheel_engine_platform.host_wheel_tag`; Linux needs glibc 2.28) they then read
+  `latest-cli-<tag>.json` and use it only when it names that same version; absent
+  (403/404) or another version leaves the pure wheel. A pinned `cli.sh --version`
+  installs the pure wheel.
+- **Promotion.** A stable promotion republishes the RC's bytes from the promotion
+  bundle, which carries no platform wheels yet, so a promoted stable publishes the
+  pure wheel alone. Its platform manifests keep naming the previous version, which
+  the same-version rule above ignores, and its clients get the engine from
+  `kirocrew kas install`. The stable-to-insider mirror is the same case.
+- **Engine guarantee.** No supported install runs without its engine: the platform
+  wheels are gated above, a desktop build in CI refuses `BUNDLE_KAS=0`
+  (`packaging/build-desktop.sh`), an update refuses to switch when the new
+  release's `kas install --if-in-use` fails whatever `agent.kas_bundle` says
+  (`platform/release_apply.py`), and a pure-wheel install that has no engine gets
+  it at the first gateway start (`acp/kas_engine_startup.py`), which reports a
+  failure loudly (`kirocrew kas status` and `kirocrew doctor` fail).
+
 ## The macOS trust chain
 
-`sign-and-notarize.yml`, three jobs, called with `write_feed: true` by both
+`sign-and-notarize.yml`, four jobs, called with `write_feed: true` by both
 triggers. Nothing about it is caller-specific: the trigger files carry only
 version derivation and `uses:` calls. Both triggers call it three times — once
 for the universal DMG and once per single-arch DMG (`mac_variant: arm64 | x64`,
@@ -637,7 +686,14 @@ the same name the fresh path wrote into its own gated artifact. On `release.yml`
 the two single-arch callers are required lanes beside the universal one:
 `record-promotion`, `github-release` and `record-stable-promotion` all wait on
 all three, and the release page carries `KiroCrew-<v>-{universal,arm64,x64}.dmg`
-with the matching `*-mac.zip`.
+with the matching `*-mac.zip`. `nightly.yml` splits each of its three calls in
+two with the `stage` input: `sign-and-notarize*` (`stage: prepare`: `sign` and
+`notarize`, nothing public) starts as soon as `build-desktop` is done, and
+`publish-macos*` (`stage: publish`: `blockmap` and `publish`, reading the same
+run's gated artifact) waits for it and for the nightly's publish gates. That
+takes signing and Apple notarization off the back of the macOS test suite.
+`release.yml` and `release-lts.yml` leave `stage` empty and run the four jobs
+as one call.
 
 1. **sign** (ubuntu). Flattens the build artifacts, attests SLSA provenance for
    the wheel, sdist, and AppImages (not the mac zip or DMG, whose bytes are not
@@ -671,8 +727,12 @@ with the matching `*-mac.zip`.
    downstream. The Apple credential is fetched from AWS Secrets Manager at
    runtime, masked, scoped to single steps in this job, and never written to
    `GITHUB_ENV`, a file, or a log.
-3. **publish** (ubuntu). Copies the gated zip and DMG to the distribution
-   bucket, writes `latest-mac.yml`, writes the legacy `latest-mac.json` bridge,
+3. **blockmap** (ubuntu, no credentials). Builds the differential-update
+   blockmap from the notarized zip with the pinned electron-builder. A failure
+   here costs that version's differential updates, not its publication.
+4. **publish** (ubuntu). Copies the gated zip and DMG to the distribution
+   bucket, writes the blockmap beside the zip when it was built from the bytes
+   the CDN serves, writes `latest-mac.yml`, writes the legacy `latest-mac.json` bridge,
    then the human `latest/KiroCrew.dmg` alias. Separate from notarize so a
    transient S3 failure retries as a two-minute ubuntu job instead of repeating
    two Apple submissions, and so the expensive macOS runner never burns minutes
@@ -813,7 +873,7 @@ on their own artifact, and the arm64 publishers go red on their missing one
 rather than skipping. `release.yml` keeps the coupling, because its run records
 the stable promotion candidate and all three arm64 Linux roles are REQUIRED in
 `scripts/release_promotion.py` -- an x64-only publish there burns immutable keys
-for a version that can never be promoted (tracked in #1030).
+for a version that can never be promoted.
 
 `SHA256SUMS` sits beside the wheel for legacy tooling, but it is only a
 corruption check. Authenticity comes from a canonical JSON artifact manifest
@@ -865,10 +925,8 @@ still succeeds.
 feed may carry `feed/<channel>/announce.json`, which the gateway reads to draw
 the About page's "Upcoming update" block (field schema and failure rules:
 [learn-cron-dashboard](../system-specs/modules/learn-cron-dashboard.md), "Upcoming
-update notice"). It is unsigned display text. Nothing writes it yet: a follow-up
-adds a step to `publish-cli.yml`, next to the manifest write, that publishes it
-from the release's changelog section ahead of the release and removes or
-replaces it once the release ships.
+update notice"). It is unsigned display text. No workflow in this repository
+writes it; without the file the gateway draws no block.
 
 Key provisioning, the `kms:GetPublicKey` + `kms:Sign` grant, and the rotation
 procedure (dual-trust, never an in-place swap, because schema v1 pins exactly
@@ -980,9 +1038,20 @@ the installed source rather than a mock. It fails, rather than passing vacuously
 when `CI` is set and the library is not installed, and is skipped elsewhere. If
 that test fails after a bump, it is not flaky and it is not the test's problem: the library rewrapped the error, and
 the attribution scheme in `runtime/update/feed-lane.js` and the check lifecycle it reads from `runtime/update/freshness-gate.js` — not one line of it —
-needs re-reading before the bump lands. The version range stays a caret on purpose: `npm ci` builds
+needs re-reading before the bump lands. The same file pins the premise the Download
+click rests on: `downloadUpdate()` fetches only what `doCheckForUpdates()`, the
+event-emitting check, stored in `this.updateInfoAndProvider`, and
+`getUpdateInfoAndProvider()`, the read that emits nothing, never sets it. That is why
+the click's freshness gate in `runtime/update/feed-lane.js` runs a real
+`checkForUpdates()` rather than a read; when that test fails, re-read that gate before
+the bump lands. The pre-install gate in `runtime/update/freshness-gate.js` is the one
+that reads: `isUpdaterActive()`, then `getUpdateInfoAndProvider()` judged by
+`isUpdateAvailable()`, the rule `doCheckForUpdates()` decides with.
+`electron-updater-error-identity.test.js` also asserts that none of the three emits an
+event and that a check still decides with that rule; when that test fails, re-read the
+pre-install gate. The version range stays a caret on purpose: `npm ci` builds
 from `package-lock.json`, so resolution is already exact in CI, and the canary is
-the general guard for the premise rather than a frozen version number.
+the general guard for both premises rather than a frozen version number.
 
 It runs in packaged macOS, Linux and Windows builds: `SUPPORTED_PLATFORMS` is
 exactly `{darwin, linux, win32}`.
@@ -1134,17 +1203,17 @@ always applies the NEWEST build.** A download can sit staged for hours while
 newer releases publish, and installing it then applies a superseded build the
 user must immediately update again. The quit-time install therefore calls
 `verifyStageIsLatest` (`website/electron/runtime/update/freshness-gate.js`, composed by `feed-lane.js`) first.
-It drives an ordinary `checkForUpdates`, or waits for the one already in flight,
-and reads the verdict back out of the existing handlers, so the direction gate
-and the retraction path make the decision rather than a second copy of that
-rule. Four outcomes:
+It reads the feed without a check: electron-updater's own fetch and its own
+"is there an update" rule (the version, the build's minimum OS version and the
+staged-rollout share), with no update event and nothing touched, judged by the
+same function the `update-available` handler uses, so the direction gate decides
+rather than a second copy of that rule. A check already in flight is waited for
+instead, and its handlers' verdict is read back out of the stage. Four outcomes:
 
 - `latest` — the feed still serves the staged version, so the install proceeds.
 - `superseded` — a newer build published, or the release was retracted. The
-  install is REFUSED and the newer build pursued instead. On the manual path the
-  card moves to what the feed now serves (the newer build's `found` or
-  `downloading`, or "up to date" for a retraction) with no separate notice; the
-  quit path explains the refusal in a native notification (below).
+  install is REFUSED and the quit explains why in a native notification (below);
+  the next launch's check offers what the feed serves then.
 - `channel-changed` — the stage came from a channel this install no longer
   follows, or the check that judged it was sent to one. Every stage and every
   offer records the channel whose feed served it, so the install is REFUSED
@@ -1157,15 +1226,14 @@ rule. Four outcomes:
 - `unknown` — **fail open.** The feed was unreachable, or answered nothing
   within 8s. Bytes the user already downloaded must not become uninstallable
   because the network went away, so the stage installs, exactly as an install
-  without the gate would. A check the gate stops waiting for is marked
-  abandoned, so its late answer or failure cannot touch the stage or the
-  dispatch.
+  without the gate would. A read the gate stops waiting for has nothing to land,
+  and a check it stops waiting for is marked abandoned, so its late answer or
+  failure cannot touch the stage or the dispatch.
 
-The gate's own re-check is kept off the renderer: its `checking`, a failure
-it folds into `unknown`, and a restated `downloaded` for a stage that is still
-the newest are not pushed, so the ready card stays up during the wait and, on the
-quit path, the `installing` overlay emitted before the gate stays up through the
-gateway stop.
+The gate's read reaches the renderer not at all, and a check it waits for is kept
+off it: that check's failure, folded into `unknown`, and a restated `downloaded`
+for a stage that is still the newest are not pushed, so on the quit path the
+`installing` overlay emitted before the gate stays up through the gateway stop.
 
 **A Download click re-checks the feed the same way before it spends the
 transfer.** With auto-download off, a `found` card can wait hours for its click,
@@ -1356,8 +1424,9 @@ The publish role's OIDC trust accepts exactly two subjects: `ref:refs/heads/main
 and `environment:prod`. Release runs are tag-triggered (`ref:refs/tags/v*`),
 which is **not** trusted, so every publishing job declares `environment: prod`,
 which switches the caller's subject. This is not optional plumbing: it is why
-`publish-cli.yml`, `publish-linux.yml`, `publish-installer.yml`, and all three
-jobs in `sign-and-notarize.yml` name the environment, and why `build-windows.yml`
+`publish-cli.yml`, `publish-linux.yml`, `publish-installer.yml`, and the three
+credentialed jobs in `sign-and-notarize.yml` (`sign`, `notarize`, `publish`; the
+credential-free `blockmap` has none) name the environment, and why `build-windows.yml`
 takes `use_prod_environment` as an input rather than deriving it (inside a called
 reusable workflow the `github` context reports the *caller's* trigger and never
 `workflow_call`, so an `event_name` test would leave the environment unset on

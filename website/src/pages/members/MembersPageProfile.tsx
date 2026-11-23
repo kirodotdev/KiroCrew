@@ -566,7 +566,7 @@ export function MembersPageProfileCard({
   const { isRunning, activeView } = rosterView
   const { activeSlot, freshStart, askFreshStart, confirmedSlot } = thread
   const {
-    profileCardW, openCrewView, activeMemberKey, drivingSessions,
+    profileCardW, openCrewView, activeMemberKey, drivingSessions, openSessionInPanel,
   } = sidePanel
   const {
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, setSchedDraftDirty,
@@ -633,6 +633,7 @@ export function MembersPageProfileCard({
         // name made every such crewmate read as having no schedules and hid
         // a job the moment it was created here. See `wakesCrew`.
         memberId={activeSlug}
+        memberStore={activeView?.memory_store}
         // The job's `agent` field, which has to be passed: `JobForm` falls back
         // to `''`, so omitting it persisted a created schedule with no agent at
         // all and `/schedule` labelled this crewmate's own job as the default
@@ -669,8 +670,8 @@ export function MembersPageProfileCard({
     </div>
   ) : null
   // The card's Sessions tab: every session this crewmate dispatched, at any
-  // depth, in the Crew panel's groups. A click expands the row in place and
-  // shows its recap from records only; it never leaves the page.
+  // depth, in the Crew panel's groups. A click opens that session in the side
+  // panel's Sessions tab, so the two lists lead to one place.
   const sessionsEmpty = (
     // A first-time reader has no model for why a crewmate would open
     // sessions at all, so the empty box explains the mechanism in plain
@@ -698,6 +699,7 @@ export function MembersPageProfileCard({
         liveSlots={drivingSessions}
         slotsLoaded={slotsLoaded}
         empty={sessionsEmpty}
+        onOpen={(w) => openSessionInPanel(w.key)}
       />
     </div>
   )
@@ -759,7 +761,7 @@ export function MembersPageProfileCard({
       schedulesError={schedulesCountQuery.isError}
       nowTs={nowTs}
       onOpenSchedule={() => { const destination = '/schedule'; leave(() => navigate(destination), destination) }}
-      onOpenScheduleJob={(id) => { const destination = `/schedule?job=${encodeURIComponent(id)}`; leave(() => navigate(destination), destination) }}
+      onOpenScheduleJob={(id, tab) => { const destination = `/schedule?job=${encodeURIComponent(id)}${tab ? `&tab=${tab}` : ''}`; leave(() => navigate(destination), destination) }}
       newScheduleBody={schedulesBody}
       heartbeatBody={activeSlug && activeMemberName ? <CrewHeartbeatRow slug={activeSlug} member={activeMemberName} onBusyChange={onHeartbeatBusyChange} /> : null}
       heartbeatOn={heartbeatOn}

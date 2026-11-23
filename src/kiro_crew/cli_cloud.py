@@ -144,9 +144,16 @@ def _resolve_login_target(args: argparse.Namespace, *, inherit: bool) -> "KiroLo
 
 def _cloud_launch(args: argparse.Namespace) -> int:
     profile, region = _resolve(args)
+    skip_login = bool(getattr(args, "no_login", False))
     try:
-        login_target = _resolve_login_target(
-            args, inherit=not getattr(args, "no_inherit_identity", False)
+        # No sign-in, no identity to resolve: --no-login must not fail on a
+        # local whoami it never needs.
+        login_target = (
+            None
+            if skip_login
+            else _resolve_login_target(
+                args, inherit=not getattr(args, "no_inherit_identity", False)
+            )
         )
     except LoginTargetError as exc:
         ui.fail(f"Kiro identity target rejected: {exc}")
@@ -176,6 +183,7 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         ami_id=ami_id,
         extra_packages=extra_packages,
         ssm_kms_key_arn=ssm_kms_key_arn,
+        skip_login=skip_login,
     )
 
 
@@ -615,7 +623,9 @@ def _cloud_iam_boundary(args: argparse.Namespace) -> int:
     if failed:
         ui.detail(
             "Keep the iam:CreatePolicy action in the IamInstanceBoundaryCreateOnce "
-            "statement until every boundary above is ready, then re-run this step."
+            "statement in the applied launcher policy (the one `kirocrew cloud "
+            "iam-policy` prints) until every boundary above is ready, then re-run "
+            "this step."
         )
         return 1
     ui.detail(

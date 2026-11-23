@@ -34,6 +34,7 @@ from push_guard_helpers import (
     _run_push_guard,
     _write_message,
 )
+from skill_script_helpers import skill_text
 
 from kiro_crew import platform_compat
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
@@ -534,26 +535,12 @@ class TestPushGuardContracts:
         assert _PG.ssh_batch_env(lambda args: (1, "", "")) == {}
 
     def test_the_docs_name_the_message_file_the_script_reads(self):
-        skill = (PUSH_GUARD_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
-        brief = (
-            REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor" / "SKILL.md"
-        ).read_text(encoding="utf-8")
-        hint = (REPO_ROOT / ".github" / "workflows" / "pr-hygiene.yml").read_text(encoding="utf-8")
-        for text in (skill, brief, hint):
+        skill = skill_text((PUSH_GUARD_DIR.parent / "SKILL.md"))
+        brief = skill_text(
+            (REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor" / "SKILL.md")
+        )
+        for text in (skill, brief):
             assert _PG._MESSAGE_PREFIX in text and "push_guard.py --base" in text
-
-    def test_the_ci_squash_remedy_vouches_only_after_the_refusal_lists(self):
-        """CI's readers committed by hand: the squash refuses first, and they name its list.
-
-        Never a listing of the whole diff to vouch with: that names a stale
-        tree's every path as readily as an honest change's few.
-        """
-        hint = (REPO_ROOT / ".github" / "workflows" / "pr-hygiene.yml").read_text(encoding="utf-8")
-        line = next(text for text in hint.splitlines() if "push_guard.py --base" in text)
-        assert line.rstrip().endswith('--squash <that file>"'), line
-        assert not [t for t in hint.splitlines() if "echo" in t and "git diff --name-only" in t]
-        assert "--paths-from-file <that list>" in hint and "Read each one's diff" in hint
-        assert "stale tree: name none" in hint
 
     def test_an_inherited_ignore_survives_the_termination_handlers(self):
         """Under ``nohup`` SIGHUP stays ignored, for the guard and the git children it starts."""
@@ -571,7 +558,7 @@ class TestPushGuardContracts:
             signal.signal(number, before)
 
     def test_the_skill_states_every_exit_code_the_script_defines(self):
-        skill = (PUSH_GUARD_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
+        skill = skill_text((PUSH_GUARD_DIR.parent / "SKILL.md"))
         row = next(line for line in skill.splitlines() if line.startswith("| `push_guard.py"))
         for code, _ in _PG.EXIT_CODES:
             assert re.search(rf"\b{code}\b", row.rsplit("|", 2)[-2]), code

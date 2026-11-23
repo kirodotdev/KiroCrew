@@ -81,6 +81,7 @@ name: Scheduled Failure Watch
 on:
   workflow_run:
     workflows:
+      - "CI Red-Cause Census"
       - "CI Runner Watchdog"
       - "CodeQL"
       - "Connections L0 Static Metadata Probe"
@@ -94,7 +95,9 @@ on:
       - "OTA Update Test (macOS)"
       - "PR Merge-Conflict Label"
       - "PR Readiness Self-Heal Sweep"
+      - "Production Dependency Vulnerability Gate"
       - "Ship Report"
+      - "Test Map"
     types: [completed]
     # MUST equal the repository default branch, and a rename that misses this
     # line silences the watcher rather than breaking it: every `schedule:` run

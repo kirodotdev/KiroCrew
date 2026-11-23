@@ -9,7 +9,6 @@ reaching into a UI runner or synthesizing display titles.
 from __future__ import annotations
 
 import fnmatch
-import glob
 import json
 import os
 import re
@@ -32,6 +31,10 @@ ENV_ASSIGNMENT_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 # is the widest timed choice the approval card offers, so a day bounds every
 # honest request; a longer one is refused rather than clamped.
 MAX_TIMED_GRANT_SECONDS = 24 * 60 * 60
+
+#: Every browser host trust key starts with this (:mod:`kiro_crew.browser_host_trust`).
+#: Host keys and every other key are two namespaces: neither matches a pattern of the other.
+HOST_TRUST_KEY_PREFIX = "browser-trust:v1:"
 
 _REDIRECT_PLACEHOLDER = "\x00REDIR\x00"
 _REDIRECT_RE = re.compile(r"[0-9]*>&[0-9]*|&>>?")
@@ -152,7 +155,22 @@ def path_trust_unresolved(path: str) -> bool:
     granted path makes the call ask again rather than write where the link points.
     """
     try:
-        return os.path.realpath(path) != path
+        real = os.path.realpath(path)
+        if real == path:
+            return False
+        # normcase folds letter case on Windows only (identity elsewhere), and
+        # realpath answers the case stored on disk, so a different spelling of
+        # a regular file is not a link. Case folding alone would also pass a
+        # link to a sibling whose name differs only in case (a case-sensitive
+        # NTFS directory), so the path and its ancestors are checked for a link.
+        if os.path.normcase(real) != os.path.normcase(path):
+            return True
+        from kiro_crew import platform_compat
+
+        return (
+            platform_compat.is_link_or_junction(path)
+            or platform_compat.first_linked_ancestor(path) is not None
+        )
     except (OSError, ValueError):
         return True
 
@@ -165,6 +183,7 @@ def approval_command(
     mcp_server_name: str = "",
     raw_tool_params: dict | None = None,
     path_scope_trusted: bool = False,
+    browser_page_url: str | None = None,
 ) -> str:
     """Return the server-authoritative INTERNAL key a trust click may bind.
 
@@ -180,9 +199,26 @@ def approval_command(
     persist across a same-call re-prompt even if a provider omits rendered input.
     Display text is intentionally absent from this API so it cannot become
     authority later.
+
+    ``browser_page_url`` is set only by a caller that proved the call is the
+    chat's own ``browser`` call (:func:`kiro_crew.browser_host_trust.page_url_for`),
+    and names the chat's current page: the key is then the host trust key of the
+    call's host and op class, or ``""`` when it has none.
     """
+    if browser_page_url is not None:
+        # Imported here: kiro_crew.security imports this module at package load.
+        from kiro_crew import browser_host_trust
+
+        host, cls = browser_host_trust.call_scope(raw_tool_params, browser_page_url)
+        return browser_host_trust.trust_key(host, cls) if host else ""
     if is_shell:
-        return extract_bash_command(tool_input) if tool_input else ""
+        command = extract_bash_command(tool_input) if tool_input else ""
+        # A command that IS a host key, whole or as one segment, would reach that
+        # site's grant, so it gets none. One that only mentions the prefix in an
+        # argument (a search for it) keeps its key.
+        split = split_command_segments(command)
+        parts = [command, *(split[1] if split else ())]
+        return "" if any(_in_host_namespace(part.strip()) for part in parts) else command
     if not tool_input and not isinstance(raw_tool_params, dict):
         return canonical_non_shell_trust_key(mcp_server_name, tool_name)
     path = (
@@ -201,13 +237,14 @@ def approval_display_command(
     mcp_server_name: str = "",
     raw_tool_params: dict | None = None,
     path_scope_trusted: bool = False,
+    browser_page_url: str | None = None,
 ) -> str:
     """Return the user-visible consent label for :func:`approval_command`.
 
     Grantability is deliberately identical, but non-shell display retains the
     ACP-compatible ``mcp__server__tool`` spelling.  The pending-card handler
     stores the separately derived internal key, so UI compatibility never
-    becomes authorization authority.
+    becomes authorization authority. A host trust key displays as its host.
     """
     trust_key = approval_command(
         tool_input,
@@ -216,9 +253,14 @@ def approval_display_command(
         mcp_server_name=mcp_server_name,
         raw_tool_params=raw_tool_params,
         path_scope_trusted=path_scope_trusted,
+        browser_page_url=browser_page_url,
     )
     if not trust_key:
         return ""
+    if browser_page_url is not None:
+        from kiro_crew import browser_host_trust
+
+        return browser_host_trust.call_scope(raw_tool_params, browser_page_url)[0]
     if is_shell:
         return trust_key
     path = (
@@ -230,19 +272,36 @@ def approval_display_command(
     return canonical_non_shell_tool(mcp_server_name, tool_name)
 
 
+def _in_host_namespace(text: str) -> bool:
+    """Whether *text* is in the browser host-key namespace, as the matcher folds case."""
+    return text.lower().startswith(HOST_TRUST_KEY_PREFIX)
+
+
 def _tool_matches(pattern: str, tool_name: str) -> bool:
-    """Match the existing case-insensitive fnmatch trust language."""
+    """Match the existing case-insensitive fnmatch trust language.
+
+    ``fnmatchcase`` on lowered strings, not ``fnmatch``: on Windows ``fnmatch``
+    runs ``ntpath.normcase``, which also folds ``/`` into ``\\``, so a grant for
+    ``del /q foo`` would approve ``del \\q foo``. A host key matches only a host
+    pattern and anything else only a pattern that is not one, so neither ``*`` nor a
+    command grant covers a browser site.
+    """
+    if _in_host_namespace(pattern) != _in_host_namespace(tool_name):
+        return False
     if pattern == "*":
         return True
-    return fnmatch.fnmatch(tool_name.lower(), pattern.lower())
+    return fnmatch.fnmatchcase(tool_name.lower(), pattern.lower())
 
 
-def _mask_quoted_separators(text: str, *, mask_escaped: bool = False) -> tuple[str, dict[str, str]]:
+def _mask_quoted_separators(
+    text: str, *, mask_escaped: bool = False, backslash_escapes: bool = True
+) -> tuple[str, dict[str, str]]:
     """Mask separators inside quotes before command segmentation.
 
     An escaped ``>`` is masked too: it is text for the splitter as well, so the
     redirect mask never reads it as the start of ``>&``, and the ``&`` after it
-    separates commands.
+    separates commands. ``backslash_escapes=False`` reads a backslash as
+    PowerShell does: as plain text.
     """
     out: list[str] = []
     restore: dict[str, str] = {}
@@ -260,7 +319,7 @@ def _mask_quoted_separators(text: str, *, mask_escaped: bool = False) -> tuple[s
             else:
                 out.append(ch)
             continue
-        if ch == "\\" and quote != "'":
+        if backslash_escapes and ch == "\\" and quote != "'":
             escaped = True
             out.append(ch)
             continue
@@ -293,6 +352,15 @@ def split_command_segments(
     if _COMMAND_SUBSTITUTION_RE.search(normalized) or "\x00" in normalized:
         return None
     quote_masked, separator_restore = _mask_quoted_separators(normalized, mask_escaped=mask_escaped)
+    from kiro_crew import platform_compat
+
+    # On Windows the harness picks the shell: PowerShell (kiro-cli), where a
+    # backslash is plain text, or bash (Claude Code's Bash tool). Segment only a
+    # command both read the same way.
+    if platform_compat.IS_WINDOWS and quote_masked != (
+        _mask_quoted_separators(normalized, backslash_escapes=False)[0]
+    ):
+        return None
     redirects: list[str] = []
 
     def _mask_redirect(match: re.Match[str]) -> str:
@@ -382,8 +450,8 @@ def _literal_gt_offsets(command: str) -> frozenset[int]:
     single quotes, is part of a word, not a redirect operator; the splitter
     reads an escaped ``>`` the same way (:func:`_mask_quoted_separators`). The
     set is empty, so every ``>`` counts, when a quote is left open, when a
-    construct of :data:`_UNMODELLED_QUOTING` appears, and on Windows, where the
-    shell is PowerShell and a backslash escapes nothing.
+    construct of :data:`_UNMODELLED_QUOTING` appears, and on Windows, where
+    PowerShell (kiro-cli's shell) reads a backslash as plain text.
     """
     from kiro_crew import platform_compat
 
@@ -497,9 +565,22 @@ def base_consent_pattern(base_command: str) -> str:
     return ",".join(f"{base.strip()} *" for base in base_command.split(",") if base.strip())
 
 
+_GLOB_MAGIC_RE = re.compile(r"([*?[])")
+
+
+def _escape_glob(text: str) -> str:
+    """Escape every fnmatch metacharacter in ``text``.
+
+    Not ``glob.escape``: on Windows it leaves the ``ntpath.splitdrive`` part
+    unescaped, so the ``?`` of ``\\\\?\\C:`` or the ``*`` of ``\\\\srv*\\share``
+    would keep wildcard power.
+    """
+    return _GLOB_MAGIC_RE.sub(r"[\1]", text)
+
+
 def exact_trust_pattern(command: str) -> str:
     """Encode an exact command as an fnmatch pattern with no wildcard power."""
-    return glob.escape(command)
+    return _escape_glob(command)
 
 
 def base_trust_patterns(base_command: str) -> set[str]:
@@ -508,7 +589,7 @@ def base_trust_patterns(base_command: str) -> set[str]:
     for base in (part.strip() for part in base_command.split(",")):
         if not base or ENV_ASSIGNMENT_RE.match(base):
             continue
-        literal = glob.escape(base)
+        literal = _escape_glob(base)
         patterns.update((literal, f"{literal} *"))
     return patterns
 

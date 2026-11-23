@@ -64,7 +64,12 @@ function laneHarness({ channel = "insider" } = {}) {
     emit,
     fireQuit,
     feedServes: (version) => { onCheck = () => emit("update-available", { version }); },
-    feedFails: () => { onCheck = () => { throw new Error("net::ERR_INTERNET_DISCONNECTED"); }; },
+    feedFails: () => {
+      onCheck = () => { throw new Error("net::ERR_INTERNET_DISCONNECTED"); };
+      // The pre-install gate reads the feed instead of checking it (see readOffer).
+      deps.autoUpdater.isUpdaterActive = () => true;
+      deps.autoUpdater.getUpdateInfoAndProvider = async () => { throw new Error("net::ERR_INTERNET_DISCONNECTED"); };
+    },
     /** The next check hangs until `upToDate()` lands it; later checks answer at once. */
     feedHangs: () => {
       let settle = null;

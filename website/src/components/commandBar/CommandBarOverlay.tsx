@@ -5,6 +5,7 @@ import { Command, Loader2 } from 'lucide-react'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
 import { selectSlotsWithLiveLastTs } from '../../store/slotLastTs'
 import { selectPersonSlots } from '../../store/dashboardSlice'
+import { selectSlotStreamState } from '../../store/chatSlice'
 import { findReport } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -195,6 +196,11 @@ export default function CommandBarOverlay({
   const slotStatusDetail = useAppSelector(s => s.chat.slotStatusDetail ?? {})
   const subagentQueued = useAppSelector(s => s.chat.subagentQueued)
   const simplifiedToolNames = useSimplifiedToolNames()
+  // A running row says "Compacting…" from the slot's run state: a compaction leaves
+  // the status detail on the phase before it. Joined, so it compares by value.
+  const compactingKeys = useAppSelector(st =>
+    personSlots.filter(s => selectSlotStreamState(st, s.key) === 'compacting').map(s => s.key).join('\n'),
+  )
   // `aria-modal` is a promise that Tab cannot reach the page behind the dialog, so
   // the trap has to be real. Escape is owned by the dialog panel's own keydown
   // handler below, which needs it to pop a scope before it closes the bar (and
@@ -316,7 +322,7 @@ export default function CommandBarOverlay({
   commandByIdRef.current = commandById
 
   const ranked = useCommandBarOverlayRootRows({
-    liveSlots: personSlots, crewWaiting, unreadSlots, slotStatusDetail, simplifiedToolNames, dispatch, navigate, store, cycleTheme,
+    liveSlots: personSlots, crewWaiting, unreadSlots, slotStatusDetail, simplifiedToolNames, compactingKeys, dispatch, navigate, store, cycleTheme,
     commandById, apps, settingsGovernance, resolved, scope, query, usage, attentionExpanded,
     setAttentionExpanded,
   })

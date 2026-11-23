@@ -113,6 +113,7 @@ EXEMPT = {
     # A one-shot, user-initiated import (merge-only, never tombstones).
     "onboarding_import.py::_write_instruction": "user-initiated one-shot import",
     "onboarding_import.py::_write_memory": "user-initiated one-shot import",
+    "memory_import_text.py::run": "user-initiated import, confirmed fact by fact",
     # Harnesses that seed their own isolated workspace, never the live store.
     "eval/runner.py::_seed_profile": "eval harness, isolated workspace",
     "eval/bench/ingest.py::ingest_instance": "bench harness, isolated workspace",

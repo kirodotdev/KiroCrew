@@ -1204,21 +1204,41 @@ async def test_a_wait_the_store_cannot_record_still_honours_the_retry_instant(
 
 
 @pytest.mark.asyncio
-async def test_a_wait_the_store_refuses_keeps_its_immediate_retry(
-    store: TaskStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("fence", ["stale_generation", "cancelled_before_the_wait"])
+async def test_a_wait_the_store_refuses_ends_the_step(
+    store: TaskStore, clock: Clock, fence: str
 ) -> None:
-    # A refusal is a fenced generation, not an outage: this owner's handling of
-    # it is unchanged here and tracked separately.
     adm, sleeps = _admission(store, clock, cap=1)
     rec = adm.accept(kind=m.KIND_WORKFLOW_AGENT, task_id="workflow:w:agent1")
     h = await adm.admit(rec.id, kind=m.KIND_WORKFLOW_AGENT)
     h.running()
-    monkeypatch.setattr(store, "enter_wait", lambda *_a, **_k: False)
+    if fence == "stale_generation":
+        h.generation += 1
+        want_state = m.RUNNING
+    else:
+        assert store.cancel(rec.id, reason="user_stop") == m.RUNNING
+        want_state = m.CANCELLED
+    row_gen = store.get(rec.id).generation
     signal = DependencySignal(
         kind=KIND_RATE_LIMITED, dependency_scope="api", source="test", retry_at=clock.t + 30
     )
-    assert await adm.yield_dependency(h, signal) is True
-    assert sleeps.calls == [0.0]
+    assert await adm.yield_dependency(h, signal) is False  # the call is not re-run
+    assert sleeps.calls == []
+    assert adm.lane.running == 1  # the slot is the caller's until it settles
+    assert store.get(rec.id).state == want_state
+    # store.cancel bumps the generation, so both refusals are the generation fence.
+    assert (
+        "stale_result",
+        {
+            "from_generation": h.generation,
+            "current": row_gen,
+            "wanted": m.WAITING_DEPENDENCY,
+        },
+    ) in _events(store, rec.id)
+    # The caller's fenced terminal write cannot touch the row either.
+    assert await h.fail_async("x") is False
+    row = store.get(rec.id)
+    assert row.state == want_state and row.generation == row_gen
 
 
 @pytest.mark.asyncio

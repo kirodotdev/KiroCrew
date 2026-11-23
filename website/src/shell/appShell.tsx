@@ -4,8 +4,9 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
-import { isRelayCrewPane, isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
-import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
+import { isRelayCrewPane, isRelayCrewWindow, offlineCover, offlineReason } from '../utils/offlineReason'
+import { useHostOfflineCover } from './useHostOfflineCover'
+import { localCovered, prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from '../utils/artifactPopout'
@@ -43,6 +44,7 @@ import { useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
+import { noteSignInCommand } from '../api/signInCommand'
 import { isPermissionRefusal } from '../api/apiError'
 import { useKiroUsageReadout } from './topbar/kiroUsageReadout'
 import { safeSetItem } from '../utils/safeStorage'
@@ -63,6 +65,7 @@ import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteC
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
 import { useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
+import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import AppIcon from '../components/AppIcon'
 import AppNavStateIcon from './nav/AppNavStateIcon'
 import { useUpdateFlow } from './updates/updateFlow'
@@ -227,8 +230,15 @@ export function useAppShell() {
   // A relay Crew shown inside the desktop app's main window: that window's own
   // top bar is the only one, so App leaves this page's header out.
   const relayCrewPane = useRef(isRelayCrewPane()).current
-  const relayRetrying = relayCrewWindow && !connected && !gatewayConnecting && !authRequired
-    && isRelayRetrying(offlineCause, relayCrewWindow)
+  // The calm view over the content area while the connection is down (the
+  // relay window's reconnecting view, or the host's "not running" view): the
+  // one gate that hides every panel's own fetch error behind a single state.
+  const offlineCoverKind = useHostOfflineCover(offlineCover({
+    connected, connecting: gatewayConnecting, authRequired, cause: offlineCause,
+    relayCrewWindow, relayCrewPane, hostname: window.location.hostname,
+  }), connected)
+  const relayRetrying = offlineCoverKind === 'relay'
+  const contentCovered = offlineCoverKind !== null
   const gatewayStatusAnnounce = relayRetrying ? '' : gatewayStatusMsg
   // The retry makes <main> and the docked terminal inert, which drops their
   // focused element (usually the composer) to <body>. Remember it as the retry
@@ -237,7 +247,7 @@ export function useAppShell() {
   // hand-off, so the read lands before the browser's focus fixup for inert.
   const relayFocusReturn = useRef<HTMLElement | null>(null)
   useLayoutEffect(() => {
-    if (relayRetrying) {
+    if (contentCovered) {
       const active = document.activeElement
       relayFocusReturn.current = active instanceof HTMLElement && active !== document.body ? active : null
       return
@@ -246,7 +256,7 @@ export function useAppShell() {
     relayFocusReturn.current = null
     const focusLost = !document.activeElement || document.activeElement === document.body
     if (el && el.isConnected && focusLost) el.focus({ preventScroll: true })
-  }, [relayRetrying])
+  }, [contentCovered])
   // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
   // focus mode the top bar (and its toggle) is inert, so this chord is the only
   // keyboard route back; it is spoken when focus mode turns on and declared on
@@ -426,15 +436,13 @@ export function useAppShell() {
     brandName,
     brandLogo,
     brandFavicon,
+    themeVersion,
     onboarded,
     importOnboarded,
-    privacyAcked,
-    privacyAckVersion,
     themeBootReady,
     themeBootRead,
     markOnboarded,
     markImportOnboarded,
-    markPrivacyAcked,
   } = useTheme()
   // First run's chapters write the host's flags, so they wait for the host's own
   // answer. A failed boot read leaves only this browser's flags, which a new
@@ -449,10 +457,10 @@ export function useAppShell() {
   const ownerCheck = useViewerIsNotOwner()
   const hostFlagsReady = themeBootReady && (themeBootRead || onboarded)
   const firstRun = useFirstRunChapters({
-    onboarded, importOnboarded, privacyAcked, privacyAckVersion,
+    onboarded, importOnboarded,
     themeBootReady: hostFlagsReady && ownerCheck.owner,
     hostStateUnread: (themeBootReady && !themeBootRead && !onboarded) || !ownerCheck.owner,
-    ownerCheckFailed: ownerCheck.failed && hostFlagsReady && (!importOnboarded || !privacyAcked || !onboarded),
+    ownerCheckFailed: ownerCheck.failed && hostFlagsReady && (!importOnboarded || !onboarded),
     retryOwnerCheck: ownerCheck.retry,
     markOnboarded,
   })
@@ -467,7 +475,7 @@ export function useAppShell() {
   // Notify the main process whenever the gateway status reports a security
   // policy provider governs this install's updates, so the feed lane stands down.
   usePolicyGovernedNotification()
-  const { branding, botName, avatar } = useShellBranding({ colorTheme, brandName, brandLogo, brandFavicon })
+  const { branding, botName, avatar, instanceLabel } = useShellBranding({ colorTheme, themeVersion, brandName, brandLogo, brandFavicon })
   useRumPageView()
   useFocusRouteRelay()
   // iPad/iPhone Safari: put the page back at scroll 0 after the on-screen
@@ -828,6 +836,10 @@ export function useAppShell() {
       // otherwise a just-installed registry app keeps rendering a "Get"
       // button until the cache expires.
       queryClient.invalidateQueries({ queryKey: ['registry'] })
+      // Kiro Space rows carry the same server-computed `installed` and
+      // `nameTaken` flags, so an install or uninstall anywhere re-reads them.
+      queryClient.invalidateQueries({ queryKey: ['market-listings'] })
+      queryClient.invalidateQueries({ queryKey: ['market-listing'] })
     }
     window.addEventListener('mc:apps-changed', handler)
     return () => window.removeEventListener('mc:apps-changed', handler)
@@ -888,7 +900,7 @@ export function useAppShell() {
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
-  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroAccountEntry } = useKiroUsageReadout()
+  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn } = useKiroUsageReadout()
   // Feature previews live on the gateway; this keeps the browser cache of them in
   // step. Called beside the credit readout, which already reads ['kirocrewConfig'].
   usePreviewFlagServerSync()
@@ -944,7 +956,7 @@ export function useAppShell() {
         // The session lives in the local Crew. Over a Remote Crew pane, bring
         // the local Crew forward first (as the notification banner does), so
         // the leave prompt and the switched session are both on screen.
-        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
+        if (localCovered(appStore.getState())) dispatch(setActiveId(null))
         applyNavIntentInMain(
           // `path` is deliberately dropped in favour of the bare route: a
           // NavIntent carries no query string, and ChatPage writes `?sid=` back
@@ -964,7 +976,7 @@ export function useAppShell() {
       // the route is the bare page, so the dashboard's own URL never carries them.
       const addCrew = remoteCrewAddFromPath(path)
       if (addCrew) {
-        if (appStore.getState().instances?.activeId != null) dispatch(setActiveId(null))
+        if (localCovered(appStore.getState())) dispatch(setActiveId(null))
         if (!mayLeaveForNavigation()) return
         dispatch(prefillCrewAddForm(addCrew))
         navigate(REMOTE_CREW_SETTINGS_PATH)
@@ -974,7 +986,7 @@ export function useAppShell() {
       // Remote Crew pane a bare navigate would route the hidden local pane, so
       // bring the local Crew forward first, as a session link does: the leave
       // prompt then sits over the draft it is asking about.
-      if (isAppDetailPath(path) && appStore.getState().instances?.activeId != null) {
+      if (isAppDetailPath(path) && localCovered(appStore.getState())) {
         dispatch(setActiveId(null))
       }
       // Same leave check as every other in-app exit: a native menu entry
@@ -1002,7 +1014,7 @@ export function useAppShell() {
     // behind this one via markBootNotificationsFetched() (see notificationsSlice).
     const disarmNotificationsFallback = armBootNotificationsFallback(() => dispatch(fetchNotifications()))
     // Fetch status immediately to sync YOLO state (WS status push is periodic)
-    api.status().then(s => { dispatch(sseStatus(s)); recordSessionStart(s) }).catch(() => {})
+    api.status().then(s => { dispatch(sseStatus(s)); noteSignInCommand(s.sign_in_command); recordSessionStart(s) }).catch(() => {})
     return disarmNotificationsFallback
   }, [dispatch])
   const { subscribeLogs, subscribeSubagents, forceReconnect } = useWebSocket()
@@ -1017,11 +1029,12 @@ export function useAppShell() {
   // the surface registry.
   const totalAttention = builtinAttention + Object.values(appBadges).reduce((a, b) => a + b, 0)
   // The active session's title, for the tab title below. A slot whose title
-  // is still its key has no real title yet (same rule as the chat popout).
+  // is its key or the backend placeholder has no real title yet (same rule
+  // as the chat popout).
   const activeSessionTitle = useAppSelector(s => {
     const key = s.chat.activeSlot
     const title = key ? slotRowByKey(s.dashboard.slots, key)?.title : undefined
-    return title && title !== key ? title : ''
+    return key && title && !isUntitledSession({ key, title }) ? title : ''
   })
 
   // Browser push notification on new notification — see src/hooks/useNativeNotification.ts
@@ -1063,10 +1076,10 @@ export function useAppShell() {
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
   // in App's shell grid; railWidthFor is the single source for both. An embed
-  // document draws no rail, so it publishes none (#37165).
+  // document and every pop-out window draw no rail, so they publish none.
   useEffect(() => {
-    setRailWidth(focusActive || isEmbed ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
-  }, [isMobile, effectiveCollapsed, focusActive, isEmbed])
+    setRailWidth(focusActive || isEmbed || isPopout ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
+  }, [isMobile, effectiveCollapsed, focusActive, isEmbed, isPopout])
   // The header's three grid tracks (see `.topbar` in index.css) size themselves:
   // the search width is a function of the window and the two side groups split
   // the remainder. Each group re-lays-out its own contents with container
@@ -1083,6 +1096,8 @@ export function useAppShell() {
   // `[(N) ]<panel> — <bot>` on any other rail destination, bare `<bot>` when
   // the route matches no row, and `[(N) ]<crew> — <bot>` while a remote crew's
   // pane hides the local route (its name from the switcher's registry cache).
+  // A set `dashboard.instance_label` names this gateway between the detail and
+  // the product (`<detail> — <label> — <bot>`, or `<label> — <bot>`).
   // The count stays in front so it survives tab truncation. Labels are
   // resolved here, at render, so a language switch re-titles the tab.
   const chatPanelLabel = i18nT('app.tab_title_chat')
@@ -1096,10 +1111,14 @@ export function useAppShell() {
     enabled: activeInstanceId !== null,
   })
   const tabLabel = instancesData?.instances.find(i => i.id === activeInstanceId)?.name || titleLabel
+  const tabProduct = instanceLabel ? i18nT('app.tab_title', { label: instanceLabel, productName: botName }) : botName
+  // A pop-out window titles itself (its frame under `pages/*PopoutFrame`), so
+  // the shell leaves its title alone there.
   useEffect(() => {
-    const base = tabLabel ? i18nT('app.tab_title', { label: tabLabel, productName: botName }) : botName
+    if (isPopout) return
+    const base = tabLabel ? i18nT('app.tab_title', { label: tabLabel, productName: tabProduct }) : tabProduct
     document.title = totalAttention > 0 ? `(${totalAttention}) ${base}` : base
-  }, [totalAttention, botName, tabLabel])
+  }, [isPopout, totalAttention, tabProduct, tabLabel])
   // Name the history entry on screen for the Back/Forward arrows' history
   // menu (#17453): the session on chat, the page anywhere else, and nothing on
   // a route with no rail row, so that entry is left out of the list. Re-run on
@@ -1131,11 +1150,11 @@ export function useAppShell() {
 
   return {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
-    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying,
+    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayCrewPane, relayRetrying, offlineCoverKind,
     focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
-    colorTheme, resolvedMode, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked,
+    colorTheme, resolvedMode, onboarded, markOnboarded, markImportOnboarded,
     firstRun, lookPreviewFrame, branding, botName, avatar, isMobile, bottomDock, activeInstanceId,
     macFullscreen, macInset, topReservePx, focusMode, toggleFocusMode, focusActive, topPeek, railPeek,
     topPeekTrigger, topPeekSurface, railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,
@@ -1144,7 +1163,7 @@ export function useAppShell() {
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
     toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
-    kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
+    kiroUsageState, usageSegmentHidden, kiroSignInPrompt, openKiroSignIn, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,

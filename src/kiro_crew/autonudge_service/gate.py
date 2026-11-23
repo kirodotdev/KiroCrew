@@ -36,6 +36,7 @@ from kiro_crew.autonudge_service.subject import (
 )
 from kiro_crew.autonudge_service.timers import _drain_registered_section
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
+from kiro_crew.probes.targets import same_subject
 
 if TYPE_CHECKING:
     from kiro_crew.autonudge import AutoNudgeService
@@ -425,7 +426,8 @@ def _judge_reads_only_the_watched_pr(loop: NudgeLoop, monitor: MonitorState) -> 
     names a session or a second pull request makes the judge count that target as
     unread or read it on the tick it is asked, and skipping the tick would skip that
     target's news -- or the notice that it could not be read -- too. A loop naming no
-    target at all answers ``False`` as well: its judge fires every tick.
+    target at all answers ``False`` as well: under an owner's brief its judge fires
+    every tick, and under the default brief no judge applies.
     """
     from kiro_crew import autonudge_judge as judge
 
@@ -858,7 +860,9 @@ async def _monitor_tick_is_quiet(self: AutoNudgeService, loop: NudgeLoop) -> boo
     # must name the monitor's subject; a mismatch fires. Arm and tick both go
     # through ``infer_subject`` so the two rules cannot drift.
     target = loop_subject(loop)
-    if target is None or (target.kind, target.subject) != (monitor.kind, monitor.target):
+    if target is None or not same_subject(
+        target.kind, target.subject, monitor.kind, monitor.target
+    ):
         if target is not None:
             logger.info(
                 "AutoNudge: loop %s names %s but its monitor is bound to "
@@ -1663,8 +1667,7 @@ async def _settle_delivered_terminal(self: AutoNudgeService, loop: NudgeLoop) ->
     try:
         monitor = loop.monitor
         pending = monitor.terminal_delivered if monitor is not None else ""
-        settle_now = bool(monitor is not None and pending and loop.id in self._loops)
-        if not settle_now or monitor is None:
+        if monitor is None or not pending or loop.id not in self._loops:
             return
         reprobe = await self._terminal_still_holds(loop, monitor)
         # Entered with no await after the re-probe returns: the drain covers the
@@ -1773,7 +1776,7 @@ async def _terminal_still_holds(
     if (
         target is None
         or probe is None
-        or (target.kind, target.subject) != (monitor.kind, monitor.target)
+        or not same_subject(target.kind, target.subject, monitor.kind, monitor.target)
     ):
         return "unknown"
     # A DISTINCT identity, because this call throws its verdict away. ``identity``

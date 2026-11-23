@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 # Read by no code here; the ``work_ledger`` facade serves it from this module.
@@ -396,7 +396,7 @@ class WorkItem:
     Conductor-owned: ``title``, ``acceptance``, ``state``, ``verdict``, ``decision``,
     ``worker_session_key``, ``round``, ``fails``, ``ask``.
     Worker-owned: ``status``, ``reason``, ``wake_at``, ``summary``, ``artifacts``,
-    ``pr``, ``discussion``, ``last_report_at``.
+    ``pr``, ``discussion``, ``last_report_at``, ``received_at``.
     Server-owned: ``item_id``, ``created_at``, ``closed_at``, ``decided_at``,
     ``pending_since``.
 
@@ -438,6 +438,12 @@ class WorkItem:
     artifacts: dict[str, str] = field(default_factory=dict)
     pr: int | None = None
     last_report_at: str | None = None
+    #: The HUB's clock when it filed the last report, set only on a report ingested
+    #: from a remote peer, else ``None``. ``last_report_at`` is then the peer's own
+    #: stamp, which keys ingest dedup, so the quiet-window rules measure from this
+    #: one instead. Every report replaces it. Serialized only when set, so a local
+    #: item is stored exactly as before the field.
+    received_at: str | None = None
     created_at: str = ""
     closed_at: str | None = None
     #: When the conductor last wrote ``decide`` on this item, or ``None``. A ``decide``
@@ -473,6 +479,8 @@ class WorkItem:
             out["worker_instance_id"] = self.worker_instance_id
         if self.wake_at:
             out["wake_at"] = self.wake_at
+        if self.received_at:
+            out["received_at"] = self.received_at
         if self.retired_bindings:
             out["retired_bindings"] = [dict(b) for b in self.retired_bindings]
         if self.ask:
@@ -540,6 +548,7 @@ class WorkItem:
             artifacts=artifacts,
             pr=_finite_int(raw.get("pr")),
             last_report_at=_as_opt_str(raw.get("last_report_at")),
+            received_at=_as_opt_str(raw.get("received_at")) or None,
             created_at=_as_str(raw.get("created_at")),
             closed_at=_as_opt_str(raw.get("closed_at")),
             decided_at=_as_opt_str(raw.get("decided_at")),
@@ -645,6 +654,36 @@ def _now_iso() -> str:
     :mod:`kiro_crew.session_ledger` writes, so two ledgers read side by side sort
     against each other."""
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_stamp(value: str) -> datetime | None:
+    """An ISO-8601 stamp as an AWARE datetime, or ``None`` when it is not one.
+
+    :func:`_now_iso` writes local time with an offset; a stamp without one (a caller's
+    ``since``, an older record) is taken as local time, because comparing naive with
+    aware raises and a read filter must never raise.
+
+    A naive stamp at either end of the calendar (``0001-01-01T00:00:00``,
+    ``9999-12-31T23:59:59``) may not shift into the local zone, and the platform raises
+    ``OverflowError`` or ``ValueError`` depending on the host. Such a sentinel is read as
+    UTC, so ``since=0001-01-01T00:00:00`` means "everything", never a failed read.
+    """
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed
+    try:
+        return parsed.astimezone()
+    except (OverflowError, ValueError, OSError):
+        return parsed.replace(tzinfo=timezone.utc)
 
 
 # Named by the path callers import it from, so a traceback or an error chain renders

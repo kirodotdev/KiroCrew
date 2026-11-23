@@ -3,9 +3,11 @@
 These tests pin the drop of a non-JSON or non-object line and of a frame with neither id nor method,
 the swallowed heartbeat pong, an unknown response id dropped, a response restored to its stub's
 original id with its latency metric, the initialize and MCP Apps sentinel responses, a progress
-notification routed to its one owner, a global notification broadcast and an unattributable
-request-scoped one dropped. Most of the file is resource-update routing: an update reaches only the
-subscribers of its URI and is never routed by ``relatedRequestId``; one subscribe per URI is
+notification routed to its one owner, a ``subscriptions/listen`` stream frame routed to its listener
+under the listener's own id, a global notification broadcast and an unattributable request-scoped
+one dropped. Most of the file is resource-update routing: an update reaches only the
+subscribers of its URI, a listen-stream one only a listener that named its URI, and none is ever
+routed by ``relatedRequestId``; one subscribe per URI is
 forwarded while later subscribers join the granted lease locally or park until the server's verdict;
 a refusal grants nobody, an update racing the grant is dropped and a refused final unsubscribe keeps
 routing; a co-tenant's replacement subscribe parks behind an in-flight release, while the releasing
@@ -196,6 +198,94 @@ class TestRouteBackendLine:
             )
         )
         assert inbox1.empty() and inbox2.empty()
+
+    @pytest.mark.asyncio
+    async def test_a_listen_stream_frame_reaches_its_listener_under_its_own_id(self) -> None:
+        """A ``subscriptions/listen`` stream tags each frame with the listen's
+        request id, which the server saw as the gateway's forward id. The
+        acknowledgement reaches only the stub that listened, tagged with that
+        stub's own id; a tag naming no pending listen is still dropped."""
+        backend = _make_backend()
+        inbox1 = await backend.attach_stub("s1")
+        inbox2 = await backend.attach_stub("s2")
+        backend._pending_requests["gw-1"] = _PendingRequest(
+            "s1", "listen-1", "subscriptions/listen"
+        )
+        backend._pending_requests["gw-2"] = _PendingRequest("s2", 7, "tools/call")
+        key = "io.modelcontextprotocol/subscriptionId"
+
+        def ack(tag: str) -> bytes:
+            return _line(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/subscriptions/acknowledged",
+                    "params": {"notifications": {"toolsListChanged": True}, "_meta": {key: tag}},
+                }
+            )
+
+        await backend._route_backend_line(ack("gw-1"))
+        delivered = await _drain(inbox1)
+        assert delivered["method"] == "notifications/subscriptions/acknowledged"
+        assert delivered["params"] == {
+            "notifications": {"toolsListChanged": True},
+            "_meta": {key: "listen-1"},
+        }
+        assert inbox1.empty() and inbox2.empty()
+        await backend._route_backend_line(ack("gw-2"))
+        await backend._route_backend_line(ack("gw-unknown"))
+        assert inbox1.empty() and inbox2.empty()
+
+    @pytest.mark.asyncio
+    async def test_a_listen_stream_resource_update_reaches_only_its_listener(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On the newer MCP protocol a client subscribes to a resource in its
+        ``subscriptions/listen`` (it cannot send ``resources/subscribe``), and
+        the server tags each update with that listen's id. The update reaches
+        only that listener, under its own id, with no hazard charged. It is
+        dropped, hazard recorded, when the tagged listen never named the URI
+        or when it carries no tag, since no ``resources/subscribe`` named it."""
+        recorded: list[str] = []
+
+        def _capture(name: str, code: str, identity: Any) -> bool:
+            recorded.append(code)
+            return True
+
+        monkeypatch.setattr(backend_mod.hazards, "record_observed", _capture)
+        backend = _make_backend()
+        inbox1 = await backend.attach_stub("s1")
+        inbox2 = await backend.attach_stub("s2")
+        for stub, uri in (("s1", "file:///a.txt"), ("s2", "file:///b.txt")):
+            await backend.forward_from_stub(
+                stub,
+                {
+                    "jsonrpc": "2.0",
+                    "id": f"listen-{stub}",
+                    "method": "subscriptions/listen",
+                    "params": {"notifications": {"resourceSubscriptions": [uri]}},
+                },
+            )
+        s1_listen, s2_listen = (frame["id"] for frame in _frames(backend))
+        key = "io.modelcontextprotocol/subscriptionId"
+
+        def update(meta: dict[str, Any]) -> bytes:
+            return _line(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/resources/updated",
+                    "params": {"uri": "file:///a.txt", "_meta": meta},
+                }
+            )
+
+        await backend._route_backend_line(update({key: s1_listen}))
+        assert inbox1.qsize() == 1 and inbox2.empty()
+        delivered = await _drain(inbox1)
+        assert delivered["params"] == {"uri": "file:///a.txt", "_meta": {key: "listen-s1"}}
+        assert recorded == []
+        await backend._route_backend_line(update({key: s2_listen}))
+        await backend._route_backend_line(update({}))
+        assert inbox1.empty() and inbox2.empty()
+        assert recorded == [backend_mod.hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION] * 2
 
     @pytest.mark.asyncio
     async def test_resource_update_reaches_only_the_subscriber(self) -> None:

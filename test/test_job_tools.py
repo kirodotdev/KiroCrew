@@ -22,6 +22,7 @@ import kiro_crew.config.paths as paths_mod
 from kiro_crew import agent
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_sdk.tool_search import (
+    CUSTOM_AGENT_JOB_TOOLS,
     JOB_TOOLS,
     job_tool_ids,
     kas_never_defer_ids,
@@ -116,6 +117,25 @@ def test_each_row_fits_its_budget(agent_name):
     assert cost <= JOB_TOOL_BUDGETS[agent_name], (
         f"{agent_name}: its job tools cost {cost} schema tokens per request, "
         f"over its budget of {JOB_TOOL_BUDGETS[agent_name]}"
+    )
+
+
+#: The same bound for :data:`CUSTOM_AGENT_JOB_TOOLS`, which rides in every request
+#: of every custom agent whose Crew servers Crew added. 3,188 measured with
+#: :func:`_engine_tokens` (``spawn_run`` 2,049, ``spawn_sub_agents`` 749,
+#: ``spawn_status`` 327, ``mcp_server_wait`` 63; ``spawn_run``'s description carries
+#: the installed agent roster, so it moves a little per host); plus 5%, the next 50 up.
+CUSTOM_AGENT_JOB_TOOL_BUDGET = 3_350
+
+
+def test_the_custom_agent_row_fits_its_budget():
+    for tool_id in CUSTOM_AGENT_JOB_TOOLS:
+        server, _, name = tool_id.partition("::")
+        assert name in _served_tools(server), f"{tool_id} is not a tool {server} serves"
+    cost = sum(_engine_tokens(tool_id) for tool_id in CUSTOM_AGENT_JOB_TOOLS)
+    assert cost <= CUSTOM_AGENT_JOB_TOOL_BUDGET, (
+        f"a custom agent's job tools cost {cost} schema tokens per request, "
+        f"over its budget of {CUSTOM_AGENT_JOB_TOOL_BUDGET}"
     )
 
 

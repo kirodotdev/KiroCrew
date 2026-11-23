@@ -4,8 +4,8 @@ status: partial
 kind: framework
 author: Ray Xu (rayrayxu)
 created: 2026-04-23
-last-audited: 2026-10-05
-audited-at: e281ecaf33
+last-audited: 2026-11-20
+audited-at: c157748343
 doc-pr:
 implementation-prs: []
 tracking-issues: []

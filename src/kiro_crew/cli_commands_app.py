@@ -214,11 +214,49 @@ def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
     )
     # Only an app with a backend process has anything a restart would change.
     if _app_declares_backend(app_name):
+        # A backend the gateway start refuses (an exec one on native Windows) starts
+        # at no restart: say why, as the dashboard enable's ``backend_refused`` does.
+        # The enable is already recorded, so an unreadable manifest keeps today's line.
+        # Call-time import: a module-level import would make this module serve the
+        # name through the ``cli_commands`` facade it does not own.
+        from kiro_crew.apps.backend import exec_backend_platform_refusal
+
+        try:
+            refusal = exec_backend_platform_refusal(app_name) if enabled else None
+        except Exception:  # noqa: BLE001 - the message must not fail a recorded enable
+            refusal = None
+        if refusal:
+            print(f"{message} {refusal}")
+            return
         message += (
             f" Its backend process still {backend}s only at that next start; restart the "
             f"gateway to {backend} it now."
         )
     print(message)
+
+
+def _audit_file_only_toggle(
+    operation: str, app_name: str, *, host_exec: str, error: str | None = None
+) -> None:
+    """Write the ``app_enable``/``app_disable`` row the dashboard route writes for the same action.
+
+    ``error`` None records ``completed``, naming the host-exec grant state the
+    manager has just verified: ``enable_app`` fails when it could not mint the
+    grant, and ``disable_app`` fails when the grant is still present. Any other
+    value records ``failed`` with that error.
+    """
+    if error is None:
+        outcome, resources = "completed", f"app={app_name} host_exec={host_exec}"
+    else:
+        outcome, resources = "failed", f"app={app_name}"
+    sel().log_api_access(
+        caller="cli",
+        source="cli",
+        operation=operation,
+        outcome=outcome,
+        resources=resources,
+        error=error or "",
+    )
 
 
 def _register_unrecorded_builtin(app_name: str) -> None:
@@ -586,7 +624,7 @@ def _handle_app_import(args: argparse.Namespace) -> None:
     print(f"\n✅ wrote {out_dir / 'app.json'}")
 
     if not getattr(args, "install", False):
-        print(f"\n   Run: kirocrew app install {out_dir}")
+        print(f"\n   Run: kirocrew app install {_shell_quoted(str(out_dir))}")
         return
 
     result = install_app(str(out_dir))
@@ -716,19 +754,27 @@ def _handle_app(args: argparse.Namespace) -> None:
         _register_unrecorded_builtin(args.name)
         result = enable_app(args.name)
         if result.ok:
-            reg = register_app(args.name)
-            _print_file_only_app_result(args.name, enabled=True)
-            if reg.agents:
-                print(f"   Agents registered: {len(reg.agents)}")
-            if reg.skills:
-                print(f"   Skills registered: {len(reg.skills)}")
-            _register_app_crons_to_scheduler(args.name)
+            # The row follows the registrations, as the dashboard route's does.
+            try:
+                reg = register_app(args.name)
+                _print_file_only_app_result(args.name, enabled=True)
+                if reg.agents:
+                    print(f"   Agents registered: {len(reg.agents)}")
+                if reg.skills:
+                    print(f"   Skills registered: {len(reg.skills)}")
+                _register_app_crons_to_scheduler(args.name)
+            except Exception as exc:
+                _audit_file_only_toggle("app_enable", args.name, host_exec="", error=str(exc) or "")
+                raise
+            _audit_file_only_toggle("app_enable", args.name, host_exec="granted")
             _warn_hooks_need_restart(args.name)
-        elif getattr(result, "error_code", "") == _SESSION_APPROVAL_CONSENT_REQUIRED:
-            _refuse_session_approval_from_cli(args.name)
         else:
-            print(f"❌ {result.error}", file=sys.stderr)
-            sys.exit(1)
+            _audit_file_only_toggle("app_enable", args.name, host_exec="", error=result.error or "")
+            if getattr(result, "error_code", "") == _SESSION_APPROVAL_CONSENT_REQUIRED:
+                _refuse_session_approval_from_cli(args.name)
+            else:
+                print(f"❌ {result.error}", file=sys.stderr)
+                sys.exit(1)
 
     elif action == "update":
         source = getattr(args, "source", None)
@@ -795,6 +841,14 @@ def _handle_app(args: argparse.Namespace) -> None:
         # silent re-registration nobody sees.
         result = disable_app(args.name)
         deregistered = _deregister_or_report(args.name)
+        # The row follows the teardown, as the dashboard route's does.
+        if not result.ok:
+            audit_error: str | None = result.error or ""
+        elif not deregistered:
+            audit_error = "some of its resources could not be removed"
+        else:
+            audit_error = None
+        _audit_file_only_toggle("app_disable", args.name, host_exec="revoked", error=audit_error)
         if not result.ok:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
@@ -919,7 +973,23 @@ def _handle_app(args: argparse.Namespace) -> None:
             print(f"✅ {args.name} is now in dev mode")
             print("   UI files served with no-store; edits under ui/ trigger a live reload")
             print("   in the dashboard within ~1s (picked up by the gateway watcher).")
-            print("   Tip: symlink the installed ui/ to your source tree for zero-copy edits.")
+            if sys.platform == "win32":
+                # A directory symlink on Windows needs Developer Mode or an
+                # elevated shell; a junction needs neither.
+                from kiro_crew.apps.manager import apps_dir
+
+                ui_path = apps_dir() / args.name / "ui"
+                print("   Tip: link the installed ui/ to your source tree for zero-copy edits.")
+                print("   On Windows use a directory junction (no admin needed), from cmd:")
+                print(f'     ren "{ui_path}" ui.bak')
+                print(f'     mklink /J "{ui_path}" "<source>\\ui"')
+                print(f"     kirocrew app dev {args.name} --confirm-out-of-install-root")
+                print("   The installed ui/ is kept as ui.bak. The last step binds the dev")
+                print("   grant to the link target. The junction target must be a")
+                print("   local absolute path. A directory symlink there needs")
+                print("   Developer Mode or an elevated shell.")
+            else:
+                print("   Tip: symlink the installed ui/ to your source tree for zero-copy edits.")
             print(f"   Turn off with: kirocrew app dev {args.name} --off")
         else:
             print(f"✅ {args.name} dev mode off (normal caching restored)")
@@ -960,12 +1030,13 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"✅ Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")
+        # Quoted, so a folder with a space in its path still pastes as one argument.
         if include_ui:
             # One command per line: Windows PowerShell 5.1 rejects `&&`.
-            print(f"   cd {app_dir}/ui")
+            print(f"   cd {_shell_quoted(f'{app_dir}/ui')}")
             print("   npm install")
             print("   npm run build")
-        print(f"   kirocrew app install {app_dir}")
+        print(f"   kirocrew app install {_shell_quoted(str(app_dir))}")
 
     else:
         # No sub-action (the subparser is not `required`, matching every CLI

@@ -40,7 +40,7 @@ def empty_proc(tmp_path, monkeypatch):
 
 
 def fired_lines(out: str) -> list[str]:
-    return [line for line in out.splitlines() if line.startswith("\U0001f514")]
+    return [line for line in out.splitlines() if line.startswith("ALERT ")]
 
 
 def ok_line(out: str) -> str:

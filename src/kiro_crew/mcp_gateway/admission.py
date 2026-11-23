@@ -47,14 +47,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Hashable, Optional
 
 from kiro_crew.start_priority import StartOrder, StartPriority
 
+from .backend_handshake import INITIALIZE_DEADLINE_REASON, _effective_initialize_timeout_secs
 from .host_budget import HostBudget, HostCharge
 
 logger = logging.getLogger(__name__)
@@ -111,6 +113,25 @@ _INIT_WATCH_GRACE_SECS = 1.0
 #: The deadline is the backend's effective one (``Backend.initialize_timeout_secs``,
 #: never below the cold-start floor), the same value its own reaper fires at.
 SLOW_INIT_FRACTION = 0.8
+
+#: Longest first-``initialize`` deadline a pool key gets after its spawns were
+#: reaped at the deadline (``Admission.initialize_timeout_for``).
+INIT_DEADLINE_STRETCH_CAP_SECS = 120.0
+
+#: Most pool keys whose deadline reaps ``Admission`` remembers at once. A key
+#: that is reaped and never comes back ready would otherwise stay forever; past
+#: this many, the key reaped longest ago is forgotten first.
+INIT_DEADLINE_REAP_KEYS_MAX = 256
+
+
+def _reap_slot(key: Hashable) -> str:
+    """A fixed-size name for *key* in ``Admission._deadline_reaps``.
+
+    The key comes from the caller's register frame, so its size is theirs to
+    choose; the dict holds this SHA-256 hex digest of its ``repr`` instead.
+    """
+    return hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
+
 
 #: Window over which slow inits are counted for the snapshot's ``slow_inits``,
 #: the gate's own latency evidence for the adaptive controller.
@@ -458,8 +479,18 @@ class SpawnGate:
         process_exited: Callable[[], Awaitable[Any]],
         timeout: float,
     ) -> None:
+        # The process exiting is the other way the handshake provably never
+        # arrives: a private backend is shut down the moment its stub leaves, and a
+        # stub that left before ``initialize`` leaves ``init_done`` unset. The
+        # permit is freed then, not after the whole ``timeout`` (30 s at the
+        # cold-start floor), so abandoned spawns cannot hold every slot (default
+        # capacity four) while the session's real server starts queue behind them.
+        exited = asyncio.ensure_future(process_exited())
         try:
-            done = await self._wait_event(init_done, timeout)
+            done = await self._wait_event(init_done, timeout, exited)
+            if not done and exited.done():
+                permit.settle(OUTCOME_NEUTRAL)
+                return
             if not done and init_state() == "in_flight":
                 done = await self._wait_event(init_done, timeout + _INIT_WATCH_GRACE_SECS)
             state = init_state()
@@ -476,15 +507,28 @@ class SpawnGate:
                 return
             permit.settle(OUTCOME_NEUTRAL)
         finally:
+            exited.cancel()
             permit.release()
 
     @staticmethod
-    async def _wait_event(event: asyncio.Event, timeout: float) -> bool:
+    async def _wait_event(
+        event: asyncio.Event, timeout: float, exited: Optional["asyncio.Future[Any]"] = None
+    ) -> bool:
+        """Wait up to ``timeout`` for ``event``, or for ``exited`` when one is given.
+
+        Returns whether the event is set, so a process that exited with the event
+        already set still reads as done.
+        """
+        waiting: "asyncio.Future[Any]" = asyncio.ensure_future(event.wait())
         try:
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return False
-        return True
+            await asyncio.wait(
+                [waiting] if exited is None else [waiting, exited],
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            waiting.cancel()
+        return event.is_set()
 
     # -- drain ---------------------------------------------------------------
 
@@ -543,6 +587,70 @@ class Admission:
         self.initialize_timeout_secs = float(initialize_timeout_secs)
         self.spawn_queue_wait_secs = float(spawn_queue_wait_secs)
         self._reapers: set[asyncio.Task[None]] = set()
+        # Pool key digest -> first-``initialize`` deadline reaps in a row, cleared
+        # by the key's next handshake that completes (see ``initialize_timeout_for``).
+        # Insertion order is reap order, so the oldest entry goes first once the
+        # dict holds ``INIT_DEADLINE_REAP_KEYS_MAX`` keys.
+        self._deadline_reaps: dict[str, int] = {}
+
+    def initialize_timeout_for(self, key: Hashable) -> float:
+        """The first-``initialize`` deadline the next spawn for *key* gets.
+
+        The configured deadline, unless the key's last spawns were reaped at it.
+        A reaped backend is killed, so its respawn starts cold again; on a host
+        whose cold start takes a little longer than the deadline (a slow disk, a
+        file scanner, every session's backends starting at once), each attempt
+        would be reaped at the same point and the server would never start. Each
+        reap in a row doubles the next deadline, up to
+        ``INIT_DEADLINE_STRETCH_CAP_SECS``. A configured value above the cap is
+        never lowered, and a backend that never answers still fails, only later.
+        """
+        base = _effective_initialize_timeout_secs(self.initialize_timeout_secs)
+        reaps = self._deadline_reaps.get(_reap_slot(key), 0)
+        if reaps <= 0:
+            return self.initialize_timeout_secs
+        return max(base, min(base * (2**reaps), INIT_DEADLINE_STRETCH_CAP_SECS))
+
+    def track_initialize(
+        self,
+        key: Hashable,
+        *,
+        init_done: asyncio.Event,
+        outcome: Callable[[], tuple[str, Optional[str]]],
+        process_exited: Callable[[], Awaitable[Any]],
+    ) -> None:
+        """Count *key*'s deadline reaps from one backend's first handshake.
+
+        *outcome* returns the backend's ``(init state, dead reason)`` once
+        *init_done* is set. A handshake that completed clears the count; one
+        reaped at the deadline adds one. Anything else (a crash, a client that
+        left before ``initialize``) leaves the count as it was. Ends when the
+        process exits, so a backend that never handshakes holds no task.
+        """
+
+        async def _note() -> None:
+            exited = asyncio.ensure_future(process_exited())
+            done = asyncio.ensure_future(init_done.wait())
+            try:
+                await asyncio.wait({exited, done}, return_when=asyncio.FIRST_COMPLETED)
+                if not init_done.is_set():
+                    return
+                state, reason = outcome()
+                slot = _reap_slot(key)
+                if state == "ready":
+                    self._deadline_reaps.pop(slot, None)
+                elif state == "failed" and (reason or "").startswith(INITIALIZE_DEADLINE_REASON):
+                    reaps = self._deadline_reaps.pop(slot, 0)
+                    self._deadline_reaps[slot] = min(reaps + 1, 8)
+                    while len(self._deadline_reaps) > INIT_DEADLINE_REAP_KEYS_MAX:
+                        del self._deadline_reaps[next(iter(self._deadline_reaps))]
+            finally:
+                exited.cancel()
+                done.cancel()
+
+        task = asyncio.create_task(_note(), name="mcp-gateway-init-deadline-track")
+        self._reapers.add(task)
+        task.add_done_callback(self._reapers.discard)
 
     def track_process(
         self, charge: HostCharge, process_exited: Callable[[], Awaitable[Any]]

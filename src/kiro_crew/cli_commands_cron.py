@@ -1,4 +1,4 @@
-"""``kirocrew cron``: list, add, update, remove, pause, resume, trigger, adopt and preview.
+"""``kirocrew cron``: list, add, update, remove, pause, resume, trigger, history, adopt, preview.
 
 ``_cron`` runs ``_cron_dispatch`` and turns an unreadable store into one error line.
 ``_cron_add`` vets a new job with the checks the ``cron_add`` tool runs and records
@@ -225,7 +225,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     writes, and a crash between them left a job missing its agent.
 
     Job kind is exactly one of agent (the default), ``--script`` or
-    ``--command``; schedule is exactly one of ``--every``, ``--cron`` or
+    ``--command``; a ``--script`` job may name a Bot with ``--agent``, which binds
+    the job to that Bot; schedule is exactly one of ``--every``, ``--cron`` or
     ``--at``. Schedule/timeout coupling is split by who can see it: when both
     ``--timeout`` and ``--timeout-secs`` are given, ``_build_job`` at the
     persistence owner validates the pair and the CLI surfaces its
@@ -278,8 +279,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     # ── Job kind: exactly one of agent / script / command ──
     if script and command:
         _cron_add_fail("--script and --command are mutually exclusive")
-    if agent and (script or command):
-        _cron_add_fail("--agent cannot be combined with --script or --command")
+    if agent and command:
+        _cron_add_fail("--agent cannot be combined with --command")
     zero_token = bool(script or command)
     if not message and not zero_token:
         _cron_add_fail("message is required for an agent job (only --script/--command may omit it)")
@@ -297,6 +298,15 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     from kiro_crew.cron_service.identity import split_cron_agent_member
 
     agent, member_id = split_cron_agent_member(agent, "")
+    # A script job launches no agent, so with --script the name must be a Bot: the
+    # job is bound to it (``member_id``) and its ``ctx.crew_log_append`` records land
+    # on that Bot's page, as a ``cron_add`` call with ``member_id`` binds one. A name
+    # left in ``agent`` is a template the script would never use.
+    if script and agent:
+        _cron_add_fail(
+            f"--agent {agent!r} is not a Bot; with --script, --agent must name a Bot "
+            "to bind the job to"
+        )
     if timeout is not None:
         if not zero_token:
             _cron_add_fail("--timeout applies only to a --script or --command job")
@@ -639,6 +649,21 @@ def _ownerless_hint(job: object) -> str:
     return "manage from CLI or the dashboard Schedule page"
 
 
+def _running_since() -> dict[str, float]:
+    """Start time of each job whose run is in flight, keyed by job id."""
+    from kiro_crew import cron_inflight
+
+    since: dict[str, float] = {}
+    try:
+        markers = cron_inflight.read_markers(config_dir())
+    except Exception:  # noqa: BLE001 - an unreadable marker dir marks nothing
+        return since
+    for m in markers:
+        if m.owner_alive() is True:
+            since[m.job_id] = max(m.started_at, since.get(m.job_id, 0.0))
+    return since
+
+
 def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
     from kiro_crew.cron import job_zone_name
@@ -653,10 +678,11 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         "pause",
         "resume",
         "trigger",
+        "history",
         "preview",
     ):
         # Before the service below, which creates cron-history/ on a fresh data home.
-        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
+        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|history|preview}")
         return
 
     svc = CronService(base_dir=config_dir())
@@ -686,6 +712,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         if not jobs:
             print("No cron jobs." if want_folder is None else "No cron jobs in that folder.")
             return
+        running = _running_since()
         for j in jobs:
             status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule, tz_name=job_zone_name(j))
@@ -693,7 +720,11 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             # Name and message are agent-authored, like the folder name.
             name = safe_terminal_line(j.name)
             message = safe_terminal_line(j.message)[:60]
-            print(f"  {status} {j.id}  {name}  ({sched})  [folder: {folder}]  {message}")
+            started = running.get(j.id)
+            run_note = ""
+            if started:
+                run_note = f"  [running since {_time.strftime('%H:%M UTC', _time.gmtime(started))}]"
+            print(f"  {status} {j.id}  {name}  ({sched})  [folder: {folder}]{run_note}  {message}")
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
             # session's scope, so `cron_list` from chat does not list it and the
@@ -714,6 +745,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 detail += f"  managed by: {j.managed_by}"
             if j.project_path:
                 detail += f"  project: {j.project_path}"
+            if j.member_id:
+                detail += f"  bot: {safe_terminal_line(j.member_id)}"
             print(f"      {detail}")
 
     elif action == "adopt":
@@ -1038,6 +1071,12 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             # A busy job is worth retrying later, unlike a real failure, so it
             # gets its own code, 75 (EX_TEMPFAIL), a script can test without the text.
             sys.exit(75 if http_status == ALREADY_RUNNING_STATUS else 1)
+
+    elif action == "history":
+        # Local for the same facade reason as ``cron_trigger`` above.
+        from kiro_crew.cli_cron_history import cron_history
+
+        cron_history(svc, args)
 
     elif action == "preview":
         _cron_preview(args)

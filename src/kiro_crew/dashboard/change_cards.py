@@ -587,7 +587,7 @@ class CardStore:
         )
         if live >= MAX_LIVE_CARDS_PER_SLOT:
             raise CardError(429, "too_many_cards", "this conversation has too many open cards")
-        same = self._open_duplicate(slot_key, kind, params)
+        same = self.open_duplicate(slot_key, kind, params)
         if same is not None:
             raise CardError(
                 409,
@@ -629,7 +629,7 @@ class CardStore:
         self.sweep()
         return rec
 
-    def _open_duplicate(
+    def open_duplicate(
         self, slot_key: str, kind: str, params: dict[str, Any]
     ) -> dict[str, Any] | None:
         """A card in *slot_key* still waiting on the person that proposes exactly this.
@@ -648,6 +648,30 @@ class CardStore:
             ):
                 return rec
         return None
+
+    def expire_made(
+        self, slot_key: str, kind: str, params: dict[str, Any]
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """Expire *slot_key*'s waiting cards whose exact change is already made.
+
+        The agent already heard the change is made, so the expiry is marked
+        reported. Returns each card with its :meth:`snapshot` for :meth:`restore`.
+        """
+        self._ensure_loaded()
+        out = []
+        for rec in self._cards.values():
+            if (
+                rec["slot_key"] == slot_key
+                and rec["kind"] == kind
+                and rec["status"] in (STATUS_PENDING, STATUS_FAILED)
+                and not rec.get("inflight")
+                and rec["params"] == params
+            ):
+                snap = self.snapshot(rec)
+                self._finish(rec, STATUS_EXPIRED)
+                rec["reported_status"] = STATUS_EXPIRED
+                out.append((rec, snap))
+        return out
 
     def _apply_preview(
         self,
@@ -997,6 +1021,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _goal_state,
         _hunk_separator,
         _import_after_is_written,
+        _import_dashboard_state,
         _import_rules_digest,
         _import_state,
         _mcp_detail,
@@ -1105,6 +1130,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew.change_card_mcp_server import (  # noqa: F401
+        KIND_MCP_SERVER,
+    )
     from kiro_crew.config.schema import (  # noqa: F401
         requires_restart,
     )

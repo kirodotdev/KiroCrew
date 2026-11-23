@@ -45,6 +45,8 @@ const {
   windowsTaskkill,
 } = require("./windows-port");
 const {
+  describeSpawnedGatewayTimeout,
+  isLiveSpawnedTimeout,
   gatewayWaitTimeoutMs,
   waitForGateway,
   readLogTail,
@@ -66,7 +68,7 @@ const {
 const { capturePySpyDump } = require("./pyspy-dump");
 const { getRemoteHostConfig } = require("./host-config");
 const { createTunnelKeeper } = require("./tunnel-keeper");
-const { loadDashboardWithToken } = require("./token-retry");
+const { dashboardUrlFor, loadDashboardWithToken } = require("./token-retry");
 const {
   remoteCrewAction,
   remoteCrewDraft,
@@ -182,7 +184,7 @@ function createGatewaySupervisor({
   const processObj = processRef;
   const PORT = port;
   const BACKEND_URL = backendUrl;
-  const HEALTH_URL = `${BACKEND_URL}/api/status`;
+  const HEALTH_URL = `${BACKEND_URL}/api/live`;
   const KIROCREW_HOME = home || resolveHome();
   const IS_MAC = processObj.platform === "darwin";
   const IS_WIN = processObj.platform === "win32";
@@ -300,6 +302,7 @@ function createGatewaySupervisor({
     psPpid,
     isLaunchdJob,
     snapshotGatewayPortPids,
+    mintPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,
     forceStopGatewayPort,
@@ -404,7 +407,7 @@ function createGatewaySupervisor({
     isWindows: IS_WIN,
     log: glog,
     sendStatus,
-    snapshotGatewayPortPids,
+    mintPortPids,
     getGatewayProcess: () => gatewayProcess,
     psPpid,
     holdsHomeGatewayLock,
@@ -482,6 +485,7 @@ function createGatewaySupervisor({
     probeGatewayPortBinding, probeGatewayPortOwner, snapshotGatewayPortPids, unverifiedIncumbent,
     waitForIncumbentExit, respawnGateway, showLoadingThenConnect, showUnrecoverableGatewayError,
     probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness, getGatewayOwnership, setGatewayOwnership,
+    getInstallEpoch: () => installEpoch,
     setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
   });
   const {
@@ -551,6 +555,8 @@ function createGatewaySupervisor({
         getListenPids: winListenPids,
         getCommand: (p) => windowsProcessCommand(p, { execFileFn: execFile }),
         isKirocrew: isTrustedWindowsGatewayCommand,
+        isOwnChild: (pid) => Boolean(gatewayProcess) && gatewayProcess.exitCode === null
+          && gatewayProcess.pid === pid,
         log: glog,
         holders,
       });
@@ -610,7 +616,9 @@ function createGatewaySupervisor({
     return new Promise((resolve) => {
       // Both the silent-port and takeover branches funnel through this gate, so
       // client-only mode cannot be honored on one path and ignored on another.
-      const spawnUnlessClientOnly = () => {
+      // `foreignHolders` is what the owner probe found on a silent port that no
+      // Kiro Crew process holds; a spawn that then exits names them.
+      const spawnUnlessClientOnly = (foreignHolders = []) => {
         // Selection targets a crew's port on purpose, so that a live tunnel there
         // is found and adopted. Reaching here means nothing answered, and binding
         // it now is the shadowing this whole path exists to prevent: the conflict
@@ -637,7 +645,7 @@ function createGatewaySupervisor({
           return;
         }
         if (runLocalGateway) {
-          spawnGateway(resolve, { isStale });
+          spawnGateway(resolve, { isStale, foreignHolders });
           return;
         }
         glog(`no gateway on :${PORT} and local gateway is off — not starting one`);
@@ -736,7 +744,8 @@ function createGatewaySupervisor({
       // the answer from spawning; every other holder keeps today's path.
       const recoverOrSpawn = async () => {
         let outcome = "spawn";
-        try { outcome = await resolveUnresponsiveHolder(); }
+        const foreignHolders = [];
+        try { outcome = await resolveUnresponsiveHolder({ holders: foreignHolders }); }
         catch (error) {
           glog(`stuck gateway: holder check failed (${error && error.message}) — spawning as before`);
         }
@@ -750,7 +759,7 @@ function createGatewaySupervisor({
           failStop("the gateway that is not responding", outcome.stopFailed);
           return;
         }
-        spawnUnlessClientOnly();
+        spawnUnlessClientOnly(foreignHolders);
       };
 
       ensureManagedTunnel()
@@ -765,7 +774,7 @@ function createGatewaySupervisor({
   // backend swapped in at the same path. resourcesPath itself is a launch-time
   // snapshot and so is every other Electron path API; there is nothing newer to
   // read.
-  function spawnGateway(resolve, { isStale = () => false } = {}) {
+  function spawnGateway(resolve, { isStale = () => false, foreignHolders = [] } = {}) {
     // Every spawn passes through here: the first start, the start that follows a
     // takeover, and the stale-bundle respawn. Once the app has begun to quit, a
     // start whose port probes were still in flight must not launch a backend,
@@ -1026,7 +1035,7 @@ function createGatewaySupervisor({
         gatewayProcess = null;
         spawnedExecutablePaths = [];
         gatewayStartFailure = null;
-        spawnGateway(resolve);
+        spawnGateway(resolve, { foreignHolders });
         try { onStaleBundleRespawn(); }
         catch (error) { glog(`stale bundle: respawn hook threw: ${error && error.message}`); }
         return true;
@@ -1065,7 +1074,14 @@ function createGatewaySupervisor({
       if (!currentChild) return;
       spawnedExecutablePaths = [];
       const giveUp = () => {
-        if (!gatewayStartFailure) gatewayStartFailure = { code, signal, bundled };
+        // The gateway refuses a port held by anything but Kiro Crew and exits, so
+        // the dialog names the holder, as it does for one that answers. A signal
+        // never came from that refusal, so it keeps its own diagnosis.
+        if (!gatewayStartFailure) {
+          gatewayStartFailure = foreignHolders.length && !signal
+            ? { port: PORT, localStartBlocked: "foreign-holder", holders: foreignHolders, isWindows: IS_WIN }
+            : { code, signal, bundled };
+        }
         gatewayProcess = null;
       };
       if (recoverStaleBackend({ exitCode: code, giveUp })) return;
@@ -1112,10 +1128,7 @@ function createGatewaySupervisor({
   }
 
   function dashboardEntryUrl(targetBackendUrl, initialPath = "") {
-    const target = initialPath
-      ? new URL(initialPath, targetBackendUrl)
-      : new URL(targetBackendUrl);
-    return target.toString();
+    return dashboardUrlFor(targetBackendUrl, initialPath);
   }
 
   /**
@@ -1178,6 +1191,8 @@ function createGatewaySupervisor({
         glog("liveness: backend responsive again (transient blip)");
       },
       log: (message) => glog(`liveness: ${message}`),
+      setIntervalFn,
+      clearIntervalFn,
     });
     livenessMonitor.start();
   }
@@ -1233,9 +1248,9 @@ function createGatewaySupervisor({
         isAborted: stale,
       }));
     } catch (error) {
-      // POSIX lsof may be unavailable. Let bind arbitrate, but record that the
-      // pre-spawn ownership proof could not be completed.
-      glog(`liveness: port probe failed (${error && error.message}); attempting respawn and letting bind confirm`);
+      // A probe that cannot run is answered as probeFailed, not thrown, so
+      // this is an unexpected force-stop error; record it and respawn.
+      glog(`liveness: force-stop failed unexpectedly (${error && error.message}); attempting respawn`);
     }
     // The force-stop can wait up to two minutes for the port. An update install
     // dispatched meanwhile owns the gateway from then on: it must not race a
@@ -1263,12 +1278,15 @@ function createGatewaySupervisor({
 
   // The splash whose default line reads "Starting gateway…". Recovery paints it
   // while it waits for a port to free, then showLoadingThenConnect paints it
-  // again for the connect itself.
-  function paintLoadingScreen(window, { reconnect = false } = {}) {
+  // again for the connect itself. Settles once the page has loaded, or once a
+  // later navigation, a closed window or a dead page ended the load.
+  async function paintLoadingScreen(window, { reconnect = false } = {}) {
     if (!window || window.isDestroyed()) return;
-    window.webContents.loadFile(path.join(dirname, "loading.html"), {
-      query: splashQuery(window, { reconnect, accent: currentThemeAccent() }),
-    });
+    try {
+      await window.webContents.loadFile(path.join(dirname, "loading.html"), {
+        query: splashQuery(window, { reconnect, accent: currentThemeAccent() }),
+      });
+    } catch { /* replaced by a later navigation, or the window or its page is gone */ }
   }
 
   async function showLoadingThenConnect(
@@ -1276,12 +1294,14 @@ function createGatewaySupervisor({
     targetBackendUrl = BACKEND_URL,
     { reconnect = false, initialPath = "" } = {},
   ) {
-    const healthUrl = `${targetBackendUrl}/api/status`;
+    const healthUrl = `${targetBackendUrl}/api/live`;
     const webContents = window.webContents;
-    paintLoadingScreen(window, { reconnect });
+    const painted = paintLoadingScreen(window, { reconnect });
     // Cold boot and user-clicked retries raise. Autonomous liveness recovery
     // loads into the existing hidden/minimized window without touching focus.
     revealWindowForConnect(window, { reconnect });
+    // A message sent before the splash loads reaches the page it replaces.
+    await painted;
 
     try {
       await waitForBackend(window, healthUrl, {
@@ -1289,7 +1309,7 @@ function createGatewaySupervisor({
       });
       if (window.isDestroyed()) return;
 
-      // A newly started gateway regenerates .local_secret. /api/status can answer
+      // A newly started gateway regenerates .local_secret. /api/live can answer
       // just before local mint accepts that secret, so retry only an own-gateway
       // 403; foreign/SSH gateways can never be minted from this machine.
       for (let attempt = 0; ; attempt += 1) {
@@ -1455,6 +1475,17 @@ function createGatewaySupervisor({
       } else if (failedToStart) {
         title = "Kiro Crew — gateway failed to start";
         message = error.message;
+      } else if (isLiveSpawnedTimeout({
+        error,
+        ownTarget: targetBackendUrl === BACKEND_URL,
+        ownership: gatewayOwnership,
+        child: gatewayProcess,
+      })) {
+        // Our own child, still running: naming `kirocrew gateway` would send
+        // the user to start a process that is already up. Retry keeps that
+        // child and waits again (it respawns only when none is running).
+        title = "Kiro Crew — gateway is not answering";
+        message = describeSpawnedGatewayTimeout(error.waitedMs);
       } else {
         title = "Kiro Crew — can't reach the gateway";
         message = "Could not connect to the Kiro Crew backend. Make sure "
@@ -1689,7 +1720,7 @@ function createGatewaySupervisor({
               isAborted: () => epoch !== installEpoch,
             }));
           } catch (probeError) {
-            glog(`force-stop: port probe failed (${probeError && probeError.message}); letting retry's bind confirm`);
+            glog(`force-stop: failed unexpectedly (${probeError && probeError.message}); retrying the start`);
           }
           if (window.isDestroyed() || epoch !== installEpoch) return;
           if (!freed) {

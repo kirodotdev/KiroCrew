@@ -43,6 +43,13 @@
  * message, this extension notifies an envelope naming the steer's sequence number,
  * which the host reads as "consumed". A steer still on disk when the run settles is
  * retired, never delivered later: the host queues it as the next turn.
+ *
+ * And it reports a failed model call. pi-acp forwards none of one: a run whose model
+ * call failed ends `end_turn` with no text, an empty reply. So this extension records
+ * the failure at `turn_end` and, when the run settles still failed and not aborted,
+ * notifies one nonce-bound envelope naming pi's provider, model and error, which the
+ * host fails the turn on. Recorded per turn, so a failure pi retried successfully
+ * reports nothing.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -86,6 +93,9 @@ const STEER_KEY_ENV = "KIROCREW_PI_STEER_KEY";
 
 /** Marker a steer file and its consumed notification carry, beside the session nonce. */
 const STEER_MARKER = "kiro-crew-steer";
+
+/** Marker of the failed-model-call notification, beside the session nonce. */
+const MODEL_ERROR_MARKER = "kiro-crew-model-error";
 
 /** A steer file's name after its stem: the zero-padded sequence number. */
 const STEER_SEQ_RE = /^(\d{10})\.json$/;
@@ -526,10 +536,25 @@ export default function (pi: ExtensionAPI) {
   // Sequence numbers of steers queued on pi and not yet started.
   const steersInFlight = new Set<number>();
 
+  // The model call that failed the latest turn, reported when the run settles.
+  let modelError: { provider: string; model: string; error: string } | null = null;
+
   pi.on("turn_end", async (event, ctx) => {
+    const message = event.message as
+      | { stopReason?: unknown; provider?: unknown; model?: unknown; errorMessage?: unknown }
+      | undefined;
+    const stop = message?.stopReason;
+    // A later turn that did not fail (pi's own retry) clears it.
+    modelError =
+      stop === "error"
+        ? {
+            provider: typeof message?.provider === "string" ? message.provider : "",
+            model: typeof message?.model === "string" ? message.model : "",
+            error: typeof message?.errorMessage === "string" ? message.errorMessage : "",
+          }
+        : null;
     // An aborted or failed model call ends the run without reading pi's steering
     // queue, and a steer queued then would surface at the start of the NEXT run.
-    const stop = (event.message as { stopReason?: unknown } | undefined)?.stopReason;
     if (event.outcome !== "completed" || stop === "error" || stop === "aborted") return;
     if (ctx.signal?.aborted || ctx.isIdle()) return;
     const next = readSteers(ctx.sessionManager.getSessionId(), steerFloor)[0];
@@ -562,7 +587,21 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (event, ctx) => {
+    const failed = modelError;
+    modelError = null;
+    if (failed && !event.aborted && ctx.hasUI) {
+      ctx.ui.notify(
+        JSON.stringify({
+          [MODEL_ERROR_MARKER]: 1,
+          nonce: process.env[NONCE_ENV] ?? "",
+          provider: failed.provider,
+          model: failed.model,
+          error: failed.error,
+        }),
+        "error",
+      );
+    }
     steersInFlight.clear();
     for (const steer of readSteers(ctx.sessionManager.getSessionId(), steerFloor)) {
       steerFloor = Math.max(steerFloor, steer.seq);

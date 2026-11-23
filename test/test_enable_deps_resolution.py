@@ -6,19 +6,10 @@ enables an app (builtin or otherwise).
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from dashboard_owner_helpers import owner_claims
-
-
-@pytest.fixture(autouse=True)
-def _mock_dashboard_server():
-    """Pre-mock dashboard.server to avoid circular import with mimir."""
-    if "kiro_crew.dashboard.server" not in sys.modules:
-        sys.modules["kiro_crew.dashboard.server"] = MagicMock()
-    yield
 
 
 class TestEnableDepsResolution:

@@ -37,6 +37,8 @@ def _agent_facing_files() -> list[Path]:
     """Every file whose text or config reaches a live agent."""
     files: list[Path] = [SRC / "config" / "prompt.md"]
     files += sorted((SRC / "builtin_skills").rglob("SKILL.md"))
+    # A skill's detail split out of its core reaches the agent the same way.
+    files += sorted((SRC / "builtin_skills").glob("**/references/*.md"))
     files += sorted((SRC / "apps" / "builtins").glob("*/skills/**/SKILL.md"))
     files += sorted((SRC / "apps" / "builtins").glob("*/agents/*.json"))
     files += sorted((ROOT / "skills").rglob("SKILL.md"))

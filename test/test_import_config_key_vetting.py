@@ -8,6 +8,7 @@ install's workspace root, skips the whole document; the rest of the import conti
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -61,7 +62,67 @@ def test_a_key_with_dots_spaces_or_cjk_is_kept(tmp_path):
     assert not summary.get("refused_merges")
 
 
-@pytest.mark.parametrize("workspace_dir", ["../../outside", "..\\outside"])
+@pytest.mark.parametrize(
+    "workspace_dir",
+    [
+        "../../outside",
+        "..\\outside",
+        "../a\x00b",
+        "~\x00/../x",
+        r"C:..\x",
+        "D:x",
+        pytest.param(
+            "~nosuchuser_zz/x",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows expands ~name, so the runtime does not fail on it",
+            ),
+        ),
+        pytest.param(
+            "./~nosuchuser_zz/x",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows expands ~name, so the runtime does not fail on it",
+            ),
+        ),
+        pytest.param(
+            "\\\\/../../x",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads a leading double backslash as a UNC root, not judged",
+            ),
+        ),
+        ".. /x",
+        pytest.param(
+            "C:/x/../../../etc",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads C:/ as an absolute path, which is not judged",
+            ),
+        ),
+        pytest.param(
+            r"\x/../../../../../../etc",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads a leading backslash as an absolute path, which is not judged",
+            ),
+        ),
+        pytest.param(
+            r"workspace/a\b/../../..",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads both spellings as the same path, which stays inside",
+            ),
+        ),
+        pytest.param(
+            r"a\b/../../x",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                reason="Windows reads both spellings as the same path, which stays inside",
+            ),
+        ),
+    ],
+)
 def test_a_workspace_folder_outside_the_roots_skips_the_config(tmp_path, workspace_dir):
     snap = _stage(tmp_path, {"workspaces": {"evil": {"dir": workspace_dir}}})
     vetted, summary = _vet(snap)
@@ -71,11 +132,32 @@ def test_a_workspace_folder_outside_the_roots_skips_the_config(tmp_path, workspa
     assert workspace_dir not in text
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows collapses .. before following a link, so there is no escape to refuse",
+)
+def test_a_workspace_folder_that_escapes_through_a_symlink_skips_the_config(tmp_path):
+    workspace = tmp_path / "home" / "workspace"
+    workspace.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / "link").symlink_to(outside, target_is_directory=True)
+
+    snap = _stage(tmp_path, {"workspaces": {"evil": {"dir": "workspace/link/../target"}}})
+    vetted, summary = _vet(snap)
+    assert "config.json" not in vetted
+    text = " ".join(summary["items"])
+    assert "evil" in text and "workspace" in text, summary
+
+
 def test_a_workspace_folder_under_the_workspace_root_or_relative_is_kept(tmp_path):
     cfg = {
         "workspaces": {
             "rel": {"dir": "workspace"},
             "plain": "workspace-two",
+            "dotdot": {"dir": "workspace/a/../b"},
+            "dotdot-trailing": {"dir": "workspace/a/../b/"},
+            "backslash": {"dir": r"workspace/a\b"},
             "inside": {"dir": str(tmp_path / "ws-root" / "proj")},
         }
     }
@@ -84,7 +166,25 @@ def test_a_workspace_folder_under_the_workspace_root_or_relative_is_kept(tmp_pat
     assert vetted["config.json"] == cfg
 
 
-@pytest.mark.parametrize("workspace_dir", ["/home/alice/code/proj", "/var/elsewhere/x", "/etc"])
+def test_a_relative_workspace_folder_that_is_the_data_home_is_refused(tmp_path):
+    # A relative folder that resolves to the data home itself is refused.
+    snap = _stage(tmp_path, {"workspaces": {"dotdot-root": {"dir": "workspace/.."}}})
+    vetted, summary = _vet(snap)
+    assert "config.json" not in vetted
+    assert summary.get("refused_merges") == ["config"], summary
+
+
+@pytest.mark.parametrize(
+    "workspace_dir",
+    [
+        "/home/alice/code/proj",
+        "/var/elsewhere/x",
+        "/etc",
+        "/x/../../etc",
+        r"C:\x\..\..\y",
+        r"\\host\share\..\y",
+    ],
+)
 def test_an_absolute_workspace_folder_keeps_the_whole_config(tmp_path, workspace_dir):
     """An absolute folder is a supported placement; it must not drop agents and settings."""
     cfg = {"agents": {"keep": {}}, "workspaces": {"proj": {"dir": workspace_dir}}}
@@ -107,11 +207,13 @@ def test_the_overlay_config_local_json_is_held_to_the_same_workspace_rule(tmp_pa
     assert summary.get("refused_merges") == ["config.local"], summary
 
 
-@pytest.mark.parametrize("workspace_dir", ["/x/../../outside", "\\x\\..\\..\\outside"])
-def test_a_rooted_folder_without_a_drive_is_absolute_on_every_platform(
-    _floor_monkeypatch, workspace_dir
-):
-    """Where the OS calls "/x" relative (Windows, Python 3.13) it must still count as absolute."""
+@pytest.mark.parametrize(
+    "workspace_dir",
+    ["/x/../../etc", r"\x\..\..\y", r"C:\x\..\..\y", r"\\host\share\..\y"],
+)
+def test_a_rooted_or_drive_folder_is_kept_on_every_platform(_floor_monkeypatch, workspace_dir):
+    """Kept where Windows or the OS reads it as absolute; on POSIX the backslash forms are one
+    name inside the data home."""
     import os
 
     from kiro_crew.archive_config_vetting import _dir_outside_roots

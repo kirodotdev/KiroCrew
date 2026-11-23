@@ -38,6 +38,9 @@ class DeepseekAcpClient(AcpClient, serves=ACP_BACKEND_DEEPSEEK):
         # or ``""`` once its launch proved stock dsh composes them
         # (``tool_gate.deepseek_read_only_owner_issue``). Refused until then.
         self._deepseek_read_only_issue = "the harness composition was not read back"
+        # dsh's release from its npm manifest (``DeepseekLaunch.resolve_spawn``), which
+        # the tested-range notice reads; ``""`` when unread.
+        self.harness_installed_version = ""
 
     # The deepseek session contract: ``kiro_crew.acp.client_deepseek_session``.
     _deepseek_session_mcp_servers = _client_deepseek_session._deepseek_session_mcp_servers

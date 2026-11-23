@@ -57,8 +57,8 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
 #: these values against the frontend table.
 TRANSIENT_NOTICE_META_KEY = "notice"
 TRANSIENT_NOTICE_RETRYING = "transient_retrying"
-#: The same pending link when the provider answered with a throttle: the
-#: network is fine, so the row names the throttle instead of the connection.
+#: The same pending link for a throttle (a provider's or Kiro's per-user limit,
+#: so its text names no one): the row names the throttle, not the connection.
 TRANSIENT_NOTICE_THROTTLE_RETRYING = "transient_throttle_retrying"
 TRANSIENT_NOTICE_RESUMING = "transient_resuming"
 TRANSIENT_NOTICE_THROTTLE_RESUMING = "transient_throttle_resuming"
@@ -66,15 +66,23 @@ TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
 #: The terminal row of a throttle ladder that ends without a re-send.
 TRANSIENT_NOTICE_THROTTLE_GIVE_UP = "transient_throttle_give_up"
 
+#: ``meta[...]`` on the row that tells the person the host declined a tool
+#: approval on their behalf; the value is that decline's ``DENY_CAUSE_APPROVAL_*``.
+#: The host's notice to the agent about the decline is folded into the turn the
+#: way a person's steer is, so the dashboard reads this key to keep the reply's
+#: "Steered" chip off a turn the person did not steer
+#: (``website/src/app-sdk/turnPolicyBlock.ts`` mirrors the literal).
+HOST_DECLINE_CAUSE_META_KEY = "host_decline_cause"
+
 #: English fallback text for the rows above. Plain language on purpose: the
 #: failure is an upstream model-backend 5xx the gateway is already retrying
 #: against, and neither "backend" nor "hiccup" tells a reader that.
 TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
-TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ The model provider is throttling requests — retrying…"
+TRANSIENT_THROTTLE_RETRYING_TEXT = "⟳ Requests are being throttled — retrying…"
 TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
-TRANSIENT_THROTTLE_RESUMING_TEXT = "⟳ The model provider is throttling requests — resuming…"
+TRANSIENT_THROTTLE_RESUMING_TEXT = "⟳ Requests are being throttled — resuming…"
 TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
-TRANSIENT_THROTTLE_GIVE_UP_TEXT = "⟳ The model provider is throttling requests — please try again."
+TRANSIENT_THROTTLE_GIVE_UP_TEXT = "⟳ Requests are being throttled — please try again."
 
 
 # Per-turn compaction-failure backoff. See
@@ -503,9 +511,7 @@ def _broadcast_compaction_result(
         from kiro_crew.security import redact
 
         summary = redact(event.title)
-        msg_text = (
-            f"✅ Conversation compacted: {summary}" if summary else "✅ Conversation compacted."
-        )
+        msg_text = f"Conversation compacted: {summary}" if summary else "Conversation compacted."
         # Reset the context meter — the provider dropped its stale counts when
         # the completed status arrived (AcpPromptStats.reset_after_compaction),
         # and `reset` tells the frontend to delete its stored token counts too
@@ -527,12 +533,12 @@ def _broadcast_compaction_result(
 
         error = redact(event.title or "unknown error")
         if streak <= _COMPACTION_NOTICE_SHOW_FIRST_N:
-            msg_text = f"❌ Compaction failed: {error}"
+            msg_text = f"Error: Compaction failed: {error}"
         else:
             # Cooldown just elapsed after 1+ suppressed repeats — collapse
             # into one message instead of resuming per-turn spam.
             msg_text = (
-                f"❌ Compaction has failed {streak}x in a row "
+                f"Error: Compaction has failed {streak}x in a row "
                 f"({error}) — this conversation may be too large to "
                 "auto-compact. Consider `/compact` manually or starting a "
                 "new chat if this persists."
@@ -741,6 +747,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AUTH_REQUIRED_KIND,
         AUTOMATION_NOTICE_KIND,
         AUTOMATION_STEER_META,
+        AUTOMATION_STEER_WIRE_KEY,
         COMPOSER_SEND_META,
         CONTEXT_OVERFLOW_KIND,
         CRON_NOTIFICATION_KIND,
@@ -750,14 +757,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         HEARTBEAT_PROMPT_KIND,
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
+        KIRO_CLI_SIGN_IN_KIND,
         MCP_APP_MESSAGE_KIND,
         MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
         MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
         REQUEUED_STEER_ROW_MID_META,
+        RESOURCE_WAKE_KIND,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
+        SPEC_HOOKS_PROJECT_HOOK_FILES_NOTICE,
         SPEC_HOOKS_RUN_NOWHERE_NOTICE,
         STEER_POSSIBLY_DELIVERED_META,
         STEER_POSSIBLY_DELIVERED_NOTE,
@@ -782,7 +792,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_system_injection,
         is_system_injection_item,
         payload_for_replay,
+        project_hook_files_notice_meta,
         releases_past_subagent_hold,
+        resource_inject_row,
         teardown_hold_active,
     )
     from kiro_crew.dashboard.chat_utils_slack_options import (  # noqa: F401

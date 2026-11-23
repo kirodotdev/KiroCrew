@@ -59,6 +59,7 @@ OWNERS = tuple(
         "eval",
         "learn",
         "secrets",
+        "usage",
     )
 )
 

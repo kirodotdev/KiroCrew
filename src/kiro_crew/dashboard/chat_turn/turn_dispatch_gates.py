@@ -613,13 +613,15 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                 # above Slack's own "Thinking completed" plan header for good.
                 # The stream opens on the first tool call instead, and the
                 # placeholder is deleted then, before the answer is posted, or
-                # at turn end, whichever comes first.
-                turn._mirror_thinking_ts = (
-                    await state.slack_client.post_message(
-                        _mirror_chan, _MIRROR_THINKING, _mirror_post_ts
+                # at turn end, whichever comes first. A Bot's Heartbeat wake
+                # (``_mirror_reply_only``) posts no placeholder: only its reply.
+                if not turn._mirror_reply_only:
+                    turn._mirror_thinking_ts = (
+                        await state.slack_client.post_message(
+                            _mirror_chan, _MIRROR_THINKING, _mirror_post_ts
+                        )
+                        or ""
                     )
-                    or ""
-                )
             except Exception:
                 logger.debug("Failed to mirror user message to Slack", exc_info=True)
             # The Slack leg is done: a cancel landing in the cross-surface leg
@@ -686,6 +688,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._turn_model = _turn_model
     # Set at EVENT_COMPLETE when the turn rebuilt the prompt cache (``cache_rewrite``).
     turn._turn_cache_rewrite = False
+    turn._turn_cache_likely = False
     # Set once EVENT_COMPLETE has filled the four figures above.
     _turn_stats_captured = False
     turn._turn_stats_captured = _turn_stats_captured

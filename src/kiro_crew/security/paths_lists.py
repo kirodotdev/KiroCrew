@@ -261,6 +261,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # one CLI spawn that must write into it is granted its per-call subdirectory
     # explicitly.
     "aws-control-staging",
+    # Kiro Space store sign-ins, one folder per added store. Only the gateway and the
+    # CLI child it runs open them; an agent that could write one could swap in another
+    # person's credential. Masked at OS level too (`sandbox._CREW_HIDDEN_LEAVES`).
+    "market-registries",
     # Quarantine markers for auto-improvement clones whose rollback and retirement both
     # failed. A marker is the only durable record that a clone carrying a refused, unscanned
     # commit must not be reused, and an agent that could write or delete one could certify
@@ -369,6 +373,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # worker, with Kiro's Chromium beside it (``browser_harness.install``).
     # READONLY in-sandbox, fenced from file tools so the interpreter cannot be swapped.
     "browser-harness",
+    # The optional channel SDKs the gateway imports (``sdk_extras``). Same fences.
+    "extras",
     # The Harness daemon's runtime directory: its IPC socket (the Windows port file
     # carries the IPC token), pid file and log (``browser_harness.supervisor``).
     # Whoever can open the socket drives the user's Chrome, so only the gateway may.
@@ -746,6 +752,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # credential store. One directory rule covers the store, its lock file and
     # every temp file — the same treatment ``profiles`` and ``run`` already get.
     "webhooks",
+    # Holder records carry server-defined URIs and choose restored session/server pairs.
+    "mcp-resource-subscriptions",
     # Pinned installer provenance authorizes an executable to receive staged
     # Kiro identity credentials. Agent reads/writes must not be able to replace
     # this trust decision.
@@ -944,12 +952,15 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # app-agent-launch: the empty directory a launch copy's kiro-cli starts in
     # (``apps.agent_launch.launch_process_cwd``); a spec written into it is the spec
     # kiro-cli runs. Read-only in the sandbox for the same reason.
+    # session-tokens: the signed session records ``session_key_is_attested`` accepts;
+    # the gateway is the only writer, so a record made with a file tool is a forgery.
     for leaf in (
         "config.json",
         "config.local.json",
         "subagents",
         "app-agent-launch",
         "update_next_start.json",
+        "session-tokens",
     )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write
@@ -1357,6 +1368,31 @@ _KIRO_SETTINGS_MCP_JSON = ".kiro/settings/mcp.json"
 
 
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
+
+
+# ── Kiro Crew's own MCP registry (<data home>/mcp.json) ──
+# The MCP page's store: every agent spec the gateway renders merges it, and a
+# shared server's backend is launched from it outside the sandbox. Only the person
+# changes it, through the MCP page or a ``request_server`` card
+# (the "agents ask before changing gateway-trusted files" entry in docs/decisions/),
+# so the gateway can trust what it holds. Write-protected rather than read+write
+# sensitive: the in-sandbox readers (``kirocrew doctor``, the MCP report) still read
+# it. The OS half is ``sandbox_leaves._CREW_READONLY_LEAVES``; the gateway's own
+# writes go through ``mcp_config_files._atomic_write`` and never ask this gate.
+_CREW_MCP_JSON_LEAF = "mcp.json"
+_CREW_MCP_REGISTRY_ROWS: list[str] = [
+    f"{prefix}/{_CREW_MCP_JSON_LEAF}" for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += _CREW_MCP_REGISTRY_ROWS
+
+#: Every MCP registry an agent's file tool is refused on. A refusal on one of these
+#: names the way forward (:data:`MCP_REGISTRY_REMEDY`) instead of ending the attempt.
+_MCP_REGISTRY_ROWS: list[str] = [_KIRO_SETTINGS_MCP_JSON, *_CREW_MCP_REGISTRY_ROWS]
+#: What the refusal tells the agent to do instead.
+MCP_REGISTRY_REMEDY = (
+    "To add, change or remove an MCP server, call the request_server tool "
+    "(action add, change or remove); the user applies it from a card."
+)
 
 
 # ── kiro-cli's tool auto-approve rules (opt-in) ──

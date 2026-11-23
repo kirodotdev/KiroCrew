@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { i18nT } from '../i18n/t'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import type { RootState } from '../store'
 import App from '../App'
 
@@ -120,6 +121,16 @@ const wheelState = (over: Record<string, unknown> = {}) => {
 
 const GATEWAY_LABEL = i18nT('pages.settings.aboutPanel.automatic_updates')
 
+// What's new opens only after the whole App shell mounts and the status, config
+// and changelog reads resolve, which a loaded runner can stretch past the 1000ms
+// default. Every first wait on the modal rides this ceiling.
+const WHATS_NEW_OPEN = () => namedCeiling('WHATS_NEW_OPEN', 5000)
+
+// The proactive update popup renders the same `in-app-update-action` for an
+// armable install and can open before What's new, which then unmounts it, so
+// the modal's own controls are looked up inside its dialog.
+const whatsNew = () => screen.findByRole('dialog', { name: i18nT('app.changelog') }, WHATS_NEW_OPEN())
+
 describe('changelog modal apply affordance', () => {
   beforeEach(() => {
     // A DIFFERENT last-seen version is what opens the modal on mount.
@@ -146,7 +157,7 @@ describe('changelog modal apply affordance', () => {
       preloadedState: wheelState({ update_can_arm: true, update_latest_version: '9.9.9' }),
     })
 
-    const action = await screen.findByTestId('in-app-update-action')
+    const action = await within(await whatsNew()).findByTestId('in-app-update-action')
     expect(action).toHaveTextContent(/update to v9\.9\.9/i)
     expect(screen.queryByTestId('modal-update-command')).toBeNull()
     fireEvent.click(action)
@@ -169,7 +180,7 @@ describe('changelog modal apply affordance', () => {
       preloadedState: wheelState({ update_can_arm: true, update_latest_version: '9.9.9' }),
     })
 
-    fireEvent.click(await screen.findByTestId('in-app-update-action'))
+    fireEvent.click(await within(await whatsNew()).findByTestId('in-app-update-action'))
 
     const notice = await screen.findByTestId('arm-error')
     expect(notice).toHaveAttribute('role', 'alert')
@@ -183,7 +194,7 @@ describe('changelog modal apply affordance', () => {
   it('retains the installer command only for a non-armable install', async () => {
     renderWithProviders(<App />, { route: '/chat', preloadedState: wheelState() })
 
-    expect(await screen.findByTestId('modal-update-command')).toHaveTextContent('kiro-crew')
+    expect(await within(await whatsNew()).findByTestId('modal-update-command')).toHaveTextContent('kiro-crew')
     expect(armUpdate).not.toHaveBeenCalled()
   })
 
@@ -193,7 +204,7 @@ describe('changelog modal apply affordance', () => {
       preloadedState: wheelState({ update_can_apply: true }),
     })
 
-    expect(await screen.findByText('Update when I restart')).toBeTruthy()
+    expect(await within(await whatsNew()).findByText('Update when I restart')).toBeTruthy()
     expect(screen.queryByTestId('modal-update-command')).toBeNull()
   })
 
@@ -205,7 +216,7 @@ describe('changelog modal apply affordance', () => {
       preloadedState: wheelState({ update_available: null, update_check_status: 'failed' }),
     })
 
-    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeTruthy(), WHATS_NEW_OPEN())
     expect(screen.queryByText('Update when I restart')).toBeNull()
     expect(screen.queryByTestId('modal-update-command')).toBeNull()
   })
@@ -233,7 +244,7 @@ describe('changelog modal auto-update switch', () => {
     kirocrewConfig.mockResolvedValue({ auto_update: false })
     renderWithProviders(<App />, { route: '/chat', preloadedState: installing() })
 
-    await waitFor(live)
+    await waitFor(live, WHATS_NEW_OPEN())
     expect(screen.getByRole('switch', { name: GATEWAY_LABEL })).toHaveAttribute('aria-checked', 'false')
     expect(setAutoUpdate).not.toHaveBeenCalled()
   })
@@ -246,7 +257,7 @@ describe('changelog modal auto-update switch', () => {
     kirocrewConfig.mockResolvedValueOnce({ auto_update: true }).mockResolvedValue({ auto_update: false })
     renderWithProviders(<App />, { route: '/chat', preloadedState: installing(), queryDefaults: { staleTime: Infinity } })
 
-    await waitFor(() => expect(screen.getByRole('switch', { name: GATEWAY_LABEL })).toHaveAttribute('aria-checked', 'false'))
+    await waitFor(() => expect(screen.getByRole('switch', { name: GATEWAY_LABEL })).toHaveAttribute('aria-checked', 'false'), WHATS_NEW_OPEN())
     expect(kirocrewConfig.mock.calls.length).toBeGreaterThan(1)
   })
 
@@ -259,7 +270,7 @@ describe('changelog modal auto-update switch', () => {
       .mockImplementation(() => new Promise(resolve => { reads.push(resolve) }))
     renderWithProviders(<App />, { route: '/chat', preloadedState: installing() })
 
-    await waitFor(live)
+    await waitFor(live, WHATS_NEW_OPEN())
     await waitFor(() => expect(reads.length).toBeGreaterThan(0))
     const toggle = screen.getByRole('switch', { name: GATEWAY_LABEL })
     fireEvent.click(toggle)
@@ -277,7 +288,7 @@ describe('changelog modal auto-update switch', () => {
     setAutoUpdate.mockRejectedValueOnce(new Error('zzq save refused'))
     renderWithProviders(<App />, { route: '/chat', preloadedState: installing() })
 
-    await waitFor(live)
+    await waitFor(live, WHATS_NEW_OPEN())
     const toggle = screen.getByRole('switch', { name: GATEWAY_LABEL })
     // The read after the failure is what the gateway holds; it shows, and the
     // failure notice goes with it, because that value is the one the click asked for.
@@ -292,7 +303,7 @@ describe('changelog modal auto-update switch', () => {
     kirocrewConfig.mockRejectedValue(new Error('zzq config unreadable'))
     renderWithProviders(<App />, { route: '/chat', preloadedState: installing() })
 
-    expect(await screen.findByText(i18nT('pages.settings.aboutPanel.auto_update_setting_unavailable'))).toBeInTheDocument()
+    expect(await screen.findByText(i18nT('pages.settings.aboutPanel.auto_update_setting_unavailable'), {}, WHATS_NEW_OPEN())).toBeInTheDocument()
     const dialog = screen.getByRole('dialog', { name: i18nT('app.changelog') })
     fireEvent.click(within(dialog).getByRole('button', { name: i18nT('components.askAgent.ask_the_agent') }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: i18nT('app.changelog') })).toBeNull())
@@ -306,8 +317,8 @@ describe('changelog modal auto-update switch', () => {
       preloadedState: wheelState({ update_auto_effect: 'install', update_can_arm: true, update_latest_version: '9.9.9' }),
     })
 
-    expect(await screen.findByTestId('in-app-update-action')).toBeInTheDocument()
-    await waitFor(live)
+    expect(await within(await whatsNew()).findByTestId('in-app-update-action')).toBeInTheDocument()
+    await waitFor(live, WHATS_NEW_OPEN())
     // The popup is a React.lazy chunk that opens only once its snooze record
     // has been read; wait for both, so its absence can only be the hold.
     await act(async () => { await import('../components/UpdateFoundModal') })

@@ -8,7 +8,7 @@
  * Passwords and one-time codes are never stored: `RememberKey` has no slot
  * for them, so no caller can pass one.
  *
- * Saved logins come from the Secrets vault instead, under its preview: the
+ * Saved logins come from the Secrets vault instead: the
  * gateway matches vault logins to the ask by base domain
  * (`browser_harness/vault_fill.py`) and the card shows them by username, never
  * through this module. On a credentials ask with that vault part the

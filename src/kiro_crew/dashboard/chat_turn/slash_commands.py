@@ -62,6 +62,7 @@ if TYPE_CHECKING:
         logger,
         sel,
         select_provider_backend,
+        subagents_attached_async,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
     from kiro_crew.dashboard.chat_turn.prompt_assembly import _expand_prompt_mention_off_loop
@@ -76,7 +77,10 @@ if TYPE_CHECKING:
         _append_command_reply,
         _cleared_segment_text,
     )
-    from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.session_reset import (
+        _a_completion_is_queued,
+        _consume_pending_reset,
+    )
     from kiro_crew.dashboard.chat_turn.turn_admission import (
         _channels_judging_turn,
         _refuse_channel_turn,
@@ -202,18 +206,27 @@ async def _answer_slash_for_harness(
             if slot.set_todo(None):
                 state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
             text = (
-                "🗑 Conversation cleared. Earlier messages stay visible, but the agent "
+                "Conversation cleared. Earlier messages stay visible, but the agent "
                 "no longer remembers them."
             )
         else:
+            discard_key = slot._pending_discard_conversation_key
+            if (
+                discard_key is not None
+                and _a_completion_is_queued(slot)
+                and not await subagents_attached_async(state, slot, discard_key, "clear_drop_plan")
+            ):
+                # Waiting only on a queued completion, which runs in the old conversation
+                # with its plan: the plan goes where the discard lands.
+                slot._pending_discard_drops_plan = True
             text = (
-                "🗑 Clear queued. The agent is busy right now, so your next reply "
+                "Clear queued. The agent is busy right now, so your next reply "
                 "may still remember this conversation."
             )
     else:
         outcome = "unsupported_backend"
         harness = "KAS" if backend == ACP_BACKEND_KAS else label_for(backend)
-        text = f"⚠ `{command}` doesn't work with {harness}. It was not sent to the agent."
+        text = f"Warning: `{command}` doesn't work with {harness}. It was not sent to the agent."
     sel().log_tool_invocation(
         session_key=session_key,
         agent=slot.agent or "kirocrew",
@@ -325,7 +338,7 @@ async def _handle_agent_command(
         text = switch_announcement(str(body.get("agent") or agent), str(body.get("warning") or ""))
     else:
         reason = str(body.get("error") or "the switch was refused")
-        text = f"⚠️ Could not switch to agent `{agent}`: {reason}"
+        text = f"Warning: Could not switch to agent `{agent}`: {reason}"
     _append_command_reply(slot, text)
     sel().log_tool_invocation(
         session_key=session_key,
@@ -355,14 +368,14 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
     _rest = _parts[1].strip() if len(_parts) > 1 else ""
     if _goal_svc is None:
         body = (
-            "🎯 Goal loops are unavailable (AutoNudge is disabled). "
+            "Goal loops are unavailable (AutoNudge is disabled). "
             "Set `KIROCREW_AUTONUDGE=1` and restart the gateway."
         )
     elif _rest in ("", "status"):
         _loop = _goal_svc.get_by_slot(slot.key)
         if _loop is not None and getattr(_loop, "active", True):
             _cap = _loop.max_cycles or "∞"
-            body = f"🎯 Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
+            body = f"Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
         elif _loop is not None:
             # The slot holds a record the service KEPT after it stopped -- a goal
             # its stop file finished, a paused one, a bound reached -- which is
@@ -371,7 +384,7 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
             _why = getattr(_loop, "stopped_reason", "") or "stopped"
             _ended = "finished" if reason_in(_why, FINISHED_LOOP_REASONS) else "stopped"
             body = (
-                f"🎯 Goal {_ended} ({_why}); it is not running. "
+                f"Goal {_ended} ({_why}); it is not running. "
                 "Use `/goal clear` to clear it, or `/goal <objective>` to set a new one."
             )
         else:
@@ -383,7 +396,7 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
         _loop = _goal_svc.get_by_slot(slot.key)
         if _loop is not None:
             await _goal_svc.remove(_loop.id, stop_reason="goal_cleared")
-            body = "🎯 Goal cleared."
+            body = "Goal cleared."
         else:
             body = "No active goal to clear."
     else:
@@ -468,7 +481,7 @@ def _refuse_blocked_slash(turn) -> None:
         slot,
         slot.append(
             "assistant",
-            f"⚠️ `{first_word}` is not available in the dashboard.",
+            f"Warning: `{first_word}` is not available in the dashboard.",
             "msg msg-a",
         ),
     )
@@ -656,7 +669,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     outcome="blocked",
                     metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
                 )
-                _append_command_reply(slot, f"🔒 Prompt `{name}` blocked — sensitive path.")
+                _append_command_reply(slot, f"Prompt `{name}` blocked — sensitive path.")
                 state.push_slots_update()
             elif status == "too_large":
                 sel().log_tool_invocation(
@@ -669,7 +682,8 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
                 )
                 _append_command_reply(
-                    slot, f"⚠️ Prompt `{name}` exceeds size limit ({MAX_PROMPT_BYTES // 1000}KB)."
+                    slot,
+                    f"Warning: Prompt `{name}` exceeds size limit ({MAX_PROMPT_BYTES // 1000}KB).",
                 )
                 state.push_slots_update()
             else:
@@ -682,7 +696,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     outcome="not_found",
                     metadata={"mention": f"@{name}", "slot": slot.key, "via": "/prompts get"},
                 )
-                _append_command_reply(slot, f"❌ Prompt `{name}` not found.")
+                _append_command_reply(slot, f"Error: Prompt `{name}` not found.")
                 state.push_slots_update()
             return _Flow.END
 
@@ -1032,7 +1046,7 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
             _append_compaction_notice(state, slot, empty_notice)
         elif capabilities_of(client).compacts_inline:
             _restore_skills_context_after_compaction(turn)
-            msg = "✅ Conversation compacted."
+            msg = "Conversation compacted."
             _append_compaction_notice(state, slot, msg)
             state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
         else:
@@ -1051,11 +1065,7 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
             if compaction_result["type"] == "completed":
                 _restore_skills_context_after_compaction(turn)
                 summary = redact(compaction_result.get("summary", ""))
-                msg = (
-                    f"✅ Conversation compacted: {summary}"
-                    if summary
-                    else "✅ Conversation compacted."
-                )
+                msg = f"Conversation compacted: {summary}" if summary else "Conversation compacted."
             elif compaction_result["type"] == "failed":
                 # The provider ships the reason on `failed` too, and every
                 # other surface already tells the user what it was — Slack,
@@ -1079,9 +1089,9 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
                     # payload) would otherwise push the whole transcript out
                     # of the reader's view.
                     error = error[:_COMPACT_FAIL_REASON_MAX_CHARS].rstrip() + "…"
-                msg = f"❌ Compaction failed: {error}" if error else "❌ Compaction failed."
+                msg = f"Error: Compaction failed: {error}" if error else "Error: Compaction failed."
             else:
-                msg = "⚠️ Compaction timed out."
+                msg = "Warning: Compaction timed out."
             _append_compaction_notice(state, slot, msg)
             # Update the context meter from the provider's post-compaction
             # state. On success the provider has dropped its stale counts by

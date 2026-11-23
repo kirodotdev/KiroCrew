@@ -27,6 +27,7 @@ from kiro_crew.shared_crew import (
     crew_mode,
     lifecycle,
     people,
+    preview,
     routes_identity,
     trigger,
 )
@@ -117,6 +118,22 @@ class TestModes:
         )
         assert invalid["mode"] == "invalid"
         assert invalid["team_config"]["reason"] == "network_identity_config_unreadable"
+
+    def test_mode_view_names_every_id_the_owner_writes_under(self):
+        """The owner opened from the startup link closes a chat the desktop app
+        started: both ids are theirs, so the page must not read it as another
+        person's chat."""
+        from kiro_crew.shared_crew import owner
+
+        viewer = local_operator_principal("local-startup")
+        body = crew_mode.mode_view(viewer, [], setup_paths=NO_PATHS, crew_id="g1")
+        assert set(owner.owner_principal_ids()) <= set(body["viewer_ids"])
+        assert local_operator_principal("local-app").id in body["viewer_ids"]
+        assert viewer.id in body["viewer_ids"]
+
+    def test_mode_view_names_only_a_teammates_own_id(self):
+        body = crew_mode.mode_view(ALICE, [], setup_paths=NO_PATHS, crew_id="g1")
+        assert body["viewer_ids"] == [ALICE.id]
 
 
 # ── the gate refuses shared access while the team setup is invalid ──
@@ -326,7 +343,11 @@ async def _mode_client(log, principal: Principal, *, app_name: str = "") -> Test
 
 
 @pytest.mark.asyncio
-async def test_mode_route_reports_personal_then_network_once_someone_else_creates(tmp_path):
+async def test_mode_route_reports_personal_then_network_once_someone_else_creates(
+    tmp_path, monkeypatch
+):
+    # Creators from the catalogue count only with the Shared Crew preview on.
+    monkeypatch.setenv(preview.PREVIEW_ENV, "1")
     base = tmp_path / "s"
     base.mkdir()
     log = ConversationLog(base)

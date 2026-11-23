@@ -26,6 +26,7 @@ from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.skill_read_ahead import read_ahead as read_skills_ahead
 from kiro_crew.dashboard.slot_list_pass import shared_slot_pass
+from kiro_crew.dashboard.slot_read_state import read_state_of, valid_read_ts
 from kiro_crew.dashboard.slot_retention import note_foreground
 from kiro_crew.dashboard.state import (
     PERSISTED_SUBAGENT_REPLAY_KEEP,
@@ -57,6 +58,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     persisted_precap_readings,
     persisted_replay_denial_reason,
     slots_envelope_extras,
+    strip_owner_only_status,
     visible_subagent_slot_keys,
 )
 from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
@@ -638,21 +640,20 @@ def _grant_auditee(ws: web.WebSocketResponse, ws_app: str) -> str:
 def _handle_slot_read(
     state: DashboardState, slot_key: object, read_ts: object = None, *, owner: bool
 ) -> bool:
-    """Relay a client's ``slot_read`` frame to every owner window.
+    """Store a client's ``slot_read`` and relay it to every owner window.
 
     A window sends this when the user reads a slot there (opens it, toggles
-    mark-as-read, or watches a message land in its visible active slot). The
-    gateway rebroadcasts it so every other window retires that slot's unread
-    bubble too. Pure relay — the server keeps no read-state: unread is a
-    frontend concept (Redux + localStorage per window) and stays one; this
-    only carries the gesture between windows sharing the gateway.
-
+    mark-as-read, or watches a message land in its visible active slot).
     ``read_ts`` is the read WATERMARK the sending window computed: the newest
     message timestamp it knew for the slot at the read. It is relayed opaquely
     (bounded string, no parsing); receivers keep any badge their window
     recorded for a newer message, so an in-flight relay cannot erase a
     message the reader had not seen. Absent or invalid, the frame relays
     without one and receivers apply their conservative default.
+
+    ``slot_read_state`` keeps the newest parseable time per slot (rows carry it as
+    ``last_read_ts``). Once it is on disk a ``slot_read`` with ``stored: true`` follows,
+    and only that echo lets the sender forget its kept read.
 
     Owner-only, mirroring ``_handle_slot_focused``: an app-scoped socket must
     not clear the user's badges, and ``broadcast_ws_owners`` keeps the echo
@@ -674,6 +675,14 @@ def _handle_slot_read(
     if isinstance(read_ts, str) and read_ts and len(read_ts) <= 64:
         payload["read_ts"] = read_ts
     state.broadcast_ws_owners("slot_read", payload)
+    reads = read_state_of(state)
+    if reads.advance(slot_key, read_ts) is not None and valid_read_ts(read_ts):
+        reads.after_persisted(
+            slot_key,
+            lambda ts: state.broadcast_ws_owners(
+                "slot_read", {"slot": slot_key, "read_ts": ts, "stored": True}
+            ),
+        )
     return True
 
 
@@ -1146,10 +1155,10 @@ async def _serve_ws(
                     # path names the operator's home directory. Strip them here
                     # rather than moving the whole frame behind a declaration,
                     # which would silently cut every existing app off from the
-                    # version signal. ``/api/status`` and the SSE stream run on
-                    # dashboard-user tokens and keep the full snapshot.
-                    for _owner_only in ("branch", "commit", "update_policy_file"):
-                        data.pop(_owner_only, None)
+                    # version signal. ``/api/status`` runs on dashboard-user
+                    # tokens and keeps the full snapshot; the SSE stream strips
+                    # the same fields for its app readers with this helper.
+                    strip_owner_only_status(data)
                 # Tier 0 admits every socket unconditionally, but the decision
                 # is still a grant per ``AUTOSDE.yaml`` -- this frame is sent
                 # directly rather than through the broadcast chokepoint, so

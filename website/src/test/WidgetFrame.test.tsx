@@ -258,15 +258,17 @@ describe('WidgetFrame theme passthrough', () => {
     expect(srcdoc).not.toMatch(/color-scheme:light dark/)
   })
 
-  it('drives dark mode via v4 custom-variant + <body> class, loaded same-origin', () => {
+  it('drives dark mode via v4 custom-variant + the <body> data-mode attribute, loaded same-origin', () => {
     // Widgets use Tailwind `dark:` variants (e.g. `bg-white dark:bg-slate-900`).
     // Inside the iframe the OS media query is wrong (it can't know the
-    // dashboard's resolved mode), so we register a `.dark`-class custom variant
-    // (v4) and put the mode on <body> so `dark:` tracks the dashboard.
+    // dashboard's resolved mode), so we register a custom variant (v4) on the
+    // body's `data-mode` attribute and mark <body> with the mode so `dark:` tracks
+    // the dashboard. An attribute, not a class: the body shares the widget's class
+    // namespace, and a widget's own `.dark` or `.light` rule must not style it.
     const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
     const srcdoc = getSrcdoc(container)
-    expect(srcdoc).toMatch(/@custom-variant dark \(&:where\(\.dark, \.dark \*\)\)/)
-    expect(srcdoc).toMatch(/<body class="dark">/)
+    expect(srcdoc).toMatch(/@custom-variant dark \(&:where\(\[data-mode=dark\], \[data-mode=dark\] \*\)\)/)
+    expect(srcdoc).toMatch(/<body data-mode="dark">/)
     // Locked-down-network fix: Tailwind must not load from the public CDN.
     expect(srcdoc).not.toContain('cdn.tailwindcss.com')
     // Directives block must precede the runtime <script> so the dark variant

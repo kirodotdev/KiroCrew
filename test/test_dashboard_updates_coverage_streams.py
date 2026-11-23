@@ -501,7 +501,7 @@ class TestDashboardStream:
         monkeypatch.setattr(sc, "_counts_refresh_inflight", False)
 
     def _request_with_queue(
-        self, notes: list[dict], *, is_dashboard_user: bool = True
+        self, notes: list[dict], *, is_dashboard_user: bool = True, monkeypatch=None
     ) -> MagicMock:
         req = _request()
         # `api_stream` reads `request["is_dashboard_user"]` — the auth
@@ -509,7 +509,19 @@ class TestDashboardStream:
         # on this unfiltered queue. A bare MagicMock returns a truthy Mock from
         # `.get()`, which would make the app-token assertion below pass on mock
         # truthiness rather than on the flag, so wire it to a real mapping.
-        req.get = {"is_dashboard_user": is_dashboard_user}.get
+        # A non-dashboard reader is an app token, the middleware's other positive
+        # mark (a reader with neither is refused); its scope gate is covered in
+        # test_sse_stream_app_scope.py and passed through here.
+        flags: dict = {"is_dashboard_user": is_dashboard_user}
+        if not is_dashboard_user:
+            flags["app"] = "stream-test-app"
+
+            async def _admitted(_request, _app):
+                return None, frozenset()
+
+            monkeypatch.setattr(updates, "stream_reader_admission", _admitted)
+            monkeypatch.setattr(updates, "scope_note_for_app", lambda note, **_kwargs: note)
+        req.get = flags.get
         queue: asyncio.Queue[dict] = asyncio.Queue()
         for note in notes:
             queue.put_nowait(note)
@@ -569,7 +581,9 @@ class TestDashboardStream:
         writes = _stub_stream(monkeypatch)
         slots = json.dumps([{"key": "a", "pin_rank": 0}])
         req = self._request_with_queue(
-            [{"_type": "slots", "slots": slots}], is_dashboard_user=is_dashboard_user
+            [{"_type": "slots", "slots": slots}],
+            is_dashboard_user=is_dashboard_user,
+            monkeypatch=monkeypatch,
         )
         task = asyncio.ensure_future(updates.api_stream(req))
         await async_wait_until(
@@ -675,6 +689,7 @@ class TestDashboardStream:
                 }
             ],
             is_dashboard_user=False,
+            monkeypatch=monkeypatch,
         )
 
         task = asyncio.ensure_future(updates.api_stream(req))

@@ -536,11 +536,11 @@ class TestFenceSafeSplitting:
         await _turn(renderer, "short and sweet")
 
         updates = [kw["text"] for m, kw in slack.calls if m == "update_message"]
-        posts = [kw["text"] for m, kw in slack.calls if m == "post_message"]
+        posts = [kw["text"] for m, kw in slack.calls if m in ("post_message", "post_blocks")]
         assert updates[-1] == "short and sweet"
-        # Only the fallback's own placeholder: an answer that fits gains no
-        # continuation replies.
-        assert posts == [_THINKING]
+        # Only the fallback's own placeholder (and the timing footer): an answer
+        # that fits gains no continuation replies.
+        assert [p for p in posts if not p.startswith("Finished")] == [_THINKING]
 
     @pytest.mark.asyncio
     async def test_the_splitter_runs_off_the_event_loop(self) -> None:
@@ -574,8 +574,8 @@ class TestFenceSafeSplitting:
 
         posts = [kw["text"] for m, kw in slack.calls if m == "post_message"]
         thinking = [t for t in posts if "reasoning step." in t]
-        assert len(thinking) > 1, "an over-limit 💭 reply is rejected whole by Slack"
-        assert thinking[0].startswith("💭")
+        assert len(thinking) > 1, "an over-limit Thinking reply is rejected whole by Slack"
+        assert thinking[0].startswith("*Thinking*")
         for text in thinking:
             assert len(text) <= SLACK_MSG_LIMIT, len(text)
 
@@ -932,7 +932,7 @@ class TestEveryRendererEgressMeetsTheDisplayFloor:
         renderer = _renderer(slack)
         renderer._show_thinking = True
         await renderer.on_thinking(f"thinking about {self._COLLAPSING}")
-        await renderer._maybe_post_thinking()
+        await renderer._settle_thinking()
         assert slack.texts(), "premise: the thinking block was posted"
         assert not self._leaked(slack), slack.calls
 

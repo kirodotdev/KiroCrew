@@ -31,6 +31,7 @@ this — it must stay that way.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -1002,6 +1003,16 @@ def same_registered_model(a: str, b: str) -> bool:
     return ka is None or kb is None or ka == kb
 
 
+#: Digests of the ``(value, provider)`` pairs whose pass-through :func:`to_provider_id`
+#: has logged in this process. Every config load translates the same configured ids
+#: again, so the DEBUG line names each pair once. Request handlers pass ids too, so an
+#: entry is a 16-byte digest whatever the id's length, and the count is bounded: when
+#: full the memory is cleared, which costs at most one repeat of a line that is still
+#: true. A race between two threads costs at most one duplicate line.
+_PASSTHROUGH_LOGGED_MAX = 256
+_passthrough_logged: set[bytes] = set()
+
+
 def to_provider_id(canonical_or_id: str, provider: str) -> str:
     """Translate a canonical key (or alias / known provider id) to a provider id.
 
@@ -1037,10 +1048,21 @@ def to_provider_id(canonical_or_id: str, provider: str) -> str:
         if rescued is not None:
             return rescued
     # Unrecognized: pass through unchanged rather than clobbering an explicit
-    # choice. Log once so an unexpected value is still diagnosable.
-    logger.debug(
-        "Model %r not in registry for provider %s; passing through", canonical_or_id, provider
-    )
+    # choice. Log once per (value, provider) so an unexpected value is still
+    # diagnosable without repeating on every config load. Remember a pair only
+    # when the line is written, so turning DEBUG on later still shows it.
+    if logger.isEnabledFor(logging.DEBUG):
+        pair = f"{provider}\0{canonical_or_id}".encode("utf-8", "replace")
+        seen = hashlib.sha256(pair).digest()[:16]
+        if seen not in _passthrough_logged:
+            if len(_passthrough_logged) >= _PASSTHROUGH_LOGGED_MAX:
+                _passthrough_logged.clear()
+            _passthrough_logged.add(seen)
+            logger.debug(
+                "Model %r not in registry for provider %s; passing through",
+                canonical_or_id,
+                provider,
+            )
     return canonical_or_id
 
 

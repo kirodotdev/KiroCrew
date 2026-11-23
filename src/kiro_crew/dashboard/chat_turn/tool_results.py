@@ -209,8 +209,8 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
             result_digest=event.tool_output_digest,
             result_bytes=event.tool_output_bytes,
         )
-        # A dispatched worker's report the harness never delivered (KAS, pi and
-        # OpenCode answer a name they cannot resolve without calling the server): record it beside the
+        # A dispatched worker's report the harness never delivered (KAS, pi,
+        # OpenCode and Claude answer a name they cannot resolve without calling the server): record it beside the
         # worker's item so its conductor and the board learn the report did not
         # arrive, instead of reading the silence as a stall.
         if turn._undelivered_watch is not None:

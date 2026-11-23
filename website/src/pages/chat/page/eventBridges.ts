@@ -41,7 +41,7 @@ interface ChatEventBridgesOptions {
   terminalCfgReadFailedRef: MutableRefObject<boolean>
   inputRef: MutableRefObject<string>
   /** A reply card's send (the `[GRILL:]` discussion card): stages `text` for `slot`, or sends it (`pending`, then `onOutcome`); null when this page does not serve `slot`. Stable. */
-  composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void) => ComposeSendResult | null
+  composeSend: (text: string, slot: string, onOutcome: (o: ComposeSendOutcome, reason?: string) => void, files?: readonly string[]) => ComposeSendResult | null
 }
 
 /**
@@ -156,7 +156,6 @@ export function useChatEventBridges({
         window.dispatchEvent(new CustomEvent('mc:prefill-terminal-result', { detail: { reqId, ok } }))
       if (typeof command !== 'string' || !command || /[\r\n]/.test(command)) { emit(false); return }
       const sessionId = addDockTerminal(currentProjectRef.current ?? undefined)
-      if (!sessionId) { emit(false); return }
       let settled = false
       const unsub = onTerminalReady(sessionId, () => {
         settled = true
@@ -184,9 +183,10 @@ export function useChatEventBridges({
   // no result, the card stays open.
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { text?: unknown; slot?: unknown; result?: unknown; onOutcome?: unknown } | undefined
+      const detail = (e as CustomEvent).detail as { text?: unknown; slot?: unknown; result?: unknown; onOutcome?: unknown; files?: unknown } | undefined
       if (!detail || detail.result || typeof detail.text !== 'string' || !detail.text || typeof detail.slot !== 'string' || typeof detail.onOutcome !== 'function') return
-      detail.result = composeSend(detail.text, detail.slot, detail.onOutcome as (o: ComposeSendOutcome, reason?: string) => void)
+      const files = Array.isArray(detail.files) ? detail.files.filter((f): f is string => typeof f === 'string' && !!f) : []
+      detail.result = composeSend(detail.text, detail.slot, detail.onOutcome as (o: ComposeSendOutcome, reason?: string) => void, files)
     }
     window.addEventListener('mc:compose-send', handler)
     return () => window.removeEventListener('mc:compose-send', handler)

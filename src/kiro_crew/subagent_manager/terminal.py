@@ -357,8 +357,8 @@ class TerminalCoordinator(ManagerComponent):
         then; ``False`` when the claim went to another path, which reports, and
         this task returns without a word (its caller disowns it from
         ``_report_owners`` before releasing it, so its exit latches nothing).
-        A single Stop of a queued run passes one too: it resolves once the
-        row's unlanded cancel is durably settled (``_report_queued_stop``).
+        A stop of a queued run whose cancel did not land passes one too: it
+        resolves once that cancel is durably settled (``_report_queued_stop``).
 
         The two call sites (reap vs. ``_run``'s ``finally``) differ only in the
         injection-timeout reason string, the log ``source`` prefix, and whether
@@ -1642,7 +1642,7 @@ class TerminalCoordinator(ManagerComponent):
                 )
             failure_msg = (
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
-                f"Agent `{info.id}` ❌ {reason}\n"
+                f"Agent `{info.id}` failed: {reason}\n"
                 f"Task: {task_preview}\n"
                 f"Usage: {format_subagent_usage(info.credits, info.elapsed)}\n"
                 f"{_injection_notice_outcome(info)}{result_hint}"

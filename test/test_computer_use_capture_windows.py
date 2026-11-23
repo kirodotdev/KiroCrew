@@ -467,10 +467,17 @@ class TestPersistJpeg:
         call is needed even though the directory is tightened too.
         """
         tightened: list = []
+        test_thread = threading.get_ident()
+
+        def _spy(p):
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                tightened.append(p)
+
         monkeypatch.setattr(C, "shots_dir", lambda: str(tmp_path))
         monkeypatch.setattr(C, "trim_shots_dir", lambda: None)
         monkeypatch.setattr(C, "_dir_ready", True)
-        monkeypatch.setattr(C.platform_compat, "restrict_to_owner", lambda p: tightened.append(p))
+        monkeypatch.setattr(C.platform_compat, "restrict_to_owner", _spy)
         path = C.persist_jpeg(b"JPEGBYTES")
         assert path and pathlib.Path(path).read_bytes() == b"JPEGBYTES"
         assert tightened == [path], "the frame was written without an owner-only DACL"

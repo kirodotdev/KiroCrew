@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:c1f4b83d62e971520e30c4a9968a95a878482a43076cf131964407703a7b88ed"
+export const GUIDE_BUILD_DIGEST = "sha256:deb046e28fa25ddb753dca89d3089fe565e7924180db12ac5f53796ffad353e9"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -74,7 +74,10 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "mcp.add-custom",
   "mcp.add-server",
   "mcp.probe",
+  "mcp.review-approve",
   "mcp.servers-view",
+  "mcp.share-switch",
+  "mcp.sharing-view",
   "members.add-menu",
   "members.add-menu.import",
   "members.add-menu.new",
@@ -140,7 +143,6 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "sessions.show-all-older",
   "shell.connect-phone",
   "shell.focus-mode",
-  "shell.kiro-account",
   "shell.menu-search",
   "shell.mobile-menu",
   "shell.nav-toggle",
@@ -1824,6 +1826,40 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "any:mcp.servers-view",
             "location": "mcp.servers-view",
             "label_key": "pages.mcpPage.view_servers"
+          }
+        ]
+      }
+    ]
+  },
+  "mcp.share-switch": {
+    "version": 2,
+    "label_key": "pages.mcpManagement.share_switch_label",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.share-switch",
+            "location": "mcp.share-switch",
+            "label_key": "pages.mcpManagement.share_switch_label"
+          }
+        ]
+      }
+    ]
+  },
+  "mcp.sharing-view": {
+    "version": 2,
+    "label_key": "pages.mcpPage.view_sharing",
+    "placements": [
+      {
+        "id": "any",
+        "route": "/capabilities?tab=mcp-servers",
+        "steps": [
+          {
+            "id": "any:mcp.sharing-view",
+            "location": "mcp.sharing-view",
+            "label_key": "pages.mcpPage.view_sharing"
           }
         ]
       }

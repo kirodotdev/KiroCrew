@@ -310,7 +310,7 @@ class TestTextModesUnchanged:
     def test_verbose_is_still_text(self) -> None:
         with patch.object(mcp_cron.CronService, "list_jobs", return_value=[_job()]):
             out = mcp_cron._call_tool_inner("cron_list", {"verbose": True})
-        assert "• poller (✅ active) [agent]" in out
+        assert "• poller (active) [agent]" in out
 
     def test_json_wins_over_the_verbose_that_ids_forces_on(self) -> None:
         """ids implies verbose; a machine consumer still needs a document."""

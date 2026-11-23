@@ -418,6 +418,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SEND_MESSAGE_SESSION_RE,
         _SLACK_TS_RE,
         _TARGET_ID_RE,
+        _TOOL_CALL_ID_CHARS,
         CREW_LIST_SCHEMA,
         DISMISS_NOTIFICATION_SCHEMA,
         GET_CHAT_SESSION_SCHEMA,
@@ -455,6 +456,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SESSION_RENAME_SCHEMA,
         SESSION_RETRY_SCHEMA,
         SESSION_REVIVE_SCHEMA,
+        SESSION_RUN_QUEUED_SCHEMA,
         SESSION_SEND_SCHEMA,
         SESSION_SET_COLOR_SCHEMA,
         SESSION_SET_MODEL_SCHEMA,
@@ -465,6 +467,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         WAIT_SCHEMA,
         WORK_DISPATCH_SCHEMA,
         _validate_channel_routing,
+        _validate_get_chat_session,
         _validate_session_set_model,
     )
     from kiro_crew.validation_parts.opt_in_server_schemas import (  # noqa: F401

@@ -37,7 +37,7 @@ Routing is the required gate: the gateway daemon intercepts a routed server's to
 Both live in **MCP Management**, on the **Sharing** view of **MCP Servers**:
 
 1. **Route the server through the gateway**: turn on the server's **Share** switch (**Enable MCP sharing**). Turning it on approves the exact command, arguments and environment the server launches with; the row's **Details** shows them. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
-2. **Share MCP servers across chats**, the switch at the top, is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
+2. **Turn on MCP server sharing**, the switch on the **Share MCP servers across chats** card at the top, is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
 
 What each row's state and the **Pre-install npm servers** control mean: [Sharing MCP servers across chats](connections.md#sharing-mcp-servers-across-chats).
 

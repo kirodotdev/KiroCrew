@@ -303,6 +303,26 @@ def test_crewmate_create_binds_its_schedule_to_the_created_identity():
     assert [s["path"] for s in undo] == ["/api/crons/j1", "/api/agents/scout"]
 
 
+def test_crewmate_create_carries_an_optional_model_pin_as_a_read_only_row():
+    def preview(**extra):
+        p = catalog.validate_params("crewmate.create", {"name": "Scout", "goal": "g", **extra})
+        return catalog.build_preview("crewmate.create", p, {"exists": False}, {})
+
+    pinned = preview(model=" some-model ")
+    assert pinned["apply"][0]["body"]["model"] == "some-model"
+    assert {"field": "model", "label": "Model", "after": "some-model"} in pinned["changes"]
+    assert "model" not in catalog.KINDS["crewmate.create"].editable
+    # Omitted, empty and "auto" all inherit: no row and no pin in the create body.
+    for extra in ({}, {"model": ""}, {"model": "auto"}):
+        plain = preview(**extra)
+        assert "model" not in plain["apply"][0]["body"]
+        assert all(c.get("field") != "model" for c in plain["changes"])
+    for bad in (123, "x" * 65, "a\x01b"):
+        with pytest.raises(catalog.CardCatalogError) as exc:
+            catalog.validate_params("crewmate.create", {"name": "Scout", "goal": "g", "model": bad})
+        assert exc.value.code == "invalid_param"
+
+
 def test_crewmate_create_shows_inherited_auto_approvals_and_asks_to_widen():
     p = catalog.validate_params("crewmate.create", {"name": "Scout", "goal": "watch PRs"})
     plain = catalog.build_preview("crewmate.create", p, {"exists": False}, {})
@@ -1049,3 +1069,37 @@ def test_the_same_proposal_after_the_waiting_card_expired_is_a_new_card():
     clock.now = first["expires_at"] + 1
     again = _propose(store)
     assert again["id"] != first["id"]
+
+
+def test_a_waiting_card_whose_same_change_is_made_expires_without_a_report():
+    """A failed card's retry applied its change: the failed twin, and any pending
+    twin, stop waiting on the person, and the agent hears only the apply."""
+    store = CardStore(None, clock=Clock())
+    failed = _propose(store)
+    store.begin_step(failed, revision=1, op="apply", index=0)
+    store.record_failure(failed, op="apply", index=0, status=400, body={"code": "x"})
+    assert store.take_unreported(SLOT)[0]["status"] == "failed"
+    applied = _propose(store)
+    pending = _propose(store, params={"path": "chat.verbosity", "value": "detailed"})
+    params = {"path": "chat.verbosity", "value": "ultra-brief"}
+    other_slot = store.propose(
+        slot_key=SLOT + "-other",
+        session_key="other",
+        kind="setting.change",
+        params=params,
+        reason="r",
+        preview=catalog.build_preview("setting.change", params, {"value": "standard"}, {}),
+        before={"value": "standard"},
+        context={},
+    )
+    store.begin_step(applied, revision=1, op="apply", index=0)
+    store.record_success(applied, op="apply", index=0, evidence={})
+    store.complete_apply(applied, after={"value": "ultra-brief"}, undo=[], undo_reason=None)
+    expired = store.expire_made(SLOT, "setting.change", applied["params"])
+    assert [rec["id"] for rec, _snap in expired] == [failed["id"]]
+    assert failed["status"] == "expired" and applied["status"] == "applied"
+    assert pending["status"] == "pending" and other_slot["status"] == "pending"
+    assert [o["id"] for o in store.take_unreported(SLOT)] == [applied["id"]]
+    twin = _propose(store)
+    assert store.expire_made(SLOT, "setting.change", twin["params"])[0][0] is twin
+    assert twin["status"] == "expired" and store.take_unreported(SLOT) == []

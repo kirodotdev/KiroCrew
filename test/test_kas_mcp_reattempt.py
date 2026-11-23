@@ -6,7 +6,8 @@ never initializes it again. On KAS, Crew asks the engine to connect it again wit
 ``_kiro/mcp/resetServer`` and ``startOAuth`` false, at a turn start, at most
 ``MAX_ATTEMPTS`` times per server per session. These tests pin which failures
 qualify, the budget and its bound on names, and that a re-attempt never shares
-the consent-URL slot with an OAuth sign-in.
+the consent-URL slot with an OAuth sign-in. A server whose process exited, which
+KAS still lists connected while its calls fail "Not connected", shares the budget.
 """
 
 from __future__ import annotations
@@ -17,11 +18,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from named_cases_helpers import named_cases
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS, is_recoverable_auth_failure
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_handle import BUCKET_CAP, AcpSessionHandle
 from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_KAS_MCP_STATUS, JsonRpcMessage
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 _NO_CREDS = "JSON-RPC error: -32603 No AWS credentials available"
 
@@ -101,7 +104,7 @@ def _handle(begun: list, accept: bool = True) -> AcpSessionHandle:
         begun.append((session_id, name))
         return accept
 
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     handle._session_id = "s1"
     handle._runtime = SimpleNamespace(
         begin_mcp_reattempt=begin,
@@ -115,6 +118,13 @@ def _handle(begun: list, accept: bool = True) -> AcpSessionHandle:
     handle._mcp_sign_in_dropped = 0
     handle._mcp_reattempt_waiting = set()
     handle._mcp_reattempt_counts = {}
+    handle._mcp_reattempt_dropped = set()
+    handle._mcp_sign_in_probes = {}
+    handle._mcp_sign_in_probed = set()
+    handle._mcp_sign_in_spent = set()
+    handle._mcp_launches = {}
+    handle._mcp_network_urls = {}
+    handle._session_key = ""
     handle._oauth_emitted_servers = set()
     return handle
 
@@ -349,6 +359,63 @@ async def test_the_turn_start_re_attempts_a_waiting_server():
             pass
     assert begun == [("s1", "aws")]
     assert handle._mcp_reattempt_counts == {"aws": 1}
+
+
+def _kas_call_failed(message: str) -> JsonRpcMessage:
+    """A KAS MCP call's failed result, shaped as the engine's tool runner writes it."""
+    return JsonRpcMessage(
+        method="session/update",
+        params={
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call-1",
+                "status": "failed",
+                "title": "@other/list_windows",
+                "rawOutput": {"response": "Not connected", "message": message},
+                "content": [{"type": "content", "content": {"type": "text", "text": message}}],
+                "_meta": {"kiro": {"serverName": "xcode", "toolOrigin": "default"}},
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_server_whose_process_exited_is_reset_at_the_next_turn_within_the_budget():
+    runtime = AcpRuntime(acp_backend=ACP_BACKEND_KAS)
+    runtime._initialized = True
+    queue: asyncio.Queue = asyncio.Queue()
+    runtime._session_queues["s1"] = queue
+    begun: list = []
+
+    class _Written(Exception):
+        """Raised by the prompt write: the turn start has run by then."""
+
+    runtime.send_request = AsyncMock(side_effect=_Written())
+    runtime.begin_mcp_sign_in = lambda *_: False
+    runtime.begin_mcp_reattempt = lambda sid, name: begun.append((sid, name)) or True
+    handle = AcpSessionHandle("s1", queue, runtime)
+    connected = _status({"name": "xcode", "status": "connected"})
+    handle._note_mcp_sign_in_status(connected, offer=False)
+    # A healthy server's own error result with the same text leaves no mark.
+    handle._handle_update(_kas_call_failed("MCP tool error: Not connected"))
+    assert handle._mcp_reattempt_waiting == set()
+    # The process exited: the engine sends no status frame, and still lists it connected.
+    handle._handle_update(_kas_call_failed("MCP tool call failed: Not connected"))
+    queue.put_nowait(connected)  # read by the pre-turn drain
+    with pytest.raises(_Written):
+        async for _event in handle.prompt("hi", timeout=FALLBACK_TIMEOUT_SECS):
+            pass
+    assert begun == [("s1", "xcode")]
+    handle._note_mcp_sign_in_status(_status({"name": "xcode", "status": "connecting"}), offer=False)
+    handle._note_mcp_sign_in_status(connected, offer=False)
+    assert handle._mcp_sign_in_completed == {"xcode"}
+    handle._reattempt_failed_mcp_servers()
+    assert begun == [("s1", "xcode")]
+    for _ in range(MAX_ATTEMPTS + 1):
+        handle._handle_update(_kas_call_failed("MCP tool call failed: Not connected"))
+        handle._reattempt_failed_mcp_servers()
+    assert begun == [("s1", "xcode")] * MAX_ATTEMPTS
 
 
 # ── session handle: the restart hint waits for the budget ─────────────────────

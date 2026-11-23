@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
-import { ChatProjectDirCtx } from '../components/markdown/contexts'
+import { BasePathCtx, ChatProjectDirCtx } from '../components/markdown/contexts'
 import { isFileLinkDest, joinProjectRelative } from '../components/markdown/pathReferences'
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { probedPaths, stubPathKinds } from './pathKindStub'
@@ -272,6 +272,117 @@ describe('MarkdownRenderer relative and home path links', () => {
     link.dispatchEvent(ev)
     expect(onFileOpen).not.toHaveBeenCalled()
     expect(getByRole('link', { name: 'route' }).getAttribute('href')).toBe('settings')
+  })
+})
+
+describe('MarkdownRenderer relative links in a previewed document (#39492)', () => {
+  // A previewed file names itself through `BasePathCtx`; its relative links are
+  // relative to its own directory, the base its relative images already use.
+  const DOC = '/home/user/notes/spec/index.md'
+  const DIR = '/home/user/notes/spec'
+
+  it('opens a sibling, nested and parent link joined to the document directory', async () => {
+    const fetchMock = stubPathKinds(() => 'file')
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <BasePathCtx.Provider value={DOC}>
+        <MarkdownRenderer content={'[a](sibling.md) [b](./b.md) [c](../c.md) [d](notes/d.md)'} onFileOpen={onFileOpen} />
+      </BasePathCtx.Provider>,
+    )
+    const want: Record<string, string> = {
+      a: `${DIR}/sibling.md`,
+      b: `${DIR}/b.md`,
+      c: `${DIR}/../c.md`,
+      d: `${DIR}/notes/d.md`,
+    }
+    for (const [name, path] of Object.entries(want)) {
+      const link = getByRole('link', { name })
+      await waitFor(() => {
+        const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+        link.dispatchEvent(ev)
+        expect(ev.defaultPrevented).toBe(true)
+        expect(onFileOpen).toHaveBeenLastCalledWith(path)
+      })
+    }
+    expect(probedPaths(fetchMock).sort()).toEqual(Object.values(want).sort())
+  })
+
+  it('swallows the plain click on a missing relative link instead of opening a dead tab', async () => {
+    stubPathKinds(() => null)
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <BasePathCtx.Provider value={DOC}>
+        <MarkdownRenderer content={'[gone](gone.md) [folder](missing-dir)'} onFileOpen={onFileOpen} />
+      </BasePathCtx.Provider>,
+    )
+    for (const name of ['gone', 'folder']) {
+      const link = getByRole('link', { name })
+      await waitFor(() => expect(link.getAttribute('class')).toContain('text-muted'))
+      expect(link.getAttribute('target')).toBeNull()
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })
+      link.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(true)
+    }
+    expect(onFileOpen).not.toHaveBeenCalled()
+  })
+
+  it('prefers the document directory over the chat project', async () => {
+    const fetchMock = stubPathKinds(() => 'file')
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <ChatProjectDirCtx.Provider value={PROJECT}>
+        <BasePathCtx.Provider value={DOC}>
+          <MarkdownRenderer content={'[a](sibling.md)'} onFileOpen={onFileOpen} />
+        </BasePathCtx.Provider>
+      </ChatProjectDirCtx.Provider>,
+    )
+    const link = getByRole('link', { name: 'a' })
+    await waitFor(() => {
+      link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+      expect(onFileOpen).toHaveBeenCalledWith(`${DIR}/sibling.md`)
+    })
+    expect(probedPaths(fetchMock)).toEqual([`${DIR}/sibling.md`])
+  })
+
+  it('opens a link from a root or home document and drops a heading suffix', async () => {
+    const fetchMock = stubPathKinds(() => 'file')
+    const cases: Array<[string, string, string]> = [
+      ['/README.md', '[n](next.md)', '/next.md'],
+      ['~/notes/index.md', '[n](next.md)', '~/notes/next.md'],
+      [DOC, '[n](guide.md#install)', `${DIR}/guide.md`],
+      [DOC, '[n](guide%23install.md)', `${DIR}/guide#install.md`],
+    ]
+    for (const [doc, md, path] of cases) {
+      const onFileOpen = vi.fn()
+      const { getByRole, unmount } = render(
+        <BasePathCtx.Provider value={doc}>
+          <MarkdownRenderer content={md} onFileOpen={onFileOpen} />
+        </BasePathCtx.Provider>,
+      )
+      const link = getByRole('link', { name: 'n' })
+      await waitFor(() => {
+        link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+        expect(onFileOpen).toHaveBeenCalledWith(path)
+      })
+      unmount()
+    }
+    expect(probedPaths(fetchMock).sort()).toEqual(cases.map(c => c[2]).sort())
+  })
+
+  it('leaves a modified click to the browser', async () => {
+    stubPathKinds(() => 'file')
+    const onFileOpen = vi.fn()
+    const { getByRole } = render(
+      <BasePathCtx.Provider value={DOC}>
+        <MarkdownRenderer content={'[a](sibling.md)'} onFileOpen={onFileOpen} />
+      </BasePathCtx.Provider>,
+    )
+    const link = getByRole('link', { name: 'a' })
+    await waitFor(() => expect(link.getAttribute('class')).toContain('text-accent'))
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, metaKey: true })
+    link.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+    expect(onFileOpen).not.toHaveBeenCalled()
   })
 })
 

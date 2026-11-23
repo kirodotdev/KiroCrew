@@ -711,27 +711,28 @@ describe("first-download installer design contract", () => {
     );
     assert.match(windowsBuilder, /"kirocrew\[voice-aws\] @ \$root_uri"/);
     assert.match(buildScript, /"\$ROOT\[voice-codex\]"/);
+    // Codex dictation is an experimental opt-in, so a target without its media
+    // wheels ships without it; only the default recogniser may fail the build.
+    const codexInstall = buildScript.slice(
+      buildScript.lastIndexOf("env PYTHONNOUSERSITE", buildScript.indexOf('"$ROOT[voice-codex]"')) - 5,
+      buildScript.indexOf("fi", buildScript.indexOf('"$ROOT[voice-codex]"'))
+    );
+    assert.match(codexInstall, /^if ! env PYTHONNOUSERSITE/);
+    assert.match(codexInstall, /"\$ROOT\[voice-codex\]"; then\n\s+log "Codex dictation media packages did not install/);
+    assert.doesNotMatch(codexInstall, /exit 1/);
     assert.doesNotMatch(windowsBuilder, /"kirocrew\[voice-codex\] @ \$root_uri"/);
     assert.match(windowsBuilder, /"kirocrew\[voice\] @ \$root_uri"/);
     assert.doesNotMatch(windowsBuilder, /"\$ROOT\[voice(?:-aws)?\]"/);
     assert.doesNotMatch(windowsBuilder, /if\s+!\s+[\s\S]*?kirocrew\[voice\]/);
   });
 
-  it("bundles the Feishu SDK into every backend, since the app cannot install it later", () => {
+  it("leaves the Feishu SDK out of every backend; the app installs it on first use", () => {
     const buildScript = fs.readFileSync(path.join(REPO_ROOT, "packaging", "build-desktop.sh"), "utf8")
       .split("\n").filter(line => !/^\s*#/.test(line)).join("\n");
-    const between = (start, end) => {
-      const from = buildScript.indexOf(start);
-      const to = buildScript.indexOf(end, from);
-      assert.ok(from >= 0 && to > from, `${start} not found`);
-      return buildScript.slice(from, to);
-    };
-    assert.match(between("build_backend() {", "build_backend_windows() {"), /"\$ROOT\[feishu\]"/);
-    const windowsBuilder = between("build_backend_windows() {", "stdlib_probe_gate() {");
-    assert.match(windowsBuilder, /"kirocrew\[feishu\] @ \$root_uri"/);
-    // Shipped compiled, so the first Feishu start does not compile ~11k modules
-    // on the gateway loop.
-    assert.match(windowsBuilder, /precompile_windows\.py" \\\n[^\n]*--module lark_oapi\n/);
+    // src/kiro_crew/sdk_extras.py installs it into the data home, outside the
+    // signed bundle, so no backend may carry it or trace its bytecode.
+    assert.doesNotMatch(buildScript, /\[feishu\]/);
+    assert.doesNotMatch(buildScript, /--module lark_oapi/);
   });
 
   it("shows native progress for updates without adding setup decisions", () => {
@@ -1658,6 +1659,18 @@ describe("uninstall data preservation contract", () => {
         `${format}.depends must name ${name}, or the app fails to start where nothing else installs it`
       );
     }
+  });
+
+  it("builds the rpm without /usr/lib/.build-id links", () => {
+    // rpmbuild adds a /usr/lib/.build-id/<xx>/<id> symlink for every ELF it
+    // packages. Electron's binaries are byte-identical in every app built on
+    // the same Electron, so another Electron app's rpm (or our own nightly)
+    // claims the same paths and rpm refuses the second install as a file
+    // conflict -- which is also how every in-app rpm update failed.
+    assert.ok(
+      (electronPkg.build.rpm.fpm ?? []).includes("--rpm-rpmbuild-define=_build_id_links none"),
+      "rpm.fpm must turn off rpmbuild's build-id links"
+    );
   });
 
   it("keeps OSS4's ALSA stand-in from satisfying the deb's ALSA dependency", () => {

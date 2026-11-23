@@ -318,6 +318,13 @@ self.addEventListener('fetch', e => {
           c.put('/', copy.clone()), c.put('/index.html', copy),
         ])).catch(() => {}))
       }
+      // The Kiro relay answers a navigation to a Crew whose host is gone with an
+      // error body (JSON) and its typed reason header. Rendered as is, the window
+      // shows that body with no way back; the cached shell boots the SPA, whose
+      // offline view retries until the host returns.
+      if (e.request.mode === 'navigate' && !resp.ok && resp.headers && resp.headers.get('x-kiro-relay-error')) {
+        return caches.match('/index.html').then(r => r || resp)
+      }
       return resp
     }).catch(() => {
       // Network failed — serve cached shell for navigation requests so

@@ -41,13 +41,24 @@
 > proven absent and through which the vault cannot reach the engine (a `kiro-cli`
 > below 3.0.0 with no `kiro-cli-chat` entry) -- a KAS spawn takes the bundle route automatically
 > (`acp/kas_route.py`), and the gateway installs the pinned engine when it is missing.
-> So the vault sign-in always takes effect on the next spawn, and every KAS prompt
-> points at the Kiro sign-in card and never at `kiro-cli login`: the declaration's
-> `sign_in_remedy` and `signed_out_message` name that card alone, led by the route
-> of the last spawn once one ran (`host_auth._with_kas_route`). The chat row for
-> that sentence carries the `meta.notice` token `kas_signed_out`, and the route it
+> So the vault sign-in always takes effect on the next spawn. The signed-out
+> sign-in prompts (the chat's sign-in rows and strip) name no route (decision
+> [2026-11-18](../../decisions/2026-11-18-signed-out-sign-in-prompts-do-not-name-the-engine-route.md), which replaces the
+> 2026-10-30 prompt clause): on kiro-cli's relay they show kiro-cli's commands and,
+> after "or", Kiro Crew's sign-in; on the bundle, the Sign in button. The route stays
+> in Settings, `kirocrew doctor` and the log. The message text itself: the declaration's
+> `sign_in_remedy` and `signed_out_message` name that card alone, led by a route
+> once a spawn ran (`host_auth._with_kas_route`). A caller holding the failing
+> runtime passes that runtime's own route (`AcpRuntime.kas_spawn_route`, which
+> `KasHarness.spawn_route` records at each spawn), so a second chat spawning on
+> another route cannot change what this one's prompt says; only a
+> caller with no runtime in hand falls back to the last spawn in the process.
+> The row reads the route back from that sentence (`host_auth.kas_sentence_route`),
+> never from the last spawn: its kind (the kiro-cli sign-in row, with or without
+> Crew's Sign in) and its `meta.notice` token `kas_signed_out` with the route it
 > names in `notice_args.route` (both set when `host_auth.kas_signed_out_route`
-> recognises it), so the dashboard draws it in the user's language, led by the
+> recognises it). Only a row whose text is no KAS signed-out sentence takes its
+> kind from the last spawn. The dashboard draws the sentence in the user's language, led by the
 > route in plain words; beside the card's sign-in button the copy points at that button.
 > The sentence counts when it leads the row, alone or followed by more text after a
 > space: the ACP error formatter appends its model-switch note and a request id. The
@@ -139,7 +150,7 @@ segment is the region source). Social device-flow uses a shared default profile 
 returned by the poll. The engine accepting a reply without one does NOT make it
 optional: the Kiro runtime refuses every request that names no profile with HTTP 400
 `ValidationException` "profileArn is required for this request" (model list, chat,
-remote tools; #26109). Builder ID has no profile of its own (`ListAvailableProfiles`
+remote tools). Builder ID has no profile of its own (`ListAvailableProfiles`
 answers it `AccessDeniedException`), so the vault stores none for it, and
 `auth/provider.kas_profile_arn` gives the engine kiro-cli's fixed Builder ID ARN
 (`BUILDER_ID_PROFILE_ARN`, the value kiro-cli's `builder_id_callback_token` sends) on
@@ -147,6 +158,64 @@ every engine-facing read: `getAccessToken`, `getProfileArn` and
 `resolveRequestCredential`. It is applied when the reply is built, not stored at
 sign-in, so a Builder ID sign-in made before the change works without signing in
 again. Every other identity sends the ARN its sign-in stored.
+
+### Workload identity in place of a sign-in
+
+A team Crew deployed as a workload (an EKS pod with workload identity) signs in
+with its own JWT-SVID, with no person sign-in, kiro-cli login or crew API key.
+`KIROCREW_WORKLOAD_IDENTITY=spiffe` turns it on. A sidecar such as `spiffe-helper`
+fetches the JWT-SVID for the Kiro audience from the SPIFFE Workload API, writes it
+to `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` and keeps it fresh; Crew reads that file
+for each use and speaks no Workload API itself. `..._AUDIENCE` (the Kiro runtime
+URL) and `..._PROFILE_ARN` are required (`kiro_crew/workload_identity.py`); a
+missing audience is named, since nothing public derives it yet. The
+file is opened non-blocking and must be a regular file (a symlink is followed, as a
+mounted secret is one), and the claims are checked (`sub` is `spiffe://`, `aud`
+names the audience, `exp` a finite time before the year 10000 with at least 3
+minutes left); the signature is the relying party's to check. While the switch is
+set, even to a bad value:
+
+- `answer_get_access_token` answers `{accessToken, expiresAt, profileArn,
+  provider: "Enterprise"}` from the file, with no `authMethod`, so the engine
+  sends no `TokenType` header. A file that cannot be used answers `workload
+  identity unavailable`; the local log names the cause, never the token.
+- `auth/bridge.vault_holds_identity` answers `True` without reading the vault, so
+  every KAS spawn is Crew-owned and never falls back to kiro-cli's account, and
+  the KAS route (`acp/kas_route.py`) counts the workload as Crew's usable sign-in.
+- Nothing reads, renews or writes the person vault: `sign_in_refused` answers
+  False, the gateway's sign-in refresher does not run, the turn gate
+  (`kiro_readiness.kas_crew_signin_ready`) asks whether the file holds a usable
+  JWT-SVID for a turn on KAS (on any route, live or cold; a turn on another
+  harness keeps the kiro-cli gate), the kiro-cli readiness probe stays kiro-cli's
+  own answer, because a kiro-cli turn cannot use the JWT-SVID, while
+  `GET /api/kiro-prerequisite` answers `ready` when a new turn would start on KAS
+  with a usable JWT-SVID (`kiro_readiness.workload_turns_ready`), so the people a
+  relay brings in to a fresh pod reach the chat instead of the owner-setup screen, the
+  model catalog is keyed by the profile ARN, the usage refresh
+  (`dashboard/handlers/sessions._refresh_from_vault`) publishes no reading and
+  no sign-in prompt before any vault read, and `fetch_local_identity` answers
+  `None` (unknown), so the Remote Crew launch form asks for a target.
+- `GET /api/models` serves the engine's recorded list
+  (`models_kas_bundle.api_models_kas_workload`), never kiro-cli's
+  `--list-models`, which needs kiro-cli's own sign-in.
+- The relay lease reads `tunnel.relay_lease_credential` as a JWT-SVID only when
+  it names the file `KIROCREW_WORKLOAD_IDENTITY_SVID_FILE` names
+  (`RelaySettings.uses_workload_identity`); any other file and a `secret://`
+  reference stay a crew key. It reads the SVID with the same checks
+  (`workload_identity.lease_bearer`), so a token the engine would refuse is never
+  sent. The call carries it as its bearer with no `TokenType`, whatever
+  `tunnel.relay_lease_token_type` says (a copied team config is logged and
+  ignored), and no `profileArn`. A refused sign-in (HTTP 401, after
+  one re-read) or a `ValidationException` waits 15 minutes and tries again
+  instead of stopping, since a stage that does not admit the JWT-SVID yet refuses
+  it that way. An empty credential is refused by name, never the sign-in lease.
+  With no `tunnel.relay_lease_url`, a JWT-SVID lease goes to the built-in lease
+  service of `tunnel.relay_lease_region`, else us-east-1, as a crew key does; the
+  profile ARN does not pick the Region.
+
+Known limit: where the agent runs unsandboxed (a Restricted pod has no user
+namespaces), the agent can read the JWT-SVID file, as it can any file the
+gateway reads there.
 
 ## Login flows (four identities × two transports)
 
@@ -227,7 +296,15 @@ Endpoints (host: `https://prod.us-east-1.auth.desktop.kiro.dev`, portal:
   `/oauth/callback?login_option=<google|github>&code=…&state=…`; then
   `POST {host}/oauth/token` with `{code, code_verifier, redirect_uri}` where
   `redirect_uri` MUST equal `http://localhost:<port>/oauth/callback?login_option=<p>`
-  (path + login_option query, exactly as rebuilt in portal.rs).
+  (path + login_option query, exactly as rebuilt in portal.rs). The tab's reply to a
+  valid callback waits for that exchange (`wait_for_callback` runs it as its own task,
+  so a tab closed early does not stop it): it says "Login complete" only once the
+  exchange has succeeded, and a failed or timed-out exchange, or a sign-in cancelled
+  mid-exchange, gets a fixed failure page sending the user back to the dashboard's
+  code. A callback carrying
+  `error` fails the sign-in at once, and the tab names the reason in fixed words for
+  each RFC 6749 §4.1.2.1 code (`_PORTAL_ERROR_REASONS`); nothing the request carries,
+  `error_description` included, reaches the page.
 - **Device code:** `POST {host}/oauth/device/authorization`
   `{clientId:"Kiro-CLI", loginProvider:"Google"|"Github"}` →
   `{deviceCode, userCode, verificationUri, verificationUriComplete,
@@ -245,7 +322,7 @@ kiro-cli does) or parse the JWT `exp`.
 ### AWS Builder ID / IAM Identity Center — fully independent
 
 Standard AWS SSO-OIDC. **No Kiro-controlled gate.** Runtime dynamic client
-registration (`RegisterClient`, `client_type=public`, `client_name="Kiro Crew"`) →
+registration (`RegisterClient` with `clientType: "public"` and `clientName` = `OIDC_CLIENT_NAME`, `"Kiro Crew"`) →
 returns `client_id` + `client_secret`; PKCE authorization-code on an arbitrary loopback
 port (or device code via `StartDeviceAuthorization`); `CreateToken`. Endpoints:
 `https://oidc.<region>.amazonaws.com` (Builder ID region `us-east-1`). Scopes:
@@ -269,19 +346,29 @@ An Identity Center start URL is canonicalized before `StartDeviceAuthorization`
 `normalize_start_url`, so the vault and a cloud target record the same string): a
 missing `https://` and a missing `/start` are added and a `#/...` fragment is dropped,
 because SSO-OIDC answers `Invalid start url provided` to `<org>.awsapps.com/start`
-and to `https://<org>.awsapps.com`. A URL it cannot canonicalize (`http://`, a query,
-a port, shell characters) is refused with `invalid_start_url` before AWS is called.
+and to `https://<org>.awsapps.com`. A URL it cannot canonicalize (`http://`, a port,
+shell characters, which include a query's `?`) is refused with `invalid_start_url`
+before AWS is called; the message says what is wrong in plain words ("That does not
+look like a web address."), then shows the access portal URL's shape, and the
+answer's `reason` names the broken rule (`characters`, `not_a_url`, `not_https`,
+`credentials`, `port`, `hostname`), carried from `LoginTargetError.reason`.
 A `400 invalid_request` from `StartDeviceAuthorization` for a company start URL is
 `StartUrlRejectedError` (HTTP 400, not the 502 of an auth-service failure): its
 message says to use the access portal URL when AWS names the start URL
 (`invalid_start_url`), and otherwise to check the start URL first and then the Region
 field, since a portal that does not exist and a portal looked up in the wrong region
 both answer a bare `Invalid request`; that answer names neither field, so it is
-`start_url_or_region_rejected`. The dashboard's company SSO form
+`start_url_or_region_rejected`; AWS's own refusal of the start URL answers
+`invalid_start_url` with `reason` `aws_rejected`. The dashboard's company SSO form
 reads the code, not the text: `invalid_region`, `invalid_start_url` and
 `start_url_or_region_rejected` get a headline naming the Region, the start URL or
 both, and those inputs are marked `aria-invalid` and described by the error; every
-other begin error keeps the "Check your connection" headline.
+other begin error keeps the "Check your connection" headline. Under the headline the
+form says the refusal in its own catalog sentence (plain words that call the field
+"the URL", not the gateway's wording), in the user's language and without AWS's raw
+answer; an `invalid_start_url` whose `reason` it has no sentence for shows the
+gateway's text. The `error` text is unchanged, so
+`kirocrew kas login` and the audit log still carry AWS's answer.
 
 The company SSO form starts filled in from `GET /api/kas-login`'s `company_sign_in`
 (`{start_url, region}`, both `""` when nothing supplies one;
@@ -295,12 +382,25 @@ browser last submitted still comes first (`website/src/utils/companySignIn.ts`).
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
 Center region does not name the control plane that serves the profile (a `us-east-1`
-instance can hold an `eu-central-1` profile, #28904), so the call asks every host in
+instance can hold an `eu-central-1` profile), so the call asks every host in
 `_CPS_ENDPOINTS`, the login region's own first, and keeps the first answer that lists
 a profile. A host that refuses or sends an unreadable answer is logged and skipped.
 The poll ends as `error`, with nothing stored, when every host refused or none lists
 a profile (`no available Kiro profiles`); a connection failure is not skipped and
 raises out of the poll, since this leg has no transport budget (above).
+
+**Edition sign-in profiles (`crew_client` preview, default off, off on LTS).** While the
+preview is on, `auth/login/endpoints.edition_idc_profiles` asks the edition's
+`DashboardContributor.idc_sign_in_profiles()` for `{start_url: {scopes, grant_types,
+issuer_url, profile_arn}}` (the public default returns `{}`; an entry missing scopes,
+grant types or an issuer is dropped, and a contributor that raises reads as `{}`).
+An Identity Center sign-in on one of those start URLs always registers its own
+SSO-OIDC client with that form, reusing no stored registration, and takes the pinned
+`profile_arn` instead of calling `ListAvailableProfiles`. While the stored sign-in is on
+such a start URL (`stored_sign_in_registered`), no local agent runs: the KAS spawn
+raises `LOCAL_AGENT_UNAVAILABLE` before any route is chosen, the turn gate refuses the
+turn (`kiro_readiness.kas_turn_verdict`), and the usage poll makes no call. The sign-in
+form warns before sign-in when the portal is one of these.
 
 ### External IdP (enterprise SSO) — independent
 
@@ -347,6 +447,26 @@ surfaces without waiting for a chat turn. Each renewal request is capped at
 shutdown budget) for an in-flight renewal to finish
 (`drain_sign_in_refresher`), so a rotated refresh token is persisted rather
 than consumed at the issuer and lost to the hard exit.
+
+The callback (`acp/kas_host_auth.answer_get_access_token`) retries a renewal
+that failed on the network (an aiohttp connection error such as DNS or connect,
+or a timeout) twice, 0.5s then 1.5s later, and starts no retry 10s past the
+first try. A refused or blocked renewal is never retried. The engine caches the
+token it was served until that token's expiry and never asks again when Kiro
+refuses it, so the runtime keeps a one-way digest of the last token it served
+(never the token). When a Crew-owned start fails because the host fail-closed
+its governance read (`KasGovernanceOffError`),
+`kas_host_auth.sign_in_refused` renews that token
+(`rejected_access_token`, under the same lock, so many starts at once make one
+refresh) and the retried start draws the new one. When the vault is empty or the
+renewal is refused (or cannot be attempted, `RefreshBlocked`, for a token already
+past its margin), the start fails at once with `AcpAuthRequired` and the
+KAS signed-out message instead of the retryable governance error. A network
+failure on that renewal keeps the governance error. Governance fail-close itself
+is unchanged. Known limit: the renewed token reaches the retried start because
+each start gets its own engine process by default. Sessions that share one
+engine process (the `chat_runtime_sharing` preview, or a subagent inside its
+parent's process) keep the engine's cached token until it expires.
 
 ### Proxy
 
@@ -464,7 +584,7 @@ nothing to act on there. The verbs deliberately speak kiro-cli's vocabulary:
 
 | Verb | Does | Output / exit |
 |---|---|---|
-| `kas login [--provider builder_id\|idc\|google\|github] [--start-url] [--region]` | device-code sign-in (the one transport that needs no callback to reach the host), polls until approved, saves to the vault | prints `Open <verification URL>` and `code: XXXX-XXXX`, exits 0 once stored; on a vault that already holds a usable identity prints `already signed in` and exits 0 (switching is `logout` then `login`). `--start-url` is only consumed by `idc` and `--region` only by the AWS providers (`builder_id`, `idc`); passed beside a provider that would ignore it, each is reported ignored on stderr and the sign-in proceeds with the chosen provider, rather than silently dropping the flag |
+| `kas login [--provider builder_id\|idc\|google\|github] [--start-url] [--region]` | device-code sign-in (the one transport that needs no callback to reach the host), polls until approved, saves to the vault | prints `Open <verification URL>` and `code: XXXX-XXXX`, then once stored `Signed in to Kiro Crew with <method>.`, the method in plain words (`AWS Builder ID`, `IAM Identity Center (<start URL>)`, `Google`, `GitHub`; a provider class with no name there is printed as is), and exits 0; on a vault that already holds a usable identity prints `already signed in` and exits 0 (switching is `logout` then `login`). `--start-url` is only consumed by `idc` and `--region` only by the AWS providers (`builder_id`, `idc`); passed beside a provider that would ignore it, each is reported ignored on stderr and the sign-in proceeds with the chosen provider, rather than silently dropping the flag |
 | `kas whoami [--format json]` | who the vault is signed in as: `KasToken.is_usable` (the predicate the spawn reads) AND no refresh-rejected marker on the slot, so a sign-in doctor and the card call "expired -- sign in again" reads as signed out here too and `kas login` replaces it | exit 0 + the `kiro-cli whoami --format json` document (`auth/whoami.whoami_document`: `accountType`, and `startUrl` when recorded -- nothing else, never a token or e-mail); exit 1 when signed out |
 | `kas logout` | removes every stored identity (`KasLoginService.logout`) and bumps the store's **sign-out generation** (below) | a running gateway retires its agent processes on the next turn: the vault is in its identity fingerprint and the pre-turn identity-change check runs the same sweep the dashboard's sign-out runs; a dashboard login pending at that moment is refused when its code is approved |
 | `kas route` | which program owns the Kiro sign-in on this host | `kas-bundle` when `agent.acp_backend == "kas"` AND Crew owns the credential: the vault holds an identity (every KAS spawn then draws on it, so a sign-in never flips the answer back to kiro-cli), or the bundle route (`agent.kas_bundle` on, or chosen automatically because kiro-cli's relay cannot run here, `acp/kas_route.py`); `kiro-cli` otherwise; a config that cannot be read -- a load that raised, OR one the loader returned as defaults with `_base_unreadable` / `_overlay_unreadable` set (`auth/whoami.load_sign_in_owner_config`) -- is a plain-language error naming the path and the fault, exit 1: the owner is then UNKNOWN, never kiro-cli, so a remote script neither runs a kiro-cli branch on a bundle-route box nor signs the wrong store out. The predicate itself is `auth/whoami.agent_owns_sign_in(agent)`, the one in-process spelling |
@@ -542,7 +662,9 @@ engine instead ([aws-control.md](aws-control.md)).
   renders the login page; full loopback token exchange not yet run end-to-end.
 - Builder ID / IdC / External IdP: contract implemented from source and covered by unit
   tests with a mocked HTTP session; **not yet exercised against the live endpoints**.
-- Unit tests: `test/test_kas_auth_{store,device,flows,helpers,shape_idp,whoami}.py` cover the
+- Unit tests: `test/test_kas_auth_store.py`, `test/test_kas_auth_device.py`,
+  `test/test_kas_auth_flows.py`, `test/test_kas_auth_helpers.py`,
+  `test/test_kas_auth_shape_idp.py` and `test/test_kas_auth_whoami.py` cover the
   store (perms, priority, expiry, invalid-token drops), the device state machine, SSO-OIDC
   polling, all three refresh paths + the single-flight lock + peer recovery, the
   KasAuthProvider contract (incl. the refresh-token-never-leaks assertion), PKCE/URL
@@ -558,8 +680,17 @@ engine instead ([aws-control.md](aws-control.md)).
   (`api_kas_login_begin_loopback`) starts the PKCE loopback sign-in and returns the
   portal URL plus the polling handle. A coded 409 `loopback_unavailable` (the install
   shape does not support loopback, or every allowlisted port is busy) sends the client
-  to the device flow. `POST /api/kas-login/cancel` abandons a pending sign-in and
-  releases the loopback callback port at once instead of at its deadline.
+  to the device flow, and so does a timeout or a failure poll answer other than
+  `token_store_failed`. The code screen then says why in one line chosen by the
+  poll's code: `loopback_wrong_address` (the browser came back with this sign-in's
+  state to a path the listener does not serve), `loopback_exchange_failed` (the code
+  exchange failed, an unreachable auth service included) and `loopback_failed` (any
+  other listener failure, such as the sign-in page returning an error) each name what
+  happened in an error notice, since the browser did come back; a `loopback_timeout`,
+  the 409 and the user's own "Use a code instead" keep "couldn't come back to this
+  computer directly" as a status line. `POST /api/kas-login/cancel` abandons a
+  pending sign-in and releases the loopback callback port at once instead of at its
+  deadline.
 - Wiring `KasAuthProvider` to the running engine is done through the kiro-cli relay
   (`acp/kas_host_auth.py` + the `_kiro/auth/getAccessToken` handler on
   `AcpRuntime`'s reader loop). Verified end-to-end against a real kiro-cli release
@@ -582,6 +713,12 @@ engine instead ([aws-control.md](aws-control.md)).
   own "not signed in … Please sign in and retry" (`ModelRegistryUnauthenticatedError`
   / `TokenExpiredError`), which `acp/transport_errors.py`'s auth-failure vocabulary now
   recognizes so the dashboard renders the sign-in prompt rather than a raw error.
+  A credential the Kiro service refuses reaches Crew as KAS's fixed
+  `AccessDeniedError` text, "Access denied. Please check your authentication.
+  (Request ID: …)", with no status code or expiry wording; `_RE_SESSION_EXPIRED`
+  carries that exact sentence, so it gets the same signed-out message (which names
+  where to sign in), the `sign_in_needed` / `auth_required` tags and the request id
+  after the message (`test/test_kas_access_denied_sign_in.py`).
 - A Crew sign-out deletes the vault entry under the identity's refresh lock and
   retires running identity-store processes (`dashboard/handlers/kas_login.py`), so
   neither a refresh in flight nor a process holding the old access token in memory
@@ -594,7 +731,21 @@ engine instead ([aws-control.md](aws-control.md)).
   own copy as well: the sign-out button (`pages/developer/KiroSignInCard.tsx`)
   and the authorized sign-in (`components/KasLoginGate.tsx`) drop the browser's
   model-list caches (`clearCachedModels`, a reset of `['available-models']`),
-  because that query is otherwise refetched only when a session spawns.
+  because that query is otherwise refetched only when a session spawns. The
+  authorized sign-in also asks for a fresh credit reading
+  (`POST /api/sessions/usage/refresh`) and writes it into the top bar's
+  `['kiro-usage']`, because the GET serves its cached "sign in" marker while it
+  refreshes and the bar's next poll is 30 s away; a 409 or refused refresh falls
+  back to re-reading the GET. It re-reads the Team Crews list
+  (`RELAY_VIEWER_CREWS_KEY`) at once too, which otherwise holds its signed-out
+  refusal for its 60 s poll.
+- The device-code screen (`DeviceWaiting`) does not open a browser: it shows the
+  verification URL as a link with a labelled Copy link beside it, and the user code
+  as large, selectable text with its own Copy code, so a host with no browser to
+  open (a Linux desktop, a remote gateway) can still finish. A Copy that reaches no
+  clipboard says Copied nowhere and shows an inline `ErrorNotice` under the steps
+  ("Couldn't copy the code. Select it and copy it by hand.", or the link's form);
+  the attempt keeps polling, and the next copy that works clears it.
 - The dashboard surfaces that NAME the signed-in account read the vault, never
   `kiro-cli whoami`, whenever the vault is the harness's credential (the KAS bundle
   route whatever the vault holds, or the relay route with a usable Crew sign-in --
@@ -640,9 +791,9 @@ engine instead ([aws-control.md](aws-control.md)).
   card, and the agent's "not signed in" error row with its sign-in deep link),
   never silently handed back to whatever `kiro-cli login` holds. Automatic
   demotion to cli-owned after a persistent refresh failure is therefore not a
-  gap to close but a behaviour deliberately not built (see #9772). The spawn
+  gap to close but a behaviour deliberately not built. The spawn
   owner is the shared sign-in resolver's pick (RFC crew-lts-edition D4,
-  `oss` order, amended 2026-10-30; delivered by #26841): any stored vault entry, including one whose access token has
+  `oss` order): any stored vault entry, including one whose access token has
   expired with no refresh token, and a vault that cannot be read, keeps the spawn
   Crew-owned and reports "not signed in"; only an empty vault hands it to
   kiro-cli. Removing the Crew sign-in (`kirocrew kas logout`) is how a user goes
@@ -650,7 +801,9 @@ engine instead ([aws-control.md](aws-control.md)).
 - The card says which account sessions run as when kiro-cli is signed in too. It reads
   `GET /api/kas-login/sources` (`dashboard/handlers/kas_login_sources.py`), which sits
   on the dashboard listener behind the same token check as `GET /api/kas-login` and
-  changes nothing: it reports both stores by presence
+  the same owner gate as the sign-in routes (`is_owner_dashboard_request`: the owner
+  and Shared Crew teammates with owner rights; anyone else gets an audited 403 `owner_only`
+  before any store read or `whoami`), and changes nothing: it reports both stores by presence
   (`lts_sign_in.stored_sign_ins`), which of the two a new session uses, and whether
   they are one account (`lts_sign_in.same_account`, the one function that decides it:
   different kinds, named account types or portal hosts mean different accounts,
@@ -703,36 +856,157 @@ engine instead ([aws-control.md](aws-control.md)).
   also drives the one oss log warning, so a Builder ID
   in the vault beside another kiro-cli account is warned about too; the LTS refusal
   still needs two profile ARNs that differ.
-- The product entry point for the flow is the **Kiro sign-in** section on Settings >
-  Agent Harness (`website/src/pages/developer/KiroSignInCard.tsx`, `compact`
-  form), rendered by `AgentBackendTab` INSIDE the KAS row's detail and only while
-  KAS is a backend that switch offers -- the stored identity is consumed by the
-  KAS relay alone, so a build or policy that cannot select KAS has nothing to
-  sign in for, and a row that is not KAS has no use for it. The section embeds
+- The product entry point for the flow is the **Kiro sign-in** card, the whole
+  Settings > Kiro account tab (settings tab key `kiro-account`,
+  `website/src/pages/developer/KiroSignInCard.tsx`). The tab shows on every
+  harness while the build offers Kiro sign-in, and is hidden when the build's
+  `agent.acp_backend` choices do not list KAS (`useKiroSignInOffered`, the tab
+  filter in `website/src/pages/SettingsPage.tsx`). The Kiro Agent row of the
+  Agent Harness tab keeps one status line and a link to the tab. The card embeds
   the same views `KasLoginGate` renders (`KasLoginEmbedded`, card chrome instead
   of the scrim + aside door; in that chrome the four provider choices are
   outlined and sit in a two-column grid, none accent-filled, because the detail's
   own primary button is "Use {{name}}", from
-  `components.kiroPrerequisiteGate.use_agent`) and adds a signed-in summary (provider,
+  `components.kiroPrerequisiteGate.use_agent`; in both chromes every provider
+  choice is a plain button with no caption under it) and adds a signed-in summary (provider,
   expiry, renewability -- never a token) with sign-out and sign-in-again. It is
   reachable from the chat error row an `AcpAuthRequired` turn produces
   (`chat_utils.AUTH_REQUIRED_KIND` → "Sign in to Kiro", navigating to
-  `KIRO_SIGN_IN_PATH` = `/settings/agent?highlight=key:kiro-sign-in`
+  `KIRO_SIGN_IN_PATH` = `/settings/kiro-account?highlight=key:kiro-sign-in`
   with the colon percent-encoded, from `pages/developer/kiroSignInLink.ts`,
   whose `highlight` rings the card through the `useSettingHighlight` hook
   SettingsPage mounts; the card's older home, `/developer?tab=agent-backend`,
-  is forwarded there by the `/developer` redirect with the `highlight` kept) and from the KAS remedy
-  strings in `agent_sdk/host_auth.py`. Its intro sentence names the backend
-  ("Used only by the Kiro Agent backend") and says Kiro CLI keeps its own
-  kiro-cli login, because the card sits under a switch that also lists Kiro
-  CLI. It is deliberately NOT on Settings > Overview and not indexed into
-  Settings search: a provider chooser on the landing page read as a required
-  step to every user, first-run installs included, and Overview carries no
-  signpost to it. The
-  switch and card are a Settings tab of their own because first-run setup
-  offers agents other than Kiro CLI, so a user who set up with one of those can
-  switch agents later. `KasLoginGate` itself is still not mounted at the app
-  root; the full-screen form stays available for that.
+  is forwarded there by the `/developer` redirect, and old Agent Harness sign-in
+  links by SettingsPage, with the `highlight` kept) and from the KAS remedy
+  strings in `agent_sdk/host_auth.py`. Once the sign-in works (`/api/kas-login`
+  reads authenticated, not `expired` and not `signInLapsed`, from a read taken
+  after the row appeared), the chat page's newest error row, when it is an
+  `auth_required` row naming this sign-in (notice `kas_signed_out`; the launcher
+  form naming `kiro-cli login` and the relay's `kiro_cli_sign_in` row do not), no
+  request was sent after it and its turn can be resumed, keeps its Sign in
+  button and offers Resume on its own row under it, its line reading
+  "Signed in to Kiro — resume to send your message again.", so the
+  failed turn reruns in the same chat instead of being typed again; a later read
+  that fails withdraws Resume, so the row returns to its signed-out shape. The row
+  re-reads the status every minute while it stands, so a frame signed in from
+  another window gains Resume too. The button
+  stays because the status can read signed in while the engine still refuses the
+  token (a revoked session). Embed and popout, which carry no button, offer
+  Resume alone; a pane's row is unchanged. When that read fails, the popout
+  and embed frames (`/popout/*`, `/embed/*`), which mount no app-level sign-in
+  notice, show it on the row (an `ErrorNotice`
+  with no agent hand-off, since the agent runs as the sign-in the row says
+  failed), except a failure while the dashboard is offline, which the offline
+  state already reports (`useOutageFailure`, as the app-level notice does); the
+  dashboard window, a chat embedded in one of its pages (an artifact's companion
+  chat) included, leaves it to that app-level notice, which reads the same
+  endpoint.
+  Its intro sentence says Kiro Agent and
+  other Kiro features run as this account whichever harness is picked, and that
+  Kiro CLI keeps its own kiro-cli login. It is deliberately NOT on Settings >
+  Overview: a provider chooser on the landing page read as a required step to
+  every user, first-run installs included. Overview links to it from its health
+  line only, and only while the main agent runs on KAS and cannot reply for want
+  of a working sign-in (`kasAgentsSignedOut` in `pages/OverviewPage.tsx`: a
+  stored sign-in not `usable` or refused (`signInLapsed`); or none stored
+  while `GET /api/kas-bundle` says `chat_needs_sign_in`, the gateway's own
+  verdict described under "The chat asks before a message fails" below, so a
+  relay that kiro-cli's own login starts reads healthy). The line then reads
+  "Kiro sign-in needed: agents can't reply" beside a warning dot, with an
+  "Open sign-in settings" link to `KIRO_SIGN_IN_PATH`, instead of "All systems
+  running". Settings search finds it by "sign
+  out" and "switch account". The full-screen `KasLoginGate` form is mounted only
+  by the LTS sign-in-only gateway and the first-run hold below.
+- **One sign-in flow, many places.** The flow's state and actions (status read,
+  begin loopback or device code, poll, the loopback-to-device fallback, cancel and
+  its settle, the landed result) live in `website/src/hooks/useKasLogin.ts`
+  (`useKasLoginFlow`, plus `useKasLoginStatus` and `KAS_LOGIN_STATUS_KEY`, the one
+  `['kas-login']` cache entry every surface reads). `KasLoginGate.tsx` only renders
+  it, in gate chrome (`KasLoginGate`, onboarding's organisation-only door) or card
+  chrome (`KasLoginEmbedded`). Its shared content is `KiroSignInFlow` in
+  `components/KiroSignInDialog.tsx`. Settings > Kiro account shows it in the card
+  while signed out: the choices and the device-code screen sit in place, with no
+  Sign in button and no dialog. The card keeps that one flow mounted when a
+  sign-in lands and renders its signed-in summary through the flow's
+  authenticated slot, so the landed result settles before the summary shows. Every other surface opens it in one dialog,
+  `KiroSignInDialog`, which only wraps that content: the card's Switch account and
+  Sign in again, the app-level notice, the chat's `KiroSignInPrompt` and the chat's
+  signed-out rows. A flow that goes away (a closed dialog, a left page) while a
+  begin request is still in flight cancels the login that request returns and
+  opens no browser tab for it.
+  In both places the choices are Google, GitHub and AWS Builder ID with their
+  marks (`assets/google-mark.svg`, `assets/aws-mark.svg`, the shipped GitHub mark),
+  then "or", then company SSO. Its device-code screen (`DeviceCodeCard`, card
+  chrome) shows one heading, an "Open sign-in page" button with a copy control,
+  the code with its own copy control, one waiting line with the expiry, and a back
+  arrow that returns to the choices: in the dialog header (`SignInBackContext`),
+  and beside the screen's heading in the Settings card, which has no such header.
+- **The chat asks before a message fails.** `KiroSignInPrompt`, above the
+  composer (`ComposerDockView`), shows one line and a Sign in button that opens
+  `KiroSignInDialog` while
+  `GET /api/kas-bundle` says `chat_needs_sign_in` (the install reply carries it
+  too, because the dashboard stores both in one cache entry). The gateway decides it
+  (`dashboard/handlers/kas_bundle._chat_needs_sign_in`): true only for the owner,
+  with KAS as `agent.acp_backend`, when `acp/kas_route.bundle_route_lacks_sign_in`
+  finds the next spawn on the bundle route and no usable Crew sign-in; false when
+  any of that cannot be worked out. A relay that kiro-cli's own login starts never
+  gets the prompt. It leaves as soon as the shared status reads authenticated.
+- **First run offers the full-screen sign-in, with a Skip.** On a page load whose
+  first resolved `GET /api/kiro-prerequisite` (one the LTS paths do not answer with
+  their own screen) reported `initial_setup_complete: false`, `KiroPrerequisiteGate`
+  renders every admission through `FirstRunSignInHold`
+  (`website/src/components/FirstRunSignInHold.tsx`), which reads that same
+  `chat_needs_sign_in` and, while it is true, shows `KasLoginGate` with a **Skip
+  for now** over the app, which stays mounted and hidden behind it. It reads the
+  field when the gate first renders the app from a resolved status with the agent
+  known, and decides only from an answer fetched from then on, never one cached
+  while a setup screen was up. The first-run reading is latched for the load, so
+  the gate's own marker write does not drop it, and a returning user is never
+  held, signed out or not: the prompt above stays their way in. The hold lets go,
+  for the rest of the load, on a stored sign-in, on a sign-in status that cannot
+  be read at all, on Skip, or on a `false` answer; a failed `GET /api/kas-bundle`
+  holds nothing. The app stays mounted in every pass, its own tree and its local
+  overlay container hidden while held (`useFirstRunSignInHeld`), so what the user
+  entered before the answer (an unsaved onboarding answer, say) is still there
+  after a Skip or a sign-in. Skip saves nothing: no config key, no browser flag.
+  While `chat_needs_sign_in` is true the tour's last card
+  (`components.onboardingFlow.pop_chat_body_sign_in_first`) names Settings → Kiro
+  account instead of saying the agent is ready. Decision:
+  [2026-11-13](../../decisions/2026-11-13-first-run-offers-the-kiro-sign-in-with-a-skip.md).
+- **A signed-out chat names every sign-in that can fix it.** The row follows
+  where the turn ran, read from the route the last KAS spawn recorded
+  (`kas_route.last_spawn_route`); which sign-in the relay draws is unchanged.
+  - The Kiro CLI harness on its own launch (no relay) is tagged `kiro_cli_sign_in`
+    (`AcpError.kiro_cli_sign_in`, row kind `chat_utils_injected_rows.KIRO_CLI_SIGN_IN_KIND`)
+    and never `auth_required`: only kiro-cli's own sign-in fixes it.
+  - kiro-cli's relay, from a KAS pick or a stored Kiro CLI pick, runs on Crew's
+    sign-in when the vault holds one and on kiro-cli's otherwise (on kiro-cli 3.x;
+    an older kiro-cli takes its own only). Its `auth_required` error becomes a
+    `kiro_cli_sign_in` row with `crew_sign_in: true`
+    (`agent_sdk.kas_bundle.last_relay_takes_crew_sign_in`), keeping its `kas_signed_out`
+    notice. A relay pinned to kiro-cli's launcher that Crew's vault does not answer
+    runs on kiro-cli's sign-in alone, so its row leaves `crew_sign_in` out.
+  - The bundle route keeps `auth_required` and Crew's Sign in button alone.
+
+  The dashboard draws the `kiro_cli_sign_in` row as one line and the welcome
+  screen's two labelled commands with copy buttons
+  (`components/KiroCliSignInCommands.tsx`, shared with `KiroPrerequisiteGate`) and
+  its Check sign-in again, read through the welcome screen's own status hook
+  (`hooks/useKiroPrerequisite.ts`, `GET /api/kiro-prerequisite`); the commands show
+  only while it says kiro-cli is installed and not signed in. With `crew_sign_in` the
+  row adds the Sign in button that opens `KiroSignInDialog`, beside Check sign-in
+  again, whatever the cached kiro-cli status says. The row never renders nothing: it is the
+  failed turn's record, and the status is only re-probed at boot and on Check
+  again, so a status that cannot name the commands or still reads signed in keeps
+  the row's own text, with Check sign-in again where kiro-cli is installed.
+  A Check sign-in again that fails keeps the last answer and shows an inline
+  `ErrorNotice` saying the check did not run.
+  The request id behind the strip's copy button is shown as selectable text in an
+  inline `ErrorNotice` when the copy fails.
+  The kiro-cli row reads and acts on this gateway's own sign-in, so only a surface
+  that offers it (the transcript's `onOpenSignIn`) draws it; a crew window showing a
+  peer's row keeps the row's own text. Every surface withholds that row's Continue,
+  as for `auth_required`: resuming meets the same signed-out wall.
 - An unfinished sign-in is said in plain words. The loopback wait screen opens the
   portal tab with `noopener`, so the page cannot tell a closed or blocked tab from
   a slow one; after 30 s it says the sign-in has not finished and offers Start
@@ -761,30 +1035,41 @@ engine instead ([aws-control.md](aws-control.md)).
   above every route beside `CrashReportNotice`), because the card above lives on
   a page nobody keeps open. It is a banner, not a top-bar control: the top bar's
   action groups are at the two-control cap. It renders only while
-  `agent.acp_backend` is `kas`, a sign-in is stored, and the card's own verdict
+  something runs on KAS (`kasInUse`) or the build offers Kiro sign-in
+  (`useKiroSignInOffered`), a sign-in is stored, and the card's own verdict
   (`signInLapsed` in `pages/developer/kiroSignInState.ts`, shared by both:
   `!usable || refresh_rejected`) calls it lapsed; it is hidden on Settings >
-  Agent Harness itself, where the card shows the same state. Every lapsed shape
-  it draws is an `ErrorNotice` with the agent hand-off, an "Open sign-in settings"
-  button and dismiss, so an expiry with nothing to renew it and a renewal Kiro
+  Kiro account itself, where the card shows the same state. Every lapsed shape
+  it draws is an `ErrorNotice` with the agent hand-off, a "Sign in" button that
+  opens the shared sign-in dialog (`KiroSignInDialog`) and dismiss, so an expiry with nothing to renew it and a renewal Kiro
   refused read at the same weight (in both the agents' credential requests are
-  refused, or will be); the title and text say which one happened. Because the
-  renewal tick only asks Kiro inside the refresh margin, a refusal is usually
-  recorded on a token that is already `expired` (while `usable` stays true,
-  since a refresh token is stored); the refused notice then says the agents
-  cannot run, and only a refusal on a token outside the margin says they will
-  stop. The button asks the page's leave guard and then deep-links to
-  `KIRO_SIGN_IN_PATH`; dismissing hides the notice for the current cause until
+  refused, or will be). Once the access token is `expired`, either cause shows
+  the same two lines and no cause: "Sign-in expired." and "Sign in again to
+  resume sessions and agent work.", or, where nothing runs on KAS (`kasInUse`
+  false, so only the features that use the Kiro account stop), "Sign in again
+  to use features that need your Kiro account."; the Settings card's lapsed
+  summary says the same and shows no reason line. Because the renewal tick only
+  asks Kiro inside the refresh margin, a refusal is usually recorded on a token
+  that is already `expired` (while `usable` stays true, since a refresh token is
+  stored); only a refusal on a token outside the margin keeps its own "Kiro
+  refused to renew your sign-in" title, saying the agents (or Bots, or account
+  features) will stop. The button opens that dialog over the current page, which is not left,
+  so the page's leave guard is not asked; dismissing hides the notice for the current cause until
   the page reloads (a refusal that has since expired is a new cause). A
-  failed status read on a KAS gateway renders the same way under "We could not
-  check sign-in status", with a plain-language line saying what to do (the
+  failed status read, on a gateway that runs KAS or offers Kiro sign-in,
+  renders the same way under "We could not
+  check sign-in status", with a plain-language line saying to sign in again
+  if the sign-in stopped working or to ask the agent (the
   server's error goes to the hand-off, not the visible text), since the
   sign-in then goes unchecked. A config read that fails before any good read
   shows "Could not read the dashboard settings" with the hand-off and no
   sign-in button or sign-in claim: it cannot say whether KAS runs the agents,
   and kiro-cli and Claude have no Kiro sign-in. It stays hidden while the
   gateway is offline or asks for a token, since the offline capsule and the
-  token banner already name that cause and its fix. A failure after a good read
+  token banner already name that cause and its fix. Off KAS, a config-schema
+  read that fails with no answer (so nothing says whether the build offers the
+  sign-in) shows the same notice under the same guards, rather than leaving the
+  sign-in unchecked in silence. A failure after a good read
   shows nothing, since the query keeps that read's backend, so a KAS gateway
   goes on reading the status. If the notice itself fails to load or render,
   its error boundary shows "Part of the dashboard could not load" with the

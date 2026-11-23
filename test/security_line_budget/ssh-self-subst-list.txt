@@ -1,0 +1,9 @@
++192
+The ssh-to-self floor spliced an `echo`/`printf` substitution body to its first
+command's output, so it missed a later command of a list in that body
+(`$(echo hi; ssh ...)`). The new module `argv_floor_ssh_bodies.py` judges each body
+that bash runs as a command line of its own: unquoted, double-quoted, in an unquoted
+heredoc, nested, or inside a `bash -c`, `eval` or here-string payload. It judges one
+level at a time, so the work grows linearly with nesting depth, and it only adds
+refusals. In `argv_floor_ssh.py` the verb gate is factored out so both modules share
+it, and an escaped backtick span is judged both as written and spliced.

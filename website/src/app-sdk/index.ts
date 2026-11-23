@@ -443,6 +443,24 @@ export interface ChatLaunchOptions {
 
 export type { ChatLaunchMemoryMode }
 
+/**
+ * The person's chat an app creates or reopens with `createChat`, inside its
+ * manifest's `permissions.chatLaunch`. The gateway refuses anything else.
+ */
+export interface ChatCreateOptions {
+  /** `chatLaunch.keyPrefix` followed by 1-128 of `[A-Za-z0-9._-]`. The same key
+   *  reopens the same chat; a key holding another app's or a core slot is refused. */
+  slotKey: string
+  /** One of `chatLaunch.agents`. */
+  agent: string
+  /** Sidebar title for a NEW chat. Sent again on a reopen, it renames the chat. */
+  title?: string
+  /** Id of a folder named `chatLaunch.folder`, to file the chat in. */
+  folderId?: string
+  /** One of `chatLaunch.memoryModes`; `'persistent'` when omitted. */
+  memoryMode?: ChatLaunchMemoryMode
+}
+
 /** Launch intent written to a global slot for the routed chat to claim. */
 interface ChatLaunchIntent extends ChatLaunchOptions {
   ts: number
@@ -457,8 +475,16 @@ interface ChatLaunchIntent extends ChatLaunchOptions {
  */
 export function useChatLauncher(): {
   openChat: (opts?: ChatLaunchOptions) => void
+  /**
+   * Create, or reopen, the person's chat `opts` names and resolve to its slot
+   * key (App Kit seam level 10; feature-detect `createChat`, not the level). It
+   * does not navigate: pass the key to `openChat({ slotKey })`. Rejects with the
+   * gateway's refusal (`status` 403, `app_chat_launch_refused`) outside the
+   * manifest's `permissions.chatLaunch`.
+   */
+  createChat: (opts: ChatCreateOptions) => Promise<string>
 } {
-  const { navigate } = useCtx()
+  const { navigate, launchChat } = useCtx()
 
   const openChat = useCallback((opts: ChatLaunchOptions = {}) => {
     // Session-shaping options describe a NEW session, so they are dropped for a
@@ -479,7 +505,13 @@ export function useChatLauncher(): {
       : chatLaunchOpensDraft({ autoSend: opts.autoSend, memoryMode, sessionFolder }) ? '/chat?new=1' : '/chat')
   }, [navigate])
 
-  return { openChat }
+  const createChat = useCallback((opts: ChatCreateOptions) => (
+    launchChat
+      ? launchChat(opts)
+      : Promise.reject(new Error('[app-sdk] this host cannot create an app chat'))
+  ), [launchChat])
+
+  return { openChat, createChat }
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +549,8 @@ export function AppApiProvider({
   sessionKey,
   slotPush,
   origin = 'external',
+  approvedBrowserVerbs,
+  appEnabled,
   children,
 }: {
   appName: string
@@ -554,6 +588,11 @@ export function AppApiProvider({
   /** The host's per-slot change signal; forwarded to the scoped layer. */
   slotPush?: SlotPush
   origin?: AppOrigin
+  /** The `permissions.browser` verbs the owner approved; forwarded to the scoped
+   *  layer, which publishes them as `info.permissions.browser`. */
+  approvedBrowserVerbs?: string[]
+  /** Whether the app is turned on; forwarded to the scoped layer (`info.enabled`). */
+  appEnabled?: boolean
   children: ReactNode
 }) {
   const existing = useAppIdentity()
@@ -570,6 +609,8 @@ export function AppApiProvider({
     notifyFn,
     sessionKey,
     slotPush,
+    approvedBrowserVerbs,
+    appEnabled,
     children,
   })
   if (existing) return scoped
@@ -603,6 +644,13 @@ export { default as ChatMessageList } from './ChatMessageList'
 export { default as PullRequestPanel } from './PullRequestPanel'
 export type { AppPullRequestPanelProps } from './PullRequestPanel'
 export type { PullRequestLink } from '../utils/pullRequestLinks'
+// The dashboard's diff viewer, which takes two texts and sends nothing, and the
+// chat's list of the files a session changed with each change's diff, behind the
+// app's declared session-file paths (level 12, see ./SessionChanges).
+export { default as DiffView } from './DiffView'
+export type { AppDiffViewProps } from './DiffView'
+export { default as SessionChanges } from './SessionChanges'
+export type { AppSessionChangesProps } from './SessionChanges'
 // Issue lists from GitHub, GitLab, Jira and Linear behind the app's declared
 // `/api/source/issues` (see ./issues/useIssues).
 export { useIssues, IssueList, IssueCard } from './issues'
@@ -616,6 +664,16 @@ export type { AppProjectPickerProps } from './ProjectPicker'
 // from it, behind the app's declared chat paths (see ./hostSessions).
 export { useHostSessions } from './hostSessions'
 export type { HostSession, HostSessionApproval, HostSessions, HostSessionDecision, HostSessionSendResult } from './hostSessions'
+// Play, pause, seek and volume on the tab the app's own agent browses, behind the
+// app's declared `/api/browser/media` (level 10, see ./browserMedia).
+export { useBrowserMedia, BROWSER_MEDIA_PATH } from './browserMedia'
+export type { BrowserMedia, BrowserMediaState } from './browserMedia'
+// The live view of an app's own slot, with take over and hand back, behind the
+// `app_browser_sdk` preview (RFC app-sdk-browser, section 5).
+export { default as BrowserView } from './BrowserView'
+export type { BrowserViewProps, BrowserViewMark } from './BrowserView'
+export { useBrowserView, useBrowserCoords } from './browserViewHooks'
+export type { BrowserViewAccess, BrowserViewState, BrowserViewInfo, BrowserCoords } from './browserViewHooks'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {
@@ -639,6 +697,7 @@ export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export { activeLocale, fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'
 // An app's own origin on the dashboard's port, for a backend that frames its own pages (level 8).
-export { appWebOrigin } from './webOrigin'
+export { appWebOrigin, appWebOriginStatus } from './webOrigin'
+export type { AppWebOriginReason, AppWebOriginStatus } from './webOrigin'
 // The App Kit seam level; an app feature-detects the seams above by it.
 export { APP_SDK_LEVEL } from './sdkLevel'

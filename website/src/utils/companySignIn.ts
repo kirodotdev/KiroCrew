@@ -66,7 +66,7 @@ export function rememberCompanySignIn(startUrl: string, region: string): void {
  */
 export function sameCompanyPortal(a: string, b: string): boolean {
   const norm = (v: string) => {
-    const value = v.trim().toLowerCase().replace(/^https:\/\//, '').replace(/\/+$/, '')
+    const value = v.trim().split('#')[0].toLowerCase().replace(/^https:\/\//, '').replace(/\/+$/, '')
     return value && !value.includes('/') ? `${value}/start` : value
   }
   return norm(a) !== '' && norm(a) === norm(b)

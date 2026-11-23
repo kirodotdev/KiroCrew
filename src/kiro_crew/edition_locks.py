@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Dict
 
@@ -36,7 +37,10 @@ LOCKED_BY_POLICY = "locked by policy"
 #: Control id -> the local source that is ignored and what the feature does instead.
 #: Ids follow the RFC appendix "Crew key" column.
 UNKEYED_LOCKS: Dict[str, str] = {
-    "tunnel": "tunnel.enabled and tunnel.relay_enabled are ignored; no tunnel or relay is started",
+    "tunnel": (
+        "tunnel.enabled and tunnel.relay_enabled are ignored; no tunnel or relay is started, "
+        "and the relay viewer stays off"
+    ),
     "telemetry.otlp_hosts": (
         "telemetry.otlp_endpoint, telemetry.otlp_endpoints and the traces OTLP "
         "endpoint and headers (config and OTEL_EXPORTER_OTLP_* variables) are "
@@ -96,13 +100,18 @@ def relay_selected(cfg: Any) -> bool:
     """Whether ``tunnel.relay_enabled`` turns the Kiro relay path on in this build.
 
     The one rule for the relay switch: the public composition's tunnel slot, the
-    dashboard app's relay ingress and the gateway's ingress publish all ask it. Only
-    the boolean ``True`` reads as on, because a stand-in config object answers any
-    attribute truthily, and an LTS build ignores the switch with the rest of
-    the ``tunnel`` control (RFC D3). It imports nothing from ``kiro_crew.relay_client``,
-    so a process that asks it with the relay off never loads that package.
+    dashboard app's relay ingress and the gateway's ingress publish all ask it.
+    What config asks for is ``remote_control.hosting.relay_requested``: ``True`` is
+    on, unset is on for a personal sign-in, a team key or a workload identity, anything else is
+    off (a stand-in config object answers any attribute truthily). An LTS build
+    ignores the switch with the rest of the ``tunnel`` control (RFC D3). It reads
+    only *cfg* and the environment, and imports nothing from
+    ``kiro_crew.relay_client``, so a process that asks it with the relay off never
+    loads that package.
     """
-    if getattr(getattr(cfg, "tunnel", None), "relay_enabled", False) is not True:
+    from kiro_crew.remote_control.hosting import relay_requested
+
+    if not relay_requested(getattr(cfg, "tunnel", None)):
         return False
     return not local_enable_locked("tunnel")
 
@@ -130,6 +139,30 @@ def feature_previews(previews: Any) -> Any:
     stored value is left alone. On ``oss`` it returns *previews* unchanged.
     """
     return {} if local_enable_locked("feature_previews") else previews
+
+
+def preview_on(name: str, cfg: Any = None) -> bool:
+    """Whether Feature Preview *name* is on: its stored switch is an exact ``True``.
+
+    *cfg* is a loaded configuration; ``None`` reads the live snapshot, else the
+    config file (a CLI process has no watcher). Read through :func:`feature_previews`,
+    so an LTS build reads every preview as off. An unreadable config is off. Never
+    raises.
+    """
+    try:
+        if cfg is None:
+            from kiro_crew.config import live
+
+            cfg = live.snapshot()
+            if cfg is None:
+                from kiro_crew.config.loader import KiroCrewConfig
+
+                cfg = KiroCrewConfig.load()
+        previews = feature_previews(getattr(cfg.dashboard, "feature_previews", None))
+    except Exception:  # noqa: BLE001 -- unread means off
+        logger.debug("feature preview %s: config unreadable; treating as off", name, exc_info=True)
+        return False
+    return isinstance(previews, Mapping) and previews.get(name) is True
 
 
 def reset_logged() -> None:

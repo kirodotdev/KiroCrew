@@ -1144,6 +1144,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("steering_resources", "unknown"),
     ],
     "kiro_crew/cron_script_mcp.py": [("cron_resolve_mcp_server", "cron")],
+    "kiro_crew/knowledge/llm_pool.py": [("knowledge_spec_refusal", "unknown")],
     "kiro_crew/dashboard/agent_admin/agent_detail.py": [
         ("api_agent_detail", "dashboard"),
         ("api_agent_detail", "dashboard"),
@@ -1188,6 +1189,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("mcp_stub_eligibility", "dashboard"),
     ],
     "kiro_crew/dashboard/handlers/mcp_probe.py": [("api_mcp_active", "dashboard")],
+    "kiro_crew/dashboard/handlers/request_server_page.py": [("mcp_card_share", "dashboard")],
     # The side chat reads the base spec in both scopes under one label. The two
     # ``agent_mode_refusal`` reads word an ACP refusal on any channel, so "unknown";
     # ``side_readonly_reap`` is gateway maintenance, so "unknown" as well.
@@ -1212,6 +1214,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("forward:operation", "forward:source"),
         ("resolve_agent_model", "unknown"),
     ],
+    # The spawn tools' roster reads each user-level spec to mark one that mounts
+    # nothing; a denial belongs to the sub-agent surface that lists the names.
+    "kiro_crew/mcp_tools/spawn_parts/schemas.py": [("spawn_roster", "subagent")],
     # The spawn gate walks every spec for the PARENT agent's
     # ``toolsSettings.subagent.availableAgents`` allowlist, and keeps a file the
     # reader refuses as unreadable (refuse) rather than as "no spec"; a denial
@@ -1236,6 +1241,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # A manifest's `commands[].agent` is checked against the names its own source
     # specs declare; those live in the app root, which the app can rewrite.
     "kiro_crew/apps/manifest_containment.py": [("app_manifest_agent_names", "unknown")],
+    # The hook fingerprint a folder's project-hooks "on" is bound to.
+    "kiro_crew/project_hooks_consent.py": [("project_hooks_fingerprint", "unknown")],
 }
 
 
@@ -1282,6 +1289,8 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("side_readonly_spec", "dashboard"),
     ],
     "kiro_crew/member_essential_context.py": [("member_essentials", "context")],
+    # The hook fingerprint a folder's project-hooks "on" is bound to.
+    "kiro_crew/project_hooks_consent.py": [("project_hooks_fingerprint", "unknown")],
     # Slack's shared discovery helper forwards the operation its two routes name
     # (the listing, the name resolution); the channel is fixed, so it is a literal.
     "kiro_crew/slack/handler_runtime/agent_names.py": [("forward:operation", "slack")],
@@ -1450,8 +1459,12 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/doctor_deadpath.py": [("doctor", "cli")],
     "kiro_crew/execution_context.py": [("repair_session_execution", "unknown")],
-    # The crewmate half of the same overlay pass reads each crewmate file.
-    "kiro_crew/mcp_gateway/mate_overlays.py": [("mcp_overlay_rewrite", "unknown")],
+    # The crewmate half of the same overlay pass reads each crewmate file, and the
+    # export-shadowing check re-reads an app's own export to confirm its name.
+    "kiro_crew/mcp_gateway/mate_overlays.py": [
+        ("mcp_overlay_rewrite", "unknown"),
+        ("mcp_overlay_rewrite", "unknown"),
+    ],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
     "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
     # A spawn refused because the parent's allowlist is unknown names each spec
@@ -1517,6 +1530,11 @@ _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The file a path reader and the pooled overlay follow for a pinned name.
     "kiro_crew/agent_parts/spec_lookup.py": [("session_agent_spec_path", "unknown")],
     "kiro_crew/mcp_gateway/session_servers.py": [("mcp_overlay_pin", "unknown")],
+    # The start refusal for a contested name on the hosts that read their servers
+    # from the session MCP read (R-SPEC-13).
+    "kiro_crew/acp/session_mcp.py": [("session_start_spec_check", "acp")],
+    # The spawn roster's tool-less mark, judged on the claimant a spawn of the name runs.
+    "kiro_crew/mcp_tools/spawn_parts/schemas.py": [("spawn_roster", "subagent")],
 }
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "declared_spec_claim": _EXPECTED_DECLARED_CLAIM_CALL_SITE_LABELS,

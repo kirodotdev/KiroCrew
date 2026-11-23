@@ -509,7 +509,7 @@ class TestRender:
     def test_critical_note_is_marked_and_carries_its_link(self):
         [text] = render_slack_parts(_note(url="/chat/abc"))
         first, *rest = text.split("\n")
-        assert first.startswith(":rotating_light: *Job failed*")
+        assert first.startswith("Critical: *Job failed*")
         assert rest == ["details", "/chat/abc"]
 
     def test_default_note_has_no_marker_and_skips_empty_fields(self):
@@ -522,7 +522,7 @@ class TestRender:
         assert len(parts) > 1
         assert all(len(part) <= SLACK_MAX_TEXT for part in parts)
         # Nothing is cut: the escaped pieces rejoin to the escaped whole.
-        joined = "".join(parts).removeprefix(":rotating_light: *" + "t" * 500 + "*\n")
+        joined = "".join(parts).removeprefix("Critical: *" + "t" * 500 + "*\n")
         assert joined == escape_mrkdwn(body + "\n/chat/" + "a" * 600)
 
     @pytest.mark.asyncio

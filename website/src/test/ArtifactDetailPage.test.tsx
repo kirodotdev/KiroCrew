@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { MockedFunction } from 'vitest'
-import { screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { screen, waitFor, fireEvent, act, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import { chooseMore, commentsShown, findMoreItem, hasMoreItem } from './artifactMoreMenu'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
@@ -413,6 +414,17 @@ describe('ArtifactDetailPage', () => {
     expect(screen.getByRole('button', { description: /Cancel/ })).toBeInTheDocument()
   })
 
+  it('names the save chord the keyboard has in the Save hover', async () => {
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown', content: '# Doc' }))
+    vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
+    renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
+    // The test DOM (happy-dom) reports a non-Mac platform, where Ctrl+S is the chord that saves.
+    expect(await screen.findByRole('button', { description: /^Save to Live/ }))
+      .toHaveAccessibleDescription('Save to Live (Ctrl+S) — updates the live state without versioning')
+  })
+
   it('cron-source warning banner shows when editing a cron-generated artifact', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'markdown', source: 'cron', content: '# auto-generated' }),
@@ -623,7 +635,7 @@ describe('ArtifactDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
     await waitFor(() =>
       expect(
-        screen.getByRole('button', { description: /Save to Live \(Cmd\+S\) — updates the live state/i }),
+        screen.getByRole('button', { description: /Save to Live \(Ctrl\+S\) — updates the live state/i }),
       ).toBeInTheDocument(),
     )
     // Snapshot moved into the "More" menu; Save and Cancel stay in the row.
@@ -860,12 +872,15 @@ describe('ArtifactDetailPage', () => {
     )
     const updateSpy = vi.fn().mockResolvedValue(mkArtifact({ kind: 'markdown' }))
     vi.mocked(api).updateArtifact = updateSpy
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
     await pickVersion('v2')
     await waitFor(() => expect(screen.getByRole('button', { description: /Revert to v2/ })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { description: /Revert to v2/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/Revert to v2\?/)).toBeInTheDocument()
+    await confirmAction('Revert')
     await waitFor(() =>
       expect(updateSpy).toHaveBeenCalledWith('cr-queue', expect.objectContaining({
         content: 'v2 content',
@@ -873,6 +888,7 @@ describe('ArtifactDetailPage', () => {
         from_version: 2,
       })),
     )
+    expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
 

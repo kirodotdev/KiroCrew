@@ -1500,45 +1500,45 @@ def _run_dry(args, caps: BudgetCaps, log: logging.Logger) -> int:
 
     Builds a real (tiny) git repo so the worktree/commit plumbing exercises real git,
     then runs the driver for one cycle. Mirrors ``autoloop.py --dry-run``."""
+    from .dry_run_root import remove_dry_root
     from .stub_profile import StubProfile
 
     tmp = Path(tempfile.mkdtemp(prefix="auto_improvement_dry_"))
     clone = tmp / "clone"
-    (clone / "src" / "mesh_pkg").mkdir(parents=True)
-    (clone / "src" / "mesh_pkg" / "__init__.py").write_text("# stub package\n")
-    _git(["init", "-q", "-b", "auto_improvement/trunk-base"], clone)
-    _git(["config", "user.email", "dry@example.com"], clone)
-    _git(["config", "user.name", "dry"], clone)
-    _git(["add", "-A"], clone)
-    _git(["commit", "-q", "-m", "stub base"], clone)
-    # disable push the way a profile would (no-op URL); the stub reports disabled.
-    _git(["remote", "add", "origin", "DISABLED_NO_PUSH"], clone)
+    try:
+        (clone / "src" / "mesh_pkg").mkdir(parents=True)
+        (clone / "src" / "mesh_pkg" / "__init__.py").write_text("# stub package\n")
+        _git(["init", "-q", "-b", "auto_improvement/trunk-base"], clone)
+        _git(["config", "user.email", "dry@example.com"], clone)
+        _git(["config", "user.name", "dry"], clone)
+        _git(["add", "-A"], clone)
+        _git(["commit", "-q", "-m", "stub base"], clone)
+        # disable push the way a profile would (no-op URL); the stub reports disabled.
+        _git(["remote", "add", "origin", "DISABLED_NO_PUSH"], clone)
 
-    # Honor --data-dir so the documented flag is live for --dry-run too: the spine
-    # writes its archive/ledger/pr_queue ONLY under this data dir (08_safety §6.3 —
-    # the dedup ledger lives at <data>/state/ledger.jsonl). When the caller did not
-    # pass --data-dir, fall back to a throwaway dir inside the ephemeral run root so
-    # a bare ``--dry-run`` stays self-cleaning. The clone/worktrees always live in the
-    # ephemeral root (never under the persisted data dir).
-    data = args.data_dir if getattr(args, "data_dir", None) else tmp / "data"
-    profile = StubProfile(clone_path=clone, queue_dir=data / "pr_queue")
-    driver = Driver(
-        profile=profile,  # type: ignore[arg-type]  # dev/CLI smoke stub duck-types TargetProfile
-        clone=clone,
-        branch="auto_improvement/trunk-base",
-        archive_root=data / "results",
-        ledger_path=data / "state" / "ledger.jsonl",
-        pr_queue_dir=data / "pr_queue",
-        worktree_root=tmp / "worktrees",
-        caps=caps,
-        logger=log,
-    )
-    stats = driver.run(dry_run=True)
-    print(f"\n[auto-improvement] --dry-run complete: {stats}")
-    print(f"  archive: {data / 'results'}")
-    print(f"  ledger:  {data / 'state' / 'ledger.jsonl'}")
-    print(f"  pr_queue:{data / 'pr_queue'}")
-    return 0
+        # The spine writes its archive/ledger/pr_queue ONLY under the data dir (08_safety
+        # §6.3). --data-dir keeps it; without one it sits in the run root, removed with it.
+        data = args.data_dir if getattr(args, "data_dir", None) else tmp / "data"
+        profile = StubProfile(clone_path=clone, queue_dir=data / "pr_queue")
+        driver = Driver(
+            profile=profile,  # type: ignore[arg-type]  # dev/CLI smoke stub duck-types TargetProfile
+            clone=clone,
+            branch="auto_improvement/trunk-base",
+            archive_root=data / "results",
+            ledger_path=data / "state" / "ledger.jsonl",
+            pr_queue_dir=data / "pr_queue",
+            worktree_root=tmp / "worktrees",
+            caps=caps,
+            logger=log,
+        )
+        stats = driver.run(dry_run=True)
+        print(f"\n[auto-improvement] --dry-run complete: {stats}")
+        print(f"  archive: {data / 'results'}")
+        print(f"  ledger:  {data / 'state' / 'ledger.jsonl'}")
+        print(f"  pr_queue:{data / 'pr_queue'}")
+        return 0
+    finally:
+        remove_dry_root(tmp, clone)
 
 
 # ── the owner family ─────────────────────────────────────────────────────

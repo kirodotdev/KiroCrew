@@ -12,7 +12,7 @@ nothing; each non-managed launch requires an explicit operator decision.
 
 This module binds the approval to CONTENT instead. For every approved server it
 records the launch fingerprints the operator accepted -- ``hash_command`` over
-the resolved command and args, and ``hash_declared_env`` over the declared env
+the resolved command and args, and ``hash_launch_env`` over the declared env
 -- in :data:`APPROVALS_LEAF` under the crew data home. That file is written only
 by gateway-side code (the dashboard stub toggle and rewrite-pass refusal
 recording), is write-protected from agent tools, and is read-only inside
@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Any, Collection, Iterable, Mapping
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.mcp_gateway.hashing import hash_command, hash_declared_env
+from kiro_crew.mcp_gateway.hashing import gateway_path, hash_command, hash_launch_env
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +141,10 @@ def _coerced_env(env_pairs: Mapping[Any, Any] | None) -> dict[str, str]:
 def env_fingerprint(env_pairs: Mapping[Any, Any] | None) -> str:
     """Hash of the complete declared env block gatewayd may apply.
 
-    Secret-prefixed entries count too: private backends receive them.
+    Secret-prefixed entries count too: private backends receive them. The
+    gateway's own part of ``PATH`` does not (``hashing.hash_launch_env``).
     """
-    return hash_declared_env(_coerced_env(env_pairs))
+    return hash_launch_env(_coerced_env(env_pairs))
 
 
 def launch_pair(command_hash: str, derived_env_hash: str) -> str:
@@ -161,6 +162,18 @@ def launch_fingerprint(
 ) -> str:
     """``<command hash>:<env hash>`` for one launch."""
     return f"{hash_command(command, list(args))}:{env_fingerprint(env_pairs)}"
+
+
+def pin_gateway_part() -> None:
+    """Fix this process's gateway ``PATH`` part for the life of the MCP broker.
+
+    The broker calls it before its rewrite pass, so the pass, every later
+    agent-spec rebuild and the gatewayd it hands the part to fold one
+    composition. BLOCKING: the first read scans the well-known directories.
+    """
+    from kiro_crew.env import pin_gateway_spec_path
+
+    pin_gateway_spec_path(gateway_path())
 
 
 def _split(fingerprint: str) -> tuple[str, str]:
@@ -483,7 +496,9 @@ class LaunchApprovals:
             )
             return True
         self.names.setdefault(stem, _bounded_name(name))
-        self.refused[stem] = REFUSED_CHANGED if self.approved.get(stem) else REFUSED_UNAPPROVED
+        # A launch already retained before the cap was hit must not hide the cap.
+        if self.refused.get(stem) != REFUSED_TOO_MANY:
+            self.refused[stem] = REFUSED_CHANGED if self.approved.get(stem) else REFUSED_UNAPPROVED
         return False
 
     def refusal_displays(self, stem: str) -> tuple[list[list[str]], list[list[str]]]:
@@ -1337,19 +1352,24 @@ def restore(snapshot: ApprovalSnapshot, path: Path | None = None) -> None:
 
 
 def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
-    """Display-safe refusal records keyed by server name."""
+    """Display-safe refusal records keyed by server name.
+
+    A ``too_many_launches`` record is display only: it shows the launches the
+    cap kept and the cap itself, and never an ``expected_launch``, because no
+    approval can cover a server past the cap.
+    """
     approvals = load_approvals(path)
     result: dict[str, dict[str, Any]] = {}
     for rec in approvals.stored_refused.values():
-        if rec.get("reason") == REFUSED_TOO_MANY:
-            continue
+        over_cap = rec.get("reason") == REFUSED_TOO_MANY
         commands, _cut_commands, _malformed_commands = _bounded_commands(rec.get("commands"))
         envs, _cut_envs, _malformed_envs = _bounded_envs(rec.get("envs"))
         result[str(rec["name"])] = {
             "reason": str(rec["reason"]),
             "commands": commands,
             "envs": envs,
-            "complete": rec.get("complete") is not False,
+            "complete": rec.get("complete") is not False and not over_cap,
+            **({"launch_cap": _MAX_SERVER_LAUNCHES} if over_cap else {}),
             **(
                 {"approved_commands": rec["approved_commands"]}
                 if rec.get("approved_commands")
@@ -1358,7 +1378,9 @@ def refused_servers(path: Path | None = None) -> dict[str, dict[str, Any]]:
             **({"approved_envs": rec["approved_envs"]} if rec.get("approved_envs") else {}),
             **(
                 {"expected_launch": rec["expected_launch"]}
-                if isinstance(rec.get("expected_launch"), str) and rec["expected_launch"]
+                if not over_cap
+                and isinstance(rec.get("expected_launch"), str)
+                and rec["expected_launch"]
                 else {}
             ),
         }
@@ -1391,10 +1413,16 @@ def refused_share_records(
 def refused_shares(
     asked: Iterable[str], refused: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, str]:
-    """Refusal reason per share-list name, matched as :func:`refused_share_records` does."""
+    """Refusal reason per share-list name, matched as :func:`refused_share_records` does.
+
+    A ``too_many_launches`` name is left out: this feeds the notice that asks for an
+    approval, no approval clears a server over the cap, and its own MCP Management
+    row explains it.
+    """
     return {
         name: str(rec.get("reason", ""))
         for name, rec in refused_share_records(asked, refused).items()
+        if rec.get("reason") != REFUSED_TOO_MANY
     }
 
 

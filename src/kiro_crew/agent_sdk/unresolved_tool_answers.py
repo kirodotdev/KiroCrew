@@ -6,12 +6,15 @@ gets an answer from the harness itself, and the call never reaches a server.
 Each harness frames that call as a ``tool_call`` of kind ``other`` titled with the
 name the model called, carrying no server and no tool identity; what differs is the
 status it ends the call with and the text it answers. This table holds those, each
-read off a live capture (the pi and OpenCode frames are in
+read off a live capture (the pi, OpenCode and Claude frames are in
 ``test/fixtures/unresolved_work_tool_frames.json``):
 
 * KAS: ``failed``, ``Tool "<name>" is not available.``
   (:data:`kiro_crew.agent_sdk.kas_tool_names.KAS_TOOL_UNAVAILABLE_RE`).
 * pi (pi-acp 0.0.34 over pi 1.4.0): ``failed``, ``Tool <name> not found``.
+* Claude (claude-agent-acp 0.94.0): ``failed``, Claude Code's own
+  ``<tool_use_error>Error: No such tool available: <name></tool_use_error>``. The
+  content text wraps it in a ```` ``` ```` fence; ``rawOutput`` is bare.
 * OpenCode (``opencode acp`` 1.19.1): ``completed`` -- it hands the call to its own
   ``invalid`` tool -- and an answer that STARTS ``The arguments provided to the tool
   are invalid: Model tried to call unavailable tool '<name>'.`` and goes on to list
@@ -58,6 +61,14 @@ _OPENCODE = UnresolvedToolAnswer(
     ),
     whole=False,
 )
+_CLAUDE = UnresolvedToolAnswer(
+    "failed",
+    re.compile(
+        r"(?P<fence>```\n)?<tool_use_error>Error: No such tool available: "
+        r"(?P<name>[^<\r\n]{1,256})</tool_use_error>(?(fence)\n```)"
+    ),
+    whole=True,
+)
 
 
 def unresolved_tool_answer(provider_type: str | None) -> UnresolvedToolAnswer | None:
@@ -70,6 +81,7 @@ def unresolved_tool_answer(provider_type: str | None) -> UnresolvedToolAnswer | 
     if not provider_type:
         return None
     from kiro_crew.acp.types import (
+        PROVIDER_LABEL_CLAUDE,
         PROVIDER_LABEL_KAS,
         PROVIDER_LABEL_OPENCODE,
         PROVIDER_LABEL_PI,
@@ -79,4 +91,5 @@ def unresolved_tool_answer(provider_type: str | None) -> UnresolvedToolAnswer | 
         PROVIDER_LABEL_KAS: _KAS,
         PROVIDER_LABEL_PI: _PI,
         PROVIDER_LABEL_OPENCODE: _OPENCODE,
+        PROVIDER_LABEL_CLAUDE: _CLAUDE,
     }.get(provider_type)

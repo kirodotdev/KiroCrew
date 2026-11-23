@@ -296,10 +296,14 @@ def _validate_private_profile_update(
 
     from kiro_crew.config.loader import resolve_agent_bindings
     from kiro_crew.member_essential_context import ESSENTIAL_MAX_CHARS, MemberEssentialContextError
+    from kiro_crew.memory_provider.contract import MAX_DOCUMENT_TEXT
 
-    if len(content) > ESSENTIAL_MAX_CHARS:
+    # A profile file is also a memory-provider document, so it must fit both
+    # caps: a move or export refuses a document over MAX_DOCUMENT_TEXT by name.
+    limit = min(ESSENTIAL_MAX_CHARS, MAX_DOCUMENT_TEXT)
+    if len(content) > limit:
         raise MemberEssentialContextError(
-            f"{filename} exceeds the {ESSENTIAL_MAX_CHARS}-character essential context budget"
+            f"{filename} exceeds the {limit}-character limit for a profile document"
         )
 
     builder = state.context_builder

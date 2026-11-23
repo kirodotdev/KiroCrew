@@ -14,7 +14,6 @@ character-class shape, never as the bytes it matched.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import string
@@ -409,6 +408,7 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
     moment the loader hoists its own.
     """
     from kiro_crew.config import loader as config_loader
+    from kiro_crew.user_json import loads_user_json, wide_bom_reason
 
     try:
         path = config_loader.oauth_endpoints_path()
@@ -425,12 +425,29 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
             _OAUTH_EXTENSION_MEMO.clear()
             _OAUTH_EXTENSION_MEMO[memo_key] = frozenset()
             return frozenset()
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logger.debug("oauth_endpoints.json unreadable; ignoring extension file", exc_info=True)
+        data = path.read_bytes()
+    except Exception as exc:
+        # Not memoized: a file held open for a moment reads fine on the next check.
+        logger.warning("Ignoring oauth_endpoints.json: cannot read it: %s", exc)
         return frozenset()
 
-    approved = _validate_operator_oauth_entries(raw)
+    # A Windows editor saves UTF-8 with a BOM, or UTF-16 (PowerShell 5.1's ``>``).
+    # One leading UTF-8 mark is dropped; a wide encoding is named and skipped. Every
+    # failure still yields the empty set, and is memoized per file version so the
+    # WARNING is logged once, not on every URL check.
+    reason = wide_bom_reason(data)
+    if reason is not None:
+        logger.warning("Ignoring %s: %s", path, reason)
+        approved: frozenset[tuple[str, str]] = frozenset()
+    else:
+        try:
+            raw = loads_user_json(data.decode("utf-8"))
+        except (ValueError, RecursionError) as exc:
+            # RecursionError: a document nested past the parser's depth limit.
+            logger.warning("Ignoring invalid %s: %s", path, exc)
+            approved = frozenset()
+        else:
+            approved = _validate_operator_oauth_entries(raw)
     # One live entry per file: the memo never outgrows a handful of keys, but a
     # test suite that rewrites the file hundreds of times should not accrete.
     _OAUTH_EXTENSION_MEMO.clear()
@@ -546,7 +563,9 @@ def _log_operator_list_use(
         logger.debug("SEL audit failed for %s (allow stands)", event_type, exc_info=True)
 
 
-def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
+def _approved_oauth_authorization_endpoint(
+    host: str, path: str, server_name: str | None = None
+) -> bool:
     """Exact-match endpoint approval for the banner-only OAuth entropy carve-out.
 
     Union of the code-owned builtin set and the operator's keystone extension,
@@ -554,12 +573,15 @@ def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
     restart. The builtin set is consulted first so the common providers never
     touch the disk; an approval that came from an operator entry is SEL-audited
     (deduped per process). Callers keep enforcing HTTPS-only / no-explicit-port
-    — this helper only answers endpoint identity.
+    — this helper only answers endpoint identity. A discovery approval holds for
+    the one server it was verified for, so it clears a caller only when that
+    caller names the same *server_name*; a caller that names none gets no
+    discovery approval.
     """
     key = (host.lower(), path)
     if key in _OAUTH_AUTHORIZATION_ENDPOINTS:
         return True
-    if _discovered_oauth_endpoint_approved(key):
+    if server_name and _discovered_oauth_endpoint_approved((*key, server_name)):
         return True
     if key in _load_operator_oauth_endpoints():
         _emit_oauth_extension_used_event(*key)
@@ -575,11 +597,11 @@ _OAUTH_DISCOVERED_TTL_SECONDS = 24 * 60 * 60
 _OAUTH_DISCOVERED_CAP = 64
 # Bound on the server URL copied into the SEL event; nothing else retains it.
 _OAUTH_DISCOVERED_MCP_URL_MAX_LEN = 512
-# (host, path) -> monotonic expiry. Host and path are bounded by the validators.
-_OAUTH_DISCOVERED_ENDPOINTS: dict[tuple[str, str], float] = {}
+# (host, path, server name) -> monotonic expiry. Host and path are bounded by the validators.
+_OAUTH_DISCOVERED_ENDPOINTS: dict[tuple[str, str, str], float] = {}
 
 
-def _discovered_oauth_endpoint_approved(key: tuple[str, str]) -> bool:
+def _discovered_oauth_endpoint_approved(key: tuple[str, str, str]) -> bool:
     """Whether *key* was verified by discovery and has not expired."""
     expiry = _OAUTH_DISCOVERED_ENDPOINTS.get(key)
     if expiry is None:
@@ -590,19 +612,25 @@ def _discovered_oauth_endpoint_approved(key: tuple[str, str]) -> bool:
     return True
 
 
-def record_discovered_oauth_endpoint(host: str, path: str, *, mcp_url: str) -> bool:
+def record_discovered_oauth_endpoint(
+    host: str, path: str, *, mcp_url: str, server_name: str
+) -> bool:
     """Approve an authorization endpoint verified by MCP OAuth discovery.
 
     Called by ``kiro_crew.mcp_oauth_discovery`` and by ``connections.crew_oauth``'s
     sign-in for an owner-recorded server, each after its own discovery from the
-    configured url found the endpoint. Returns False (and records nothing) for a
-    host or path the operator file's validators would refuse. A newly recorded
-    endpoint is SEL-audited with the server URL it was verified from.
+    configured url found the endpoint. The approval is for *server_name* alone.
+    Returns False (and records nothing) for a host or path the operator file's
+    validators would refuse, or for a server name that is empty or longer than
+    256 characters. A newly recorded endpoint is
+    SEL-audited with the server URL it was verified from.
     """
     host_norm = host.lower()
     if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(path):
         return False
-    key = (host_norm, path)
+    if not server_name or len(server_name) > 256:  # the name is part of the dict key
+        return False
+    key = (host_norm, path, server_name)
     fresh = not _discovered_oauth_endpoint_approved(key)
     _OAUTH_DISCOVERED_ENDPOINTS.pop(key, None)
     while len(_OAUTH_DISCOVERED_ENDPOINTS) >= _OAUTH_DISCOVERED_CAP:
@@ -610,11 +638,13 @@ def record_discovered_oauth_endpoint(host: str, path: str, *, mcp_url: str) -> b
         _OAUTH_DISCOVERED_ENDPOINTS.pop(next(iter(_OAUTH_DISCOVERED_ENDPOINTS)), None)
     _OAUTH_DISCOVERED_ENDPOINTS[key] = time.monotonic() + _OAUTH_DISCOVERED_TTL_SECONDS
     if fresh:
-        _emit_oauth_discovered_endpoint_event(host_norm, path, mcp_url)
+        _emit_oauth_discovered_endpoint_event(host_norm, path, mcp_url, server_name)
     return True
 
 
-def _emit_oauth_discovered_endpoint_event(host: str, path: str, mcp_url: str) -> None:
+def _emit_oauth_discovered_endpoint_event(
+    host: str, path: str, mcp_url: str, server_name: str
+) -> None:
     """Best-effort SEL record that discovery approved a consent endpoint."""
     if len(mcp_url) > _OAUTH_DISCOVERED_MCP_URL_MAX_LEN:
         mcp_url = mcp_url[: _OAUTH_DISCOVERED_MCP_URL_MAX_LEN - 1] + "…"
@@ -634,6 +664,7 @@ def _emit_oauth_discovered_endpoint_event(host: str, path: str, mcp_url: str) ->
                     "host": host,
                     "path": path,
                     "mcp_url": mcp_url,
+                    "server_name": server_name,
                     "mechanism": "OAUTH_ENDPOINT_DISCOVERY",
                 },
             )

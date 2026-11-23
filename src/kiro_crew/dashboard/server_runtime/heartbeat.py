@@ -125,7 +125,10 @@ def _start_loop_heartbeat(
     thread — unaffected by a loop thread blocked in a syscall — and dumps all
     thread stacks via faulthandler once the heartbeat stops beating, so the
     stuck frame lands in the log automatically instead of leaving us to sample
-    the PID by hand.
+    the PID by hand. The beat is withheld once the loop's default executor has
+    left a no-op unrun for ``EXECUTOR_STALL_SECS``
+    (``LoopStallWatchdog.default_executor_live``), so a wedged pool takes the
+    same path as a wedged loop.
     """
 
     async def _loop_heartbeat() -> None:
@@ -149,7 +152,10 @@ def _start_loop_heartbeat(
             lag = platform_compat.awake_now() - t0 - interval
             # Claimed before beat(): check() holds its own capture flag until a beat.
             capture_lag = _loop_watchdog.claim_lag_enrichment(lag)
-            _loop_watchdog.beat()
+            # Beat only while the default executor still runs work: when its
+            # workers are all wedged, every to_thread call stops with this loop live.
+            if _loop_watchdog.default_executor_live(asyncio.get_running_loop()):
+                _loop_watchdog.beat()
             # Resource-pressure notifications ride the heartbeat cadence
             # rather than owning a task: the notifier self-gates to its own
             # sample interval, never raises, and off-loads its synchronous
@@ -236,7 +242,7 @@ async def _report_prior_crash_dump(state: DashboardState) -> None:
             except OSError:
                 _fired = "unknown"
             logger.warning(
-                "⚠️  Prior loop-stall crash dump found: %s (fired %s, %.1f hours ago%s). "
+                "Warning: Prior loop-stall crash dump found: %s (fired %s, %.1f hours ago%s). "
                 "Run `kirocrew doctor` for details.",
                 _prior_dump,
                 _fired,
@@ -273,9 +279,9 @@ async def _report_prior_crash_dump(state: DashboardState) -> None:
                 state.notify(
                     "heartbeat",
                     (
-                        "⚠️ Gateway restarted after a host-wide pause"
+                        "Warning: Gateway restarted after a host-wide pause"
                         if _host_pause is not None
-                        else "⚠️ Gateway restarted after an event-loop stall"
+                        else "Warning: Gateway restarted after an event-loop stall"
                     ),
                     (
                         f"{_what} "

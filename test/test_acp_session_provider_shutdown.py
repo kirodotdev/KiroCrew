@@ -38,15 +38,14 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from session_handle_helpers import bare_session_handle
 
 from kiro_crew.acp.session_provider import AcpSessionProvider
 
 
 def _handle_with_transcript(tmp_path, sid: str = "sid-provider"):
     """A real AcpSessionHandle carrying a real transcript, mid-turn."""
-    from kiro_crew.acp.session_handle import AcpSessionHandle
-
-    handle = AcpSessionHandle.__new__(AcpSessionHandle)
+    handle = bare_session_handle()
     handle._session_id = sid
     handle.keep_transcript = False
     handle.memory_mode = "persistent"

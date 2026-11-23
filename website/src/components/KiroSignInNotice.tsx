@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useLocation, useNavigate } from 'react-router-dom'
-import { ArrowRight } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 
 import { api } from '../api/client'
 import { ACP_BACKEND_KAS, configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/acpBackend'
@@ -10,20 +9,16 @@ import { useOutageFailure } from '../hooks/useOutageFailure'
 import { useAppSelector } from '../store'
 import ErrorNotice from './ErrorNotice'
 import { reportForError } from '../utils/errorReport'
-import { useGuardedLeave } from './NavigationLeaveGuard'
+import { KiroSignInDialog } from './KiroSignInDialog'
 import { Btn } from './ui'
 import { settingsPath } from './settingsPath'
-import { AGENT_HARNESS_SETTINGS_TAB, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { KIRO_ACCOUNT_SETTINGS_TAB } from '../pages/developer/kiroSignInLink'
+import { useKiroSignInOfferedQuery } from '../pages/developer/useKiroSignInOffered'
 import { signInLapsed } from '../pages/developer/kiroSignInState'
-
-// Same cache key the sign-in flow and card read status under
-// (KasLoginGate.QUERY_KEY): a sign-in, sign-out or switch landing there
-// re-reads this one entry, so the notice clears the moment a new sign-in lands
-// instead of waiting for its own next poll.
-const STATUS_QUERY_KEY = ['kas-login'] as const
+import { useKasLoginStatus } from '../hooks/useKasLogin'
 
 /**
- * How often the notice re-reads the stored sign-in while KAS is the backend.
+ * How often the notice re-reads the stored sign-in.
  * The gateway's renewal tick records a refused renewal in the store, and the
  * status read is a plain store read (no refresh, no network), so a minute
  * bounds how late the notice reports one at the cost of one small read per
@@ -32,9 +27,19 @@ const STATUS_QUERY_KEY = ['kas-login'] as const
 export const KIRO_SIGN_IN_NOTICE_POLL_MS = 60_000
 
 /**
+ * A refusal whose access token still works, by who runs as the sign-in. Both
+ * expired shapes instead say only what to do, not why.
+ */
+const REFUSED_DETAIL = {
+  agents: 'components.kiroSignInNotice.refused_detail',
+  bots: 'components.kiroSignInNotice.refused_detail_bots',
+  account: 'components.kiroSignInNotice.refused_detail_account',
+} as const
+
+/**
  * App-level notice for a stored Kiro sign-in that no longer works, mounted
  * above every page beside the crash notice. The sign-in card on Settings >
- * Agent Harness says the same thing, but on a page nobody keeps open; without
+ * Kiro account says the same thing, but on a page nobody keeps open; without
  * this a lapsed or issuer-refused sign-in stays invisible until a chat turn
  * fails.
  *
@@ -44,7 +49,7 @@ export const KIRO_SIGN_IN_NOTICE_POLL_MS = 60_000
  * can say what happened and where the button goes at every width instead of
  * folding to an icon.
  *
- * What it shows, all hidden on Settings > Agent Harness itself (the card shows
+ * What it shows, all hidden on Settings > Kiro account itself (the card shows
  * every one of these states next to its own controls). Every shape is an
  * `ErrorNotice` with dismiss, at the same weight, and with the agent hand-off
  * except where the agent cannot run (the two expired shapes below):
@@ -53,7 +58,7 @@ export const KIRO_SIGN_IN_NOTICE_POLL_MS = 60_000
  *   the settings could not be read and makes no sign-in claim (kiro-cli and
  *   Claude have no Kiro sign-in), with no sign-in button. A failure after a
  *   good read shows nothing: the query keeps that read's backend.
- * - The status read FAILED on a KAS gateway: a plain-language line saying
+ * - The status read FAILED: a plain-language line saying
  *   what to do, the sign-in button, and the hand-off, which carries the
  *   server's error. Not for a read that failed while the dashboard was
  *   disconnected (a gateway restart): the offline state says that one.
@@ -67,29 +72,26 @@ export const KIRO_SIGN_IN_NOTICE_POLL_MS = 60_000
  *   has no agent hand-off either.
  * Where the main harness is not KAS and only Bots run on it, both lapsed shapes
  * name the Bots instead of "agents" and keep the hand-off: the main agent runs
- * on another credential, so the chat it opens still works.
- * Nothing at all while nothing here runs on KAS (the one backend that runs
- * agents as this identity, for the main harness or for Bots: `kasInUse`), with
- * no stored sign-in, or while it works. A gateway with nothing on KAS never
- * reads the status.
+ * on another credential, so the chat it opens still works. Where nothing here
+ * runs on KAS (`kasInUse`) but the build offers Kiro sign-in, the sign-in still
+ * serves the features that run as the Kiro account, so the lapsed shapes name
+ * those and keep the hand-off. A lapsed shape needs a stored sign-in, so
+ * someone who never signed in is never asked to; a failed status read is an
+ * error, shown wherever the status is read. Nothing at all on a build that offers no Kiro sign-in and
+ * runs nothing on KAS, with no stored sign-in, or while it works.
  *
- * The lapsed and status-failure shapes carry the "Open sign-in settings"
- * button in their footer: signing in again is the fix the user can make.
- *
- * The hand-offs: the notice holds no input, and both the agent hand-off (where
- * shown) and
- * the sign-in button ask the page's leave guard before navigating, so a draft
- * on the page below is not lost.
- *
- * The sign-in button opens the card rather than starting a sign-in: the card
- * is where the provider is chosen, and a one-click browser sign-in from a
- * banner is a misclick hazard. Dismissing hides a lapsed notice for its cause
+ * The lapsed and status-failure shapes carry a "Sign in" button in their
+ * footer: signing in again is the fix the user can make. It opens the shared
+ * sign-in dialog (`KiroSignInDialog`) in place, so nothing on the page below
+ * is left; the agent hand-off (where shown) asks the page's leave guard first.
+ * The dialog shows the provider choices, so a banner press is never a one-click
+ * browser sign-in, a misclick hazard.
+ * Dismissing hides a lapsed notice for its cause
  * until the page reloads (a different cause shows again), and a failed read
  * until a read succeeds again (not on every failed poll).
  */
 export default function KiroSignInNotice() {
-  const navigate = useNavigate()
-  const leave = useGuardedLeave()
+  const [signInOpen, setSignInOpen] = useState(false)
   const { pathname } = useLocation()
   const [dismissedCause, setDismissedCause] = useState<string | null>(null)
   // `<which read>:<its dataUpdatedAt>` when its failure was dismissed.
@@ -99,6 +101,10 @@ export default function KiroSignInNotice() {
     queryFn: () => api.kirocrewConfig(),
   })
   const kas = cfgQuery.data !== undefined && kasInUse(cfgQuery.data)
+  // The sign-in also serves what runs as the Kiro account on any harness, so a
+  // build that offers it reads the stored sign-in whichever harness runs.
+  const offeredQuery = useKiroSignInOfferedQuery()
+  const offered = offeredQuery.offered === true
   // The shell's own outage surfaces: the offline capsule, and the banner that
   // asks for a token. Same event pair shell/appShell.tsx subscribes to, seeded from the
   // banner element (as in KiroPrerequisiteGate) rather than from api/client.
@@ -116,12 +122,9 @@ export default function KiroSignInNotice() {
       window.removeEventListener('mc-auth-cleared', onCleared)
     }
   }, [])
-  const statusQuery = useQuery({
-    queryKey: STATUS_QUERY_KEY,
-    queryFn: api.kasLoginStatus,
-    enabled: kas,
-    refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
-  })
+  // The shared sign-in entry: a sign-in, sign-out or switch landing anywhere
+  // re-reads it, so the notice clears the moment a new sign-in lands.
+  const statusQuery = useKasLoginStatus({ enabled: kas || offered, poll: KIRO_SIGN_IN_NOTICE_POLL_MS })
   // A status read that failed because the gateway was down (a restart): the
   // offline state says so, and nothing about the sign-in is known to be wrong.
   const outageFailure = useOutageFailure(
@@ -130,18 +133,17 @@ export default function KiroSignInNotice() {
     () => statusQuery.refetch({ cancelRefetch: false }),
   )
 
-  if (pathname === settingsPath({ tab: AGENT_HARNESS_SETTINGS_TAB })) return null
+  if (pathname === settingsPath({ tab: KIRO_ACCOUNT_SETTINGS_TAB })) return null
 
+  // Signing in again is the fix the user can make: the shared sign-in dialog,
+  // opened over the stored sign-in, the same one Settings and the chat open.
   const openSignIn = (
-    <Btn
-      primary
-      data-testid="kiro-sign-in-notice-open"
-      className="min-w-0 max-w-full text-left"
-      onClick={() => leave(() => navigate(KIRO_SIGN_IN_PATH), KIRO_SIGN_IN_PATH)}
-    >
-      <span className="min-w-0">{i18nT('components.kiroSignInNotice.open_sign_in')}</span>
-      <ArrowRight size={14} className="shrink-0" aria-hidden="true" />
-    </Btn>
+    <>
+      <Btn primary data-testid="kiro-sign-in-notice-open" onClick={() => setSignInOpen(true)}>
+        {i18nT('components.kiroSignInPrompt.sign_in')}
+      </Btn>
+      <KiroSignInDialog open={signInOpen} onOpenChange={setSignInOpen} reauth />
+    </>
   )
 
   // A config read that failed before any good one: nothing says which backend
@@ -172,9 +174,32 @@ export default function KiroSignInNotice() {
     )
   }
 
-  if (kas && outageFailure) return null
-  // The status read's failure, on KAS only (the only backend that reads it).
-  const failedRead = kas && statusQuery.isError
+  const reads = kas || offered
+  // Off KAS, only the schema says whether the build offers the sign-in. A
+  // schema read that failed with no answer leaves the sign-in unchecked, so it
+  // is said, under the same settings-read wording and guards as the config
+  // read above. On KAS the status read runs anyway and this stays out.
+  if (cfgQuery.data !== undefined && !kas && offeredQuery.offered === undefined && offeredQuery.error) {
+    if (!connected || authRequired) return null
+    if (dismissedFailure === 'schema') return null
+    return (
+      <ErrorNotice
+        className="mx-3 md:mx-6 mt-4 mb-2"
+        title={i18nT('components.kiroSignInNotice.config_unavailable')}
+        message={i18nT('components.kiroSignInNotice.config_unavailable_detail')}
+        report={reportForError(offeredQuery.error)}
+        messagePlacement="below"
+        actionPlacement="below"
+        askAgent
+        onDismiss={() => setDismissedFailure('schema')}
+        testId="kiro-sign-in-schema-error"
+      />
+    )
+  }
+  if (reads && outageFailure) return null
+  // The status read's failure, wherever it is read: nothing then says whether
+  // a sign-in is stored or works, and the card is where to look.
+  const failedRead = reads && statusQuery.isError
     ? { key: `status:${statusQuery.dataUpdatedAt}`, error: statusQuery.error }
     : null
   if (failedRead) {
@@ -190,8 +215,7 @@ export default function KiroSignInNotice() {
         report={reportForError(failedRead.error)}
         messagePlacement="below"
         actionPlacement="below"
-        // The way to fix it yourself: the sign-in card shows the same read
-        // with its own controls, and this notice is hidden there.
+        // The way to fix it yourself: sign in again in the shared dialog.
         footer={<div className="mt-1.5">{openSignIn}</div>}
         askAgent
         onDismiss={() => setDismissedFailure(failedRead.key)}
@@ -201,7 +225,11 @@ export default function KiroSignInNotice() {
   }
 
   const status = statusQuery.data
-  if (!kas || !status?.authenticated || !signInLapsed(status)) return null
+  // `authenticated`: a sign-in is stored, usable or not. Never shown without one.
+  if (!reads || !status?.authenticated || !signInLapsed(status)) return null
+  // Who runs as the sign-in decides the copy and the hand-off below, so wait
+  // for the config rather than show one shape and swap it.
+  if (cfgQuery.data === undefined) return null
   // A refusal that has since expired is its own cause: "the agents have
   // stopped" is new information after a dismissed "they will stop".
   const cause = status.refresh_rejected
@@ -214,30 +242,27 @@ export default function KiroSignInNotice() {
   // in again fixes it. An expiry with nothing to renew it is that failure as
   // much as an issuer's refusal is, so it is not dressed down to a warning --
   // a yellow "agents cannot run" under a red "will stop" read backwards.
-  // The text says which one happened.
-  // Where the main harness is not KAS only the Bots run as this sign-in, so the
-  // text says Bots and the main agent, which still runs, keeps its hand-off.
-  const botsOnly = configuredAcpBackend(cfgQuery.data ?? {}) !== ACP_BACKEND_KAS
-  let title = i18nT('components.kiroSignInNotice.sign_in_expired')
-  let detail = botsOnly
-    ? i18nT('components.kiroSignInNotice.expired_detail_bots')
-    : i18nT('components.kiroSignInNotice.expired_detail')
-  if (cause !== 'expired') {
-    // The renewal tick only asks Kiro inside the refresh margin, so by the time
-    // a refusal is recorded the access token is usually `expired` too: the
-    // agents have already stopped, and "will stop" would be wrong. `usable`
-    // cannot tell the two apart (a stored refresh token keeps it true).
-    title = i18nT('components.kiroSignInNotice.refused_title')
-    if (cause === 'refresh_rejected_expired') {
-      detail = botsOnly
-        ? i18nT('components.kiroSignInNotice.refused_expired_detail_bots')
-        : i18nT('components.kiroSignInNotice.refused_expired_detail')
-    } else {
-      detail = botsOnly
-        ? i18nT('components.kiroSignInNotice.refused_detail_bots')
-        : i18nT('components.kiroSignInNotice.refused_detail')
-    }
-  }
+  // Once expired, both say only what to do: the cause changes nothing for the user.
+  // Who runs as this sign-in: the agents (main harness on KAS), only the Bots,
+  // or neither, so only the features that use the Kiro account. Off the main
+  // KAS harness the main agent still runs, so it keeps its hand-off.
+  const mainOnKas = cfgQuery.data !== undefined && configuredAcpBackend(cfgQuery.data) === ACP_BACKEND_KAS
+  const audience = mainOnKas ? 'agents' : kas ? 'bots' : 'account'
+  // The renewal tick only asks Kiro inside the refresh margin, so by the time
+  // a refusal is recorded the access token is usually `expired` too: the
+  // agents have already stopped, and "will stop" would be wrong. `usable`
+  // cannot tell the two apart (a stored refresh token keeps it true), so only
+  // a refusal whose token still works keeps its own "will stop" copy.
+  const title = cause === 'refresh_rejected'
+    ? i18nT('components.kiroSignInNotice.refused_title')
+    : i18nT('components.kiroSignInNotice.sign_in_expired')
+  // Expired: the agents (or Bots) running as it have stopped; off KAS the
+  // agents keep running, so only the account features need the sign-in.
+  const detail = cause === 'refresh_rejected'
+    ? i18nT(REFUSED_DETAIL[audience])
+    : i18nT(audience === 'account'
+      ? 'components.kiroSignInNotice.expired_detail_account'
+      : 'components.kiroSignInNotice.expired_detail')
   const lapsed = {
     className: 'mx-3 md:mx-6 mt-4 mb-2',
     title,
@@ -250,7 +275,7 @@ export default function KiroSignInNotice() {
   } as const
   // A refusal whose access token still works leaves the agents running until
   // it expires, so one can still look into it.
-  if (cause === 'refresh_rejected' || botsOnly) return <ErrorNotice {...lapsed} askAgent />
+  if (cause === 'refresh_rejected' || !mainOnKas) return <ErrorNotice {...lapsed} askAgent />
   return (
     <ErrorNotice
       {...lapsed}

@@ -99,6 +99,20 @@ describe('ArtifactDetailPage app-shell leave guard', () => {
     expect(ask()).toBe(true)
   })
 
+  it('renders and dismisses the discard dialog while the page reports a load error', async () => {
+    const { queryClient } = renderPage()
+    fireEvent.click(await screen.findByRole('button', { description: /edit content/i }))
+    fireEvent.change(await screen.findByLabelText('editor'), { target: { value: '# unsaved work' } })
+    vi.mocked(api).artifact = vi.fn().mockRejectedValue(new Error('artifact unavailable'))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['artifact', 'cr-queue'] }) })
+    expect(await screen.findByText('artifact unavailable')).toBeInTheDocument()
+    act(() => { expect(ask()).toBe(false) })
+    const dialog = await screen.findByRole('dialog', { name: /discard unsaved changes/i })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByText('artifact unavailable')).toBeInTheDocument()
+  })
+
   it('keeps the edit when the discard dialog is cancelled', async () => {
     const editor = await enterEditMode()
     fireEvent.change(editor, { target: { value: '# unsaved work' } })

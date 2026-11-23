@@ -12,8 +12,9 @@ runtime surface for data that is compile-time constant. A parity gate is the che
 equivalent and matches how this repo already guards its i18n catalogs: the duplication
 stays, drifting becomes unmergeable.
 
-Only the *facts* are compared. The copy (tier names, the sub-agent headline) is
-deliberately frontend-owned, because it is translated.
+Only the *facts* are compared, the approximate price and the Region it was read for
+included. The copy (tier names, the sub-agent headline) is deliberately
+frontend-owned, because it is translated.
 """
 
 from __future__ import annotations
@@ -36,16 +37,19 @@ PANEL = (
 
 # One object literal per tier, e.g.
 #   { key: 'light', family: 'light', arch: 'arm64', instanceType: 't4g.xlarge',
-#     vcpu: 4, ramGb: 16, diskGb: 40, subagents: 3 },
+#     vcpu: 4, ramGb: 16, diskGb: 40, approxUsdPerHr: 0.134, subagents: 3 },
 _ROW = re.compile(
     r"\{\s*key:\s*'(?P<key>[a-z0-9-]+)'.*?"
     r"arch:\s*'(?P<arch>[a-z0-9_]+)'.*?"
     r"instanceType:\s*'(?P<instance_type>[a-z0-9.]+)'.*?"
     r"vcpu:\s*(?P<vcpu>\d+).*?"
     r"ramGb:\s*(?P<ram_gb>\d+).*?"
-    r"diskGb:\s*(?P<disk_gb>\d+)",
+    r"diskGb:\s*(?P<disk_gb>\d+).*?"
+    r"approxUsdPerHr:\s*(?P<approx_usd_per_hr>[0-9.]+)",
     re.DOTALL,
 )
+_PRICE_REGION = re.compile(r"export const PRICE_REGION = '(?P<region>[a-z0-9-]+)'")
+_HOURS_PER_MONTH = re.compile(r"export const HOURS_PER_MONTH = (?P<hours>\d+) \* (?P<days>\d+)")
 
 
 def _panel_tiers() -> dict[str, dict[str, object]]:
@@ -59,6 +63,7 @@ def _panel_tiers() -> dict[str, dict[str, object]]:
             "vcpu": int(d["vcpu"]),
             "ram_gb": int(d["ram_gb"]),
             "disk_gb": int(d["disk_gb"]),
+            "approx_usd_per_hr": float(d["approx_usd_per_hr"]),
         }
     return found
 
@@ -85,3 +90,16 @@ def test_panel_tier_matches_sizes_py(key: str) -> None:
     assert ui["ram_gb"] == spec.ram_gb, f"{key}: RAM drifted"
     assert ui["disk_gb"] == spec.disk_gb, f"{key}: disk drifted"
     assert ui["arch"] == spec.arch, f"{key}: architecture drifted"
+    assert ui["approx_usd_per_hr"] == spec.approx_usd_per_hr, f"{key}: price drifted"
+
+
+def test_panel_prices_name_the_same_region_and_month_as_sizes_py() -> None:
+    text = PANEL.read_text(encoding="utf-8")
+    region = _PRICE_REGION.search(text)
+    assert region, f"no PRICE_REGION in {PANEL.name}"
+    assert region["region"] == sizes.PRICE_REGION
+    month = _HOURS_PER_MONTH.search(text)
+    assert month, f"no HOURS_PER_MONTH in {PANEL.name}"
+    tier = sizes.default_tier()
+    hours = int(month["hours"]) * int(month["days"])
+    assert round(tier.approx_usd_per_hr * hours, 2) == sizes.monthly_estimate(tier)

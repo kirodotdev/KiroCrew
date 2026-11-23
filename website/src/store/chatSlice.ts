@@ -17,6 +17,7 @@ import { jsonEqual } from '../utils/structuralEqual'
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { nextActiveAfterClose } from '../lib/sessionTabs'
 import { api } from '../api/client'
+import { abortPendingSends, settleCancelledSends } from '../chat-core/transport/sendTurn'
 import { ApiError, apiErrorCode, isNotFoundError } from '../api/apiError'
 import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, removeSlotOptimistic, fetchSlots, slotSurfaceKey, sseSlotPatch } from './dashboardSlice'
 import { isClosedIncarnation, watchCloseOutcome } from './dashboard/closeWatch'
@@ -156,12 +157,20 @@ export type BatchedChunkPart = { seq?: number; text: string }
  *  from the floor and the kept seqs, rather than carried in the parts: a gap
  *  the hook saw on the wire may be exactly what the snapshot filled in, and a
  *  marker inlined at arrival would then flag a chunk that is on screen.
+ *  A caller opening a NEW streaming row passes *opensRow*: the floor then
+ *  belongs to text this row does not hold (an earlier turn, kept past `_done`,
+ *  or an earlier segment), so a jump above it is not a hole in this reply and
+ *  gaps are measured only between the frame's own parts.
  *  Returns `undefined` when nothing survives so the caller leaves the slot
  *  untouched (no run-state bump, no streaming row). */
-export const batchedTextAboveFloor = (parts: BatchedChunkPart[], floor: number | undefined): string | undefined => {
+export const batchedTextAboveFloor = (
+  parts: BatchedChunkPart[],
+  floor: number | undefined,
+  opensRow = false,
+): string | undefined => {
   const kept = parts.filter(p => p.seq === undefined || floor === undefined || p.seq > floor)
   if (kept.length === 0) return undefined
-  let prev = floor
+  let prev = opensRow ? undefined : floor
   let text = ''
   for (const p of kept) {
     if (p.seq !== undefined) {
@@ -229,7 +238,8 @@ function applyNonActiveFrame(
     run.lastChunkSeq = floorForGen(run.lastChunkSeq, run.lastChunkGen, gen)
     if (gen !== undefined) run.lastChunkGen = gen
     if (batched && parts) {
-      const kept = batchedTextAboveFloor(parts, run.lastChunkSeq)
+      const opensRow = !msgs.some(m => m.role === 'streaming')
+      const kept = batchedTextAboveFloor(parts, run.lastChunkSeq, opensRow)
       if (kept === undefined) return
       content = kept
     }
@@ -430,7 +440,10 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     state.lastChunkSeq = floorForGen(state.lastChunkSeq, state.lastChunkGen, gen)
     if (gen !== undefined) state.lastChunkGen = gen
     if (batched && parts) {
-      const kept = batchedTextAboveFloor(parts, state.lastChunkSeq)
+      // A chunk that opens a streaming row has no text before it to have a
+      // hole in; see `batchedTextAboveFloor`.
+      const opensRow = !state.messages.some(m => m.role === 'streaming')
+      const kept = batchedTextAboveFloor(parts, state.lastChunkSeq, opensRow)
       if (kept === undefined) return
       content = kept
     }
@@ -921,6 +934,8 @@ export type StopFailure = { error: string; status?: number; code?: string; authR
 export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean; rejectPending?: boolean }>(
   'chat/requestStop',
   async ({ slotId, force, rejectPending }, { getState, dispatch }) => {
+    // A send still waiting on the network must not start the stopped turn.
+    const sendCancelled = abortPendingSends(slotId)
     const state = (getState() as { chat: ChatState }).chat
     if (!force) {
       const lastPress = state.stopPressedAt[slotId] ?? 0
@@ -953,8 +968,11 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
     // it as "Stop does not work" (#9547). `already_stopping` is the other
     // no-op (a cancel already in flight) and changes nothing here.
     if (reply?.info === 'not running' && !reply.already_stopping) {
-      dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch }))
+      dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch, sendCancelled }))
     }
+    // The gateway answered this press, so the cancel it carried is settled; a
+    // press still waiting on another cancel (`already_stopping`) keeps it.
+    if (!reply?.already_stopping) settleCancelledSends(slotId)
     // Only the cards on screen for the turn this press was about: a switch
     // to another chat, or a newer turn on this one, keeps its cards.
     const now = (getState() as { chat: ChatState }).chat
@@ -1146,9 +1164,11 @@ const chatSlice = createSlice({
         if (slot === state.activeSlot) return
         if ((state.slotPaneNextBefore?.[k] ?? 0) !== before) return
         const cur = state.slotMessages[k] ?? []
+        // The backend never stores `meta.pastes`, so re-collapse this page's sent pastes first.
+        const restored = mergePreservedPastes(cur, messages)
         // Identity is meta.mid only, as for the active walk: an overlapping
         // page must not reach the list as a duplicate row key.
-        const fresh = messages.filter(m => !isRedeliveredMessage(cur, m.meta))
+        const fresh = restored.filter(m => !isRedeliveredMessage(cur, m.meta))
         const merged = [...fresh, ...cur]
         // Paging older is exactly when a parked block's anchor becomes loaded,
         // as on the active walk; without this a split pane showed the restored
@@ -1387,9 +1407,9 @@ export { WORKFLOW_TERMINAL_STATUSES, isTerminalWorkflowStatus, selectSidebarWork
 export { selectAutomationForSlot, selectSidebarAutomationRunningKeys } from './chat/automations'
 export { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, noteSideQueueDroppedByClose, queueEditBroadcastAt, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, takeSideQueueEditForClose } from './chat/side'
 export {
-  selectActiveSlotProject, selectComposerBusy, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
+  selectActiveSlotProject, selectComposerBusy, selectSlotTurnRunning, selectContinuable, selectProjectChipLocked, selectSendAccepted, selectSendAttempts, selectSendConfirmed, selectSlotMessages,
   selectPendingTurn, selectSlotPendingApproval, selectSlotRunEpoch, selectSlotStreamState, selectSlotToolLog, selectTrailingSendUnconfirmed,
-  selectSlotTurnFromWake, selectTurnInterrupted,
+  selectResumeInterrupted, selectSlotTurnFromWake, selectTurnInterrupted,
   QUIET_END_SERVER, QUIET_END_TOOL,
 } from './chat/selectors'
 export { clearSwitchSlotGone, setSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotArg } from './chat/slotSwitch'

@@ -238,3 +238,17 @@ describe('MarkdownPanel — markdown preview find is unchanged (regression guard
     expect(tab().getByLabelText(FIND_INPUT)).toBeTruthy()
   })
 })
+
+describe('MarkdownPanel — Shift+Cmd/Ctrl+F is Search all chats, not the panel find', () => {
+  it('lets the chord through, unclaimed, on the active markdown tab and on a diff', async () => {
+    render(<Panel filePath="/tmp/readme.md" content={'# Readme\n\nhello hello\n'} />, { wrapper })
+    await waitFor(() => expect(panelRoot()).toBeTruthy())
+    fireEvent.pointerDown(panelRoot())
+
+    // Lower-case key with Shift down, as macOS reports it with Command held.
+    const later = withChatFind(() => { fireEvent.keyDown(document, { key: 'f', ctrlKey: true, shiftKey: true }) })
+
+    expect(later).toHaveBeenCalledTimes(1)
+    expect(tab().queryByLabelText(FIND_INPUT)).toBeNull()
+  })
+})

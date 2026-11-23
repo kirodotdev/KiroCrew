@@ -59,7 +59,13 @@ describe('matchesBroadcast presets', () => {
   })
   it('all reaches every local row', () => {
     expect(broadcastTargets(rows, base({ preset: 'all' }), ctx())).toHaveLength(rows.length)
-    expect(PRESET_STATES.all).toHaveLength(5)
+    // Every state a row can be in, and every other preset's states, are in `all`.
+    for (const s of rows) {
+      for (const st of slotBroadcastStates(s, { goalLoopActive: true })) expect(PRESET_STATES.all).toContain(st)
+    }
+    for (const states of Object.values(PRESET_STATES)) {
+      for (const st of states) expect(PRESET_STATES.all).toContain(st)
+    }
   })
   it('never reaches a peer-owned row', () => {
     expect(matchesBroadcast(peer, base(), ctx())).toBe(false)

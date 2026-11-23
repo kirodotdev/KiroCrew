@@ -169,20 +169,6 @@ export const LOCATIONS = {
       },
     ],
   },
-  // Phone nav drawer only: the desktop opens the same account modal from the
-  // top bar's readout capsule, which the phone does not render.
-  'shell.kiro-account': {
-    kind: 'button',
-    label: { from: 'attr', attr: 'label' },
-    terms: {
-      en: ['account balance', 'credits', 'my account', 'sign in status', 'usage'],
-      'zh-CN': ['账户余额', '额度', '我的账户', '登录状态', '用量'],
-    },
-    placements: [{
-      surface: 'shell', parent: 'shell.mobile-menu', entry: 'menu',
-      requires: [{ kind: 'condition', id: 'kiro_account_entry' }],
-    }],
-  },
   // The community row's "Report issue" link, which opens the diagnostics flow.
   // The label is the short visible text; the long accessible name ("Report a
   // problem — collects logs…") is an alias, so it stays searchable without

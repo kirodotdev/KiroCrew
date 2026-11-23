@@ -283,6 +283,10 @@ class TestCapAlignment:
         # A job's project directory: set from the CLI only, never via
         # CRON_ADD_SCHEMA (MCP cron_add does not take it). General ID cap applies.
         "project_path",
+        # A job's pinned channel destination: chosen on the Schedule page, so it
+        # is accepted on POST/PATCH /api/crons and has no CRON_ADD_SCHEMA entry.
+        "channel_type",
+        "target_id",
     }
 
     def test_table_caps_match_cron_add_schema(self):
@@ -334,6 +338,7 @@ class TestAntiDrift:
     # - last_posted_hash: set by dedup logic when a Slack post is delivered
     # - last_failure_hash: set by dedup logic when a failure notification fires
     # - approval_mode: validated by a separate finite-set check, not length
+    # - on_tab_close: the same, through validate_on_tab_close
     # - memory_store: resolved internally from trusted member/session identity;
     #   never accepted from a cron creation or update caller
     # - managed_by: caller-supplied, but create-only, so it must stay OUT of the
@@ -351,11 +356,16 @@ class TestAntiDrift:
             "last_posted_hash",
             "last_failure_hash",
             "approval_mode",
+            "on_tab_close",
             "memory_store",
             # Computed by ack_job / unack_job from acked_items; no caller sets it.
             "acked_item_ids_digest",
             # add_job copies the already-validated session_key; no caller sets it.
             "person_owner_key",
+            # add_job copies the creator Bot's grant (owner_grant.creator_grant),
+            # read from the verified caller session; no caller sets either.
+            "owner_member_id",
+            "owner_approval_mode",
         }
     )
 

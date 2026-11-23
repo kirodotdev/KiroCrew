@@ -169,6 +169,10 @@ async def _shutdown(self: GatewayOrchestrator) -> None:
                 ),
                 timeout=5.0,
             )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Dashboard slot save before shutdown did not finish within 5.0s; shutting down without it"
+            )
         except Exception:
             logger.debug("Dashboard slot save before shutdown failed", exc_info=True)
         self.dashboard_state.file_indexes.stop_all()
@@ -314,7 +318,27 @@ async def _stop_services_and_sessions(
         await asyncio.gather(*self._handler_tasks, return_exceptions=True)
 
     if self.cron_svc:
-        await self.cron_svc.stop()
+        from kiro_crew import cron as _cron_facade
+
+        try:
+            await self.cron_svc.stop()
+        finally:
+            # A pause landed by stop()'s own held-record flush scheduled a
+            # notice on this loop; drain it bounded before the loop ends, as
+            # the interrupt notices are, so a schedule's last word is not
+            # cancelled with the process — in a finally, because a raising
+            # stop() is exactly the exit that would otherwise destroy it. One
+            # slower than the bound is cancelled, not left to die as "Task
+            # was destroyed but it is pending" at loop close. The callback
+            # itself is per-service (set_auto_pause_alert) and dies with it.
+            pending = [f for f in getattr(self, "_auto_pause_alerts", ()) if not f.done()]
+            if pending:
+                await asyncio.wait(
+                    [asyncio.wrap_future(f) for f in pending],
+                    timeout=_cron_facade._INTERRUPT_ALERT_WAIT_SECS,
+                )
+                for fut in pending:
+                    fut.cancel()
     if self.heartbeat_svc:
         self.heartbeat_svc.stop()
         await self.heartbeat_svc.wait_closed()

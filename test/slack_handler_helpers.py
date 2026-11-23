@@ -7,13 +7,31 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from pathlib import Path
 
 import pytest
 
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack.handler import _pending_approvals, _thread_agents, _trusted_sessions
 from kiro_crew.testing.wait import async_wait_until
+
+
+def hide_slack_timing_footer(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+    """Give this test a data home whose ``config.json`` sets ``slack.show_timing_footer`` off.
+
+    The footer builder reads the setting per turn through ``slack_cfg()``, which loads
+    ``config.json`` when no gateway config is installed, so a fresh home holding the
+    value is the real path, not a patched one. A config another test left installed
+    would be read first, so none is.
+    """
+    monkeypatch.setattr(slack_handler, "_orch_cfg", None)
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    (home / "config.json").write_text(
+        json.dumps({"slack": {"show_timing_footer": False}}), encoding="utf-8"
+    )
 
 
 @pytest.fixture(autouse=True)

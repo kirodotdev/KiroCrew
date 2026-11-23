@@ -883,6 +883,28 @@ async def test_a_reported_discussion_rides_the_record_and_the_next_report_replac
         ({"thread": "/home/me/thread.md"}, "invalid_value", "discussion.thread"),
         ({"phase": "arguing"}, "invalid_value", "discussion.phase"),
         ({"mood": "calm"}, "invalid_value", "discussion.mood"),
+        ({"rounds": [{"round": 1, "lines": []}] * 7}, "field_too_long", "discussion.rounds"),
+        ({"rounds": [{"round": 0, "lines": []}]}, "invalid_value", "discussion.rounds[0].round"),
+        (
+            {"rounds": [{"round": 1, "lines": [{"who": "A", "text": "t"}] * 5}]},
+            "field_too_long",
+            "discussion.rounds[0].lines",
+        ),
+        (
+            {"rounds": [{"round": 1, "lines": [{"who": "A", "text": "y" * 121}]}]},
+            "field_too_long",
+            "discussion.rounds[0].lines[0].text",
+        ),
+        (
+            {"rounds": [{"round": 1, "lines": [{"who": "A"}]}]},
+            "invalid_value",
+            "discussion.rounds[0].lines[0].text",
+        ),
+        (
+            {"rounds": [{"round": 1, "lines": [], "x": 1}]},
+            "invalid_value",
+            "discussion.rounds[0].x",
+        ),
     ],
 )
 async def test_a_discussion_over_a_cap_is_refused_by_name_and_writes_nothing(
@@ -917,6 +939,9 @@ async def test_a_discussion_at_every_cap_in_chinese_fits_one_record_line(monkeyp
         "checking": [ch * 120] * 3,
         "recent": [{"who": ch * 20, "text": ch * 200}] * 6,
         "thread": "/artifacts/" + "a" * 501,
+        "rounds": [
+            {"round": n, "lines": [{"who": ch * 20, "text": ch * 120}] * 4} for n in range(1, 7)
+        ],
     }
     status, body = await _report(
         WORKER, {"status": "progress", "summary": ch * 500, "discussion": widest}

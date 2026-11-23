@@ -38,13 +38,14 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_NONE,
     RLIMIT_PROFILE_SESSION_HOST,
     RLIMIT_PROFILE_TOOL,
+    RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
     create_subprocess_limited,
     popen_limited,
     run_limited,
     spawn_shim_argv,
 )
 from kiro_crew.testing.clock import ManualClock
-from kiro_crew.testing.wait import finished
+from kiro_crew.testing.wait import default_timeout, finished
 
 # The shim exists to deliver POSIX rlimits, and `spawn_shim_argv` returns an empty
 # prefix on Windows, so there is nothing here to exercise there. Skipping at import
@@ -306,6 +307,92 @@ class TestShimArgvContract:
 
 
 @posix_only
+class TestShimPosixSpawnFlags:
+    """``--setsid``, ``--chdir=`` and ``--close-fds``: Popen's fork-child jobs, in-process."""
+
+    @staticmethod
+    def _stop_exec(*_args):
+        raise OSError(13, "stop here")
+
+    def test_the_three_jobs_run_in_popens_order_before_exec(self, tmp_path):
+        order: list[str] = []
+        with (
+            patch.object(shim.os, "setsid", lambda: order.append("setsid")),
+            patch.object(shim.os, "chdir", lambda path: order.append(f"chdir {path}")),
+            patch.object(shim, "_close_inherited_fds", lambda: order.append("close")),
+            patch.object(shim, "_apply_rlimits", lambda _p: order.append("limits")),
+            patch.object(shim.os, "execv", lambda *_a: order.append("exec") or self._stop_exec()),
+        ):
+            shim.main(
+                [
+                    "--rlimits=RLIMIT_NOFILE:1024",
+                    "--setsid",
+                    f"--chdir={tmp_path}",
+                    "--close-fds",
+                    "--",
+                    "/bin/true",
+                ]
+            )
+        assert order == ["setsid", f"chdir {tmp_path}", "close", "limits", "exec"]
+
+    def test_an_existing_session_leader_still_execs(self):
+        execs: list[tuple] = []
+
+        def already_leader():
+            raise PermissionError(1, "Operation not permitted")
+
+        with (
+            patch.object(shim.os, "setsid", already_leader),
+            patch.object(shim.os, "execv", lambda *a: execs.append(a) or self._stop_exec()),
+        ):
+            shim.main(["--setsid", "--", "/bin/true"])
+        assert len(execs) == 1
+
+    def test_an_unenterable_working_directory_never_reaches_exec(self, tmp_path, capsys):
+        execs: list[tuple] = []
+        with patch.object(shim.os, "execv", lambda *a: execs.append(a)):
+            rc = shim.main([f"--chdir={tmp_path / 'missing'}", "--", "/bin/true"])
+        assert rc == 127
+        assert execs == []
+        assert "cannot enter" in capsys.readouterr().err
+
+    def test_inherited_descriptors_above_stderr_are_closed(self):
+        closed: list[int] = []
+        with (
+            patch.object(shim.os, "listdir", lambda _d: ["0", "1", "2", "5", "9", "x"]),
+            patch.object(shim.os, "close", closed.append),
+        ):
+            shim._close_inherited_fds()
+        assert closed == [5, 9]
+
+    def test_a_close_failure_does_not_stop_the_others(self):
+        closed: list[int] = []
+
+        def close(fd):
+            closed.append(fd)
+            raise OSError(9, "Bad file descriptor")
+
+        with (
+            patch.object(shim.os, "listdir", lambda _d: ["4", "7"]),
+            patch.object(shim.os, "close", close),
+        ):
+            shim._close_inherited_fds()
+        assert closed == [4, 7]
+
+    def test_without_a_descriptor_listing_it_closes_by_range(self):
+        ranges: list[tuple[int, int]] = []
+
+        def no_listing(_d):
+            raise OSError(2, "No such file or directory")
+
+        with (
+            patch.object(shim.os, "listdir", no_listing),
+            patch.object(shim.os, "closerange", lambda lo, hi: ranges.append((lo, hi))),
+        ):
+            shim._close_inherited_fds()
+        assert len(ranges) == 1 and ranges[0][0] == 3 and ranges[0][1] > 3
+
+
 class TestShimRetryEndToEnd:
     @pytest.mark.asyncio
     async def test_target_appearing_inside_the_retry_window_is_executed(self, tmp_path):
@@ -366,6 +453,18 @@ class TestSpawnShimArgv:
         prefix = spawn_shim_argv(RLIMIT_PROFILE_SESSION_HOST)
         assert "--rlimits=RLIMIT_NOFILE:hard" in prefix
         assert "--oom-bias" not in prefix
+
+    def test_unbounded_session_host_keeps_headroom_and_is_an_oom_target(self):
+        # No cgroup scope over the tree: same NOFILE headroom, plus the bias.
+        prefix = spawn_shim_argv(RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST)
+        assert "--rlimits=RLIMIT_NOFILE:hard" in prefix
+        assert "--oom-bias" in prefix
+
+    def test_unbounded_session_host_fallback_keeps_the_session_host_preexec(self):
+        # A shim-less install drops the bias but must keep the descriptor
+        # headroom, not fall through to the tool's 1024 cap.
+        preexec = sandbox._preexec_for_profile(RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST)
+        assert preexec is sandbox.session_host_preexec()
 
     def test_build_profile_raises_the_descriptor_ceiling(self):
         tool = [a for a in spawn_shim_argv(RLIMIT_PROFILE_TOOL) if a.startswith("--rlimits=")]
@@ -1191,6 +1290,7 @@ class TestSyncReportedArgv:
 
 
 @posix_only
+@pytest.mark.xdist_group("spawn_exec_shim_real_child")
 class TestSyncRealChild:
     def test_child_is_capped_and_is_its_own_process(self):
         probe = (
@@ -1266,6 +1366,9 @@ class TestSyncRealChild:
 
 
 @posix_only
+# One worker runs every real interpreter child here, one after another, so they
+# never cold-start side by side on parallel workers (tests-are-deterministic D8).
+@pytest.mark.xdist_group("spawn_exec_shim_real_child")
 class TestRealChild:
     @pytest.mark.asyncio
     async def test_child_is_capped_and_is_its_own_process(self):
@@ -1326,3 +1429,43 @@ class TestRealChild:
         else:
             expected = gateway_hard
         assert int(out.decode().strip()) == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(sys.platform != "linux", reason="oom_score_adj is Linux-only")
+    async def test_unbounded_session_host_biases_what_its_harness_runs(self):
+        # The harness runs shell commands itself, outside any ``tool`` spawn, so
+        # the bias has to reach a GRANDCHILD by inheritance, not just the host.
+        with open("/proc/self/oom_score_adj", encoding="ascii") as fh:
+            own = int(fh.read())
+        # A runner already at 1000 still checks both expected scores, but only a
+        # runner below 1000 can tell the two profiles apart.
+        # The grandchild's bound sits inside the outer wait's, so a hung grandchild
+        # is killed by its own parent, which then exits non-zero with the reason.
+        grandchild_bound = default_timeout() / 2
+        probe = (
+            "import subprocess,sys;"
+            "print(open('/proc/self/oom_score_adj').read().strip(),"
+            " subprocess.run([sys.executable,'-c',"
+            "\"print(open('/proc/self/oom_score_adj').read().strip())\"],"
+            f" capture_output=True,text=True,timeout={grandchild_bound}).stdout.strip())"
+        )
+        scores = {}
+        for profile in (RLIMIT_PROFILE_SESSION_HOST, RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST):
+            proc = await create_subprocess_limited(
+                sys.executable,
+                "-c",
+                probe,
+                profile=profile,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                out, err = await finished(proc.communicate(), f"the {profile} probe's output")
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await finished(proc.wait(), f"the killed {profile} probe")
+            assert proc.returncode == 0, err.decode()
+            scores[profile] = tuple(int(v) for v in out.decode().split())
+        assert scores[RLIMIT_PROFILE_SESSION_HOST] == (own, own)
+        assert scores[RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST] == (1000, 1000)

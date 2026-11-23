@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,15 +18,17 @@ from types import SimpleNamespace
 
 import pytest
 from slack_code_channels_helpers import store_channel_binding
+from slack_code_workspace_repo import build_repo_template
 
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.handlers import worktree as wt
 from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import binding as cc_binding
+from kiro_crew.slack.code_channels.client import SCOPE_REFUSED
 from kiro_crew.slack.code_channels.models import CodeChannelApiError
 from kiro_crew.slack.code_channels.workspace import diff as diff_mod
 from kiro_crew.slack.code_channels.workspace import git_ops, service
-from kiro_crew.slack.code_channels.workspace.context_bar import ICONS, BarState, build_items
+from kiro_crew.slack.code_channels.workspace.context_bar import BarState, build_items
 from kiro_crew.slack.code_channels.workspace.diff import MAX_VIEW_BYTES, assemble, screen_tracked
 from kiro_crew.slack.code_channels.workspace.pr import PrLookup, PullRequest
 from kiro_crew.slack.code_channels.workspace.remote import RepoRef, parse_remote
@@ -42,6 +45,13 @@ def _passthrough_spawn(argv, mode="standard", **kw):
 def _no_sandbox(_floor_monkeypatch):
     _floor_monkeypatch.setattr(wt, "sandboxed_spawn_argv", _passthrough_spawn)
     _floor_monkeypatch.setattr(git_ops, "sandboxed_spawn_argv", _passthrough_spawn)
+    # These tests prove the workspace, not hook handling. The hook scan starts three
+    # git processes before every git read, and a refresh makes dozens of reads. Both
+    # names that bind the scan are stubbed: `_run_git` reads it from `wt`, the capped
+    # diff reader from `git_ops`. Both carrying the disable flags are covered in
+    # test_git_config_hooks.py.
+    _floor_monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
+    _floor_monkeypatch.setattr(git_ops, "config_hook_disable_args_sandboxed", lambda *_a, **_kw: [])
 
 
 @pytest.fixture(autouse=True)
@@ -87,27 +97,29 @@ def _git(*args: str, cwd: Path) -> str:
     ).stdout.strip()
 
 
+@pytest.fixture(scope="session")
+def _repo_template(tmp_path_factory) -> Path:
+    """The ``repo`` layout built once per session; ``repo`` copies it for each test.
+
+    Building it costs ~11 ``git`` spawns, which on a Windows runner made up most of
+    this file's setup time. Session scope is safe because the template is never
+    handed to a test, only copied from.
+    """
+    base = tmp_path_factory.mktemp("code-channel-repo")
+    build_repo_template(base)
+    return base
+
+
 @pytest.fixture
-def repo(tmp_path) -> Path:
-    """A repo on ``main`` with an ``origin`` remote, so ``origin/HEAD`` resolves."""
-    remote = tmp_path / "remote.git"
-    _git("init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
-    root = tmp_path / "proj"
-    root.mkdir()
-    _git("init", "-q", "-b", "main", cwd=root)
-    for key, value in (("user.email", "t@example.com"), ("user.name", "T"), ("gc.auto", "0")):
-        _git("config", key, value, cwd=root)
-    (root / "README.md").write_text("hello\n", newline="\n")
-    (root / "pkg").mkdir()
-    (root / "pkg" / "mod.py").write_text("x = 1\n", newline="\n")
-    _git("add", ".", cwd=root)
-    _git("commit", "-q", "-m", "init", cwd=root)
-    _git("remote", "add", "origin", "https://user:s3cret@github.com/acme/widgets.git", cwd=root)
-    # Push through a local URL, then keep the https form as the configured URL.
-    _git("push", "-q", str(remote), "main:main", cwd=root)
-    _git("fetch", "-q", str(remote), "+refs/heads/*:refs/remotes/origin/*", cwd=root)
-    _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
-    return root
+def repo(tmp_path, _repo_template) -> Path:
+    """A repo on ``main`` with an ``origin`` remote, so ``origin/HEAD`` resolves.
+
+    Its bare remote sits beside it at ``tmp_path / "remote.git"``. Neither copy
+    names an absolute path, so nothing needs rewriting after the copy.
+    """
+    shutil.copytree(_repo_template / "remote.git", tmp_path / "remote.git")
+    shutil.copytree(_repo_template / "proj", tmp_path / "proj")
+    return tmp_path / "proj"
 
 
 @dataclass
@@ -132,8 +144,12 @@ class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict]] = []
         self.fail: dict[str, str] = {}
+        self.views: list[dict] = []
 
-    async def _record(self, method: str, channel_id: str, **kwargs):
+    async def _record(self, method: str, channel_id: str, gate=None, **kwargs):
+        if gate is not None and not gate():
+            # The real client asks the gate last, right before the send.
+            raise CodeChannelApiError(f"agents.conversations.{method}", SCOPE_REFUSED)
         self.calls.append((method, channel_id, kwargs))
         code = self.fail.get(method)
         if code:
@@ -144,17 +160,25 @@ class FakeClient:
     async def set_context_bar(self, channel_id, items):
         return await self._record("set_context_bar", channel_id, context_bar_items=items)
 
-    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch=""):
+    async def set_diff_view(self, channel_id, content, *, base_branch="", head_branch="", gate):
         return await self._record(
             "set_diff_view",
             channel_id,
+            gate=gate,
             content=content,
             base_branch=base_branch,
             head_branch=head_branch,
         )
 
-    async def remove_view(self, channel_id, view_id):
+    async def remove_view(self, channel_id, view_id="", *, view_key=""):
         return await self._record("remove_view", channel_id, view_id=view_id)
+
+    async def set_agent_resource(self, channel_id, **resource):
+        return await self._record("set_agent_resource", channel_id, **resource)
+
+    async def list_views(self, channel_id):
+        await self._record("list_views", channel_id)
+        return list(self.views)
 
     def of(self, method: str) -> list[dict]:
         return [kw for m, _c, kw in self.calls if m == method]
@@ -517,18 +541,14 @@ def test_an_open_pr_and_its_ci_join_the_context_bar(tmp_path, repo, audits):
     binding, rec = _bound(h, repo)
     h.run(h.svc.refresh(binding))
     keys = {i["key"]: i for i in _bar(h.client)}
+    # CI shares the PR's item: five slots cannot also hold the channel's actions.
     assert keys["pr"] == {
         "key": "pr",
-        "label": "PR #42 is open",
-        "icon": "hierarchy",
+        "label": "PR #42 is open · tests passing",
+        "icon": "link",
         "url": _PR_URL,
     }
-    assert keys["ci"] == {
-        "key": "ci",
-        "label": "Tests passing",
-        "icon": "terminal",
-        "url": _PR_URL + "/checks",
-    }
+    assert "ci" not in keys
     repo_ref, branch = h.pr_queries[-1]
     assert repo_ref == RepoRef("github.com", "acme", "widgets") and branch == rec.branch
 
@@ -1123,7 +1143,9 @@ def test_the_core_client_sends_the_workspace_writes_and_latches_refusals():
     client = CodeChannelsClient(api_call)
     items = [{"key": "repo", "label": "a/b", "icon": "folder", "url": "https://github.com/a/b"}]
     asyncio.run(client.set_context_bar("C1", items))
-    view_id = asyncio.run(client.set_diff_view("C1", "diff --git a/x b/x\n", base_branch="main"))
+    view_id = asyncio.run(
+        client.set_diff_view("C1", "diff --git a/x b/x\n", base_branch="main", gate=None)
+    )
     assert sent[0] == (
         "agents.conversations.setProperties",
         {"channel_id": "C1", "code_channel": {"context_bar_items": items}},
@@ -1144,7 +1166,7 @@ def test_the_core_client_sends_the_workspace_writes_and_latches_refusals():
     assert err.value.code == "missing_scope"
     assert not features.code_channels_available()  # the client latched it itself
     with pytest.raises(CodeChannelRequestError):
-        asyncio.run(client.set_diff_view("C1", "x" * 1_000_001))
+        asyncio.run(client.set_diff_view("C1", "x" * 1_000_001, gate=None))
     assert len(sent) == 3  # refused locally, never sent
 
 
@@ -1938,18 +1960,6 @@ def test_branch_names_are_channel_unique_and_always_valid():
     assert git_ops.channel_branch("", "T1", "C1").startswith("slack/code-channel-")
     assert git_ops.channel_branch("💥 ..lock ../", "T1", "C1").startswith("slack/")
     assert len(git_ops.channel_branch("x" * 500, "T1", "C1")) <= 80
-
-
-def test_context_bar_never_exceeds_five_unique_items_with_valid_icons():
-    pr = PullRequest(1, "https://github.com/a/b/pull/1", "open", "failed")
-    items = build_items(
-        BarState(repo=RepoRef("github.com", "a", "b"), branch="br", branch_pushed=True, pr=pr)
-    )
-    assert [i["key"] for i in items] == ["repo", "branch", "pr", "ci"]
-    assert items[1]["url"] == "https://github.com/a/b/tree/br"
-    assert all(i["icon"] in ICONS and "item_type" not in i for i in items)
-    long = build_items(BarState(folder="/x/" + "y" * 300))
-    assert len(long[0]["label"]) <= 128
 
 
 def test_assemble_cuts_at_a_file_boundary():

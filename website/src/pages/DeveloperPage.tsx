@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { settingsPath } from '../components/settingsPath'
-import { AGENT_HARNESS_SETTINGS_TAB } from './developer/kiroSignInLink'
+import { AGENT_HARNESS_SETTINGS_TAB, isKiroSignInHighlight, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
+import { isKasEngineHighlight, KAS_ENGINE_PATH } from './developer/kasEngineLink'
 import { DEVELOPER_DEBUG_TOOLS_SUB, DEVELOPER_FEATURE_PREVIEWS_SUB, DEVELOPER_SUBS, LEGACY_DEVELOPER_MCP_POOL_SUB } from './settings/developerSubs'
 import { LOCKED_DEBUG_TOOLS, controlLocked } from '../utils/editionLocks'
 import { FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from './settings/FeaturePreviewsSection'
@@ -35,7 +36,9 @@ export default function DeveloperPage() {
     qs.delete('tab')
     if (tab === LEGACY_AGENT_BACKEND_TAB) {
       const highlight = qs.get('highlight') ?? undefined
-      navigate(settingsPath({ tab: AGENT_HARNESS_SETTINGS_TAB, highlight }), { replace: true })
+      // The sign-in card that tab carried has a tab of its own now.
+      if (isKiroSignInHighlight(highlight)) navigate(KIRO_SIGN_IN_PATH, { replace: true })
+      else navigate(settingsPath({ tab: AGENT_HARNESS_SETTINGS_TAB, highlight }), { replace: true })
       return
     }
     // MCP Management lives on Customize → MCP Servers, not on Developer.
@@ -46,6 +49,11 @@ export default function DeveloperPage() {
     // An LTS build hides Debug tools (RFC D12), so its old link lands on the first page.
     const hidden = tab === DEVELOPER_DEBUG_TOOLS_SUB && controlLocked(LOCKED_DEBUG_TOOLS)
     const sub = tab && !hidden && DEVELOPER_SUBS.includes(tab) ? tab : null
+    // The engine switch left Feature Previews for the KAS row on Agent Harness.
+    if (isKasEngineHighlight(qs.get('highlight'))) {
+      navigate(KAS_ENGINE_PATH, { replace: true })
+      return
+    }
     // The old Feature Previews link rings the whole section it names.
     const highlight = qs.get('highlight')
       ?? (sub === DEVELOPER_FEATURE_PREVIEWS_SUB ? `key:${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}` : undefined)

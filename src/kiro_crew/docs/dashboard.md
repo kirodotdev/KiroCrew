@@ -75,7 +75,7 @@ A board column's **Filter & manage tags** view lists the same tags. There you ca
 
 ### Settings (`/settings/*`)
 
-Settings uses tabbed panels for Overview, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, and About (which also holds the release notes). `/overview` redirects to `/settings/overview`.
+Settings uses tabbed panels for Overview, Kiro account, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Messaging Channels, Browser, Computer Use, Webhooks, Remote Crew, People, Privacy, Security, Connections, Secrets, Session Environments, Developer, and About (which also holds the release notes). Kiro account shows when the build offers Kiro sign-in or has a credit reading; Webhooks and Session Environments show only with their feature preview on; People shows only while the gateway runs the Shared Crew preview. `/overview` redirects to `/settings/overview`.
 
 ### Customize (`/capabilities`)
 
@@ -87,7 +87,7 @@ Create and manage cron jobs, organize them in folders, and switch between list, 
 
 ### Developer (`/settings/developer`)
 
-**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**. MCP Management is no longer a Developer page: `/developer?tab=mcp-pool` and `/settings/developer/mcp-pool` redirect to **MCP Servers**, where it sits at the top, above the Servers and Sharing views.
+**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed, except Debug tools, which an LTS build hides. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**. MCP Management is no longer a Developer page: `/developer?tab=mcp-pool` and `/settings/developer/mcp-pool` redirect to **MCP Servers**, where it sits at the top, above the Servers and Sharing views.
 
 **Telemetry → Spend** ranks sessions by what they cost. When a session made commits or opened pull requests, its row also shows what it delivered: commits, lines added and removed, pull requests, how many are merged, and the session's spend per merged pull request. The gateway reads these from the session's own transcript for the 50 costliest sessions in the window, and counts a commit only when git printed its summary line for it, so a quiet commit (`git commit -q`) is not counted, and a pull request only when its link was printed, so amended commits and commits whose output was mixed with other text are missed and the figures are minimums. A commit preview (`git commit --dry-run` and the formats that imply it) is not a commit, and an incognito or temporary session gives no figures. A pull request the gateway has not looked up yet is not counted as merged; a `≥` before the merged count means more may be merged. A session with nothing found shows `—`, not zero. The tab also lists up to two recommendations, each with the share of the window's spend it applies to: turns above 600K tokens of context, and the model that costs the most per turn when a model at most half its price per turn was also used (each model needs at least 5 recorded turns). A recommendation that applies to less than 10% of the spend is not listed.
 
@@ -150,7 +150,9 @@ ends the shell and every process it started, logs a warning, records a
 When a new terminal would exceed `dashboard.terminal.max_sessions`, the shell
 that has had no browser attached the longest (at least a minute) is ended the
 same way to make room, so shells left behind on another device cannot block new
-terminals. A gateway restart also ends every shell. Run work that must outlive either inside
+terminals. With no such shell the new one is refused with an `error` frame
+(`code: "terminal_max_sessions"`); its tab says the server is at its limit,
+and offers Reconnect for after you close another terminal. The dashboard sets no tab count of its own. A gateway restart also ends every shell. Run work that must outlive either inside
 `tmux` or `screen`.
 
 **Selection toolbar.** Highlighting text in a terminal shows a floating toolbar with **Send to chat** and **Copy**. Send to chat appends the selection to the chat composer draft (never overwrites the draft, never auto-sends), annotated with a `Terminal output (path):` header — using the live `cwd` value when the backend has reported one, else the terminal's spawn directory — and wrapped in a code fence so the agent reads it as literal output. Copy places the raw selection on the clipboard.

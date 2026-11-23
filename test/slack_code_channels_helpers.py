@@ -18,7 +18,7 @@ from kiro_crew.config.loader import ACTIVATION_MENTION, ChannelConfig
 from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import agent_picker
 from kiro_crew.slack.code_channels import binding as binding_mod
-from kiro_crew.slack.code_channels import recognition, routing, status
+from kiro_crew.slack.code_channels import recognition, routing, status, views
 from kiro_crew.slack.code_channels.classifier import RouteDecision
 from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
 from kiro_crew.slack.handler import LinkedRoute
@@ -156,6 +156,22 @@ class SelRecorder:
         return [r for r in self.rows if r["operation"] == operation]
 
 
+def stop_running_turn(channel: str) -> None:
+    """A Stop of *channel*'s running turn at the stop fence (``routing._stop_bound``)."""
+    from kiro_crew.slack.code_channels import surface
+
+    surface._turn_started_at[channel] = surface._stop_seq
+    surface.mark_stopped(channel)
+    assert surface.channel_stopped(channel)
+
+
+def start_new_turn(channel: str) -> None:
+    """*channel*'s next turn starts: an earlier Stop leaves it unfenced."""
+    from kiro_crew.slack.code_channels import surface
+
+    surface._turn_started_at[channel] = surface._stop_seq
+
+
 def channel_info(
     channel: str,
     *,
@@ -181,6 +197,15 @@ def _reset_routing() -> None:
     routing._bind_locks.clear()
     routing._follow_up_locks.clear()
     routing._PENDING_TEMPS.clear()
+    status._ended.clear()
+    from kiro_crew.slack.code_channels import surface
+
+    surface._stopped_at.clear()
+    surface._turn_started_at.clear()
+    # asyncio locks bind to the loop that first waits on one: never carried over.
+    status._status_locks.clear()
+    views._locks.clear()
+    views._record_locks.clear()
 
 
 class Env:
@@ -193,6 +218,8 @@ class Env:
         self.store = CodeChannelStore(tmp_path / "slack-code-channels.json")
         self.on = True
         self.defaults: dict[str, str] = {}
+        #: ``agent.default_agent``: what a zero-config code channel runs.
+        self.default_agent = "slack-default"
         self.activation: dict[str, str] = {}
         self.decision = RouteDecision("code_channel", title="Fix flaky login test")
         self.classified: list[str] = []
@@ -223,7 +250,7 @@ class Env:
                         reasoning_effort=self.defaults.get("reasoning_effort", ""),
                     ),
                 ),
-                agent=SimpleNamespace(default_agent="slack-default"),
+                agent=SimpleNamespace(default_agent=self.default_agent),
                 channel_config=lambda ch: ChannelConfig(
                     activation=self.activation.get(ch, ACTIVATION_MENTION)
                 ),
@@ -324,6 +351,16 @@ class Env:
 def make_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Iterator[Env]:
     """Body of each test module's ``env`` fixture (a fixture cannot be imported
     without tripping flake8's redefinition check)."""
+    from kiro_crew.slack.agent_sessions import session_events
+    from kiro_crew.slack.events import SeenCache
+
+    # Stop events are deduplicated by their event ts, which tests reuse: fresh
+    # per test, so a repeated or reordered run never reads one as a redelivery.
+    monkeypatch.setattr(session_events, "_SEEN_EVENTS", SeenCache(512))
+    from kiro_crew.slack.code_channels import surface
+
+    # An archive a test makes (the in-process fence) never reaches the next test.
+    monkeypatch.setattr(surface, "_archived_here", set())
     e = Env(monkeypatch, tmp_path)
     yield e
     set_store(None)

@@ -63,7 +63,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.agent_sdk import host_auth, kas_model_catalog
+from kiro_crew.agent_sdk import host_auth, kas_machine, kas_model_catalog
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, model_registry_namespace
 from kiro_crew.dashboard.kiro_readiness import is_probe_timeout_refusal
 from kiro_crew.executors import maintenance_executor
@@ -134,7 +134,10 @@ async def api_models_kas_bundle(request: web.Request) -> web.Response:
             },
             status=503,
         )
-    if not await asyncio.to_thread(_vault_signed_in):
+    # KAS machine mode (``agent_sdk/kas_machine.py``): the engine's token file is its
+    # sign-in, so the vault is not asked.
+    machine = await asyncio.to_thread(kas_machine.configured_machine_auth)
+    if machine is None and not await asyncio.to_thread(_vault_signed_in):
         return web.json_response(
             {
                 "error": host_auth.signed_out_message(ACP_BACKEND_KAS),
@@ -143,6 +146,17 @@ async def api_models_kas_bundle(request: web.Request) -> web.Response:
             status=503,
         )
     return await _serve_recording(request, start_probe=True)
+
+
+async def api_models_kas_workload(request: web.Request) -> web.Response:
+    """A workload-identity host's ``GET /api/models`` off the bundle: the recording.
+
+    kiro-cli is never signed in there, so its ``--list-models`` cannot answer.
+    The engine signs in with the Crew's JWT-SVID and records its own list, served
+    as :func:`api_models_kas_crew_relay` serves it: nothing is spawned, and a cold
+    read answers ``auto``.
+    """
+    return await _serve_recording(request, start_probe=False)
 
 
 def _crew_sign_in_starts_spawn() -> bool:

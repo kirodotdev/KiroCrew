@@ -28,10 +28,12 @@ pretend the helper ran. Use the host interfaces above for general monitoring.
 
 `green_age.py` answers the separate question of whether a clean rollup still
 describes today's base: `0` fresh, `30` the base moved in files this PR also
-touches since the commit this head's CI ran on (an authorized sync, per the
-conflict rule above), `2` could not measure — which is neither fresh nor stale.
-`pr_status.py --json` carries the same reading in `advisory.green_age`, so a
-cycle that already polled does not need a second call. Keep it out of the stall
+touches since the commit this head's CI ran on (a local rebase and re-check,
+pushed only when it conflicts or goes red), `2` could not measure — which is neither fresh nor stale.
+`pr_status.py --json` carries a reading in `advisory.green_age` measured on the
+PR's published head, so it keeps saying 30 after a clean re-check that stayed
+local. Take 30 or 0 from `green_age.py` run in the loop's own checkout, which
+measures the local head. Keep it out of the stall
 key: on a busy repository the base moves constantly, and a commit count in the
 key would reset the streak forever.
 

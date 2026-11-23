@@ -638,6 +638,15 @@ class ConversationLog:
         """
         return self._listing_index.has_messages(key)
 
+    def listing_identities(self) -> dict[str, CacheIdentity] | None:
+        """The listing index's cache identity per transcript stem, else None.
+
+        For the rows :meth:`list_sessions_indexed` just returned: as current as those
+        rows and costs no ``stat``. A caller passes one to
+        :meth:`read_file_change_messages` as ``identity``.
+        """
+        return self._listing_index.identities()
+
     def session_mtime(self, key: str) -> float | None:
         """Return the session file's mtime, or None if it can't be stat'd.
 
@@ -778,8 +787,10 @@ class ConversationLog:
     def read_messages(self, key: str) -> list[dict]:
         return self._read_projection.read_messages(key)
 
-    def read_file_change_messages(self, key: str) -> list[dict]:
-        return self._read_projection.read_file_change_messages(key)
+    def read_file_change_messages(
+        self, key: str, *, identity: CacheIdentity | None = None
+    ) -> list[dict]:
+        return self._read_projection.read_file_change_messages(key, identity=identity)
 
     def read_messages_chained(self, key: str) -> list[dict]:
         return self._read_projection.read_messages_chained(key)
@@ -983,6 +994,9 @@ class ConversationLog:
 
     def last_row_ts(self, key: str) -> str | None:
         return self._read_projection.last_row_ts(key)
+
+    def last_speech_row_ts(self, key: str) -> str | None:
+        return self._read_projection.last_speech_row_ts(key)
 
     @staticmethod
     def _cache_key_identities(key: str) -> tuple[str, ...]:

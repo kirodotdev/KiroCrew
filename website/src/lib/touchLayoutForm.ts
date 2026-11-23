@@ -1,6 +1,37 @@
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+
+export const TOUCH_LAYOUT_KEY = 'kc-touch-layout'
+export const TOUCH_LAYOUT_CHOICES = ['auto', 'phone', 'desktop'] as const
+export type TouchLayoutChoice = (typeof TOUCH_LAYOUT_CHOICES)[number]
+/** Fired on `window` after the choice changes, so `useIsMobile` re-reads the form at once. */
+export const TOUCH_LAYOUT_CHANGED_EVENT = 'mc:touch-layout-changed'
+
+// The choice a write could not save (site storage blocked or full). It wins over
+// whatever storage still holds, so the pick applies to this page; the next write
+// that lands clears it and storage is the source again.
+let unsavedChoice: TouchLayoutChoice | null = null
+
+/** The saved choice; anything missing or unknown reads as Automatic. */
+export function readTouchLayoutChoice(): TouchLayoutChoice {
+  const stored = safeGetItem(TOUCH_LAYOUT_KEY)
+  return unsavedChoice ?? TOUCH_LAYOUT_CHOICES.find(choice => choice === stored) ?? 'auto'
+}
+
+export function saveTouchLayoutChoice(choice: TouchLayoutChoice) {
+  unsavedChoice = safeSetItem(TOUCH_LAYOUT_KEY, choice) ? null : choice
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(TOUCH_LAYOUT_CHANGED_EVENT))
+}
+
+/** Coarse primary pointer that cannot hover: the devices the choice applies to. */
+export function isTouchFirst(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  return window.matchMedia('(pointer: coarse)').matches && window.matchMedia('(hover: none)').matches
+}
+
 /**
- * The layout form a touch-first device asks for, read from the browser's own
- * mobile/desktop mode rather than the window's width.
+ * The layout form a touch-first device asks for: the person's own "Touch screen
+ * layout" choice, else the browser's own mobile/desktop mode rather than the
+ * window's width.
  *
  * A touch-first device is one whose primary pointer is coarse AND cannot hover.
  * On it the browser already knows which form the person wants: a phone browser
@@ -9,17 +40,20 @@
  * unfolded foldable in landscape is ~950px wide, past the 768px breakpoint, and
  * got the desktop form with none of the phone's touch drawers.
  *
- * Returns `true` (phone form) for a mobile-mode browser on a touch-first device,
- * or `null` (the width breakpoint decides, as before) for everything else,
- * including a desktop-mode browser: it gets the desktop form from 768px up.
+ * A home-screen web app or an in-app browser has no such toggle, so Settings >
+ * Display > View offers the same choice (Automatic, Phone layout, Desktop layout
+ * on wide screens). It is saved on this browser only and read only here, after
+ * the touch-first test, so a computer with a mouse keeps the width breakpoint.
  *
- * shortcut: a home-screen web app has no "Request desktop site" toggle, so it
- * keeps the browser's default mode; revisit if that needs a setting of its own.
+ * Returns `true` (phone form) for the Phone choice, or on Automatic for a
+ * mobile-mode browser. Returns `null` (the width breakpoint decides, as before)
+ * for everything else, including the Desktop choice and a desktop-mode browser:
+ * both get the desktop form from 768px up and keep the phone form below it.
  */
 export function touchFirstForm(): true | null {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return null
-  const touchFirst = window.matchMedia('(pointer: coarse)').matches && window.matchMedia('(hover: none)').matches
-  if (!touchFirst) return null
+  if (!isTouchFirst()) return null
+  const choice = readTouchLayoutChoice()
+  if (choice !== 'auto') return choice === 'phone' ? true : null
   // Mobile mode promotes to the phone form at any width. Desktop mode leaves
   // the width to decide: below 768px (iPad Split View or Slide Over, a tablet
   // in multi-window) the desktop top bar's collapse ladder has no rungs, so

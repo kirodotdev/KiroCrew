@@ -15,6 +15,7 @@ import logging
 import struct
 from typing import TYPE_CHECKING, Callable, cast
 
+from kiro_crew.vector_memory_runtime import lesson_candidates as _lesson_candidates
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 
 if TYPE_CHECKING:
@@ -538,13 +539,10 @@ def backfill_lesson_embeddings(
     """Embed lesson rows whose vector is NULL. Returns the count embedded.
 
     Lesson vectors drive semantic dedup and contradiction detection
-    (:meth:`write_lesson`, :meth:`find_contradiction_candidates`). They are
-    otherwise only refilled lazily inside ``write_lesson``, capped at
-    ``_MAX_BACKFILLS_PER_CALL`` per call — fine for the handful of legacy rows
-    that cap was written for, but not for a wholesale invalidation: after
+    (:meth:`write_lesson`, :meth:`find_contradiction_candidates`). This sweep is
+    their only refill: ``write_lesson`` embeds its own rule and no stored one. After
     :meth:`reconcile_embedding_space` clears every lesson vector on a model
-    change, lesson writes are rare enough that recovery could take
-    arbitrarily long, and until then dedup silently degrades and can accept a
+    change, dedup degrades until the sweep has run, and can accept a
     duplicate or contradictory lesson.
 
     Scoped to ``lesson.*`` keys because lessons embed different TEXT than
@@ -616,6 +614,8 @@ def backfill_lesson_embeddings(
                 f"AND is_deleted = 0{store._sem_guard}",
                 (blob, row["key"], row["value_json"]),
             )
+            # The candidate index keeps a sketch of each stored vector: this row has one now.
+            _lesson_candidates.note_key_write(store, row["key"])
         embedded += 1
         if progress is not None:
             progress(embedded, total)

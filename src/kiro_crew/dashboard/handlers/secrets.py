@@ -232,22 +232,6 @@ async def reserved_name_check(request: web.Request) -> Callable[[str], bool]:
     return lambda name: _managed_name_owned(name) is not None or channel(name)
 
 
-#: The feature preview (``dashboard.feature_previews``) that adds typed items to
-#: the listing. Off, ``GET /api/secrets`` answers exactly as before it existed.
-SECRETS_VAULT_PREVIEW = "secrets_vault"
-
-
-def _secrets_vault_preview_on() -> bool:
-    """Whether :data:`SECRETS_VAULT_PREVIEW` is ``true``. Blocking; unreadable reads as off."""
-    from kiro_crew.edition_locks import feature_previews
-
-    try:
-        previews = feature_previews(KiroCrewConfig.load().dashboard.feature_previews)
-    except Exception:  # noqa: BLE001 -- an unreadable config reads as off
-        return False
-    return isinstance(previews, dict) and previews.get(SECRETS_VAULT_PREVIEW) is True
-
-
 def _managed_secret_config() -> tuple[list[str], bool, bool, bool, list[str]]:
     """Return managed-consumer config without making vault listing fail."""
     try:
@@ -489,30 +473,25 @@ async def api_secrets_list(request: web.Request) -> web.Response:
     # duration of that read, stalling every other request. `SecretVault.set` and
     # `.delete` already offload internally via `asyncio.to_thread`; this is the
     # one read path that does not, so it is wrapped here.
-    # Preview off: names only, read without decrypting, as before typed items.
-    listed: list[dict[str, object]] | None = None
-    if not await asyncio.to_thread(_secrets_vault_preview_on):
-        names: list[str] = sorted(await asyncio.to_thread(vault.list_names))
-    else:
-        try:
-            listed = await asyncio.to_thread(_list_items, vault)
-        except (OSError, ValueError) as exc:
-            # The key (or the store) cannot be read, so no typed item can be
-            # shown. One typed error, not every item marked corrupt: the fix is
-            # restoring the key, and nothing should be deleted. The OS message
-            # names a local path, so it is logged and never returned.
-            logger.warning("Vault listing failed: %s", exc)
-            return web.json_response(
-                {
-                    "error": (
-                        "The vault could not be read. If you restored a backup, "
-                        "restore its .vault_key file too, then reload."
-                    ),
-                    "code": "vault_unreadable",
-                },
-                status=500,
-            )
-        names = [str(item["name"]) for item in listed]
+    try:
+        listed = await asyncio.to_thread(_list_items, vault)
+    except (OSError, ValueError) as exc:
+        # The key (or the store) cannot be read, so no typed item can be
+        # shown. One typed error, not every item marked corrupt: the fix is
+        # restoring the key, and nothing should be deleted. The OS message
+        # names a local path, so it is logged and never returned.
+        logger.warning("Vault listing failed: %s", exc)
+        return web.json_response(
+            {
+                "error": (
+                    "The vault could not be read. If you restored a backup, "
+                    "restore its .vault_key file too, then reload."
+                ),
+                "code": "vault_unreadable",
+            },
+            status=500,
+        )
+    names = [str(item["name"]) for item in listed]
     (
         jira_hosts,
         jira_global_applicable,
@@ -522,6 +501,7 @@ async def api_secrets_list(request: web.Request) -> web.Response:
     ) = await asyncio.to_thread(_managed_secret_config)
     payload: dict[str, object] = {
         "names": names,
+        "items": listed,
         "managed": _managed_secret_catalog(
             names,
             jira_hosts,
@@ -537,8 +517,6 @@ async def api_secrets_list(request: web.Request) -> web.Response:
         wakatime_enabled,
         gerrit_hosts,
     )
-    if listed is not None:
-        payload["items"] = listed
     if unused:
         payload["unused"] = unused
     if managed_config_error:

@@ -126,6 +126,10 @@ def _orch_attrs_consumed(channel_type: str) -> set[str]:
 _HOIST_EXEMPT: dict[str, frozenset[str]] = {
     # ``getattr(orch, "_weixin_home", "") or str(data_home())``.
     "weixin": frozenset({"_weixin_home"}),
+    # ``getattr(orch, "_feishu_sdk_install_task", None)``: the one-per-start
+    # SDK install handle. A hoist would reset it on ``restart_channel`` and
+    # let a second install start.
+    "feishu": frozenset({"_feishu_sdk_install_task"}),
 }
 
 
@@ -1161,8 +1165,8 @@ class TestChannelRestartRequired:
     def test_a_restart_marked_field_requires_a_restart(self):
         from kiro_crew.config.schema import requires_restart
 
-        assert requires_restart("slack.command") is True
-        assert channel_restart_required("slack", ["command"]) is True
+        assert requires_restart("whatsapp.db_path") is True
+        assert channel_restart_required("whatsapp", ["db_path"]) is True
 
     def test_a_live_field_does_not(self):
         assert channel_restart_required("slack", ["open_channels"]) is False
@@ -1188,7 +1192,7 @@ class TestChannelRestartRequired:
         assert channel_restart_required("whatsapp", ["db_path"]) is True
 
     def test_a_mixed_save_requires_a_restart_if_any_field_does(self):
-        assert channel_restart_required("slack", ["open_channels", "command"]) is True
+        assert channel_restart_required("whatsapp", ["session_folder", "db_path"]) is True
 
     def test_an_env_write_always_requires_a_restart(self):
         assert channel_restart_required("whatsapp", [], env_updates={"WA_TOKEN": "x"}) is True
@@ -1507,11 +1511,31 @@ class TestCredentialChangeRestartsChannel:
         ), "the credential path is deferred for retry, not dropped"
 
 
+class TestSlackCommandIsLive:
+    """``slack.command`` needs no restart: the router answers every manifest
+    name, and the applier refreshes the name help text and the Home tab show."""
+
+    def test_the_settings_page_promises_no_restart(self):
+        assert channel_restart_required("slack", ["command"]) is False
+
+    def test_the_applier_refreshes_the_command_without_a_restart_notice(self, caplog):
+        import logging
+
+        orch = _make_orchestrator()
+        orch.slack_command = "kirocrew"
+        cfg = KiroCrewConfig()
+        cfg.slack.command = "kirocrew-alice"
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(orch._on_slack_config_change(_change(cfg, "slack.command")))
+        assert orch.slack_command == "kirocrew-alice"
+        assert not [r for r in caplog.records if "slack.command" in r.getMessage()]
+
+
 class TestSlackCredentialChangeWarns:
     def test_a_slack_token_change_logs_a_restart_needed_notice(self, caplog):
         """Slack's socket is host-managed, so a .env token change cannot be applied
         live; the applier tells the operator a restart is needed (the honest
-        fallback), the same shape as slack.command."""
+        fallback)."""
         import logging
 
         orch = _make_orchestrator()

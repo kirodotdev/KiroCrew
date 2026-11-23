@@ -1,8 +1,9 @@
 # Kiro Crew Documentation
 
 Kiro Crew is a personal, autonomous AI agent that runs locally on your own
-machine. It is powered by kiro-cli (KiroACP) and reaches tools over the Model
-Context Protocol (MCP). Everything below is the reference for the features you
+machine. It drives a Kiro agent engine over the Agent Client Protocol (by
+default KAS, kiro-cli's v3 engine, reached through kiro-cli) and reaches tools
+over the Model Context Protocol (MCP). Everything below is the reference for the features you
 can reach from the dashboard, the CLI, or a connected messaging channel.
 
 ## Quick Start
@@ -19,7 +20,9 @@ Then start the gateway and open the dashboard:
 kirocrew gateway     # → http://localhost:5476
 ```
 
-`kiro-cli` must be installed, on your `PATH`, and logged in. See
+`kiro-cli` must be installed, on your `PATH`, and logged in, unless you run
+Kiro Crew's own engine bundle (`kirocrew kas install`, see `agent.kas_bundle` in
+[Configuration](configuration.md#agent)). See
 [Getting Started](getting-started.md) for the source install, the pip channel
 index, first-time setup, and connecting messaging channels. Already using
 kiro-cli? [Coming from kiro-cli](coming-from-kiro-cli.md) explains what carries
@@ -55,7 +58,7 @@ over and what changes.
 | [Work Ledger](work-ledger.md) | Split a goal across one session per item: a conductor dispatches workers, reads their status as data, and settles every completion claim against an acceptance condition |
 | [Browser Control](browser-control.md) | Drive a real web page from the dashboard's Browser panel: navigate, snapshot, click, type, screenshot |
 | [Computer Use](computer-use.md) | Read and drive native desktop applications through the accessibility layer; opt-in and off by default |
-| [Jev Decisions](decisions.md) | Let a small fast model choose the automatic skill for a sampled conversation, choose whether a message sent mid-turn steers or queues, flag a risky tool call on its own card without changing any permission, fall back to what shipped whenever it cannot, and keep a basic log of the calls |
+| [Jev Decisions](decisions.md) | Let a small fast model choose the automatic skill, the model for a chat turn, whether a message sent mid-turn steers or queues, which recalled memories reach the prompt and whether a watching loop wakes its session; flag a risky tool call on its own card without changing any permission; fall back to what shipped whenever it cannot, and keep a basic log of the calls |
 
 ## Additional Features
 
@@ -83,16 +86,17 @@ documented by their own in-panel help.
 | Tab | Covers | Guide |
 |---|---|---|
 | Overview | Gateway status and the settings you change most | — |
+| Kiro account | Signing in to Kiro and your plan's credit reading; shown when the build offers Kiro sign-in or has a credit reading | [Coming from kiro-cli](coming-from-kiro-cli.md) |
 | Import / Export | Bringing data in from another AI agent, and backing up or restoring Kiro Crew configuration | [Snapshot and restore](snapshot-and-restore.md) |
 | Agent Harness | Which agent new sessions start | — |
 | Chat | Composer behaviour, queued messages, feature tips | [Feature Tips](feature-tips.md) |
-| Display | Theme, language, and layout; in the desktop app, whether closing the window keeps the app running or quits it, and whether the tray icon shows | — |
+| Display | Theme, language, and layout; in the desktop app, whether closing the window keeps the app running or quits it, whether the tray icon shows, and whether minimizing hides the window to the tray | — |
 | Voice | Speech-to-text and spoken replies | [Configuration](configuration.md) |
 | Notifications | Where a proactive message is delivered | — |
 | Shortcuts | Keyboard bindings | — |
 | Skills | Whether sessions auto-generate skills, and whether a generated one needs your approval; installed skills live under Customize | [Skills](skills.md) |
 | Messaging Channels | Per-channel setup and access control | [Channel capabilities](channel-capabilities.md) |
-| Browser | Installing the browser engine and the attach token | [Browser control](browser-control.md) |
+| Browser | Which browser Kiro drives, how it connects, and the live view in chat | [Browser control](browser-control.md) |
 | Computer Use | Driving native desktop apps; off by default | [Computer use](computer-use.md) |
 | Webhooks | Inbound tokens and request signing — hidden unless you enable it under Feature Previews | [Inbound webhooks](inbound-webhooks.md) |
 | Remote Crew | Additional gateways this dashboard can reach | [Remote crew](remote-crew.md) |
@@ -102,6 +106,11 @@ documented by their own in-panel help.
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
 | Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage and the other developer views | [Dashboard](dashboard.md) |
 | About | Version, update channel, check for updates, release notes, and license | [Getting Started](getting-started.md) |
+
+Two more tabs appear only behind a preview: **Session Environments** (remote
+workspaces a session can start in) once its Feature Previews switch is on, and
+**People** (who else may use this Crew) while the gateway runs with
+`KIROCREW_SHARED_CREW_PREVIEW=1`.
 
 ## Chat Channels
 

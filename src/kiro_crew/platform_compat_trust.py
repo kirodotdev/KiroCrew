@@ -335,6 +335,12 @@ def trusted_system_bin_quiet(name: str) -> str | None:
 #: therefore proves nothing; :func:`trusted_aws_bin` gates it on ownership.
 _LOCAL_SYSTEM_BIN_DIR = "/usr/local/bin"
 
+#: The bin dirs that end the ``PATH`` of a Kiro Crew service on Linux and macOS,
+#: in search order: the local install prefix, then the two base dirs. Dev Fleet
+#: puts them after the gateway's own entries when a cutover writes the restarted
+#: gateway's ``PATH``. Windows has no such dirs, and no Windows caller reads this.
+POSIX_DEFAULT_BIN_DIRS: tuple[str, ...] = (_LOCAL_SYSTEM_BIN_DIR, "/usr/bin", "/bin")
+
 #: Set once the ``/usr/local/bin/aws`` copy has been declined and logged.
 _UNTRUSTED_AWS_BIN_LOGGED = False
 

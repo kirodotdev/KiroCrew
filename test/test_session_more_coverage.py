@@ -48,6 +48,7 @@ from kiro_crew.session import (
     SessionManager,
     _Session,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -80,6 +81,8 @@ def _provider(**attrs):
         "is_process_alive": lambda: True,
         # The registry calls this on a race loser before its shutdown.
         "disown_work_dir": lambda: None,
+        # ``LLMProvider``'s default: no spawn tier to compare.
+        "sandbox_mode": None,
     }
     base.update(attrs)
     return SimpleNamespace(**base)
@@ -663,7 +666,8 @@ class TestGetBgSessionRespawn:
             is_alive=lambda: True,
             has_active_sessions=lambda: True,
             _is_stale=AsyncMock(return_value=None),  # healthy, so never displaced
-            pid=11,
+            sandbox_mode=mgr._cfg.agent.sandbox,
+            pid=UNALLOCATABLE_PID,
             create_session=create,
             kill=AsyncMock(),
         )
@@ -689,7 +693,8 @@ class TestGetBgSessionRespawn:
             is_alive=lambda: alive[0],
             has_active_sessions=lambda: True,
             _is_stale=AsyncMock(return_value=None),  # healthy, so never displaced
-            pid=11,
+            sandbox_mode=mgr._cfg.agent.sandbox,
+            pid=UNALLOCATABLE_PID,
             create_session=create_session,
             kill=AsyncMock(side_effect=RuntimeError("kill failed")),
         )
@@ -979,6 +984,83 @@ class TestOpenTaskSession:
         dup.shutdown.assert_awaited_once()
         assert mgr._sessions[key].provider is winner_provider
         mgr.release(key)
+
+
+class TestTaskStepCliDefaultModel:
+    """A run's step session on a KAS runtime starts on kiro-cli's
+    ``chat.defaultModel`` when nothing pins a model."""
+
+    async def _open(
+        self,
+        mgr,
+        monkeypatch,
+        *,
+        backend: str,
+        agent_model: str = "",
+        cwd: str | None = "/work/step",
+    ):
+        key = "taskrunner:run7:step1"
+        held: list[bool] = []
+
+        async def _set_model(model, *, inherit=False):
+            # The step owns its turn while the model is applied.
+            held.append(mgr._sessions[key].semaphore.locked())
+
+        handle = SimpleNamespace(
+            session_id="sid-step", kas_memory_mode="", set_model=AsyncMock(side_effect=_set_model)
+        )
+
+        async def create_session(**kwargs):
+            return handle
+
+        runtime = SimpleNamespace(
+            create_session=create_session, acp_backend=backend, _work_dir="/work/run"
+        )
+        mgr._get_or_bootstrap_run_runtime = AsyncMock(return_value=runtime)
+        read_dirs: list[object] = []
+
+        def _cli_default(work_dir=None):
+            read_dirs.append(work_dir)
+            return "cli-default-model"
+
+        monkeypatch.setattr("kiro_crew.acp.kas_cli_settings.kiro_cli_default_model", _cli_default)
+        monkeypatch.setattr(mgr._cfg, "acp_effective_model", lambda agent, override: agent_model)
+        monkeypatch.setattr(
+            "kiro_crew.session._load_acp_session_provider_type", lambda: lambda h, rt: _provider()
+        )
+        await mgr.open_task_session("taskrunner:run7", key, agent="kirocrew", cwd=cwd)
+        mgr.release(key)
+        return handle, read_dirs, held
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_kas_step_inherits_the_cli_default(self, mgr, monkeypatch) -> None:
+        handle, read_dirs, held = await self._open(mgr, monkeypatch, backend=ACP_BACKEND_KAS)
+        assert handle.set_model.await_args_list == [((("cli-default-model",)), {"inherit": True})]
+        assert read_dirs == ["/work/step"]
+        assert held == [True]
+
+    @pytest.mark.asyncio
+    async def test_a_step_with_no_folder_reads_the_runtimes(self, mgr, monkeypatch) -> None:
+        _handle, read_dirs, _held = await self._open(
+            mgr, monkeypatch, backend=ACP_BACKEND_KAS, cwd=None
+        )
+        assert read_dirs == ["/work/run"]
+
+    @pytest.mark.asyncio
+    async def test_a_kiro_step_sends_nothing(self, mgr, monkeypatch) -> None:
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
+
+        handle, read_dirs, _held = await self._open(mgr, monkeypatch, backend=ACP_BACKEND_KIRO)
+        handle.set_model.assert_not_awaited()
+        assert read_dirs == []
+
+    @pytest.mark.asyncio
+    async def test_a_model_crew_pins_is_left_alone(self, mgr, monkeypatch) -> None:
+        handle, read_dirs, _held = await self._open(
+            mgr, monkeypatch, backend=ACP_BACKEND_KAS, agent_model="crew-default-model"
+        )
+        handle.set_model.assert_not_awaited()
+        assert read_dirs == []
 
 
 # ── Signal escalation ────────────────────────────────────────────────────────

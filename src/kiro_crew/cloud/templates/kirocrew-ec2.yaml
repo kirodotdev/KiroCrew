@@ -645,10 +645,10 @@ Resources:
           node_floor_ok() { printf '%s\n' "v$NODE_MIN" "$(node --version 2>/dev/null)" | sort -V -C; }
           command -v node >/dev/null 2>&1 || dnf install -y nodejs npm || true
           if ! node_floor_ok; then
-            NODE_V=v22.12.0
+            NODE_V=v22.23.5
             case "$(uname -m)" in
-              aarch64) NODE_ARCH=linux-arm64; NODE_SHA=9e7905fdee722f9650a03ae644b51c4c6effd3b98ac93c588700072ab35c9ddb ;;
-              x86_64) NODE_ARCH=linux-x64; NODE_SHA=e05a4d65232ae2b27b3d77da2e368522fb46b923335b8e0d5f77624c32484044 ;;
+              aarch64) NODE_ARCH=linux-arm64; NODE_SHA=8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3 ;;
+              x86_64) NODE_ARCH=linux-x64; NODE_SHA=c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1 ;;
               *) fail "unsupported arch for Node install: $(uname -m)" ;;
             esac
             NODE_TARB=node-$NODE_V-$NODE_ARCH
@@ -695,7 +695,7 @@ Resources:
           cat > /tmp/kcfetch.sh <<KCFETCH
           #!/bin/bash
           set -e
-          # sudo resets PATH to secure_path, which can resolve `node` to the distro
+          # sudo resets PATH to secure_path, which can resolve node to the distro
           # node 18 in /usr/bin over the Node 22 tarball in /usr/local/bin -- so the
           # vite build would still fail. Prepend /usr/local/bin so the build sees 22.
           export PATH="/usr/local/bin:\$PATH"
@@ -708,7 +708,7 @@ Resources:
           else
             echo "cloning ${KirocrewRepo}@${KirocrewRef}"
             rm -rf kirocrew
-            # `--` ends option parsing so the URL can't read as a git flag.
+            # The -- ends option parsing so the URL can't read as a git flag.
             git clone --depth 1 --branch "${KirocrewRef}" -- "${KirocrewRepo}" kirocrew
           fi
           cd kirocrew

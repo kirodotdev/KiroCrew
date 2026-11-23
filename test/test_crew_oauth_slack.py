@@ -299,6 +299,41 @@ async def test_disconnect_revokes_the_access_token(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_disconnect_renews_an_expired_access_token_before_revoking_it(tmp_path, monkeypatch):
+    seen: list = []
+    answer = {"ok": True, "access_token": "a2", "refresh_token": "r2", "expires_in": 43200}
+    server = await _serve(monkeypatch, seen, answer)
+    monkeypatch.setattr(crew_oauth, "_client", lambda s: _client())
+    store = TokenStore(SecretVault(tmp_path))
+    store.replace(SLUG, Tokens("a1", "r1", time.time() - 10, "", None, "123.456"))
+    try:
+        result = await crew_oauth.disconnect(SLUG, store=store)
+    finally:
+        await server.close()
+    assert result == {"removed": True, "revoked": True}
+    assert [kind for kind, _ in seen] == ["token", "revoke"]
+    assert seen[1] == ("revoke", {"token": "a2"})
+    assert not store.present(SLUG)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_still_revokes_and_deletes_when_the_renewal_fails(tmp_path, monkeypatch):
+    seen: list = []
+    server = await _serve(monkeypatch, seen, {"ok": False, "error": "invalid_refresh_token"})
+    monkeypatch.setattr(crew_oauth, "_client", lambda s: _client())
+    store = TokenStore(SecretVault(tmp_path))
+    store.replace(SLUG, Tokens("a1", "r1", time.time() - 10, "", None, "123.456"))
+    try:
+        result = await crew_oauth.disconnect(SLUG, store=store)
+    finally:
+        await server.close()
+    assert [kind for kind, _ in seen] == ["token", "revoke"]
+    assert seen[1] == ("revoke", {"token": "a1"})
+    assert result["removed"] is True
+    assert not store.present(SLUG)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "answer",
     [{"ok": False, "error": "token_expired"}, {"ok": True, "revoked": False}, "not json"],
@@ -563,6 +598,78 @@ def test_a_case_variant_of_a_card_that_never_keeps_a_users_client_stays_refused(
     rows = [{"name": "GitHub", "url": url}]
     mcp_probe._annotate_owner_sign_in(rows)
     assert rows[0]["ownerSignIn"] is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mcp.notion.com/mcp",
+        "https://mcp.notion.com/mcp/",
+        "https://MCP.NOTION.COM/mcp",
+        "HTTPS://Mcp.Notion.Com/mcp",
+        "https://mcp.notion.com:443/mcp",
+        "https://mcp.notion.com./mcp",
+        "https://mcp.notion.com/%6Dcp",
+        "https://mcp.notion.com/x/../mcp",
+        "https://MCP.Linear.App/mcp/readonly",
+    ],
+)
+def test_a_scheme_or_host_spelling_of_a_card_url_is_the_cards(url):
+    """Scheme and host are case-blind, so a variant is still the card's endpoint."""
+    assert crew_oauth._is_registry_url(url)
+    assert crew_oauth._card_claims("my-notes", {"url": url})
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mcp.linear.app/mcp",
+        "https://mcp.linear.app/MCP/readonly",
+        "https://mcp.notion.com:8443/mcp",
+        "http://mcp.notion.com/mcp",
+        "https://user@mcp.notion.com/mcp",
+        "https://mcp.internal.example.com/",
+        "not a url",
+    ],
+)
+def test_a_different_path_port_or_host_is_not_a_card_url(url):
+    """The path stays exact: ``/mcp`` is Linear's writable endpoint, not the read-only card."""
+    assert not crew_oauth._is_registry_url(url)
+    assert not crew_oauth._card_claims("my-notes", {"url": url})
+
+
+def test_an_owner_slack_entry_at_a_host_case_variant_stays_the_owners(monkeypatch):
+    """Both checks share one key, so the Slack exception still finds Slack's card."""
+    import kiro_crew.config.loader as loader
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+
+    variant = "https://MCP.Slack.com/mcp"
+    root = {
+        CONFIG_SERVERS_KEY: {"work-slack": {"url": variant}},
+        "oauth_clients": {SLUG: {"client_id": "123.456"}},
+    }
+    monkeypatch.setenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(loader, "read_config_for_update", lambda: {CONFIG_ROOT_KEY: root})
+    monkeypatch.setattr(crew_oauth, "holds_grant", lambda slug: False)
+    entry = {"url": variant}
+
+    assert crew_oauth._is_registry_url(variant)
+    assert not crew_oauth._card_claims("work-slack", entry)
+    assert crew_oauth._card_claims("other-slack", entry)
+
+
+def test_an_owner_entry_at_a_host_case_variant_of_a_card_without_that_exception_is_the_cards(
+    monkeypatch,
+):
+    """Notion has no keeps-user-client exception, so even a recorded variant stays the card's."""
+    import kiro_crew.config.loader as loader
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+
+    variant = "https://MCP.Notion.com/mcp"
+    config = {CONFIG_ROOT_KEY: {CONFIG_SERVERS_KEY: {"my-notion": {"url": variant}}}}
+    monkeypatch.setattr(loader, "read_config_for_update", lambda: config)
+
+    assert crew_oauth._card_claims("my-notion", {"url": variant})
 
 
 def test_a_card_that_never_keeps_a_users_client_never_yields(monkeypatch):
@@ -1142,6 +1249,67 @@ async def test_the_row_says_the_mint_refuses_slack_whether_or_not_a_grant_is_hel
     assert slack.get(wording) is (None if granted else True)
     code, body, started = await _mint_slack(monkeypatch)
     assert (code, body.get("code"), started) == (409, "crew_sign_in_required", [])
+
+
+def _owner_recorded_slack(tmp_path, monkeypatch, url: str) -> None:
+    """:func:`_configured_slack` at *url*, recorded by the owner, with no Slack app saved."""
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+
+    _configured_slack(tmp_path, monkeypatch, {"name": SLUG, "url": url, "headers": {}})
+    (tmp_path / "home" / "config.json").write_text(
+        json.dumps({CONFIG_ROOT_KEY: {CONFIG_SERVERS_KEY: {SLUG: {"url": url}}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("granted", [True, False], ids=["grant-held", "no-grant"])
+async def test_an_owner_slack_entry_at_the_exact_url_says_the_mint_refuses(
+    tmp_path, monkeypatch, granted
+):
+    """The owner's own header-less entry at Slack's exact url: the card yields to it.
+
+    ``owns`` is False, so the mint refuses. The card's Connect cannot change
+    that, because writing the registry url leaves the entry the owner's. So the
+    row carries ``crewMintRefused`` and the card offers no Reconnect. Saving an
+    OAuth app takes the slug back, so without a grant the setup steps stay.
+    """
+    from kiro_crew.connections import status
+
+    _owner_recorded_slack(tmp_path, monkeypatch, SLACK_URL)
+    if granted:
+        monkeypatch.setattr(
+            status, "_grant_presence_maps", lambda providers, kas: ({SLUG: True}, {SLUG: True})
+        )
+    assert crew_oauth.manages(SLUG) and not crew_oauth.owns(SLUG)
+
+    slack = {s["slug"]: s for s in await status.collect_connection_statuses()}[SLUG]
+    assert slack.get("crewMintRefused") == "not_owned"
+    assert "crewSignInNotOwned" not in slack
+    assert slack.get("needsClientConfig") is (None if granted else True)
+    code, body, started = await _mint_slack(monkeypatch)
+    assert (code, body.get("code"), started) == (409, "crew_sign_in_required", [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", _url_variants(SLACK_URL), ids=["trailing-slash", "upper-case"])
+async def test_an_owner_slack_entry_at_a_url_variant_is_not_marked_refused(
+    tmp_path, monkeypatch, variant
+):
+    """Control: at a url variant the card's Connect writes the registry url first.
+
+    The entry then stops being the owner's recorded server, so the row keeps
+    Connect and carries no ``not_owned`` mark.
+    """
+    from kiro_crew.connections import status
+
+    _owner_recorded_slack(tmp_path, monkeypatch, variant)
+    assert crew_oauth.manages(SLUG) and not crew_oauth.owns(SLUG)
+
+    slack = {s["slug"]: s for s in await status.collect_connection_statuses()}[SLUG]
+    assert slack.get("crewMintRefused") != "not_owned"
+    assert "crewSignInNotOwned" not in slack
 
 
 @pytest.mark.parametrize("header", ["Authorization", "x-api-key"])

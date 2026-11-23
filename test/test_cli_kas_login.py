@@ -292,6 +292,27 @@ class TestLogin:
         assert fake_service.begun[0]["region"] == "eu-west-1"
 
     @pytest.mark.parametrize(
+        "argv, stored, line",
+        [
+            ((), "BuilderId", "Signed in to Kiro Crew with AWS Builder ID."),
+            (
+                ("--provider", "idc", "--start-url", "acme.awsapps.com"),
+                "Enterprise",
+                "Signed in to Kiro Crew with IAM Identity Center (https://acme.awsapps.com/start).",
+            ),
+            (("--provider", "google"), "Google", "Signed in to Kiro Crew with Google."),
+            (("--provider", "github"), "Github", "Signed in to Kiro Crew with GitHub."),
+        ],
+    )
+    def test_the_confirmation_names_the_sign_in_method_in_plain_words(
+        self, home_store, fake_service, capsys, argv, stored, line
+    ):
+        fake_service.polls = [{"status": "authorized", "provider": stored}]
+        assert cli_kas.kas_cmd(_parse("login", *argv)) == 0
+        out = capsys.readouterr().out
+        assert line in out.splitlines()
+
+    @pytest.mark.parametrize(
         "start_url, reason",
         [
             # Refused by Crew before AWS is called.

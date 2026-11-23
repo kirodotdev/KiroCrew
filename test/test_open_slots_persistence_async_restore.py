@@ -180,6 +180,74 @@ def test_restore_open_slots_drains_its_tab_id_backfills_before_returning(tmp_pat
     assert log.read_messages_chained(_history_key_for(keys[0]))
 
 
+def test_targeted_rehydrate_commits_its_tab_id_backfill_before_returning(tmp_path, monkeypatch):
+    """``rehydrate_slot_from_history_async`` commits the tab id it minted before returning.
+
+    Its callers (messaging, member threads, goal reminders, the file outbox) run a
+    turn on the slot next, and a turn's admission reads the session's execution
+    carrier outside the transcript lock. A backfill still replacing the file then
+    overlaps those reads, which on Windows can refuse the turn with "session changed
+    during admission". The fire-and-forget helper is replaced by a recorder that
+    writes nothing, so a backfill handed to it is never on disk and only the
+    drained order passes.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-targeted")  # no tab_id -> the rehydrate mints one
+
+    import kiro_crew.dashboard.chat_persistence as chat_persistence
+    from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+
+    fire_and_forget: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        chat_persistence,
+        "update_metadata_off_loop",
+        lambda conv_log, key, fields: fire_and_forget.append((key, dict(fields))),
+    )
+    state2 = _make_state(tmp_path / "sessions")
+
+    slot = asyncio.run(rehydrate_slot_from_history_async(state2, "chat-1-targeted"))
+
+    assert slot is not None
+    assert fire_and_forget == [], (
+        "the targeted rehydrate fired its tab-id backfill off the loop; that "
+        "os.replace outlives the return and overlaps the caller's next turn"
+    )
+    on_disk = state2.conversation_log.get_metadata(_history_key_for("chat-1-targeted"))
+    assert on_disk.get("tab_id") == slot._tab_id
+
+
+def test_targeted_rehydrate_deleted_during_its_backfill_commit_returns_none(tmp_path, monkeypatch):
+    """A delete landing while the targeted rehydrate commits its tab id retires the slot.
+
+    The commit is the wrapper's exit work, after it noted the published slot under its
+    key, so its re-read of the key answers ``None`` rather than handing back a slot no
+    flush reaches, and the commit does not recreate the deleted transcript.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-deleted")  # no tab_id -> the rehydrate mints one
+
+    from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
+
+    state2 = _make_state(tmp_path / "sessions")
+    log = state2.conversation_log
+    key = _history_key_for("chat-1-deleted")
+    real_update_if = log.update_metadata_if
+
+    def _deleted_first(history_key, fields, guard, **kwargs):
+        if "tab_id" in fields:
+            # The permanent deletion: the tab leaves the registry and its transcript goes.
+            state2._slots.pop("chat-1-deleted", None)
+            assert log.delete_session(history_key)
+        return real_update_if(history_key, fields, guard, **kwargs)
+
+    monkeypatch.setattr(log, "update_metadata_if", _deleted_first)
+
+    assert asyncio.run(rehydrate_slot_from_history_async(state2, "chat-1-deleted")) is None
+    assert not log.has_log(key), "the backfill commit recreated a deleted session"
+
+
 def test_open_slot_drained_backfill_does_not_recreate_a_session_deleted_mid_restore(
     tmp_path, monkeypatch
 ):

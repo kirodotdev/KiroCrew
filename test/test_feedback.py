@@ -189,9 +189,6 @@ class TestIdentityAndConsentHelpers:
             class telemetry:
                 beacon_enabled = True
 
-            class dashboard:
-                privacy_acked = True
-
         class _Verdict:
             def __init__(self, ok: bool) -> None:
                 self.ok = ok
@@ -199,9 +196,9 @@ class TestIdentityAndConsentHelpers:
         seen_audit_tools: list[str] = []
         monkeypatch.setattr(feedback.KiroCrewConfig, "load", staticmethod(lambda: _Cfg()))
 
-        def _tp(*, enabled: bool, acked: bool, audit_tool: str = "") -> "_Verdict":
+        def _tp(*, enabled: bool, audit_tool: str = "") -> "_Verdict":
             seen_audit_tools.append(audit_tool)
-            return _Verdict(enabled and acked)
+            return _Verdict(enabled)
 
         monkeypatch.setattr(feedback.beacon, "telemetry_permitted", _tp)
         assert feedback._telemetry_permitted() is True
@@ -678,3 +675,40 @@ class TestSubmitMetadataRedaction:
         assert self._meta(captured["payload"], "sessionId") == "chat-7-1786950000"
         assert self._meta(captured["payload"], "kiro_crew_version") == "1.2.3"
         assert self._meta(captured["payload"], "userId") == "install-xyz"
+
+
+class TestApertureCallsUseTheProxy:
+    """On a proxy-only network both Aperture calls must leave through the proxy."""
+
+    @pytest.mark.asyncio
+    async def test_submit_and_eligibility_pass_the_configured_proxy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from urllib import request as urllib_request
+
+        proxy = "http://proxy.invalid:3128"
+        monkeypatch.setattr(urllib_request, "getproxies", lambda: {"https": proxy})
+        monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+        seen: list[tuple[str, object]] = []
+
+        class _RecordingSession(_FakeSession):
+            def post(self, url: str, **kw: object) -> _FakeResp:  # type: ignore[override]
+                seen.append((url, kw.get("proxy")))
+                return super().post(url, **kw)
+
+            def get(self, url: str, **kw: object) -> _FakeResp:  # type: ignore[override]
+                seen.append((url, kw.get("proxy")))
+                return super().get(url, **kw)
+
+        _allow(monkeypatch)
+        monkeypatch.setattr(
+            feedback.aiohttp,
+            "ClientSession",
+            lambda *_a, **_kw: _RecordingSession(_FakeResp(200, json_body={"prompt": "x"})),
+        )
+        _patch_body(monkeypatch, body={"rating": "Good"})
+
+        await feedback.api_feedback_submit(_dashboard_req("POST", "/api/feedback/submit"))
+        await feedback.api_feedback_eligible(_dashboard_req("GET", "/api/feedback/eligible"))
+
+        assert seen == [(feedback._INGESTION_URL, proxy), (feedback._PROMPT_URL, proxy)]

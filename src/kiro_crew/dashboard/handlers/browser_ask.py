@@ -12,8 +12,7 @@ Three legs, three trust classes:
   refused, like the takeover routes) -- the card's answer. Body capped at
   ``ANSWER_BODY_MAX``, each value at ``VALUE_MAX``. A fill re-checks the binding
   and writes in the gateway; the values go nowhere else: not to a log, the SEL,
-  the replay, the card's state or the agent. Under the ``secrets_vault``
-  preview a credentials answer may instead name a login the card offered
+  the replay, the card's state or the agent. A credentials answer may instead name a login the card offered
   (``vault_item``: read from the vault here, then the same fill), or tick
   ``save`` (the typed login is stored in the vault after the fill lands); see
   ``browser_harness.vault_fill``.
@@ -108,8 +107,13 @@ def _refused(code: str) -> dict[str, Any]:
     return {"ok": True, "outcome": qa.REFUSED, "code": code}
 
 
-async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any]:
-    """The ``ask`` op's result: ``{ok, ask_id, expires_at}``, or ``{ok, outcome: refused, code}``."""
+async def run_ask(
+    hub: LiveHub, key: str, args: dict[str, Any], *, own_origins: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """The ``ask`` op's result: ``{ok, ask_id, expires_at}``, or ``{ok, outcome: refused, code}``.
+
+    *own_origins* is the gateway's live ``allowed_origins``, for the page and frame gate.
+    """
     from kiro_crew.dashboard.handlers.browser_ops import committed_url_allowed
 
     try:
@@ -132,13 +136,13 @@ async def run_ask(hub: LiveHub, key: str, args: dict[str, Any]) -> dict[str, Any
             spec,
             float(getattr(stream, "scale", 1.0) or 1.0),
             getattr(stream, "frames", None),
-            url_allowed=committed_url_allowed,
+            url_allowed=lambda url: committed_url_allowed(url, own_origins),
         )
     except qa.AskError as exc:
         _audit("browser_ask", "refused", exc.code)
         return _refused(exc.code)
     if spec.kind == "credentials":
-        # The vault logins for this origin (entry name and username), under the preview.
+        # The vault logins for this origin (entry name and username).
         offered = await asyncio.to_thread(vault_fill.offer, ask.origin)
         if offered is not None:
             ask.vault, ask.vault_more = offered
@@ -283,9 +287,7 @@ async def api_browser_ask_answer(request: web.Request) -> web.Response:
     picked = body.get("vault_item")
     save = body.get("save")
     vault_part = "vault_item" in body or "save" in body
-    if vault_part and (
-        action != "fill" or ask.vault is None or not await asyncio.to_thread(vault_fill.enabled)
-    ):
+    if vault_part and (action != "fill" or ask.vault is None):
         return _fail(400, "bad_action")
     values: dict[str, str] | None = None
     if action == "fill" and "vault_item" in body:

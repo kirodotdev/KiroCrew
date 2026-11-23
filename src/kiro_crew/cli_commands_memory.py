@@ -783,7 +783,7 @@ def _memory_verb(args: argparse.Namespace) -> None:
     """Run one ``kirocrew memory`` verb; :func:`_memory_cmd` owns its refusals."""
     action = getattr(args, "mem_action", None)
     # Verbs that change Crew's own stores refuse while a provider replaces them.
-    writes = action in ("migrate", "carve", "dream", "import", "forget", "restore")
+    writes = action in ("migrate", "carve", "dream", "import", "import-text", "forget", "restore")
     if writes or (action == "retired" and getattr(args, "restore_id", None)):
         from kiro_crew import cli_memory_provider
 
@@ -813,6 +813,12 @@ def _memory_verb(args: argparse.Namespace) -> None:
     if action == "carve":
         _memory_carve(args)
         return
+    # "import-text" parses its file and opens the default store itself, and only to save.
+    if action == "import-text":
+        from kiro_crew import memory_import_text
+
+        memory_import_text.run(args)
+        return
     # "create-store" names the store that does not exist yet, so nothing opens first.
     if action == "create-store":
         _memory_create_store(args)
@@ -821,7 +827,7 @@ def _memory_verb(args: argparse.Namespace) -> None:
     if action is None:
         print(
             "Usage: kirocrew memory {list|search|show|stats|audit|export|migrate|backup|"
-            "backups|restore|create-store|carve|retired|forget|import|dream|shadow}"
+            "backups|restore|create-store|carve|retired|forget|import|import-text|dream|shadow}"
         )
         return
     # "dream" reads a store's file read-only, or only leaves a request for the gateway.

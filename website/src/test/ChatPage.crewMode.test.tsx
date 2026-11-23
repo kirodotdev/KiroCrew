@@ -14,11 +14,12 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import chatReducer, { appendMessage } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { updateSlot } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore, type RootState } from '../store'
 import { BUSY_SEND_MODE_LS_KEY } from '../components/BusySendButton'
+import AppConfirmHost from '../components/AppConfirmHost'
 
 interface VirtuosoMockProps {
   data?: unknown[]
@@ -73,8 +74,12 @@ vi.mock('../hooks/useVoiceInput', () => ({
   voiceInputSupported: false,
 }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
-const agentsState = vi.hoisted(() => ({ defaultAgent: 'default' }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: agentsState.defaultAgent }) }))
+// `choices`: the catalog rows, through the same conductor filter the real hook applies.
+const agentsState = vi.hoisted(() => ({ defaultAgent: 'default', choices: undefined as Array<{ name: string; selection_kind: string }> | undefined }))
+vi.mock('../hooks/useAgents', async () => {
+  const { withoutConductors } = await import('../lib/crewMode')
+  return { useAgents: () => ({ agents: [], defaultAgent: agentsState.defaultAgent, ...(agentsState.choices ? { choices: withoutConductors(agentsState.choices) } : {}) }) }
+})
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
@@ -125,7 +130,7 @@ function makeStore({ messages, mode = '', agent = 'default', agentKind = '', ori
       dashboard: {
         status: null,
         ...(connected ? { connected: true } : {}),
-        slots: slotKeys.map(key => ({ key, messages: key === 'slot-a' ? messages.length : 0, running: key === 'slot-a' && listedRunning, mode: key === 'slot-a' ? mode : '', agent: key === 'slot-a' ? agent : 'default', agent_kind: key === 'slot-a' ? agentKind : '', origin: key === 'slot-a' ? origin : 'user', memory_mode: key === 'slot-a' ? memoryMode : 'persistent', ...(key === 'slot-a' && createdBy ? { created_by: createdBy } : {}), ...(key === 'slot-a' && instanceId ? { instance_id: instanceId } : {}), ...(key === 'slot-a' && crewRoot ? { crew_root: crewRoot, title: 'Worker B' } : {}), ...(key === 'slot-a' && crewModeRootStamp ? { crew_mode_root: true } : {}), ...(key === 'root-1' ? { title: 'Sample goal', crew_mode_root: true } : {}), pending_approval: key === 'slot-a' && pendingApproval, waiting_for_input: false, last_activity_ts: undefined })),
+        slots: slotKeys.map(key => ({ key, messages: key === 'slot-a' ? messages.length : 0, running: key === 'slot-a' && listedRunning, mode: key === 'slot-a' ? mode : '', agent: key === 'slot-a' ? agent : 'default', agent_kind: key === 'slot-a' ? agentKind : '', origin: key === 'slot-a' ? origin : 'user', memory_mode: key === 'slot-a' ? memoryMode : 'persistent', ...(key === 'slot-a' && createdBy ? { created_by: createdBy } : {}), ...(key === 'slot-a' && instanceId ? { instance_id: instanceId } : {}), ...(key === 'slot-a' && crewRoot ? { crew_root: crewRoot, title: 'Worker B' } : {}), ...(key === 'slot-a' && crewModeRootStamp !== undefined ? { crew_mode_root: crewModeRootStamp } : {}), ...(key === 'root-1' ? { title: 'Sample goal', crew_mode_root: true } : {}), pending_approval: key === 'slot-a' && pendingApproval, waiting_for_input: false, last_activity_ts: undefined })),
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -155,6 +160,7 @@ async function renderWith(slot: Slot) {
         <Provider store={store}>
           <ThemeProvider>
             <MemoryRouter><ChatPage /></MemoryRouter>
+            <AppConfirmHost />
           </ThemeProvider>
         </Provider>
       </QueryClientProvider>,
@@ -168,7 +174,7 @@ describe('Conductor mode on ChatPage', () => {
   // app: a gateway that runs Crew Mode on the shipped conductor. A test that
   // names another conductor set re-seeds it.
   beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
-  afterEach(() => { crewWorkers.mockReset(); crewWorkers.mockImplementation(() => Promise.reject(new Error('no worker list'))); agentsState.defaultAgent = 'default'; detail.running = false; detail.hold = false; localStorage.clear(); setCrewModeCatalog(undefined, undefined) })
+  afterEach(() => { crewWorkers.mockReset(); crewWorkers.mockImplementation(() => Promise.reject(new Error('no worker list'))); agentsState.defaultAgent = 'default'; agentsState.choices = undefined; detail.running = false; detail.hold = false; localStorage.clear(); setCrewModeCatalog(undefined, undefined) })
 
   it('sits right of the memory chip on the welcome state', async () => {
     await renderWith({ messages: [] })
@@ -199,23 +205,36 @@ describe('Conductor mode on ChatPage', () => {
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'better-conductor', 'template'))
   })
 
-  it('shows the conductor mode chip, not a picker, on a conductor chat', async () => {
+  it('shows one conductor mode bolt, not a picker, on a conductor chat', async () => {
     await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Conductor mode')
+    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
     const mark = screen.getByTestId('crew-mode-composer-chip')
-    expect(mark.tagName).not.toBe('BUTTON')
-    // A read-only status: named for what it says, not focusable, no pointer.
-    expect(mark).toHaveAttribute('aria-label', 'Conductor mode is on for this chat')
-    expect(mark).not.toHaveAttribute('tabindex')
+    expect(mark.tagName).toBe('BUTTON')
+    // A read-only icon: focusable so its name tip reaches keyboard and touch users.
+    expect(mark).toHaveAttribute('aria-label', 'This chat runs in conductor mode')
+    expect(mark).not.toHaveAttribute('aria-pressed')
     expect(mark).not.toHaveAttribute('title')
     expect(mark.className).toContain('cursor-default')
     expect(mark.className).not.toMatch(/\bborder\b|rounded|hover:/)
   })
 
-  it('shows the conductor mode badge on every conductor, the pipeline conductor included', async () => {
+  it('closes the open attach menu when the composer bolt is pressed, as a press anywhere outside it does', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template' })
+    const plus = screen.getByRole('button', { name: 'Add files & options' })
+    fireEvent.click(plus)
+    expect(plus).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Upload file' })).toBeInTheDocument()
+    // The menu's closer is a bubble-phase document mousedown listener, so a
+    // bolt that stopped mousedown at itself would leave the menu open.
+    fireEvent.mouseDown(screen.getByTestId('crew-mode-composer-chip'))
+    expect(plus).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'Upload file' })).toBeNull()
+  })
+
+  it('shows one bolt on every conductor, the pipeline conductor included', async () => {
     setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor', 'kirocrew-pipeline-conductor'])
     await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-pipeline-conductor', agentKind: 'template' })
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Conductor mode')
+    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
   })
 
   it('keeps the crew badge clear of the stationary sessions toggle', async () => {
@@ -241,7 +260,7 @@ describe('Conductor mode on ChatPage', () => {
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('root-1'))
   })
 
-  it("a worker's composer is the conductor's normal composer: no frame, header, hint or agent label", async () => {
+  it("a worker's composer is the conductor's normal composer: no frame, header, hint or agent picker", async () => {
     await renderWith({ messages: [{ role: 'user', content: 'do part 2' }], agent: 'kirocrew-worker', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
     const wrap = screen.getByTestId('crew-steer-composer')
     expect(wrap.className).toBe('')
@@ -253,11 +272,45 @@ describe('Conductor mode on ChatPage', () => {
     const ph = within(wrap).getByRole('textbox').getAttribute('placeholder') ?? ''
     expect(ph).not.toMatch(/^Steer/)
     expect(ph).toMatch(/^Message |press Resume/)
-    // The conductor's footer: the Crew Mode mark, never a switch, and no agent picker.
+    // The footer: one bolt, never a switch, no visible text, and no agent picker.
+    // Its name and tip say it is a Worker of a conductor mode crew.
     const mark = within(wrap).getByTestId('crew-mode-composer-chip')
-    expect(mark.tagName).not.toBe('BUTTON')
+    expect(mark.tagName).toBe('BUTTON')
+    expect(mark.textContent).toBe('')
+    expect(mark).not.toHaveAttribute('aria-pressed')
+    expect(mark).toHaveAttribute('aria-label', 'Conductor mode · Worker')
+    fireEvent.focus(mark)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Conductor mode · Worker')
     expect(within(wrap).queryByRole('button', { name: /^Agent: / })).toBeNull()
     expect(within(wrap).queryByText('kirocrew-worker')).toBeNull()
+  })
+
+  it('a crew member that runs a conductor (a sub-conductor) keeps the conductor bolt and its name', async () => {
+    await renderWith({ messages: [{ role: 'user', content: 'own part 2' }], agent: 'kirocrew-conductor', agentKind: 'template', createdBy: 'root-1', crewRoot: 'root-1', slotKeys: ['slot-a', 'root-1'] })
+    const wrap = screen.getByTestId('crew-steer-composer')
+    const mark = within(wrap).getByTestId('crew-mode-composer-chip')
+    expect(mark).toHaveAttribute('aria-label', 'This chat runs in conductor mode')
+    expect(mark.textContent).toBe('')
+    expect(within(wrap).queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('keeps the agent picker on a conductor chat that another session opened outside any crew (#39260)', async () => {
+    // A Bot's or a plain chat's session_create onto the conductor: the gateway
+    // neither locks this chat's agent nor nests the sessions it opens.
+    await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', createdBy: 'slot-parent', crewModeRootStamp: false })
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    expect(screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
+  })
+
+  it('shows a new conductor chat that another session opened outside any crew as a plain chat, not Crew Mode', async () => {
+    // session_create opens it empty, so it has no message yet: the composer must
+    // not say Crew Mode (pressed chip, welcome) beside the agent picker it offers.
+    await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', createdBy: 'slot-parent', crewModeRootStamp: false })
+    expect(screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('crew-mode-welcome')).toBeNull()
+    expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
+    expect(screen.queryByTestId('crew-mode-composer-chip')).toBeNull()
+    expect(screen.getByTestId('memory-mode-chip')).toBeInTheDocument()
   })
 
   it('V1: a worker opened from Workers while Split View is on leaves the split and shows the worker', async () => {
@@ -515,7 +568,7 @@ describe('Conductor mode on ChatPage', () => {
     detail.hold = true
     await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', slotLoading: true })
     const mark = screen.getByTestId('crew-mode-composer-chip')
-    expect(mark).toHaveAttribute('aria-label', 'Conductor mode is on for this chat')
+    expect(mark).toHaveAttribute('aria-label', 'This chat runs in conductor mode')
     expect(screen.queryByRole('button', { name: 'Conductor mode', pressed: true })).toBeNull()
     expect(chatSlotAgent).not.toHaveBeenCalled()
   })
@@ -607,22 +660,68 @@ describe('Conductor mode on ChatPage', () => {
     chatSlotAgent.mockClear()
     const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
     fireEvent.click(screen.getByTestId('crew-mode-switch'))
-    // Gone the moment it is pressed: there is no way back.
-    expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
+    // There is no way back, so it asks first; nothing is sent until confirmed.
+    const dialog = await screen.findByRole('dialog', { name: 'Turn on conductor mode for this chat?' })
+    expect(dialog).toHaveTextContent("Conductor mode can't be turned off for this chat.")
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Turn on conductor mode' }))
+    // Gone once confirmed, before the switch lands.
+    await waitFor(() => expect(screen.queryByTestId('crew-mode-switch')).toBeNull())
     await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
     await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
     await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
     expect(screen.queryByTestId('crew-mode-switch')).toBeNull()
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Conductor mode')
+    expect(screen.getByTestId('crew-mode-composer-chip').textContent).toBe('')
     // The Board shows the conductor mode panel before the gateway's root stamp reaches the row.
     expect(await screen.findByTestId('conductor-mode-crew-panel', {}, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.queryByTestId('crew-workers-none')).toBeNull()
+  })
+
+  it('keeps the bolt and no picker once a mid-chat switch lands on a row the gateway stamped not-a-root', async () => {
+    chatSlotAgent.mockClear()
+    // Every listed row carries the stamp; a plain chat's is `false`.
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }], crewModeRootStamp: false })
+    fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Turn on conductor mode' }))
+    await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
+    await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('kirocrew-conductor'))
+    // No new slot frame: the switch's own answer must not leave the stale `false` behind.
+    expect(store.getState().dashboard.slots[0].crew_mode_root).toBeUndefined()
+    expect(screen.getByTestId('crew-mode-composer-chip')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+  })
+
+  it('keeps the root stamp a slot frame already wrote before the switch answer lands', async () => {
+    chatSlotAgent.mockClear()
+    let land: (v: { agent: string; workspace: string }) => void = () => {}
+    chatSlotAgent.mockImplementationOnce(() => new Promise(r => { land = r }))
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }], crewModeRootStamp: false })
+    fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Turn on conductor mode' }))
+    await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'kirocrew-conductor', 'template'))
+    // The gateway pushes the slot frame before it answers the request.
+    act(() => { store.dispatch(updateSlot({ key: 'slot-a', agent: 'kirocrew-conductor', agent_kind: 'template', crew_mode_root: true })) })
+    await act(async () => { land({ agent: 'kirocrew-conductor', workspace: 'default' }) })
+    expect(store.getState().dashboard.slots[0].crew_mode_root).toBe(true)
+  })
+
+  it('leaves the chat unchanged when the mid-chat confirm is cancelled', async () => {
+    chatSlotAgent.mockClear()
+    const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
+    fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    const dialog = await screen.findByRole('dialog', { name: 'Turn on conductor mode for this chat?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(chatSlotAgent).not.toHaveBeenCalled()
+    expect(screen.getByTestId('crew-mode-switch')).toBeInTheDocument()
+    expect(store.getState().dashboard.slots[0].agent).toBe('default')
   })
 
   it('leaves the chat a plain chat and puts the panel back when the mid-chat switch is refused', async () => {
     chatSlotAgent.mockImplementationOnce(async () => { throw new Error('refused') })
     const store = await renderWith({ messages: [{ role: 'user', content: 'hello' }] })
     fireEvent.click(screen.getByTestId('crew-mode-switch'))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Turn on conductor mode' }))
     await waitFor(() => expect(screen.getByTestId('crew-mode-switch')).toBeInTheDocument())
     expect(store.getState().dashboard.slots[0].agent).toBe('default')
     expect(store.getState().chat.activityOpen).toBe(false)
@@ -705,12 +804,70 @@ describe('Conductor mode on ChatPage', () => {
     await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template' })
     expect(screen.queryByTestId('crew-mode-chip')).toBeNull()
     // The chat is still in Crew Mode: its welcome with the task board, and no
-    // memory-mode switch. Only the way off is gone.
+    // memory-mode switch. The agent picker, after the mark, is the way off.
     expect(screen.getByTestId('crew-mode-welcome')).toBeInTheDocument()
     expect(screen.getByTestId('crew-mode-open-board')).toBeInTheDocument()
     expect(screen.queryByTestId('memory-mode-chip')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Conductor mode', pressed: true })).toBeNull()
-    expect(screen.getByTestId('crew-mode-composer-chip')).toHaveTextContent('Conductor mode')
+    const mark = screen.getByTestId('crew-mode-composer-chip')
+    const picker = screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ })
+    expect(mark.textContent).toBe('')
+    expect(mark.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  describe('with the conductor itself as the default agent', () => {
+    const rows = [
+      { name: 'kirocrew-conductor', selection_kind: 'template' },
+      { name: 'other-template', selection_kind: 'template' },
+      { name: 'helper-bot', selection_kind: 'member' },
+    ]
+    beforeEach(() => { agentsState.defaultAgent = 'kirocrew-conductor'; agentsState.choices = rows; chatSlotAgent.mockClear() })
+    const pickerRows = async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ }))
+      const list = await screen.findByRole('listbox', { name: 'Agent list' })
+      return within(list).getAllByRole('option').map(o => o.textContent ?? '')
+    }
+
+    it('keeps the agent picker on a new root, onto the other templates only, and picks in the template namespace', async () => {
+      const store = await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true })
+      const mark = screen.getByTestId('crew-mode-composer-chip')
+      expect(mark.compareDocumentPosition(screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      const options = await pickerRows()
+      expect(options.some(t => t.includes('other-template'))).toBe(true)
+      expect(options.some(t => t.includes('helper-bot') || t.includes('kirocrew-conductor'))).toBe(false)
+      fireEvent.click(screen.getByRole('option', { name: /other-template/ }))
+      await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'other-template', 'template'))
+      await waitFor(() => expect(store.getState().dashboard.slots[0].agent).toBe('other-template'))
+    })
+
+    it('picks the one template drawn when Enter is pressed in a filter a Bot also matches', async () => {
+      await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true })
+      fireEvent.click(screen.getByRole('button', { name: /^Agent: kirocrew-conductor/ }))
+      const input = await screen.findByRole('textbox', { name: 'Filter agents' })
+      fireEvent.change(input, { target: { value: 'er' } })
+      const list = await screen.findByRole('listbox', { name: 'Agent list' })
+      expect(within(list).getAllByRole('option').map(o => o.textContent ?? '')).toEqual([expect.stringContaining('other-template')])
+      fireEvent.keyDown(input, { key: 'Enter' })
+      await waitFor(() => expect(chatSlotAgent).toHaveBeenCalledWith('slot-a', 'other-template', 'template'))
+    })
+
+    it('offers no agent picker once the chat has a message, as the gateway locks it', async () => {
+      await renderWith({ messages: [{ role: 'user', content: 'hello' }], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true })
+      expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+      expect(screen.getByTestId('crew-mode-composer-chip')).toBeInTheDocument()
+    })
+
+    it('offers no agent picker while the transcript is still loading, since a sent message may be in it', async () => {
+      detail.hold = true
+      await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true, slotLoading: true })
+      expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+    })
+  })
+
+  it('hides the agent picker and offers the chip on a new conductor mode chat when the default agent is no conductor', async () => {
+    await renderWith({ messages: [], agent: 'kirocrew-conductor', agentKind: 'template', crewModeRootStamp: true })
+    expect(screen.queryByRole('button', { name: /^Agent: / })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Conductor mode', pressed: true })).toHaveAttribute('data-testid', 'crew-mode-chip')
   })
 
   it('is not offered on a legacy orchestrator-mode session', async () => {

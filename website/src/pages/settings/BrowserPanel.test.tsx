@@ -25,7 +25,8 @@ vi.mock('../../api/client', async (importOriginal) => {
 import { api, type BrowserStatusData } from '../../api/client'
 import { i18next } from '../../i18n/all'
 import { BrowserPanel } from './BrowserPanel'
-import { choiceFromHeadless, choiceFromPicker, pickerValueOf, primaryState } from './browserStatus'
+import { ISOLATIONS, choiceFromHeadless, choiceFromPicker, isolationValueOf, pickerValueOf, primaryState } from './browserStatus'
+import { viewOf } from './useBrowserSettings'
 
 function status(overrides: Partial<BrowserStatusData> = {}): BrowserStatusData {
   return {
@@ -124,6 +125,15 @@ describe('browser.choice across the picker and the no-window switch', () => {
   it('the switch writes headless on and Kiro’s Chromium (with a window) off', () => {
     expect(choiceFromHeadless(true)).toBe('headless')
     expect(choiceFromHeadless(false)).toBe('kiro_chromium')
+  })
+})
+
+describe('browser.isolation as the Browser isolation picker', () => {
+  it('reads every gateway value as itself and an unknown or absent one as shared, the gateway’s own resolution', () => {
+    for (const m of ISOLATIONS) expect(isolationValueOf(m)).toBe(m)
+    expect(isolationValueOf('nonsense')).toBe('shared')
+    expect(viewOf(config()).isolation).toBe('shared')
+    expect(viewOf(config({ browser: { isolation: 'per_session' } })).isolation).toBe('per_session')
   })
 })
 
@@ -302,10 +312,12 @@ describe('BrowserPanel - main card', () => {
 })
 
 describe('BrowserPanel - controls and More', () => {
-  it('shows two controls up front and nothing of More until it opens', async () => {
+  it('shows three controls up front and nothing of More until it opens', async () => {
     renderWithProviders(<BrowserPanel />)
     await screen.findByTestId('browser-status-card')
     expect(document.querySelector('[data-setting-key="browser.choice"]')).not.toBeNull()
+    const isolation = document.querySelector('[data-setting-key="browser.isolation"]')
+    expect(isolation?.getAttribute('data-setting-label')).toBe('Browser isolation')
     expect(screen.getByRole('switch', { name: 'Show the live view in chat' })).toBeTruthy()
     const more = screen.getByRole('button', { name: 'More' })
     expect(more.getAttribute('aria-expanded')).toBe('false')

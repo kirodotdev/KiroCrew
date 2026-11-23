@@ -120,8 +120,28 @@ class _SlowClock:
         self.now += self.step
         return self.now
 
-    def sleep(self, secs: float) -> None:  # pragma: no cover - not exercised here
+    def sleep(self, secs: float) -> None:
         self.now += secs
+
+
+class _RestagesOnSleep(_SlowClock):
+    """A still clock whose every sleep gives *window* the next child list in *trees*.
+
+    The Electron retry sleeps before each re-walk, so each entry is what one re-walk sees."""
+
+    def __init__(self, fakes: _Fakes, window: int, trees: list[list[dict]]) -> None:
+        super().__init__(step=0.0)
+        self._fakes = fakes
+        self._window = window
+        self._trees = list(trees)
+        self.polls = 0
+
+    def sleep(self, secs: float) -> None:
+        self.now += secs
+        self.polls += 1
+        if self._trees:
+            children = [_stage_element(self._fakes, spec) for spec in self._trees.pop(0)]
+            self._fakes.ax.attrs[(self._window, "AXChildren")] = self._fakes.new_array(children)
 
 
 class TestBuildSnapshot:
@@ -230,6 +250,40 @@ class TestElectronOptIn:
         ]
         assert len(sets) == 1
 
+    def test_a_secure_field_only_a_smaller_retry_walk_saw_is_reported(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The retry keeps its largest walk for the tree, but a password field that
+        only a smaller walk saw must still suppress the screenshot."""
+        window = _stage_window(fakes, children=[{"role": "AXGroup"}])
+        monkeypatch.setattr(macos_ffi, "ELECTRON_OPT_IN_WAIT_SECS", 1.0)  # flake-ok: faked clock
+        monkeypatch.setattr(macos_ffi, "ELECTRON_OPT_IN_POLL_SECS", 0.5)  # flake-ok: faked clock
+        password = {"role": "AXTextField", "subrole": "AXSecureTextField", "title": "Password"}
+        buttons = [{"role": "AXButton", "title": f"b{i}"} for i in range(10)]
+        clock = _RestagesOnSleep(fakes, window, [[password], buttons])
+        monkeypatch.setattr(snapshot_macos, "time", clock)
+
+        snap = snapshot_macos.build_snapshot(_APP, _req())
+
+        assert clock.polls == 2
+        assert not [rec for rec in snap.elements if rec.secure]  # the tree is the larger walk
+        assert snap.has_secure is True
+
+    def test_a_secure_field_only_the_walk_before_the_retry_saw_is_reported(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A stub window can hold a password prompt that is gone by the time the
+        retry re-walks it; the screenshot must still be suppressed."""
+        password = {"role": "AXTextField", "subrole": "AXSecureTextField", "title": "Password"}
+        window = _stage_window(fakes, children=[password])
+        buttons = [{"role": "AXButton", "title": f"b{i}"} for i in range(30)]
+        monkeypatch.setattr(snapshot_macos, "time", _RestagesOnSleep(fakes, window, [buttons]))
+
+        snap = snapshot_macos.build_snapshot(_APP, _req())
+
+        assert not [rec for rec in snap.elements if rec.secure]
+        assert snap.has_secure is True
+
     def test_implausibly_small_tree_also_triggers_the_opt_in(self, fakes: _Fakes):
         """The finding an error-only check would have missed.
 
@@ -245,6 +299,273 @@ class TestElectronOptIn:
             and args[1] == macos_ffi.AX_MANUAL_ACCESSIBILITY
         ]
         assert sets, "a tiny tree should have prompted the opt-in retry"
+
+
+_CHROME = AppRef(name="Google Chrome", pid=4242, bundle_id="com.google.Chrome", window_id=77)
+_BROWSER_UI_TITLES = [f"tab {i}" for i in range(30)]
+# The one opt-in attribute Chrome reads, spelled as Chrome spells it.
+_ENHANCED_UI = "AXEnhancedUserInterface"
+
+
+class TestChromiumWebContentOptIn:
+    """Chrome on macOS 14+ answers a client with its own UI and no page.
+
+    It ignores ``AXManualAccessibility`` and turns page content on only for
+    ``AXEnhancedUserInterface``. The browser UI alone is far above the Electron stub
+    threshold, so these windows never trip the Electron retry.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clock(self, _floor_monkeypatch: pytest.MonkeyPatch) -> _SlowClock:
+        """Every sleep advances a fake clock, so the debounce and poll cost nothing."""
+        clock = _SlowClock(step=0.0)
+        _floor_monkeypatch.setattr(snapshot_macos, "time", clock)
+        # The fake pid is not a real process, so its start identity is pinned rather
+        # than read off the host.
+        _floor_monkeypatch.setattr(
+            snapshot_macos, "_browser_process", lambda pid: (pid, "start-1"), raising=False
+        )
+        return clock
+
+    @staticmethod
+    def _writes(fakes: _Fakes, attribute: str) -> list:
+        return [
+            args
+            for (name, args) in fakes.ax.calls
+            if name == "AXUIElementSetAttributeValue" and args[1] == attribute
+        ]
+
+    @staticmethod
+    def _page(fakes: _Fakes) -> int:
+        return _stage_element(
+            fakes,
+            {
+                "role": "AXWebArea",
+                "title": "Dogma",
+                "children": [{"role": "AXButton", "title": "Create"}],
+            },
+        )
+
+    def _browser_window(
+        self, fakes: _Fakes, *, with_page: bool = False, page_last: bool = False
+    ) -> tuple[int, list[int]]:
+        """Stage a browser window: thirty toolbar buttons, and a page only if asked."""
+        window = _stage_window(fakes)
+        ui = [
+            _stage_element(fakes, {"role": "AXButton", "title": title})
+            for title in _BROWSER_UI_TITLES
+        ]
+        children = list(ui)
+        if with_page:
+            page = self._page(fakes)
+            children = [*ui, page] if page_last else [page, *ui]
+        fakes.ax.attrs[(window, "AXChildren")] = fakes.new_array(children)
+        return window, ui
+
+    def _page_appears_on_opt_in(self, fakes: _Fakes, window: int, ui: list[int]) -> None:
+        """Make the opt-in put a page in *window*, as Chrome does once it settles."""
+        set_attr = fakes.ax.AXUIElementSetAttributeValue
+        page = self._page(fakes)
+
+        def write(elem, key, value):
+            result = set_attr(elem, key, value)
+            if fakes.heap.payload(key) == _ENHANCED_UI:
+                fakes.ax.attrs[(window, "AXChildren")] = fakes.new_array([page, *ui])
+            return result
+
+        fakes.ax.AXUIElementSetAttributeValue = _FakeFn(write)
+
+    def test_a_browser_without_its_page_is_opted_in_and_the_page_returned(self, fakes: _Fakes):
+        window, ui = self._browser_window(fakes)
+        self._page_appears_on_opt_in(fakes, window, ui)
+
+        snap = snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert len(self._writes(fakes, _ENHANCED_UI)) == 1
+        assert [rec.title for rec in snap.elements if rec.role == "AXWebArea"] == ["Dogma"]
+        assert "Create" in [rec.title for rec in snap.elements]
+        assert not self._writes(fakes, macos_ffi.AX_MANUAL_ACCESSIBILITY)
+
+    def test_a_browser_already_showing_its_page_is_left_alone(self, fakes: _Fakes):
+        self._browser_window(fakes, with_page=True)
+
+        snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert not self._writes(fakes, _ENHANCED_UI)
+
+    def test_a_page_past_the_report_budget_still_counts_as_present(self, fakes: _Fakes):
+        """The model chooses ``max_tree_nodes``; a small one must not trigger the opt-in."""
+        self._browser_window(fakes, with_page=True, page_last=True)
+
+        snap = snapshot_macos.build_snapshot(_CHROME, _req(max_nodes=5))
+
+        assert snap.truncated is True
+        assert not [rec for rec in snap.elements if rec.role == "AXWebArea"]
+        assert not self._writes(fakes, _ENHANCED_UI)
+
+    def test_an_app_that_is_not_a_listed_browser_is_never_opted_in(self, fakes: _Fakes):
+        self._browser_window(fakes)
+
+        snapshot_macos.build_snapshot(_APP, _req())
+
+        assert not self._writes(fakes, _ENHANCED_UI)
+
+    def test_a_page_that_never_appears_keeps_the_browser_ui_and_leaks_nothing(self, fakes: _Fakes):
+        self._browser_window(fakes)
+        before = len(fakes.heap.live)
+
+        snap = snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert len(self._writes(fakes, _ENHANCED_UI)) == 1
+        assert [rec.title for rec in snap.elements if rec.role == "AXButton"] == _BROWSER_UI_TITLES
+        assert len(fakes.heap.live) == before, "the opt-in's re-walks leaked a reference"
+
+    def test_a_walk_cut_short_by_its_time_budget_is_not_opted_in(
+        self, fakes: _Fakes, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A walk that ran out of time may not have reached the page; re-walking an
+        app that slow would only spend another budget."""
+        self._browser_window(fakes)
+        monkeypatch.setattr(snapshot_macos, "time", _SlowClock(step=1.0))
+
+        snap = snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert snap.truncated is True
+        assert not self._writes(fakes, _ENHANCED_UI)
+
+    def test_a_secure_field_that_appears_during_the_wait_is_reported(self, fakes: _Fakes):
+        """The opt-in's re-walks are the newest view of the window: a password prompt
+        that opened during the wait must suppress the screenshot even though the page
+        never appeared."""
+        window, ui = self._browser_window(fakes)
+        set_attr = fakes.ax.AXUIElementSetAttributeValue
+        password = _stage_element(fakes, {"role": "AXTextField", "subrole": "AXSecureTextField"})
+
+        def write(elem, key, value):
+            result = set_attr(elem, key, value)
+            if fakes.heap.payload(key) == _ENHANCED_UI:
+                fakes.ax.attrs[(window, "AXChildren")] = fakes.new_array([*ui, password])
+            return result
+
+        fakes.ax.AXUIElementSetAttributeValue = _FakeFn(write)
+
+        snap = snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert snap.has_secure is True
+
+    def test_a_secure_field_only_the_first_walk_saw_is_still_reported(self, fakes: _Fakes):
+        """The opt-in keeps its last re-walk as the tree, but a password prompt that
+        closed during the wait was on screen once: the screenshot stays suppressed."""
+        window, ui = self._browser_window(fakes)
+        password = _stage_element(fakes, {"role": "AXTextField", "subrole": "AXSecureTextField"})
+        fakes.ax.attrs[(window, "AXChildren")] = fakes.new_array([*ui, password])
+        set_attr = fakes.ax.AXUIElementSetAttributeValue
+
+        def write(elem, key, value):
+            result = set_attr(elem, key, value)
+            if fakes.heap.payload(key) == _ENHANCED_UI:
+                fakes.ax.attrs[(window, "AXChildren")] = fakes.new_array(list(ui))
+            return result
+
+        fakes.ax.AXUIElementSetAttributeValue = _FakeFn(write)
+
+        snap = snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert len(self._writes(fakes, _ENHANCED_UI)) == 1
+        assert not [rec for rec in snap.elements if rec.secure]
+        assert snap.has_secure is True
+
+    def test_a_refused_write_is_retried_only_after_a_cooldown(
+        self, fakes: _Fakes, _clock: _SlowClock
+    ):
+        """A failed write may be transient, so it must not pin the browser at its UI
+        for good; retrying on every snapshot would slow every action instead."""
+        self._browser_window(fakes)
+        set_attr = fakes.ax.AXUIElementSetAttributeValue
+
+        def refuse(elem, key, value):
+            result = set_attr(elem, key, value)
+            if fakes.heap.payload(key) == _ENHANCED_UI:
+                return macos_ffi.AX_ERR_CANNOT_COMPLETE
+            return result
+
+        fakes.ax.AXUIElementSetAttributeValue = _FakeFn(refuse)
+
+        snapshot_macos.build_snapshot(_CHROME, _req())
+        snapshot_macos.build_snapshot(_CHROME, _req())
+        assert len(self._writes(fakes, _ENHANCED_UI)) == 1
+
+        _clock.now += 61.0
+        snapshot_macos.build_snapshot(_CHROME, _req())
+        assert len(self._writes(fakes, _ENHANCED_UI)) == 2
+
+    def test_a_new_browser_that_reuses_the_pid_is_opted_in_again(
+        self, fakes: _Fakes, _floor_monkeypatch: pytest.MonkeyPatch
+    ):
+        """The record names one process, not one pid number: macOS hands a freed pid
+        to a later process, and that browser has never been opted in."""
+        self._browser_window(fakes)
+
+        snapshot_macos.build_snapshot(_CHROME, _req())
+        _floor_monkeypatch.setattr(
+            snapshot_macos, "_browser_process", lambda pid: (pid, "start-2"), raising=False
+        )
+        snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert len(self._writes(fakes, _ENHANCED_UI)) == 2
+
+    def test_a_window_with_no_page_pays_the_opt_in_once_per_process(
+        self, fakes: _Fakes, _clock: _SlowClock
+    ):
+        """Every action re-walks the window to check its fingerprint, so a Task
+        Manager or picture-in-picture window must not wait on each of them. An
+        accepted write is pinned for the process, not just for the retry cooldown."""
+        self._browser_window(fakes)
+
+        snapshot_macos.build_snapshot(_CHROME, _req())
+        _clock.now += snapshot_macos.CHROMIUM_OPT_IN_RETRY_SECS + 1.0
+        snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert len(self._writes(fakes, _ENHANCED_UI)) == 1
+
+    def test_the_first_re_walk_waits_out_chromes_debounce(
+        self, fakes: _Fakes, _clock: _SlowClock, _floor_monkeypatch: pytest.MonkeyPatch
+    ):
+        """Chrome builds the page only once the attribute has held still for its
+        debounce, so a re-walk any sooner sees the browser UI again."""
+        window, ui = self._browser_window(fakes)
+        page = self._page(fakes)
+        set_attr = fakes.ax.AXUIElementSetAttributeValue
+        written_at: list[float] = []
+
+        def write(elem, key, value):
+            if fakes.heap.payload(key) == _ENHANCED_UI:
+                written_at.append(_clock.now)
+            return set_attr(elem, key, value)
+
+        fakes.ax.AXUIElementSetAttributeValue = _FakeFn(write)
+        real_sleep = _clock.sleep
+
+        def sleep(secs: float) -> None:
+            real_sleep(secs)
+            debounce = snapshot_macos.CHROMIUM_OPT_IN_DEBOUNCE_SECS
+            if written_at and _clock.now >= written_at[0] + debounce:
+                fakes.ax.attrs[(window, "AXChildren")] = fakes.new_array([page, *ui])
+
+        _floor_monkeypatch.setattr(_clock, "sleep", sleep)
+        real_walk = snapshot_macos._walk
+        walked_at: list[float] = []
+
+        def walk(*args, **kwargs):
+            walked_at.append(_clock.now)
+            return real_walk(*args, **kwargs)
+
+        _floor_monkeypatch.setattr(snapshot_macos, "_walk", walk)
+
+        snap = snapshot_macos.build_snapshot(_CHROME, _req())
+
+        assert [rec.title for rec in snap.elements if rec.role == "AXWebArea"] == ["Dogma"]
+        assert walked_at[1] >= written_at[0] + 2.0
 
 
 def _copy_of_the_app_element(fakes: _Fakes) -> int:

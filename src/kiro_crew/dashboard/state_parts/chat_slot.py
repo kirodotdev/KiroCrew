@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.approval_mode_policy import session_mode_permitted
+from kiro_crew.dashboard import deferred_steer
 from kiro_crew.dashboard import run_clock as _run_clock
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
@@ -194,6 +195,7 @@ class _ChatSlot:
         "_pending_reset_clears_cwd",
         "_pending_discard_conversation_key",
         "_pending_discard_from_wake",
+        "_pending_discard_drops_plan",
         "_pending_model_pick",
         "_deferred_model_switch_key",
         "_eager_spawn_task",
@@ -207,6 +209,7 @@ class _ChatSlot:
         "_guarded_history_writes",
         "_last_turn_auth_required",
         "_cycle_reached_provider",
+        "_preparing_turn",
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
@@ -251,6 +254,7 @@ class _ChatSlot:
         "_fallback_slot_model",
         "_model_pick_gen",
         "_model_runtime_pick_gen",
+        "_turn_pick_gen",
         "_fallback_pick_gen",
         "_fallback_client_pick_epoch",
         "_refusal_fallback_primary",
@@ -275,6 +279,7 @@ class _ChatSlot:
         "_carried_ttft_clock",
         "_prev_turn_ctx_used",
         "_prev_turn_ctx_session",
+        "_prev_turn_ended_at",
         "_promise_only_retries",
         "_compaction_continue_retries",
         "_batch_rejected",
@@ -340,6 +345,8 @@ class _ChatSlot:
         "executor",
         "instance_id",
         "remote_slot",
+        # A cron run's transcript reopened from History with nothing to save to.
+        "cron_run_read_only",
         "_turn_in_flight_generation",
         "_turn_in_flight_prompt",
         "_restored_turn_marker",
@@ -377,6 +384,13 @@ class _ChatSlot:
         "_steer_clear",
         "_steer_audience_fences",
         "_steer_audience_fence_holders",
+        "_deferred_steers",
+        "_deferred_steer_receipts",
+        "_deferred_steer_delivered",
+        "_deferred_steer_injected",
+        "_deferred_steer_ended_gen",
+        "_deferred_flush_task",
+        "_deferred_flush_dirty",
         "_steer_attachment_meta",
         "_steer_act_now",
         "_steer_automation",
@@ -463,6 +477,7 @@ class _ChatSlot:
     executor: str
     instance_id: str
     remote_slot: str
+    cron_run_read_only: bool
     created_at: str
     _titled: bool
     _title_origin: str
@@ -510,6 +525,7 @@ class _ChatSlot:
     _pending_reset_clears_cwd: bool
     _pending_discard_conversation_key: str | None
     _pending_discard_from_wake: bool
+    _pending_discard_drops_plan: bool
     _pending_model_pick: Any
     _deferred_model_switch_key: str
     _eager_spawn_task: asyncio.Task[None] | None
@@ -526,6 +542,10 @@ class _ChatSlot:
     _pending_thread_parent: tuple[str, str, str] | None
     _model_pick_gen: int
     _model_runtime_pick_gen: int | None
+    #: The ``_model_pick_gen`` this slot's last turn ran under (stamped by the
+    #: turn's model settle), so a pick made since its session last ran a turn is
+    #: told from an older value. Runtime only, like the generation itself.
+    _turn_pick_gen: int
     _pending_memory_mode: str | None
     _app: str
     _human_seen: bool
@@ -617,6 +637,7 @@ class _ChatSlot:
     _stop_escalated_card_id: str | None
     _last_turn_auth_required: bool
     _cycle_reached_provider: bool
+    _preparing_turn: Any
     _subagent_delivery_pending: dict[str, list[SubagentDelivery]]
     _pending_context: list[dict[str, Any]]
     _inflight_merge_contexts: list[dict[str, Any]]
@@ -715,6 +736,7 @@ class _ChatSlot:
     _carried_ttft_clock: Any
     _prev_turn_ctx_used: int
     _prev_turn_ctx_session: str
+    _prev_turn_ended_at: float
     _promise_only_retries: int
     _compaction_continue_retries: int
     _batch_rejected: bool
@@ -756,6 +778,22 @@ class _ChatSlot:
     _steer_clear: SteerClear | None
     _steer_audience_fences: dict[str, dict]
     _steer_audience_fence_holders: dict[str, int]
+    #: Steers held for the next tool boundary and the receipts of settled ones
+    #: (``dashboard.deferred_steer``).
+    _deferred_steers: list[Any]
+    _deferred_steer_receipts: dict[str, dict[str, Any]]
+    #: Ids of held steers marked delivered before their injection; the teardown
+    #: requeue skips them, so none runs a second time.
+    _deferred_steer_delivered: dict[str, str]
+    #: Id -> text of every held steer injected at a boundary, marked or not, while its
+    #: text may still be pending; a hard stop reads it to tell the sender.
+    _deferred_steer_injected: dict[str, str]
+    #: The turn generation whose hand-off has begun: nothing is held for it any more.
+    _deferred_steer_ended_gen: int
+    #: The one running boundary flush (``dashboard.deferred_steer.schedule_flush``).
+    _deferred_flush_task: Any
+    #: A boundary arrived while that flush ran: it runs one more pass when it finishes.
+    _deferred_flush_dirty: bool
     _steer_attachment_meta: dict[str, dict[str, Any]]
     _steer_act_now: set[str]
     _steer_automation: dict[str, dict]
@@ -783,7 +821,8 @@ class _ChatSlot:
     _disk_older_durable_count: int
     _disk_window_len: int
     _disk_tail_ts: str | None
-    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
+    # The prefix entry is its text, or ``(offset, size[, crc, msgs])`` in the file.
+    _frozen_prefix_cache: tuple[float, int, int, str | tuple[int | None, ...], list[str]] | None
     _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool
@@ -867,6 +906,19 @@ class _ChatSlot:
         from kiro_crew.dashboard.transcript_binding import write_project
 
         write_project(self._binding, value)
+
+    @property
+    def _project_picked(self) -> bool:
+        """Whether a person picked the project, held in the binding beside it.
+
+        A Bot worker keeps a picked project instead of moving to the Bot's worktree
+        (``crewmate_worktree_scope``). Any write that changes the project clears it.
+        """
+        return self._binding.picked
+
+    @_project_picked.setter
+    def _project_picked(self, value: bool) -> None:
+        self._binding.picked = value
 
     @property
     def autocompact_pct(self) -> float | None:
@@ -1025,17 +1077,35 @@ class _ChatSlot:
         if was and not self._has_reader_flag:
             self._retry_deferred_release()
 
+    def durable_source(self) -> list[dict[str, Any]]:
+        """The list the durable queue writer persists from: the held peer steers
+        (``deferred_steer.saved_queue_entries``), then ``_queue``.
+
+        Every check that judges whether a queued prompt is kept
+        (``warn_if_not_durable``, ``refused_durable_ids``) reads this rather than
+        ``_queue`` alone, so a prompt the held steers push past the count cap or
+        the byte budget is reported and marked as one the queue pushes out is.
+        """
+        return deferred_steer.saved_queue_entries(self) + self._queue
+
     def durable_queue_entries(self) -> list[dict[str, Any]]:
-        """The queued user prompts a metadata writer may persist right now."""
-        return durable_queue_entries(self._queue)
+        """The queued user prompts a metadata writer may persist right now.
+
+        The held peer steers come first (``deferred_steer.saved_queue_entries``),
+        each as the queued peer send the turn's end would make of it, so a restart
+        hands it back as a queue card. The drift check reads this too, so a hold
+        or a settle owes a save as a queue change does.
+        """
+        return durable_queue_entries(self.durable_source())
 
     def durable_queue_view(self) -> tuple[list[dict[str, Any]], int]:
         """Persistable queued prompts and the candidate count, from one read.
 
         Used where the two are SUBTRACTED (the save's over-cap report), so the
-        difference describes one observation of the queue rather than two.
+        difference describes one observation of the queue rather than two. The
+        held peer steers lead, as in :meth:`durable_queue_entries`.
         """
-        return durable_queue_view(self._queue)
+        return durable_queue_view(self.durable_source())
 
     @property
     def queue_persist_pending(self) -> bool:
@@ -1216,6 +1286,7 @@ class _ChatSlot:
         extra_meta: dict[str, Any] | None = None,
         relay_meta: dict[str, Any] | None = None,
         gateway_prompt_kind: str = "",
+        at_head: bool = False,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1241,6 +1312,11 @@ class _ChatSlot:
         own words: queued under that kind, or appended directly as the ``inject``
         row that kind drains to, so neither arm draws it as the person's bubble.
         The caller hands a *run_chat_coro* that runs it as a synthetic payload.
+
+        *at_head* queues the entry at the HEAD instead of the tail, for a held
+        peer steer its turn outlived: steers outrank queued messages, as the
+        unconsumed-steer requeue (``_requeue_unconsumed_steers``) has them.
+        Ignored on the run arm.
 
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
@@ -1278,7 +1354,15 @@ class _ChatSlot:
             if relay_meta:
                 _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
-            self.queue_append(prompt, kind=gateway_prompt_kind, meta=_meta)
+            if at_head:
+                from kiro_crew.tracing import steps as trace_steps
+
+                # Its queue wait is timed as an appended entry's is.
+                trace_steps.note_queued(
+                    self.queue_insert(0, prompt, kind=gateway_prompt_kind, meta=_meta)
+                )
+            else:
+                self.queue_append(prompt, kind=gateway_prompt_kind, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the
             # prompt's only record -- so a restart inside the periodic flush

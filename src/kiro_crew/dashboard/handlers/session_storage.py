@@ -7,7 +7,9 @@ conversation history.
 The wire shape deliberately reports a session as ONE size. Sessions occupy two
 stores underneath (see :mod:`kiro_crew.session_storage`), but that is an
 implementation detail the reader cannot act on, so it is neither split out here
-nor derivable from these payloads.
+nor derivable from these payloads. ``claude_code`` is not such a split: it is how
+much Claude Code's own store keeps for this instance's mapped Claude chats, which
+Storage never moves, and no row or other total counts it.
 
 Reclaiming stages files in a trash rather than deleting them, which means the
 reclaim itself does not return space to the filesystem. ``trash`` carries the
@@ -21,10 +23,11 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.agent_sdk.claude_transcripts import PROVIDER_LABEL_CLAUDE
 from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers._shared import (
@@ -44,6 +47,7 @@ from kiro_crew.session_storage import (
     SessionIndex,
     SessionStorageError,
     SessionUnit,
+    StorageReport,
     empty_trash,
     list_trash,
     list_units,
@@ -87,7 +91,9 @@ def _sel():
     return _pkg.sel()
 
 
-def _build_index(state: DashboardState | None = None) -> SessionIndex:
+def _build_index(
+    state: DashboardState | None = None, session_map: SessionMap | None = None
+) -> SessionIndex:
     """Pair every mapped session's replay log with its transcript files.
 
     Stems come from :func:`kiro_crew.history.transcript_stems`, which returns both
@@ -102,7 +108,7 @@ def _build_index(state: DashboardState | None = None) -> SessionIndex:
     the state therefore cannot make anything reclaimable that would not be —
     it only costs the caller the ability to say which sessions are truly busy.
     """
-    mapping = SessionMap().mapped_sids_by_key()
+    mapping = (session_map or SessionMap()).mapped_sids_by_key()
     stem_to_sid = {stem: sid for key, sid in mapping.items() for stem in transcript_stems(key)}
     running = state.running_session_keys() if state is not None else frozenset()
     live_sids = frozenset(sid for key, sid in mapping.items() if key in running)
@@ -278,13 +284,27 @@ async def _json_body(request: web.Request) -> tuple[dict[str, Any] | None, web.R
     return body, error
 
 
+def _claude_code_payload(report: StorageReport) -> dict[str, int]:
+    """What Claude Code keeps for this instance's mapped Claude chats, at least.
+
+    Another program's store, which Storage never moves: no session row and no
+    other total in the payload includes it.
+    """
+    return {"bytes": report.claude_code_bytes, "sessions": report.claude_code_sessions}
+
+
 def _report_payload() -> dict[str, Any]:
-    index = _build_index()
+    session_map = SessionMap()
+    index = _build_index(session_map=session_map)
     # One trash pass serves both the totals inside measure() and the wire array
     # below: list_trash reads every batch manifest per call, and two calls could
     # bracket a concurrent stage/empty and ship totals that contradict the array.
     batches = list_trash()
-    report = measure(index, batches=batches)
+    report = measure(
+        index,
+        batches=batches,
+        claude_sessions=session_map.mapped_sid_cwds(PROVIDER_LABEL_CLAUDE),
+    )
     return {
         "total_bytes": report.total_bytes,
         "total_sessions": report.total_sessions,
@@ -295,6 +315,7 @@ def _report_payload() -> dict[str, Any]:
         # Non-empty when this instance must not reclaim at all; a client should
         # explain rather than offer an action that can only be refused.
         "reclaim_blocked_reason": report.reclaim_blocked_reason,
+        "claude_code": _claude_code_payload(report),
         "buckets": [
             {"label": b.label, "sessions": b.sessions, "bytes": b.bytes} for b in report.buckets
         ],
@@ -406,6 +427,11 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
         )
     except SessionStorageError as exc:
         return _refused(exc, "cleanup_refused")
+    await _retire_trashed_subscriptions(
+        {unit.uid: unit.stems for unit in selected},
+        batch.moved,
+        _runtime_owner(state, "POST /api/system/session-storage/cleanup"),
+    )
 
     _sel().log_api_access(
         caller=_read_session_key(request),
@@ -815,7 +841,8 @@ def _titles_by_stem(conversation_log: Any) -> dict[str, str]:
 
 
 def _inventory_payload(state: DashboardState) -> dict[str, Any]:
-    index = _build_index(state)
+    session_map = SessionMap()
+    index = _build_index(state, session_map)
     units = list_units(index)
     titles = _titles_by_stem(state.conversation_log)
     # The same pass answers both halves of the screen. Measuring separately would
@@ -824,7 +851,12 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
     # The trash gets the identical treatment: one list_trash() pass feeds both
     # the totals and the batches array, for the same one-instant reason.
     batches = list_trash()
-    report = measure(index, units=units, batches=batches)
+    report = measure(
+        index,
+        units=units,
+        batches=batches,
+        claude_sessions=session_map.mapped_sid_cwds(PROVIDER_LABEL_CLAUDE),
+    )
 
     # Replay-only units — subagent runs — are what a long-lived install accumulates
     # by the hundred thousand, and this screen folds every one of them into a single
@@ -886,6 +918,7 @@ def _inventory_payload(state: DashboardState) -> dict[str, Any]:
         "total_sessions": report.total_sessions,
         "reclaimable_bytes": report.reclaimable_bytes,
         "reclaim_blocked_reason": report.reclaim_blocked_reason,
+        "claude_code": _claude_code_payload(report),
         "sessions": sessions,
         # The truth about the group the rows above only partly represent, so a
         # client can say "the 200 largest of 168,832" instead of implying the list
@@ -972,6 +1005,54 @@ async def api_session_inventory_detail(request: web.Request) -> web.Response:
     if data is None:
         return web.json_response({"error": "No such session.", "code": "unknown"}, status=404)
     return web.json_response(data)
+
+
+def _stems_by_uid(index: SessionIndex, uids: list[str]) -> dict[str, tuple[str, ...]]:
+    wanted = set(uids)
+    return {u.uid: u.stems for u in list_units(index, cached=True) if u.uid in wanted}
+
+
+def _runtime_owner(state: DashboardState, route: str) -> Callable[[str], bool]:
+    """Whether a live slot or runtime owns a session key, as the delete path asks.
+
+    *route* names the caller in the owner check's log line.
+    """
+    from kiro_crew.dashboard.session_owners import runtime_owns_session
+
+    context = f"the sessions trashed by {route}"
+    return lambda session_key: runtime_owns_session(state, session_key, context)
+
+
+async def _retire_trashed_subscriptions(
+    stems_by_uid: dict[str, tuple[str, ...]],
+    moved: tuple[str, ...],
+    owned: Callable[[str], bool],
+) -> None:
+    """A trashed session keeps no MCP resource subscription (RFC §4.7).
+
+    Done at the move rather than at the empty: the trash is where a session
+    stops being resumable, and a restored one is subscribed again by the session
+    that wants it. Only *moved* sessions are retired: one the move left in place
+    is still live. A session key a live slot or runtime owns when the removal
+    runs keeps its subscriptions, as on the delete path: a slot key is recycled,
+    so a new conversation can take a trashed transcript's key after the move.
+    Fail-soft and bounded: the move already happened and is what the caller
+    asked for.
+    """
+    # Call-time: keeps the gateway out of this import graph.
+    from kiro_crew.mcp_gateway.resource_subscriptions import (
+        retire_sessions_with_stems,
+        retire_within_bound,
+    )
+
+    taken = set(moved)
+    await retire_within_bound(
+        retire_sessions_with_stems(
+            (stem for uid, stems in stems_by_uid.items() if uid in taken for stem in stems),
+            keep=owned,
+        ),
+        "the trashed sessions",
+    )
 
 
 def _classify(uids: list[str], index: SessionIndex, now: float) -> tuple[list[str], list[dict]]:
@@ -1071,6 +1152,9 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
         )
     if not eligible:
         return web.json_response({"sessions": 0, "bytes": 0, "batch_id": "", "refused": refused})
+    # Read before the move because moved sessions are absent from this listing.
+    # Cached is safe here -- these stems only name what to retire, never what may move.
+    eligible_stems = await asyncio.to_thread(_stems_by_uid, index, eligible)
 
     try:
         batch = await asyncio.to_thread(
@@ -1102,6 +1186,9 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
         )
         return _refused(exc, "trash_refused")
 
+    await _retire_trashed_subscriptions(
+        eligible_stems, batch.moved, _runtime_owner(state, "POST /api/system/session-storage/trash")
+    )
     # A session resumed while the batch was being staged was left in place, and
     # this endpoint's contract is that anything not taken is named. It joins the
     # same list under the same code the pre-flight uses for a live session: the

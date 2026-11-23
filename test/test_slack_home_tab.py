@@ -996,3 +996,17 @@ class TestPublishHomeTabCronTimezone:
 
         assert captured.get("tz_name") == ""
         orch.slack.get_user_profile.assert_not_called()
+
+
+class TestHomeTabCommandName:
+    @pytest.mark.asyncio
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    async def test_commands_name_the_live_slack_command(self, _yolo):
+        """The Home tab has no payload to read a typed name from, so it names
+        ``orch.slack_command``: the live ``slack.command`` the applier refreshes."""
+        orch = _make_orch()
+        orch.slack_command = "kirocrew-alice"
+        await _publish_home_tab(orch, "U123")
+        text = str(orch.slack.views_publish.call_args[1]["view"]["blocks"])
+        assert "/kirocrew-alice " in text
+        assert "/kirocrew " not in text

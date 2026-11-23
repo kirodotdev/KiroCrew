@@ -2,7 +2,6 @@ import { useRef, useMemo, useState, type MutableRefObject, type Dispatch, type S
 import { useNavigate, useNavigationType, useLocation, useSearchParams } from 'react-router-dom'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { useIsMobile } from '../../../hooks/useIsMobile'
-import { useIsTouchDevice } from '../../../hooks/useIsTouchDevice'
 import { useShellSlot } from '../../../hooks/useShellSlot'
 import { useMobileNavRail } from '../../../components/MobileNavRailContext'
 import { useVisualViewport } from '../../../hooks/useVisualViewport'
@@ -93,9 +92,6 @@ export function useChatPageEnvironment({
   // effect reads it (mobile replaces rather than pushes a session switch), and
   // ChatPage defines that effect well before the layout hooks start.
   const isMobile = useIsMobile()
-  // Width alone cannot tell a phone from a narrow desktop pane, which still has
-  // Enter: only a narrow TOUCH device forces Ctrl+Enter over the saved choice.
-  const isTouch = useIsTouchDevice()
   /**
    * Phone: the App shell's top bar is the ONE bar, and this page's title row
    * lives in it. The shell renders `#mobile-topbar-slot` (centre cell) and
@@ -174,7 +170,7 @@ export function useChatPageEnvironment({
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
   // Unified view: unread keys for all chat-like slots.
   const surfaceUnreadSlots = useMemo(() => surfaceUnreadKeys(unreadSlots, personSlots), [unreadSlots, personSlots])
-  const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
+  const catalogRefreshTrigger = useAppSelector(s => s.dashboard.catalogRefreshTrigger)
   const connected = useConnected()
   // Create-in-flight, so the flyout's New button can go inert exactly like the
   // sidebar's does instead of accepting a second click.
@@ -225,7 +221,7 @@ export function useChatPageEnvironment({
   // MCP Apps in the side panel (dashboard.mcp_app_panel, opt-in). When on, a new
   // render opens the panel to its own `app` tab instead of drawing inline in the
   // bubble — same auto-open path the web-preview marker uses.
-  const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean; side_panel_always_open?: boolean; side_panel_pin_summary?: boolean }>({
+  const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean; side_panel_always_open?: boolean; side_panel_pin_summary?: boolean; auto_open_conductor_board?: boolean }>({
     queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000,
   })
   const mcpAppPanel = appPanelCfg?.mcp_app_panel === true
@@ -254,11 +250,18 @@ export function useChatPageEnvironment({
   // user closed meanwhile. A failed refetch keeps the data it had, which still
   // counts.
   const sidePanelAlwaysOpenKnown = appPanelCfg !== undefined
+  // On unless set off (dashboard.auto_open_conductor_board): a conductor mode
+  // chat's first entry opens the side panel on its Board. `undefined` until the
+  // read settles, so that entry waits for it. A FAILED read settles on the
+  // default (on), the way `autoOpenGitPanelKnown` settles on its default (off).
+  const autoOpenConductorBoard = appPanelCfg !== undefined || appPanelCfgError
+    ? appPanelCfg?.auto_open_conductor_board !== false
+    : undefined
   return {
-    dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, isTouch, topbarSlot, topbarTrailSlot,
-    mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, personSlots, surfaceUnreadSlots, refreshTrigger, connected, creatingSlot, foregroundCreateId,
+    dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, topbarSlot, topbarTrailSlot,
+    mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, personSlots, surfaceUnreadSlots, catalogRefreshTrigger, connected, creatingSlot, foregroundCreateId,
     foregroundCreateIdRef, lastCreatedActivationRef, unresumableResume, undeletableHistory, activeSlot, boundStore, voiceRecoverySlot, setVoiceRecoverySlot, appToolCallIds, mcpAppPanel,
-    autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, sidePanelPinSummary,
+    autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelAlwaysOpenKnown, sidePanelPinSummary, autoOpenConductorBoard,
   }
 }
 

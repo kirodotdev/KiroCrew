@@ -102,7 +102,7 @@ def every_session_body(body: str, *, truncated: bool = False) -> str | None:
     """*body* with its front matter stripped, or ``None`` when it is not for every session.
 
     The one inclusion rule both steering loads apply: this module's folder
-    collection and the Claude Code and Codex ``[Steering resources]`` load
+    collection and the Claude Code, Codex, OpenCode and Pi ``[Steering resources]`` load
     (``context_assembly.agent_spec._load_steering_resources``). A leading
     byte-order mark is dropped, since it would hide the column-0 fence and turn
     a ``manual`` document into an always-loaded one, and line endings are
@@ -635,8 +635,8 @@ def collect_folder_steering(
     *skip_delivered_roots* says whether documents under the project's and the
     operator's ``.kiro/steering`` trees are ALREADY reaching the model by the
     provider's own steering path (kiro-cli loads them natively while the
-    workspace inherits kiro-cli's default resources, the Claude Code seam and
-    Codex load them explicitly, KAS reports ``native_steering``) and so must not
+    workspace inherits kiro-cli's default resources, the Claude Code seam,
+    Codex, OpenCode and Pi load them explicitly, KAS reports ``native_steering``) and so must not
     be re-sent here. A provider with no such path -- the harnesses that neither
     load ``.kiro/steering`` nor receive the explicit load -- passes ``False``
     and receives them through the folder like any other

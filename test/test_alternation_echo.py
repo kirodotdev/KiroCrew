@@ -40,14 +40,14 @@ class TestPredicate:
         ids=["long", "short", "padded"],
     )
     def test_the_placeholder_in_each_spelling_is_an_echo(self, text):
-        from kiro_crew.dashboard.alternation_echo import could_be_echo, is_echo
+        from kiro_crew.messaging.alternation_echo import could_be_echo, is_echo
 
         assert is_echo(text)
         assert could_be_echo(text)
 
     @pytest.mark.parametrize("cut", [0, 1, 5, 20, 60, len(PLACEHOLDER) - 1])
     def test_every_prefix_could_still_be_the_echo(self, cut):
-        from kiro_crew.dashboard.alternation_echo import could_be_echo
+        from kiro_crew.messaging.alternation_echo import could_be_echo
 
         assert could_be_echo(PLACEHOLDER[:cut])
 
@@ -62,7 +62,7 @@ class TestPredicate:
         ids=["parenthesis", "no-parenthesis", "words-after", "plain"],
     )
     def test_the_model_s_own_words_are_not_an_echo(self, text):
-        from kiro_crew.dashboard.alternation_echo import could_be_echo, is_echo
+        from kiro_crew.messaging.alternation_echo import could_be_echo, is_echo
 
         assert not is_echo(text)
         assert not could_be_echo(text)
@@ -234,3 +234,102 @@ class TestLiveStream:
         echoed = await _run("echo-tool-only", [_text(PLACEHOLDER)] + _tool() + [_END])
         assert plain[0] and plain[1], plain
         assert echoed == plain
+
+
+class _ScriptedProvider:
+    """Yields a fixed event script, like a backend mid-turn."""
+
+    def __init__(self, events: list[AcpEvent]) -> None:
+        self._events = events
+
+    async def stream(self, message: str):
+        for event in self._events:
+            yield event
+
+
+class TestCollectedTurns:
+    """The turns that collect text outside the dashboard runner and the channel
+    driver: ``stream_and_collect`` (cron, heartbeat, a thread wake, a reply thread)
+    and the native Slack turn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("events", "expected"),
+        [
+            (
+                [_text(PLACEHOLDER[:30]), _text(PLACEHOLDER[30:]), _text("\n\nHere it is."), _END],
+                "Here it is.",
+            ),
+            (
+                [
+                    _text(PLACEHOLDER[:30]),
+                    _text(PLACEHOLDER[30:]),
+                    *_tool(),
+                    _text("Here it is."),
+                    _END,
+                ],
+                "Here it is.",
+            ),
+            ([_text(PLACEHOLDER), _END], ""),
+            (
+                [_text("(No assistant"), _text(" was needed here.) Done."), _END],
+                "(No assistant was needed here.) Done.",
+            ),
+            ([_text("(No assistant"), *_tool(), _END], "(No assistant"),
+            ([_text("(No assistant"), _END], "(No assistant"),
+        ],
+        ids=[
+            "words-after",
+            "then-tool",
+            "only",
+            "opens-like-it",
+            "prefix-held-to-a-tool-call",
+            "prefix-held-to-the-end",
+        ],
+    )
+    async def test_a_collected_turn_returns_and_streams_only_its_own_words(self, events, expected):
+        from kiro_crew.llm_helpers import stream_and_collect
+
+        chunks: list[str] = []
+        text = await stream_and_collect(
+            _ScriptedProvider(events),  # type: ignore[arg-type]
+            "q",
+            retry_transient=False,
+            on_chunk=chunks.append,
+        )
+        assert text == expected
+        assert "".join(chunks) == expected
+
+    @pytest.mark.parametrize("streaming", [True, False], ids=["stream", "post"])
+    @pytest.mark.parametrize(
+        ("events", "kept"),
+        [
+            (
+                [_text(PLACEHOLDER[:30]), _text(PLACEHOLDER[30:]), _text("\n\nHere it is.")],
+                "Here it is.",
+            ),
+            (
+                [_text(PLACEHOLDER[:30]), _text(PLACEHOLDER[30:]), *_tool(), _text("Here it is.")],
+                "Here it is.",
+            ),
+            ([_text("(No assistant"), *_tool()], "(No assistant"),
+            ([_text("(No assistant")], "(No assistant"),
+        ],
+        ids=["words-after", "then-tool", "prefix-held-to-a-tool-call", "prefix-held-to-the-end"],
+    )
+    def test_a_native_slack_turn_posts_only_its_own_words(self, events, kept, streaming):
+        from slack_handler_helpers import FakeProvider, FakeSessionManager
+
+        from conftest import MockSlackClient
+        from kiro_crew.slack.handler import handle_message
+
+        slack = MockSlackClient()
+        slack._stream_enabled = streaming
+        asyncio.run(
+            handle_message(
+                slack, FakeSessionManager(FakeProvider(events)), "C1", "q?", None, "m1", "U1"
+            )
+        )
+        sent = repr(slack.actions)
+        assert "No assistant response" not in sent
+        assert kept in sent

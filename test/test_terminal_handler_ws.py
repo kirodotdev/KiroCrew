@@ -130,18 +130,26 @@ class TestApiTerminalWs:
 
     @pytest.mark.asyncio
     async def test_rejects_when_max_sessions_reached(self):
+        # The refusal rides an accepted socket (a browser cannot read a refused
+        # handshake), carries its code, and reserves nothing.
         registry = {"s1": _make_session(), "s2": _make_session(), "s3": _make_session()}
         req = _make_request(registry=registry, session_id="new")
+        refusal_ws = MagicMock()
+        refusal_ws.prepare = AsyncMock()
+        close = AsyncMock()
         with (
             patch.object(terminal, "_sel") as mock_sel,
             patch.object(
                 terminal, "_get_config", return_value={"enabled": True, "max_sessions": 3}
             ),
+            patch.object(terminal.web, "WebSocketResponse", return_value=refusal_ws),
+            patch.object(terminal, "_close_terminal_ws_bounded", close),
         ):
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_ws(req)
-        assert isinstance(resp, web.Response)
-        assert resp.status == 409
+        assert resp is refusal_ws
+        assert close.await_args.kwargs["error_code"] == "terminal_max_sessions"
+        assert set(registry) == {"s1", "s2", "s3"}
 
     @pytest.mark.asyncio
     async def test_at_the_cap_the_slot_changes_hands_before_any_await(self):
@@ -658,6 +666,72 @@ class TestApiTerminalWs:
         ]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("shell", ["/bin/bash", "/bin/zsh", "powershell.exe"])
+    async def test_new_session_sends_replayed_before_output(self, monkeypatch, tmp_path, shell):
+        registry = {}
+        req = _make_request(registry=registry, session_id="replayed-open")
+        ws = MagicMock()
+        ws.closed = False
+        ws.prepare = AsyncMock()
+        frames = []
+        output_sent = asyncio.Event()
+
+        async def send_bytes(data):
+            frames.append(data)
+            output_sent.set()
+
+        async def send_str(data):
+            frames.append(json.loads(data))
+
+        async def incoming():
+            await await_until(output_sent, what="the first terminal output")
+            return
+            yield  # pragma: no cover -- async iterator with no input frames
+
+        ws.send_bytes = AsyncMock(side_effect=send_bytes)
+        ws.send_str = AsyncMock(side_effect=send_str)
+        ws.__aiter__.side_effect = incoming
+        proc = _make_session().proc
+        wp = MagicMock()
+        wp.pid = proc.pid
+        wp.read.side_effect = [b"live", b""]
+        fake_os = MagicMock(wraps=os)
+        fake_os.read.side_effect = [b"live", b""]
+        monkeypatch.setattr(terminal, "os", fake_os)
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", shell == "powershell.exe")
+        monkeypatch.setattr(terminal.platform_compat, "IS_POSIX", shell != "powershell.exe")
+        monkeypatch.setattr(terminal, "_pty", MagicMock())
+        terminal._pty.openpty.return_value = (101, 102)
+        monkeypatch.setattr(terminal, "fcntl", MagicMock())
+        monkeypatch.setattr(terminal, "termios", MagicMock(TIOCSWINSZ=1))
+        monkeypatch.setattr(terminal, "_close_terminal_fd", AsyncMock())
+        monkeypatch.setattr(terminal, "_handle_pty_reader_end", AsyncMock())
+        monkeypatch.setattr(terminal, "_resolve_cwd", lambda *_args: str(tmp_path))
+        monkeypatch.setattr(
+            terminal, "_resolve_shell_with_fence_shells", lambda _cfg: (shell, None, {})
+        )
+        monkeypatch.setattr(terminal, "_pty_child_env", lambda env: env)
+        monkeypatch.setattr(terminal, "_get_config", lambda _req: {"enabled": True})
+        monkeypatch.setattr(terminal, "_sel", MagicMock())
+        monkeypatch.setattr(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", lambda **kw: ws)
+        monkeypatch.setattr(
+            terminal.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)
+        )
+        with patch("kiro_crew.conpty.WindowsPty", return_value=wp):
+            try:
+                assert await terminal.api_terminal_ws(req) is ws
+            finally:
+                sess = registry.get("replayed-open")
+                if sess is not None and sess.reader_task is not None:
+                    await await_until(sess.reader_task, what="the terminal reader finishing")
+
+        assert frames.count({"type": "replayed"}) == 1
+        assert frames.index({"type": "replayed"}) < frames.index(b"live")
+        if shell == "/bin/bash":
+            assert frames == [{"type": "replayed"}, b"live"]
+            assert sess.shell_ready is False
+
+    @pytest.mark.asyncio
     async def test_windows_conpty_spawn_failure_sends_error(self, monkeypatch):
         """On Windows a new WS session spawns a ConPTY shell (kiro_crew.conpty).
         If the
@@ -935,8 +1009,8 @@ class TestSweepTerminals:
 
     @pytest.mark.asyncio
     async def test_reads_config_off_the_default_executor(self):
-        # Every live PTY reader parks a blocking read on the default executor, so a
-        # config read queued there could wait behind the very shells it would end.
+        # Every to_thread caller in the gateway queues on the default executor, so a
+        # config read queued there could wait behind work that never finishes.
         sess = _make_session(session_id="s1", alive=True, disconnect=_DETACHED_AT)
         app, registry = _sweep_app(sess, bus=MagicMock())
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)

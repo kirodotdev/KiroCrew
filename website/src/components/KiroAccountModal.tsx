@@ -1,24 +1,25 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
 import { AlertCircle, AlertTriangle, ArrowRight, Coins, ExternalLink, Eye, EyeOff, Gift, Info, Loader2, RefreshCw, UserRound } from 'lucide-react'
 
 import { api } from '../api/client'
 import type { KasLoginStatus, KiroBonusCreditGrant, KiroCreditUsage, KiroUsageRefreshResponse } from '../api/client'
+import { emailInitials } from '../lib/emailInitials'
 import { isAccountOnly, parseKiroUsagePayload, type KiroAccountOnly } from '../api/kiroUsage'
 import { accountProviderLabel, providerLabelFromWire } from './kasProviderLabel'
 import { forecastCreditRunOut } from '../api/creditForecast'
 import { providerUsageQuery } from '../api/providerUsageQuery'
 import { getAdapter } from '../providers/registry'
-import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { KIRO_SIGN_IN_BACKEND } from '../pages/developer/kiroSignInLink'
+import { useOpenKiroSignIn } from '../pages/developer/useOpenKiroSignIn'
 import { configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/acpBackend'
+import { useKiroSignInOffered } from '../pages/developer/useKiroSignInOffered'
 import { failedWithNoData } from '../api/queryState'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import Clickable from './Clickable'
 import ErrorNotice from './ErrorNotice'
-import { useGuardedLeave } from './NavigationLeaveGuard'
 import Modal from './Modal'
 
 // The usage view model is owned by `api/client.ts` next to the wire payload it
@@ -32,9 +33,12 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
  * where the Refresh below can fill it), `'failed'` when
  * the fetch itself failed with nothing cached, `'signin-required'`
  * when no live Kiro credential could be read, `'signin-rejected'` when the
- * usage API refused the one that was, or `'config-unreadable'` when the
- * gateway holds no reading AND the config read that decides whether this is a
- * Kiro harness at all failed -- so nothing can be shown as a fact, and the read
+ * usage API refused the one that was, `'api-key'` when the sessions run on a
+ * `KIRO_API_KEY` and so spend credits kiro-cli's login does not own, `'no-limit'`
+ * when the usage service reports no credit limit for the account (so there is no
+ * balance to show), or `'config-unreadable'` when the gateway holds no reading
+ * AND the config read that decides whether this is a Kiro harness at all
+ * failed -- so nothing can be shown as a fact, and the read
  * is retried from here. `null` is the ONLY value that means "still loading" —
  * the others have nothing more to wait for, so spinning on them would repeat
  * the defect this distinction exists to remove.
@@ -47,6 +51,8 @@ export type KiroAccountUsage =
   | 'failed'
   | 'signin-required'
   | 'signin-rejected'
+  | 'api-key'
+  | 'no-limit'
   | 'config-unreadable'
 
 /** True only for an actual reading, so the sentinels cannot reach a field access. */
@@ -122,6 +128,21 @@ interface KiroAccountModalProps {
 }
 
 const KIRO_ACCOUNT_URL = 'https://app.kiro.dev/settings/account'
+
+/** The shared route from account details to Kiro's account and subscription page. */
+export function ManageKiroAccountLink() {
+  return (
+    <a
+      href={KIRO_ACCOUNT_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline"
+    >
+      {i18nT('app.manage_account')} <ExternalLink className="lucide-inline" />
+    </a>
+  )
+}
+
 /** The e-mail hide toggle, read through `usePersistedBool(key, true)` here and on the Kiro sign-in card, which live-syncs both. */
 export const KIRO_ACCOUNT_EMAIL_HIDDEN_KEY = 'kirocrew:account-email-hidden'
 
@@ -146,7 +167,15 @@ function formatResetDate(value: string): string {
  * refreshing, and nothing when there is nothing honest to project. A failed
  * read goes through `ErrorNotice` like every other failure in this panel.
  */
-function CreditForecastLine({ usage, onClose }: { usage: KiroCreditUsage; onClose: () => void }) {
+function CreditForecastLine({
+  usage,
+  onClose,
+  handoff,
+}: {
+  usage: KiroCreditUsage
+  onClose: () => void
+  handoff: boolean
+}) {
   // The registry's one adapter, not useProvider(): the context only ever
   // holds that same adapter, and reading it directly keeps this line
   // independent of every test that stubs the context with a bare `{ id }`.
@@ -157,7 +186,12 @@ function CreditForecastLine({ usage, onClose }: { usage: KiroCreditUsage; onClos
   if (error) {
     return (
       <div className="mt-2">
-        <ErrorNotice impact="minor" message={i18nT('components.kiroAccountModal.forecast_unavailable')} askAgent onHandoff={onClose} />
+        <ErrorNotice
+          impact="minor"
+          message={i18nT('components.kiroAccountModal.forecast_unavailable')}
+          askAgent={handoff}
+          onHandoff={handoff ? onClose : undefined}
+        />
       </div>
     )
   }
@@ -208,13 +242,6 @@ function formatCredits(value: number): string {
   return fmtNumber(value, { maximumFractionDigits: 2 })
 }
 
-function emailInitials(email: string): string {
-  const localPart = email.split('@', 1)[0] ?? ''
-  const parts = localPart.split(/[^A-Za-z0-9]+/).filter(Boolean)
-  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
-  return (parts[0] ?? '?').slice(0, 2).toUpperCase()
-}
-
 function BonusCredits({ grants }: { grants: KiroBonusCreditGrant[] }) {
   if (grants.length === 0) return null
 
@@ -262,7 +289,13 @@ function BonusCredits({ grants }: { grants: KiroBonusCreditGrant[] }) {
   )
 }
 
-function AccountIdentity({ usage }: { usage: KiroAccountUsage }) {
+/** The name a reading carries (its email, else its account), or `''` with no reading. */
+export function accountIdentityName(usage: KiroAccountUsage): string {
+  const reading = isUsageReading(usage) ? usage : undefined
+  return reading?.email || reading?.account || ''
+}
+
+export function AccountIdentity({ usage }: { usage: KiroAccountUsage }) {
   const [emailHidden, setEmailHidden] = usePersistedBool(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY, true)
   const toggleEmailVisibility = () => setEmailHidden(!emailHidden)
 
@@ -375,9 +408,9 @@ function useUsageRefresh() {
         setNotice({ kind: 'parked', minutes: Math.max(1, Math.ceil(secs / 60)) })
         return
       }
-      if (isAccountOnly(parsed)) {
-        // The sign-in has no balance to show. That state carries its own
-        // notice and offers no Refresh, so the outcome adds nothing to it.
+      if (isAccountOnly(parsed) || parsed === 'no-limit') {
+        // The sign-in (or its plan) has no balance to show. That state carries
+        // its own notice and offers no Refresh, so the outcome adds nothing to it.
         return
       }
       if (!isUsageReading(parsed)) {
@@ -478,9 +511,10 @@ const KIROCREW_CONFIG_QUERY = ['kirocrewConfig'] as const
  * reuses its answer rather than refetching it under the pill. `onKas` is true
  * only for a LOADED config where something runs on KAS (`kasInUse`), Bots
  * included; `mainOnKas` only when the main harness is that KAS, so its agents
- * run as Crew's own Kiro sign-in (the card in Settings > Agent Harness) and that
- * sign-in, never a kiro-cli login, is the account this popup names.
- * `signInQuery` reads that sign-in under the key the card's flow polls
+ * run as Crew's own Kiro sign-in (the card in Settings > Kiro account) and that
+ * sign-in, never a kiro-cli login, is the account this popup names. `offered`:
+ * the build offers that sign-in, which other features use whichever harness
+ * runs. `signInQuery` reads that sign-in under the key the card's flow polls
  * (`KasLoginGate`); `crewSignInStored` is true when it says one is stored,
  * usable or not.
  */
@@ -493,16 +527,25 @@ function useKasHarness() {
   const cfg = cfgQuery.data
   const onKas = cfg !== undefined && kasInUse(cfg)
   const mainOnKas = cfg !== undefined && onKas && configuredAcpBackend(cfg) === KIRO_SIGN_IN_BACKEND
+  const offered = useKiroSignInOffered() === true
   const signInQuery = useQuery<KasLoginStatus>({
     queryKey: ['kas-login'],
     queryFn: api.kasLoginStatus,
-    enabled: onKas,
+    enabled: onKas || offered,
     refetchOnMount: false,
   })
-  return { cfgQuery, onKas, mainOnKas, signInQuery, crewSignInStored: signInQuery.data?.authenticated === true }
+  return { cfgQuery, onKas, mainOnKas, offered, signInQuery, crewSignInStored: signInQuery.data?.authenticated === true }
 }
 
-function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () => void }) {
+export function CreditUsage({
+  usage,
+  onClose,
+  handoff = true,
+}: {
+  usage: KiroAccountUsage
+  onClose: () => void
+  handoff?: boolean
+}) {
   const queryClient = useQueryClient()
   const refresh = useUsageRefresh()
   const { mainOnKas, signInQuery } = useKasHarness()
@@ -538,7 +581,13 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   // query re-read above has landed.
   const refreshNotice = refresh.notice === null
     ? null
-    : <ErrorNotice message={refreshNoticeMessage(refresh.notice)} askAgent onHandoff={onClose} />
+    : (
+      <ErrorNotice
+        message={refreshNoticeMessage(refresh.notice)}
+        askAgent={handoff}
+        onHandoff={handoff ? onClose : undefined}
+      />
+    )
   // Only a cache that has not warmed yet is still loading. A failed fetch and an
   // account with no plan both have nothing pending, so they get the static
   // notice rather than a skeleton that never resolves.
@@ -551,7 +600,14 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
     // stored nothing failed, so that is the passive notice.
     if (signInQuery.data === undefined) {
       return failedWithNoData(signInQuery)
-        ? <ErrorNotice impact="partial" message={i18nT('components.kasLogin.sign_in_status_unavailable')} askAgent onHandoff={onClose} />
+        ? (
+          <ErrorNotice
+            impact="partial"
+            message={i18nT('components.kasLogin.sign_in_status_unavailable')}
+            askAgent={handoff}
+            onHandoff={handoff ? onClose : undefined}
+          />
+        )
         : <UsageSkeleton />
     }
     if (signInQuery.data.authenticated) {
@@ -589,8 +645,8 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
         message={i18nT(usage === 'signin-rejected' && mainOnKas
           ? 'components.kiroAccountModal.credit_usage_sign_in_lapsed'
           : 'components.kiroAccountModal.credit_usage_signin_required')}
-        askAgent
-        onHandoff={onClose}
+        askAgent={handoff}
+        onHandoff={handoff ? onClose : undefined}
       />
     )
   }
@@ -599,6 +655,18 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   // user). That holds until the sign-in changes, so it is a configuration the
   // account is in, not a failure: the passive notice, and no Refresh, since
   // another read of the same sign-in answers the same.
+  if (usage === 'api-key') {
+    // Same passive shape as the account-only notice, and for the same reason:
+    // the key stays in place until the user removes it, so another read answers
+    // the same and there is no failure to recover from. It must be said, though:
+    // the login named above is not the account these chats bill.
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
+        <Info className="lucide-inline shrink-0" aria-hidden="true" />{' '}
+        {i18nT('components.kiroAccountModal.credit_usage_api_key')}
+      </div>
+    )
+  }
   if (isAccountOnly(usage)) {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
@@ -612,6 +680,17 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
         {i18nT('components.kiroAccountModal.credit_usage_sign_in_type', {
           provider: accountProviderLabel(usage.accountType) || providerLabelFromWire('externalidp'),
         })}
+      </div>
+    )
+  }
+  // A plan that reports no credit limit has no balance, and re-reading it
+  // answers the same: a configuration the account is in, like the state above,
+  // so the same passive notice and no Refresh.
+  if (usage === 'no-limit') {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
+        <Info className="lucide-inline shrink-0" aria-hidden="true" />{' '}
+        {i18nT('components.kiroAccountModal.credit_usage_no_limit')}
       </div>
     )
   }
@@ -631,8 +710,8 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
               message={i18nT(usage === 'config-unreadable'
                 ? 'components.kiroAccountModal.credit_usage_config_unreadable'
                 : 'components.kiroAccountModal.credit_usage_unavailable')}
-              askAgent
-              onHandoff={onClose}
+              askAgent={handoff}
+              onHandoff={handoff ? onClose : undefined}
             />
           )}
         {/* Refresh sits directly under the failure it can retry. */}
@@ -701,7 +780,7 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
           </span>
           {usage.resets && <span>{i18nT('app.resets')} {formatResetDate(usage.resets)}</span>}
         </div>
-        <CreditForecastLine usage={usage} onClose={onClose} />
+        <CreditForecastLine usage={usage} onClose={onClose} handoff={handoff} />
       </div>
       <div className="rounded-lg border border-border px-3">
         <DetailRow label={i18nT('app.overage_used')} value={`${fmtNumber(usage.overage)} ${i18nT('app.credits')}`} />
@@ -747,30 +826,30 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
 /**
  * The way from this popup to Sign out and Switch account. This popup is where
  * people look for account actions, but the actions live on the Kiro sign-in
- * card in Settings > Agent Harness, so this links there instead of carrying a
- * second copy of the sign-in flow. The link opens the card's KAS row and rings
- * it, the same deep link the chat's "Sign in to Kiro" row uses. The label names
+ * card in Settings > Kiro account, so this links there instead of carrying a
+ * second copy of the sign-in flow. The link rings the card, the same deep link
+ * the chat's "Sign in to Kiro" row uses. The label names
  * Settings and the icon is an arrow: pressing it moves, it signs nothing out.
  *
- * Shown only on a LOADED config where something runs on KAS (`kasInUse`). That
- * card signs out Crew's own Kiro sign-in, which is the account this popup names
- * only when the main harness is KAS; on kiro-cli the popup names the kiro-cli
- * login, which the card cannot touch, so a link there would promise a sign-out
- * that does not happen. So where only Bots run on KAS the label names the Bots'
- * sign-in instead. On KAS with Crew's sign-in empty the same holds for sign-out,
+ * Shown on a LOADED config where something runs on KAS (`kasInUse`) or the
+ * build offers Kiro sign-in. That card signs out Crew's own Kiro sign-in, which
+ * is the account this popup names only when the main harness is KAS; on kiro-cli
+ * the popup names the kiro-cli login, which the card cannot touch, so a link
+ * there would promise a sign-out that does not happen. So where only Bots run on
+ * KAS the label names the Bots' sign-in instead, and where nothing does it names
+ * only the Kiro account page. On KAS with Crew's sign-in empty the same holds for sign-out,
  * so the label then offers only the switch, which that card's sign-in does
  * perform. With no usable sign-in at all (`signin-required`) the label offers
  * the sign-in itself. A failed config read says so here rather than dropping
  * the link silently.
  */
 function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: KiroAccountUsage }) {
-  const navigate = useNavigate()
-  const leave = useGuardedLeave()
+  const openKiroSignIn = useOpenKiroSignIn()
   // Crew's sign-in stored: the card can sign that account out or switch it. Not
   // stored (or not yet known): the popup names kiro-cli's login, which the card
   // cannot sign out, but signing in there DOES switch the account agents run as
   // -- so the label promises only the switch.
-  const { cfgQuery, onKas, mainOnKas, crewSignInStored } = useKasHarness()
+  const { cfgQuery, onKas, mainOnKas, offered, crewSignInStored } = useKasHarness()
   if (cfgQuery.data === undefined) {
     // `config-unreadable` already carries this failure in the usage box above.
     if (!failedWithNoData(cfgQuery) || usage === 'config-unreadable') return null
@@ -784,20 +863,19 @@ function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: Ki
       />
     )
   }
-  if (!onKas) return null
+  if (!onKas && !offered) return null
   return (
     <button
       type="button"
       // Through the page's leave guard: a refused leave (an unsaved draft the
       // user keeps) leaves both the popup and the route as they are.
-      onClick={() => leave(() => {
-        onClose()
-        navigate(KIRO_SIGN_IN_PATH)
-      }, KIRO_SIGN_IN_PATH)}
+      onClick={() => openKiroSignIn(onClose)}
       className="inline-flex cursor-pointer items-center gap-1 text-[12px] text-accent hover:underline focus-ring-accent"
       data-testid="kiro-account-sign-in-settings"
     >
-      {i18nT(!mainOnKas
+      {i18nT(!onKas
+        ? 'components.kiroAccountModal.kiro_account_in_settings'
+        : !mainOnKas
         ? 'components.kiroAccountModal.bots_sign_in_in_settings'
         : needsSignIn(usage)
           ? 'components.kiroAccountModal.sign_in_in_settings'
@@ -821,14 +899,7 @@ export default function KiroAccountModal({ open, onClose, usage }: KiroAccountMo
         <CreditUsage usage={usage} onClose={onClose} />
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <SignInSettingsLink onClose={onClose} usage={usage} />
-          <a
-            href={KIRO_ACCOUNT_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline"
-          >
-            {i18nT('app.manage_account')} <ExternalLink className="lucide-inline" />
-          </a>
+          <ManageKiroAccountLink />
         </div>
       </div>
     </Modal>

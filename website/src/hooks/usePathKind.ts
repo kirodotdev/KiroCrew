@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { apiTransport } from '../api/apiTransport'
 
 /**
  * What a chip-candidate string actually is on disk.
@@ -85,7 +86,7 @@ async function probeBatch(paths: string[]): Promise<Record<string, PathKind>> {
   const out: Record<string, PathKind> = {}
   for (const p of paths) out[p] = 'missing'
   try {
-    const res = await fetch('/api/file-kinds', {
+    const res = await apiTransport.request('/api/file-kinds', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' },
       body: JSON.stringify({ paths }),

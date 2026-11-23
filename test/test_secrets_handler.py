@@ -115,7 +115,12 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"names": ["DB_PASS", "TEST_KEY"], "managed": []}
+                assert data["names"] == ["DB_PASS", "TEST_KEY"]
+                assert data["managed"] == []
+                assert [(i["name"], i["type"]) for i in data["items"]] == [
+                    ("DB_PASS", "secret"),
+                    ("TEST_KEY", "secret"),
+                ]
 
     @pytest.mark.asyncio
     async def test_empty_vault(self, empty_vault_dir: Path) -> None:
@@ -130,7 +135,7 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"names": [], "managed": []}
+                assert data == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_classifies_only_actual_jira_vault_consumers(self, tmp_path: Path) -> None:
@@ -237,7 +242,7 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {"names": [], "managed": []}
+                assert await response.json() == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_single_whitespace_jira_entry_is_ignored(self, tmp_path: Path) -> None:
@@ -259,7 +264,7 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {"names": [], "managed": []}
+                assert await response.json() == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_config_failure_keeps_names_and_reports_managed_error(
@@ -279,11 +284,10 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {
-                    "names": ["DB_PASS", "TEST_KEY"],
-                    "managed": [],
-                    "managed_error": True,
-                }
+                data = await response.json()
+                assert data["names"] == ["DB_PASS", "TEST_KEY"]
+                assert data["managed"] == []
+                assert data["managed_error"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("degraded", [{"*"}, {"dashboard"}, {"wakatime"}])
@@ -311,6 +315,7 @@ class TestApiSecretsList:
                 assert response.status == 200
                 assert await response.json() == {
                     "names": [],
+                    "items": [],
                     "managed": [],
                     "managed_error": True,
                 }

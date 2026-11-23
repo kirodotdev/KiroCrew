@@ -861,6 +861,34 @@ async def test_rotation_carries_the_embed_parent_port_onto_both_new_cookies(
 
 
 @pytest.mark.asyncio
+async def test_rotation_carries_the_embed_forward_port_onto_both_new_cookies(
+    state: RefreshStateManager, audit: list
+) -> None:
+    """A pane's forward port claim survives a refresh with the parent it pairs with.
+
+    Without it, the rotated session would stop binding the pane's app web origin
+    record to the port the hub minted for, and fall back to reading ``Host``.
+    """
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_embed_forward_port
+    from kiro_crew.dashboard.token_auth_tokens import _b64url_decode
+
+    token, _chain, _jti, _exp = generate_refresh_token(
+        "alice", embed_parent_port="5476", embed_forward_port="7778"
+    )
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+
+    cookies = {morsel.key: morsel.value for morsel in response.cookies.values()}
+    access = json.loads(_b64url_decode(cookies[f"mc_token_{PORT}"].split(".", 1)[0]))
+    assert access["embed_forward_port"] == "7778"
+    assert refresh_token_embed_forward_port(cookies[refresh_cookie_name(str(PORT))]) == "7778"
+
+    plain, *_ = generate_refresh_token("alice")
+    assert refresh_token_embed_forward_port(plain) == ""
+    assert refresh_token_embed_forward_port("not-a-token") == ""
+
+
+@pytest.mark.asyncio
 async def test_a_boot_bound_rotation_keeps_its_address_pin(
     state: RefreshStateManager, audit: list
 ) -> None:

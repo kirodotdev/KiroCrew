@@ -55,6 +55,7 @@ from typing import Any
 from kiro_crew import crewmate_prompts
 from kiro_crew import members as members_mod
 from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, ASSISTANT_MEMBER_NAME
+from kiro_crew.member_folder import open_member_folder
 
 logger = logging.getLogger(__name__)
 
@@ -256,12 +257,18 @@ def claim_greeting_marker(slug: str, slot_key: str) -> bool:
     processes, so exactly one caller ever sees True. Blocking IO; call it off
     the event loop.
     """
-    path = greeting_marker_path(slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return False
+    with open_member_folder(slug) as folder:
+        try:
+            fd = os.open(
+                folder.leaf(GREETING_MARKER_FILENAME),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=folder.fd,
+            )
+        except FileExistsError:
+            # A link at the marker is refused, not read as "already claimed".
+            folder.refuse_link(GREETING_MARKER_FILENAME)
+            return False
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump({"slot_key": slot_key, "ts": time.time()}, fh)
     return True
@@ -363,7 +370,13 @@ def app_is_stopping(state: Any) -> bool:
 
 
 def dispatch_hidden_turn(
-    state: Any, slot: Any, prompt: str, *, human_seen: bool, actor: str = "gateway"
+    state: Any,
+    slot: Any,
+    prompt: str,
+    *,
+    human_seen: bool,
+    actor: str = "gateway",
+    mirror_reply_only: bool = False,
 ) -> bool:
     """Run *prompt* as one gateway-authored turn in *slot*, with no user row for it.
 
@@ -375,6 +388,9 @@ def dispatch_hidden_turn(
     may run (a guide, ``update_self``, most cards) refuse inside it; in a
     crewmate's own thread its goal, milestones and check-ins cards are still
     admitted (``handlers.guide.REQ_OWN_GOAL_TURN``).
+
+    With *mirror_reply_only* a linked thread or channel gets only the turn's
+    final reply (the goal check-ins' Heartbeat passes it).
 
     Returns False, starting nothing, while the app is stopping
     (:func:`app_is_stopping`). A restart cancels every running turn, and a
@@ -407,6 +423,7 @@ def dispatch_hidden_turn(
                 prompt,
                 _synthetic_payload=True,
                 _turn_actor=actor,
+                _mirror_reply_only=mirror_reply_only,
             ),
         ),
     )

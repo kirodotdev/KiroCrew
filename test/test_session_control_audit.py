@@ -74,6 +74,7 @@ _DASHBOARD_TOOL_CALLS = {
     "work_dispatch": {"title": "t", "acceptance": {}, "agent": "a", "seed": "s"},
     "session_queue": {"target": "chat-2"},
     "crew_list": {},
+    "session_run_queued": {"target": "chat-2", "queue_id": "q1"},
 }
 
 

@@ -11,7 +11,7 @@ import {
 import { WhatsAppLogo } from '../../components/WhatsAppLogo'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn, IconButton, PanelSectionHeader } from '../../components/ui'
-import { SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
+import { SettingsCard, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useChannelFolderSave } from '../../hooks/useChannelFolderSave'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -270,7 +270,7 @@ function GroupRow({
 
   return (
     <div
-      className="rounded-lg border border-border bg-card p-3 flex flex-col gap-1"
+      className="flex flex-col gap-1 py-2"
       data-testid={`whatsapp-group-${group.jid}`}
     >
       <div className="flex items-start justify-between gap-2">
@@ -659,9 +659,11 @@ export function WhatsAppPanel() {
         </div>
       </div>
 
-      {/* status */}
+      {/* One group box: pairing state, pairing, unlink and who can reach the
+          agent are rows of it, never boxes of their own inside the pane. */}
+      <SettingsCard>
       <div
-        className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3.5 py-2.5"
+        className="flex flex-col gap-1.5"
         data-testid="whatsapp-status"
       >
         {isError ? (
@@ -714,7 +716,7 @@ export function WhatsAppPanel() {
       )}
 
       {/* pairing */}
-      <div className="rounded-lg border border-border bg-card p-3.5">
+      <div>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="min-w-0">
             <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.whatsAppPanel.pair_with_whatsapp')}</div>
@@ -845,7 +847,7 @@ export function WhatsAppPanel() {
           that leave work to do, so an attempt that changed nothing cannot read
           as a revoke. */}
       {!readOnly && (
-        <div className="rounded-lg border border-border bg-card p-3.5" data-testid="whatsapp-unlink">
+        <div data-testid="whatsapp-unlink">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0">
               <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.whatsAppPanel.unlink_this_device')}</div>
@@ -917,12 +919,10 @@ export function WhatsAppPanel() {
           as the switch's accessible name) and the keyboard/AT semantics.
           data-testid lives on this wrapper because SettingsToggle exposes only
           data-setting-label — same move as whatsapp-dm-policy below. */}
-      {/* max-w: this panel has no SettingsCard, so an uncapped row would make
-          the whole pane width a Clickable save surface (this panel autosaves —
-          a stray click in the empty gap would silently disable the channel)
-          and push the switch far from its label. Content-scaling matches the
-          dm-policy select below. */}
-      <div data-testid="whatsapp-enabled" className="max-w-[380px]">
+      {/* A row of the group box above, so the box's 720px content width caps
+          the Clickable save surface (this panel autosaves; an uncapped row would
+          let a stray click in the empty gap disable the channel). */}
+      <div data-testid="whatsapp-enabled">
         <SettingsToggle
           label={i18nT('pages.settings.whatsAppPanel.enable_the_whatsapp_channel')}
           checked={!!data?.enabled}
@@ -937,7 +937,7 @@ export function WhatsAppPanel() {
             neighbouring control stays content-scaled. data-testid stays on this
             wrapper so the Playwright drive (scripts/test-whatsapp-panel.mjs)
             still finds the field. */}
-        <div className="block" data-testid="whatsapp-dm-policy" style={{ maxWidth: 280 }}>
+        <div className="block" data-testid="whatsapp-dm-policy">
           <SettingsSelect
             label={i18nT('pages.settings.whatsAppPanel.who_can_message_the_bot')}
             // Kept as paired entries: as two positional arrays these drifted,
@@ -1039,7 +1039,7 @@ export function WhatsAppPanel() {
           button) pass neither. Renaming does not strand the folder it creates:
           the channel's folder is found by its stamp, so a new name relabels that
           same folder instead of building a second one. */}
-      <div className="border-t border-border mt-4 pt-4" data-testid="whatsapp-session-folder">
+      <div data-testid="whatsapp-session-folder">
         <SettingsToggle
           label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
           hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
@@ -1097,8 +1097,9 @@ export function WhatsAppPanel() {
           testId="whatsapp-session-folder-error"
         />
       </div>
+      </SettingsCard>
 
-      <p className="text-[11.5px] text-muted m-0">
+      <p className="text-[11.5px] text-muted m-0 px-4 max-w-[720px]">
         <Trans
           i18nKey="pages.settings.whatsAppPanel.group_participation_setup_guide"
           components={{

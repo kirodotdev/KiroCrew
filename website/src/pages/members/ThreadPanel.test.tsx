@@ -7,6 +7,9 @@ import { threadDrafts, threadLiveStore, threadPendingReplies } from '../../state
 
 const mockDetail = vi.fn()
 const mockReply = vi.fn()
+const phone = vi.hoisted(() => ({ on: false }))
+vi.mock('../../hooks/useIsMobile', () => ({ useIsMobile: () => phone.on }))
+vi.mock('../../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => phone.on }))
 
 vi.mock('../../api/threads', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/threads')>()
@@ -45,6 +48,7 @@ const renderPanel = (onClose = vi.fn()) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  phone.on = false
   qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   mockDetail.mockResolvedValue({ parent: PARENT, replies: REPLIES, in_flight: false })
   mockReply.mockResolvedValue({ reply: { id: 'r4', role: 'user', content: 'ok', ts: '2026-09-22T07:44:00Z' }, run_id: 'run-1' })
@@ -100,6 +104,19 @@ describe('ThreadPanel', () => {
     await screen.findByTestId('thread-replying')
     fireEvent.change(box, { target: { value: 'again' } })
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled()
+  })
+
+  it('on a phone, Return starts a new line and the Send button replies', async () => {
+    phone.on = true
+    renderPanel()
+    await screen.findByTestId('thread-parent')
+    const box = screen.getByTestId('thread-composer') as HTMLTextAreaElement
+    fireEvent.change(box, { target: { value: 'Is #4198 among them?' } })
+    expect(fireEvent.keyDown(box, { key: 'Enter' })).toBe(true)
+    await act(async () => {})
+    expect(mockReply).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+    await waitFor(() => expect(mockReply).toHaveBeenCalledWith('member-radar', 'm-1', 'Is #4198 among them?', expect.stringMatching(/^[0-9a-f]{32}$/)))
   })
 
   it('streams the mate reply from the live store', async () => {

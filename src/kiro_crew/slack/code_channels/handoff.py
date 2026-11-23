@@ -1,6 +1,7 @@
 """The code channel's "helper agents are off" notice and its Turn-on button.
 
-``slack.code_channel_dispatch`` is an opt-in (default off). When a code channel's
+``slack.code_channel_dispatch`` is off when unset; a first enable of code channels on
+the Slack Code card saves it on, and a stored off is kept. When a code channel's
 own session asks to hand off work while it is off, the dispatch exemption refuses
 (``DISPATCH_OFF_REFUSAL``, which names the Settings control) and calls
 :func:`notice_soon`, which posts ONE short notice in that channel with a

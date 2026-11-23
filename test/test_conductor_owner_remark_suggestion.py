@@ -11,13 +11,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 
 GOAL_SKILL = Path(_BUILTIN_SKILLS_DIR) / "goal-conductor" / "SKILL.md"
 
 
 def _patrol_section() -> str:
-    body = " ".join(GOAL_SKILL.read_text(encoding="utf-8").split())
+    body = " ".join(skill_text(GOAL_SKILL).split())
     start = body.index("### Patrol")
     return body[start : body.index("### Close the round", start)]
 

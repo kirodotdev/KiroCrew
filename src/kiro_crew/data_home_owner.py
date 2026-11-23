@@ -7,11 +7,11 @@ far from the cause. Two helpers cover it:
 
 * :func:`root_run_refusal` stops that run before it writes anything.
 * :func:`check_data_home` finds the damage an earlier run left, so the gateway
-  log, ``kirocrew doctor``, ``/api/status`` and the Bot create route can say
-  what is wrong, who owns the files, and where the docs explain how to give them
-  back. Kiro Crew never re-owns them itself: changing owners as root inside a
-  folder an agent can write is a privilege boundary, so that step stays the
-  person's own, taken while nothing else runs.
+  log, a refused gateway start, ``kirocrew doctor``, ``/api/status`` and the Bot
+  create route can say what is wrong, who owns the files, and where the docs
+  explain how to give them back. Kiro Crew never re-owns them itself: changing
+  owners as root inside a folder an agent can write is a privilege boundary, so
+  that step stays the person's own, taken while nothing else runs.
 
 POSIX only. Windows has no root run of this shape, and its ACLs are reported
 elsewhere, so both helpers answer "nothing wrong" there.
@@ -23,6 +23,7 @@ import logging
 import os
 import shlex
 import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -158,6 +159,19 @@ def warn_if_data_home_not_owned(home: Path) -> None:
     access = check_data_home(home)
     if not access.ok:
         logger.warning("%s", access.explain())
+
+
+def print_if_data_home_not_owned(home: Path) -> None:
+    """Print :func:`check_data_home`'s finding to stderr when the gateway refuses to start.
+
+    A refused start never reaches the after-ready warning, so without this its last
+    line is the lock or file error, not who owns the files. Only files another
+    account owns are named: a read-only home of this account's own already has its
+    cause in the refusal line.
+    """
+    access = check_data_home(home)
+    if access.owner:
+        print(access.explain(), file=sys.stderr)
 
 
 def _nearest_owner(path: Path) -> int | None:

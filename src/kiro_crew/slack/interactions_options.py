@@ -5,7 +5,9 @@
 Both answers go through ``_answer_options``: it refuses a superseded or already answered
 control (``_refuse_stale_options``, an "Already answered" ephemeral), edits the card in
 place to "<who> chose <choice>" and sends the choice to the agent session. An ``action::`` button reaches
-the session through ``_route_action_to_session``. ``_import_thread_to_slot`` fetches a
+the session through ``_route_action_to_session``; one on the Home tab
+(``_is_home_tab_action_button``) is routed by ``_handle_home_tab_action`` into the
+clicker's DM with the bot. ``_import_thread_to_slot`` fetches a
 Slack thread, redacts it and imports it into a new dashboard slot.
 
 Split out of ``kiro_crew.slack.interactions``, which stays the import path and the
@@ -43,7 +45,15 @@ from kiro_crew.slack.format import (
     escape_mrkdwn,
     replace_options_blocks,
 )
-from kiro_crew.slack.handler import handle_message, is_allowed_user
+from kiro_crew.slack.handler import (
+    SHARED_OWNER_ONLY_TEXT,
+    handle_message,
+    is_allowed_user,
+    is_shared_listed,
+    is_shared_user,
+    shared_command_refused,
+    shared_user_refused_for_session,
+)
 from kiro_crew.slack.interactions_context import _orch, register_view_handler
 from kiro_crew.slack.outbound import (
     OptionsSeveralRequest,
@@ -151,10 +161,76 @@ def _extract_selected_value(action: dict) -> tuple[str, str]:
 _ACTION_PAYLOAD_CAP = 4000
 
 
+async def _shared_answer_refused(
+    channel: str, user_id: str, thread_ts: str, text: str, tool_name: str
+) -> bool:
+    """Refuse a shared user's card answer that is a harness ``/`` command or carries a
+    privacy modifier (``slack.shared_access``), BEFORE the card is claimed.
+
+    The agent's harness reads a prompt that starts with ``/`` as its own command
+    whatever Kiro Crew's ``interpret_commands`` says, so such an answer stays the
+    owner's. Refused here, not later in dispatch, so the card stays answerable.
+    """
+    # A label is the model's: only its leading "/" is judged (modifiers never run
+    # from a card answer, ``interpret_commands=False``).
+    if not shared_command_refused(user_id, text, modifiers=False):
+        return False
+    sel().log_tool_invocation(
+        session_key=thread_ts,
+        agent="kirocrew",
+        source="slack",
+        tool_name=tool_name,
+        tool_kind="interaction",
+        outcome="denied",
+        metadata={"reason": "shared_user_command", "channel": channel},
+    )
+    await _tell_user(channel, user_id, thread_ts, SHARED_OWNER_ONLY_TEXT)
+    return True
+
+
+async def _shared_destination_refused(
+    channel: str,
+    user_id: str,
+    thread_ts: str,
+    tool_name: str,
+    *destinations: str | None,
+) -> bool:
+    """Refuse a shared user's card answer whose session is a code channel's
+    (``slack.shared_access``), BEFORE the card is claimed, so it stays answerable.
+
+    The destinations are the sessions the answer may be delivered to (the pinned
+    asker or slot); the thread's current owner and the thread itself are checked too.
+    """
+    if not is_shared_listed(user_id):
+        return False
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_unbound
+
+    keys = [d for d in destinations if d]
+    sessions = getattr(getattr(_orch, "dashboard_state", None), "sessions", None)
+    owner = sessions.get_session_for_thread(thread_ts) if (sessions and thread_ts) else None
+    if isinstance(owner, str) and owner:
+        keys.append(owner)
+    unbound = await shared_user_refused_unbound(getattr(_orch, "slack", None), channel)
+    for key in keys or [""]:
+        if unbound or await shared_user_refused_for_session(user_id, key, thread_ts, channel):
+            sel().log_tool_invocation(
+                session_key=thread_ts,
+                agent="kirocrew",
+                source="slack",
+                tool_name=tool_name,
+                tool_kind="interaction",
+                outcome="denied",
+                metadata={"reason": "code_channel_owner_only", "channel": channel},
+            )
+            await _tell_user(channel, user_id, thread_ts, SHARED_OWNER_ONLY_TEXT)
+            return True
+    return False
+
+
 async def _route_action_to_session(
     channel: str,
     msg_ts: str,
-    thread_ts: str,
+    thread_ts: str | None,
     user_id: str,
     team_id: str,
     label: str,
@@ -170,19 +246,28 @@ async def _route_action_to_session(
     *user_meta* is the routed user row's meta (a code channel's Slack sender).
     *pinned_slot* is a bound code channel's session: the answer is delivered
     there, and its label posts top-level like every other post in the channel.
+    An empty *msg_ts* means the click came from no message (the Home tab): no
+    message is edited, and a ``None`` *thread_ts* posts the label top-level.
     """
     assert _orch and _orch.slack  # caller already checked  # noqa: S101
+
+    src_thread = thread_ts or ""
+    if await _shared_answer_refused(channel, user_id, src_thread, label, context_tag):
+        return
+    if await _shared_destination_refused(channel, user_id, src_thread, context_tag, pinned_slot):
+        return
 
     # Redact label before any Slack surface
     label, _ = redact_exfiltration_urls(label)
     label = redact_credentials(label)[0]
 
     # Update the message: replace clicked element with ✓ label
-    updated_blocks = _mark_button_clicked(blocks, action_id_value, label)
-    try:
-        await _orch.slack.update_message(channel, msg_ts, text=label, blocks=updated_blocks)
-    except Exception:
-        logger.debug("Failed to update action message", exc_info=True)
+    if msg_ts:
+        updated_blocks = _mark_button_clicked(blocks, action_id_value, label)
+        try:
+            await _orch.slack.update_message(channel, msg_ts, text=label, blocks=updated_blocks)
+        except Exception:
+            logger.debug("Failed to update action message", exc_info=True)
 
     # Post display text as visible user message
     new_ts = await _orch.slack.post_message(channel, label, None if pinned_slot else thread_ts)
@@ -239,6 +324,79 @@ async def _route_action_to_session(
     )
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
+
+
+def _is_home_tab_action_button(payload: dict, action: dict) -> bool:
+    """Whether a click is a Home-tab element of a card's action-button shape.
+
+    The shape a message card's action button already has: an
+    ``OPTIONS_ACTION_PREFIX`` action id that is not a numbered OPTIONS choice and
+    carries no ``_done_`` marker, whose value (or selected option's value) starts
+    with ``action::``. Every other Home-tab click keeps its own path.
+    """
+    if (payload.get("view") or {}).get("type") != "home":
+        return False
+    action_id = action.get("action_id", "")
+    suffix = action_id[len(OPTIONS_ACTION_PREFIX) :]
+    if not action_id.startswith(OPTIONS_ACTION_PREFIX) or "_done_" in action_id:
+        return False
+    if suffix.isascii() and suffix.isdigit():
+        return False
+    value = action.get("value", "") or (action.get("selected_option") or {}).get("value", "")
+    return value.startswith(_ACTION_PREFIX)
+
+
+async def _handle_home_tab_action(payload: dict, action: dict, user_id: str) -> None:
+    """Route a Home-tab action button into the clicker's DM with the bot.
+
+    The Home tab stays the owner's, so a ``slack.shared_access`` person the
+    dispatcher admits for card answers is refused here. A Home-tab payload has
+    no channel and no message, so the click is gated on the DM it posts into
+    rather than on an empty channel id: the ``channels`` governance gate, then
+    the DM is opened (as the Home tab's Resume button does), then that DM's
+    channel policy. The label starts a new top-level thread there and the turn
+    runs exactly as a card click's does. The Home view itself is never edited.
+    """
+    if not (_orch and _orch.slack):
+        return
+    if not is_allowed_user(user_id):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.interactive",
+            outcome="denied",
+            source="slack",
+            resources=action.get("action_id", ""),
+            error="owner-only action",
+        )
+        return
+    if not await channel_inbound_permitted("slack"):
+        logger.info("slack Home tab action dropped: denied by channels governance policy")
+        return
+    try:
+        dm_id = await _orch.slack.open_dm(user_id)
+    except Exception:
+        logger.exception("Home tab action: open_dm failed for user %s", user_id)
+        return
+    if not dm_id:
+        return
+    if channel_refusal(dm_id, operation="slack.interactive", caller=user_id):
+        logger.info("slack Home tab action dropped: denied by the DM's channel policy")
+        return
+    selected = action.get("selected_option") or {}
+    choice = action.get("value", "") or selected.get("value", "")
+    label = action.get("text", {}).get("text", "") or selected.get("text", {}).get("text", "")
+    await _route_action_to_session(
+        dm_id,
+        "",
+        None,
+        user_id,
+        (payload.get("team") or {}).get("id", ""),
+        label,
+        choice[len(_ACTION_PREFIX) :],
+        "Action button clicked",
+        action.get("action_id", ""),
+        [],
+    )
 
 
 class ChannelAgentMismatchError(Exception):
@@ -527,6 +685,23 @@ async def _answer_options(
         )
         return
 
+    # A shared user's answer must not reach a code channel's session: the session
+    # it goes to is read before the claim (and before the stale-card cleanup, which
+    # edits the card), from the asker in the control's token and
+    # the slot that asker holds.
+    if is_shared_listed(user_id):
+        _early_token = decode_options_token(block_id)
+        _early_key = _early_token[0] if _early_token else None
+        _early_slot = (
+            slack_options_slot(_orch.dashboard_state, _early_key)
+            if (_early_key and _orch and _orch.dashboard_state)
+            else None
+        )
+        if await _shared_destination_refused(
+            channel, user_id, thread_ts, tool_name, _early_key, getattr(_early_slot, "key", None)
+        ):
+            return
+
     # One rule, checked before any work: does this control still belong to the
     # question the conversation is actually on? Judged from the token in the
     # message plus the transcript on disk, so it holds across a restart -- and it
@@ -551,6 +726,8 @@ async def _answer_options(
     # Redact LLM-generated content before any external use.
     selected = [redact_credentials(redact_exfiltration_urls(all_choices[i])[0])[0] for i in picked]
     combined = ", ".join(selected)
+    if await _shared_answer_refused(channel, user_id, thread_ts, combined, tool_name):
+        return
     # The Slack-facing FALLBACK TEXT, escaped. Slack parses entities in a
     # message's top-level `text` too, not just in mrkdwn blocks -- and `text` is
     # what notifications and block-less clients render, so an unescaped
@@ -795,7 +972,7 @@ async def _handle_options_several_submission(payload: dict) -> None:
         return
     # The same gate every OPTIONS click passes in ``dispatch``: an allowed user,
     # then the channels governance policy -- both before anything is edited or sent.
-    if user_id != request.user_id or not is_allowed_user(user_id):
+    if user_id != request.user_id or not (is_allowed_user(user_id) or is_shared_user(user_id)):
         sel().log_tool_invocation(
             session_key=request.thread_ts,
             agent="kirocrew",

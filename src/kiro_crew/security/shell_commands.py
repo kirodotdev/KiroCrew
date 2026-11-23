@@ -20,6 +20,7 @@ import re
 from typing import NamedTuple
 
 from . import shell_normalizer as _shell
+from . import shell_normalizer_walk as _walk
 
 # One gate call's payloads per frame text are kept in ``_CALL_VIEWS`` under the plain
 # text; ``shell_normalizer._shell_payload_walk`` keeps its frames there under tuple keys.
@@ -100,6 +101,11 @@ class HereDoc(NamedTuple):
     quoted: bool
     #: Raw offset past the tag line that closed the body; ``end`` when nothing closed it.
     tail: int = -1
+    #: The ``<<`` was held inside an open ``$(( ))`` / ``(( ))`` arithmetic span and
+    #: only became a body because the span was still open at a newline (the reader's
+    #: conservative multiline-arithmetic reading). Inside arithmetic ``<<`` is a left
+    #: SHIFT, not a here-document, so this body is a fiction bash never reads.
+    arith_held: bool = False
 
 
 class ShellCommand(NamedTuple):
@@ -293,10 +299,17 @@ def read_commands(
                 cut(step.char)
                 in_redirect = False
                 if step.char == "\n" and pending:  # the bodies start on the next line
+                    # A ``<<`` still HELD in an open arithmetic span at this newline is
+                    # a left shift the reader is about to read as a body only because
+                    # the span never closed with ``))`` on the ``<<``'s line. Record
+                    # which pending docs those are so the body-quote reset can skip
+                    # them: escaping a quote inside such a fiction would reset a real
+                    # command's quote after the arithmetic and over-refuse.
+                    arith_held_ids = {id(doc) for frame in frames for doc in frame[2]}
                     for frame in frames:
                         frame[2] = []  # a held ``<<`` whose span is still open is a heredoc
                     resume = _read_bodies(
-                        command, pos + step.offset + 1, pending, out, track, _base
+                        command, pos + step.offset + 1, pending, out, track, _base, arith_held_ids
                     )
                     pending = []
                     break
@@ -333,11 +346,23 @@ def _heredoc_tag(text: str, at: int) -> "tuple[str, bool, bool]":
 
 
 def _read_bodies(
-    command: str, at: int, pending: "list[list]", out: "list[ShellCommand]", track: bool, base: int
+    command: str,
+    at: int,
+    pending: "list[list]",
+    out: "list[ShellCommand]",
+    track: bool,
+    base: int,
+    arith_held_ids: "set[int] | None" = None,
 ) -> int:
     """Take each pending body from *at* up to its tag line, attach it to its command,
-    read the substitutions of an unquoted one, and return the offset past the last tag line."""
-    for owner, tag, strip, quoted in pending:
+    read the substitutions of an unquoted one, and return the offset past the last tag line.
+
+    *arith_held_ids* are the ``id()`` of the pending docs whose ``<<`` was a left shift
+    held in an open arithmetic span (see the caller): their :class:`HereDoc` is marked
+    ``arith_held`` so the body-quote reset skips the fiction."""
+    for doc_entry in pending:
+        owner, tag, strip, quoted = doc_entry
+        held = arith_held_ids is not None and id(doc_entry) in arith_held_ids
         start = body_end = tail = at
         while at < len(command):
             newline = command.find("\n", at)
@@ -354,7 +379,7 @@ def _read_bodies(
         else:
             body_end = tail = at = len(command)  # an unclosed body runs to the end, as in bash
         body = command[start:body_end]
-        doc = HereDoc(body, base + start, base + body_end, quoted, base + tail)
+        doc = HereDoc(body, base + start, base + body_end, quoted, base + tail, held)
         out[owner] = out[owner]._replace(heredocs=out[owner].heredocs + (doc,))
         if not quoted:
             out.extend(_body_substitutions(body, base + start, track))
@@ -362,9 +387,19 @@ def _read_bodies(
 
 
 def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand]":
-    """The commands of each ``$(…)`` / backtick in an unquoted heredoc body. There a quote
-    is a plain character and only a backslash escapes, so each body is read once."""
+    """The commands of each ``$(…)`` / backtick in an unquoted heredoc body, read once."""
     out: list[ShellCommand] = []
+    for _start, _stop, inner_at, inner in _heredoc_body_substitutions(body):
+        out.extend(read_commands(inner, track, base + inner_at, heredocs=True))
+    return out
+
+
+def _heredoc_body_substitutions(body: str) -> "list[tuple[int, int, int, str]]":
+    """``(start, stop, inner_start, inner)`` of each ``$(…)`` / backtick in an unquoted
+    heredoc body, in order; ``start:stop`` spans the opener to the closer. There a quote
+    is a plain character and only a backslash escapes. The one scan of such a body: the
+    ssh self-target floor (``argv_floor_ssh_bodies``) reads it too."""
+    out: list[tuple[int, int, int, str]] = []
     i = 0
     while i < len(body):
         if body[i] == "\\":
@@ -372,13 +407,12 @@ def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand
         elif body.startswith("$(", i):
             rest = body[i + 2 :]  # the walk starts unquoted inside the substitution
             close, proven = _shell._matching_close_paren(rest, 0)
-            inner = rest[: close - 1 if proven else close]
-            out.extend(read_commands(inner, track, base + i + 2, heredocs=True))
+            out.append((i, i + 2 + close, i + 2, rest[: close - 1 if proven else close]))
             i += 2 + close
         elif body[i] == "`":
             closer = _shell._backtick_closer(body, i + 1)
             end = len(body) if closer < 0 else closer
-            out.extend(read_commands(body[i + 1 : end], track, base + i + 1, heredocs=True))
+            out.append((i, end + 1, i + 1, body[i + 1 : end]))
             i = end + 1
         else:
             i += 1
@@ -435,14 +469,16 @@ def without_substitutions(command: str) -> str:
     :func:`read_commands` would cut (``bash -c 2>$(x) '<script>'``)."""
     out: list[str] = []
     pos = 0
+    quote_at: "dict[int, tuple[int, bool]] | None" = None
     while True:
-        steps = _shell._iter_shell_chars(command[pos:])
-        opens = (pos + s.offset for s in steps if s.active and s.char in "$<>")
+        steps = _shell._iter_shell_chars(command, 0, False, pos)
+        opens = (s.offset for s in steps if s.active and s.char in "$<>")
         hit = next((at for at in opens if command.startswith("(", at + 1)), None)
         if hit is None:
             return "".join(out) + command[pos:]
         out.append(command[pos:hit] + "_")
-        pos = _shell._matching_close_paren(command, hit + 2)[0]
+        quote_at = quote_at or _walk._quote_states(command)
+        pos = _shell._matching_close_paren(command, hit + 2, quote_at[hit + 2])[0]
 
 
 def heredoc_text_spans(text: str) -> "list[tuple[int, int]]":
@@ -459,6 +495,12 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
 
     *start* is the ``$``; *end* is just past the matching ``)`` when *proven*, else the end
     of *text*. A ``)`` in a heredoc body inside the substitution does not end it.
+
+    A heredoc body starts after the newline that ends its ``<<`` line, so when the text
+    the close walk read has no newline after its first ``<<`` (none at all, a ``<<<``
+    here-string, a ``$(( 1 << n ))`` shift), no body can change that walk and the
+    heredoc re-read is skipped. Each body that does hold a heredoc before its close
+    still re-reads the rest of *text*, so a line of many such bodies stays quadratic.
     """
     spans: "list[tuple[int, int, bool]]" = []
     i, state = 0, 0
@@ -469,9 +511,13 @@ def _double_quoted_substitution_spans(text: str) -> "list[tuple[int, int, bool]]
             dollars = dollars + 1 if step.state == 2 and step.text == "$" else 0
             if dollars % 2 and text.startswith("(", at + 1):
                 rest = text[at + 2 :]
-                for start, end in heredoc_text_spans(rest):
-                    rest = rest[:start] + re.sub("[^\n]", " ", rest[start:end]) + rest[end:]
-                end, proven = _shell._matching_close_paren(rest, 0)
+                end, proven, reach = _walk._matching_close_paren_reach(rest, 0)
+                window = rest if reach is None else rest[:reach]
+                k = window.find("<<")
+                if k >= 0 and "\n" in window[k:]:
+                    for start, stop in heredoc_text_spans(rest):
+                        rest = rest[:start] + re.sub("[^\n]", " ", rest[start:stop]) + rest[stop:]
+                    end, proven = _shell._matching_close_paren(rest, 0)
                 spans.append((at, at + 2 + end if proven else len(text), proven))
                 i, state = spans[-1][1], 2
                 break

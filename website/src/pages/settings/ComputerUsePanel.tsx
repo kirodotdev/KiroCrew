@@ -307,7 +307,11 @@ export function ComputerUsePanel() {
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={platformBadge}>
         <SettingsCard>
           <div className="text-[13px] text-muted">
-            {cfg.reason || i18nT('pages.settings.computerUsePanel.computer_use_not_available', { platform: cfg.platform })}
+            {/* Linux has no driver in this release: say that in the reader's language
+                rather than the driver's developer reason. */}
+            {cfg.platform === 'linux'
+              ? i18nT('pages.settings.computerUsePanel.linux_unsupported')
+              : cfg.reason || i18nT('pages.settings.computerUsePanel.computer_use_not_available', { platform: cfg.platform })}
           </div>
         </SettingsCard>
       </SettingsSection>

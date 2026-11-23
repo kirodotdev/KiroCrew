@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -598,12 +599,16 @@ class TestSegmentDirIsNotFollowedThroughALink:
         assert log._segments_oldest_first(), "precondition: rotation happened"
         assert list(outside.iterdir()) == [], "audit segments landed outside the fence"
 
-    def test_an_unremovable_link_refuses_to_rotate(self, sel_dir, small_segments):
+    def test_an_unremovable_link_refuses_to_rotate(self, sel_dir, small_segments, caplog):
         """Refusing beats writing audit records outside the fence.
 
         The log keeps growing, which is the failure this release bounds — but an
         oversized log inside the fence beats a bounded one outside it.
         """
+        # Each refused rotation logs a warning with a traceback, about 36 MiB over
+        # this test, and pytest keeps captured logs for the whole session. No
+        # assertion reads them.
+        caplog.set_level(logging.ERROR, logger="kiro_crew.sel")
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
         # Answer "link" only for rotation's paths (the segment dir and its

@@ -13,6 +13,12 @@ are left out by identity, see :data:`_EXEMPT_TOOL_IDS`: their result text
 echoes the action (``Browser press_key: {"key": "ArrowDown"}``) while the page
 behind it changes every time, so an identical result says nothing about a loop.
 
+A frame's tool is the name it states; else its wire title when that is a
+single tool-name token (KAS names a resident MCP tool only there, as
+``@<server>/<tool>``); else the tool an earlier frame for the same call named,
+since a harness may re-send the input in a later ``tool_call_update`` that
+names none. So the call keeps its exemption and its name.
+
 Known gap, left for a follow-up: a call's streak is kept per signature, so
 other calls made in between do not reset it.
 
@@ -35,6 +41,13 @@ _MAX_TRACKED = 512
 
 #: Longest slice of the call's title quoted back in the notice.
 _TITLE_LIMIT = 200
+
+#: Longest tool name remembered for a call's later frames; a longer one is
+#: still judged on the frame that states it.
+_NAME_LIMIT = 256
+
+#: The backend's own prefix on a kiro-cli or KAS tool-call wire title.
+_RUNNING_PREFIX = "Running: "
 
 #: Bare tool names never tracked. Each acts on state outside the turn, so the
 #: same result text after the same input is normal, not a loop. ``browser`` is
@@ -74,6 +87,21 @@ _NAME_SEP_RE = re.compile(r"::|__|/")
 def _tool_leaf(name: str) -> str:
     """The bare tool part of a possibly server-qualified tool name."""
     return _NAME_SEP_RE.split((name or "").strip())[-1]
+
+
+def _wire_tool_name(wire_title: str) -> str:
+    """The tool a backend's wire title names, or "".
+
+    KAS titles a resident MCP call ``@<server>/<tool>`` and claude-agent-acp
+    ``mcp__<server>__<tool>``, kiro-cli and KAS behind ``Running: ``. Only a
+    single whitespace-free token counts: a title with whitespace is a command
+    or a label, not a tool name.
+    """
+    text = wire_title or ""
+    if text.startswith(_RUNNING_PREFIX):
+        text = text[len(_RUNNING_PREFIX) :]
+    text = text.strip()
+    return text if text and len(text.split()) == 1 else ""
 
 
 def _wrapped_tool_id(tool_input: str) -> str:
@@ -132,22 +160,36 @@ class RepeatLoopTracker:
 
     def __init__(self) -> None:
         self._calls: dict[str, tuple[str, str]] = {}
+        self._names: dict[str, str] = {}
         self._outputs: dict[str, str] = {}
         self._last_outcome: dict[str, str] = {}
         self._streak: dict[str, int] = {}
         self._warned: set[str] = set()
 
-    def note_call(self, tool_call_id: str, tool_name: str, tool_input: str, title: str) -> None:
+    def note_call(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        tool_input: str,
+        title: str,
+        *,
+        wire_title: str = "",
+    ) -> None:
         """Record what a call is, so its result can be matched to its input.
 
         Called again for the same id (an input refinement) it replaces the
-        earlier record, because the refined input is the real one. A call to an
-        exempt tool (:func:`is_exempt_tool`) is never recorded, so it is never
-        counted and never draws the notice.
+        earlier record, because the refined input is the real one. The call's
+        tool is *tool_name*, else the tool *wire_title* names, else the tool an
+        earlier frame for the id named, so a frame naming none keeps it. A call
+        to an exempt tool (:func:`is_exempt_tool`) is never recorded, so it is
+        never counted and never draws the notice.
         """
-        if not tool_call_id or not (tool_input or "").strip():
+        if not tool_call_id:
             return
         key = _digest(tool_call_id)
+        tool_name = self._resolve_name(key, tool_name, wire_title)
+        if not (tool_input or "").strip():
+            return
         if is_exempt_tool(tool_name, tool_input):
             # A refinement may name the tool the first frame did not.
             self._calls.pop(key, None)
@@ -158,6 +200,20 @@ class RepeatLoopTracker:
         name = _real_tool_name(tool_name, tool_input)
         shown = " ".join((title or name or "").split())[:_TITLE_LIMIT]
         self._calls[key] = (_digest(tool_name or "", tool_input), shown)
+
+    def _resolve_name(self, key: str, tool_name: str, wire_title: str) -> str:
+        """The tool one frame of call *key* is for, remembering a stated one."""
+        stated = tool_name if (tool_name or "").strip() else _wire_tool_name(wire_title)
+        if not stated:
+            return self._names.get(key, "")
+        if len(stated) <= _NAME_LIMIT:
+            # A frame may follow its call's terminal result (KAS re-titles the
+            # call after it), so a full map drops its oldest name rather than
+            # refusing a call still in flight.
+            if key not in self._names and len(self._names) >= _MAX_TRACKED:
+                self._names.pop(next(iter(self._names)))
+            self._names[key] = stated
+        return stated
 
     def note_result(
         self,
@@ -176,6 +232,8 @@ class RepeatLoopTracker:
         per turn.
         """
         key = _digest(tool_call_id) if tool_call_id else ""
+        if key and terminal:
+            self._names.pop(key, None)
         if not key or key not in self._calls:
             return ""
         seen = output_digest or (_digest(output) if output else "")

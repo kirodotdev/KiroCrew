@@ -17,10 +17,14 @@ from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
 from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE, UNVERIFIED_MODEL_NOTE
-from kiro_crew.mcp_tools.spawn_parts.schemas import _parent_allowlist_filter
+from kiro_crew.mcp_tools.spawn_parts.schemas import (
+    _parent_allowlist_filter,
+    _roster_with_tools_first,
+    _toolless_agent_names,
+)
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.subagent import (
+from kiro_crew.subagent import (  # noqa: F401 -- visible_agent_names: the facade serves it
     format_subagent_usage,
     is_internal_agent_spec,
     visible_agent_names,
@@ -69,7 +73,11 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
             "(the queued list is partial: more spawns may be queued than listed here; "
             "they are accepted and start on their own -- do not spawn them again)"
         )
-    if not agents and not lines:
+    if d.get("error"):
+        # A failed read (a timeout, a refused connection, an HTTP error) has no
+        # run list; calling it empty would tell the caller its runs do not exist.
+        lines.append(f"Error: {d['error']}")
+    elif not agents and not lines:
         lines.append("No subagents running.")
     else:
         for a in agents:
@@ -116,10 +124,12 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
     # generated specs are NOT: the gateway refuses them, so even the full listing
     # leaves them out (``is_internal_agent_spec``).
     try:
-        names, restricted = _parent_allowlist_filter(
-            a.name or "" for a in mcp_core.list_agents() if not is_internal_agent_spec(a)
+        rows = [a for a in mcp_core.list_agents() if not is_internal_agent_spec(a)]
+        names, restricted = _parent_allowlist_filter(a.name or "" for a in rows)
+        # Agents with tools first; a tool-less one is marked, as in the parameter roster.
+        names, _ = _roster_with_tools_first(
+            names, _toolless_agent_names(rows), limit=None, exclude=()
         )
-        names, _ = visible_agent_names(names, exclude=())
         if names:
             lines.append(f"\nAvailable agents: {', '.join(names)}")
         if restricted:

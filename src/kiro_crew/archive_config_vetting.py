@@ -9,7 +9,7 @@ documents for the same reason.
 from __future__ import annotations
 
 import os
-from pathlib import PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from kiro_crew.members import is_single_path_component
@@ -44,16 +44,68 @@ def _dir_outside_roots(raw: str, roots: list[str]) -> bool:
     """
     from kiro_crew.sandbox_plan import path_within
 
-    path = os.path.expanduser(raw)
-    windows_path = PureWindowsPath(path)  # splits on / and \
-    # A path with a root but no drive ("/x", "\x") is absolute here, whatever this OS says:
-    # joined under the data home it would still discard the data home.
-    if os.path.isabs(path) or windows_path.root or ".." not in windows_path.parts:
+    # A NUL cannot be a real path component; refuse it the same on every OS.
+    if "\x00" in raw:
+        return True
+
+    try:
+        path = os.path.expanduser(raw)
+        try:
+            Path(raw).expanduser()
+        except RuntimeError:
+            return True  # an unknown "~user": the runtime fails on it, even behind a "./"
+        windows_path = PureWindowsPath(path)  # splits on / and \
+        parts = windows_path.parts
+        # "D:x" or "C:..\x" has a drive but no root: a Windows runtime anchors it to that
+        # drive's current folder, outside the data home. A segment of only dots and spaces
+        # ("... ", ".. ") is trimmed by Windows, so it may be a ".." in disguise.
+        if (windows_path.drive and not windows_path.root) or any(
+            p not in (".", "..") and not p.strip(" .") for p in parts
+        ):
+            return True
+        if ".." not in parts and ".." not in PurePosixPath(path).parts:
+            return False  # "\\/../.." is one UNC root to Windows but two climbs to POSIX
+        # A backslash is a name character on POSIX and a separator on Windows, and an archive
+        # can be restored on either, so each reading that is relative must stay inside a root.
+        # A reading that is absolute is not judged: "/x" anywhere (even where the OS calls it
+        # relative, Windows with Python 3.13), and on Windows also "\x", "C:\x" and UNC roots.
+        native_absolute = (
+            os.path.isabs(path)
+            or path.startswith("/")
+            or (os.name == "nt" and bool(windows_path.root))
+        )
+        candidates = []
+        if not native_absolute:
+            candidates.append(os.path.join(roots[1], path))
+        if not windows_path.root:
+            candidates.append(os.path.join(roots[1], path.replace("\\", "/")))
+        for candidate in candidates:
+            normal = os.path.normcase(os.path.realpath(candidate))
+            if not any(
+                path_within(normal, os.path.normcase(os.path.realpath(root))) for root in roots
+            ):
+                return True
         return False
-    # A backslash is a separator in an archive written on Windows, so a ``..\\x`` that
-    # would climb there must also climb here, where normpath keeps it as a name.
-    normal = os.path.normcase(os.path.normpath(os.path.join(roots[1], path).replace("\\", "/")))
-    return not any(path_within(normal, os.path.normcase(root)) for root in roots)
+    except (ValueError, OSError):
+        # An unresolvable path cannot be shown to be inside, so refuse it.
+        return True
+
+
+def _is_data_home(raw: str) -> bool:
+    """Whether workspace folder *raw* resolves to exactly the data home.
+
+    A relative folder is anchored at the data home first (the runtime's placement rule), so
+    ``"."`` and ``"workspace/.."`` are the data home and ``"workspace/proj"`` is not.
+    """
+    from kiro_crew.config.paths import config_dir
+
+    home = os.path.realpath(config_dir())
+    try:
+        # An absolute folder wins the join, so this is also the absolute case.
+        folder = os.path.realpath(os.path.join(home, os.path.expanduser(raw)))
+    except ValueError:  # an embedded NUL: not resolvable, so not the data home
+        return False
+    return os.path.normcase(folder) == os.path.normcase(home)
 
 
 def config_document_refusal(data: Any) -> str | None:
@@ -79,4 +131,6 @@ def config_document_refusal(data: Any) -> str | None:
             raw = entry.get("dir") if isinstance(entry, dict) else entry
             if isinstance(raw, str) and raw and _dir_outside_roots(raw, roots):
                 return f"workspace {_shown(str(name))} places its folder outside the workspace root"
+            if isinstance(raw, str) and raw and _is_data_home(raw):
+                return f"workspace {_shown(str(name))} places its folder on the data home itself"
     return None

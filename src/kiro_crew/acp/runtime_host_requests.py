@@ -9,7 +9,7 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_audit_tasks``, ``_kas_host_auth_logged``,
-``_kas_host_auth_failure_logged``,
+``_kas_host_auth_failure_logged``, ``_kas_served_token_digest``,
 ``_mcp_reattempts``, ``_mcp_sign_in``, ``_mcp_sign_in_ended_hooks``.
 
 Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``, ``_fold_mcp_frame``,
@@ -26,7 +26,7 @@ from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._dispatch import redact_text
 from kiro_crew.acp._dispatch import reject_option_id as _reject_option_id
 from kiro_crew.acp.client import _is_safe_oauth_url, _loggable_request_id
-from kiro_crew.acp.kas_host_auth import HostAuthCallbackError
+from kiro_crew.acp.kas_host_auth import HostAuthCallbackError, token_digest
 from kiro_crew.acp.kas_transport import (
     KAS_AUTH_CALLBACK_ERROR_CODE,
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
@@ -411,6 +411,9 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
         return
     # A served callback ends the failure run, so the next failure warns again.
     self._kas_host_auth_failure_logged = None
+    served = result.get("accessToken") if method == METHOD_KAS_AUTH_GET_ACCESS_TOKEN else None
+    if isinstance(served, str) and served:
+        self._kas_served_token_digest = token_digest(served)
     if not self._kas_host_auth_logged:
         self._kas_host_auth_logged = True
         logger.info(
@@ -516,9 +519,10 @@ def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> 
     """Ask the engine to connect a failed MCP server of one session again.
 
     For a server that failed to start for want of a credential that may
-    exist now. Sends ``_kiro/mcp/resetServer`` with ``startOAuth``
-    false in the background; the server's next ``_kiro/mcp/status`` entry
-    reports whether it connected. The host that takes this request is the
+    exist now, or that lost its connection mid-session. Sends
+    ``_kiro/mcp/resetServer`` with ``startOAuth`` false in the background;
+    the server's next ``_kiro/mcp/status`` entry reports whether it
+    connected. The host that takes this request is the
     one that sends consent URLs, so the same capability gates both.
 
     Returns False, starting nothing, on a host without the request, when
@@ -612,12 +616,13 @@ async def _answer_secret_request(
     """Answer one ``_kiro/secret/*`` request from *server*, off the reader loop.
 
     A refusal goes back as a JSON-RPC error whose message names only the
-    category; the request's value is never logged.
+    category; the request's value is never logged. It is logged at WARNING: a
+    refused request fails the engine's MCP sign-in.
     """
     try:
         result = await server.answer(method, params)
     except kas_secret_storage.SecretStorageRefused as exc:
-        logger.info("MCP grant store request refused: %s", exc)
+        logger.warning("MCP grant store request refused: %s", exc)
         try:
             await self.send_error(request_id, _MCP_SECRET_REFUSED, str(exc))
         except AcpRuntimeDead:

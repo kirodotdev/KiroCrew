@@ -5,8 +5,8 @@
 //
 //   1. ONE PUBLIC SURFACE. Every consumer (App, SessionGridView, the capture
 //      pages) and every test that mocks `../hooks/useWebSocket` reaches the
-//      socket through the facade, so the facade keeps its exact export list,
-//      re-exports each moved helper as the owner's own binding, and no module
+//      socket through the facade, so every name they import from it resolves,
+//      it re-exports each moved helper as the owner's own binding, and no module
 //      outside `hooks/websocket/` except the facade (and this test) imports an
 //      owner. An owner importing the facade back would form an import cycle
 //      with the module that composes it, where a binding read during module
@@ -16,22 +16,19 @@
 //      mount effect run in that order, so only the two owners that carry one
 //      of them may declare an effect, and the facade calls them in order.
 //   3. DEPENDENCY DIRECTION. Owners exchange values through the facade; the
-//      value imports between owners are the short list below, and they form no
-//      cycle.
+//      value imports between owners, read from their sources, form no cycle.
+//
+// Every non-test module in `hooks/websocket/` is an owner, read from the
+// directory, so a new owner falls under these rules without editing this file.
 
 import { describe, it, expect } from 'vitest'
 import { readdirSync, statSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { readSource } from './readSource'
 import * as facade from '../hooks/useWebSocket'
-import * as serverState from '../hooks/websocket/serverState'
-import * as composerCards from '../hooks/websocket/composerCards'
-import * as retiredIds from '../hooks/websocket/retiredIds'
-import * as bundleReload from '../hooks/websocket/bundleReload'
-import * as attention from '../hooks/websocket/attention'
-import * as slotProjection from '../hooks/websocket/slotProjection'
-import * as sessionProjection from '../hooks/websocket/sessionProjection'
-import * as contextTraceRefresh from '../hooks/websocket/contextTraceRefresh'
+
+type Module = Record<string, unknown>
+const OWNERS = import.meta.glob<Module>(['../hooks/websocket/*.ts', '!../hooks/websocket/*.test.ts'], { eager: true })
 
 const SRC = join(__dirname, '..')
 const WEBSITE = join(SRC, '..')
@@ -42,36 +39,9 @@ const code = (path: string) => readSource(path)
   .replace(/^\s*\/\*[\s\S]*?\*\//gm, '')
   .replace(/^\s*\/\/.*$/gm, '')
 
-const OWNER_MODULES = [
-  'approvals.ts',
-  'attention.ts',
-  'automationSeed.ts',
-  'browserEvents.ts',
-  'bundleReload.ts',
-  'chatStream.ts',
-  'chunkWatch.ts',
-  'composerCards.ts',
-  'connection.ts',
-  'contextTraceRefresh.ts',
-  'dashboardFields.ts',
-  'foldWatch.ts',
-  'frames.ts',
-  'gatewayConnectivity.ts',
-  'idleRowRefresh.ts',
-  'reconnectCatchUp.ts',
-  'relayClose.ts',
-  'retiredIds.ts',
-  'rowDeliveryWatchdog.ts',
-  'serverState.ts',
-  'sessionProjection.ts',
-  'slotList.ts',
-  'slotProjection.ts',
-  'streamBuffers.ts',
-  'turnCompletion.ts',
-  'voicePlayback.ts',
-  'workDelta.ts',
-  'workflowRuns.ts',
-]
+const OWNER_MODULES = readdirSync(DIR)
+  .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
+  .sort()
 
 /** Value imports (not `import type`) of `./<owner>` specifiers, per owner. */
 function ownerValueImports(file: string): string[] {
@@ -85,95 +55,52 @@ function ownerValueImports(file: string): string[] {
   return out.sort()
 }
 
-describe('the websocket owner directory is fully classified', () => {
-  it('every module is a listed owner', () => {
-    // A new file has to be added here, which puts it under the rules below.
-    // A co-located `*.test.ts` is NOT one of them: it is not part of the
-    // composition the facade builds, and it is already inside the directory, so
-    // rule 1's "nothing outside imports an owner" covers it with nothing to list.
-    const files = readdirSync(DIR)
-      .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
-      .sort()
-    expect(files).toEqual([...OWNER_MODULES].sort())
-  })
-})
-
 describe('one public surface', () => {
-  it('the facade exports exactly its original names', () => {
-    expect(Object.keys(facade).sort()).toEqual([
-      'CONTEXT_TRACE_COALESCE_MS',
-      'DASHBOARD_FIELDS_FRAME',
-      'MEMBER_DASHBOARD_QUERY_PREFIX',
-      'RECONNECT_HEALTHY_MS',
-      'RECONNECT_SNAPSHOT_WAIT_MS',
-      'ROW_STALL_MS',
-      'ROW_STALL_TICK_MS',
-      'SESSION_DASHBOARD_QUERY_PREFIX',
-      'UPDATE_RESTART_LATCH_KEY',
-      'UPDATE_RESTART_LATCH_TTL_MS',
-      'WS_SILENCE_CHECK_MS',
-      'WS_SILENCE_MAX_MS',
-      'WS_SILENCE_MS',
-      '__resetRedactionHealForTests',
-      'applySessionProjection',
-      'askIdsOf',
-      'consumeUpdateRestartLatch',
-      'contextTraceKey',
-      'crewLogProjectionsKey',
-      'emitSlotFocused',
-      'endSplitPaneFocus',
-      'fetchingAnyFoldQuery',
-      'handleDashboardMoved',
-      'healRedactionSwitchAfterReconnect',
-      'identityOf',
-      'onUsageFrame',
-      'readSessionProjectionFrame',
-      'reconcileQuestions',
-      'refetchSessionProjections',
-      'rereadAllContextTraces',
-      'resetContextTraceRefresh',
-      'resetSlotProjectionRevisions',
-      'resolvedSince',
-      'seedFoldedProjection',
-      'staleAskIds',
-      'subscribeDashboardFields',
-      'takeFoldedSlotProjection',
-      'useWebSocket',
-    ])
+  it('reads the owners and the facade it checks', () => {
+    expect(OWNER_MODULES.length).toBeGreaterThan(0)
+    expect(Object.keys(OWNERS).map((k) => k.split('/').pop()).sort()).toEqual(OWNER_MODULES)
+    expect(Object.keys(facade).length).toBeGreaterThan(0)
+  })
+
+  it('resolves every runtime name a module imports from the facade', () => {
+    const wanted = new Map<string, string>()
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name)
+        if (statSync(full).isDirectory()) { walk(full); continue }
+        if (!/\.tsx?$/.test(name)) continue
+        for (const [, clause, spec] of readSource(full).matchAll(/import\s+(?!type\b)((?:[\w$]+\s*,\s*)?\{[^}]*\}|[\w$]+)\s+from\s+'(\.{1,2}\/[^']+)'/g)) {
+          if (resolve(dirname(full), spec) !== FACADE.replace(/\.ts$/, '')) continue
+          for (const raw of (clause.match(/\{([^}]*)\}/)?.[1] ?? '').split(',')) {
+            const part = raw.trim()
+            if (part && !part.startsWith('type ')) wanted.set(part.split(/\s+as\s+/)[0], relative(WEBSITE, full))
+          }
+        }
+      }
+    }
+    walk(SRC)
+    walk(join(WEBSITE, 'capture'))
+    walk(join(WEBSITE, 'integration'))
+    expect(wanted.size, 'no importer of the facade found').toBeGreaterThan(0)
+    for (const [name, file] of wanted) {
+      expect(name in facade, `${file} imports ${name}, which useWebSocket does not export`).toBe(true)
+    }
   })
 
   it('re-exports each moved helper as the owner binding, so module state has one home', () => {
-    // The redaction latch and the slot-focus sender are module state: a copy
-    // would let a reset or a bind reach a different variable from the reader.
-    expect(facade.__resetRedactionHealForTests).toBe(serverState.__resetRedactionHealForTests)
-    expect(facade.healRedactionSwitchAfterReconnect).toBe(serverState.healRedactionSwitchAfterReconnect)
-    // The crewmate dashboard's cache prefix and its frame handler. The prefix is
-    // pinned beside the handler because a caller invalidating a second spelling
-    // of it would reach a different cache entry from the one the frame moves.
-    expect(facade.MEMBER_DASHBOARD_QUERY_PREFIX).toBe(serverState.MEMBER_DASHBOARD_QUERY_PREFIX)
-    expect(facade.handleDashboardMoved).toBe(serverState.handleDashboardMoved)
-    expect(facade.identityOf).toBe(composerCards.identityOf)
-    expect(facade.askIdsOf).toBe(composerCards.askIdsOf)
-    expect(facade.reconcileQuestions).toBe(composerCards.reconcileQuestions)
-    expect(facade.staleAskIds).toBe(composerCards.staleAskIds)
-    expect(facade.resolvedSince).toBe(retiredIds.resolvedSince)
-    expect(facade.UPDATE_RESTART_LATCH_KEY).toBe(bundleReload.UPDATE_RESTART_LATCH_KEY)
-    expect(facade.UPDATE_RESTART_LATCH_TTL_MS).toBe(bundleReload.UPDATE_RESTART_LATCH_TTL_MS)
-    expect(facade.consumeUpdateRestartLatch).toBe(bundleReload.consumeUpdateRestartLatch)
-    expect(facade.emitSlotFocused).toBe(attention.emitSlotFocused)
-    expect(facade.crewLogProjectionsKey).toBe(sessionProjection.crewLogProjectionsKey)
-    // The usage-frame refresh keeps its seen revisions and pending reads in module state.
-    expect(facade.onUsageFrame).toBe(contextTraceRefresh.onUsageFrame)
-    expect(facade.resetContextTraceRefresh).toBe(contextTraceRefresh.resetContextTraceRefresh)
-    expect(facade.rereadAllContextTraces).toBe(contextTraceRefresh.rereadAllContextTraces)
-    expect(facade.contextTraceKey).toBe(contextTraceRefresh.contextTraceKey)
-    expect(facade.applySessionProjection).toBe(sessionProjection.applySessionProjection)
-    expect(facade.readSessionProjectionFrame).toBe(sessionProjection.readSessionProjectionFrame)
-    // The accepted-revision ledger is module state too: a second copy would let a
-    // reset reach a different Map from the gate that reads it.
-    expect(facade.resetSlotProjectionRevisions).toBe(slotProjection.resetSlotProjectionRevisions)
-    expect(facade.takeFoldedSlotProjection).toBe(slotProjection.takeFoldedSlotProjection)
-    expect(facade.seedFoldedProjection).toBe(slotProjection.seedFoldedProjection)
+    // The redaction latch, the slot-focus sender, the accepted-revision ledger and
+    // the usage-frame refresh are module state: a copy would let a reset or a
+    // bind reach a different variable from the reader. Every facade export that
+    // an owner also exports must be that owner's own binding.
+    let shared = 0
+    for (const [name, value] of Object.entries(facade)) {
+      for (const [path, owner] of Object.entries(OWNERS)) {
+        if (!(name in owner)) continue
+        shared += 1
+        expect(value, `useWebSocket.${name} is a copy of ${path}'s, not its binding`).toBe(owner[name])
+      }
+    }
+    expect(shared, 'the facade re-exports nothing from an owner').toBeGreaterThan(0)
   })
 
   it('no owner imports the facade', () => {
@@ -227,8 +154,9 @@ describe('effect order', () => {
 })
 
 describe('dependency direction', () => {
-  // The only value edges between owners. Everything else an owner needs from
-  // another arrives through the facade as a parameter; `import type` is free.
+  // Review list: owners exchange values through the facade as parameters, so a
+  // direct value import between two owners is a reviewed exception, one line per
+  // owner. `import type` is free.
   const EDGES: Record<string, string[]> = {
     'approvals.ts': ['attention.ts', 'retiredIds.ts'],
     'chatStream.ts': ['attention.ts', 'browserEvents.ts'],
@@ -237,7 +165,8 @@ describe('dependency direction', () => {
     'foldWatch.ts': ['serverState.ts'],
     'reconnectCatchUp.ts': ['bundleReload.ts', 'gatewayConnectivity.ts', 'serverState.ts'],
     'serverState.ts': ['browserEvents.ts'],
-    'slotList.ts': ['idleRowRefresh.ts'],
+    'serverReads.ts': ['attention.ts'],
+    'slotList.ts': ['idleRowRefresh.ts', 'paneResync.ts', 'serverReads.ts'],
     'turnCompletion.ts': ['attention.ts', 'idleRowRefresh.ts', 'serverState.ts'],
   }
 

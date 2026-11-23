@@ -28,7 +28,7 @@ def _host(tmp_path: Path, *headers: str, python_h: bool = True, **over) -> dict:
     if python_h:
         (python_include / "Python.h").write_text("", encoding="utf-8")
     host = {"include_dirs": (str(include),), "python_include": python_include}
-    return {**host, "env": {}, "sysconfig_cc": None, **over}
+    return {**host, "env": {}, "sysconfig_cc": None, "sysconfig_ar": None, **over}
 
 
 def _tools(*present: str):
@@ -201,6 +201,61 @@ def test_the_compiler_the_build_would_use_counts(tmp_path: Path) -> None:
     assert build_deps.missing_build_deps(system="linux", glibc=_OLD, which=_tools(), **host) == [
         build_deps.MISSING_COMPILER
     ]
+
+
+def test_a_named_compiler_or_archiver_that_is_absent_is_named_even_with_gcc_on_path(
+    tmp_path: Path,
+) -> None:
+    """A python-build-standalone interpreter records ``clang`` and ``llvm-ar``: setuptools
+    runs those, never the ``gcc`` and ``ar`` on ``PATH``, so the build would fail."""
+    host = _host(
+        tmp_path,
+        "zlib.h",
+        "jpeglib.h",
+        sysconfig_cc="clang -pthread",
+        sysconfig_ar="/tools/llvm/bin/llvm-ar",
+    )
+    which = _tools("gcc", "cc", "ar")
+    missing = build_deps.missing_build_deps(system="linux", glibc=_OLD, which=which, **host)
+    assert missing == ["clang (this build's CC)", "/tools/llvm/bin/llvm-ar (this build's AR)"]
+    text = build_deps.refusal(missing, glibc=_OLD, which=_tools("yum"))
+    assert "clang (this build's CC), /tools/llvm/bin/llvm-ar (this build's AR)" in text
+    assert "CC=gcc AR=ar" in text and "sudo" not in text
+    fixed = {**host, "env": {"CC": "gcc", "AR": "ar"}}
+    assert build_deps.missing_build_deps(system="linux", glibc=_OLD, which=which, **fixed) == []
+
+
+def test_an_unnamed_archiver_is_left_to_pip(tmp_path: Path) -> None:
+    """A host that builds today with no ``AR`` anywhere keeps passing."""
+    host = _host(tmp_path, "zlib.h", "jpeglib.h")
+    assert (
+        build_deps.missing_build_deps(system="linux", glibc=_OLD, which=_tools("gcc"), **host) == []
+    )
+
+
+def test_the_refusal_for_a_plain_missing_compiler_offers_no_cc_hint() -> None:
+    text = build_deps.refusal([build_deps.MISSING_COMPILER], glibc=_OLD, which=_tools("yum"))
+    assert "sudo yum install -y gcc" in text and "CC=gcc" not in text
+
+
+def test_a_named_compiler_on_a_host_with_no_compiler_asks_for_gcc(tmp_path: Path) -> None:
+    """A typical interpreter records ``gcc -pthread``: with no compiler on the host the
+    refusal offers the gcc package, not a ``CC=gcc`` the host cannot follow."""
+    host = _host(tmp_path, "zlib.h", "jpeglib.h", sysconfig_cc="gcc -pthread")
+    which = _tools("yum")
+    missing = build_deps.missing_build_deps(system="linux", glibc=_OLD, which=which, **host)
+    assert missing == [build_deps.MISSING_COMPILER]
+    text = build_deps.refusal(missing, glibc=_OLD, which=which)
+    assert "sudo yum install -y gcc" in text and "CC=gcc" not in text
+
+
+def test_a_named_archiver_on_a_host_with_no_ar_asks_for_binutils(tmp_path: Path) -> None:
+    host = _host(tmp_path, "zlib.h", "jpeglib.h", sysconfig_ar="/tools/llvm/bin/llvm-ar")
+    which = _tools("yum", "gcc")
+    missing = build_deps.missing_build_deps(system="linux", glibc=_OLD, which=which, **host)
+    assert missing == [build_deps.MISSING_ARCHIVER]
+    text = build_deps.refusal(missing, glibc=_OLD, which=which)
+    assert "sudo yum install -y binutils" in text and "AR=ar" not in text
 
 
 def test_off_linux_the_host_is_never_probed(monkeypatch) -> None:

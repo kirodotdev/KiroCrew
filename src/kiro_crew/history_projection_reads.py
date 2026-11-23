@@ -51,6 +51,7 @@ from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+    from kiro_crew.history_files import CacheIdentity
 
 
 class TranscriptReadProjection:
@@ -207,7 +208,9 @@ class TranscriptReadProjection:
         """Return the shared read-only cached transcript projection."""
         return self._log._read_messages(key)
 
-    def read_file_change_messages(self, key: str) -> list[dict]:
+    def read_file_change_messages(
+        self, key: str, *, identity: CacheIdentity | None = None
+    ) -> list[dict]:
         """Return lightweight rows carrying only ``ts`` and the changed paths.
 
         Each row is ``{"ts", "role", "meta": {"file_changes": [{"path": str}, ...]}}``,
@@ -216,16 +219,28 @@ class TranscriptReadProjection:
         change entries without a string ``path`` and rows left with none are
         dropped, and every other field of a change (``before``/``after``) is
         not kept.
+
+        *identity* is the file's cache identity as the caller already knows it
+        (``ConversationLog.listing_identities``). When the cached rows were read
+        at that identity and this process wrote nothing since, they are returned
+        with no ``stat``, so they are as current as that identity.
         """
-        path = self._log._path(key)
         generation = self._log._cache_gen(key)
+        cached = self._log._file_change_cache.get(key)
+        if (
+            identity is not None
+            and cached is not None
+            and cached.stamp == identity
+            and cached.generation == self._log._cache_gen(key)
+        ):
+            return cached.messages
+        path = self._log._path(key)
         try:
             before = path.stat()
         except FileNotFoundError:
             self._log._file_change_cache.pop(key, None)
             return []
-        stamp = (before.st_mtime_ns, before.st_size, before.st_ino, before.st_dev)
-        cached = self._log._file_change_cache.get(key)
+        stamp = self._log._cache_identity(before)
         if (
             cached is not None
             and cached.stamp == stamp
@@ -283,7 +298,7 @@ class TranscriptReadProjection:
             after = path.stat()
         except OSError:
             return messages
-        after_stamp = (after.st_mtime_ns, after.st_size, after.st_ino, after.st_dev)
+        after_stamp = self._log._cache_identity(after)
         if after_stamp == stamp:
             self._log._publish_if_current(
                 self._log._file_change_cache,
@@ -1308,6 +1323,36 @@ class TranscriptReadProjection:
         with self._log._locked(key):
             return self._log._last_row_ts(key)
 
+    # How many newest rows the speech read looks through. A system row lands a
+    # handful of rows after the answer it follows; a window this size is far past
+    # that, and bounds the read on a transcript whose tail is all tool rows.
+    _SPEECH_TS_WINDOW = 64
+
+    def last_speech_row_ts(self, key: str) -> str | None:
+        """Return the timestamp of the newest SPEECH row, skipping system rows.
+
+        Speech is what ``is_speech_row`` accepts: a user or assistant row with
+        visible text, so a compaction or watchdog-recycle notice, a tool row or a
+        sub-agent envelope appended after an answer does not move it. ``None``
+        when the newest rows hold no speech: the caller cannot place the
+        conversation, and treats that as "no evidence it moved on". A full window
+        with no speech (a long tool-only turn) is evidence it did: that case
+        returns the newest row's timestamp, as :meth:`last_row_ts` would.
+        """
+        from kiro_crew.dashboard.system_notices import is_speech_row
+
+        with self._log._locked(key):
+            tail = self._log._read_tail_messages(self._log._path(key), self._SPEECH_TS_WINDOW, None)
+        for row in reversed(tail):
+            if is_speech_row(row.get("role"), row.get("content"), row.get("meta")):
+                timestamp = row.get("ts")
+                return timestamp if isinstance(timestamp, str) and timestamp else None
+        if len(tail) >= self._SPEECH_TS_WINDOW:
+            # The window may have cut off the newest speech: fail closed (stale).
+            timestamp = tail[-1].get("ts")
+            return timestamp if isinstance(timestamp, str) and timestamp else None
+        return None
+
     def last_message_preview(
         self,
         key: str,
@@ -1373,6 +1418,7 @@ class TranscriptReadProjection:
         # Function-local: dashboard.state imports kiro_crew.history at module
         # scope, which lands back here, so a top-level import would be a
         # cycle. By preview time the dashboard module is long since loaded.
+        from kiro_crew.dashboard.host_sandbox_refusal import is_refusal_row
         from kiro_crew.dashboard.state import is_stop_event_row
         from kiro_crew.dashboard.system_notices import is_speech_row
 
@@ -1455,6 +1501,10 @@ class TranscriptReadProjection:
                     # Machinery: skipped for the TEXT, kept for the recency.
                     if not newest_epoch:
                         newest_epoch = _row_epoch(data)
+                    continue
+                # The host owner's runbook: a preview string has no row type for the
+                # non-owner edge to redact by, so it never quotes one (as search).
+                if is_refusal_row(data):
                     continue
                 if not text:
                     continue

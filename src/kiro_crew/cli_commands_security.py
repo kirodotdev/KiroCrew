@@ -97,9 +97,71 @@ def _security(args: argparse.Namespace) -> None:
 
     action = getattr(args, "sec_action", None)
     if action == "deny-list":
-        print("🔒 Built-in deny patterns (always enforced):")
-        for p in BUILTIN_DENY_PATTERNS:
-            print(f"  ✗ {p}")
+        # The built-in half shows what the gate enforces: the same opt-out state
+        # (denied_commands.json disable_all / disabled_ids, with floor rules and
+        # governance pins kept on) that Settings > Security reads. Imported here,
+        # not at module scope, so the name does not join the ``cli_commands`` facade.
+        from kiro_crew.dashboard.handlers.security import (
+            _denied_state,
+            _read_denied_data,
+            build_denied_commands_snapshot,
+        )
+        from kiro_crew.security import pinned_builtin_command_ids
+
+        rows = {
+            r["pattern"]: r
+            for r in build_denied_commands_snapshot()["builtins"]
+            if r["source"] == "builtin"
+        }
+        # The snapshot locks a rule pinned by ANY profile; the gate restores only
+        # ceiling pins for every session, and a profile pin only for sessions bound
+        # to that profile. An opted-out rule kept on by a profile pin alone is
+        # therefore not enforced everywhere and gets its own section.
+        state = _denied_state(_read_denied_data())
+        opted_out = set(state["disabled_ids"])
+        ceiling_pins = pinned_builtin_command_ids()
+
+        def _profile_only(p: str) -> bool:
+            row = rows.get(p, {})
+            rid = row.get("id")
+            return (
+                row.get("lock_reason") == "policy"
+                and rid not in ceiling_pins
+                and (state["disable_all"] or rid in opted_out)
+            )
+
+        lock_notes = {"floor": "  (always on: floor rule)", "policy": "  (kept on: governance pin)"}
+        profile_only = [p for p in BUILTIN_DENY_PATTERNS if _profile_only(p)]
+        enforced = [
+            p
+            for p in BUILTIN_DENY_PATTERNS
+            if rows.get(p, {}).get("enabled", True) and p not in profile_only
+        ]
+        turned_off = [
+            p for p in BUILTIN_DENY_PATTERNS if p not in enforced and p not in profile_only
+        ]
+        print("🔒 Built-in deny patterns (enforced):")
+        for p in enforced:
+            # A lock note says why a rule the operator turned off is still on, so
+            # only a rule they turned off gets one.
+            row = rows.get(p, {})
+            note = (
+                lock_notes.get(row.get("lock_reason") or "", "")
+                if state["disable_all"] or row.get("id") in opted_out
+                else ""
+            )
+            print(f"  ✗ {p}{note}")
+        if profile_only:
+            print(
+                "\n🔐 Built-in deny patterns turned off but kept on only for sessions "
+                "bound to a governance profile that pins them:"
+            )
+            for p in profile_only:
+                print(f"  ~ {p}")
+        if turned_off:
+            print("\n🔓 Built-in deny patterns turned off in denied_commands.json (not enforced):")
+            for p in turned_off:
+                print(f"  - {p}")
         cfg_path = config_dir() / "config.json"
         local_path = config_dir() / "config.local.json"
         if cfg_path.exists() or local_path.exists():
@@ -184,12 +246,108 @@ def _security(args: argparse.Namespace) -> None:
             since = parse_time_selector(getattr(args, "since", "") or "")
             until = parse_time_selector(getattr(args, "until", "") or "")
         except ValueError as exc:
-            print(f"❌ {exc}")
+            print(f"❌ {exc}", file=sys.stderr)
             sys.exit(2)
         if since and until and since >= until:
-            print("❌ --since must be earlier than --until")
+            print("❌ --since must be earlier than --until", file=sys.stderr)
             sys.exit(2)
-        events = sel().recent(limit=limit, since=since, until=until)
+        from contextlib import ExitStack, suppress
+        from pathlib import Path
+
+        from kiro_crew import platform_compat
+        from kiro_crew.owner_only_files import owner_only_opener
+        from kiro_crew.sel_filter import (
+            CLI_SCAN_LIMIT,
+            FIELD_KEYS,
+            build_manifest,
+            render_csv,
+            render_jsonl,
+            select_events,
+        )
+
+        filters = {name: getattr(args, name, "") or "" for name in FIELD_KEYS}
+        fmt = (getattr(args, "format", "") or "text").lower()
+        if fmt not in ("text", "jsonl", "csv"):
+            print(
+                f"warning: --format {safe_terminal_line(fmt)} is not text, jsonl or csv; "
+                "showing text",
+                file=sys.stderr,
+            )
+            fmt = "text"
+        out_name = getattr(args, "out", "") or ""
+        if out_name and fmt == "text":
+            print("warning: --out applies to --format jsonl or csv; ignored", file=sys.stderr)
+            out_name = ""
+        export_all = fmt != "text" and not getattr(args, "limit_given", False)
+        picked = select_events(
+            sel(),
+            limit=None if export_all else limit,
+            filters=filters,
+            since=since,
+            until=until,
+            scan_limit=CLI_SCAN_LIMIT,
+        )
+        events = picked.rows
+        if picked.scan_capped:
+            print(
+                f"note: looked at the newest {CLI_SCAN_LIMIT} rows only; set an earlier --until "
+                "to reach older rows",
+                file=sys.stderr,
+            )
+        if fmt != "text":
+            ordered = list(reversed(events))
+            payload = render_jsonl(ordered) if fmt == "jsonl" else render_csv(ordered)
+            manifest = build_manifest(
+                ordered,
+                fmt=fmt,
+                payload=payload,
+                filters=filters,
+                since=since,
+                until=until,
+                scan_capped=picked.scan_capped,
+                now=datetime.now(tz=timezone.utc),
+            )
+            if not out_name:
+                sys.stdout.write(payload)
+                first, last = (str(manifest[f"chain_hash_{end}"]) for end in ("first", "last"))
+                print(
+                    f"rows={manifest['rows']} first={safe_terminal_line(first)} "
+                    f"last={safe_terminal_line(last)}",
+                    file=sys.stderr,
+                )
+                return
+            shown = safe_terminal_line(Path(out_name).name)
+            created: list[Path] = []
+            try:  # claim both names exclusively before either gets text
+                target = Path(out_name).expanduser()
+                if not target.name:  # "." and "/" name a directory: refuse before any claim
+                    print("Error: --out needs a file name, not a directory", file=sys.stderr)
+                    sys.exit(1)
+                side = target.with_name(target.name + ".manifest.json")
+                with ExitStack() as stack:
+                    handles = []
+                    for path in (target, side):
+                        handle = stack.enter_context(
+                            open(path, "x", encoding="utf-8", newline="", opener=owner_only_opener)
+                        )
+                        created.append(path)
+                        platform_compat.restrict_to_owner(path)  # lockdown-ok: new empty file
+                        handles.append(handle)
+                    handles[0].write(payload)
+                    handles[1].write(json.dumps(manifest, indent=2) + "\n")
+            except (OSError, RuntimeError, ValueError) as exc:  # never str(exc): it quotes a path
+                for path in created:
+                    with suppress(OSError):
+                        path.unlink(missing_ok=True)
+                why = type(exc).__name__
+                if isinstance(exc, FileExistsError):
+                    why = "it or its manifest already exists; nothing written"
+                elif isinstance(exc, OSError) and exc.strerror:
+                    why += f" ({exc.strerror})"
+                print(f"Error: could not write {shown}: {why}", file=sys.stderr)
+                sys.exit(1)
+            print(f"Wrote {len(events)} event(s) to {shown} and {shown}.manifest.json")
+            return
         window = ""
         if since or until:
             window = (
@@ -197,7 +355,8 @@ def _security(args: argparse.Namespace) -> None:
                 f"{until.isoformat() if until else 'now'})"
             )
         if not events:
-            print(f"No security events recorded{window}.")
+            what = "matched the filters" if any(filters.values()) else "recorded"
+            print(f"No security events {what}{window}.")
             return
         print(f"📋 Last {len(events)} security event(s){window}:\n")
 
@@ -537,8 +696,16 @@ def _explain_batch(
     from kiro_crew.platform.governance import SCOPE_CATALOG
 
     # A caller-supplied path goes through the sensitive-path gate, like the CLI's other reads.
+    # Stdin is read as bytes and decoded as UTF-8 with the file path's newline handling,
+    # because text-mode stdin uses the locale code page (cp1252 on Windows), which
+    # mis-reads a BOM or a non-ASCII item. A stream with no byte buffer is read as text.
+    stdin_bytes = getattr(sys.stdin, "buffer", None) if source == "-" else None
     try:
-        text = sys.stdin.read() if source == "-" else safe_read_file(source)
+        if stdin_bytes is not None:
+            raw = stdin_bytes.read().decode("utf-8")
+            text = raw.replace("\r\n", "\n").replace("\r", "\n")
+        else:
+            text = sys.stdin.read() if source == "-" else safe_read_file(source)
     except PermissionError:
         print(
             "Refusing to read the batch file: it is protected or resolves to a sensitive location.",

@@ -1,4 +1,5 @@
 import { useMemo, useCallback, useState, useRef, useEffect, type MutableRefObject, type RefObject, type Dispatch, type SetStateAction } from 'react'
+import type { MarkJump, MarkStep } from './jumpMark'
 import type { AppDispatch } from '../../../store'
 import { loadOlderMessages, isSupersededPagingRejection, openActivityPanel } from '../../../store/chatSlice'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
@@ -11,23 +12,8 @@ import { useChatNavigation } from '../../../hooks/useChatNavigation'
 import { useChatPins } from '../../../hooks/useChatPins'
 import type { ChatMessage } from '../../../types'
 import { i18nT } from '../../../i18n/t'
-import { supersededSuccessorIdx } from '../groupDisplayItems'
+import { buildMessageToDisplayIdx, supersededSuccessorIdx } from '../groupDisplayItems'
 import { userResendText } from '../userMessageText'
-
-/** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
-function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
-  const map = new Map<number, number>()
-  items.forEach((item, di) => {
-    if (item.kind === 'turn') {
-      for (const ti of item.items) {
-        if (ti.kind === 'single') map.set(ti.idx, di)
-        else if (ti.kind === 'group') ti.msgs.forEach((_, mi) => map.set(ti.startIdx + mi, di))
-      }
-    } else if (item.kind === 'single') map.set(item.idx, di)
-    else if (item.kind === 'group') item.msgs.forEach((_, mi) => map.set(item.startIdx + mi, di))
-  })
-  return map
-}
 
 /**
  * The row a jump to `messages[idx]` should land on. A superseded steer is not
@@ -56,6 +42,8 @@ export function drawnSuccessorIdx(messages: ChatMessage[], idx: number): number 
  */
 type PendingJumpOrigin = 'pin' | 'earlier' | 'link' | 'quote'
 
+export { LANDED_HIGHLIGHT_MS } from './jumpMark'
+
 /** SINGLE writer for the not-found copy, so a new origin cannot reach the reader
  *  wearing another origin's wording. */
 const jumpUnavailableNotice = (origin: PendingJumpOrigin): string =>
@@ -83,16 +71,25 @@ interface TranscriptPinsOptions {
   activeSlotRemoteBound: boolean
   scrollerRef: RefObject<HTMLDivElement>
   search: ReturnType<typeof useChatPageResourcesController>['search']
+  /** Scroll to a row of the rows on screen by its display index (the minimap). */
   navToDisplayIndex: (idx: number, opts?: { behavior?: ScrollBehavior; align?: ScrollLogicalPosition; offset?: number; }) => void
+  /** Scroll to the row that draws a message; false when no row on screen draws it. */
+  navToMessage: (msg: ChatMessage, opts?: { behavior?: ScrollBehavior; align?: ScrollLogicalPosition; offset?: number; }) => boolean
   pinnedJumpChrome: () => number
   scrollToPinnedPrompt: (target: number) => void
-  setHighlightTs: Dispatch<SetStateAction<string | null>>
+  /** The flash on the prompt an Alt+↑ / Alt+↓ step lands on. */
+  markStep: MarkStep
+  /** The landing highlight a `link` jump draws instead of the flash. */
+  markJump: MarkJump
   splitFeatureEnabled: boolean
   regenerating: boolean
   setEditLast: Dispatch<SetStateAction<{ seq: number; ts: string; index: number; } | null>>
   editSeqRef: MutableRefObject<number>
   renderedDisplayItems: DisplayItem[]
   renderedTranscript: { messages: ChatMessage[]; displayItems: DisplayItem[]; }
+  /** True while the rows on screen draw an older list than `messages`: a landed
+   *  page waits to render, so a loaded message can have no row yet. */
+  rowsTrailList: boolean
   /** Merge text into this chat's composer after anything already typed; never sends. */
   insertIntoComposer: (text: string) => void
 }
@@ -106,8 +103,8 @@ interface TranscriptPinsOptions {
  */
 export function useTranscriptPins({
   embedded, dispatch, isMobile, activeSlot, messages, messagesRef, slotRunning, splitMode, crewWindow, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, activeViewIsBoundedPage,
-  isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, setHighlightTs, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
-  renderedDisplayItems, renderedTranscript, insertIntoComposer,
+  isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, navToMessage, pinnedJumpChrome, scrollToPinnedPrompt, markStep, markJump, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
+  renderedDisplayItems, renderedTranscript, rowsTrailList, insertIntoComposer,
 }: TranscriptPinsOptions) {
   // Search, pins, tool focus, and deep links navigate the rows the virtualizer
   // actually renders, including post-defer MCP App coalescing.
@@ -142,7 +139,7 @@ export function useTranscriptPins({
     scrollerRef,
     landingInset: pinnedJumpChrome,
     jump: scrollToPinnedPrompt,
-    setHighlightTs,
+    flash: markStep,
   })
 
   // ── Chat Pins ──────────────────────────────────────────────────────────────
@@ -177,7 +174,7 @@ export function useTranscriptPins({
   // renderers memo dep, so a `messages` dep re-rendered every mounted row on
   // every frame. The pending-jump effect below lists `messages` itself, so it
   // still re-resolves when paged rows land.
-  const jumpToLoadedPinnedMessage = useCallback((messageTs: string, mid?: string, fill = false): boolean => {
+  const jumpToLoadedPinnedMessage = useCallback((messageTs: string, mid?: string, fill = false, landed = false): boolean => {
     const messages = messagesRef.current
     // Mid-based resolution when a mid is known; ts ONLY for legacy pins that carry none.
     // Falling through to ts with a mid in hand takes a same-tick twin, which is the wrong row.
@@ -186,18 +183,20 @@ export function useTranscriptPins({
       : messages.findIndex(m => m.ts === messageTs)
     if (msgIdx < 0) return false
     msgIdx = drawnSuccessorIdx(messages, msgIdx)
-    const di = messageToDisplayIdxRef.current.get(msgIdx)
-    if (di === undefined) return false
+    // By the message, not its index: this list leads the rows on screen while
+    // a landed page waits to render.
+    if (!navToMessage(messages[msgIdx], { behavior: 'smooth', align: 'center' })) return false
     setPinNotice(null)
     setPinLoadError(null)
-    navToDisplayIndex(di, { behavior: 'smooth', align: 'center' })
-    setHighlightTs(messages[msgIdx].ts ?? messageTs)
-    setTimeout(() => setHighlightTs(null), 3000)
+    // A reader sent here from elsewhere gets the landing highlight; a jump they
+    // made inside this chat (a pin, a quote) gets the flash.
+    const markedMid = (messages[msgIdx].meta as Record<string, unknown> | undefined)?.mid
+    markJump(messages[msgIdx].ts ?? messageTs, landed, typeof markedMid === 'string' ? markedMid : undefined)
     // A legacy pin resolves by ts, which can land on a same-tick reply: fill from user rows only.
     const m = messages[msgIdx]
     if (fill && m.role === 'user') insertIntoComposer(userResendText(m.content, m.meta))
     return true
-  }, [messagesRef, navToDisplayIndex, setHighlightTs, insertIntoComposer])
+  }, [messagesRef, navToMessage, markJump, insertIntoComposer])
   // ⌘↑ / Ctrl+Up target resolution, placed next to the virtualizer seam it
   // depends on: the transcript is virtualized, so the newest user message can
   // sit OUTSIDE the mounted window (a long agent reply just streamed past it)
@@ -211,17 +210,19 @@ export function useTranscriptPins({
       if (msgs[i].role !== 'user') continue
       // A steer taken back draws no bubble, so it has nothing to edit.
       if (msgs[i].meta?.steerState === 'retracted') continue
-      const di = messageToDisplayIdxRef.current.get(i)
-      if (di === undefined) return
-      navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
+      if (!navToMessage(msgs[i], { behavior: 'auto', align: 'center' })) return
       setEditLast({ seq: ++editSeqRef.current, ts: msgs[i].ts || '', index: i })
       return
     }
-  }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToDisplayIndex, editSeqRef, messagesRef, setEditLast])
+  }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToMessage, editSeqRef, messagesRef, setEditLast])
   const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin, fill }: { origin: PendingJumpOrigin; fill?: boolean }) => {
     // A jump that lands at once replaces a pending one, so its fill cannot fire later.
-    if (jumpToLoadedPinnedMessage(messageTs, mid, fill)) { setPendingPinnedJump(null); return }
-    if (activeSlot && (!cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
+    if (jumpToLoadedPinnedMessage(messageTs, mid, fill, origin === 'link')) { setPendingPinnedJump(null); return }
+    // Pending while the message may still turn up: older history to page in, a
+    // cursor that still describes another chat, or rows on screen that trail
+    // the list, where a loaded message has no row yet (the effect below waits
+    // for the rows before it reads the message as gone).
+    if (activeSlot && (rowsTrailList || !cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
       pinnedJumpPageLoadsRef.current = 0
       setPinNotice(null)
       setPinLoadError(null)
@@ -231,7 +232,7 @@ export function useTranscriptPins({
     // Same writer as the async branch below, so the synchronous dead-link case
     // cannot drift into pin wording while the paging case reports the truth.
     setPinNotice(jumpUnavailableNotice(origin))
-  }, [activeSlot, cursorIsForActiveSlot, jumpToLoadedPinnedMessage, slotHasMore, slotOldestIndex])
+  }, [activeSlot, cursorIsForActiveSlot, jumpToLoadedPinnedMessage, rowsTrailList, slotHasMore, slotOldestIndex])
   // A sent quote card jumps to the quoted row through the pinned-message jump,
   // which already pages older history in when the target is off the loaded window.
   const handleJumpToQuote = useCallback((q: MessageQuote) => {
@@ -265,7 +266,7 @@ export function useTranscriptPins({
     // Split View and a crew window hide this chat's composer, so a pending fill
     // that lands while either is open is dropped.
     const fill = pendingPinnedJump.fill && !(splitMode && splitFeatureEnabled) && !crewWindow
-    if (jumpToLoadedPinnedMessage(pendingPinnedJump.messageTs, pendingPinnedJump.mid, fill)) {
+    if (jumpToLoadedPinnedMessage(pendingPinnedJump.messageTs, pendingPinnedJump.mid, fill, pendingPinnedJump.origin === 'link')) {
       pinnedJumpPageLoadsRef.current = 0
       // A jump resolved against the bounded page is provisional: the full
       // transcript prepends older rows, so re-resolve once it has replaced it.
@@ -274,6 +275,12 @@ export function useTranscriptPins({
       else if (pendingPinnedJump.fill) setPendingPinnedJump({ ...pendingPinnedJump, fill: false })
       return
     }
+    // The rows on screen trail the list: a page that just landed, the target
+    // with it, has no rows yet. Nothing is decided until the rows catch up,
+    // which runs this effect again (`rowsTrailList`). Read as gone here, a
+    // message on the oldest page would be reported unavailable one commit
+    // before its row draws.
+    if (rowsTrailList) return
     // The cursor still describes the chat we left; wait for the switch to settle
     // rather than read its has-more as this chat's.
     if (!cursorIsForActiveSlot) return
@@ -326,6 +333,8 @@ export function useTranscriptPins({
     // rows landing must re-run this effect on its own.
     messages,
     pendingPinnedJump,
+    // The rows catching up with the list runs it again too.
+    rowsTrailList,
     slotHasMore,
     slotOldestIndex,
     splitFeatureEnabled,
@@ -387,16 +396,8 @@ export function useTranscriptPins({
     return () => window.clearTimeout(timeout)
   }, [pinStatus, chatPinsError, clearChatPinsError])
 
-  // Read the display-index map via a ref so the search scroll effect
-  // (useTranscriptJumps, called later from ChatPage) does NOT
-  // re-fire when the map is rebuilt (every new message / stream chunk rebuilds
-  // it). Otherwise an open search pane would yank the chat back to the current
-  // match each time the agent emits output. The effect should scroll only on
-  // deliberate search navigation (currentIdx / currentMessageIdx change).
-  const messageToDisplayIdxRef = useRef(messageToDisplayIdx)
-  messageToDisplayIdxRef.current = messageToDisplayIdx
   return {
     messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
-    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, messageToDisplayIdxRef,
+    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus,
   }
 }

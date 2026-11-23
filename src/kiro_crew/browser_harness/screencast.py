@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
 import secrets
@@ -55,8 +54,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from kiro_crew.browser_harness.dom_census import MalformedDocument, closed_secret_count
 from kiro_crew.browser_harness.frames import FrameOps, FrameRegistry, enable_auto_attach
+from kiro_crew.browser_harness.screencast_closed_roots import closed_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +118,11 @@ def rung_index(picture: int, fps_step: int) -> int:
     return picture * len(FPS_STEPS) + fps_step
 
 
-#: The frame-rate step of 15 fps: the stream's ceiling during takeover.
-TAKEOVER_FPS_STEP = FPS_STEPS.index(15)
-#: The rung a takeover lands on from the top: 15 fps, picture unchanged.
+#: The frame-rate step during takeover: 60 fps, the top step, so a dragged thumb keeps
+#: up with the pointer. Only ``max_fps`` caps it; a slow link still steps it down by
+#: measurement (the ladder).
+TAKEOVER_FPS_STEP = FPS_STEPS.index(60)
+#: The rung a takeover lands on from the top: 60 fps, picture unchanged.
 TAKEOVER_RUNG = rung_index(0, TAKEOVER_FPS_STEP)
 
 #: Seconds without a frame after an input before the screencast is restarted.
@@ -168,6 +169,8 @@ DOWN_UTILISATION = 0.9
 DOWN_TARGET_UTILISATION = 0.8
 #: Seconds between two controller ticks.
 TICK_S = 1.0
+#: A gap between frames this long is a still spell: the next frame wakes the ladder.
+STILL_WAKE_S = 0.3
 
 Clock = Callable[[], float]
 Sleep = Callable[[float], Awaitable[None]]
@@ -345,6 +348,13 @@ class _Window:
     bytes: int = 0
     late: int = 0
     delivery_s: float = 0.0
+    #: Each frame's bytes per second of delivery (for :meth:`AdaptiveController.tick`).
+    rates: list[float] = field(default_factory=list)
+
+
+#: The busy-card rule: a frame rate the ack latency alone pushed down stops here
+#: (index into :data:`FPS_STEPS`), unless even the fast frames' link cannot carry it.
+BUSY_FPS_FLOOR_STEP = FPS_STEPS.index(30)
 
 
 @dataclass
@@ -378,6 +388,8 @@ class AdaptiveController:
         self.squeezed = 0
         self.roomy = 0
         self.window = _Window()
+        #: The last window with frames: (bytes per frame, link bytes per second).
+        self._last: tuple[float, float] | None = None
 
     @property
     def rung(self) -> int:
@@ -389,6 +401,8 @@ class AdaptiveController:
         w.frames += 1
         w.bytes += nbytes
         w.delivery_s += delivery_s
+        if len(w.rates) < 240:
+            w.rates.append(nbytes / delivery_s if delivery_s > 1e-3 else float("inf"))
         if delivery_s > LATE_PERIODS * LADDER[self.rung].period:
             w.late += 1
 
@@ -422,11 +436,26 @@ class AdaptiveController:
             kb_per_frame=round(per_frame / 1024, 1),
         )
         if not w.frames:
-            # A still page sends nothing: no evidence about the link either way.
+            # A still page sends nothing: no new evidence about the link. A still
+            # window counts as a calm one against the link last measured, so a rate
+            # stepped down while the page was busy climbs back while nothing moves.
+            if self._last is not None:
+                per_frame, link = self._last
+                self.calm += 1
+                if self.calm >= CALM_WINDOWS_UP:
+                    self.fps_step = self._fastest_fitting(per_frame, link)
+                stats.rung = self.rung
             return stats
         # Link rate: bytes the card took divided by the time it took to take them.
         # A window with no measurable delivery time is a link faster than we can see.
-        link = w.bytes / w.delivery_s if w.delivery_s > 1e-3 and w.bytes else float("inf")
+        # The link is what the faster frames of the window show (the upper quarter):
+        # a busy card delays some acks, a slow link delays all.
+        rates = sorted(w.rates)
+        if rates:
+            link = rates[min(len(rates) - 1, (len(rates) * 3) // 4)]
+        else:
+            link = w.bytes / w.delivery_s if w.delivery_s > 1e-3 and w.bytes else float("inf")
+        self._last = (per_frame, link)
         cur = PICTURES[self.picture]
 
         def need(picture: int, fps_step: int) -> float:
@@ -444,20 +473,39 @@ class AdaptiveController:
             target = min(self.fps_step + 1, bottom)
             while target < bottom and need(self.picture, target) > link * DOWN_TARGET_UTILISATION:
                 target += 1
+            # Late acks on a link that carries 30 fps are the card being busy, not the
+            # link being full: the rate never drops below 30 fps for them. A frame
+            # waits for its ack anyway, so a slower step would only add waiting.
+            if need(self.picture, BUSY_FPS_FLOOR_STEP) <= link * DOWN_UTILISATION:
+                target = min(target, max(BUSY_FPS_FLOOR_STEP, self.fps_step))
             self.fps_step = max(target, self.fps_floor)
         else:
             self.calm += 1
             if self.calm >= CALM_WINDOWS_UP:
-                best = self.fps_step
-                for step in range(self.fps_step - 1, self.fps_floor - 1, -1):
-                    if need(self.picture, step) * UP_HEADROOM <= link:
-                        best = step
-                    else:
-                        break
-                self.fps_step = best
+                self.fps_step = self._fastest_fitting(per_frame, link)
         self._pick_picture(w.delivery_s / w.frames, at_bottom=self.fps_step == bottom)
         stats.rung = self.rung
         return stats
+
+    def wake(self) -> int:
+        """The page moves again (or the person moves the pointer): the fastest step
+        the link last measured carries, at once; the top allowed with no measurement."""
+        self.calm = 0
+        if self._last is None:
+            self.fps_step = self.fps_floor
+        else:
+            self.fps_step = self._fastest_fitting(*self._last)
+        return self.rung
+
+    def _fastest_fitting(self, per_frame: float, link: float) -> int:
+        """The fastest step from here up to the floor whose bytes fit *link* with headroom."""
+        best = self.fps_step
+        for step in range(self.fps_step - 1, self.fps_floor - 1, -1):
+            if per_frame * FPS_STEPS[step] * UP_HEADROOM <= link:
+                best = step
+            else:
+                break
+        return best
 
     def _pick_picture(self, delivery: float, *, at_bottom: bool) -> None:
         """The picture axis: judged on how long one frame takes to land.
@@ -685,6 +733,9 @@ def _same_scroll(value: Any, scroll: tuple[float, float] | None) -> bool:
 
 #: Oldest a held frame may be when the tick offers it to the recorder.
 HELD_FRAME_MAX_AGE_S = 1.5
+#: While the person's input is this recent (one gesture, a pause to aim included), the
+#: recorder's mask query (13-160 ms on a busy page) is kept out of the frame path.
+RECORD_INPUT_QUIET_S = 1.0
 
 
 @dataclass
@@ -752,6 +803,8 @@ class LiveStream:
         #: resized between the card's frame and the newest one is off until the card
         #: draws a frame of the new viewport, one frame period.
         self.device_width = 0.0
+        #: The viewport's CSS height from the same metadata (0 until a frame lands).
+        self.device_height = 0.0
         self.metrics = _Metrics()
         self.running = False
         self.visible = True
@@ -766,11 +819,10 @@ class LiveStream:
         #: Last password boxes the page reported, in viewport CSS pixels; scaled
         #: per frame so a frame at another width is masked at its own scale.
         self._mask_boxes: list[Any] = []
+        #: The card's box query run beside the frames while the person drives.
+        self._mask_refresh: asyncio.Future[Any] | None = None
         #: The mask query's isolated world per CDP session (``_mask_query``).
         self._mask_worlds: dict[str, int] = {}
-        #: The last ``_mask_query`` had to make its world: the document it read may
-        #: have replaced the one the frame in hand shows.
-        self._mask_new_world = False
         #: The boxes the last answered query found (CSS px), or None after one that
         #: did not answer. A recorded frame needs this query and the one before it
         #: to agree: a field the page removed after the capture shows in neither
@@ -862,6 +914,8 @@ class LiveStream:
         task, self._control_task = self._control_task, None
         if task is not None:
             task.cancel()
+        if self._mask_refresh is not None:
+            self._mask_refresh.cancel()
         try:
             if self.casting:
                 await self._stop_cast()
@@ -917,6 +971,10 @@ class LiveStream:
         self._settle_landing = settle
         if self.casting:
             await self._stop_cast()
+        # The last card may have gone while the stop was in flight; its
+        # ``set_visible(False)`` found no cast to stop, so this start must not run.
+        if not self.running or not (self.visible or self._casts_hidden):
+            return
         await self._start_cast()
 
     def _remember(self) -> None:
@@ -959,12 +1017,22 @@ class LiveStream:
         return True
 
     def note_input(self) -> None:
-        """An input was dispatched to the page; the watchdog starts counting."""
+        """An input was dispatched to the page; the watchdog starts counting.
+
+        The stream jumps to the fastest step the link carries, so a hover highlight
+        follows a moving pointer.
+        """
         self._input_at = self._clock()
         self._input_pending = True
+        self.controller.wake()
+
+    def _driving(self, now: float) -> bool:
+        """The person's input went to the page within :data:`RECORD_INPUT_QUIET_S`."""
+        return self._input_at >= 0 and now - self._input_at < RECORD_INPUT_QUIET_S
 
     async def set_takeover(self, active: bool) -> None:
-        """Cap the frame rate at 15 fps while the person holds input; the picture stays."""
+        """Let the frame rate reach :data:`TAKEOVER_FPS_STEP` (the top step) while the
+        person holds input; ``max_fps`` still caps it, and the picture stays."""
         self._takeover = bool(active)
         before = self.controller.rung
         fps_floor = self.config.fps_floor()
@@ -978,6 +1046,19 @@ class LiveStream:
 
     async def _on_event(self, msg: dict[str, Any]) -> None:
         self.frames.handle(msg)
+        if msg.get("method") == "Page.screencastVisibilityChanged" and msg.get("sessionId") in (
+            None,
+            self.session_id,
+        ):
+            # Chrome draws no frame of a tab it hides (a background tab, a covered
+            # or minimised window), whatever the card asks; this line is the trace.
+            # Every cast start reports "shown", so only "hidden" is worth a log line.
+            if not (msg.get("params") or {}).get("visible"):
+                logger.info(
+                    "live stream %s: Chrome hides the tab, so it sends no frames until shown",
+                    self.session_key,
+                )
+            return
         if msg.get("method") != "Page.screencastFrame" or not self.running:
             return
         if msg.get("sessionId") not in (None, self.session_id):
@@ -1000,6 +1081,9 @@ class LiveStream:
         except (ValueError, TypeError):
             return
         now = self._clock()
+        # The first frame after a still spell puts the stream on its fastest step.
+        if self.metrics.last_frame_at >= 0 and now - self.metrics.last_frame_at > STILL_WAKE_S:
+            self.controller.wake()
         self.metrics.last_frame_at = now
         self._input_pending = False
         settle_frame = self._settled
@@ -1023,7 +1107,12 @@ class LiveStream:
             if callable(note):
                 # Every frame, not only kept ones: a point placed now uses this scale.
                 note(width, height)
-        want = records and self._recorder_wants()
+        # The recorder's own mask query (13-110 ms on a busy page) must not hold a
+        # live frame back while the person drives, since Chrome sends no frame
+        # meanwhile. No query brackets such a frame (the card's runs beside it, or
+        # none runs), so it can never be proved masked: the recorder takes none.
+        driving = self._driving(now)
+        want = records and self._recorder_wants() and not driving
         scroll = frame_scroll(meta)
         run = self._run
         boxes = await self._mask_rects(width, height, force=want, scroll=scroll)
@@ -1035,6 +1124,11 @@ class LiveStream:
         if want:
             self._held = None
             self._record(jpeg, width, height, self._rec_boxes, self._mask_ok)
+        elif records and driving:
+            # Dropped, with any frame held before it and the proof that the fields
+            # stood still: the next recorded frame needs two fresh matching queries.
+            self._held = None
+            self._mask_prev = self._rec_last = None
         elif records:
             # Inside the recorder's interval: held, so the last picture of a burst
             # is kept by the next tick (with a query of its own) if nothing follows.
@@ -1115,6 +1209,8 @@ class LiveStream:
         held = self._held
         if held is None or not self.running or not self.records or not self._recorder_wants():
             return False
+        if self._driving(self._clock()):
+            return False  # decided once input is quiet
         async with self._frame_lock:
             if self._held is not held:
                 return False
@@ -1145,11 +1241,13 @@ class LiveStream:
         """
         try:
             device_w = float(meta.get("deviceWidth") or 0)
+            device_h = float(meta.get("deviceHeight") or 0)
         except (TypeError, ValueError):
-            device_w = 0.0
+            device_w = device_h = 0.0
         if device_w > 0 and width > 0:
             self.scale = width / device_w
             self.device_width = device_w
+            self.device_height = device_h if device_h > 0 else 0.0
 
     async def _wait_card_ack(self, waiter: asyncio.Event) -> bool:
         """Wait for the card's ack, bounded by :data:`CARD_ACK_TIMEOUT_S` on the injected sleep."""
@@ -1225,15 +1323,24 @@ class LiveStream:
             return clip_mask_rects(
                 self._mask_boxes, self.scale, width, height, limit=MASK_BOX_LIMIT
             )
+        if not force and self._mask_at >= 0 and self._driving(now):
+            # While the person drives, the card's box query runs beside the frames:
+            # this one goes with the boxes read up to a query ago, so a press's first
+            # frame never waits for the page to answer.
+            if self._mask_refresh is None or self._mask_refresh.done():
+                self._mask_at = now
+                self._mask_refresh = asyncio.ensure_future(self._refresh_card_boxes())
+            return clip_mask_rects(
+                self._mask_boxes, self.scale, width, height, limit=MASK_BOX_LIMIT
+            )
         self._mask_at = now
         prev, self._mask_prev = self._mask_prev, None
         try:
-            reply = await self._mask_query(self.session_id)
+            reply, new_world = await self._mask_query(self.session_id)
             # A world made for this query reads whatever document is there now; a
             # navigation between the capture and the query (a submitted one-time
             # code) leaves a frame of the old page that this answer says nothing
             # about, so that frame is never recorded as masked.
-            new_world = self._mask_new_world
         except Exception:
             # Keep the last boxes rather than unmask on a transient failure.
             return clip_mask_rects(
@@ -1268,7 +1375,11 @@ class LiveStream:
         partial = isinstance(value, dict) and bool(value.get("partial"))
         # A secret field in a closed shadow root is out of the mask query's reach,
         # so a frame of such a page is never recorded as masked.
-        closed = await self._closed_secrets() if force else 0
+        closed = (
+            await closed_secrets(lambda m, p: self.relay.send(m, p, self.session_id))
+            if force
+            else 0
+        )
         if (
             named_ok
             and len(boxes) + len(frames) + len(named) <= MASK_BOX_LIMIT
@@ -1289,28 +1400,27 @@ class LiveStream:
                 self._rec_last_size = (width, height)
         return list(rects)
 
-    async def _closed_secrets(self) -> int | None:
-        """Secret-looking fields in closed shadow roots of the tab, or ``None``.
+    async def _refresh_card_boxes(self) -> None:
+        """Read the card's password boxes again; a failed or odd answer keeps the last.
 
-        Read from the browser's own DOM (``DOM.getDocument`` with ``pierce``),
-        which reaches into closed roots no page-side query can enter.
+        It runs beside the frames while the person drives, so no query brackets the
+        frames of that stretch: the recorder's proof that the fields stood still
+        (``_mask_prev``, ``_rec_last``) is voided before and after it, and the next
+        held or recorded frame has to earn a fresh pair of matching queries.
         """
+        self._mask_prev = self._rec_last = None
         try:
-            reply = await self.relay.send(
-                "DOM.getDocument", {"depth": -1, "pierce": True}, self.session_id
-            )
-        except Exception:  # noqa: BLE001 - unknown: the frame is not recorded as masked
-            return None
+            reply, _made = await self._mask_query(self.session_id)
+            value = ((reply.get("result") or {}).get("value")) if isinstance(reply, dict) else None
+            boxes = value.get("boxes") if isinstance(value, dict) else value
+            if isinstance(boxes, list):
+                self._mask_boxes = boxes + await self._frame_boxes()
+        except Exception:  # noqa: BLE001 - the last boxes stay
+            logger.debug("live stream: card box refresh failed", exc_info=True)
         finally:
-            with contextlib.suppress(Exception):
-                await self.relay.send("DOM.disable", {}, self.session_id)
-        root = reply.get("root") if isinstance(reply, dict) else None
-        try:
-            return closed_secret_count(root)
-        except MalformedDocument:
-            return None
+            self._mask_prev = self._rec_last = None
 
-    async def _mask_query(self, sid: str) -> Any:
+    async def _mask_query(self, sid: str) -> tuple[Any, bool]:
         """Run :data:`_MASK_JS` in an isolated world of *sid*'s own frame.
 
         In the page's own world a script could replace ``querySelectorAll`` or
@@ -1318,22 +1428,22 @@ class LiveStream:
         no secret field. The world is made once per session and reused: Chrome
         makes a new one for every ``Page.createIsolatedWorld``, kept until the frame
         navigates. A reused world that a navigation destroyed fails, and is made
-        again once. Raises when no world can be had: the caller then keeps the last
-        boxes and records no frame as masked.
+        again once. Returns the reply and whether this call made the world, per
+        call so a query running beside another never reports for it. Raises when no
+        world can be had: the caller then keeps the last boxes and records no frame
+        as masked.
         """
-        self._mask_new_world = False
         ctx = self._mask_worlds.get(sid)
         if ctx is not None:
             try:
                 reply = await self._mask_eval(sid, ctx)
                 if isinstance(reply, dict) and not reply.get("exceptionDetails"):
-                    return reply
+                    return reply, False
             except Exception:  # noqa: BLE001 - the world went with a navigation
                 pass
             self._mask_worlds.pop(sid, None)
         ctx = await self._make_mask_world(sid)
-        self._mask_new_world = True
-        return await self._mask_eval(sid, ctx)
+        return await self._mask_eval(sid, ctx), True
 
     async def _make_mask_world(self, sid: str) -> int:
         """Make *sid*'s mask world in its current document and keep it."""
@@ -1371,7 +1481,7 @@ class LiveStream:
         place = FrameOps(self.relay, self.session_id, self.frames, "")
         for frame_id, sid in self.frames.frames():
             try:
-                reply = await self._mask_query(sid)
+                reply, _made = await self._mask_query(sid)
             except Exception:  # noqa: BLE001 - the frame went away
                 continue
             value = (reply.get("result") or {}).get("value") if isinstance(reply, dict) else None

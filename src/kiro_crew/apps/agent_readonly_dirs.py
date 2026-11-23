@@ -12,7 +12,9 @@ then fence it from every agent, the same two a core write-protected crew-home le
 * **The file-edit tool gate.** ``security.paths.sensitive_write_path_refusal`` refuses an
   agent tool's write under every declared directory, at both data-home prefixes and a
   relocated home, exactly as it refuses one under a ``_WRITE_PROTECTED_HOME_PATHS`` row.
-  Reads stay open, as for that row.
+  Reads stay open, as for that row. Where an installed app's declaration cannot be
+  read cleanly, the gate refuses writes under that app's whole data directory (both
+  places), and an ``apps/`` it cannot list refuses writes under ``apps/``.
 * **The OS sandbox, in every mode.** The sandbox seals each declared directory read-only
   as it seals a core ``READONLY`` crew-home leaf: a read-only bind on Linux (made first
   when absent, so the seal is never vacuous), a write and link deny on Seatbelt, with every
@@ -33,9 +35,12 @@ lift a core fence. The retained record, ``apps/.<name>-agent-readonly-dirs.json`
 the fence on data a default uninstall leaves behind and on the data an update holds
 aside in ``apps/.<name>-data-tmp/``.
 
-The residual is the credential masks' one: the installed tree is sandbox-writable, so an
-agent that rewrites an installed app's ``app.json`` drops its declaration from the next
-spawn.
+The agent's file tools cannot rewrite the declaration away: the write gate also refuses an
+installed app's ``app.json`` and retained records of either declaration while they hold a
+fence (one that declares an entry or does not read cleanly). A manifest that declares
+nothing stays writable, so adding a fence is never blocked. The residual is the credential
+masks' one: the installed tree is sandbox-writable, so an agent's shell that rewrites an
+installed app's ``app.json`` drops its declaration from the next spawn.
 
 Process state only (the shared engine's parsed-manifest cache); no per-caller data.
 """
@@ -116,13 +121,30 @@ def write_protected_home_paths() -> tuple[str, ...]:
 
     The shape of a ``_WRITE_PROTECTED_HOME_PATHS`` row, so the gate anchors and
     re-anchors them (``KIROCREW_HOME``) exactly as it does a core row.
+
+    The shipped built-ins' declarations, plus the installed apps' as the strict reader
+    gives them (:func:`kiro_crew.apps.credential_masks.tool_gate_crew_leaves`): where an
+    installed declaration cannot be read cleanly, that app's whole data directory (at
+    both places) is a row, and an ``apps/`` that cannot be listed is one. So is every
+    installed manifest and retained record that holds an ``agentReadOnlyDirs`` or
+    ``credentialMasks`` fence (:func:`credential_masks.tool_gate_declarations`), so a
+    file tool cannot rewrite the fence away; they stay readable.
     """
     # Imported at call time, so loading this module never loads the security package.
     from kiro_crew.security.paths_lists import _CREW_HOME_PREFIXES
 
-    return tuple(
-        f"{prefix}/{leaf}" for leaf in declared_crew_leaves() for prefix in _CREW_HOME_PREFIXES
+    installed, sources = credential_masks.tool_gate_declarations(KIND)
+    _, mask_sources = credential_masks.tool_gate_declarations()
+    leaves = sorted(
+        {
+            *credential_masks.declared_crew_leaves(installed=False, kind=KIND),
+            *installed.declared,
+            *installed.unreadable,
+            *sources,
+            *mask_sources,
+        }
     )
+    return tuple(f"{prefix}/{leaf}" for leaf in leaves for prefix in _CREW_HOME_PREFIXES)
 
 
 def remember_declaration(app: str) -> None:

@@ -106,7 +106,7 @@ const STEPS_REGISTERED = [
     key: 'connect',
     label: 'Connect',
     state: 'done' as const,
-    detail: 'Added to Your crews. Sign in to Kiro on the crew after you connect.',
+    detail: 'Added to My Crews. Sign in to Kiro on the crew after you connect.',
   },
 ]
 const UNSIGNED_JOB = {
@@ -167,12 +167,17 @@ beforeEach(() => {
   )
   vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] } as never)
   useJob(UNSIGNED_JOB)
+  // The row asks the box once before badging a finished unsigned job. By default
+  // the box says it is signed out, so the badge these tests assert is the real one.
+  vi.mocked(api.cloudLaunchSignin).mockRejectedValue(
+    new ApiError(409, 'no sign-in pending', JSON.stringify({ code: 'no_signin_pending' })),
+  )
   vi.mocked(copyToClipboard).mockResolvedValue(true)
 })
 
 /** Open the setup tab, where the launch progress card lives. */
 const openSetup = async (u: ReturnType<typeof userEvent.setup>) => {
-  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 }
 
 describe('a crew created without a Kiro sign-in — the progress card', () => {
@@ -198,7 +203,7 @@ describe('a crew created without a Kiro sign-in — the progress card', () => {
 
     const icon = await screen.findByTestId('step-waiting-connect')
     const row = icon.closest('li')
-    expect(row).toHaveTextContent(/Added to Your crews\./i)
+    expect(row).toHaveTextContent(/Added to My Crews\./i)
     expect(row?.querySelector('.text-ok')).toBeNull()
     // A warn-tinted hollow circle, deliberately NOT the key: the key marks the
     // step in the user's court; this step ran and is only held.
@@ -235,6 +240,8 @@ describe('a crew created without a Kiro sign-in — the progress card', () => {
     const signed = {
       ...UNSIGNED_JOB,
       signin_detected: true,
+      // Just finished: a finished card closes by itself 2 minutes after its last write.
+      updated_at: Date.now() / 1000, // flake-ok: the card's timer reads the same clock; its window is 120 s
       steps: STEPS_REGISTERED.map(s => (s.key === 'signin' ? { ...s, state: 'done' as const, detail: '' } : s)),
     }
     useJob(signed)
@@ -399,6 +406,8 @@ describe('what Cancel destroys', () => {
     })
     renderWithProviders(<RemoteCrewPanel />)
 
+    // The Setting up row's status opens its steps and the Cancel.
+    fireEvent.click(await screen.findByRole('button', { name: /Setting up/ }))
     const cancel = await screen.findByRole('button', {
       name: /Cancel setup of kc-5e10bb and remove the crew/i,
     })
@@ -482,7 +491,7 @@ describe('the restart, and the state before a code exists', () => {
   })
 })
 
-describe('Your crews — an unsigned cloud crew', () => {
+describe('My Crews — an unsigned cloud crew', () => {
   beforeEach(() => {
     vi.mocked(api.listInstances).mockResolvedValue(
       { active: true, warm_set_cap: 5, instances: [CLOUD_INSTANCE] } as never,
@@ -542,6 +551,49 @@ describe('Your crews — an unsigned cloud crew', () => {
     expect(screen.getByRole('button', { name: /Start sign-in/i })).toBeInTheDocument()
   })
 
+  it('asks the box before badging, and drops the badge when it was signed in later', async () => {
+    // The owner's report: a connected crew signed in after its launch's code ran
+    // out still read "Needs sign-in", because the job is written once and never
+    // re-read. The row asks the box; the gateway corrects the job.
+    // The box's answer is held until the baseline is taken, so only the
+    // invalidation that answer triggers can raise the status-read count.
+    let answer: (e: unknown) => void = () => {}
+    vi.mocked(api.cloudLaunchSignin).mockReturnValue(new Promise((_r, reject) => { answer = reject }) as never)
+    vi.mocked(api.listInstances).mockResolvedValue(
+      { active: true, warm_set_cap: 5, instances: [{ ...CLOUD_INSTANCE, status: { instance_id: 'kc1', state: 'connected' } }] } as never,
+    )
+    renderWithProviders(<RemoteCrewPanel />)
+    await waitFor(() => expect(api.cloudLaunchStatus).toHaveBeenCalled())
+    await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-unsigned'))
+    const statusReads = vi.mocked(api.cloudLaunchStatus).mock.calls.length
+    useJob({ ...UNSIGNED_JOB, signin_detected: true, updated_at: 1 })
+    answer(new ApiError(409, 'already signed in', JSON.stringify({ code: 'signin_already_complete' })))
+    // The Set-up card's own cached copy of the job is re-read too: a terminal
+    // job never refetches it on its own.
+    await waitFor(() => expect(vi.mocked(api.cloudLaunchStatus).mock.calls.length).toBeGreaterThan(statusReads))
+    await waitFor(() => expect(vi.mocked(api.cloudLaunches).mock.calls.length).toBeGreaterThan(1))
+    await screen.findByText('Kiro Crew Cloud (kc-5e10bb)')
+    expect(screen.queryByText(/Needs sign-in/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('signin-prompt')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['the box could not be reached', new ApiError(502, 'could not reach the crew', JSON.stringify({ code: 'signin_probe_failed' })), 'could not reach the crew'],
+    ['the request failed', new Error('network down'), 'network down'],
+  ])('does not badge when %s: unknown is not "signed out"', async (_label, err, text) => {
+    // A crew on another harness, with no Kiro sign-in program, answers this way
+    // too. "Its chats will fail" would be a claim nobody checked; the failed
+    // check itself is shown, as a minor notice with the hand-off.
+    vi.mocked(api.cloudLaunchSignin).mockRejectedValue(err)
+    renderWithProviders(<RemoteCrewPanel />)
+    await waitFor(() => expect(api.cloudLaunchSignin).toHaveBeenCalledWith('j-unsigned'))
+    expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
+    const notice = (await screen.findByText(text)).closest('[data-crew-id="kc1"]') as HTMLElement
+    expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    expect(screen.queryByText(/Needs sign-in/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('signin-prompt')).not.toBeInTheDocument()
+  })
+
   it('leaves a signed-in crew alone', async () => {
     useJob({ ...UNSIGNED_JOB, signin_detected: true })
     renderWithProviders(<RemoteCrewPanel />)
@@ -549,6 +601,8 @@ describe('Your crews — an unsigned cloud crew', () => {
     expect(await screen.findByRole('button', { name: /^Connect$/i })).toBeEnabled()
     expect(screen.queryByText(/Needs sign-in/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('signin-prompt')).not.toBeInTheDocument()
+    // A signed-in job is never re-probed: one SSM round trip per UNSIGNED row only.
+    expect(api.cloudLaunchSignin).not.toHaveBeenCalled()
   })
 
   it('does not list a sign-in retry as a second instance being set up', async () => {
@@ -1146,7 +1200,7 @@ describe('the step details these fixtures put on screen', () => {
   // The card renders `step.detail` verbatim, so a fixture that invents one tests
   // — and screenshots — a screen that does not ship. Both fixtures drifted once:
   // they still said "Added to your crews." after the backend had moved to
-  // "Added to Your crews.". Pin them to their source instead.
+  // "Added to My Crews.". Pin them to their source instead.
   const read = (rel: string): string =>
     readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
   const details = STEPS_REGISTERED.flatMap(step =>

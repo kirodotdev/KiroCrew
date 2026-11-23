@@ -5,9 +5,9 @@
  * kind refetches only its own caches, plus any listed cache whose last read
  * failed; a rare, unknown or missing kind refetches every listed cache.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import { QueryClient, QueryObserver } from '@tanstack/react-query'
-import { invalidateRefreshQueries, TURN_END_CRON_REFRESH_MS, __resetTurnEndCronRefreshForTests } from './serverState'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import { QueryClient, QueryObserver, focusManager } from '@tanstack/react-query'
+import { invalidateRefreshQueries, refreshMayChangeRegistry, TURN_END_CRON_REFRESH_MS, __resetTurnEndCronRefreshForTests } from './serverState'
 
 const KEYS = [
   ['cron-jobs'], ['crons', 'crew-wake', 'ada'], ['cron-history-all'],
@@ -192,5 +192,108 @@ describe('a turn-end history frame', () => {
     invalidateRefreshQueries(qc, ['turn_end'])
     await settle()
     expect(refetched(fetches)).toEqual(['kirocrewConfig'])
+  })
+})
+
+describe('a frame that cannot change an agent or a crewmate', () => {
+  const REGISTRY_IDS = ['kirocrew-agents', 'kirocrew-agents/members-roster']
+
+  it.each([['lessons'], ['taskrunner'], ['update_available'], ['update_failed'], ['updating']])(
+    'leaves the crew registry and the roster alone for %s',
+    async kind => {
+      const fetches = await observeAll()
+      const others = vi.fn()
+      invalidateRefreshQueries(qc, [kind], undefined, others)
+      await settle()
+      for (const id of REGISTRY_IDS) expect(fetches[id]).toBe(0)
+      // Everything else a frame re-reads still is, and the store's counter still moves.
+      expect(fetches.kirocrewConfig).toBe(1)
+      expect(others).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('still re-reads a registry cache whose last read failed', async () => {
+    const fetches = await observeAll(['kirocrew-agents/members-roster'])
+    invalidateRefreshQueries(qc, ['lessons'])
+    await settle()
+    expect(fetches['kirocrew-agents/members-roster']).toBe(1)
+    expect(fetches['kirocrew-agents']).toBe(0)
+  })
+
+  it.each([
+    ['an agent write', ['agents']],
+    ['a config write', ['config']],
+    ['a lesson beside an agent write', ['lessons', 'agents']],
+    ['a kind this client does not know', ['something-new']],
+    ['no kinds', []],
+    ['a turn end', ['turn_end']],
+  ])('re-reads the crew registry and the roster for %s', async (_label, kinds) => {
+    const fetches = await observeAll()
+    invalidateRefreshQueries(qc, kinds)
+    await settle()
+    for (const id of REGISTRY_IDS) expect(fetches[id]).toBe(1)
+  })
+
+  it('keeps the re-read a held turn end owes the registry when such a frame arrives meanwhile', async () => {
+    const fetches = await observeAll()
+    vi.useFakeTimers()
+    const others = vi.fn()
+    invalidateRefreshQueries(qc, ['turn_end'], undefined, others)
+    invalidateRefreshQueries(qc, ['turn_end'], undefined, others)
+    invalidateRefreshQueries(qc, ['lessons'], undefined, vi.fn())
+    vi.advanceTimersByTime(TURN_END_CRON_REFRESH_MS)
+    vi.useRealTimers()
+    await settle()
+    // The first turn end read at once; the held one is paid when the window ends.
+    expect(fetches['kirocrew-agents/members-roster']).toBe(2)
+    expect(others).toHaveBeenCalledTimes(2)
+  })
+
+  it('tells refreshMayChangeRegistry apart the same way', () => {
+    expect(refreshMayChangeRegistry(['lessons', 'crons'])).toBe(false)
+    expect(refreshMayChangeRegistry(['lessons', 'agents'])).toBe(true)
+    expect(refreshMayChangeRegistry(['turn_end'])).toBe(true)
+    expect(refreshMayChangeRegistry([])).toBe(true)
+    expect(refreshMayChangeRegistry(undefined)).toBe(true)
+  })
+})
+
+describe('a frame that arrives while the tab is hidden', () => {
+  let hidden = false
+  beforeEach(() => {
+    hidden = true
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
+  })
+  afterEach(() => {
+    delete (document as unknown as Record<string, unknown>).hidden
+  })
+
+  it('marks the crew registry and the roster stale without reading them', async () => {
+    const fetches = await observeAll()
+    invalidateRefreshQueries(qc, ['agents'])
+    await settle()
+    expect(fetches['kirocrew-agents']).toBe(0)
+    expect(fetches['kirocrew-agents/members-roster']).toBe(0)
+    expect(qc.getQueryState(['kirocrew-agents', 'members-roster'])?.isInvalidated).toBe(true)
+    // Every other cache still re-reads at once.
+    expect(fetches.kirocrewConfig).toBe(1)
+  })
+
+  it('reads the roster when the tab is shown, because it is marked stale', async () => {
+    const fetches = await observeAll()
+    // The focus manager is what the app's client listens to; a bare test client does not.
+    qc.mount()
+    try {
+      invalidateRefreshQueries(qc, ['agents'])
+      await settle()
+      hidden = false
+      focusManager.setFocused(false)
+      focusManager.setFocused(true)
+      await settle()
+      expect(fetches['kirocrew-agents/members-roster']).toBe(1)
+    } finally {
+      qc.unmount()
+      focusManager.setFocused(undefined)
+    }
   })
 })

@@ -6,15 +6,16 @@ and cleanup policy remain separate owner-facade responsibilities.  This module
 never imports :mod:`kiro_crew.session` at runtime; patchable compatibility seams
 are supplied through :class:`AllocationDeps`.
 
-The class keeps its whole interface; the bodies of its two largest member groups
-live in the :mod:`kiro_crew.session_allocation_parts` package: ``get_or_create``
-(claiming or cold-starting the session for a key) and ``companions`` (companion and
-run runtimes). Each member there is a function whose first parameter is ``self``,
-bound on the class by name, and the refusals the class and ``get_or_create`` raise
-live in its ``errors`` module; ``memory_policy`` plans a cold start's KAS memory
-request. Every project name this module bound before the owners existed still
-resolves here, and :mod:`kiro_crew._facade_mirror` carries a patch of one of them
-through this module to every owner that reads it.
+The class keeps its whole interface; the bodies of its largest member groups live in
+the :mod:`kiro_crew.session_allocation_parts` package: ``get_or_create`` (claiming or
+cold-starting the session for a key), ``eviction`` (ending a session a claim cannot
+hand out) and ``companions`` (companion and run runtimes). Each member there is a
+function whose first parameter is ``self``, bound on the class by name, and the
+refusals the class and ``get_or_create`` raise live in its ``errors`` module;
+``memory_policy`` plans a cold start's KAS memory request. Every project name this
+module bound before the owners existed still resolves here, and
+:mod:`kiro_crew._facade_mirror` carries a patch of one of them through this module to
+every owner that reads it.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew import keepalive_route as _keepalive_route
+from kiro_crew.agent_sdk.kas_default_model import serve_kiro_cli_default_model
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.aws_project_profiles import configured_project_profiles, resolve_project_profile
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
@@ -251,6 +253,10 @@ class SessionRegistryState:
     #: their spawn door and started itself: each stands down at that door
     #: (``SpeculativeResumeRefused``). Removed with the announcement.
     superseded_speculative_starts: set[object] = field(default_factory=set)
+    #: Per key, the sid a resume prefetch saw its KAS ``session/load`` refuse
+    #: (``AcpResumeNotRestored``): a later prefetch of that sid is refused before it
+    #: starts a process. In memory only; registering a session for the key drops it.
+    refused_resume_sids: dict[str, str] = field(default_factory=dict)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -322,6 +328,8 @@ class _AllocationOwner(Protocol):
 
     def retire_turn_permit(self, key: str, session: Any) -> None: ...
 
+    def _lifecycle_boundary(self) -> Any: ...
+
     def get_provider(self, key: str) -> LLMProvider | None: ...
 
     async def get_subagent_runtime(
@@ -350,6 +358,7 @@ class _AllocationOwner(Protocol):
         *,
         wait_if_busy: bool = True,
         reservation: object | None = None,
+        refuse_looser_tier: bool = True,
     ) -> bool: ...
 
     async def _evict_stale_session(self, key: str, session: Any) -> None: ...
@@ -391,6 +400,7 @@ class _AllocationOwner(Protocol):
 # end of this module installs the mirror over them, so they load here.
 from kiro_crew import _facade_mirror  # noqa: E402
 from kiro_crew.session_allocation_parts import companions as _sa_companions  # noqa: E402
+from kiro_crew.session_allocation_parts import eviction as _sa_eviction  # noqa: E402
 from kiro_crew.session_allocation_parts import get_or_create as _sa_get_or_create  # noqa: E402
 
 
@@ -823,11 +833,14 @@ class SessionAllocationService:
     _runtime_pid = staticmethod(_sa_companions._runtime_pid)
     runtime_pids = _sa_companions.runtime_pids
     _append_companion_runtime_rows = _sa_companions._append_companion_runtime_rows
+    # Ending a registered session a claim cannot hand out:
+    # ``kiro_crew.session_allocation_parts.eviction``.
+    _evict_stale_session = _sa_eviction._evict_stale_session
+    _sandbox_tightened = _sa_eviction._sandbox_tightened
     # Claiming the live session for a key or cold-starting one:
     # ``kiro_crew.session_allocation_parts.get_or_create``.
     _reacquire_and_validate = _sa_get_or_create._reacquire_and_validate
     _release_reacquired = _sa_get_or_create._release_reacquired
-    _evict_stale_session = _sa_get_or_create._evict_stale_session
     _is_member_key = staticmethod(_sa_get_or_create._is_member_key)
     _crew_pins_effort = _sa_get_or_create._crew_pins_effort
     _dispatch_hard_kill = _sa_get_or_create._dispatch_hard_kill
@@ -1067,6 +1080,21 @@ class SessionAllocationService:
         assert won_race_session is session
         await session.semaphore.acquire()
         session.turn_owner = asyncio.current_task()
+        try:
+            # On KAS an unpinned step starts on kiro-cli's chat.defaultModel. Under
+            # the turn semaphore, so no other claimant runs a turn before it lands.
+            await serve_kiro_cli_default_model(
+                runtime,
+                handle,
+                cwd,
+                lambda: owner._cfg.acp_effective_model(
+                    agent or getattr(runtime, "_agent", "") or None, None
+                ),
+            )
+        except BaseException:
+            # Gives the permit back unless a teardown during the call already did.
+            self._release_reacquired(key, session)
+            raise
         return session.provider, True, False
 
     def record_success(self, key: str) -> None:
@@ -1617,6 +1645,7 @@ _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.errors",
     "kiro_crew.session_allocation_parts.companions",
     "kiro_crew.session_allocation_parts.memory_policy",
+    "kiro_crew.session_allocation_parts.eviction",
     "kiro_crew.session_allocation_parts.get_or_create",
 )
 #: Project names this module bound before the owners existed that only the owners read.

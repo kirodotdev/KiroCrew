@@ -79,9 +79,10 @@ class TestNoFlags:
         assert result["no_crons"] is False
         assert result["no_dashboard"] is False
 
-    def test_test_mode_does_not_imply_no_tunnel(self):
+    def test_test_mode_implies_no_tunnel(self):
+        # A test home may hold a team key, which hosts through the relay by default.
         result = _resolve_gateway_args(_ns(test_mode=True))
-        assert result["no_tunnel"] is False
+        assert result["no_tunnel"] is True
 
 
 class TestTestModeBundle:

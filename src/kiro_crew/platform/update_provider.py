@@ -118,19 +118,21 @@ _APPLY_TIMEOUT_SECS = 600
 INSTALLER_TIMEOUT_TERM_GRACE_SECS = 60.0
 
 
-async def _stop_installer(
-    proc: asyncio.subprocess.Process, *, grace: float = UPDATE_INSTALLER_TERM_GRACE_SECS
-) -> None:
+async def _stop_installer(proc: asyncio.subprocess.Process, *, grace: float | None = None) -> None:
     """Stop an in-flight update installer so its own rollback can run.
 
     An installer that replaces the install in place moves the old tree aside
     first and restores it from a TERM trap if it is interrupted. SIGKILL skips
     that trap and leaves no install at all, so the group gets SIGTERM and
     *grace* seconds to finish, then SIGKILL. The cancellation (shutdown) arm of
-    every apply route uses the default; the timeout arm passes
+    every apply route uses the default, :data:`UPDATE_INSTALLER_TERM_GRACE_SECS`
+    read at call time (as :func:`_start_installer` reads it), so this module's
+    binding is the one seam for it; the timeout arm passes
     :data:`INSTALLER_TIMEOUT_TERM_GRACE_SECS`. The check command keeps
     :func:`_kill_and_reap`, since it changes nothing.
     """
+    if grace is None:
+        grace = UPDATE_INSTALLER_TERM_GRACE_SECS
     await platform_compat.terminate_and_reap(
         proc, grace=grace, reap_timeout=UPDATE_INSTALLER_KILL_REAP_SECS
     )

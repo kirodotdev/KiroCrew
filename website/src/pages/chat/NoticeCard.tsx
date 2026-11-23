@@ -16,14 +16,20 @@ export type NoticeTone = 'info' | 'warn' | 'blocked'
  * older gateways without needing a migration. Only these three glyphs are
  * recognized: an unknown leading glyph is CONTENT and stays in the text, so a
  * broader emoji class can never silently eat meaning.
+ *
+ * Current gateways write the lead as a word (`Note:`, `Warning:`, `Blocked:`);
+ * saved history keeps the glyph, so both spellings map to the same tone.
  */
-const LEAD_EMOJI_RE = /^\s*(\u2139|\u26A0|\u26D4)\uFE0F*\s*/u
+const LEAD_RE = /^\s*(?:(\u2139|\u26A0|\u26D4)\uFE0F*|(Note|Warning|Blocked):)\s*/u
+const WORD_TONE: Record<string, NoticeTone> = { Note: 'info', Warning: 'warn', Blocked: 'blocked' }
 
 export function parseNotice(content: string): { tone: NoticeTone; text: string } {
   const raw = content ?? ''
-  const m = LEAD_EMOJI_RE.exec(raw)
+  const m = LEAD_RE.exec(raw)
   if (!m) return { tone: 'info', text: raw }
-  const tone: NoticeTone = m[1] === '\u2139' ? 'info' : m[1] === '\u26A0' ? 'warn' : 'blocked'
+  const tone: NoticeTone = m[2]
+    ? WORD_TONE[m[2]]
+    : m[1] === '\u2139' ? 'info' : m[1] === '\u26A0' ? 'warn' : 'blocked'
   return { tone, text: raw.slice(m[0].length) }
 }
 

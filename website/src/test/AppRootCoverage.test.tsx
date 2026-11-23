@@ -372,7 +372,10 @@ describe('App — update progress overlay', () => {
 
     const card = screen.getByTestId('update-overlay-error')
     expect(card.textContent).toContain('Fast-forward to 9f8202496fcf failed')
-    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+    // Scoped to the overlay: app-level notices (the Kiro sign-in notice on a
+    // failed settings read in this env) carry their own Dismiss.
+    const overlay = screen.getByTestId('update-overlay-step-icon').parentElement!
+    expect(within(overlay).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
     // No step is "active", and the header glyph is the terminal one, not the
     // in-progress spinner.
     expect(screen.queryByText('Page will reconnect when ready…')).toBeNull()
@@ -469,7 +472,7 @@ describe('App — Kiro credits modal', () => {
     vi.mocked(api.sessionsUsage).mockResolvedValue(usageWithBonus('https://example.awsapps.com/start') as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    fireEvent.click(await screen.findByTitle(/Kiro account & credits/))
+    fireEvent.click(await screen.findByRole('button', { description: /Kiro account & credits/ }))
     const dialog = await screen.findByRole('dialog')
     // Plan pool: the progressbar tracks the plan only, not bonus grants.
     expect(within(dialog).getByText('KIRO POWER')).toBeInTheDocument()
@@ -489,7 +492,7 @@ describe('App — Kiro credits modal', () => {
     vi.mocked(api.sessionsUsage).mockResolvedValue(usageWithBonus('not-a-url', 'IamIdentityCenter') as never)
     renderWithProviders(<App />, { route: '/chat' })
 
-    fireEvent.click(await screen.findByTitle(/Kiro account & credits/))
+    fireEvent.click(await screen.findByRole('button', { description: /Kiro account & credits/ }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Signed in with IAM Identity Center')).toBeInTheDocument()
   })

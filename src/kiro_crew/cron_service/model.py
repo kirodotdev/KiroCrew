@@ -38,6 +38,16 @@ _NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
 # Default consecutive failures before a failure alert leaves the dashboard bell
 # for the job's channel or the owner's DM: 1 alerts on the first failure.
 _ALERT_AFTER_DEFAULT = 1
+# What the job's own ``cron-<id>`` tab shows when a run re-creates it after the
+# person closed it: its history (``resume``) or none of it (``fresh``).
+ON_TAB_CLOSE_VALUES = ("resume", "fresh")
+
+
+def validate_on_tab_close(value: object) -> str:
+    """Return *value* when it is one of :data:`ON_TAB_CLOSE_VALUES`, else raise ``ValueError``."""
+    if value not in ON_TAB_CLOSE_VALUES:
+        raise ValueError(f"on_tab_close must be 'resume' or 'fresh', got {value!r}")
+    return str(value)
 
 
 def parked_by_its_run(
@@ -134,6 +144,13 @@ class CronJob:
     schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="every"))
     channel: str | None = None
     thread_ts: str | None = None
+    # A destination on another messaging channel, in ``send_message``'s grammar:
+    # ``channel_type`` names the transport (``"telegram"``) and ``target_id`` its
+    # configured target (``user:<id>``, ``topic:<user id>:<topic id>``). Set
+    # together or not at all, and never with ``channel``: a job has
+    # one pinned destination. ``""`` = not pinned.
+    channel_type: str = ""
+    target_id: str = ""
     enabled: bool = True
     user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
     # Monotonic per-job order for explicit pause/resume requests, including a
@@ -282,6 +299,11 @@ class CronJob:
     silent: bool = False  # suppress auto-delivery; agent sends via send_message
     session_key: str = ""  # session that created this job (for scoped removal)
     person_owner_key: str = ""  # session_key MCP cron_add saw as a live person's tab
+    # The Bot that made this job through ``cron_add`` and the Profile approval mode
+    # it held then (``cron_service.owner_grant``). Read at each fire together with
+    # the Bot's live Profile, so the job never runs above either. "" = no grant.
+    owner_member_id: str = ""
+    owner_approval_mode: str = ""
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
     consecutive_dupes: int = 0  # count of suppressed duplicate results
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)
@@ -309,6 +331,10 @@ class CronJob:
     # one run alone. The store refuses it with ``persistent_session=True``, whose
     # one tab already holds every run. ``hide_in_chat`` still wins.
     new_chat_per_run: bool = False
+    # ``fresh`` → the first run after the person closed the job's tab reopens it
+    # empty: the rows stay in ``cron:<id>`` below the tab's display floor
+    # (``cron_inject.start_fresh_cron_tab``). ``resume`` shows them again.
+    on_tab_close: str = "resume"
     # Cron folder grouping; "" = unfiled. CONTRACT for all consumers
     # (Schedule UI, calendar, CLI, MCP): an id that does not match a folder
     # in cron_folders.json MUST be treated as ungrouped — folder deletion
@@ -450,7 +476,12 @@ class CronJob:
         auditable per the security-controls guideline. Best-effort — an audit
         write failure must never mask the failure/success bookkeeping that drives
         the pause itself; the tool-invocation error paths already log the run
-        outcome separately."""
+        outcome separately.
+
+        The user-facing auto-pause notice does NOT ride this audit: it fires
+        on the stored pause's rising edge, at the save (``store_sync._save``),
+        so every writer shares one owner and the notice never outruns the
+        disk."""
         from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
         try:
@@ -588,6 +619,10 @@ class CronJob:
         default threshold, the backoff in :meth:`failure_backoff_until`, so a job
         that stays signed out keeps a bounded retry rate. A later failure of
         another kind pauses the job as usual once the streak is at its limit.
+
+        The notice for the pause this lands fires at the SAVE that persists
+        it (``store_sync._save``'s rising edge), never here: this runs on the
+        claim's copy, and the stored limit decides the pause at the merge.
         """
         counted = self.count_failure()
         self.failure_auth_expiry = auth_expiry

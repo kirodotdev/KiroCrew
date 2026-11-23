@@ -29,6 +29,7 @@ The contract these tests pin:
 from __future__ import annotations
 
 import logging
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -36,7 +37,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.config.sections import MemoryConfig
+from kiro_crew.config.sections import MemoryConfig, WorkspaceConfig
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +69,7 @@ def _fake_config():
         agents={},
         memory_stores={},
         workspaces={},
+        default_workspace="default",
         default_agent="kirocrew",
         save=lambda: saved.append(True),
         saved=saved,
@@ -387,6 +389,23 @@ class TestFirstGreetingOwed:
         assert marked == [("scout", WELCOME_KIND_GOAL, data["member_id"])]
 
     @pytest.mark.asyncio
+    async def test_a_crewmate_named_after_a_windows_device_owes_its_welcome_elsewhere(self):
+        """``members/nul`` is the NUL device on Windows, so the welcome record a
+        crewmate named ``Nul`` owes must land in a directory of another name."""
+        from kiro_crew.members import WELCOME_OWED_FILENAME, members_root
+
+        status, data = await _post(
+            {"name": "Nul", "kiro_agent": "kirocrew", "first_greeting": True},
+            _fake_config(),
+            installed=("kirocrew",),
+        )
+
+        assert status == 200
+        assert re.fullmatch(r"nul-[0-9a-f]{12}", data["member_id"])
+        assert (members_root() / data["member_id"] / WELCOME_OWED_FILENAME).is_file()
+        assert "nul" not in {entry.name for entry in members_root().iterdir()}
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("flag", [None, False, "true", 1])
     async def test_a_create_without_the_flag_owes_nothing(self, flag):
         cfg = _fake_config()
@@ -434,6 +453,23 @@ class TestCreateRequestHandle:
         assert first[0] == 200 and first[1]["member_id"]
         assert again == first
         assert cfg.saved == [True, True] and len(cfg.agents) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_repeat_naming_an_unconfigured_workspace_gets_the_same_warning(self):
+        cfg = _fake_config()
+        body = {
+            "name": "scout",
+            "kiro_agent": "kirocrew",
+            "workspace": "nope",
+            "request_id": self.RID,
+        }
+        first = await _post(body, cfg, installed=("kirocrew",))
+        again = await _post(body, cfg, installed=("kirocrew",))
+        assert first[0] == 200
+        assert first[1].get("warnings") == [
+            "workspace 'nope' is not configured; the crew shares a fallback workspace directory"
+        ]
+        assert again == first
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("repeat_id", [None, "0b9e4a1c-2d3f-4a5b-9c8d-7e6f5a4b3c2d"])
@@ -670,3 +706,39 @@ class TestHeadlessAvatarDefault:
         (key,) = agents.keys()
         assert agents[key]["display_name"] == "Scout Ranger"
         assert agents[key]["avatar"] == default_icon_avatar("Scout Ranger")
+
+
+class TestUnconfiguredWorkspaceWarning:
+    """A named workspace is stored as given; an unconfigured one is warned about.
+
+    Such a name falls back to another workspace's directory, so the create says
+    so with the same line the update route answers, and nothing else changes.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "workspace, warned",
+        [
+            ("nope", True),
+            ("shared", False),
+            ("default", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    async def test_only_an_unconfigured_name_is_warned_about(self, workspace, warned, tmp_path):
+        cfg = _fake_config()
+        cfg.workspaces["shared"] = WorkspaceConfig(dir=str(tmp_path / "shared"))
+        body = {"name": "scout", "kiro_agent": "kirocrew"}
+        if workspace is not None:
+            body["workspace"] = workspace
+        status, data = await _post(body, cfg, installed=("kirocrew",))
+        assert status == 200 and data["ok"] is True
+        if warned:
+            assert data.get("warnings") == [
+                "workspace 'nope' is not configured; "
+                "the crew shares a fallback workspace directory"
+            ]
+            assert cfg.written["doc"]["agents"]["scout"]["workspace"] == "nope"
+        else:
+            assert "warnings" not in data

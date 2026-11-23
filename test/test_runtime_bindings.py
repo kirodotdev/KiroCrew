@@ -148,7 +148,8 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_mode_available": ("staticmethod", False, "08e0d5cbf178", "runtime_mode_activation"),
     "_mount_member_panel": ("function", True, "bcc6c7135aaa", "runtime_session_setup"),
     "_note_announced_child": ("function", False, "ae18ce00a59d", "runtime_frame_accounting"),
-    "_note_dropped_frame": ("function", False, "65da3cb3ad9e", "runtime_frame_accounting"),
+    # Takes ``replay``: a load's own replayed turn, counted apart from ``update``.
+    "_note_dropped_frame": ("function", False, "cead0de215d9", "runtime_frame_accounting"),
     "_note_reaped": ("function", False, "65a401984277", "runtime_liveness"),
     "_note_reaped_after_kill": ("function", False, "0d4bde9dbb0a", "runtime_liveness"),
     "_note_roster_overflow": ("function", False, "72f2430f414f", "runtime_frame_accounting"),

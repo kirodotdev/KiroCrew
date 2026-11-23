@@ -24,6 +24,7 @@ import dataclasses
 import ntpath
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 import pytest
@@ -56,6 +57,12 @@ _HOME = Path.home()
 #: The builtin app whose own server the app-own-server scenarios call.
 _APP = "dev_fleet"
 _APP_SERVER = "dev_fleet:srv"
+#: The app whose own sessions hold approved browser sites in every scenario here.
+_BROWSER_APP = "tunes"
+_BROWSER_SITES = ("https://www.example.com/watch",)
+#: The app whose own agent calls the tool its manifest declares, on its own cron run.
+_TOOLS_APP = "clock"
+_TOOLS_AGENT = "clock-keeper"
 
 
 class Scenario(NamedTuple):
@@ -212,6 +219,32 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
             identity_trusted=True,
         ),
         surface={"app": _APP},
+        flags={"identity_grant": True},
+    ),
+    Scenario(
+        "app-own-tools",
+        TOOL_AUTO_APPROVE,
+        ToolCall(
+            title="Running: @kirocrew-core/clock_api",
+            mcp_server="kirocrew-core",
+            mcp_tool="clock_api",
+            identity_trusted=True,
+            app_run=(_TOOLS_APP, _TOOLS_AGENT),
+        ),
+        surface={"session_key": "cron:job-1"},
+        flags={"identity_grant": True},
+    ),
+    Scenario(
+        "app-browser-sites",
+        TOOL_AUTO_APPROVE,
+        ToolCall(
+            title="Running: @kirocrew-core/browser",
+            mcp_server="kirocrew-core",
+            mcp_tool="browser",
+            identity_trusted=True,
+            raw_params={"op": "navigate", "args": {"url": "https://www.example.com/watch?v=1"}},
+        ),
+        surface={"app": _BROWSER_APP, "session_key": "dashboard:app-tunes-1"},
         flags={"identity_grant": True},
     ),
     Scenario(
@@ -447,7 +480,19 @@ def gate_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(hooks, "_TITLE_ONLY_GRANT_NOTED", set())
     hooks.set_builtin_app_names([_APP])
     hooks.set_builtin_app_mcp_servers([_APP_SERVER])
-    hooks.set_builtin_app_agents({})
+    hooks.set_builtin_app_agents({_TOOLS_AGENT: _TOOLS_APP})
+    from kiro_crew.apps import app_agent_tools, browser_sites
+    from kiro_crew.mcp_tools.catalog import app_tools
+
+    declared = SimpleNamespace(app=_TOOLS_APP, name="clock_api")
+    monkeypatch.setattr(app_agent_tools, "declared_tools", lambda: (declared,))
+    monkeypatch.setattr(app_tools, "app_enabled_state", lambda app: app == _TOOLS_APP)
+
+    monkeypatch.setattr(
+        browser_sites,
+        "app_browser_sites",
+        lambda app: _BROWSER_SITES if app == _BROWSER_APP else (),
+    )
     yield
     gp.reset_store()
     ctx_mod.reset_context()
@@ -496,6 +541,8 @@ def test_the_table_is_the_gate_order() -> None:
         ("spec-denies", "deny_policy"),
         ("spec-unjudged-denies", "deny_policy"),
         ("app-own-server", "grant"),
+        ("app-own-tools", "grant"),
+        ("app-browser-sites", "grant"),
         ("operator-grants", "grant"),
         ("spec-builtin-grant", "grant"),
         ("batch-guard-grant", "grant"),
@@ -696,7 +743,11 @@ def test_the_keyword_form_judges_the_same_call() -> None:
         call = scenario.call
         _install_governance(scenario.governance)
         keyword = HookManager(HooksConfig(**scenario.config)).on_tool_call(
-            call.title, resolved_agent=call.resolved_agent, **call.kwargs(), **scenario.surface
+            call.title,
+            resolved_agent=call.resolved_agent,
+            app_run=call.app_run,
+            **call.kwargs(),
+            **scenario.surface,
         )
         direct = judge_scenario(scenario)
         assert (keyword.action, keyword.reason, keyword.tier) == (
@@ -795,7 +846,13 @@ def test_classifier_only_drops_every_grant_tier() -> None:
     to the classifier (not read-only, so allow) and the app's own server is not
     auto-approved -- while a provable read still is."""
     by_tier = {s.tier: s for s in TIER_SCENARIOS}
-    grant_tiers = ("operator-grants", "app-own-server", "spec-builtin-grant", "batch-guard-grant")
+    grant_tiers = (
+        "operator-grants",
+        "app-own-server",
+        "app-own-tools",
+        "spec-builtin-grant",
+        "batch-guard-grant",
+    )
     for tier in grant_tiers:
         verdict = judge_scenario(by_tier[tier], classifier_only=True)
         assert verdict.action == TOOL_ALLOW, tier

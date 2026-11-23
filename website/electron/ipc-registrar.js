@@ -26,9 +26,10 @@ const { safeFilename } = require("./download-handler");
 const { saveThemeSplash } = require("./theme-splash");
 const { createRelayCrewOpener, isEndpointId } = require("./relay-crew-open");
 const { requestRelayCrewToken } = require("./relay-crew-client");
-const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder } = require("./relay-crew-window");
+const { openRelayCrewWindow, openRelayCrewPane, createTokenHolder, partitionCleared } = require("./relay-crew-window");
 const { normalizeBounds, deriveScale, scaleRect } = require("./browser-view");
 const { createRelayCrewRenewal } = require("./relay-crew-renewal");
+const { createRelayCrewHandoff } = require("./relay-crew-handoff");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -44,6 +45,8 @@ function createIpcRegistrar({
   port,
   detectWsl = detectWsl2,
   crashScan = null,
+  // This launch's `initNativeLogging` result; only its cause code reaches the renderer.
+  nativeLoggingStatus = null,
   glog,
   // Close/reopen the Crew Companion overlay around an update install so it does
   // not float orphaned over the vanished dashboard during the quit handoff.
@@ -194,9 +197,12 @@ function createIpcRegistrar({
   // sender's own `toString`, which a hostile page can make throw, and a throw
   // there skips the rejection throttle. Render by type instead: a string is
   // cut to 64 characters, a finite number prints as itself, anything else
-  // shows only its type.
+  // shows only its type. Control and line-break characters become `?` after
+  // the cut, so the value stays on one log line and within 64 characters.
   function boundedMenuArg(value) {
-    if (typeof value === "string") return value.slice(0, 64);
+    if (typeof value === "string") {
+      return value.slice(0, 64).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "?");
+    }
     if (typeof value === "number" && Number.isFinite(value)) return String(value);
     return `<${typeof value}>`;
   }
@@ -294,6 +300,7 @@ function createIpcRegistrar({
         openPane: (opts) => openRelayCrewPane(opts, windowDeps),
         createRenewal: createRelayCrewRenewal,
         createTokenHolder,
+        partitionCleared,
         log,
       });
     }
@@ -951,10 +958,10 @@ function createIpcRegistrar({
       restoreClipboardIfEmpty(saved);
       return false;
     });
-    ipcMain.on("theme-mode-changed", (_event, pref) =>
-      windows.chrome.setThemeMode(pref));
-    ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
-      windows.chrome.setTitlebarMode(mode));
+    ipcMain.on("theme-mode-changed", (event, pref) =>
+      windows.chrome.setThemeMode(pref, event.sender));
+    ipcMain.on("titlebar-overlay-theme", (event, mode) =>
+      windows.chrome.setTitlebarMode(mode, event.sender));
 
     // Electron no-ops setBadgeCount on unsupported platforms. Keep the clamp in
     // the trusted process so a malformed renderer value cannot set an absurd
@@ -1010,7 +1017,10 @@ function createIpcRegistrar({
       await assertLocalDashboard(event, "crash-reports:get");
       // Absent injection means the shell was assembled without a collector —
       // report "nothing to see" rather than failing the renderer's first call.
-      return crashNoticeSummary(typeof crashScan === "function" ? crashScan() : null);
+      return crashNoticeSummary(
+        typeof crashScan === "function" ? crashScan() : null,
+        typeof nativeLoggingStatus === "function" ? nativeLoggingStatus() : null,
+      );
     });
 
     // Reveal, never read. The renderer names no path and receives no path: this
@@ -1118,10 +1128,11 @@ function createIpcRegistrar({
       return detectWsl();
     });
 
-    // What the main window's close button does, and whether the tray icon
-    // shows. Deliberately narrower than `assertLocalDashboard`, which would
-    // hide the rows from a main window on a configured remote host and leave
-    // that user no way to change them. The sender must be the main window's
+    // What the main window's close button does, whether the tray icon shows,
+    // and whether minimizing hides the window to it. Deliberately narrower
+    // than `assertLocalDashboard`, which would hide the rows from a main
+    // window on a configured remote host and leave that user no way to change
+    // them. The sender must be the main window's
     // top frame, still on its assigned dashboard origin. That trusts the main
     // window's dashboard, local or remote, with visible, reversible two-valued
     // preferences.
@@ -1164,6 +1175,14 @@ function createIpcRegistrar({
     ipcMain.handle("tray-icon:set", async (event, show) => {
       assertMainWindowDashboard(event, "tray-icon:set");
       return windows.trayIcon.set(show);
+    });
+    ipcMain.handle("minimize-to-tray:get", async (event) => {
+      assertMainWindowDashboard(event, "minimize-to-tray:get");
+      return windows.minimizeToTray.get();
+    });
+    ipcMain.handle("minimize-to-tray:set", async (event, on) => {
+      assertMainWindowDashboard(event, "minimize-to-tray:set");
+      return windows.minimizeToTray.set(on);
     });
 
     // Open a file the chat referenced in the user's own editor, by handing its
@@ -1317,6 +1336,21 @@ function createIpcRegistrar({
       }
     });
 
+    // Connect with WakaTime finishes in the system browser: its callback needs
+    // the state cookie of the browser that started the sign-in. The renderer
+    // passes nothing; the only URL opened is this dashboard's WakaTime panel.
+    // Answers whether the OS took the hand-off.
+    ipcMain.handle("wakatime:open-in-browser", async (event) => {
+      await assertLocalDashboard(event, "wakatime:open-in-browser");
+      try {
+        await shell.openExternal(`${backendUrl}/settings/overview?view=wakatime`);
+        return true;
+      } catch (e) {
+        log(`wakatime:open-in-browser failed: ${e && e.message}`);
+        return false;
+      }
+    });
+
     // First-run setup's "connect to a crew on another machine" exit. It stops the
     // gateway this app started and reconnects the main window to a crew the
     // user names, so it is an action on the machine in front of the user and
@@ -1435,19 +1469,55 @@ function createIpcRegistrar({
       const content = parent.getContentBounds();
       return normalizeBounds(scaleRect(rect, deriveScale(viewport, content)), content);
     };
+    // Another local dashboard window's open goes to the main window's
+    // dashboard while it listens (relay-crew-handoff.js).
+    const relayHandoff = createRelayCrewHandoff({ showMainWindow: (o) => windows.showMainWindow(o) });
+    ipcMain.handle("relay-crew:open-requests", async (event, on, seq) => {
+      try {
+        await assertLocalDashboard(event, "relay-crew:open-requests");
+        assertMainWindowDashboard(event, "relay-crew:open-requests");
+      } catch {
+        return;
+      }
+      relayHandoff.listen(event.sender, on, seq);
+    });
     ipcMain.handle("relay-crew:open-pane", async (event, endpointId, rect, viewport) => {
       if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      const main = windows.getMainWindow();
       try {
         await assertLocalDashboard(event, "relay-crew:open-pane");
+        if (main && windows.windowForWebContents(event.sender) !== main) {
+          if (!event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+            logGateRejection(event.sender, "relay-crew:open-pane rejected: sender is not the top frame");
+            throw new Error("relay-crew:open-pane is restricted to a dashboard's top frame");
+          }
+          return relayHandoff.handOff(endpointId);
+        }
         assertMainWindowDashboard(event, "relay-crew:open-pane");
       } catch {
         return { ok: false, error: "UNAVAILABLE" };
       }
-      const parent = windows.getMainWindow();
+      const parent = main;
       const bounds = paneRect(parent, rect, viewport);
       // Before any mint, like a bad ID.
       if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
       return relayCrewOpener().open(endpointId, { parent, dashboard: parent._mcView, bounds });
+    });
+
+    // The warm set's background load: the main window's dashboard only, and never
+    // handed off, so no other window can bring the main one forward with it.
+    ipcMain.handle("relay-crew:prewarm-pane", async (event, endpointId, rect, viewport) => {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      try {
+        await assertLocalDashboard(event, "relay-crew:prewarm-pane");
+        assertMainWindowDashboard(event, "relay-crew:prewarm-pane");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      const main = windows.getMainWindow();
+      const bounds = paneRect(main, rect, viewport);
+      if (!bounds) return { ok: false, error: "INVALID_BOUNDS" };
+      return relayCrewOpener().prewarm(endpointId, { parent: main, dashboard: main._mcView, bounds });
     });
 
     // The calls that steer an open pane take it only from the dashboard view
@@ -1595,7 +1665,7 @@ function createIpcRegistrar({
               && (await gateway.ownsLocalListener()) === true;
           } catch { return false; }
         },
-        // A start-time apply that failed (main.js runs it before any window).
+        // A start-time apply that failed (main.js runs it before the main window).
         startupApplyError: updateArm.takeApplyError(),
         // electron-updater's AppUpdater, NOT Electron's built-in autoUpdater:
         // it generates/verifies feed metadata and also supports Linux.
@@ -1819,6 +1889,16 @@ function createIpcRegistrar({
         app.quit();
       }
       return { ok: true };
+    });
+    // Whether `update:relaunch` would accept this sender. The same check, as a
+    // bare boolean, so the dashboard offers Restart now only where it works.
+    ipcMain.handle("update:can-relaunch", async (event) => {
+      try {
+        await assertLocalDashboard(event, "update:can-relaunch");
+      } catch {
+        return false;
+      }
+      return true;
     });
     ipcMain.handle("update:set-channel", (_event, channel) => {
       const next = typeof channel === "string" ? channel : "";

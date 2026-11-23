@@ -111,10 +111,13 @@ def owner_only_opener(path: str, flags: int) -> int:
     ``O_CLOEXEC`` to *flags* before calling an opener and marks the descriptor
     non-inheritable after.
 
+    The open adds ``O_NOFOLLOW``: a symlink at the final name raises ``OSError``
+    (``ELOOP``). Where ``os.O_NOFOLLOW`` does not exist (Windows) the flag is 0.
+
     Safe on Windows: there ``0o600`` carries ``S_IWRITE``, so the file is created
     writable, which is all the mode argument decides on that platform.
     """
-    return os.open(path, flags, OWNER_ONLY_FILE_MODE)
+    return os.open(path, flags | _O_NOFOLLOW, OWNER_ONLY_FILE_MODE)
 
 
 def owner_only_opener_for(
@@ -135,8 +138,8 @@ def write_text_owner_only(
 ) -> None:
     """``Path.write_text`` that creates the file ``0600``.
 
-    Same semantics otherwise -- truncate in place, follow a symlink at the name
-    -- so a site can switch to it without changing what it writes or where.
+    Same semantics otherwise -- truncate in place -- and a symlink at the name
+    raises ``OSError`` (see :func:`owner_only_opener`).
     """
     with open(path, "w", encoding=encoding, opener=owner_only_opener) as handle:
         handle.write(text)

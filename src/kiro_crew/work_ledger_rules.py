@@ -42,7 +42,9 @@ from kiro_crew.work_ledger_records import (
     WorkItem,
     WorkLedgerError,
     _finite_int,
+    _parse_iso,
     logger,
+    parse_stamp,
 )
 from kiro_crew.work_vocab import (
     WORK_MAX_DEPTH_MAX,
@@ -436,7 +438,7 @@ def quiet_since(item: WorkItem, *, wake: bool = True) -> str:
     *wake* False skips ``wake_at`` (the worker's loop is held; see :func:`is_stale`).
     """
     handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
-    since = handed_back or item.last_report_at or item.created_at or ""
+    since = handed_back or _report_clock(item) or item.created_at or ""
     if wake and item.wake_at:
         due = parse_stamp(item.wake_at)
         start = parse_stamp(since) if since else None
@@ -461,6 +463,14 @@ def _worker_owns_next_move(item: WorkItem) -> bool:
     return item.status == "done" and item.verdict == "fail"
 
 
+def _report_clock(item: WorkItem) -> str | None:
+    """*item*'s last report on the HUB's clock: ``received_at`` for a report filed
+    from a remote peer, whose ``last_report_at`` is the peer's own stamp, else
+    ``last_report_at``. Only durations read this; ordering and dedup keep the stamp.
+    """
+    return item.received_at or item.last_report_at
+
+
 def _decided_after_report(item: WorkItem) -> str | None:
     """*item*'s ``decided_at`` when it is at or after its last report, else ``None``.
 
@@ -474,9 +484,10 @@ def _decided_after_report(item: WorkItem) -> str | None:
     decided = parse_stamp(item.decided_at)
     if decided is None:
         return None
-    if not item.last_report_at:
+    last = _report_clock(item)
+    if not last:
         return item.decided_at
-    reported = parse_stamp(item.last_report_at)
+    reported = parse_stamp(last)
     if reported is None:
         return None
     try:
@@ -592,33 +603,3 @@ def _is_placeholder(value: Any) -> bool:
     field is a wrong type, which the type rules refuse.
     """
     return isinstance(value, str) and value.strip().lower() in ACCEPTANCE_PLACEHOLDERS
-
-
-def _parse_iso(value: str) -> datetime | None:
-    try:
-        return datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def parse_stamp(value: str) -> datetime | None:
-    """An ISO-8601 stamp as an AWARE datetime, or ``None`` when it is not one.
-
-    :func:`_now_iso` writes local time with an offset; a stamp without one (a caller's
-    ``since``, an older record) is taken as local time, because comparing naive with
-    aware raises and a read filter must never raise.
-
-    A naive stamp at either end of the calendar (``0001-01-01T00:00:00``,
-    ``9999-12-31T23:59:59``) may not shift into the local zone, and the platform raises
-    ``OverflowError`` or ``ValueError`` depending on the host. Such a sentinel is read as
-    UTC, so ``since=0001-01-01T00:00:00`` means "everything", never a failed read.
-    """
-    parsed = _parse_iso(value)
-    if parsed is None:
-        return None
-    if parsed.tzinfo is not None:
-        return parsed
-    try:
-        return parsed.astimezone()
-    except (OverflowError, ValueError, OSError):
-        return parsed.replace(tzinfo=timezone.utc)

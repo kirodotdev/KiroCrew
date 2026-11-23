@@ -84,6 +84,12 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   desktopCapabilitiesGrant?: { approved: string[]; staged: string[] }
   /** `ui.frameSources` origins the owner approved, and the ones an update or edit holds back; absent when undeclared. */
   frameSourcesGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.browserSites` pages the owner approved, and the ones waiting; absent when undeclared. */
+  browserSitesGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.kiroOperations` the owner approved, and the ones waiting; absent when undeclared. */
+  kiroOperationsGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.browser` verbs the owner approved, the ones waiting, and whether the `app_browser_sdk` preview is on; absent when undeclared. */
+  browserGrant?: { approved: string[]; staged: string[]; preview: boolean }
   managed?: string
   source?: string
   installedAt?: string
@@ -125,8 +131,11 @@ interface AppPermissions {
   workerAutoApprove?: boolean
   chatSlots?: boolean
   hiddenSessions?: boolean
+  chatLaunch?: unknown
   reachableByUserSessions?: string[]
   desktopCapabilities?: string[]
+  /** `permissions.browser` verbs, `"view"`, `"read"` and `"act"`. */
+  browser?: string[]
   webhookSource?: boolean
   /** Bot scopes, `"read"` and `"wake"`. */
   bots?: string[]

@@ -33,6 +33,7 @@ import {
 } from '../../lib/sttProviders'
 import { parseErrorCode, parseErrorField, reportForError, sendErrorToChat } from '../../utils/errorReport'
 import { PttTestStrip } from '../../components/PttTestStrip'
+import { PointerHoldConfig } from './SttPointerHoldSettings'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import SttRetentionNote from './SttRetentionNote'
 import SpeechProviderNotice from '../../components/SpeechProviderNotice'
@@ -48,6 +49,7 @@ import {
   isBareModifier,
   IS_MAC,
   loadPttConfig,
+  PTT_CHANGED_EVENT,
   type PttMode,
   savePttConfig,
   SELECTABLE_BARE_CODES,
@@ -669,7 +671,7 @@ function PushToTalkConfig() {
   // A save the browser refuses (storage full) stores nothing, so the form keeps
   // showing the stored binding and says why the change did not take.
   const patch = (next: Partial<typeof cfg>) => {
-    const merged = { ...cfg, ...next }
+    const merged = { ...loadPttConfig(), ...next }
     if (!savePttConfig(merged)) {
       setSaveError(i18nT('pages.settings.sttSettings.ptt_save_refused'))
       return
@@ -677,6 +679,17 @@ function PushToTalkConfig() {
     setSaveError(null)
     setCfg(merged)
   }
+  // The pointer-hold section and another browser tab edit the same stored
+  // record, so every signal re-reads the complete current record.
+  useEffect(() => {
+    const onChange = () => setCfg(loadPttConfig())
+    window.addEventListener(PTT_CHANGED_EVENT, onChange)
+    window.addEventListener('storage', onChange)
+    return () => {
+      window.removeEventListener(PTT_CHANGED_EVENT, onChange)
+      window.removeEventListener('storage', onChange)
+    }
+  }, [])
 
   const bare = isBareModifier(cfg.binding)
   // A chord binding (the Windows/Linux default) has no entry in the bare-key
@@ -1661,6 +1674,7 @@ export default function SttSettings({ cardIndex }: {
           )}
 
           {stt.enabled && <PushToTalkConfig />}
+          {stt.enabled && <PointerHoldConfig />}
         </SettingsSection>
 
         {isTranscribe && (

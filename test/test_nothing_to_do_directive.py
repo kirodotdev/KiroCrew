@@ -63,7 +63,7 @@ class TestNothingToDoTool:
         # The human line tells the model the turn is OVER, and says the quiet
         # step is the consumer's to record — never that it already happened.
         human = session_directive.strip_marker(out)
-        assert "Write nothing and call nothing" in human
+        assert f"Reply with exactly {session_directive.QUIET_END_TOKEN} and nothing else" in human
         assert "requested" in human.lower()
 
     def test_no_note_encodes_an_empty_payload(self):
@@ -1051,9 +1051,9 @@ class TestDashboardRunnerHonoursTheSignal:
             for m in slot.messages
             if m.get("role") in ("assistant", "tool")
         ]
-        reply = [("assistant", "Let me look."), ("tool", "🔧 read"), ("assistant", "Found it.")]
+        reply = [("assistant", "Let me look."), ("tool", "Tool: read"), ("assistant", "Found it.")]
         assert rows == [
-            ("tool", "🔧 nothing_to_do"),
+            ("tool", "Tool: nothing_to_do"),
             *reply[: 2 if echo == "none" else 3],
         ], slot.messages
 
@@ -1130,7 +1130,7 @@ class TestDashboardRunnerHonoursTheSignal:
         assert recovery == [], recovery
         # The compaction notice is the only assistant row; the filler is gone.
         assistant = [m["content"] for m in slot.messages if m.get("role") == "assistant"]
-        assert all(c.startswith("✅ Conversation compacted") for c in assistant), assistant
+        assert all(c.startswith("Conversation compacted") for c in assistant), assistant
         assert not any("No assistant response" in c for c in assistant)
 
 

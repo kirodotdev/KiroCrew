@@ -564,6 +564,94 @@ class TestCronThreadTsEndToEnd:
         assert CronService(base_dir=tmp_path).list_jobs()[0].thread_ts is None
 
 
+class TestCronChannelChangeDropsThread:
+    """A ``thread_ts`` belongs to the channel it was created in.
+
+    Moving a job to another channel, or clearing the channel so runs go to the
+    owner DM, drops the stored thread unless the same update names one.
+    """
+
+    OLD_THREAD = "1776298241.408339"
+
+    def _threaded_job(self, svc: CronService):
+        return svc.add_job(
+            name="route",
+            message="m",
+            every_secs=3600,
+            channel="C0OLDCHAN1",
+            thread_ts=self.OLD_THREAD,
+            session_key="dashboard:conftest-slot",
+        )
+
+    def test_update_job_new_channel_drops_old_thread(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        job = self._threaded_job(svc)
+
+        assert svc.update_job(job.id, channel="C0NEWCHAN2") is not None
+        saved = CronService(base_dir=tmp_path).list_jobs()[0]
+        assert saved.channel == "C0NEWCHAN2"
+        assert (
+            saved.thread_ts is None
+        ), f"thread {saved.thread_ts!r} from C0OLDCHAN1 kept after the move to C0NEWCHAN2"
+
+    def test_update_job_cleared_channel_drops_thread(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        job = self._threaded_job(svc)
+
+        assert svc.update_job(job.id, channel="") is not None
+        saved = CronService(base_dir=tmp_path).list_jobs()[0]
+        assert saved.channel is None
+        assert (
+            saved.thread_ts is None
+        ), f"thread {saved.thread_ts!r} kept after the channel was cleared (owner DM delivery)"
+
+    def test_update_job_same_channel_keeps_thread(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        job = self._threaded_job(svc)
+
+        assert svc.update_job(job.id, channel="C0OLDCHAN1") is not None
+        assert CronService(base_dir=tmp_path).list_jobs()[0].thread_ts == self.OLD_THREAD
+
+    def test_update_job_thread_ts_with_new_channel_wins(self, tmp_path: Path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        job = self._threaded_job(svc)
+
+        updated = svc.update_job(job.id, channel="C0NEWCHAN2", thread_ts="1776300000.000100")
+        assert updated is not None
+        saved = CronService(base_dir=tmp_path).list_jobs()[0]
+        assert (saved.channel, saved.thread_ts) == ("C0NEWCHAN2", "1776300000.000100")
+
+    def test_cron_update_new_channel_drops_old_thread(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        job = self._threaded_job(CronService(base_dir=tmp_path))
+
+        result = _call_tool_inner("cron_update", {"job_id": job.id, "channel": "C0NEWCHAN2"})
+        assert "Updated" in result, result
+        saved = CronService(base_dir=tmp_path).list_jobs()[0]
+        assert saved.channel == "C0NEWCHAN2"
+        assert (
+            saved.thread_ts is None
+        ), f"thread {saved.thread_ts!r} from C0OLDCHAN1 kept after the move to C0NEWCHAN2"
+
+    def test_cron_update_clearing_channel_drops_thread(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        job = self._threaded_job(CronService(base_dir=tmp_path))
+
+        result = _call_tool_inner("cron_update", {"job_id": job.id, "channel": ""})
+        assert "Updated" in result, result
+        saved = CronService(base_dir=tmp_path).list_jobs()[0]
+        assert saved.channel is None
+        assert (
+            saved.thread_ts is None
+        ), f"thread {saved.thread_ts!r} kept after the channel was cleared (owner DM delivery)"
+
+
 class TestThreadTsValidation:
     """Schema rejects invalid thread_ts formats."""
 

@@ -15,7 +15,7 @@
 // - a managed-venv arm does NOT summon the card (that lane prints a command)
 // - a shell with no desktop bridge renders nothing
 import { describe, it, expect, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
 import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -23,7 +23,10 @@ import { store } from '../store'
 import { sseStatus } from '../store/dashboardSlice'
 import { AboutPanel, AgentUpdateRequestCard, AGENT_REQUEST_POLL_MS } from '../pages/settings/AboutPanel'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
+import { newQueryClient } from '../api/queryClient'
 import { agentInstallDispatchQuery, useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
+import { __resetErrorJournalForTests, consumeChatHandoff } from '../utils/errorReport'
 
 const BLANK_STATUS = {
   uptime: '1m', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
@@ -33,6 +36,18 @@ const BLANK_STATUS = {
 const REQUEST = {
   armed: true, managed_by: 'electron', request_id: 'r1', version: '0.6.0', requested_by: 'chat-42',
   armed_at: Date.now() / 1000 - 30, expires_in: 305,
+}
+
+/** A gateway refusal as the transport receives it: `text` carries the JSON body. */
+function jsonAnswer(status: number, body: unknown) {
+  const text = JSON.stringify(body)
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => JSON.parse(text),
+    text: async () => text,
+    headers: new Headers({ 'content-type': 'application/json' }),
+  }
 }
 
 function desktopBridge(info: object = {}) {
@@ -69,7 +84,10 @@ function renderPanel(client: QueryClient) {
 }
 
 describe('AgentUpdateRequestCard', () => {
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+  })
 
   function renderCard(props: Partial<React.ComponentProps<typeof AgentUpdateRequestCard>> = {}) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -104,7 +122,7 @@ describe('AgentUpdateRequestCard', () => {
   })
 
   it('a panel-owned failure renders through ErrorNotice', () => {
-    renderCard({ panelError: 'the request poll keeps failing' })
+    renderCard({ panelError: { message: 'the request poll keeps failing' } })
     expect(screen.getByTestId('agent-update-request-panel-error').textContent).toContain('keeps failing')
     // And the controls stay live: an error must not strand the user.
     expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled()
@@ -148,6 +166,20 @@ describe('AgentUpdateRequestCard', () => {
     expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled()
     spy.mockRestore()
   })
+
+  it('a failed decline hands the agent the request\'s report', async () => {
+    // The notice words the failure from the catalog, while the transport files
+    // the report under the gateway's message, so the notice carries the report.
+    __resetErrorJournalForTests()
+    vi.stubGlobal('fetch', vi.fn(async () => jsonAnswer(400, { error: 'request_id is required', code: 'invalid_request_id' })))
+    renderCard()
+    fireEvent.click(screen.getByTestId('agent-update-request-decline'))
+    const err = await screen.findByTestId('agent-update-request-error')
+    fireEvent.click(within(err).getByRole('button', { name: 'Ask the agent' }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 400')
+    expect(prompt).toContain('invalid_request_id')
+  })
 })
 
 describe('AboutPanel with a pending agent request', () => {
@@ -160,6 +192,7 @@ describe('AboutPanel with a pending agent request', () => {
     cleanup()
     delete (window as { updateAPI?: unknown }).updateAPI
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     notifyManager.setScheduler(defaultScheduler)
   })
 
@@ -433,7 +466,7 @@ describe('AboutPanel with a pending agent request', () => {
     vi.spyOn(api, 'armStatus').mockImplementation(async () => {
       calls += 1
       if (calls === 1) return REQUEST as never
-      throw new Error('gateway away')
+      throw new ApiError(503, 'update state unavailable')
     })
     // A tiny poll interval stands in for the 5 s one so three consecutive
     // failures land inside the test's budget; the threshold under test is the
@@ -441,11 +474,10 @@ describe('AboutPanel with a pending agent request', () => {
     const saved = AGENT_REQUEST_POLL_MS.value
     AGENT_REQUEST_POLL_MS.value = 20
     try {
-      // React Query resets `failureCount` at the START of each fetch, so it only
-      // reaches the threshold through RETRIES within one poll — which is what
-      // production has (the default retry is 3). Keep retries on here, with no
-      // delay, or the threshold can never be crossed.
-      const client = new QueryClient({ defaultOptions: { queries: { retry: 3, retryDelay: 1 } } })
+      // The app's own client, so the poll runs production's retry policy (one
+      // retry for a 503); only the retry delay is shortened.
+      const client = newQueryClient()
+      client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, retryDelay: 1 } })
       renderPanel(client)
       await screen.findByTestId('agent-update-request')
       await screen.findByTestId('agent-update-request-panel-error', {}, { timeout: 4000 })
@@ -458,6 +490,38 @@ describe('AboutPanel with a pending agent request', () => {
     }
   })
 
+  it('a poll that keeps failing hands the agent the failed request\'s report, also while the next poll is out', async () => {
+    __resetErrorJournalForTests()
+    ;(window as { updateAPI?: unknown }).updateAPI = desktopBridge()
+    store.dispatch(sseStatus(BLANK_STATUS as never))
+    // Three polls of one read plus one retry are refused; the fourth poll's read
+    // never answers, and React Query clears `failureReason` when a poll starts.
+    let reads = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: { method?: string }) => {
+      if (!String(input).includes('/api/update/arm') || (init?.method ?? 'GET') !== 'GET') return jsonAnswer(200, {})
+      reads += 1
+      if (reads > 6) return new Promise(() => {})
+      return jsonAnswer(503, { error: 'update state unavailable', code: 'update_state_unavailable' })
+    }))
+    const saved = AGENT_REQUEST_POLL_MS.value
+    AGENT_REQUEST_POLL_MS.value = 20
+    try {
+      const client = newQueryClient()
+      client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, retryDelay: 1 } })
+      client.setQueryData(['update-arm-status'], REQUEST)
+      renderPanel(client)
+      await waitFor(() => expect(reads).toBe(7), { timeout: 4000 })
+      expect(client.getQueryState(['update-arm-status'])?.fetchFailureReason).toBeNull()
+      const err = await screen.findByTestId('agent-update-request-panel-error')
+      fireEvent.click(within(err).getByRole('button', { name: 'Ask the agent' }))
+      const prompt = consumeChatHandoff() ?? ''
+      expect(prompt).toContain('HTTP 503')
+      expect(prompt).toContain('update_state_unavailable')
+    } finally {
+      AGENT_REQUEST_POLL_MS.value = saved
+    }
+  })
+
   it('the ordinary card yields its Install control while a request is live', async () => {
     setup(REQUEST, { state: 'found', version: '0.7.0' })
     await screen.findByTestId('agent-update-request')
@@ -465,6 +529,14 @@ describe('AboutPanel with a pending agent request', () => {
     // One CTA for one update: the request card's, which names the version.
     expect(ordinary.querySelector('button')).toBeNull()
     expect(screen.getByTestId('agent-update-request-install').textContent).toContain('0.7.0')
+  })
+
+  it('with a stage present, the ordinary card does not name the Install control it yields', async () => {
+    setup(REQUEST, { state: 'downloaded', version: '0.6.0' })
+    await screen.findByTestId('agent-update-request')
+    expect(screen.getByTestId('update-card').querySelector('button')).toBeNull()
+    // Its pre-arm note tells the reader to choose Install when I quit, a button not on screen here.
+    expect(screen.queryByTestId('update-ready-note')).toBeNull()
   })
 
   it('a download the card started finishes with install, once', async () => {

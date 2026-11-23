@@ -36,7 +36,7 @@ def on_posix(monkeypatch):
 
 def _windows_text() -> str:
     with patch.object(platform_compat, "IS_WINDOWS", True):
-        return _no_command_shell_message().removeprefix("❌ ")
+        return _no_command_shell_message().removeprefix("Error: ")
 
 
 def _mcp_add(tmp_path, args: dict):
@@ -175,3 +175,12 @@ def test_shell_vet_still_accepts_clean_command_on_windows(on_windows):
     from kiro_crew.mcp_cron import _vet_shell_command
 
     assert _vet_shell_command("echo hi") is None
+
+
+@pytest.mark.parametrize("lead", ["Error: ", "❌ "])
+def test_create_refusal_says_error_once_for_either_lead(on_windows, lead):
+    """The create refusal leads with one ``Error:`` whichever lead the fire text carries."""
+    from kiro_crew.mcp_cron_vet import _command_cron_platform_refusal
+
+    with patch("kiro_crew.cron_script._no_command_shell_message", return_value=f"{lead}No shell."):
+        assert _command_cron_platform_refusal() == "Error: No shell."

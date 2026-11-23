@@ -170,6 +170,22 @@ class TestRequeuedAutomationSteer:
         assert (text, len(items)) == ("first", 1)
 
     @pytest.mark.asyncio
+    async def test_the_requeued_wake_drains_as_the_autonudge_actor(self, tmp_path, monkeypatch):
+        """Its loop's turn, not the person's: unnamed, it would fall back to ``user``,
+        be model-routed, send coding heartbeats and log as typed. No self-wake rides it."""
+        state, slot = self._requeue_with_human_message(tmp_path, monkeypatch)
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()) as run_chat,
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        assert [q["content"] for q in slot._queue] == ["please also fix the login bug"]
+        assert run_chat.call_args.kwargs.get("_turn_actor") == "autonudge"
+        assert "_directive_self_wake" not in run_chat.call_args.kwargs
+
+    @pytest.mark.asyncio
     async def test_a_human_edit_clears_automation_origin_and_drains_as_user(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         qid = slot.queue_append(WAKE, meta={AUTOMATION_STEER_META: dict(NUDGE), "sendId": "s-1"})
@@ -189,6 +205,7 @@ class TestRequeuedAutomationSteer:
             assert await chat_runner._start_next_queued_turn(state, slot) is True
 
         assert "_recovered_wake" not in run_chat.call_args.kwargs, "their words charge no loop"
+        assert "_turn_actor" not in run_chat.call_args.kwargs, "their words run as theirs"
         rows = [m for m in slot.messages if m.get("content") == "my own words"]
         assert [r["role"] for r in rows] == ["user"]
         assert "nudge" not in rows[0]["meta"]
@@ -432,3 +449,45 @@ def test_a_steered_nudge_row_does_not_open_the_interrupted_turn():
 
     assert "build the report" in preamble
     assert "[Steered mid-turn]" in preamble
+
+
+class TestRequeuedAutomationSteerWire:
+    """The requeued card is marked automation on the wire, live and listed.
+
+    A crewmate chat draws an unmarked queue card as the person's own bubble, so a
+    wake the turn never took drew as words the person typed until its drain.
+    """
+
+    def _requeue(self, tmp_path, monkeypatch, *, automation: bool):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._pending_steers = [WAKE]
+        if automation:
+            slot._steer_automation = {WAKE: dict(NUDGE)}
+        _requeue_unconsumed_steers(state, slot)
+        pushes = [c.args[1] for c in state.broadcast_ws.call_args_list if c.args[0] == "queue_push"]
+        return slot, pushes
+
+    def test_the_live_card_is_marked_automation(self, tmp_path, monkeypatch):
+        _slot_, pushes = self._requeue(tmp_path, monkeypatch, automation=True)
+
+        assert len(pushes) == 1
+        assert pushes[0]["meta"]["automationSteer"] is True
+        assert pushes[0]["meta"]["requeuedSteer"] is True
+
+    def test_the_listed_entry_is_marked_automation(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_delivery import queue_entry_view
+
+        slot, _pushes = self._requeue(tmp_path, monkeypatch, automation=True)
+
+        assert queue_entry_view(slot._queue[0])["meta"]["automationSteer"] is True
+
+    def test_a_persons_requeued_steer_carries_no_mark(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_delivery import queue_entry_view
+
+        slot, pushes = self._requeue(tmp_path, monkeypatch, automation=False)
+
+        assert "automationSteer" not in pushes[0]["meta"]
+        assert "automationSteer" not in (queue_entry_view(slot._queue[0]).get("meta") or {})

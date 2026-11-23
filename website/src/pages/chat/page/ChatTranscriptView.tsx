@@ -7,6 +7,7 @@ import type { PinnedPromptState } from '../../../utils/pinnedPrompt'
 import type { TurnItem, DisplayItem } from '../types'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { ChatTranscriptSkeleton } from '../../../components/ChatTranscriptSkeleton'
+import { RunInTerminalOriginSlot } from '../../../components/runInTerminalScope'
 import CollapsibleToolGroup from '../CollapsibleToolGroup'
 import { MeasureFarm } from '../../../hooks/virtualizer/MeasureFarm'
 import { msgIdentityKey } from '../ChatPageMessageContent'
@@ -120,6 +121,7 @@ export default function ChatTranscriptView({
   // The scroller is what the on-screen backstop probes.
   useMarkTranscriptShown(activeSlot, !slotLoading && !virt.restoreGate && !isWelcomeState && renderedDisplayItems.length > 0, () => scrollerRef.current)
   return (
+    <RunInTerminalOriginSlot.Provider value={activeSlot}>
     <ChatProjectDirCtx.Provider value={projectDir}>
       {isWelcomeState ? (
         <motion.div
@@ -368,5 +370,6 @@ export default function ChatTranscriptView({
           "wait", where a skeleton previews the shape that is coming. */}
       {(slotLoading || virt.restoreGate) && <ChatTranscriptSkeleton />}
     </ChatProjectDirCtx.Provider>
+    </RunInTerminalOriginSlot.Provider>
   )
 }

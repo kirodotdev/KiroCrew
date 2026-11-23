@@ -8,7 +8,7 @@
  * The header shows the mate's identity; the X close button is rendered by
  * DialogContent itself.
  */
-import { Loader2, ChevronRight, Wrench, Plug, BookOpen, ScrollText, FileText, type LucideIcon } from 'lucide-react'
+import { Loader2, ChevronRight, Wrench, Plug, BookOpen, ScrollText, FileText, SlidersHorizontal, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -16,6 +16,7 @@ import {
 } from '../ui/dialog'
 import { Btn, SendBtn } from '../ui'
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 import SimpleSelect from '../SimpleSelect'
 import { toolMeta } from './toolMeta'
 import CrewAvatar from '../CrewAvatar'
@@ -26,7 +27,7 @@ import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, Ef
 import ErrorNotice from '../ErrorNotice'
 import { useDialogConfirm } from './useDialogConfirm'
 import { effortLabel } from '../../lib/effort'
-import { crewCapabilitiesApi, crewCapabilitiesKey, capabilityKey, type CapabilityRow, type CapabilityPreview, type CapabilityDraft } from '../../api/crewCapabilities'
+import { crewCapabilitiesApi, crewCapabilitiesKey, crewWorkerKitKey, capabilityKey, type CapabilityRow, type CapabilityPreview, type CapabilityDraft } from '../../api/crewCapabilities'
 import CrewApprovalsEditor from './CrewApprovalsEditor'
 import WorkerKitPane from './WorkerKitPane'
 import { templateDisplayName, mateAbilitiesLabel } from './builtFromName'
@@ -41,8 +42,9 @@ import MemoryRetiredCard from '../../pages/overview/MemoryRetiredCard'
 import MemoryCarveCard from '../../pages/overview/MemoryCarveCard'
 import { api } from '../../api/client'
 import { pathBasename } from '../../utils/pathBasename'
-import { apiErrorCode } from '../../api/apiError'
+import { ApiError, apiErrorCode } from '../../api/apiError'
 import { isDeadlineError } from '../../api/queryClient'
+import { parseErrorField, reportForError } from '../../utils/errorReport'
 import { type CrewEditorController } from './useCrewEditor'
 import CrewEditorNextRail from './CrewEditorNextRail'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -50,15 +52,18 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 export type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'danger'
 type MemoryTab = 'profile' | 'memories' | 'recovery'
 
-/** What the Abilities pane shows for a failed capabilities read. A read the
- *  gateway gave up on (`capabilities_unavailable`, its code as its message) and
- *  one the dashboard's own deadline ended (the untranslated `deadline exceeded`)
- *  carry no sentence of their own, so both read as the pane's load error. */
+/** The sentence under the Abilities pane's load error. A read past either
+ *  deadline (the gateway's `reason: timed_out`, or the dashboard's own, the
+ *  untranslated `deadline exceeded`) names the likely causes; any other
+ *  `capabilities_unavailable` points at the gateway log. Neither shows the code. */
 function capabilitiesLoadErrorText(error: unknown): string {
-  if (isDeadlineError(error) || apiErrorCode(error) === 'capabilities_unavailable') {
-    return i18nT('crewEditorNext.load_error')
+  const timedOut = isDeadlineError(error)
+    || (error instanceof ApiError && parseErrorField(error.body, 'reason') === 'timed_out')
+  if (timedOut) return i18nT('crewEditorNext.load_error_timed_out')
+  if (apiErrorCode(error) === 'capabilities_unavailable') {
+    return i18nT('crewEditorNext.load_error_details')
   }
-  return error instanceof Error ? error.message : i18nT('crewEditorNext.load_error')
+  return error instanceof Error ? error.message : i18nT('crewEditorNext.load_error_details')
 }
 
 /** Split a skill id into owner/namespace + skill name, and de-slugify the name
@@ -82,6 +87,23 @@ function resourceLabel(id: string): string {
   return id.startsWith('file://') ? id.slice('file://'.length) || id : id
 }
 
+/** kiro-cli's spellings of the terminal tool's `toolsSettings` key
+ *  (`tools_settings_aliases._TOOLS_SETTINGS_ALIAS_GROUPS`). */
+const TERMINAL_SETTINGS_IDS = new Set(['shell', 'execute_bash', 'executeBash', 'executeCmd', 'execute_cmd'])
+
+/** One `toolsSettings` key in words, or as the file names it when it is not a known one. */
+function toolsSettingWord(key: string): string {
+  if (key === 'deniedCommands') return i18nT('crewEditorNext.band_tools_settings_denied_commands')
+  if (key === 'allowedCommands') return i18nT('crewEditorNext.band_tools_settings_allowed_commands')
+  return key
+}
+
+/** The settings a Tool settings row sets, in words; '' when it sets none. */
+function toolsSettingsWords(row: CapabilityRow): string {
+  if (!row.value || typeof row.value !== 'object') return ''
+  return fmtList(Object.keys(row.value).map(toolsSettingWord))
+}
+
 /** The label a capability row shows in a band. */
 function bandRowLabel(row: CapabilityRow): string {
   if (row.section === 'skills') {
@@ -90,7 +112,19 @@ function bandRowLabel(row: CapabilityRow): string {
   if (row.section === 'resources') return resourceLabel(row.id)
   if (row.section === 'tools') return row.label || toolMeta(row.id).label
   if (row.section === 'prompt') return i18nT('crewEditorNext.band_directions')
+  if (row.section === 'toolsSettings' && TERMINAL_SETTINGS_IDS.has(row.id)) {
+    return i18nT('crewEditorNext.band_tools_settings_terminal')
+  }
   return row.label || row.id
+}
+
+/** What a row's Remove confirm names: its label, and for a tool's settings
+ *  the settings that go with it too, so the title says what is removed. */
+function bandRowRemoveName(row: CapabilityRow): string {
+  const settings = row.section === 'toolsSettings' ? toolsSettingsWords(row) : ''
+  return settings
+    ? i18nT('crewEditorNext.band_tools_settings_name', { tool: bandRowLabel(row), settings })
+    : bandRowLabel(row)
 }
 
 /** A row's secondary line — a tool's description, an MCP server's host/command,
@@ -105,6 +139,8 @@ function bandRowSecondary(row: CapabilityRow): string {
       if (typeof t.command === 'string') return pathBasename(t.command) || t.command
     }
   }
+  // A tool's settings row: the settings it sets, in words.
+  if (row.section === 'toolsSettings') return toolsSettingsWords(row)
   return ''
 }
 
@@ -112,7 +148,9 @@ function bandRowSecondary(row: CapabilityRow): string {
  *  group starts collapsed (Tools is the long one, so it does). Behaviour
  *  directions is the one prompt slot an add fills; it leads, as it shapes how
  *  the worker uses everything below it. Resources lists every other `resources`
- *  entry the agent loads (a `file://` document or glob), so none is left off. */
+ *  entry the agent loads (a `file://` document or glob), so none is left off.
+ *  Tool settings lists each tool's settings the Bot's file adds beyond the base
+ *  (a terminal tool's blocked commands among them), so a person can remove them. */
 const BAND_KINDS: {
   section: CapabilityRow['section']
   heading: () => string
@@ -124,6 +162,7 @@ const BAND_KINDS: {
   { section: 'mcpServers', heading: () => i18nT('crewEditorNext.stat_mcp_servers'), Icon: Plug, collapsed: false },
   { section: 'skills', heading: () => i18nT('crewEditorNext.tab_skills'), Icon: BookOpen, collapsed: false },
   { section: 'resources', heading: () => i18nT('crewEditorNext.band_resources'), Icon: FileText, collapsed: false },
+  { section: 'toolsSettings', heading: () => i18nT('crewEditorNext.band_tools_settings'), Icon: SlidersHorizontal, collapsed: false },
 ]
 
 /** One collapsible kind group (Tools / MCP servers / Skills / Resources) inside a band. */
@@ -335,12 +374,21 @@ export default function CrewEditorNextDialog({
     const revision = capsQuery.data?.revision
     if (!row.remove || !revision) return
     const ok = await confirm({
-      title: i18nT('crewEditorNext.band_remove_confirm_title', { name: bandRowLabel(row) }),
-      body: i18nT('crewEditorNext.band_remove_confirm_body'),
+      title: i18nT('crewEditorNext.band_remove_confirm_title', { name: bandRowRemoveName(row) }),
+      // Removing a tool's settings drops its limits (and any grant it holds).
+      body: row.section === 'toolsSettings'
+        ? i18nT('crewEditorNext.band_remove_settings_confirm_body')
+        : i18nT('crewEditorNext.band_remove_confirm_body'),
       confirmLabel: i18nT('crewEditorNext.band_remove'),
     })
     if (!ok) return
     const key = capabilityKey(row)
+    // The Bot's file feeds both the bands and Add abilities' own view, whose
+    // notice about blocked commands a Tool settings remove lifts.
+    const refresh = () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(ctl.editing) }),
+      queryClient.invalidateQueries({ queryKey: crewWorkerKitKey(ctl.editing) }),
+    ])
     setRemoveBusy(key)
     setRemoveError(null)
     try {
@@ -355,10 +403,10 @@ export default function CrewEditorNextDialog({
       }
       const previewed = await crewCapabilitiesApi.preview(ctl.editing, draft)
       await crewCapabilitiesApi.save(ctl.editing, { ...draft, preview_token: previewed.preview_token })
-      await queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(ctl.editing) })
+      await refresh()
     } catch (e) {
       if (apiErrorCode(e) === 'stale_revision') {
-        await queryClient.invalidateQueries({ queryKey: crewCapabilitiesKey(ctl.editing) })
+        await refresh()
         setRemoveError(i18nT('crewEditorNext.band_remove_stale'))
         return
       }
@@ -792,13 +840,28 @@ export default function CrewEditorNextDialog({
                       </div>
                     )}
                     {capsQuery.error && (
-                      // No hand-off: the editor is a modal holding the user's
-                      // unsaved edits in its other sections; the hand-off would
-                      // navigate away and discard them.
+                      // The hand-off goes through the editor's leave guard
+                      // (`leaveGate`): the modal holds the user's unsaved edits
+                      // in its other sections, and the guard asks before the
+                      // navigation to the chat would discard them.
                       <ErrorNotice
+                        title={i18nT('crewEditorNext.load_error')}
                         message={capabilitiesLoadErrorText(capsQuery.error)}
-                        variant="inline"
-                        askAgent={false}
+                        report={reportForError(capsQuery.error)}
+                        askAgent
+                        gate={ctl.leaveGate}
+                        actions={(
+                          // A refetch of a query with no data goes back to
+                          // pending, so the pane shows its loading line, not
+                          // this notice, until the read settles again.
+                          <button
+                            type="button"
+                            onClick={() => { void capsQuery.refetch() }}
+                            data-testid="next-builtfrom-retry"
+                          >
+                            {i18nT('crewEditorNext.load_retry')}
+                          </button>
+                        )}
                         testId="next-builtfrom-error"
                       />
                     )}
@@ -905,6 +968,7 @@ export default function CrewEditorNextDialog({
                       <CrewWakeSection
                         crew={editing}
                         memberId={memberId}
+                        memberStore={memoryStore}
                         agentTemplate={kiroAgent}
                         isDefaultCrew={isDefaultCrew}
                         hideKindBadge

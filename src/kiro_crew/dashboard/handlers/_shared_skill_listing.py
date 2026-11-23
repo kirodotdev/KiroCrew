@@ -12,6 +12,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+import unicodedata
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -222,6 +223,47 @@ class _AgentMatch(NamedTuple):
     exact: frozenset[str]
     wildcard: tuple[str, ...]
     aliases: list[tuple[Path, list[str]]]
+    #: Equal for agents whose globs are equal, so a row is matched once per
+    #: distinct glob set: agents made from one template share one.
+    signature: int = -1
+    #: The folded names of the entries under every ``aliases`` prefix, read once
+    #: per index: a row whose folder name is in none of them has no alias to
+    #: test. ``None`` when a prefix could not be listed, so nothing is skipped.
+    alias_leaves: frozenset[str] | None = None
+
+
+def _fold_leaf(name: str) -> str:
+    """A folder name folded loosely, so the alias pre-check never misses a match.
+
+    Case and Unicode form are folded because a case-insensitive or normalizing
+    filesystem resolves either spelling; a loose fold only lets more rows through
+    to the exact check in ``_alias_hit``.
+    """
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _alias_leaves(
+    aliases: list[tuple[Path, list[str]]], listed: dict[str, frozenset[str] | None]
+) -> frozenset[str] | None:
+    """The folded entry names under each alias prefix; ``None`` if one cannot be read."""
+    names: set[str] = set()
+    for base, _globs in aliases:
+        key = str(base)
+        if key not in listed:
+            try:
+                listed[key] = frozenset(_fold_leaf(n) for n in os.listdir(base))
+            except OSError:
+                # A missing prefix has no alias under it, as ``lexists`` would find.
+                listed[key] = frozenset() if not os.path.lexists(base) else None
+            except ValueError:
+                # A prefix no path can name (an embedded NUL in a spec's resource):
+                # skip nothing, so ``_alias_hit`` answers as it did without this check.
+                listed[key] = None
+        leaves = listed[key]
+        if leaves is None:
+            return None
+        names |= leaves
+    return frozenset(names)
 
 
 class _AgentMatchIndex(NamedTuple):
@@ -257,16 +299,23 @@ def _build_agent_match_index(expanded_agents: list[tuple[str, list[str]]]) -> _A
     root = str(skills_dir())
     real_root = validate_file_path(root)
     roots = (os.path.abspath(root), *((real_root,) if real_root else ()))
-    agents = tuple(
-        _AgentMatch(
-            name,
-            frozenset(os.path.normcase(g) for g in globs if not _has_wildcard(g)),
-            tuple(g for g in globs if _has_wildcard(g)),
-            _alias_candidates(globs, dict.fromkeys(globs), {g: g for g in globs}, roots),
+    signatures: dict[tuple[str, ...], int] = {}
+    listed: dict[str, frozenset[str] | None] = {}
+    agents = []
+    for name, globs in expanded_agents:
+        aliases = _alias_candidates(globs, dict.fromkeys(globs), {g: g for g in globs}, roots)
+        agents.append(
+            _AgentMatch(
+                name,
+                frozenset(os.path.normcase(g) for g in globs if not _has_wildcard(g)),
+                tuple(g for g in globs if _has_wildcard(g)),
+                aliases,
+                # Every field here is a function of the glob list alone.
+                signatures.setdefault(tuple(globs), len(signatures)),
+                _alias_leaves(aliases, listed),
+            )
         )
-        for name, globs in expanded_agents
-    )
-    return _AgentMatchIndex(agents, roots)
+    return _AgentMatchIndex(tuple(agents), roots)
 
 
 def _index_selects(path: str, agent: _AgentMatch) -> bool:
@@ -297,10 +346,14 @@ def _agents_loading_skill_indexed(skill_md: Path, index: _AgentMatchIndex) -> li
     resolved = False
     inside: bool | None = None
     out: list[str] = []
-    for agent in index.agents:
+    # The answer depends only on the agent's globs, so agents sharing them
+    # (Bots and workers made from one template) are matched once per row.
+    answers: dict[int, bool] = {}
+
+    def selects(agent: _AgentMatch) -> bool:
+        nonlocal real, resolved, inside
         if _index_selects(target, agent):
-            out.append(agent.name)
-            continue
+            return True
         if not resolved:
             resolved = True
             try:
@@ -309,14 +362,28 @@ def _agents_loading_skill_indexed(skill_md: Path, index: _AgentMatchIndex) -> li
                 candidate = target
             real = candidate if candidate != target else None
         if real is not None and _index_selects(real, agent):
-            out.append(agent.name)
-            continue
+            return True
         if not agent.aliases:
-            continue
+            return False
+        if (
+            agent.alias_leaves is not None
+            and _fold_leaf(skill_md.parent.name) not in agent.alias_leaves
+        ):
+            # ``_alias_hit`` tests ``<prefix>/<this folder name>/SKILL.md``, and no
+            # prefix holds an entry of that name.
+            return False
         if inside is None:
             # A row outside the skills root (a project row) is never resolved.
             inside = _within_any(os.path.abspath(skill_md), index.roots)
-        if inside and _alias_hit(skill_md, agent.aliases):
+        return bool(inside and _alias_hit(skill_md, agent.aliases))
+
+    for agent in index.agents:
+        hit = answers.get(agent.signature) if agent.signature >= 0 else None
+        if hit is None:
+            hit = selects(agent)
+            if agent.signature >= 0:
+                answers[agent.signature] = hit
+        if hit:
             out.append(agent.name)
     return out
 
@@ -518,7 +585,29 @@ def collect_skills_blocking(
     result.extend(workspace_rows)
     annotate_skills_with_agents(result, project_dir=project_dir)
     _qualify_colliding_package_rows(result, project_dir)
-    return _one_row_per_skill_file(result)
+    rows = _one_row_per_skill_file(result)
+    # ``list_kiro_skills`` reads top-level folders only, so a skill in a category folder
+    # (``utils/tiny-url``) reached through ``skills.extra_paths`` is listed under its bare
+    # key alone, while an agent's mapping of it reads back as ``kiro-user/utils/tiny-url``
+    # (``kiro-user/`` leads the catalog walk). A row in the user skills folder answers to
+    # that key too, or the skill editor flags the mapping as not installed. The
+    # loader spells each skill file resolved, so a linked folder is matched both ways.
+    user_root = Path.home() / ".kiro" / "skills"
+    user_roots = (user_root, Path(os.path.realpath(user_root)))
+    for row in rows:
+        if row.get("source") == "kiro-workspace":
+            continue
+        parent = Path(row.get("path") or "").parent
+        for root in user_roots:
+            try:
+                key = f"kiro-user/{parent.relative_to(root).as_posix()}"
+            except ValueError:
+                continue
+            aliases = list(row.get("aliases") or [])
+            if key != row.get("key") and key not in aliases:
+                row["aliases"] = [*aliases, key]
+            break
+    return rows
 
 
 def _qualify_colliding_package_rows(rows: list[dict[str, Any]], project_dir: Path | None) -> None:

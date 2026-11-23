@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from git_maintenance_helpers import git_maintenance_off_entries
 from skill_script_helpers import no_bytecode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -83,15 +87,53 @@ EXIT_BASELINE_RED = 30
 EXIT_ENV = 2
 
 
+def _git_env() -> dict[str, str]:
+    """The suite's env with no host git config and auto maintenance off.
+
+    The module-scoped template below runs before the per-test git isolation does,
+    so without this its commit would read the host's global and system config.
+    """
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    env.update(git_maintenance_off_entries(env))
+    return env
+
+
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(
-        ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True, encoding="utf-8"
+        ["git", *args],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=_git_env(),
     )
+
+
+_TEMPLATE: list[Path] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _repo_template(tmp_path_factory):
+    """Build the base repo once per module; ``_repo`` copies it for each test.
+
+    Safe to share because no test is handed the template, only a copy of it.
+    """
+    root = _build_repo(tmp_path_factory.mktemp("prove-seed"))
+    _TEMPLATE.append(root)
+    yield
+    _TEMPLATE.remove(root)
 
 
 def _repo(tmp_path: Path) -> Path:
     """A git repo on branch main with one production module and one test file."""
     repo = tmp_path / "repo"
+    shutil.copytree(_TEMPLATE[-1], repo)
+    return repo
+
+
+def _build_repo(parent: Path) -> Path:
+    repo = parent / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "prove@test")
@@ -137,6 +179,23 @@ def test_a_test_that_catches_the_reintroduced_bug_is_proven(tmp_path: Path) -> N
     r = _run(repo)
     assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
     assert "PROVEN" in r.stdout
+
+
+def test_a_test_file_with_a_non_ascii_name_is_proven(tmp_path: Path) -> None:
+    """Line output C-quotes ``test_modé.py``, and the quoted spelling is not a
+    test path, so reading it that way reports NOTHING_TO_PROVE."""
+    repo = _repo(tmp_path)
+    (repo / "mod.py").write_text("def last_char(s):\n    return s[len(s) - 1]\n")
+    (repo / "test_modé.py").write_text(
+        "from mod import last_char\n\n\ndef test_last():\n    assert last_char('abc') == 'c'\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "fix off-by-one, test in a non-ASCII file")
+
+    r = _run(repo)
+    assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
+    assert "test_modé.py" in r.stdout
 
 
 def test_a_test_that_passes_with_the_bug_back_is_not_proven(tmp_path: Path) -> None:
@@ -509,12 +568,15 @@ def test_an_unmet_pytest_raises_still_counts_as_proof(tmp_path: Path) -> None:
     assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
 
 
-def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
+@pytest.mark.parametrize("doc", ["README.md", "café.md"])
+def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path, doc: str) -> None:
     """Prose is unfalsifiable, so --per-hunk must not call it uncaught.
 
     This repo mandates same-commit spec updates, so treating a doc hunk as an
     uncaught production hunk would make attribution mode red on every compliant
-    change and bury the real uncaught code hunks.
+    change and bury the real uncaught code hunks. ``café.md`` pins the hunk
+    header: git C-quotes a non-ASCII name there unless quoting is off, and the
+    quoted header names no doc file.
     """
     repo = tmp_path / "docs"
     repo.mkdir()
@@ -522,7 +584,7 @@ def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
     _git(repo, "config", "user.email", "prove@test")
     _git(repo, "config", "user.name", "prove")
     (repo / "mod.py").write_text("def bump(n):\n    return n - 1\n")
-    (repo / "README.md").write_text("bump decrements\n")
+    (repo / doc).write_text("bump decrements\n", encoding="utf-8")
     (repo / "test_mod.py").write_text(
         "from mod import bump\n\n\ndef test_bump():\n    assert bump(3) == 2\n"
     )
@@ -530,7 +592,7 @@ def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
     _git(repo, "commit", "-qm", "base")
     _git(repo, "checkout", "-q", "-b", "feature")
     (repo / "mod.py").write_text("def bump(n):\n    return n + 1\n")
-    (repo / "README.md").write_text("bump increments\n")
+    (repo / doc).write_text("bump increments\n", encoding="utf-8")
     (repo / "test_mod.py").write_text(
         "from mod import bump\n\n\ndef test_bump():\n    assert bump(3) == 4\n"
     )
@@ -539,7 +601,7 @@ def test_a_doc_hunk_does_not_drive_not_proven(tmp_path: Path) -> None:
     r = _run(repo, "--per-hunk")
     assert r.returncode == EXIT_PROVEN, r.stdout + r.stderr
     # Reported, but as its own bucket -- never as an uncaught production hunk.
-    assert "unprovable: README.md" in r.stdout, r.stdout
+    assert f"unprovable: {doc}" in r.stdout, r.stdout
     assert "uncaught" not in r.stdout, r.stdout
 
 

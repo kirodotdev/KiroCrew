@@ -2,9 +2,9 @@
  * The built-in launch form: an empty region field reads as empty and blocks
  * Launch, a launch that went out cannot be repeated by a second click on the
  * same settings, and the checklist says when it answers for other values than
- * the ones typed.
+ * the ones typed, and a subnet the gateway refuses is shown under its field.
  */
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
@@ -50,7 +50,7 @@ vi.mock('../api/client', () => {
     },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 const PREFLIGHT_OK = {
   reachable: true, account: '1234•••7890', arn: 'arn:aws:iam::x:user/dev',
@@ -83,9 +83,10 @@ const RUNNING_JOB = {
 const DONE_JOB = { ...RUNNING_JOB, status: 'done' as const, instance_id: 'i-0abc123456789def0' }
 const REGION_REQUIRED = 'Enter an AWS Region, for example us-east-1.'
 const STALE = 'The profile or Region changed since this check. Re-check to update.'
+const PRICE_NOTE = 'Prices are us-east-1 on-demand rates; other Regions may differ.'
 const RETRY = 'Fix the problem shown below, or change the Subnet ID above, then choose Launch to try again.'
-const CHECK_CREWS = 'The launch did not finish. Check Your crews before launching again.'
-const CREW_LISTED = 'The launch did not finish. Its crew is listed in Your crews, where you can fix or delete it.'
+const CHECK_CREWS = 'The launch did not finish. Check My Crews before launching again.'
+const CREW_LISTED = 'The launch did not finish. Its crew is listed in My Crews, where you can fix or delete it.'
 const LAUNCHED_ID = 'i-0abc123456789def0'
 // The registry id is derived from the crew name; the EC2 id the job carries is
 // the crew's SSM target. Distinct here, as they are in a real registry.
@@ -139,7 +140,7 @@ beforeEach(() => {
 
 async function openSetup(u: ReturnType<typeof userEvent.setup>) {
   renderWithProviders(<RemoteCrewPanel />)
-  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 }
 
 describe('RemoteCrewPanel launch form', () => {
@@ -250,7 +251,7 @@ describe('RemoteCrewPanel launch form', () => {
   // From provisioning on a stack may still exist: a refused sign-in leaves a
   // registered crew, and a failed provision is rolled back best-effort with no
   // field saying whether the rollback confirmed.
-  // "Listed in Your crews" is said only while the live list holds the instance:
+  // "Listed in My Crews" is said only while the live list holds the instance:
   // the job is a snapshot, so a registered crew deleted since gets the neutral line.
   it.each([
     ['sign-in, with its registered crew in the live list', { instance_id: LAUNCHED_ID, steps: FAILED_AFTER_REGISTER }, [LIVE_CREW], CREW_LISTED],
@@ -299,6 +300,92 @@ describe('RemoteCrewPanel launch form', () => {
     expect(api.cloudLaunch).toHaveBeenCalledTimes(1)
   })
 
+  it('prices each size card like the CLI and says when the Region is not the priced one', async () => {
+    const u = userEvent.setup()
+    await openSetup(u)
+    const card = await screen.findByRole('button', { name: 'Development · arm64' })
+    // The flag is typed into a terminal, so it renders verbatim in a <code> element.
+    expect(within(card).getByText('--size balanced').tagName).toBe('CODE')
+    expect(card).toHaveAccessibleDescription('~$0.33/hr · ~$235/mo if left running (approx)')
+    expect(screen.queryByText(PRICE_NOTE)).toBeNull()
+
+    const region = screen.getByRole('textbox', { name: 'Region' })
+    await u.clear(region)
+    await u.type(region, 'sa-east-1')
+    expect(screen.getByText(PRICE_NOTE)).toBeInTheDocument()
+  })
+
+  it('shows a refused subnet under the Subnet ID field until the field is edited', async () => {
+    const message = 'subnet subnet-0123abcd has no verified internet egress route (NAT or internet gateway).'
+    vi.mocked(api.cloudLaunch).mockRejectedValue(
+      new ApiError(400, message, JSON.stringify({ error: message, code: 'invalid_subnet' })),
+    )
+    const u = userEvent.setup()
+    await openSetup(u)
+    const subnet = await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })
+    await u.type(subnet, 'subnet-0123abcd')
+    const launch = await screen.findByRole('button', { name: /^Launch$/ })
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+
+    await waitFor(() => expect(subnet).toHaveAttribute('aria-invalid', 'true'))
+    const notice = document.getElementById(subnet.getAttribute('aria-describedby') ?? '')
+    expect(notice).toHaveTextContent(message)
+    // Shown once, under the field: not repeated in the page-top notice.
+    expect(screen.getAllByText(message)).toHaveLength(1)
+
+    await u.type(subnet, '0')
+    expect(subnet).not.toHaveAttribute('aria-invalid')
+    expect(subnet).not.toHaveAttribute('aria-describedby')
+    expect(screen.queryByText(message)).not.toBeInTheDocument()
+  })
+
+  it('reports a refused subnet at the top once the field has been edited while the launch was in flight', async () => {
+    const message = 'subnet subnet-0123abcd has no verified internet egress route (NAT or internet gateway).'
+    let refuse: (e: unknown) => void = () => {}
+    vi.mocked(api.cloudLaunch).mockImplementation(() => new Promise((_resolve, reject) => { refuse = reject }))
+    const u = userEvent.setup()
+    await openSetup(u)
+    const subnet = await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })
+    await u.type(subnet, 'subnet-0123abcd')
+    const launch = await screen.findByRole('button', { name: /^Launch$/ })
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    expect(await screen.findByRole('button', { name: /Launching/ })).toBeDisabled()
+    await waitFor(() => expect(api.cloudLaunch).toHaveBeenCalled())
+    // A different subnet, typed before the refusal of the first arrives.
+    await u.clear(subnet)
+    await u.type(subnet, 'subnet-4567efab')
+    refuse(new ApiError(400, message, JSON.stringify({ error: message, code: 'invalid_subnet' })))
+
+    const notice = await screen.findByText(message)
+    expect(screen.getAllByText(message)).toHaveLength(1)
+    // The page-top notice sits above the form; the field's own notice would follow it.
+    expect(notice.compareDocumentPosition(subnet) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(subnet).toHaveValue('subnet-4567efab')
+    expect(subnet).not.toHaveAttribute('aria-invalid')
+    expect(subnet).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('reports a refused subnet at the top once the Add Crew window was closed while the launch was in flight', async () => {
+    const message = 'subnet subnet-0123abcd has no verified internet egress route (NAT or internet gateway).'
+    let refuse: (e: unknown) => void = () => {}
+    vi.mocked(api.cloudLaunch).mockImplementation(() => new Promise((_resolve, reject) => { refuse = reject }))
+    const u = userEvent.setup()
+    await openSetup(u)
+    await u.type(await screen.findByRole('textbox', { name: 'Subnet ID (optional)' }), 'subnet-0123abcd')
+    const launch = await screen.findByRole('button', { name: /^Launch$/ })
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+    await waitFor(() => expect(api.cloudLaunch).toHaveBeenCalled())
+    await u.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('textbox', { name: 'Subnet ID (optional)' })).not.toBeInTheDocument()
+    refuse(new ApiError(400, message, JSON.stringify({ error: message, code: 'invalid_subnet' })))
+
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(screen.getAllByText(message)).toHaveLength(1)
+  })
+
   it('names the missing region in the check line instead of leaving a gap', async () => {
     const u = userEvent.setup()
     await openSetup(u)
@@ -311,7 +398,8 @@ describe('RemoteCrewPanel launch form', () => {
   it('marks the checklist out of date while the typed profile differs from the checked one', async () => {
     const u = userEvent.setup()
     await openSetup(u)
-    const list = (await screen.findByText('Session Manager plugin')).closest('ul') as HTMLElement
+    // The answered list: the rows drawn while the check runs carry the same titles.
+    const list = (await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).closest('ul') as HTMLElement
     const greyMarks = () => list.querySelectorAll('li > span.bg-border-strong').length
     expect(greyMarks()).toBe(0)
     expect(screen.queryByText(STALE)).toBeNull()

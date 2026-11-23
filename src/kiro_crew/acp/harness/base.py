@@ -283,6 +283,14 @@ class SpawnPlan:
     running, not from the configuration, which may have changed since the spawn.
     """
 
+    machine_auth: Any = field(default=None, kw_only=True)
+    """The KAS machine-mode settings this spawn runs under (``agent_sdk/kas_machine.py``).
+
+    ``None`` for Crew's own sign-in, the only value off the ``crew_client`` preview.
+    The runtime keeps it, so a live session's turn gate judges the token file the
+    running process reads, not the current configuration.
+    """
+
     kiro_cli_internal_sandbox: bool = field(default=False, kw_only=True)
     """kiro-cli's internal sandbox confines this spawn.
 
@@ -293,6 +301,16 @@ class SpawnPlan:
     would have sealed. It moves the sandbox only for
     a harness in ``ACP_BACKENDS_RELAY_INTERNAL_SANDBOX``
     (``spawn_delegates_to_internal_sandbox``); any other harness is unaffected.
+    """
+
+    engine_is_child: bool = field(default=False, kw_only=True)
+    """The launched process relays to an engine that runs the tools.
+
+    Stated by the harness that built the argv (KAS's kiro-cli relay): the engine
+    is the launched process's sole direct child and spawns the tool processes, so
+    a shell tool's parent is that engine, one level below the harness. The
+    stalled-shell cleanup pins that hop by identity. The bundle route launches
+    the engine itself and leaves it False.
     """
 
     host_auth: bool = False
@@ -868,13 +886,15 @@ class HarnessAdapter(LaunchAdapter):
         mcp_servers: list[dict[str, Any]],
         *,
         zero_tools: bool = False,
+        builtin_tools: tuple[str, ...] | None = None,
         stub_token: str = "",
     ) -> dict[str, Any] | None:
         """The ``_meta`` entries this session's request carries, built after its array, or None.
 
         *stub_token* is the token the runtime minted to name THIS session's brokered
         servers, for a host that also hands the session's identity to the tools it
-        runs.
+        runs. *builtin_tools* is the mirror's ``SessionProjection.builtin_tools``, the
+        harness built-ins the session keeps (``None`` for all of them).
         """
         return None
 

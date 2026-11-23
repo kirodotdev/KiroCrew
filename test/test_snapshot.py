@@ -267,7 +267,7 @@ class TestRestoreDryRun:
         fresh = tmp_path / "fresh4"
         fresh.mkdir()
         monkeypatch.setenv("KIROCREW_HOME", str(fresh))
-        restore_main([str(tarball), "--dry-run", "--force"])
+        restore_main([str(tarball), "--dry-run", "--mode", "replace", "--force"])
         assert "Dry run" in capsys.readouterr().out
         assert not (fresh / "memory.db").exists()
 
@@ -796,24 +796,25 @@ class TestRestoreMerge:
         assert "Notifications imported: 0" in capsys.readouterr().out
 
 
-class TestAutoDetect:
-    def test_auto_replace_fresh(self, env, capsys, monkeypatch):
+class TestNoModeIsRefused:
+    def test_fresh_home_is_refused(self, env, capsys, monkeypatch):
         """TEST 11a"""
         _, _, tarball, tmp_path = env
         fresh = tmp_path / "fresh11"
         fresh.mkdir()
         monkeypatch.setenv("KIROCREW_HOME", str(fresh))
-        restore_main([str(tarball), "--force"])
-        assert "replace" in capsys.readouterr().out.lower()
+        assert restore_main([str(tarball), "--force"]) == 1
+        assert "--mode replace" in capsys.readouterr().out
+        assert not (fresh / "memory.db").exists()
 
-    def test_auto_merge_existing(self, env, capsys, monkeypatch):
+    def test_existing_home_is_refused(self, env, capsys, monkeypatch):
         """TEST 11b"""
         _, _, tarball, tmp_path = env
         dst = tmp_path / "dst11"
         _setup_fake_kirocrew(dst)
         monkeypatch.setenv("KIROCREW_HOME", str(dst))
-        restore_main([str(tarball), "--force"])
-        assert "merge" in capsys.readouterr().out.lower()
+        assert restore_main([str(tarball), "--force"]) == 1
+        assert "--mode merge" in capsys.readouterr().out
 
 
 class TestComponents:

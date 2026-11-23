@@ -265,33 +265,67 @@ function approvedCapabilities(row, manifest) {
   return declared.filter((cap) => approved.includes(cap));
 }
 
+function appRows(rows) {
+  return Array.isArray(rows) ? rows : isPlainObject(rows) && Array.isArray(rows.apps) ? rows.apps : [];
+}
+
 /**
  * The declarations the host should serve, keyed by app name, from `/api/apps`.
  *
- * Only an enabled app the gateway did not skip at boot is served. An app with no
- * `desktop` block, or one the rules above refuse, is absent from the map. Each
- * declaration carries `capabilities`: the ones the app declares AND has approved.
+ * Only an app the gateway did not skip at boot is listed, and only an enabled one
+ * unless *disabledToo*: the host lists an app switched off on this computer's
+ * gateway too, because it still serves that app's windows from a crew the operator
+ * chose for it (`gatewayChoice`, app-window-gateways.js) while the app is on there.
+ * Each declaration says which with `enabledHere`. An app with no `desktop` block, or
+ * one the rules above refuse, is absent from the map. Each declaration carries
+ * `capabilities`: the ones the app declares AND has approved.
  *
  * @param {unknown} rows the parsed `/api/apps` body.
  * @param {(line: string) => void} [log] told once per refused declaration.
- * @param {{platform?: string}} [options] `platform`: the Node platform shortcut
- *   defaults are resolved for.
- * @returns {Map<string, {windows: object[], shortcuts: object[], capabilities: string[]}>}
+ * @param {{platform?: string, disabledToo?: boolean}} [options] `platform`: the Node
+ *   platform shortcut defaults are resolved for.
+ * @returns {Map<string, {windows: object[], shortcuts: object[], capabilities: string[], enabledHere: boolean}>}
  */
-function desktopDeclarations(rows, log = () => {}, { platform = process.platform } = {}) {
+function desktopDeclarations(rows, log = () => {}, { platform = process.platform, disabledToo = false } = {}) {
   const out = new Map();
-  const list = Array.isArray(rows) ? rows : isPlainObject(rows) && Array.isArray(rows.apps) ? rows.apps : [];
-  for (const row of list) {
-    if (!isPlainObject(row) || row.enabled !== true || row.unavailable) continue;
+  for (const row of appRows(rows)) {
+    if (!isPlainObject(row) || row.unavailable) continue;
+    const enabledHere = row.enabled === true;
+    if (!enabledHere && !disabledToo) continue;
     const name = row.name;
     if (typeof name !== "string" || !APP_NAME_RE.test(name) || out.has(name)) continue;
     const manifest = isPlainObject(row.manifest) ? row.manifest : null;
     if (!manifest || manifest.desktop === undefined) continue;
     const parsed = parseDesktopDeclaration(manifest.desktop, platform);
-    if (parsed) out.set(name, { ...parsed, capabilities: approvedCapabilities(row, manifest) });
+    if (parsed) out.set(name, { ...parsed, capabilities: approvedCapabilities(row, manifest), enabledHere });
     else log(`app-window-host: ${name}: desktop declaration refused`);
   }
   return out;
+}
+
+/**
+ * Whether the window host, not built-in shell code, owns *name*'s windows on the
+ * gateway that answered *rows*: `true`, `false`, or `null` when the body cannot be read.
+ *
+ * Built-in shell code that predates the host (a directory of its own under
+ * `website/electron/`) asks this before it opens anything for its app, and stands
+ * down on `true`. The answer is keyed on the gateway's record, never on a name the
+ * host knows: `true` when that record's manifest carries a `desktop` block, on or
+ * off, whether or not this shell's rules accept it. A block the rules refuse still
+ * counts, so a shell older than the grammar of the record it reads shows nothing for
+ * that app rather than its built-in windows over a record that no longer ships
+ * them. A gateway that predates the block, or a built-in record without one,
+ * answers `false`, and the built-in code serves its app as before.
+ *
+ * @param {unknown} rows the parsed `/api/apps` body.
+ * @param {string} name the app's installed name.
+ * @returns {boolean | null}
+ */
+function hostOwnsAppWindows(rows, name) {
+  if (!isAppListBody(rows)) return null;
+  const row = appRows(rows).find((r) => isPlainObject(r) && r.name === name);
+  const manifest = row && isPlainObject(row.manifest) ? row.manifest : null;
+  return !!manifest && manifest.desktop !== undefined && manifest.desktop !== null;
 }
 
 /** Whether the list body is one the host can read at all (vs. an unexpected shape). */
@@ -312,6 +346,7 @@ module.exports = {
   parseDesktopDeclaration,
   platformName,
   desktopDeclarations,
+  hostOwnsAppWindows,
   isAppListBody,
   keyPressChords,
   pressedChord,

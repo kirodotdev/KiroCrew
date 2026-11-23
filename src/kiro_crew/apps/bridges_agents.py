@@ -51,7 +51,7 @@ from kiro_crew.mcp_provenance import DERIVED_KEY
 from kiro_crew.mcp_utils import without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
-from kiro_crew.user_json import loads_user_json
+from kiro_crew.user_json import loads_user_json, strip_utf8_bom
 
 logger = logging.getLogger("kiro_crew.apps.bridges")
 
@@ -990,7 +990,7 @@ def _render_shipped_agent(
         )
         return None
     try:
-        json.loads(rendered)
+        loads_user_json(rendered)
     except ValueError:
         logger.warning("App %s: rendered agent %s is not valid JSON", app_name, agent_path.name)
         return None
@@ -999,7 +999,8 @@ def _render_shipped_agent(
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / agent_path.name
-        atomic_write(target, rendered)
+        # The copy is written without a leading byte-order mark the template may carry.
+        atomic_write(target, strip_utf8_bom(rendered))
     except OSError as exc:
         logger.warning("App %s: could not write rendered agent: %s", app_name, exc)
         if io_failures is not None:
@@ -1094,7 +1095,7 @@ def _register_agents(
 
             # Read agent JSON to get the agent name
             try:
-                agent_data = json.loads(agent_path.read_text(encoding="utf-8"))
+                agent_data = loads_user_json(agent_path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
                 logger.warning("App %s: unreadable agent %s: %s", app_name, agent_path, exc)
                 if isinstance(exc, OSError) and io_failures is not None:

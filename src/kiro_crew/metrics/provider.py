@@ -2,12 +2,11 @@
 
 Consent + local-first:
   * ``telemetry.enabled`` defaults **True**: local recording is on unless the
-    user turned it off, and every user is told (the dashboard's Privacy chapter,
-    or a one-line notice on a CLI or headless start, see :mod:`metrics.notice`).
+    user turned it off. Settings > Privacy shows it, and a start prints a
+    one-line notice once per notice version (see :mod:`metrics.notice`).
     When off, ``get_recorder()`` returns a no-op recorder.
   * Off switches: ``telemetry.enabled: false`` in ``~/.kiro/crew/config.json``
-    (what the Privacy chapter's Turn off and ``kirocrew telemetry disable``
-    write), the ``KIROCREW_TELEMETRY`` env var (``0``/``false``/``off``
+    (what Settings > Privacy and ``kirocrew telemetry disable`` write), the ``KIROCREW_TELEMETRY`` env var (``0``/``false``/``off``
     force-disables, ``1``/``true``/``on`` force-enables), or a truthy
     ``DO_NOT_TRACK``, which wins over everything. The env vars gate LOCAL
     collection only; network egress needs a destination AND
@@ -53,6 +52,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
 from kiro_crew.metrics import kiro_export, otlp_endpoints, otlp_governance, otlp_session
+from kiro_crew.metrics import provider_flush as _provider_flush
 from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_SCOPE
 
 # The env-var pins and the export opt-in live in ``consent_pins`` (this module's
@@ -796,14 +796,13 @@ def _resource_attributes(harness: str) -> "dict[str, str | int]":
 _READ_NOW = object()
 
 
-def _endpoints_key(tel: object, ceiling: object = _READ_NOW, full_cfg: object = None) -> object:
+def _endpoints_key(tel: object, ceiling: object = _READ_NOW) -> object:
     """A fingerprint of the endpoint settings the OTLP readers are built from.
 
     A sha256 over ``telemetry.otlp_endpoint`` and ``telemetry.otlp_endpoints``,
     so module state keeps no second copy of a header value. Compared as-is by the
     consent worker: a changed fingerprint means a reader may point at an entry
-    that is gone or turned off. ``None`` when the values cannot be read. It also
-    covers whether the Kiro notice was shown, read from *full_cfg*, the build's load.
+    that is gone or turned off. ``None`` when the values cannot be read.
 
     An LTS build adds the policy's ``capabilities.telemetry.otlp_endpoint``
     under *ceiling* (a build passes the snapshot its destinations came from), so a
@@ -811,7 +810,6 @@ def _endpoints_key(tel: object, ceiling: object = _READ_NOW, full_cfg: object = 
     """
     try:
         raw = [getattr(tel, "otlp_endpoint", None), getattr(tel, "otlp_endpoints", None)]
-        raw.append(kiro_export.notice_shown(full_cfg))  # same snapshot as the build's
         if edition.is_lts():
             if ceiling is _READ_NOW:
                 # A process with no context reads an already-composed provider
@@ -848,7 +846,7 @@ def _build_recorder() -> _Build:
 
     consent = _held_consent(full_cfg, _consent_enabled(cfg))
     agent_key = _agent_key(full_cfg)
-    endpoints_key = _endpoints_key(cfg, full_cfg=full_cfg)
+    endpoints_key = _endpoints_key(cfg)
     if not consent:
         return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
@@ -886,7 +884,7 @@ def _build_recorder() -> _Build:
     # landing mid-build moves the key the next recheck compares.
     ceiling = _policy_ceiling() if edition.is_lts() else _READ_NOW
     destinations = _otlp_destinations(cfg, ceiling)
-    endpoints_key = _endpoints_key(cfg, ceiling, full_cfg)
+    endpoints_key = _endpoints_key(cfg, ceiling)
     # Recording on alone exports only to the built-in Kiro destination (kiro_export).
     outbound: Optional[bool] = None
     if destinations:
@@ -896,7 +894,7 @@ def _build_recorder() -> _Build:
             "telemetry export to configured destinations waits for an explicit opt-in "
             "to recording (telemetry.enabled: true in config.json, or KIROCREW_TELEMETRY=1)"
         )
-    destinations = kiro_export.exported(destinations, full_cfg, outbound)
+    destinations = kiro_export.exported(destinations, outbound)
 
     # PeriodicExportingMetricReader starts its ticker thread in __init__, so a
     # later raise (e.g. in MeterProvider) leaves it running and logging export
@@ -1608,7 +1606,7 @@ def _consent_worker(generation: int) -> None:
             full_cfg = KiroCrewConfig.load()
             consent: Optional[bool] = _held_consent(full_cfg, _consent_enabled(full_cfg.telemetry))
             agent_key = _agent_key(full_cfg)
-            endpoints_key = _endpoints_key(full_cfg.telemetry, full_cfg=full_cfg)
+            endpoints_key = _endpoints_key(full_cfg.telemetry)
             # Re-ask about export only when the live build had a destination to
             # gate; a local-only host reads nothing extra here.
             if consent and _built_outbound is not None:
@@ -1723,7 +1721,7 @@ def get_recorder() -> MetricsRecorder:
 
     The recheck is eventual by design — up to ``_CONSENT_RECHECK_SECS`` — so the
     extra thread hop changes nothing an observer can distinguish. A caller that
-    changed the setting in-process reaches ``shutdown()`` through the config
+    changed the setting in-process reaches ``_detach()`` through the config
     watcher (``watch_config``) and skips the wait.
     """
     global _recorder, _initialized, _built_consent
@@ -1855,11 +1853,18 @@ def shutdown() -> None:
     dropping the recorder makes the next metric call rebuild from the new value
     without waiting out the recheck window.
 
-    The flush runs on the CALLER's thread (so process teardown and the config
-    watcher — which calls this via ``asyncio.to_thread`` — both get a completed
-    flush) but NOT under ``_lock``: holding it across the flush would stall any
+    The flush runs on the CALLER's thread (so process teardown gets a completed
+    flush; the config watcher detaches instead and flushes in the background)
+    but NOT under ``_lock``: holding it across the flush would stall any
     concurrent ``get_recorder()`` on the event loop for the whole 30s deadline.
     """
+    doomed = _detach()
+    if doomed is not None:
+        _flush_detached_provider(doomed)
+
+
+def _detach() -> Optional["_MeterProviderT"]:
+    """Drop the live recorder and return its provider, unflushed. Cheap; takes ``_lock``."""
     global _consent_checked_at
     with _lock:
         doomed = _take_provider_locked()
@@ -1868,8 +1873,7 @@ def shutdown() -> None:
         # not defer the next recheck — a zero stamp reads as immediately due — but
         # nothing consults it while `_recorder` is None.
         _consent_checked_at = 0.0
-    if doomed is not None:
-        _flush_detached_provider(doomed)
+    return doomed
 
 
 # reset_for_testing() waits at most this long for an in-flight consent-check
@@ -1924,6 +1928,8 @@ def reset_for_testing() -> None:
     global _ever_built, _is_gatewayd
     shutdown()
     _wait_for_in_flight_consent_worker()
+    if not _provider_flush.join_all(_RESET_WAIT_BOUND_SECS):
+        raise RuntimeError("reset_for_testing: a background provider flush is still running")
     with _lock:
         _ever_built = False
     # A process-level provider override and role (a gatewayd entry point run
@@ -1957,17 +1963,22 @@ async def _on_config_change(change: object) -> None:
     every other field in the section (``local_dir``, ``retention_days``,
     ``max_total_mb``, ``export_interval_seconds``, ``otlp_endpoint``) was frozen
     into the recorder at first use and stayed there for the process lifetime.
-    :func:`shutdown` drops the recorder and its provider, so the next metric call
+    :func:`_detach` drops the recorder and its provider, so the next metric call
     rebuilds from the new values -- which is also the fast path for ``enabled``,
     replacing the 30-second wait with an immediate apply.
 
     Deliberately blunt: the section is small, a rebuild is bounded, and a config
     write is rare, so comparing which field moved would buy nothing over
-    rebuilding once. ``shutdown`` flushes on the calling thread, so it runs in a
-    worker rather than on the event loop.
+    rebuilding once. The old provider normally flushes on a detached daemon
+    thread. If it cannot start, await an executor flush to keep the event loop
+    free, though the settings write must then wait for completion.
     """
     del change  # any telemetry.* change rebuilds; nothing to inspect
-    await asyncio.to_thread(shutdown)
+    doomed = _detach()
+    if doomed is not None and not _provider_flush.flush_in_background(
+        doomed, _flush_detached_provider
+    ):
+        await asyncio.to_thread(_flush_detached_provider, doomed)
 
 
 def watch_config() -> None:
