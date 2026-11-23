@@ -319,6 +319,11 @@ export interface ChatSlot extends TurnIdentityFields {
    *  `model_withheld`: it describes the session, so it must not drive a
    *  write. */
   served_model?: string
+  /** The served model an engine promotion moved this slot's session onto for
+   *  the rest of it; `''`/absent when none. While `served_model` still equals
+   *  it, a slot with no pick of its own runs on it. DISPLAY only, like
+   *  `served_model`. */
+  engine_promoted_model?: string
   /** Remote-execution binding. `executor` is "local" for an ordinary session and
    *  "remote" for one whose turns run on a connected crew; `instance_id` names
    *  that crew. The backend ships BOTH on every slot so "runs locally" is a
