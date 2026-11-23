@@ -9,7 +9,7 @@ fallback reads as the designed path it is.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -38,10 +38,15 @@ async def test_a_client_with_a_reset_is_delegated_to() -> None:
     client = MagicMock(spec=["new_conversation", "backend"])
     client.new_conversation = AsyncMock()
     provider = _provider_over(client)
+    provider._bind_unbound_effort = AsyncMock()  # type: ignore[method-assign]
+    provider._reassert_projected_effort = AsyncMock()  # type: ignore[method-assign]
 
     await provider.new_conversation()
 
     client.new_conversation.assert_awaited_once_with()
+    # The fresh session gets the same effort binding a (re)start does.
+    provider._bind_unbound_effort.assert_awaited_once_with()
+    provider._reassert_projected_effort.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -75,14 +80,61 @@ async def test_a_claude_reset_deletes_a_disposable_transcript_once_it_left_it(
     provider = _provider_over(client)
     provider.memory_mode = memory_mode
     provider._apply_initial_effort = AsyncMock()  # type: ignore[method-assign]
+    provider._bind_unbound_effort = AsyncMock()  # type: ignore[method-assign]
+    provider._reassert_projected_effort = AsyncMock()  # type: ignore[method-assign]
     removed: list[str] = []
     provider.cleanup_session = AsyncMock(side_effect=removed.append)  # type: ignore[method-assign]
 
     if left_on == "sess-2":
         await provider.new_conversation()
+        provider._bind_unbound_effort.assert_awaited_once_with()
+        provider._reassert_projected_effort.assert_awaited_once_with()
         provider._apply_initial_effort.assert_awaited_once_with()
     else:
         with pytest.raises(AcpError):
             await provider.new_conversation()
+        provider._bind_unbound_effort.assert_not_awaited()
         provider._apply_initial_effort.assert_not_awaited()
     assert removed == deleted
+
+
+def _kiro_effort_provider(model: str) -> AcpProvider:
+    with patch("kiro_crew.providers.acp.AcpClient"):
+        provider = AcpProvider(acp_backend="")
+    provider._client = MagicMock()
+    provider._client.backend = ""
+    provider._client._model = model
+    provider._client._work_dir = MagicMock()
+    provider._client.send_command = AsyncMock()
+    provider._client.command_result = AsyncMock(return_value={"success": True})
+    provider._client.set_config_option = AsyncMock()
+    provider._client.supports_config_option = MagicMock(return_value=True)
+    return provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,overrides,expected_level",
+    [
+        ("claude-opus-4.7", {"claude-opus-4.7": "high"}, "high"),
+        ("auto", {"auto": "high"}, None),
+        ("claude-opus-4.7", {}, None),
+    ],
+    ids=["concrete-level", "auto", "no-level"],
+)
+async def test_new_conversation_reasserts_only_a_concrete_resolved_kiro_level(
+    model, overrides, expected_level
+) -> None:
+    provider = _kiro_effort_provider(model)
+    provider._effort_per_model = overrides
+    provider._client.new_conversation = AsyncMock()
+
+    await provider.new_conversation()
+
+    provider._client.new_conversation.assert_awaited_once()
+    if expected_level is None:
+        provider._client.command_result.assert_not_awaited()
+    else:
+        provider._client.command_result.assert_awaited_once_with(
+            "/effort", args={"level": expected_level}
+        )

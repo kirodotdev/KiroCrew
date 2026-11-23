@@ -524,3 +524,22 @@ def rss_runtimes_read_under_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
         return judge(state, key, pid, *args, **kwargs)
 
     monkeypatch.setattr(session_cleanup, "judge_rss_reading", _judge_grown)
+
+
+@pytest.fixture
+def no_zero_tool_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn off the post-start MCP zero-tool check on every ``AcpProvider``.
+
+    For a test that stubs ``_start_kiro_runtime``: the provider then keeps the
+    ``AcpClient`` it was built with, and the zero-tool check reads ``/mcp``
+    through that client, which starts it for real. That spawn prepares a native
+    skill projection the test never releases, so the garbage collector ends it
+    later on the projection reaper thread, inside whichever test is running by
+    then, and its prune lands in that test's patches and refusal counters.
+    """
+    from kiro_crew.providers.acp import AcpProvider
+
+    async def _skip_zero_tool_check(self: AcpProvider) -> None:
+        return None
+
+    monkeypatch.setattr(AcpProvider, "_note_zero_tool_servers", _skip_zero_tool_check)

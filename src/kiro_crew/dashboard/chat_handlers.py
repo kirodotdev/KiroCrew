@@ -331,8 +331,13 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.slot_discard import api_chat_slot_discard  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
+    _EFFORT_INTENT_NOT_SAVED,
+    _EFFORT_INTENT_ROLLBACK_NOT_SAVED,
+    _EFFORT_INTENT_UNSAVED_CODE,
     _approve_for_me_field,
+    _bump_session_effort_intent_slots,
     _configured_backend_for_slot,
+    _effort_intent_unsaved,
     _own_models_field,
     _restart_for_approve_for_me,
     _write_session_switch,

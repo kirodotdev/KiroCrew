@@ -39,11 +39,32 @@ from kiro_crew.config.paths import (  # noqa: F401
     project_agents_dir,
 )
 from kiro_crew.file_uri import file_uri_path_text  # noqa: F401
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes  # noqa: F401
+from kiro_crew.hooks import (  # noqa: F401
+    MAX_FILE_BYTES,
+    FileTooLargeError,
+    safe_read_file_bytes,
+)
 from kiro_crew.security import _PATH_RESOLVE_TIMEOUT_SECS  # noqa: F401
 from kiro_crew.user_json import copy_json_document  # noqa: F401
 from kiro_crew.validation import is_registered_agent_name  # noqa: F401
-from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock  # noqa: F401
+from kiro_crew.workspace_cli_settings import (  # noqa: F401
+    CLI_JSON_REFUSED,
+    CliJsonVersion,
+    LockedCliSettings,
+    admitted_workspace_cli_settings_dir,
+    carry_effort_ownership,
+    cli_json_version,
+    current_cli_json_version,
+    locked_workspace_cli_settings,
+    named_cli_json_metadata,
+    owned_document_unchanged,
+    pinned_cli_settings_fd,
+    publish_locked_cli_settings,
+    read_named_cli_json,
+    read_pinned_cli_json,
+    settings_json_text,
+    workspace_cli_settings_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +133,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SETTINGS_READ_RETRY_PAUSES,
         _UNREADABLE_SETTINGS_ERRORS,
         _inheritance_preference,
+        _refuse_changed_since_read,
         _restore_inheritance,
         _settings,
         _settings_read_sleep,
+        _settings_with_mtime,
         inherits_default_resources,
     )
     from kiro_crew.acp.skill_projection_parts.native_projection import (  # noqa: F401
