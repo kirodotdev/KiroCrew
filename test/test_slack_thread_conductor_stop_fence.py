@@ -16,20 +16,21 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import test_slack_thread_conductor_identity as identity
 from test_session_control_owner_dm import _state
-from test_slack_thread_conductor_identity import (  # noqa: F401 - the identity suite's autouse setup, reused here
-    _enabled,
-)
-from test_slack_thread_conductor_identity import (
-    OWNER,
-    _create,
-    _owner_turn,
-    _refused,
-    _thread,
-)
 
 from kiro_crew.dashboard.session_control_parts import code_channel_exemption as cce
 from kiro_crew.slack.code_channels import routing, stop_helpers
+
+# The identity suite's autouse setup (code channels off, thread runtime built), reused here.
+_enabled = identity._enabled
+OWNER, _create, _owner_turn, _refused, _thread = (
+    identity.OWNER,
+    identity._create,
+    identity._owner_turn,
+    identity._refused,
+    identity._thread,
+)
 
 
 def _stop(state: Any, binding: Any, monkeypatch: pytest.MonkeyPatch) -> list[str]:
