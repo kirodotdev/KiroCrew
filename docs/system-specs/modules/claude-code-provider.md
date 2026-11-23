@@ -999,6 +999,10 @@ from a child's. The rung runs only on a backend in
 (`SessionCapabilities.permission_requests_name_child`: kiro-cli and KAS); every
 other backend, an unknown one included, skips it the same way. Every request takes
 the gate it takes with no child running.
+On the backends it does serve, the rung grants only a request the transport marks as
+a child's (its own `sub_session_id`, or `native_child_call` with a tool-call id, on a
+transport whose `child_calls_marked` is true), so the parent's own call takes the
+gates below; and it fires PreToolUse first when no gate above has, so a BLOCKED holds.
 Contract tests: `test_claude_native_subagent_cards.py`.
 
 A Stop on a child's card (`DELETE /api/spawn/native:<child sessionId>`) stops that
