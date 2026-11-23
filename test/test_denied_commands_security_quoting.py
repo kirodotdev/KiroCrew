@@ -1381,6 +1381,9 @@ class TestWindowsRespellings:
         r"Remove-Item -Recurse -Exclude *.log C:\ ",
         r"Remove-Item -Recurse C:\ -WhatIf:$false",
         r'Remove-Item -Recurse -Force "-old",C:\ ',  # a two-path array, not a parameter
+        r"Remove-Item -Recurse -Force ~\*",
+        r"Remove-Item -Recurse -Force $HOME\*",
+        r"Remove-Item -Recurse ~\ -Force",
         r"rmdir /s /q C:\ ",
         r"rd /S/Q C:\ ",
         r"del /s /q C:\* ",
@@ -1402,6 +1405,8 @@ class TestWindowsRespellings:
         r"Remove-Item -Recurse -Force ./build -Include C:\ ",
         r"Remove-Item -Recurse:$false C:\ ",
         r"Remove-Item -Recurse -Force .\build -ea C:\ ",
+        r"Remove-Item -Recurse -Force ~\work\build",
+        r"Remove-Item -Recurse -Force $HOME\.cache\pip",
         r"rd /s /q ~",  # cmd never expands ~: this is a folder named ~
         r'rd /s /q "~"',
         r"rm -r ~",  # PowerShell's rm alias is left to the rm reading: partial flags pass

@@ -128,8 +128,9 @@ _CMD_SWITCH_RE = re.compile(r"(?:/[A-Za-z?][-:A-Za-z]*)+")
 #: Windows only. A drive root: ``C:``, ``C:/``, ``C:\``, ``C:\*``, any letter. The POSIX
 #: reading drops an unquoted ``\``, so ``C:\*`` also arrives as ``C:*``.
 _DRIVE_ROOT_RE = re.compile(r"[A-Za-z]:[\\/]*\*?")
-#: Windows only. The ``\`` right after a drive letter, read as ``/`` for the drive-root view.
-_DRIVE_BACKSLASH_RE = re.compile(r"(?<![\w\\])([A-Za-z]:)\\")
+#: Windows only. The ``\`` right after a drive letter or a leading home word (``~\*``,
+#: ``$HOME\``), read as ``/`` for the Windows view.
+_ROOT_BACKSLASH_RE = re.compile(r"(?<![\w\\])([A-Za-z]:|~|\$HOME|\$\{HOME\})\\")
 
 
 def _is_scratch_entry(word: str) -> bool:
@@ -243,8 +244,8 @@ def _rm_wipe_targets(command: str) -> "set[str]":
     # each segment with whether the rm reading reads it too (the Windows reader reads all)
     segments = [(s, True) for s in (*_segments(command), *_segments(command, track=False))]
     if platform_compat.IS_WINDOWS:
-        # PowerShell and cmd read the ``\`` after a drive letter as a separator: ``C:\ -Recurse``
-        view = _DRIVE_BACKSLASH_RE.sub(r"\1/", command)
+        # PowerShell and cmd read that ``\`` as a separator: ``C:\ -Recurse``, ``~\*``
+        view = _ROOT_BACKSLASH_RE.sub(r"\1/", command)
         segments += [(s, True) for s in _segments(view)] if view != command else []
         if "~" in command:  # PowerShell resolves a quoted ``~``; rm does not
             segments += [(s, False) for s in _render_segments(view, True, quoted_tilde=True)]
