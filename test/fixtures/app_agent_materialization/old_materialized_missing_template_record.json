@@ -1,0 +1,59 @@
+{
+  "appName": "test-app",
+  "agentName": "my-agent",
+  "oldMaterialized": {
+    "name": "my-agent",
+    "model": "provider/user-choice",
+    "description": "  User-authored description.\nKeep spacing, punctuation, and ünicode exactly.  ",
+    "toolsSettings": {
+      "read": {
+        "maxFileSize": 9007199254740991,
+        "note": "  preserve inner spacing  "
+      },
+      "subagent": {
+        "availableAgents": [
+          "custom-one",
+          "custom/two"
+        ]
+      }
+    },
+    "kiroUpgrade": {
+      "revision": 2,
+      "fingerprint": "legacy-publication-only",
+      "source": "sha256:old-materialized-output"
+    }
+  },
+  "currentTemplate": {
+    "name": "my-agent",
+    "model": "auto",
+    "description": "Current package description",
+    "toolsSettings": {
+      "read": {
+        "maxFileSize": 1024
+      }
+    },
+    "welcomeMessage": "Welcome from the current template."
+  },
+  "expectedMaterialized": {
+    "name": "my-agent",
+    "mcpServers": {},
+    "model": "provider/user-choice",
+    "description": "  User-authored description.\nKeep spacing, punctuation, and ünicode exactly.  ",
+    "toolsSettings": {
+      "read": {
+        "maxFileSize": 9007199254740991,
+        "note": "  preserve inner spacing  "
+      },
+      "subagent": {
+        "availableAgents": [
+          "custom-one",
+          "custom/two"
+        ]
+      }
+    },
+    "welcomeMessage": "Welcome from the current template."
+  },
+  "expectedTemplateRecord": {
+    "welcomeMessage": "Welcome from the current template."
+  }
+}

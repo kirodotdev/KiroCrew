@@ -22,6 +22,10 @@ from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.apps.manifest import AppManifest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_LEGACY_AGENT_FIXTURE = (
+    _REPO_ROOT
+    / "test/fixtures/app_agent_materialization/old_materialized_missing_template_record.json"
+)
 
 
 class TestBuiltinAgentNamesAreNamespaced:
@@ -95,6 +99,68 @@ class TestUserAgentEditsSurviveRefresh:
         fresh = {"name": "a", "model": "auto"}
         assert _preserve_user_agent_edits("a.json", None, fresh) == fresh
 
+    @pytest.mark.parametrize(
+        "record_contents",
+        [None, {}],
+        ids=["missing-template-record", "empty-template-record"],
+    )
+    def test_legacy_publication_metadata_is_retired_without_losing_user_values(
+        self, tmp_path, app_env, record_contents
+    ) -> None:
+        """An old app-agent copy may predate trustworthy template provenance.
+
+        Only the known legacy publication field is retired; real preferences stay
+        byte-for-value, and this refresh establishes the current template record.
+        """
+        from kiro_crew import agent_spec_schema
+        from kiro_crew.apps import bridges
+
+        fixture = json.loads(_LEGACY_AGENT_FIXTURE.read_text(encoding="utf-8"))
+        app_name = fixture["appName"]
+        agent_name = fixture["agentName"]
+        prior = fixture["oldMaterialized"]
+        current = fixture["currentTemplate"]
+
+        source = _make_app_source(tmp_path, name=app_name)
+        (source / "agents" / "my-agent.json").write_text(
+            json.dumps(current, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        install_app(source)
+
+        link_name = bridges._safe_link_name(bridges._namespace(app_name, agent_name)) + ".json"
+        spec_path = app_env["kiro_agents"] / link_name
+        record_path = spec_path.with_suffix(bridges._TEMPLATE_RECORD_SUFFIX)
+        spec_path.write_text(
+            json.dumps(prior, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if record_contents is not None:
+            record_path.write_text(json.dumps(record_contents) + "\n", encoding="utf-8")
+        else:
+            assert not record_path.exists()
+
+        assert agent_spec_schema.check_spec(prior) == [("kiroUpgrade", "unknown field")]
+        value_bytes = {
+            key: json.dumps(prior[key], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            for key in ("model", "description", "toolsSettings")
+        }
+
+        assert bridges.refresh_app_agents(app_name) == [f"{app_name}/{agent_name}"]
+
+        written = json.loads(spec_path.read_text(encoding="utf-8"))
+        assert written == fixture["expectedMaterialized"]
+        assert "kiroUpgrade" not in written
+        for key, expected_bytes in value_bytes.items():
+            assert (
+                json.dumps(written[key], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                == expected_bytes
+            ), f"{key} changed during legacy metadata migration"
+        assert agent_spec_schema.check_spec(written) == []
+        assert (
+            json.loads(record_path.read_text(encoding="utf-8")) == fixture["expectedTemplateRecord"]
+        )
+
     def test_containment_keys_are_refreshed_not_preserved(self) -> None:
         """`managedToolPolicy` / `includeMcpJson` are the framework's, not the user's.
 
@@ -146,6 +212,7 @@ class TestUserAgentEditsSurviveRefresh:
             "tools",
             "allowedTools",
             "prompt",
+            "kiroUpgrade",
             "managedToolPolicy",
             "includeMcpJson",
             # A generated `file://` path list into the app's provisioned tree, rendered

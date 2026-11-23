@@ -664,6 +664,9 @@ _FRAMEWORK_OWNED_AGENT_KEYS = frozenset(
         "tools",  # policy grants/neutralizes decide what may mount
         "allowedTools",  # auto-approve list, intersected with the gov ceiling
         "prompt",  # generated (pet name / persona) — a path, not a preference
+        # Unsupported publication metadata from pre-template-record app agents.
+        # A clean template never writes it, so refresh must retire on-disk residue.
+        "kiroUpgrade",
         # The two below are CONTAINMENT, not preference — see the note in
         # _preserve_user_agent_edits for why that distinction decides ownership.
         "managedToolPolicy",  # which managed tools an app agent may NOT reach

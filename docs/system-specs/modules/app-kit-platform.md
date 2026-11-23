@@ -1440,9 +1440,11 @@ servers:
 
 - **Framework-owned, always refreshed** (`_FRAMEWORK_OWNED_AGENT_KEYS`): `name`,
   `mcpServers`, `tools`, `allowedTools`, `prompt`, `managedToolPolicy`,
-  `includeMcpJson`, `resources`. Each is derived from the
-  manifest, the per-app policy, or the running install — a stale value is a bug,
-  not a preference.
+  `includeMcpJson`, `resources`, and retired `kiroUpgrade` publication metadata.
+  Each is derived from the manifest, the per-app policy, the running install, or
+  a legacy framework write — a stale value is a bug, not a preference.
+  `kiroUpgrade` is unsupported by the current agent schema, so a clean template
+  never emits it and refresh removes old on-disk residue.
 - **Everything else on disk wins when the user owns it**: `model`, `description`,
   `toolsSettings`, `excludedTools`, `permissions`… The previous registration wrote
   the template's own values there too, so each registration keeps a **template
@@ -1452,9 +1454,9 @@ servers:
   the user's (`_user_owned_agent_keys`) and is kept, and the record leaves that key
   out from then on, so a later template that happens to equal the user's value and
   then changes it again cannot take it back. A spec with no record (written before
-  records existed) keeps every value on disk, and those keys stay the user's from
-  then on. Preserved keys are logged so the reason a template change did not appear
-  is visible.
+  records existed) keeps every non-framework-owned value on disk, while known legacy
+  framework residue is retired; the remaining keys stay the user's from then on.
+  Preserved keys are logged so the reason a template change did not appear is visible.
 
 The record is not `.json`, so kiro-cli and every spec scan skip it. It sits in the
 agents directory, which the sandbox seals read-only like the spec, and is written
