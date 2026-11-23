@@ -139,12 +139,15 @@ export function useLaneScrollMemory(
     // back on screen.
     // Unknown until the observer's first delivery, which reports the lane as it
     // mounted: reading `clientHeight` here would force a layout of the page
-    // inside the commit that mounts the sidebar.
+    // inside the commit that mounts the sidebar. A lane that mounts detached
+    // gets no first delivery (it has no size), so its first visible delivery
+    // must restore too; for a lane that mounted visible that is one redundant
+    // restore of the same anchor.
     let shown: boolean | null = null
     const ro = typeof ResizeObserver === 'function'
       ? new ResizeObserver(() => {
         const now = el.isConnected && el.clientHeight > 0
-        if (now && shown === false) restore()
+        if (now && shown !== true) restore()
         shown = now
       })
       : null

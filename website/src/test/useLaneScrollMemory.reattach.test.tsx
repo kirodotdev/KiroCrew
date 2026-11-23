@@ -76,4 +76,35 @@ describe('useLaneScrollMemory — the lane comes back on screen', () => {
     act(() => { shownHeight = 300; observers.forEach(o => o.fire()) })
     expect(lane.scrollTop).toBe(12 * ROW_H)
   })
+
+  it('restores on the first visible delivery when the lane mounted out of the document', () => {
+    const fake = (lane: HTMLDivElement) => {
+      Object.defineProperty(lane, 'clientHeight', { configurable: true, get: () => shownHeight })
+      lane.getBoundingClientRect = () => ({ top: 0, bottom: shownHeight } as DOMRect)
+      lane.querySelectorAll<HTMLElement>('[data-session-row]').forEach((row, i) => {
+        row.getBoundingClientRect = () => {
+          const top = i * ROW_H - lane.scrollTop
+          return { top, bottom: top + ROW_H } as DOMRect
+        }
+      })
+    }
+    // An earlier mount recorded row 12 at the top.
+    const first = render(<Lane />)
+    const lane1 = first.getByTestId('lane') as HTMLDivElement
+    fake(lane1)
+    act(() => { lane1.scrollTop = 12 * ROW_H; fireEvent.scroll(lane1) })
+    first.unmount()
+    observers.length = 0
+
+    // Remounted while detached: no size, so the observer never delivers.
+    shownHeight = 0
+    const { getByTestId } = render(<Lane />)
+    const lane = getByTestId('lane') as HTMLDivElement
+    fake(lane)
+    expect(lane.scrollTop).toBe(0)
+
+    // Its first delivery is the one that shows it.
+    act(() => { shownHeight = 300; observers.forEach(o => o.fire()) })
+    expect(lane.scrollTop).toBe(12 * ROW_H)
+  })
 })
