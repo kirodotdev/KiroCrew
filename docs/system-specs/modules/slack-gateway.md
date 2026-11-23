@@ -1364,6 +1364,29 @@ A click on a linked dashboard slot's prompt (`_resolve_linked_click`, which sett
 the slot and future the prompt was posted for) and a Trust click whose approval already resolved (`_grant_late_trust`) are `slack/handler_runtime/approvals.py`;
 the claimed region that answers the wire is `slack/handler_runtime/permission_ladder.py`.
 
+A linked prompt names its requester at parity with the native path, which keeps
+`requester=turn.user_id` for the whole turn with skills, lessons, hooks and the thread
+parent in the prompt. The requester is the shared user whose Slack message opened the
+slot's running turn (`slack/turn_requester.py`, stamped by `route_linked_thread` on the
+turn's task). One rule takes it away: once anyone other than the opener puts words into
+the linked turn, the requester is gone for the rest of that turn (`forget_turn_requester`),
+and the owner alone may answer. The places that apply it are a steer
+(`dashboard/chat_delivery.py`), what the prompt build adds (queued context, a cancelled
+turn's preamble, sub-agent notices, a cold-start replay, a responsive recovery transcript;
+`dashboard/chat_turn/prompt_assembly.py`), a typed rejection reason
+(`dashboard/chat_turn/permission_prompt.py`), a question-card answer
+(`dashboard/handlers/ask_question.py`) and an answered engine form
+(`dashboard/chat_turn/elicitation_prompt.py`). A queued message's turn, a dashboard, cron or wake
+turn, a child's call and a code channel's own session never carry one. A posted card
+re-reads the slot's live requester at the click (`live_card_requester`). The requester may Approve or Reject;
+Trust stays the owner's.
+
+A press that returns `None` (a refused clicker, or no approval waiting under that card)
+keeps the card's buttons for the owner and tells the clicker why in one ephemeral in the
+card's thread (`_handle_tool_approval` in `slack/interactions_approvals.py`): who can
+answer it (the owner, or the owner and the person whose message asked), only the owner
+can turn on Trust, or it is not waiting for an answer.
+
 ### `SlackClientOps` (ABC)
 Testable interface for the Slack Web API. `slack/client.py` owns the method list
 (posting, updating and deleting messages, reactions, pins, `upload_file`,
