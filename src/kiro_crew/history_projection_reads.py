@@ -1343,7 +1343,9 @@ class TranscriptReadProjection:
         with self._log._locked(key):
             tail = self._log._read_tail_messages(self._log._path(key), self._SPEECH_TS_WINDOW, None)
         for row in reversed(tail):
-            if is_speech_row(row.get("role"), row.get("content"), row.get("meta")):
+            if is_speech_row(
+                row.get("role"), row.get("content"), row.get("meta"), variants=row.get("variants")
+            ):
                 timestamp = row.get("ts")
                 return timestamp if isinstance(timestamp, str) and timestamp else None
         if len(tail) >= self._SPEECH_TS_WINDOW:
@@ -1420,6 +1422,7 @@ class TranscriptReadProjection:
         from kiro_crew.dashboard.host_sandbox_refusal import is_refusal_row
         from kiro_crew.dashboard.state import is_stop_event_row
         from kiro_crew.dashboard.system_notices import is_speech_row
+        from kiro_crew.messaging.alternation_echo import is_stored_echo_row
 
         path = self._log._path(key)
         try:
@@ -1496,7 +1499,9 @@ class TranscriptReadProjection:
                 # renders it; handing the raw list to the predicate would read
                 # legacy structured speech as machinery and blank the roster.
                 text = self._log._content_text(data.get("content"))
-                if speech_only and not is_speech_row(data.get("role"), text, data.get("meta")):
+                if speech_only and not is_speech_row(
+                    data.get("role"), text, data.get("meta"), variants=data.get("variants")
+                ):
                     # Machinery: skipped for the TEXT, kept for the recency.
                     if not newest_epoch:
                         newest_epoch = _row_epoch(data)
@@ -1505,7 +1510,7 @@ class TranscriptReadProjection:
                 # non-owner edge to redact by, so it never quotes one (as search).
                 if is_refusal_row(data):
                     continue
-                if not text:
+                if not text or is_stored_echo_row(data):
                     continue
                 # The ONE spelling of a roster preview (strip -> sanitize -> cap),
                 # shared with the live `member/message` writer in state_parts/slot_directory.py so
