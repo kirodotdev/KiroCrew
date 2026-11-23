@@ -7897,8 +7897,10 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
 - `trigger` accepts the whole alias table from the trigger alias table in `kiro-team/kiro-agent` (blob `2d4a3127e32e5e81e68d5c2ea406a6a5728f6d78`, `trigger-names.ts` under its hooks package) — twelve canonical triggers with their PascalCase identity rows, the IDE's
   legacy camelCase spellings, the CLI aliases and one Open Plugins legacy alias —
   keyed case-insensitively, which is one deliberate leniency over kiro-agent's
-  own case-sensitive lookup. That blob is the version to re-read when adding a
-  name
+  own case-sensitive lookup. The two compaction triggers, `PreCompact` and
+  `PostCompact` (and their camelCase spellings), come from the same table in the
+  pinned engine 0.66.117's published bundle, for fourteen in all. That blob and
+  that bundle are the ones to re-read when adding a name
 - `action` is `{"type": "command", "command": ...}` or
   `{"type": "agent", "prompt": ...}`; the type must be a string and the payload a
   non-empty string within `_MAX_HOOK_PAYLOAD_LEN`
@@ -7915,9 +7917,13 @@ Array-form rules (implemented in `normalize_spec_hooks()`):
 Left out of the kiro-cli emission, kept in the stored spec — and left out for
 that TRIGGER only, since autoimport still discovers a script in the hooks
 directory on its own unless a suppressed document names it: an `action` of type
-`agent`, the seven triggers kiro-cli has no event name for (`SessionEnd`, `PreTaskExec`,
-`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`), and
-the per-hook `name`, `description` and `timeout`. `enabled: false` and
+`agent`, the nine triggers kiro-cli has no event name for (`SessionEnd`, `PreTaskExec`,
+`PostTaskExec`, `PostFileCreate`, `PostFileSave`, `PostFileDelete`, `Manual`,
+`PreCompact`, `PostCompact`), and
+the per-hook `name`, `description` and `timeout`. Crew's own conversion
+(`agent_sdk/spec_hooks._from_documents`) gives a `PreCompact` or `PostCompact`
+document no number, so the other documents' `<agent>/<Event>/<n>` policy names
+are the ones they would have without it. `enabled: false` and
 `confirm: true` are NOT in that class: each grants less execution than the object
 form can express, so either one keeps the hook out of the kiro-cli spec entirely,
 with a log line and a SEL audit naming which. `hook_documents_suppressed_commands()`

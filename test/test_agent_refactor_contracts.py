@@ -80,7 +80,7 @@ BASE_SURFACE: dict[str, str] = {
     "_KAS_ACTION_TYPES": "value frozenset 903158b00413cba6",
     "_KAS_DOCUMENT_FIELD_LIMITS": "value tuple b80ab2c94d50d9dc",
     "_KAS_DOCUMENT_FIELD_TYPES": "value tuple 87ad0f01d8e8353c",
-    "_KAS_TRIGGER_CANONICAL": "value dict cc814336d72dc4c9",
+    "_KAS_TRIGGER_CANONICAL": "value dict 1c2ecd5e80d959b6",
     "_KAS_TRIGGER_TO_EVENT": "value dict 16182f505da03cae",
     "_KIROCREW_BIN": "value host",
     "_KIRO_MCP_JSON": "value host",
