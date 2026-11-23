@@ -610,7 +610,8 @@ class TestTheSessionArraySeam:
             client_mod.AcpClient._resolve_session_mcp_servers
         )
         assert "mirror.session_projection(" in source
-        assert "stub_elements=self._pooled_broker_stubs()" in source
+        assert "stubs = self._pooled_broker_stubs()" in source
+        assert "stub_elements=stubs," in source
 
     def test_the_base_projection_is_the_wire_face_with_nothing_off_wire(self, agents_dir):
         """Every mirror answers the client with ONE shape.
