@@ -27,7 +27,8 @@ field, a button's file picker with `via: chooser`, or a drop zone with
 `via: drop`) / `wait_for` /
 `wait_for_element` / `wait_for_network_idle` / `back` / `console` /
 `screenshot` / `tabs` (list, switch or close the tabs you opened) / `dialog` /
-`reflex`, and `ask` for a step only the user may do. When no op fits, `js`
+`set_appearance` (light, dark or reset) / `resize` (viewport width and
+height, or reset) / `reflex`, and `ask` for a step only the user may do. When no op fits, `js`
 runs JavaScript in your tab, `cdp` sends one DevTools Protocol command to it
 (`iframe_target` finds a cross-site frame for `js`), and `http_get` fetches a
 public URL without the browser's cookies; prefer the ops above. Call `snapshot`

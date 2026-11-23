@@ -296,11 +296,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "fence-neutralized and capped, before it leaves the op route.",
     ),
     (
-        "Browser sign-in completion",
-        "browser_harness/sign_in.py",
-        "The page URL a provider's sign-in completion lands on, the only part of it the "
-        "agent sees, passes the exfiltration-URL and credential redactors before it is "
-        "returned or written to the step label.",
+        "Browser per-origin sign-in",
+        "browser_harness/sign_in_guard.py",
+        "A provider's sign-in outcome reaches the agent as the site's host, a fixed "
+        "reason code and a note; the provider's own message passes the exfiltration-URL "
+        "and credential redactors whole before it is cut to 200 printable characters.",
     ),
     (
         "Browser action change reports",

@@ -475,37 +475,107 @@ the block in `needs_refresh`, as does the provider's own `status()` answering
 reduced to `{needs_refresh, message}`; `message` is edition-authored text
 (printable, at most 200 characters) Settings shows as-is.
 
-**Finishing a sign-in.** A provider may also have the OPTIONAL method
-`complete_sign_in(target, url) -> str | None` (not a Protocol member; read with
-`getattr`; the public Default has none, so nothing below runs there;
-[platform-context](platform-context.md)). `browser_harness/sign_in.py` wraps the
-op's own task (`run_op`): after a `navigate` that committed, it asks the provider
-only when the page is `https`, its host is in BOTH `domains()` and
-`browser.credentials.domains`, the browser is Kiro's own Chromium with
-`browser.credentials.enabled` on (read through the supervisor's own credential
-settings, so the apply and this question agree), and the
-person does not hold the tab. `target.reason` is `sign_in`; `domains()` and the
-method run in one worker thread bounded at 15 s (`budgets.SIGN_IN_PROVIDER_S`).
-Once per op: a completion that lands on a sign-in page again is not asked again;
-`tabs new`, `back` and a click that reaches a sign-in page are not covered. A
-returned URL is opened in the same tab only when it is `https`, has no userinfo,
-no control character, backslash or space, is at most the navigate cap, has a host
-in both domain lists, and passes the route's committed-URL gate
-(`OpContext.url_allowed`); the opened page's landing is judged by that gate again
-(a refused one is blanked, as for any navigate). The opening is bounded at 20 s
-(`budgets.SIGN_IN_NAV_S`); the route adds both bounds to every `navigate`'s budget
-(`budgets.SIGN_IN_WORST_S`), and so to the lock wait and the shim's timeout. It
-runs inside the op's task, so a takeover cancels it like any op. The navigate
-never fails because of it: the result gains `sign_in: {outcome, provider}`, where
-`outcome` is `not_offered`, `provider_timeout`, `provider_failed`,
-`provider_bad_shape`, `url_refused`, `held`, `nav_failed`, `redirect_refused` or
-`completed`. **The URL never leaves the gateway as data:** after a completion the
-agent is told the final page as origin and path only (query and fragment dropped,
-then the exfiltration and credential redactors), the live card's step reads
-"Finish sign-in on <host>", a refusal names the host only, and each asked
-completion writes ONE SEL row (`browser_harness.sign_in`, caller `gateway`):
-provider name, both hosts and the outcome. Nothing is set or kept: the site sets
-its own cookies, which the stale-cookie deletes above never touch.
+**Signing one origin in.** A provider may also have two OPTIONAL methods
+(not Protocol members; read with `getattr`; the public Default has neither, so
+nothing below runs there; [platform-context](platform-context.md)):
+`sign_in_hosts()`, the exact hosts the browser must never reach (the sign-in
+service), and `sign_in_for_origin(target, origin, sign_in_url, *, site_cookies)`.
+`browser_harness/sign_in_guard.py` owns it. After each credential apply
+(`sign_in_guard.reconcile`) the guard is on only for Kiro's own Chromium with
+`browser.credentials.enabled` on and a provider with both methods and a valid
+host, and off (`Fetch.disable`) otherwise. A `domains()` call that fails or times
+out keeps it on with no signable domain: everything stays blocked, nothing is signed. Turning it on, off or to other hosts is `prepare` (synchronous: the supervisor
+holds the guard before any await) then `converge`, which sends each session only
+the `Fetch` state it does not hold yet and records it only once the browser
+answered; the relay hooks stay until every session's interception is off. A run
+cut short (the 8 s re-pull budget) leaves the credential key unapplied, so the
+next navigation runs it again and finishes what is left (an unsettled guard is
+owed that run even with no applied key). At a browser start a run that does not
+land fails the start, so no op runs on a browser without its interception. While on, every agent tab's resident
+relay session (the one `set_appearance` and `resize` use, adopted once per tab;
+the daemon hears of a new tab only after it) carries `Fetch.enable` with two
+kinds of pattern: every `Document` response, and every request to a sign-in host
+on any scheme and port (`*://<host>*`; `classify` keeps the exact host).
+A 3xx whose `Location` is a sign-in host is failed (`Aborted`); every request to a
+sign-in host, of any type, is failed (`BlockedByClient`). So an agent tab never
+sends a request there and the sign-in service never sets a cookie through it.
+Pausing every document response costs one gateway round trip per page load; the
+narrower choice (pausing only sign-in-host requests and reading the redirect from
+`Network.requestWillBeSent`) would lose the failed redirect's `Set-Cookie`, which
+the provider needs. Only a
+tab's main frame is signed; a frame is blocked only. The origin is that of the URL
+whose response redirected (or of the page the tab is on, for a script that went to
+the sign-in host itself), never the sign-in URL, and it must be `https`, in both
+domain lists, not a sign-in host, and either a host the agent asked for in the
+op now running (its `navigate` URL, or a `tabs new` URL for the tab it opens; a
+`tabs new` that reuses a blank current tab counts for that tab). A redirect to
+another host, even a listed one, gets nothing unless that host was signed before or a host already
+signed in that browser context (`origin_not_requested` otherwise). The sign is
+registered before its request is answered, so the op that waits for it
+(`settle`) always sees it. One sign runs per context and host; a host
+signed under 30 s ago that bounces again is not signed again
+(`still_redirected`); a second tab that bounces for the same host meanwhile waits
+on that sign and is opened again with it. The provider gets the origin, the sign-in URL and the site's
+own cookies for that host (the context's jar plus the failed redirect's
+`Set-Cookie`, which the failure would otherwise lose), in a worker thread bounded
+at 15 s; `target.reason` is `navigate` or `renew`. Its cookies are kept only when
+each names the origin's host exactly or no domain (`cross_host` when none is
+left), written host-only (`url=origin`), `secure`, as session cookies into that
+tab's browser context, then read back by name, host, path and value: every cookie must have landed and
+an older one of the same name does not count (`readback_missing`).
+The switch, both domain lists, the caller's URL gate and the governance ceiling's
+browse decision (the
+gateway's and the chat whose op last ran on the tab, which a popup takes from its
+opener; a tab no chat is known for is never signed, since a renewal runs outside
+any op's gate; that caller's URL gate, `OpContext.url_allowed`, must also allow the
+page or a page of the same origin it already passed, the op's URL or the tab's
+page, so an app is signed only on its own sites while a same-origin login hop
+such as `/oauth2/start` still counts) are
+read as they are NOW before the provider is asked and again once it answers, together
+with whether the person holds the tab: a takeover (`held`) or a settings change
+meanwhile (`origin_not_requested`) writes nothing. A
+renewal re-opens the page in the tab, unless an op that can move the page (not a
+read-only one) started on that tab since it bounced (a click or navigate meanwhile keeps its page: `moved_on`). It re-opens the
+bounced page when the caller's URL gate allows it, else the same-origin page the
+tab showed; with neither the result is `nav_failed` and the agent opens it. While that page
+loads, a main-frame document the caller's gate refuses (a redirect off its sites)
+is failed, as an op's committed-URL check would refuse it; a `navigate` (`browser_harness/sign_in.py`)
+opens its URL again through `navigate_to` (bounded by `budgets.SIGN_IN_NAV_S`), so
+the agent gets a judged landing; only a sign whose bounce happened during that
+navigate re-runs it, never a renewal already in flight.
+After every op and every sign, each cookie on a sign-in host, or a parent-domain cookie
+one would be sent on a domain outside both domain lists, is deleted from every
+context (`SignInGuard.sweep`), and the bulk `cookies()` pull never sets one, nor a
+cookie with an explicit `domain` that a sign-in host would be sent (a parent
+domain). The
+op result carries `sign_in: {outcome, reason, provider, host, note}`: `outcome`
+is `signed_in`, `not_signed` or `held` (the person holds the tab or a tab it was
+opened from; nothing is asked); `reason` is a provider code (`not_signed_in`, `device_check_failed`,
+`signer_missing`, `signer_timeout`, `refused`, `other`; anything else reads as
+`other`) or a core one (`origin_not_requested`, `provider_timeout`,
+`provider_failed`, `provider_bad_shape`, `cross_host`, `readback_missing`,
+`still_redirected`, `nav_failed`, `moved_on`, `resubmit`: a bounced form post is
+never re-sent as a GET); `note` is a fixed sentence or the
+provider's
+`message`, through the exfiltration-URL and credential redactors whole, then cut
+to 200 printable characters. A renewal between
+ops shows on the tab's next op. The `browser` tool prints the block on every
+answer, a refusal and the snapshot, screenshot and read formats included
+(`mcp_tools/browser._popup_note`). Each sign writes ONE SEL row
+(`browser_harness.sign_in`, caller `gateway`): provider, host, outcome, reason and
+cookie count, never a URL or value. The cookies a sign set are remembered without
+values in the guard's own `PlacedCookies` (keyed by the host their `url` names) and,
+once `sign_in_guard.halt` has turned the guard off and cancelled every sign in
+flight (an op that ends, or a takeover that cuts it, cancels its own signs the same
+way), deleted before Kiro's Chromium stops, and purged from the profile after, like the
+bulk ones. Browser-wide as well, `Fetch.enable` on the browser target itself (no session)
+holds the same sign-in-host request patterns, so a target with no guarded session
+yet (a popup's first request before the relay adopts it, a worker, a
+cross-process frame) is failed too, never signed (`SignInGuard.on_browser_paused`;
+the relay hands those pauses to the guard and to no daemon client). An agent tab's
+own session sees its requests first, so its signing is unchanged. Not covered: a
+tab whose adoption failed is blocked but never signed; the sweep catches any
+cookie on a sign-in host.
 
 **File hygiene for providers.** `browser_harness/credential_files.py` is the
 generic reader an edition's provider uses for its source file:
@@ -571,7 +641,10 @@ it to be single-use.
   reach the daemon's shared event buffer.
 - **Agent tabs stay live.** Every target the daemon creates gets focus emulation,
   so a tab behind another tab keeps painting and Harness's input calls on it do
-  not hang. The user's own tabs are never attached.
+  not hang. The user's own tabs are never attached. That one relay-owned session
+  per agent tab (attached once, `_adopt_once`) also carries the `set_appearance`
+  and `resize` overrides (`CdpRelay.emulate`, only `EMULATE_METHODS`, refused for
+  a target outside the ledger).
 - **Tab ledger.** Each target the agent creates is recorded at the create reply,
   whether or not the page then loads; `tabs` lists only those and session end
   closes only those. A chat whose session ends -- its tab closed, archived as
@@ -1426,6 +1499,7 @@ the last navigate or snapshot.
 | `reflex` | a loop of the ops above over a closed move set, judged by the decision seam, in `step`, `realtime` or `virtual_time` mode; `not_available` when it is off ("The fast loop" below) |
 | `js`, `cdp`, `http_get` | Harness's own helpers, called as they are (`browser_harness/raw_ops.py`, reached from `ops.py` by a call-time import; the owner's decision `docs/decisions/2026-11-19-the-browser-tool-runs-harness-js-cdp-and-http-get.md`). `js {expression, target_id?}` evaluates the expression in the bound tab, or in `target_id`, which must be one of the caller's tabs (`agent_targets`) or an out-of-process iframe whose `Target.getTargets` `parentId` chain reaches one of them (`raw_ops._frames_of`) and that is still in the browser, else `not_agent_tab`; that target's own URL must pass the navigate gate (empty or `about:blank` passes), before the script and again after it (a value read from a target that moved is withheld), else `url_blocked`, since the committed-URL checks judge only the bound tab and a background tab or popup can have moved; `bad_expression` past `TEXT_CAP`. `cdp {method, params?}` sends one `Domain.method` (`bad_method`) on the bound tab's session: it takes no session id (`session_id` or `params.sessionId` is `not_agent_tab`, since no ledger says whose tab a session is on), a `params.targetId` must be one of the caller's tabs (`not_agent_tab`), and `params` may not carry the helper's own argument names (`bad_params`); a method that hands the browser a path on this computer (`DOM.setFileInputFiles`, `Input.dispatchDragEvent`, `Network.loadNetworkResource`, `Page.setDownloadBehavior`, `Browser.setDownloadBehavior`, and the tunnels `Target.sendMessageToTarget` and `Target.exposeDevToolsProtocol`, whose inner commands this list never sees) is `local_path`, since the browser runs outside the agent's sandbox and `upload` is the checked way to give a page a file. `http_get {url, headers?, timeout?}` fetches a public http(s) URL with no browser and answers a redirect as `{status, location}` without following it: the navigate gate reads its `url` in the shim and the route (`browser_sites.browser_call_url`, so an app slot's sites hold it too) and `ctx.url_allowed` once more (`url_blocked`); at most 32 headers with no line break (`bad_headers`); `timeout` is capped at 15 s, under the route's 20 s budget. All three are acting ops (`op_classes._ACT_OPS`), so the shim's hand-back wait holds them and a site's `read` grant never covers them. Each asks a person on its own card every call, whatever the agent's spec auto-approves or trust the chat holds: the op route opens an Allow / Deny agent ask on the caller's dashboard slot and answers `needs_approval` with its `ask_id`, the tool parks on that ask (`mcp_tools/browser._CardWait`) and posts the call again with `approval`, and the route runs it only on an Allow given for that same session and call digest, spending the answer (`dashboard/handlers/browser_card_ask.py`; `approval_mismatch`, `not_allowed`; `needs_person` with no dashboard slot or window, or for a Crew Mode worker). The card shows the whole call (the script, the method and its params, or the address with its query and headers), refused past 500 characters (`too_long_for_card`), and the Allow choice says what the step can do (Security, "Agent runs its own script or CDP command"), and no site grant names them (`op_classes.card_only`). Each writes one SEL `api_access` row (`operation=browser.<op>`, outcome `invoked`; `method=` for `cdp`, `url=` cut to scheme, host and path for `http_get`), never the expression, params, headers or result. The result is `{result}`: JSON text (a string as it is) redacted for credentials and exfiltration URLs and fence-neutralized whole, then cut at `READ_CONTENT_CAP`, with `truncated` and `total` past it; the shim puts it between the untrusted-page fences. A `js` or `cdp` reply past Harness's own 64 KiB IPC line fails as Harness's error. The pre- and post-op committed-URL checks below run as for any op, so a `cdp` `Page.navigate` that lands off the gate is blanked |
 | `iframe_target` | `{url_substr}` (`browser_harness/raw_ops.py`): Harness's `iframe_target`, held to the caller. It lists the browser's targets with `Target.getTargets` (through the worker's `cdp` helper) and answers the first `iframe` target whose URL contains `url_substr` and whose `parentId` chain, through other iframes, reaches one of the caller's tabs (`agent_targets`): `{target_id, url}` (the URL cut to scheme, host and path), or `target_id: null`. A frame of the person's own tabs is never answered, nor a frame whose URL the navigate gate refuses. A same-site frame has no target of its own (the snapshot's frame refs reach it). A read op (`op_classes.READ_ONLY_OPS`); `bad_url_substr` past 2,048 characters |
+| `set_appearance`, `resize` | `{scheme: light \| dark \| reset}` and `{width, height}` or `{reset: true}` (`browser_harness/emulation.py`; the owner's decision `docs/decisions/2026-11-23-the-browser-tool-sets-dark-mode-and-viewport-size.md`). `set_appearance` sets `prefers-color-scheme` with `Emulation.setEmulatedMedia` (`reset` sends no features); `resize` sets the viewport in CSS pixels with `Emulation.setDeviceMetricsOverride` (`deviceScaleFactor` 0, `mobile` false), width 320 to 3,840 and height 240 to 2,160 whole numbers, and `reset` alone sends `Emulation.clearDeviceMetricsOverride` (`bad_scheme`, `bad_size`). The bound tab (`current_tab`) must be in `agent_targets`, else `not_agent_tab`. Neither goes through Harness: Chrome keeps an Emulation override per CDP session and a reset from another session leaves it (checked on Chromium 154), and Harness attaches a new session on every `switch_tab` without detaching the old one, so the route's `OpContext.emulate` sends on the relay's own session of the tab (`CdpRelay.emulate`, through `_GatedRelay`, which asks the ceiling first), the one every set and reset of that tab share. Closing the tab, which a chat's end does, drops every override with that session; the person's own tabs have no such session. Host class `read` (`op_classes._OPEN_OPS`, beside `scroll`): they press, type and send nothing, but the page's own script may react, so they are not `READ_ONLY_OPS` and the hand-back wait holds them. Not in `_PAGE_TARGETED_OPS`: they name no ref or point, so after a popup they run on the new tab like `navigate` |
 
 Every op calls `live_hub.step`; `run_op`'s own `in_control` check is the backstop
 under the route's fence (the route holds the op until the hand-back, see Takeover).
@@ -1722,7 +1796,7 @@ reading op, "Trust reading, clicking, typing and uploading on `<host>`" on an ac
 for this session only: a site grant has no lifetime choice, and the approve route
 refuses one with `ttl_unsupported`. Which ops are which is
 `browser_harness/op_classes.host_trust_class` (`read`: the read-only ops,
-`navigate`, `tabs new`, `scroll`; `act`: `click`, `type`, `paste`,
+`navigate`, `tabs new`, `scroll`, `set_appearance`, `resize`; `act`: `click`, `type`, `paste`,
 `press_key`, `fill`, `dispatch_key`, `hover`, `select_option`, `drag`, `dialog`,
 `back`, `tabs switch`, `upload`; `tabs list` and `iframe_target`, which answer from every tab the agent owns, `ask`, `reflex`
 and every call of `op_classes.card_only`: `js`, `cdp`, `http_get` and `tabs close` never). An `act` grant also lifts `upload`'s own in-band card on that host (`browser_card_ask.upload_grant_host`); "Trust all tools" does not. The grant rides the command trust tier, and its

@@ -273,12 +273,14 @@ def _redacted(text: str) -> str:
 
 
 def _popup_note(result: dict[str, Any]) -> str:
-    """The route's popup fields (``popup``, ``popup_closed``) as one line, or ``""``.
+    """The route's own notices (``popup``, ``popup_closed``, ``sign_in``) as one line, or ``""``.
 
-    The snapshot and screenshot branches below print only their own fields, so
-    without this the notice that the tab changed would be lost there.
+    The snapshot and screenshot branches below print only their own fields, and a
+    refusal prints only its error, so without this the notice that the tab changed,
+    or why a site could not be signed in, would be lost there.
     """
-    notes = {k: result[k] for k in ("popup", "popup_closed") if isinstance(result.get(k), dict)}
+    keys = ("popup", "popup_closed", "sign_in")
+    notes = {k: result[k] for k in keys if isinstance(result.get(k), dict)}
     return f"\n{json.dumps(notes, default=str)}" if notes else ""
 
 

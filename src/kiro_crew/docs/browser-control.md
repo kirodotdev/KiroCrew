@@ -57,13 +57,17 @@ next page the agent opens picks it up. These cookies last only until the browser
 closes. One that expires, or that your organisation's sign-in leaves out,
 is removed from the browser before the next page the agent opens.
 
-If the agent opens a page that sends it to your organisation's sign-in, and your
-organisation's provider can finish that sign-in by itself, the browser finishes it
-in the same tab. The agent sees only the page it ends on, never the sign-in link.
+If your organisation's provider can sign a site in by itself, the browser never
+visits your organisation's sign-in page at all. When a site the agent opened sends
+the browser there, the gateway stops it, asks the provider to sign in for that one
+site, puts that site's cookies in, and opens the page again. The same happens when
+a site's sign-in runs out while a page is open. Another site gets nothing. If it
+cannot sign in, the agent is told why (for example, that you need to sign in again).
 
 Your own Chrome is never filled this way: it already has your logins, and the
-gateway does not write into your profile. The agent never sees a cookie value: not
-in a tool result, a page outline, a log or the audit record. The sign-in reaches
+gateway does not write into your profile. No tool result, page outline, log or
+audit record carries a cookie value, but the `cdp` op, which asks you each time,
+can read the browser's cookies. The sign-in reaches
 every agent browsing on this gateway, including the members and temporary sessions
 it serves.
 
@@ -167,6 +171,13 @@ the button and fills the picker, which you never see) or drop the files on a
 drop zone (`via: drop`), naming either by its ref or, for a zone the outline
 gives no ref, by its position on the page. A folder goes onto a drop zone, not
 into a file field or through a file picker a button opens.
+
+**Dark mode and screen size.** To check how a page looks, the agent can show
+its tab as if your computer were in dark or light mode (`set_appearance`), or
+give the tab another screen size, from 320 x 240 up to 3840 x 2160 CSS pixels
+(`resize`). Each has a reset. Both change only a tab the agent opened, never
+one of yours, and end when that tab closes, which happens when the chat ends.
+They count as reading steps: "Trust reading pages on" a site covers them there.
 
 **Scripts, DevTools commands and plain fetches.** When no step above fits, the
 agent can run the browser engine's own three tools: `js` runs a piece of
