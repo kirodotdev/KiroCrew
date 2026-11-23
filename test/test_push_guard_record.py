@@ -176,6 +176,32 @@ class TestPushGuardRecord:
             for i, sha in enumerate(shas)
         )
 
+    def test_a_record_it_cannot_open_only_unvouches_its_paths(self, repo_pair, monkeypatch):
+        """Rewriting a commit's record it cannot open keeps only the new paths.
+
+        The paths it held lose their vouch, so every check that reads the record lists
+        them to be named again: the lenient read fails closed.
+        """
+        clone_dir, _ = repo_pair
+        git_dir = _git(clone_dir, "rev-parse", "--absolute-git-dir")
+        sha = "1" * 40
+        _PG.record_built(git_dir, sha, {b"a.py", b"b.py"})
+        refused: list[str] = []
+
+        def _open(path, mode="r", *args, **kwargs):
+            if "r" in mode and os.path.basename(path) == sha:
+                refused.append(path)
+                raise PermissionError(13, "Permission denied", path)
+            return open(path, mode, *args, **kwargs)
+
+        guard = _load_push_guard()
+        monkeypatch.setattr(guard, "open", _open, raising=False)
+        guard.record_built(git_dir, sha, {b"c.py"})
+        assert refused
+        assert _PG._built(str(_built_dir(clone_dir) / sha)) == {b"c.py"}
+        unknown = _PG._unrecorded(git_dir, "HEAD", {b"a.py", b"b.py", b"c.py"}, [sha])
+        assert unknown == [b"a.py", b"b.py"]
+
     def test_a_re_created_branch_starts_with_an_empty_record(self, repo_pair):
         """A deleted branch's reflog goes with it, so a new branch of that name inherits nothing."""
         clone_dir, _ = repo_pair

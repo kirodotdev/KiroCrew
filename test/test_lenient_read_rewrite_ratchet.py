@@ -105,7 +105,10 @@ _KNOWN: dict[str, str] = {
     ),
     "kiro_crew/aws_consent.py::record_source_attestation": _PRESERVES,
     "kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard_record.py::"
-    "record_built": _UNAUDITED,
+    "record_built": (
+        "an unreadable record is rewritten with the new paths only, and _unrecorded only"
+        " subtracts a record's paths, so a dropped one is listed to be named again"
+    ),
     "kiro_crew/connections/mint.py::_forget_mint_spec": _FOUND_ONLY,
     "kiro_crew/connections/mint.py::_sweep_mint_specs": _FOUND_ONLY,
     "kiro_crew/dashboard/handlers/mcp_config_entries.py::_replace_kirocrew_spec": _FOUND_ONLY,
