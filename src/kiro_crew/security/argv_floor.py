@@ -309,6 +309,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FLAT_SUBSTITUTION_RE,
         _FUNCTION_BIND_CAP,
         _FUNCTION_DEF_RE,
+        _HEREDOC_RESET,
         _LINE_ASSIGNMENT_RE,
         _MAIN_READING,
         _MAX_SSH_READING_DEPTH,

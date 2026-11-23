@@ -1108,6 +1108,28 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     the closing line, where bash keeps it) or a line holding `<<` ends in a backslash
     (bash joins it to the next line; the view does not). Both guards only turn the
     allow off, so this floor never refuses more than it did without the view.
+    For an own-line input `_reaches_self_over_ssh` then reads the line ONE MORE
+    TIME, under the `_HEREDOC_RESET` flag, and refuses if that reading does: the
+    reset pass calls `shell_normalizer._heredoc_body_quotes_literal`, which returns
+    the command with every here-document BODY and its closing tag line removed, to be
+    read from a fresh quote state (see the tokenizer note below, including the
+    `arith_held` shift it skips, so a `<<` inside an open `$(( ))` does not expose a
+    real command after the arithmetic). Without that pass a body holding an unbalanced
+    quote (`cat <<EOF` NL `it's` NL `EOF` NL `ssh … localhost id` NL `# '`) keeps the
+    floor's own separator mask and its frame tokenizer reading everything after the
+    body as one quoted blob, so the `ssh … localhost` on the line after the closing
+    `EOF` is never seen; the reset pass drops the body and feeds the mask and the walk
+    the text that surrounds the bodies, which they read as the commands bash runs.
+    Removing whole bodies also exposes a command written BETWEEN two here-documents
+    (`cat <<A` .. `A` NL `kirocrew restart` NL `cat <<B` .. `B`), where a quote in body
+    A would otherwise pair with a quote in body B across A's closing line. A comment in the
+    kept text (a `#` at a word start outside any quote) is removed, an
+    `ssh … localhost` written INSIDE a body stays part of the dropped span, and the
+    bodies are found on the line as written (`raw_text`), since bash closes a body
+    only on its tag with case. The ordinary
+    reading and the main-reading pass keep a body's quotes as origin/main read them,
+    so the reset pass only ADDS a denial and never removes one. The here-document
+    body readers and the untracked fallback are unchanged.
   - `argv_floor_ssh_bodies.py` — the floor's reading of substitution bodies
     (`_reaches_self_over_ssh`). The static splice reads only the first command of a
     `$( )` or backtick body, so `$(echo hi; ssh -p 22 <this host> id)` would splice to
@@ -1182,6 +1204,59 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   `$((a) …)`), or is still open at the next newline, reads exactly as with no span
   tracking. The read stays one pass.
   The default stays the stopping read, for callers that do not ask.
+  `read_commands` resumes after a tag line in a CLOSED quote state, so a floor that
+  reads through it (the rm floor) already reads the text after a here-document's
+  closing line as the fresh command bash runs. The self and ssh floors do not read
+  through `read_commands`: they tokenize the line with `shlex` (`_self_tokens`) or
+  scan it with the ssh floor's own quote mask, both quote-blind to a here-document,
+  so a quote left open in a body would pair with a quote after the closing line and
+  bury the command on it (`cat <<EOF` NL `it's` NL `EOF` NL `kirocrew restart` NL
+  `# '`). So each of those two floors evaluates the command through TWO INDEPENDENT
+  readings and refuses if EITHER reading does: the command as written, and a second
+  reading with `shell_normalizer._heredoc_body_quotes_literal` applied. Each reading
+  runs the floor in FULL on its own — its own tokenization, alias and assignment
+  resolution, nested payload descent and denial check — and no reading's token stream
+  is ever concatenated with another's. That helper locates each body and its delimiter
+  line with `read_commands` and returns the command with every here-document BODY and
+  its closing tag line removed, to be read from a fresh quote state: what is kept is
+  everything AROUND the bodies -- each opener line, any command written BETWEEN two
+  closing lines, and the final tail. No quote in a body can pair across its closing
+  line, or with a quote in a later body, so a self-restart or self-ssh written between
+  two bodies (`cat <<A` .. `A` NL `kirocrew restart` NL `cat <<B` .. `B`) or after the
+  last one is exposed, while one written INSIDE a body stays part of the removed span.
+  Each comment in the kept text is removed too, found the way bash finds one: a `#`
+  only at a word start OUTSIDE any quote (the shared quote walk `_iter_shell_chars`
+  plus `_opens_comment`), running to its newline, so a quote or a self command in a
+  real comment opens and runs nothing. A `#` inside quotes or mid-word is data and
+  stays, so a quoted argument whose line starts with `#` (`echo 'Heading` NL `# end'`)
+  still closes its quote; no line-level `startswith("#")` test is used. The bodies
+  are found on the command AS WRITTEN, case and line continuations intact, because
+  bash matches a closing tag case-sensitively: an `eof` line in an `EOF` body is body
+  text, not its end. `is_denied` keeps the submitted text for the call
+  (`_keep_submitted_command`), the payload walk hands it (and the matching slice of
+  each nested payload, when the payload sits in it verbatim) to the reset reading,
+  and the ssh floor uses its `raw_text`; only the text left after the removal is
+  lowered and folded for tokenizing. Without the submitted text (or when its lowered
+  form is not the text read) the reset reads the lowered text as before. The body
+  stays in place for the here-document payload readers, which read the whole command
+  unchanged. The as-written reading is what
+  origin/main tokenizes, so the second reading is a PURELY ADDITIONAL denial check: it
+  can only catch the buried command, never drop a denial the as-written reading has, so
+  head's denial set is a superset of main's because the as-written reading is run
+  unchanged. `_self_tokens` produces ONE reading per call: the as-written reading by
+  default, and the reset reading when `_HEREDOC_RESET` is set. The self floors' payload
+  walk seeds that reset reading as a SECOND independent pass — a frame of its own, with
+  its own tokens and descent, deduping nested payloads per reading so each reading walks
+  every one — alongside the as-written pass whenever a `<<` is present;
+  the ssh floor adds its reset reading the same way, through its own `_HEREDOC_RESET`
+  flag. The second reading runs only when the command contains `<<`, so a command with
+  no here-document keeps the single reading and its linear cost. The quote-reset applies
+  only to a reader-CONFIRMED here-document: a `<<` the reader held inside an open
+  `$(( ))` / `(( ))` is a left SHIFT, not a body (`HereDoc.arith_held`), so its fictional
+  span is skipped and no real command after the arithmetic is exposed. An
+  unclosed body (nothing runs after it) and a degenerate delimiter carrying a quote,
+  backslash or substitution character (`<<'a"'`, `<<$(x)`), whose own quote is
+  structural, stay read as before.
   `pipelines(commands)` groups one read's commands into the pipelines bash runs: a command
   joins the one before it when that one ended in `|`, in `|&` (read as `|` then an empty
   `&`), or opened the `( … )` group the pipe feeds (`| (sh)`).

@@ -832,6 +832,7 @@ def is_denied(
     _diag = _submodule("diagnostics")
 
     lower = tool_name.lower()
+    _submodule("shell_normalizer")._keep_submitted_command(tool_name)
     waive = _DenyWaiver(tool_name, frozenset(waived))
 
     def _reason(
