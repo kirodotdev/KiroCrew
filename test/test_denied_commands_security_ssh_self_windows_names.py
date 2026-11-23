@@ -158,3 +158,32 @@ def test_a_windows_name_in_an_ssh_option_value_stays_refused(cmd):
 )
 def test_a_windows_name_as_a_git_or_tar_remote_host_is_refused(cmd):
     assert _denied_by(cmd) == "sandbox-escape-git-tar-self", cmd
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # A push refspec names refs, never a transport: its source and its
+        # destination are not hosts, bare or as ``src:dst``.
+        "git push origin %COMPUTERNAME%:refs/heads/ci/%COMPUTERNAME%",
+        "git push origin %COMPUTERNAME%",
+        "git push -o ci.skip origin %COMPUTERNAME%:refs/heads/ci/%COMPUTERNAME%",
+        "git push --force origin %COMPUTERNAME%:ci/%COMPUTERNAME% build:ci/build",
+    ],
+)
+def test_a_windows_name_in_a_push_refspec_is_not_a_host(cmd):
+    assert _denied_by(cmd) is None, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # The remote of a push still names a host, after a detached option value too.
+        "git push %COMPUTERNAME%:/srv/repo.git feature",
+        "git push -o ci.skip %COMPUTERNAME%:/srv/repo.git feature",
+        "git push --repo %COMPUTERNAME%:/srv/repo.git feature",
+        "git push ssh://%COMPUTERNAME%/srv/repo.git feature",
+    ],
+)
+def test_a_windows_name_as_a_push_remote_is_refused(cmd):
+    assert _denied_by(cmd) == "sandbox-escape-git-tar-self", cmd

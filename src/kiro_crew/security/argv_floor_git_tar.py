@@ -81,6 +81,7 @@ from .argv_floor_ssh import (
     _ssh_floor_unmasked_text,
     _unmask_separators,
 )
+from .argv_floor_ssh_operand import _REFSPEC_WORD, _git_push_refspec_indices
 from .argv_floor_tar import (
     _GLOB_WORDS,
     _RAW_COMMAND,
@@ -689,8 +690,11 @@ def _git_transport_modes(verb: str, tokens: "list[str]") -> "tuple[bool, bool]":
     return False, False
 
 
-def _git_tokens_target_self(tokens: "list[str]") -> bool:
+def _git_tokens_target_self(tokens: "list[str]", *, push: bool = False) -> bool:
     """True if any post-verb transport operand or executable targets self.
+
+    With *push*, a refspec word (``_git_push_refspec_indices``) is read without
+    the Windows own-name spellings: its source and destination are refs.
 
     An ``ext::`` operand is read with the operands after it up to the next
     ``ext::`` operand, and an option's ``ext::`` value (``--opt=ext::x``,
@@ -715,10 +719,16 @@ def _git_tokens_target_self(tokens: "list[str]") -> bool:
         elif any(_git_ext_command(candidate, []) is not None for candidate in candidates[idx]):
             value_end = idx
     payload_ends.reverse()
+    refspecs = _git_push_refspec_indices(words) if push else frozenset()
     for idx, token_candidates in enumerate(candidates):
         for position, masked_candidate in enumerate(token_candidates):
             candidate = _unmasked(masked_candidate)
-            if _git_remote_targets_self(candidate) or _command_value_dials_self(candidate):
+            refspec = _REFSPEC_WORD.set(position == 0 and idx in refspecs)
+            try:
+                dials = _git_remote_targets_self(candidate) or _command_value_dials_self(candidate)
+            finally:
+                _REFSPEC_WORD.reset(refspec)
+            if dials:
                 return True
             # Position 0 is the whole token; the rest are an option's attached value.
             following = words[idx + 1 : payload_ends[idx][min(position, 1)]]
@@ -877,7 +887,7 @@ def _git_command_targets_self(tokens: "list[str]", env: "dict[str, list[str]]") 
 
     # Remote and command discovery is token-agnostic: no option grammar
     # decision can hide a self-targeting operand or executable override.
-    if _git_tokens_target_self(command_tokens):
+    if _git_tokens_target_self(command_tokens, push=verb == "push"):
         return True
     return _git_rewritten_remotes_dial_self(
         verb == "push",
