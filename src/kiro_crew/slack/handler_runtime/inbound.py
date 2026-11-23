@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         agent_switch_target,
         append_and_surface,
         config_path,
+        crew_bots,
         is_allowed_user,
         is_sensitive_path,
         is_shared_listed,
@@ -413,7 +414,6 @@ def _read_thread_overrides(
     # may be recorded under it).
     if is_slack_born(session_key):
         from kiro_crew.execution_context import execution_from_record
-        from kiro_crew.slack.channel_crew import crew_bots
 
         agent_field = str(meta.get("agent") or "")
         try:
@@ -825,8 +825,9 @@ async def route_linked_thread(
             shared_user_refused_unbound,
         )
 
+        # *reply_ts* too: a Conductor thread is the owner's in any channel or DM.
         if await asyncio.to_thread(
-            shared_user_refused_in, channel
+            shared_user_refused_in, channel, reply_ts
         ) or await shared_user_refused_unbound(slack, channel):
             sel().log_api_access(
                 caller=user_id,
@@ -858,6 +859,21 @@ async def route_linked_thread(
             _dest = str((_sessions.get_session_for_thread(reply_ts) if _sessions else "") or "")
         if await shared_user_refused_for_session(user_id, _dest, reply_ts, channel):
             return LinkedRoute.REFUSED
+    # A Conductor thread (``kiro_crew.slack.conductor_thread``): only the owner's
+    # messages reach its session, an ended one runs nothing and never falls back to
+    # plain routing, and the words that would change what it is are answered here.
+    from kiro_crew.slack import conductor_thread
+
+    if await conductor_thread.gate_message(
+        text,
+        user_id,
+        channel,
+        slack,
+        reply_ts,
+        _linked_slot,
+        interpret_commands=interpret_commands,
+    ):
+        return LinkedRoute.REFUSED
     if not _linked_slot:
         # No live slot: a dashboard session whose tab is closed can still own
         # the thread, and the plain route would run the reply on its recorded

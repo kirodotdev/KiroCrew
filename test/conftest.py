@@ -387,6 +387,7 @@ from conftest_slack import (  # noqa: E402,F401 -- bound for pytest and importer
     _clean_slack_thread_state,
     _enterprise_bypass,
     _reset_code_channel_audience,
+    _reset_conductor_thread_notices,
     _reset_options_control_state,
     _reset_thread_board,
 )
