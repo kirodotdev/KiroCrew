@@ -146,6 +146,76 @@ def _is_plain_git(word: str) -> bool:
 
 _SEPARATORS = frozenset({";", "|", "||", "&", "&&", "{", "}"})
 
+#: Command operators that, glued into one shlex word, still separate commands.
+#: Quoted operators are masked out of the word upstream (the ssh-floor source
+#: pre-walk), so a literal one here is always a real separator; a leading ``(``
+#: glued to a following word opens a subshell. ``{``/``}``, a lone ``&`` and a
+#: redirection ``&`` (``2>&1``) are deliberately NOT here: they stay in the word
+#: and are read exactly as before.
+_GLUED_BOUNDARY_OPS = frozenset({"&&", "||", ";;", ";", "|"})
+
+
+def _expand_glued_boundaries(token: str) -> "list[str]":
+    """*token* split so a command operator glued into it becomes its own piece.
+
+    The one rule: split a glued separator ONLY in a word that carries no other
+    shell metacharacter. Without this a word that carries a glued ``;`` / ``|`` /
+    ``||`` / ``&&`` or a glued ``(`` is kept whole, so the piece after the
+    operator never starts its own command. A quoted
+    operator is masked to a placeholder upstream, so a literal ``;`` / ``|`` /
+    ``||`` / ``&&`` here separates commands, and a ``(`` glued to a following word
+    opens a subshell (emitted as a boundary). A word that ALSO carries a
+    substitution (``$(`` / `` ` `` / ``${``), a ``)`` (a ``case`` pattern or a
+    subshell close), a ``#`` comment, or a ``>|`` / ``<|`` redirection is left
+    whole for the unsplit reading: an operator there is not an outer command
+    boundary, so splitting it could drop or invent a command. A bare ``(`` token,
+    ``{`` / ``}``, a lone ``&`` and a redirection ``&`` are left in place too.
+    """
+    # THE ONE RULE: split a glued separator only in a word that carries no other
+    # shell metacharacter. A substitution (``$( )``, `` ` ``, ``${ }``), a ``)``
+    # (a ``case`` pattern like ``a|b)``, or a subshell close) or a ``#`` comment
+    # means an operator in the word is NOT an outer command boundary, so splitting
+    # it could drop or invent a command; leave the whole word to the unsplit
+    # reading, which keeps it. (A ``>|`` / ``<|`` redirection ``|`` is handled
+    # below for the same reason.)
+    if any(mark in token for mark in ("$(", "${", "`", ")", "#")):
+        return [token]
+    ops = ("&&", "||", ";;", ";", "|")
+    pieces: list[str] = []
+    buf = ""
+    i, n = 0, len(token)
+    while i < n:
+        ch = token[i]
+        if (
+            ch == "("
+            and not buf
+            and (i == 0 or token[i - 1] not in "$<>")
+            and i + 1 < n
+            and token[i + 1] not in "();|&"
+        ):
+            # A subshell opened right before a word starts a fresh command, like a
+            # separator; emit one so the word after it is not read as the paren's
+            # argument. A bare ``(`` token keeps its existing reading (not split).
+            pieces.append(";")
+            i += 1
+            continue
+        hit = next((op for op in ops if token.startswith(op, i)), None)
+        if hit == "|" and i > 0 and token[i - 1] in "<>":
+            hit = None  # ``>|`` / ``<|`` is a redirection operator, not a pipe
+        if hit:
+            if buf:
+                pieces.append(buf)
+                buf = ""
+            pieces.append(hit)
+            i += len(hit)
+            continue
+        buf += ch
+        i += 1
+    if buf:
+        pieces.append(buf)
+    return pieces or [token]
+
+
 #: Reserved words after which the next word is still in command position.
 _COMPOUND_OPENERS = frozenset({"then", "do", "else", "elif", "{", "(", "!"})
 
@@ -203,7 +273,9 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
     return _shell._program_basename(tokens[i]), tokens[i + 1 :]
 
 
-def _split_commands_indexed(tokens: "list[str]") -> "list[list[tuple[int, str]]]":
+def _split_commands_indexed(
+    tokens: "list[str]", glue_split: bool = False
+) -> "list[list[tuple[int, str]]]":
     """*tokens* cut into one command per argv, each word kept with its index.
 
     The one place comment and separator boundaries are decided; callers that
@@ -222,30 +294,44 @@ def _split_commands_indexed(tokens: "list[str]") -> "list[list[tuple[int, str]]]
         if not token:  # an empty word (``chmod "" 777 x``) is an argument, not a separator
             current.append((i, token))
             continue
-        if token.startswith("#"):
-            in_comment = True
-        elif _shell._ends_argv(token):
-            # A separator glued to a word (``https://x;``) keeps the word.
-            word = token.rstrip(";|&")
-            if word and word not in _SEPARATORS and not word.endswith("{"):
-                current.append((i, word))
-        else:
-            current.append((i, token))
-            continue
-        if current:
-            out.append(current)
-        current = []
+        # With *glue_split*, a command operator glued into the word is split off
+        # first, so the piece after it starts its own command; each piece keeps
+        # this token's index ``i``. Only callers whose tokens had quoted operators masked upstream
+        # pass it; the default leaves a glued operator inside the word, as before,
+        # because a dequoted/unmasked token cannot tell a quoted operator from a
+        # real one.
+        for piece in _expand_glued_boundaries(token) if glue_split else [token]:
+            if piece in _GLUED_BOUNDARY_OPS:
+                if current:
+                    out.append(current)
+                current = []
+                continue
+            if piece.startswith("#"):
+                in_comment = True
+            elif _shell._ends_argv(piece):
+                # A separator glued to a word (``https://x;``) keeps the word.
+                word = piece.rstrip(";|&")
+                if word and word not in _SEPARATORS and not word.endswith("{"):
+                    current.append((i, word))
+            else:
+                current.append((i, piece))
+                continue
+            if current:
+                out.append(current)
+            current = []
     if current:
         out.append(current)
     return out
 
 
-def _split_commands(tokens: "list[str]") -> "list[list[str]]":
+def _split_commands(tokens: "list[str]", glue_split: bool = False) -> "list[list[str]]":
     """*tokens* (one frame's flat argv) cut into one argv per command.
 
     A comment runs to the next separator; a ``find -exec`` command is its own argv.
+    *glue_split* is forwarded to :func:`_split_commands_indexed`: pass it only
+    when the tokens had quoted operators masked upstream.
     """
-    out = [[word for _, word in command] for command in _split_commands_indexed(tokens)]
+    out = [[word for _, word in command] for command in _split_commands_indexed(tokens, glue_split)]
     return [*out, *(sub for argv in out for sub in _find_exec_argvs(argv))]
 
 
