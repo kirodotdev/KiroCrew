@@ -6,7 +6,7 @@ created: 2026-11-21
 last-audited: 2026-11-22
 audited-at: 03224a1e17
 doc-pr: 40538
-implementation-prs: []
+implementation-prs: [41456]
 tracking-issues: []
 supersedes: [rfc-conductor-split-default.md]
 superseded-by: []
