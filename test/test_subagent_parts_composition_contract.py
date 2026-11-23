@@ -559,6 +559,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "(self, info: 'SubagentInfo', reason: 'str', failure_info: 'SubagentInfo | None' = None, messages: 'list | None' = None) -> 'None'",
     ),
     "_announce_rejection": ("method", "(self, info: 'SubagentInfo') -> 'SubagentInfo'"),
+    "_append_result_chunk": ("async method", "(self, info: 'SubagentInfo', text: 'str') -> 'bool'"),
     "_arm_followup_watcher": ("method", "(self, info: 'SubagentInfo') -> 'None'"),
     "_audit_followup": ("method", "(self, info: 'SubagentInfo', outcome: 'str') -> 'None'"),
     "_await_lane_resume": (

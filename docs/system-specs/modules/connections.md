@@ -297,7 +297,19 @@ directly: `reason=validated_grant` when an on-disk grant was re-verified and
 proven usable without spawning a fresh consent flow, and `url_minted=<bool>` on
 a completed spawn — `True` when the dedicated kiro-cli spawn produced an
 approval URL, `False` when it found no challenge (an open endpoint, or a grant
-that landed concurrently). The route a Connect took is derivable from those
+that landed concurrently).
+
+**The cold mint waits for the server's own report.** Readiness drains MCP start-up
+frames for about a second, and a remote server that runs OAuth discovery and
+client registration first (Atlassian) asks for sign-in after that. So the kiro-cli
+route drains the session until the spec's server reports, inside the same
+`_MINT_READY_TIMEOUT_SECONDS` deadline, and only a server that reports ready
+counts as an open endpoint. A server that reports a failure, or asks for sign-in
+with no usable URL, ends `failed` with `reason=mint_server_failed`; a kiro-cli
+process that exits first ends `mint_process_gone`; a server that never reports
+ends `mint_timeouterror`. When a check has disproved the stored grant, each of
+those three ends `mint_grant_unproven` instead, so the card keeps its
+unproven-grant fence (see below). The route a Connect took is derivable from those
 fields; no separate label is emitted. A latency-tier vocabulary belongs to the
 warm-runtime seam (a URL already held; an activation on a shared warm process)
 and ships with that seam, where its routes exist as code and its consumers

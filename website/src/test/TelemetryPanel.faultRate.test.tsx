@@ -199,6 +199,16 @@ describe('TelemetryPanel startup faults', () => {
     expect(startupTile().textContent).toContain('23 startups recorded')
   })
 
+  it('does not count a cancelled start as a fault', async () => {
+    // Stop, a closed chat or a reset during the start ended it on purpose; the
+    // start never failed. It still counts as a recorded startup.
+    await mount(withStartupOutcome({ ready: 20, error: 1, cancelled: 4 }))
+    await waitFor(() => expect(screen.getByText('Startup faults')).toBeInTheDocument())
+
+    expect(startupValue().textContent).toBe('1')
+    expect(startupTile().textContent).toContain('25 startups recorded')
+  })
+
   it('uses the singular when exactly one startup was recorded', async () => {
     await mount(withStartupOutcome({ ready: 1 }))
     await waitFor(() => expect(screen.getByText('Startup faults')).toBeInTheDocument())

@@ -23,7 +23,8 @@ from subagent_persistence_helpers import (  # noqa: F401 -- the fixture is reque
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
-pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+# Every manager a test builds is closed at teardown, releasing its task store.
+pytestmark = pytest.mark.usefixtures("healthy_host_memory", "close_subagent_managers")
 
 
 # ── Slice 2: spawn() creates agent folder ────────────────────────────
@@ -223,6 +224,55 @@ class TestResultStreamingToAgentFolder:
         assert result_path.read_text(encoding="utf-8") == "hello world"
         # info.result_path should point to agent folder
         assert info.result_path == str(result_path)
+
+    @pytest.mark.asyncio
+    async def test_every_chunk_is_written_off_the_event_loop_in_order(
+        self, agent_root, monkeypatch
+    ):
+        """Each chunk's write resolves the run folder and opens result.txt, so
+        it runs in a worker, never on the gateway's event loop, and the
+        appends still land byte for byte in the order the chunks streamed."""
+        import threading
+
+        from subagent_stop_reason_helpers import (
+            _complete,
+            _manager,
+            _mock_sessions,
+            _spawn_and_wait,
+            _text,
+        )
+
+        import kiro_crew.subagent as subagent
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+
+        loop_thread = threading.get_ident()
+        real_write = subagent.write_result_chunk
+        on_loop: list[str] = []
+        chunks = [f"chunk {i}\n" for i in range(200)]
+        streamed: list[str] = []
+
+        def _recording_write(agent_id, text, *, fresh=False):
+            if threading.get_ident() == loop_thread:
+                on_loop.append(text)
+            return real_write(agent_id, text, fresh=fresh)
+
+        def factory(msg, *a, **kw):
+            async def _gen():
+                for chunk in chunks:
+                    yield _text(chunk)
+                # What the writes left, read before the ending rewrites it whole.
+                (result_path,) = agent_root.glob("*/result.txt")
+                streamed.append(result_path.read_text(encoding="utf-8"))
+                yield _complete(STOP_REASON_END_TURN)
+
+            return _gen()
+
+        monkeypatch.setattr(subagent, "write_result_chunk", _recording_write)
+        info = await _spawn_and_wait(_manager(_mock_sessions(factory)))
+
+        assert info.outcome == "completed"
+        assert on_loop == []
+        assert streamed == ["".join(chunks)]
 
 
 # ── Slice 4: Per-turn state.json updates ─────────────────────────────
