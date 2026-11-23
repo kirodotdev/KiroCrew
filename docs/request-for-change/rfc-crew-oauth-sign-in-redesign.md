@@ -6,7 +6,7 @@ created: 2026-11-16
 last-audited: 2026-11-20
 audited-at: c157748343
 doc-pr: null
-implementation-prs: []
+implementation-prs: [41513]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew-owned MCP sign-in, redesigned for first use, remote gateways and chat
 
-- Status: draft. Nothing is built, and this document changes no code.
+- Status: draft. Phase 3 (section 2) is built in [#41513](https://github.com/kirodotdev/KiroCrew/pull/41513); nothing else is.
 - Builds on [rfc-crew-owned-oauth.md](rfc-crew-owned-oauth.md) (the gateway runs OAuth and holds the tokens) and its 2026-11-10 Slack amendment, shipped in [#34811](https://github.com/kirodotdev/KiroCrew/pull/34811). It changes how a person reaches and finishes that sign-in. It does not change custody, the bridge or the proxy gate.
 - Per-person Connection tokens in a shared Crew (this RFC's former section 7.4 and Phases 5a and 5b) moved to their own RFC, `rfc-crew-oauth-per-person-connections.md`, proposed in [#39049](https://github.com/kirodotdev/KiroCrew/pull/39049).
 - Measured at `origin/main` `3c9f33cdc80`; re-audited 2026-11-18 at `224959b4ade`. Paths are under `src/kiro_crew/` or `website/src/` unless they start with `docs/`.
@@ -214,14 +214,25 @@ Slack channel and the Slack Connection.
 - **No new registry field.** The manifest is not built from the registry,
   so `app_manifest` and `redirect_urls_extra` are not added. The https
   return address (section 4.3) stays a manual redirect the person adds.
-- **Not proven yet.** Slack's docs say a `localhost` redirect counts as a
-  desktop redirect only "if the app has opted into PKCE". Whether Slack
-  accepts the redirect when `pkce_enabled` arrives in the same manifest is
-  not documented. Phase 0 tests it on a throwaway workspace, with [#38169](https://github.com/kirodotdev/KiroCrew/pull/38169)'s
-  manifest. If Slack refuses, the card shows one extra step with a short
-  picture: "Open **OAuth & Permissions**, check that PKCE is on, add this
-  redirect URL." The **Copy** button for the redirect is already on the
-  card.
+- **Phase 0 verdict, 2026-11-19: Slack accepts it.** Slack's docs say a
+  `localhost` redirect counts as a desktop redirect only "if the app has
+  opted into PKCE", and do not say whether `pkce_enabled` may arrive in the
+  same manifest as the redirect. The repository owner tested it in a test
+  Slack workspace with [#38169](https://github.com/kirodotdev/KiroCrew/pull/38169)'s
+  manifest, `slack.slack_mcp` on, and posted the results on
+  [#38169 (2026-11-19)](https://github.com/kirodotdev/KiroCrew/pull/38169#issuecomment-7016161038):
+  Slack created the app from that one manifest with PKCE on, the
+  `localhost:48106` redirect and the bot scopes, with no error; **Install to
+  Workspace** issued the `xoxb-` bot token and the bot answered a DM; and
+  **Connect** on the Slack card succeeded and a chat read the workspace
+  through Slack's MCP server. The review lane accepted these results on
+  that PR's head `674fb0f0`. So the card needs no extra PKCE or redirect
+  step.
+- **Bot scopes.** The table's last row assumed a Connection-only app. With
+  one app for the channel bot and the Connection, the manifest keeps the
+  bot's scopes, and the Connection asks only for user scopes when it signs
+  in (`https://slack.com/oauth/v2_user/authorize`), which is the shape the
+  Phase 0 run proved.
 - **Steps that stay manual**, each with one cropped picture in the guide:
   copying the Client ID and Client Secret from **Basic Information**, and an
   admin approval where the workspace needs one. The pictures live under

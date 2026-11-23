@@ -1,13 +1,13 @@
 # Register a Slack OAuth app for Kiro Crew Connections
 
-*Who this is for: the person who owns (or can create apps in) the Slack workspace that Kiro Crew should read. You need a browser and a Slack account with permission to install apps in that workspace. Expected time: 20 minutes, plus any wait for a workspace admin to approve the app.*
+*Who this is for: the person who owns (or can create apps in) the Slack workspace that Kiro Crew should read. You need a browser and a Slack account with permission to install apps in that workspace. Expected time: 10 minutes, plus any wait for a workspace admin to approve the app.*
 
 Slack is a pre-registered Connections entry (see the [index](README.md)): its
 card reads "needs configuration" until the Client ID and Client Secret from
 section 5 are saved, and offers **Connect** after, once the Crew-owned sign-in
 preview is on and your chats run on Kiro Agent.
 
-This runbook covers the **Slack MCP server** (`https://mcp.slack.com/mcp`), which lets Kiro Crew search and read Slack on behalf of the signed-in user. It is not the Slack channel bot described in `docs/guides/slack-setup.md`; that is a separate feature with separate tokens. You can reuse one Slack app for both: turn on **Slack tools for your agents** (Settings → Messaging Channels → Slack → Slack Code) and save the manifest Kiro Crew generates on your bot app, which adds the MCP toggle, PKCE, the redirect URL and the user scopes below while the app keeps its Bot Token Scopes (see the Slack setup guide). Then continue at section 4. The rest of this document registers a separate app for the MCP side only.
+This runbook covers the **Slack MCP server** (`https://mcp.slack.com/mcp`), which lets Kiro Crew search and read Slack on behalf of the signed-in user. It is not the Slack channel bot described in `docs/guides/slack-setup.md`; that is a separate feature with separate tokens. One Slack app can serve both: section 1 creates it from the manifest Kiro Crew generates for the bot, with the MCP settings on.
 
 ## Before you start
 
@@ -18,45 +18,47 @@ This runbook covers the **Slack MCP server** (`https://mcp.slack.com/mcp`), whic
   - Redirect URI: `http://localhost:48106/callback`
   - MCP endpoint: `https://mcp.slack.com/mcp`
   - Slack does not support Dynamic Client Registration, so the Client ID must be created by hand and entered into Kiro Crew.
-  - The app must have **PKCE** enabled (section 1), and Kiro Crew needs both the app's **Client ID** and its **Client Secret** (section 5).
+  - The app must have **PKCE** enabled (the manifest in section 1 turns it on), and Kiro Crew needs both the app's **Client ID** and its **Client Secret** (section 5).
   - The Slack card connects only when Kiro Crew does the sign-in itself: the Crew-owned sign-in preview is on and your chats run on Kiro Agent. Until then the card shows a link to that setting instead of **Connect**. Kiro Crew keeps the app's Client Secret in its vault and never writes it into an MCP entry or an agent file.
   - Already have a `slack` MCP server set up with its own Client ID? Kiro Crew does not rewrite that entry, so the Kiro CLI keeps signing in with it. A `slack` server you added from the dashboard also keeps its own **Sign in** on the MCP Servers page, and a sign-in made there keeps working, for as long as no Slack app is saved under **Settings → Connections**. Once you save one there (section 5), the Slack card owns the entry: connect on the card, and a sign-in made from the MCP Servers page is not used any more. Kiro Crew does not read the secret from your MCP entry.
 
-## 1. Create the app
+## 1. Create the app from the Slack card
 
-1. Open [https://api.slack.com/apps](https://api.slack.com/apps) and sign in to the workspace.
-2. Click **Create New App**.
-3. Choose **From scratch**. (A manifest also works; Slack's own MCP sample uses **From a manifest**. From scratch is simpler because you only need OAuth settings, no bot user, events or interactivity.)
-4. **App Name**: something recognisable, for example `Kiro Crew Connections`. Names must be unique within the workspace.
-5. **Pick a workspace to develop your app in**: select the workspace Kiro Crew should read.
-6. Click **Create App**. You land on **Basic Information**.
-7. Enable MCP for the app: in the left sidebar open the **Agents** section and switch the **Slack Model Context Protocol (MCP) Server** toggle to **On**. Slack's sample-app guide names this exact toggle; if you do not see the Agents section, refresh the page after the app is created.
-8. Enable PKCE: in the left sidebar under **Features**, click **OAuth & Permissions** and turn on the **PKCE** setting. Slack: "For standard (non-directory) apps, you can find the PKCE setting in the app settings under the OAuth & Permissions sidebar section." Do this **before** adding the redirect URL in section 2, because Slack only treats a `localhost` redirect as a desktop redirect "if the app has opted into PKCE". Be aware that this is permanent: "Enabling PKCE marks your app as a public client, which is a one-way operation. It cannot be disabled without contacting Slack support." If you would rather not convert an existing app, create a new one for Kiro Crew.
-9. Back on **Basic Information**, scroll to **App Credentials** and note the **Client ID**. You will paste it into Kiro Crew in section 5. Click **Show** next to **Client Secret** and note it too: Kiro Crew needs it (section 5). Treat it like a password.
+1. In the Kiro Crew dashboard open **Settings → Connections** and find the **Slack** card.
+2. Point at the warning triangle beside the card's action (**Before you connect**) and click **Create the Slack app**. Slack's create page opens in a new tab with the app filled in.
+3. Pick the workspace Kiro Crew should read and click **Create**. You land on **Basic Information**.
+
+The buttons show while the card still needs its app, and only to the dashboard owner. If the browser that opens Slack cannot use the link, click **Copy manifest** instead, open [https://api.slack.com/apps](https://api.slack.com/apps), click **Create New App → From a manifest**, pick the workspace and paste it.
+
+The app comes from the same manifest Kiro Crew generates for its Slack channel bot (`docs/guides/slack-setup.md`), with **Slack tools for your agents** on. Section 3 lists what it sets. Two of those settings matter before you click **Create**:
+
+- **PKCE is on, and that is permanent.** Slack: "Enabling PKCE marks your app as a public client, which is a one-way operation. It cannot be disabled without contacting Slack support." Slack needs it to accept the `localhost` redirect. Slack accepted PKCE and that redirect in one manifest when this was tested on 2026-11-19.
+- **The app is also a Kiro Crew bot app.** It carries the bot user, the slash command and the bot scopes, so you can use the same app for the Slack channel bot. If you do not, the bot settings are unused: the Slack card signs in with user scopes only.
+
+Already run the Kiro Crew bot on a Slack app? Do not make a second one: turn on **Slack tools for your agents** (Settings → Messaging Channels → Slack → Slack Code) and save the manifest Kiro Crew generates on your bot app, then continue at section 2.
 
 Do not click anything under **Manage Distribution** / **Distribute App**. Activating public distribution turns the app into an "unlisted" distributed app, which Slack bars from MCP.
 
-## 2. Redirect URI
+## 2. Copy the Client ID and Client Secret
 
-1. In the left sidebar under **Features**, click **OAuth & Permissions**. Confirm the **PKCE** setting from section 1 step 8 is on.
-2. In **Redirect URLs**, click **Add New Redirect URL**.
-3. Enter exactly:
+On **Basic Information**, scroll to **App Credentials**. Note the **Client ID**, then click **Show** next to **Client Secret** and note it too. Kiro Crew needs both (section 5). Treat the secret like a password.
 
-   ```
-   http://localhost:48106/callback
-   ```
+If your workspace needs an admin to approve apps, request that approval now (section 4).
 
-4. Click **Add**, then **Save URLs**.
+## 3. What the manifest sets
 
-Kiro Crew registers this provider's callback on the host name `localhost` because that is the only host name Slack exempts from its HTTPS rule. Slack's OAuth guide says: "The `redirect_uri` must use HTTPS. Alternatively, you can configure a Redirect URL in the App Management page under OAuth & Permissions. A Redirect URL must also use HTTPS." Its PKCE guide adds the one carve-out: "Redirects to `localhost` (e.g. `http://localhost:8080/auth`) are treated as desktop redirects if the app has opted into PKCE. If the app has never enabled PKCE, they will be treated like a server redirect." That is why the app must have PKCE enabled, and why the redirect uses `localhost` rather than the `127.0.0.1` literal most other Kiro Crew providers use.
+You do not type any of this; it is here so you can check the app, or set it by hand on an app you already have.
 
-Slack's MCP server documentation asks for the secret as well: "Slack supports confidential OAuth for MCP clients. You'll need to use your app's `client_id` and `client_secret`", and the server's authorization metadata lists `client_secret_post` as its only token authentication method. So Kiro Crew sends the Client Secret on every Slack token request, and the app keeps PKCE on only so Slack accepts the `localhost` redirect.
+| Where in Slack's app settings | Value |
+|---|---|
+| **Agents → Slack Model Context Protocol (MCP) Server** | On (`settings.is_mcp_enabled: true`) |
+| **OAuth & Permissions → PKCE** | On (`oauth_config.pkce_enabled: true`) |
+| **OAuth & Permissions → Redirect URLs** | `http://localhost:48106/callback` |
+| **OAuth & Permissions → User Token Scopes** | the 18 scopes below |
 
-Kiro Crew's OAuth callback listener (the gateway's own when the Crew-owned sign-in preview is on, otherwise kiro-cli's) runs on the loopback interface over plain HTTP only; an https loopback is not possible, and the port is fixed per provider (Slack is 48106). Remote, tailnet or Docker installs do not need a second redirect URI. After you approve the app, the browser is sent to that loopback URL, which is unreachable from your laptop when the gateway runs elsewhere; copy the full landing URL from the browser's address bar, paste it into the Kiro Crew dashboard when prompted, and the gateway replays it to its own loopback listener.
+Slack exempts only `localhost` from its HTTPS rule, and only "if the app has opted into PKCE", which is why the redirect is plain `http` on `localhost` rather than the `127.0.0.1` literal most other Kiro Crew providers use. Slack's MCP server also asks for the secret ("Slack supports confidential OAuth for MCP clients"), so Kiro Crew sends the Client Secret on every token request and keeps PKCE on only for the redirect.
 
-## 3. Scopes and permissions
-
-The Slack MCP server acts as the signed-in user, so all scopes go under **User Token Scopes**, not Bot Token Scopes. On **OAuth & Permissions**, scroll to **Scopes → User Token Scopes** and click **Add an OAuth Scope** for each of the following. This is a read-mostly set taken from Slack's per-tool scope table:
+The Slack MCP server acts as the signed-in user, so its scopes are **User Token Scopes**, a read-mostly set taken from Slack's per-tool scope table:
 
 | Scope | MCP tool it unlocks |
 |-------|---------------------|
@@ -70,7 +72,9 @@ The Slack MCP server acts as the signed-in user, so all scopes go under **User T
 | `canvases:read` | Read a canvas |
 | `lists:read` | Read lists |
 
-Leave out `chat:write`, `reactions:write`, `canvases:write`, `lists:write`, `files:write` and the `*:write` channel scopes unless you want the agent to post or create things. On an app you register only for this, you can leave **Bot Token Scopes** empty: the MCP server does not use a bot token. On an app that also runs the Kiro Crew bot, keep them: removing them stops the bot. Slack's rule that "Desktop redirects are not allowed to request bot scopes" applies to what the sign-in asks for, and the Slack card asks for these user scopes only (at `https://slack.com/oauth/v2_user/authorize`). The bot token still comes from **Install to Workspace**.
+No write scope is requested (`chat:write`, `reactions:write`, `canvases:write`, `lists:write`, `files:write`, the `*:write` channel scopes); add one only if you want the agent to post or create things. Keep the app's **Bot Token Scopes** if the Kiro Crew bot uses the app: removing them stops the bot. Slack's rule that "Desktop redirects are not allowed to request bot scopes" applies to what the sign-in asks for, and the Slack card asks for user scopes only (at `https://slack.com/oauth/v2_user/authorize`).
+
+Kiro Crew's OAuth callback listener runs on the gateway's loopback interface over plain HTTP, on port 48106. Remote, tailnet or Docker installs need no second redirect URL: after you approve, copy the full landing address from the browser bar and paste it into the dashboard when prompted, and the gateway replays it to its own listener.
 
 Scopes are additive per installation and cannot be removed from an existing token; if you later add a scope, reinstall the app so the new user token carries it.
 
@@ -87,7 +91,7 @@ Scopes are additive per installation and cannot be removed from an existing toke
 2. Find the **Slack** card.
 3. Paste the **Client ID** from Basic Information → App Credentials into **Client ID**.
 4. Paste the **Client Secret** from the same App Credentials section into **Client secret**. It is required: Kiro Crew refuses to start a Slack sign-in without it, because Slack's MCP server asks for `client_id` and `client_secret` ("Slack supports confidential OAuth for MCP clients"). Kiro Crew stores it encrypted in the secrets vault and never shows it again. It still sends the PKCE parameters on every Slack flow.
-5. Use the card's copy button for the redirect URI to confirm it reads `http://localhost:48106/callback`, matching what you saved in section 2.
+5. Use the card's copy button for the redirect URI to confirm it reads `http://localhost:48106/callback`, matching the redirect in section 3.
 6. Save.
 
 Container or CI alternative: set the environment variables `KIROCREW_CONNECTIONS_SLACK_CLIENT_ID` and `KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET` on the gateway process. Environment variables override dashboard values.
@@ -101,7 +105,7 @@ Container or CI alternative: set the environment variables `KIROCREW_CONNECTIONS
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| Slack shows `bad_redirect_uri` | The URI Kiro Crew sent does not match a saved Redirect URL, or PKCE is not enabled on the app so Slack treats `http://localhost` as a server redirect and demands https | Re-check section 2, and confirm the PKCE setting on OAuth & Permissions is on (section 1 step 8) |
+| Slack shows `bad_redirect_uri` | The URI Kiro Crew sent does not match a saved Redirect URL, or PKCE is not enabled on the app so Slack treats `http://localhost` as a server redirect and demands https | Check the redirect and the PKCE setting on OAuth & Permissions against section 3 |
 | Slack rejects the authorization because of bot scopes | The sign-in asked for a bot scope; desktop redirects cannot request bot scopes. The Slack card asks for user scopes only, so the sign-in did not come from the card (for example a hand-made MCP entry that lists bot scopes) | Connect from the Slack card under **Settings → Connections**. Don't remove the app's Bot Token Scopes if the Kiro Crew bot uses it: the bot needs them, and the card's sign-in does not ask for them |
 | Slack shows `invalid_team_for_non_distributed_app` | You authorised against a different workspace than the one the app was created in | Sign in to the correct workspace and retry; do not enable distribution |
 | Consent page says the app needs admin approval | Workspace has app approval turned on | Ask an admin to approve the request (section 4) |

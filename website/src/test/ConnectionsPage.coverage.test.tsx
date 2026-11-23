@@ -74,6 +74,7 @@ vi.mock('../api/client', () => ({
     connectionsCancel: (...a: unknown[]) => connectionsCancel(...a),
     connectionsDisconnect: (...a: unknown[]) => connectionsDisconnect(...a),
     connectionsTest: (...a: unknown[]) => connectionsTest(...a),
+    connectionsAppManifests: () => Promise.resolve({ schema_version: 1, apps: {} }),
   },
 }))
 
