@@ -213,6 +213,10 @@ def install_state(home: Path) -> InstallState:
         have_python = python.is_file()
     except OSError:
         have_python = False
+    # A Windows venv's ``python.exe`` is a copied launcher, not a link, so it stays
+    # a file after the base Python it starts is removed; ask ``pyvenv.cfg`` instead.
+    if have_python and IS_WINDOWS:
+        have_python = _venv_base_python_present(prefix)
     installed = have_python and version == HARNESS_VERSION
     return InstallState(
         prefix=prefix,
@@ -611,6 +615,29 @@ def _venv_built_by_this_minor(prefix: Path) -> bool:
         if sep and key.strip() == "version":
             return value.strip().split(".")[:2] == [str(n) for n in sys.version_info[:2]]
     return False
+
+
+def _venv_base_python_present(prefix: Path) -> bool:
+    """Whether the folder ``pyvenv.cfg`` names as ``home`` still holds ``python.exe`` (no spawn).
+
+    Windows only: there the venv's launcher starts that interpreter. A ``home`` that
+    cannot be read or checked is taken as present, as before this check existed.
+    ``lexists`` rather than ``is_file``: a Microsoft Store Python's ``python.exe``
+    under ``WindowsApps`` is an app execution alias, a reparse point that is not
+    a plain file, and it must still read as present.
+    """
+    try:
+        text = (venv_dir(prefix) / "pyvenv.cfg").read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return True
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "home" and value.strip():
+            try:
+                return os.path.lexists(Path(value.strip()) / "python.exe")
+            except OSError:
+                return True
+    return True
 
 
 def _drop_dangling_interpreter_links(prefix: Path) -> None:

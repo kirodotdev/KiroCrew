@@ -85,6 +85,11 @@ def _runtime_ships(site: Path, **versions: str) -> Path:
     return site
 
 
+#: The real-interpreter cases share one worker under ``-n auto --dist loadgroup``, so they
+#: never cold-start interpreters side by side.
+_REAL_CHILD = pytest.mark.xdist_group(name="browser_harness_install_real_child")
+
+
 def _ok(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     # ``python -m venv <prefix>/venv`` creates the interpreter the next step runs;
     # ``--clear`` empties the directory first.
@@ -265,6 +270,158 @@ def _pruned_install(prefix: Path, *, minor: int) -> Path:
     return sentinel
 
 
+def _windows_venv(prefix: Path, home: Path) -> None:
+    """A finished Windows install: a copied ``Scripts/python.exe`` and ``pyvenv.cfg`` naming ``home``."""
+    venv = install.venv_dir(prefix)
+    (venv / "Lib" / "site-packages" / "pip").mkdir(parents=True)
+    (venv / "Scripts").mkdir()
+    (venv / "Scripts" / "python.exe").write_bytes(b"launcher")
+    minor = ".".join(str(n) for n in sys.version_info[:2])
+    (venv / "pyvenv.cfg").write_text(f"home = {home}\nversion = {minor}.4\n", encoding="utf-8")
+    (prefix / install.MARKER_FILE).write_text(
+        json.dumps({"version": HARNESS_VERSION, "lock_sha256": install.lock_digest()}),
+        encoding="utf-8",
+    )
+
+
+def test_a_windows_venv_whose_base_python_was_removed_is_repaired_in_place(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The Windows launcher is a copied file, so it outlives its base Python.
+    The venv reads as not installed and is re-pointed offline, not left to fail at pip."""
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    _gateway_ships(monkeypatch, "pip")
+    prefix = tmp_path / install.PREFIX_LEAF
+    _windows_venv(prefix, tmp_path / "pruned")
+    assert install.install_state(tmp_path).installed is False
+    assert install.install_state(tmp_path).python is None
+    assert install.harness_current(tmp_path) is False
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return _ok(argv, timeout)
+
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert calls[0] == [
+        sys.executable,
+        "-I",
+        "-m",
+        "venv",
+        "--upgrade",
+        "--without-pip",
+        str(install.venv_dir(prefix)),
+    ]
+    assert "pip" in calls[1] and calls[1][-1] == str(install.LOCK_FILE)
+
+
+def test_a_windows_venv_whose_base_python_exists_stays_installed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "python.exe").write_bytes(b"python")
+    _windows_venv(tmp_path / install.PREFIX_LEAF, base)
+    assert install.install_state(tmp_path).installed is True
+    assert install.harness_current(tmp_path) is True
+
+
+@requires_symlinks
+def test_a_windows_base_python_that_is_a_link_still_reads_as_present(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A Store Python's ``python.exe`` is an app execution alias, not a plain file.
+    A dangling link stands in for it: present by name, so the venv reads as installed."""
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    base = tmp_path / "store-python"
+    base.mkdir()
+    (base / "python.exe").symlink_to(tmp_path / "alias-target-not-a-file")
+    _windows_venv(tmp_path / install.PREFIX_LEAF, base)
+    assert install.install_state(tmp_path).installed is True
+
+
+def _copy_base_python(dest: Path) -> Path:
+    """A private copy of this interpreter's base install, enough for ``-m venv`` to run."""
+    src = Path(sys.base_prefix)
+    dest.mkdir()
+    for entry in src.iterdir():
+        if entry.is_file() and entry.suffix.lower() in (".exe", ".dll", ".zip", "._pth"):
+            shutil.copy2(entry, dest / entry.name)
+    shutil.copytree(src / "DLLs", dest / "DLLs")
+    skip = shutil.ignore_patterns(
+        "site-packages", "__pycache__", "test", "tests", "idlelib", "tkinter", "turtledemo"
+    )
+    shutil.copytree(src / "Lib", dest / "Lib", ignore=skip)
+    return dest / "python.exe"
+
+
+def _runs(launcher: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(launcher), "-c", "pass"],
+        capture_output=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        **UTF8_TEXT,
+    )
+
+
+@_REAL_CHILD
+@pytest.mark.skipif(sys.platform != "win32", reason="the copied venv launcher is a Windows layout")
+def test_a_real_windows_venv_over_a_removed_base_python_is_repaired(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """On a real Windows host: a venv built on a Python that is then removed reads as not
+    installed, and the offline repair (a real ``venv --upgrade``) makes it start again.
+    Over the intact base it reads as installed and Install repairs nothing."""
+    _gateway_ships(monkeypatch, "pip")
+    base_python = _copy_base_python(tmp_path / "base-python")
+    prefix = tmp_path / install.PREFIX_LEAF
+    prefix.mkdir()
+    subprocess.run(
+        [str(base_python), "-I", "-m", "venv", "--without-pip", str(install.venv_dir(prefix))],
+        check=True,
+        capture_output=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        **UTF8_TEXT,
+    )
+    (prefix / install.MARKER_FILE).write_text(
+        json.dumps({"version": HARNESS_VERSION, "lock_sha256": install.lock_digest()}),
+        encoding="utf-8",
+    )
+    launcher = install.venv_python(prefix)
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[1:4] == ["-I", "-m", "venv"]:
+            # The production venv deadline equals the suite's pytest-timeout, so the
+            # child gets the shorter test deadline and a stall fails as a normal test.
+            return subprocess.run(
+                argv, capture_output=True, timeout=FALLBACK_TIMEOUT_SECS, **UTF8_TEXT
+            )
+        return _ok(argv, timeout)
+
+    # Intact base: installed, and Install runs no venv step.
+    assert _runs(launcher).returncode == 0
+    assert install.install_state(tmp_path).installed is True
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert not [c for c in calls if c[1:4] == ["-I", "-m", "venv"]]
+
+    # Base removed: the copied launcher is still a file but cannot start.
+    shutil.rmtree(base_python.parent)
+    assert launcher.is_file()
+    dead = _runs(launcher)
+    assert dead.returncode != 0, dead.stdout + dead.stderr
+    assert install.install_state(tmp_path).installed is False
+    assert install.harness_current(tmp_path) is False
+
+    calls.clear()
+    install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
+    assert calls[0][:6] == [sys.executable, "-I", "-m", "venv", "--upgrade", "--without-pip"]
+    assert _runs(launcher).returncode == 0
+    assert install.install_state(tmp_path).installed is True
+
+
 @requires_symlinks
 @pytest.mark.parametrize("gateway_has", ["pip", "ensurepip"])
 def test_a_venv_whose_base_python_was_removed_is_repaired_in_place(
@@ -286,6 +443,12 @@ def test_a_venv_whose_base_python_was_removed_is_repaired_in_place(
         if argv[1:4] == ["-I", "-m", "venv"]:
             bindir = install.venv_python(prefix).parent
             links_at_venv.extend(p.name for p in bindir.iterdir() if p.is_symlink())
+            # ``venv --upgrade`` re-points ``pyvenv.cfg`` at this interpreter.
+            cfg = install.venv_dir(prefix) / "pyvenv.cfg"
+            minor = ".".join(str(n) for n in sys.version_info[:2])
+            cfg.write_text(
+                f"home = {Path(sys.executable).parent}\nversion = {minor}.4\n", encoding="utf-8"
+            )
         return _ok(argv, timeout)
 
     install.install_sync(tmp_path, runner=runner, components=(install.COMPONENT_HARNESS,))
@@ -490,6 +653,7 @@ def test_the_installers_children_get_a_scrubbed_env_and_the_prefix_as_cwd(
     assert "PYTHONPATH" not in seen["env"]  # type: ignore[operator]
 
 
+@_REAL_CHILD
 def test_the_installers_pip_reads_no_index_from_the_owners_pip_config(
     tmp_path: Path, monkeypatch
 ) -> None:
