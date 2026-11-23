@@ -842,6 +842,12 @@ def test_the_concreteness_rules_are_exactly_accept_evals_error_only_guards():
         {"kind": "edition_check", "check": "name", "ref": "-ID-1"},
         {"kind": "edition_check", "check": "name", "ref": "ID-1\n"},
         {"kind": "edition_check", "check": "name", "ref": 7},
+        {"kind": "git_commit", "repo": "rel/repo", "branch": "feat/x", "base": "a" * 40},
+        {"kind": "git_commit", "branch": "feat/x", "base": "a" * 40},
+        {"kind": "git_commit", "repo": "/r", "branch": "a..b", "base": "a" * 40},
+        {"kind": "git_commit", "repo": "/r", "branch": "-x", "base": "a" * 40},
+        {"kind": "git_commit", "repo": "/r", "branch": "feat/x", "base": "TBD"},
+        {"kind": "git_commit", "repo": "/r", "branch": "feat/x"},
     ]
     batch = {"items": [{"id": f"it_{n:08d}", "accept": spec} for n, spec in enumerate(specs)]}
     proc = subprocess.run(

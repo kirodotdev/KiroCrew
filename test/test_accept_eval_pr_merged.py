@@ -156,9 +156,9 @@ def test_every_argv_element_is_a_template_literal_or_a_validated_field(monkeypat
 
 def test_pr_merged_adds_no_self_built_command():
     """``pr_merged`` runs ``gh``, which ``pr_checks`` already needed, so it adds no
-    binary. ``kirocrew`` is ``edition_check``'s."""
+    binary. ``kirocrew`` is ``edition_check``'s and ``git`` is ``git_commit``'s."""
     mod = _load()
-    assert mod._SELF_BUILT_COMMANDS == {"gh", "kirocrew"}
+    assert mod._SELF_BUILT_COMMANDS == {"gh", "kirocrew", "git"}
 
 
 def test_the_ledger_mirror_uses_the_evaluators_own_pattern():
