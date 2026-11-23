@@ -18,8 +18,10 @@ Four properties are pinned:
 from __future__ import annotations
 
 import gzip
+import itertools
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -531,3 +533,131 @@ def test_only_the_shadow_workflow_loads_the_recorder() -> None:
     ]:
         if path != WORKFLOW:
             assert "ci_test_file_map" not in path.read_text(encoding="utf-8"), path
+
+
+SCRIPT = "scripts/ci_test_map.py"
+# The retention the publishing issue asks for at least: a reader must still find
+# a bundle after a run of red nights.
+MIN_RETENTION_DAYS = 14
+
+
+def _map_job_calls() -> dict[str, tuple[int, dict[str, Any], list[str]]]:
+    """Each subcommand of the script the `map` job runs: its step index, step and argv."""
+    calls: dict[str, tuple[int, dict[str, Any], list[str]]] = {}
+    for index, step in enumerate(_workflow()["jobs"]["map"]["steps"]):
+        for line in str(step.get("run", "")).splitlines():
+            words = list(shlex.shlex(line, posix=True, punctuation_chars=True))
+            if SCRIPT not in words:
+                continue
+            argv = words[words.index(SCRIPT) + 1 :]
+            piped = "|" in argv
+            argv = argv[: argv.index("|")] if piped else argv
+            assert argv[0] not in calls, f"{argv[0]} runs twice"
+            # Without pipefail a pipe ends green on its last command's status.
+            assert not piped or step.get("shell") == "bash", line
+            calls[argv[0]] = (index, step, argv)
+    return calls
+
+
+def _option(argv: list[str], name: str) -> str:
+    return argv[argv.index(name) + 1]
+
+
+def test_map_job_publishes_the_checked_bundle_as_its_one_artifact() -> None:
+    steps = _workflow()["jobs"]["map"]["steps"]
+    calls = _map_job_calls()
+    uploads = [
+        (i, s) for i, s in enumerate(steps) if "actions/upload-artifact@" in str(s.get("uses", ""))
+    ]
+    assert len(uploads) == 1
+    at, upload = uploads[0]
+    # What is built is what is bundled; what is bundled is what is checked and uploaded.
+    assert _option(calls["bundle"][2], "--map") == _option(calls["build"][2], "--out")
+    bundle_out = _option(calls["bundle"][2], "--out")
+    assert _option(calls["check"][2], "--bundle") == bundle_out == upload["with"]["path"]
+    order = [calls[name][0] for name in ("build", "bundle", "check")]
+    assert order == sorted(order) and order[-1] < at
+    # Nothing lets the upload run after a failed check, or a failed check pass.
+    for step in (upload, *(calls[name][1] for name in calls)):
+        assert "if" not in step and "continue-on-error" not in step
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert upload["with"]["retention-days"] >= MIN_RETENTION_DAYS
+    # The checkout holds the window `bundle` reads by default, and the commit before it.
+    assert "--commits" not in calls["bundle"][2] and "--ref" not in calls["bundle"][2]
+    depths = [
+        s["with"].get("fetch-depth", 1)
+        for s in steps[: calls["bundle"][0]]
+        if "actions/checkout@" in str(s.get("uses", ""))
+    ]
+    assert len(depths) == 1
+    assert depths[0] == 0 or depths[0] > ctm.CO_CHANGE_COMMITS
+
+
+def test_map_job_commands_pass_only_on_a_clone_that_holds_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _fixture_repo(tmp_path)
+    calls = _map_job_calls()
+    window = 2
+    monkeypatch.setattr(ctm, "CO_CHANGE_COMMITS", window)
+    monkeypatch.setattr(ctm, "GIT_LOG_TIMEOUT_SECS", FALLBACK_TIMEOUT_SECS)
+    map_name = _option(calls["bundle"][2], "--map")
+    out_name = _option(calls["bundle"][2], "--out")
+    works = iter(tmp_path / f"work-{n}" for n in itertools.count())
+
+    def run(root: Path, tier: list[str]) -> tuple[int, str, Path]:
+        """The job's own `bundle` and `check` lines against `root`, in a new directory."""
+        work = next(works)
+        work.mkdir()
+        (work / map_name).write_text(json.dumps(MAP), encoding="utf-8")
+        monkeypatch.chdir(work)
+        monkeypatch.setattr(ctm, "guard_tier", lambda root: tier)
+        assert ctm.main(["--root", str(root), *calls["bundle"][2]]) == 0
+        capsys.readouterr()
+        status = ctm.main(["--root", str(root), *calls["check"][2]])
+        if status == 0:
+            doc = ctm.load_map(work / out_name)
+            assert all(doc[table] for table in ctm.BUNDLE_TABLES)
+        return status, capsys.readouterr().out, work / out_name
+
+    # The fixture has four commits: a shallow clone passes from `window + 1` commits up.
+    for depth in range(1, 5):
+        status, printed, _ = run(_shallow_clone(repo, depth), TIER)
+        assert status == (0 if depth > window else 1), depth
+        assert ("::error::the bundle has no cochange table" in printed) == (depth <= window)
+    status, printed, written = run(repo, TIER)
+    assert status == 0 and "::error::" not in printed
+    # The summary line: the commit, the file's size and the rows in each table.
+    assert f"commit `{MAP['commit']}`" in printed
+    assert f"{written.stat().st_size} bytes" in printed
+    rows = ctm.bundle_rows(ctm.load_map(written))
+    assert all(f"{name} {count}" in printed for name, count in rows.items())
+    assert set(rows) > set(ctm.BUNDLE_TABLES) and all(rows.values())
+    # A dead guard scan fails the job as a short history does.
+    status, printed, _ = run(repo, [])
+    assert status == 1 and "::error::the bundle has no guard table" in printed
+
+
+def test_check_fails_on_every_bundle_that_lacks_a_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    whole = {**MAP, "cochange": {"src/kiro_crew/a.py": ["test/test_a.py"]}, "guard": TIER}
+    path = tmp_path / "bundle.json.gz"
+    for count in range(len(ctm.BUNDLE_TABLES) + 1):
+        for gone in itertools.combinations(ctm.BUNDLE_TABLES, count):
+            # Absent and empty read the same: neither holds a row.
+            for doc in (
+                {k: v for k, v in whole.items() if k not in gone},
+                {k: (type(v)() if k in gone else v) for k, v in whole.items()},
+            ):
+                path.write_bytes(gzip.compress(json.dumps(doc).encode("utf-8")))
+                assert ctm.main(["check", "--bundle", str(path)]) == (1 if gone else 0)
+                printed = capsys.readouterr().out
+                named = {t for t in ctm.BUNDLE_TABLES if f"no {t} table" in printed}
+                assert named == set(gone)
+    # A file that is not a readable schema-1 map is a usage error, never a pass.
+    data = path.read_bytes()
+    for damaged in (data[: len(data) // 2], b"{}", gzip.compress(b"[]")):
+        path.write_bytes(damaged)
+        assert ctm.main(["check", "--bundle", str(path)]) == 2
+    assert ctm.main(["check", "--bundle", str(tmp_path / "absent.json.gz")]) == 2
