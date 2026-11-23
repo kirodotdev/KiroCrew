@@ -135,8 +135,12 @@ async def test_onInstall_rewriting_the_manifest_loses_the_desktop_requirements_w
     assert result["ok"] is False
     assert result["error"] == (
         "Python apps that require a build step are not supported in Kiro Crew's desktop "
-        "build: its bundled interpreter is inside the signed application bundle and cannot "
-        "install packages"
+        "build: the build step installs packages into Kiro Crew's own interpreter, which is "
+        "inside the signed application bundle and cannot be installed into. A requirements.txt "
+        "needs that step too, except in the cases described in the backend.hooks section of "
+        "docs/app-kit/manifest-reference.md. A requirements.txt in an app that declares "
+        "backend.hooks always needs it, because hook code runs inside Kiro Crew and imports "
+        "from that interpreter."
     )
     assert result["code"] == "desktop_build_step_unsupported"
     # Nothing registered, nothing enabled: the refusal happens before install_app.
@@ -380,8 +384,12 @@ async def test_a_self_managed_entry_keeps_the_desktop_refusal(monkeypatch, tmp_p
     assert result["ok"] is False
     assert result["error"] == (
         "Python apps that require a build step are not supported in Kiro Crew's desktop "
-        "build: its bundled interpreter is inside the signed application bundle and cannot "
-        "install packages"
+        "build: the build step installs packages into Kiro Crew's own interpreter, which is "
+        "inside the signed application bundle and cannot be installed into. A requirements.txt "
+        "needs that step too, except in the cases described in the backend.hooks section of "
+        "docs/app-kit/manifest-reference.md. A requirements.txt in an app that declares "
+        "backend.hooks always needs it, because hook code runs inside Kiro Crew and imports "
+        "from that interpreter."
     )
     assert result["code"] == "desktop_build_step_unsupported"
     assert registered == []

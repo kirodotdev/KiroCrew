@@ -166,7 +166,7 @@ class TestRunAppBuild:
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         result = await registry._run_app_build(tmp_path, "demo", [], manifest=AppManifest.from_dict({}), self_managed=False)
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert spawned == []
 
     @pytest.mark.asyncio
@@ -206,7 +206,7 @@ class TestRunAppBuild:
             tmp_path, "demo", log, manifest=_asgi_backend(), self_managed=False, verb=verb
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert result["code"] == registry.DESKTOP_BUILD_STEP_UNSUPPORTED
         assert log == [f"Refusing {verb}: {result['error']}"]
         assert spawned == []
@@ -221,7 +221,7 @@ class TestRunAppBuild:
             tmp_path, "demo", [], manifest=_asgi_backend(), self_managed=False
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert spawned == []
 
     @pytest.mark.asyncio
@@ -241,7 +241,7 @@ class TestRunAppBuild:
             tmp_path, "demo", log, manifest=AppManifest.from_dict({"name": "demo", "backend": {"entryPoint": entry}}), self_managed=False
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert result["code"] == registry.DESKTOP_BUILD_STEP_UNSUPPORTED
         assert spawned == []
         assert not any("provisioned at runtime" in line for line in log)
@@ -319,7 +319,7 @@ class TestRunAppBuild:
             tmp_path, "demo", [], manifest=AppManifest.from_dict({"name": "demo"}), self_managed=False
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert spawned == []
 
     @pytest.mark.asyncio
@@ -336,7 +336,7 @@ class TestRunAppBuild:
             tmp_path, "demo", [], manifest=_asgi_backend(), self_managed=False
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert spawned == []
 
     @pytest.mark.asyncio
@@ -371,7 +371,7 @@ class TestRunAppBuild:
                 self_managed=False,
             )
             assert result["ok"] is False, hook
-            assert "bundled interpreter" in result["error"]
+            assert "signed application bundle" in result["error"]
             assert spawned == []
 
     @pytest.mark.asyncio
@@ -399,7 +399,7 @@ class TestRunAppBuild:
         assert blank.backend.hooks.to_dict() == {"on_startup": "  "}
         result = await registry._run_app_build(tmp_path, "demo", [], manifest=blank, self_managed=False)
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert spawned == []
 
     @pytest.mark.asyncio
@@ -454,7 +454,7 @@ class TestRunAppBuild:
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         result = await registry._run_app_build(tmp_path, "demo", [], manifest=manifest, self_managed=False)
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert spawned == []
 
     @pytest.mark.asyncio
@@ -474,7 +474,7 @@ class TestRunAppBuild:
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         result = await registry._run_app_build(tmp_path, "demo", [], manifest=manifest, self_managed=False)
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert spawned == []
 
     @pytest.mark.asyncio
@@ -496,7 +496,7 @@ class TestRunAppBuild:
             self_managed=False,
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert result["code"] == registry.DESKTOP_BUILD_STEP_UNSUPPORTED
         assert spawned == []
 
@@ -516,7 +516,7 @@ class TestRunAppBuild:
             tmp_path, "demo", [], manifest=_asgi_backend(), self_managed=True
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert result["code"] == registry.DESKTOP_BUILD_STEP_UNSUPPORTED
         assert spawned == []
 
@@ -572,7 +572,7 @@ class TestRunAppBuild:
             app_root, "demo", [], manifest=_asgi_backend(), self_managed=False
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert result["code"] == registry.DESKTOP_BUILD_STEP_UNSUPPORTED
         assert spawned == []
 
@@ -621,7 +621,7 @@ class TestRunAppBuild:
             tmp_path, "demo", [], manifest=_asgi_backend(), self_managed=False
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert result["code"] == registry.DESKTOP_BUILD_STEP_UNSUPPORTED
         assert spawned == []
 
@@ -708,7 +708,7 @@ class TestRunAppBuild:
             tmp_path, "demo", [], manifest=_asgi_backend(), self_managed=False
         )
         assert result["ok"] is False
-        assert "bundled interpreter" in result["error"]
+        assert "signed application bundle" in result["error"]
         assert result["code"] == registry.DESKTOP_BUILD_STEP_UNSUPPORTED
         assert spawned == []
 

@@ -241,3 +241,102 @@ def test_a_command_that_cannot_name_the_programs_is_not_read(monkeypatch):
     monkeypatch.setattr(argv_rules, "_commands", lambda c: calls.append(c) or [])
     assert argv_rules.argv_rule_hit("ls -la /tmp", argv_rules.ARGV_RULE_PATTERNS) is None
     assert calls == []
+
+
+def test_a_separator_glued_to_a_word_starts_a_new_command():
+    from kiro_crew.security import argv_rules as r
+
+    def words(tokens):
+        return [[w for _, w in cmd] for cmd in r._split_commands_indexed(tokens, glue_split=True)]
+
+    # Off by default: an unmasked caller keeps a glued operator inside the word,
+    # exactly as before, because it cannot tell a quoted operator from a real one.
+    assert [[w for _, w in c] for c in r._split_commands_indexed(["a;VAR=v", "b"])] == [
+        ["a;VAR=v"],
+        ["b"],
+    ]
+
+    # A real ; | || && glued to a word still separates commands, so the piece
+    # after it begins its own command.
+    assert words(["a;VAR=v", "b"]) == [["a"], ["VAR=v", "b"]]
+    assert words(["a&&VAR=v", "b"]) == [["a"], ["VAR=v", "b"]]
+    assert words(["a||VAR=v", "b"]) == [["a"], ["VAR=v", "b"]]
+    assert words(["a|VAR=v", "b"]) == [["a"], ["VAR=v", "b"]]
+    # A subshell opener glued to a following word opens a new command too.
+    assert words(["(VAR=v", "b)"]) == [["VAR=v", "b)"]]
+    # A quoted operator was masked to a placeholder upstream, so it is NOT a split.
+    assert words(["VAR=\x00v", "b"]) == [["VAR=\x00v", "b"]]
+    # The one rule: a word carrying any other shell metacharacter is left whole --
+    # a substitution, a ``)`` (case pattern / subshell close) or a ``#`` comment.
+    assert words(["$(a;b)", "c"]) == [["$(a;b)"], ["c"]]
+    assert words(["a|b)", "c"]) == [["a|b)"], ["c"]]
+    assert words(["a;#c", "b"]) == [["a;#c"], ["b"]]
+    # A bare separator token, a redirection & and brace expansion are unchanged.
+    assert words([";"]) == []
+    assert words(["2>&1"]) == [["2>&1"]]
+    assert words(["a{b,c}"]) == [["a{b,c}"]]
+    assert words(["(", "echo", "hi", ")"]) == [["("], ["echo", "hi", ")"]]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("true;GIT_SSH_COMMAND='ssh localhost' git fetch o:x", id="semicolon"),
+        pytest.param("true&&GIT_SSH_COMMAND='ssh localhost' git fetch o:x", id="and"),
+        pytest.param("true||GIT_SSH_COMMAND='ssh localhost' git fetch o:x", id="or"),
+        pytest.param("a|GIT_SSH_COMMAND='ssh localhost' git fetch o:x", id="pipe"),
+        pytest.param("(GIT_SSH_COMMAND='ssh localhost' git fetch o:x)", id="subshell"),
+    ],
+)
+def test_an_unspaced_command_line_reads_like_its_spaced_spelling(line):
+    # The split reads an unspaced command line the same as its spaced spelling,
+    # so both reach the same verdict the row already covers.
+    assert security.is_denied(line) is not None
+    assert (
+        security.is_denied(
+            line.replace(";", "; ", 1).replace("&&", "&& ", 1).replace("||", "|| ", 1)
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(
+            "bash -c 'printf \"%s\\n\" \"$@\"' -- 'x;chmod' 777 a", id="quoted-sep-in-payload-arg"
+        ),
+        pytest.param("echo ok >|git clone ssh://localhost/repo", id="noclobber-redirect"),
+        pytest.param(
+            "echo ok;#note;GIT_SSH_COMMAND='ssh localhost'\ngit fetch remote:x", id="comment"
+        ),
+    ],
+)
+def test_a_quoted_or_redirected_operator_is_not_a_command_boundary(line):
+    # The split must not invent a command: a quoted operator in an unmasked
+    # payload argument is kept whole (the split is off for that caller), and a
+    # ``>|`` redirection is not a pipe. Both stay allowed, as on main.
+    assert security.is_denied(line) is None
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("git -C $(pwd&&true) fetch localhost:x", id="operator-in-substitution"),
+        pytest.param(
+            "git -C $(true status&&printf .) fetch localhost:x",
+            id="operator-in-multiword-substitution",
+        ),
+        pytest.param(
+            "case x in a|b) GIT_SSH_COMMAND='ssh localhost' git fetch o:x;; esac",
+            id="operator-in-case-pattern",
+        ),
+    ],
+)
+def test_an_operator_that_is_not_a_real_boundary_does_not_drop_a_refusal(line):
+    # The floor reads the command twice -- once on main's unsplit boundaries,
+    # once on the glued-split boundaries -- and refuses if EITHER refuses. So an
+    # operator that is NOT a real command boundary (one inside a $()/backtick
+    # substitution, whether that substitution is one word or several, or a case
+    # pattern word) can never drop a refusal main's reading reaches.
+    assert security.is_denied(line) is not None

@@ -163,8 +163,12 @@ DESKTOP_BUILD_STEP_UNSUPPORTED = "desktop_build_step_unsupported"
 
 _DESKTOP_BUILD_REFUSAL = (
     "Python apps that require a build step are not supported in Kiro Crew's desktop "
-    "build: its bundled interpreter is inside the signed application bundle and cannot "
-    "install packages"
+    "build: the build step installs packages into Kiro Crew's own interpreter, which is "
+    "inside the signed application bundle and cannot be installed into. A requirements.txt "
+    "needs that step too, except in the cases described in the backend.hooks section of "
+    "docs/app-kit/manifest-reference.md. A requirements.txt in an app that declares "
+    "backend.hooks always needs it, because hook code runs inside Kiro Crew and imports "
+    "from that interpreter."
 )
 
 

@@ -7,7 +7,8 @@ and questions, notifications, the periodic flush, context snapshots and yolo.
 Instance fields of ``DashboardState`` this module reads and writes:
 
 Writes: ``_bg_turn_cap``, ``_bg_turn_sema``, ``_bg_turns_running``,
-``_bg_turns_waiting``.
+``_bg_turns_waiting``, ``_web_push_drain``, ``_web_push_dropped``,
+``_web_push_queue``.
 Reads only: ``MAX_BACKGROUND_TURNS``, ``MAX_BACKGROUND_TURNS_CEIL``,
 ``_APPROVAL_TIMEOUT``, ``_BACKGROUND_APPROVAL_TIMEOUT_SECS``,
 ``_BACKGROUND_QUEUE_WAIT_SECS``, ``_approval_futures``, ``_log``,
@@ -82,6 +83,9 @@ _PUSH_BODY_BYTES = 2000
 _PUSH_CHANNEL_BYTES = 128
 _PUSH_TS_BYTES = 64
 _PUSH_URL_BYTES = 384
+#: How many notes wait for Web Push while the drain sends. A longer burst keeps
+#: the newest: a closed device needs the latest state, not every step to it.
+_WEB_PUSH_QUEUE_MAX = 20
 
 
 def _truncate_bytes(text: str, byte_limit: int) -> str:
@@ -828,32 +832,56 @@ def notify(
 
 
 def _fan_out_web_push(self: DashboardState, note: dict[str, Any]) -> None:
-    """Schedule Web Push delivery of a note to every browser subscription.
+    """Queue Web Push delivery of a note to every browser subscription.
 
     Called from the delivery sink (synchronous). Web Push is network I/O, so
-    this only schedules the send and returns. On the event loop it creates a
-    task there. Off the loop (a note raised from a worker thread, such as
-    ``asyncio.to_thread(state.notify, ...)``) it hands the send to the serving
-    loop with ``run_coroutine_threadsafe``. Only a state that has never seen a
-    loop (a synchronous unit test) skips the push. Best-effort by contract: a
-    failed push must never affect the in-app notification that already landed.
+    this only queues the note on the serving loop and returns: directly when
+    called there, through ``call_soon_threadsafe`` from anywhere else (a note
+    raised from a worker thread, such as ``asyncio.to_thread(state.notify,
+    ...)``). The queue is touched only on that loop. Only a state that has never
+    seen a loop (a synchronous unit test) skips the push. Best-effort by
+    contract: a failed push must never affect the in-app notification that
+    already landed.
     """
-    running = self._running_loop()
-    if running is not None:
-        # Held until done: the loop keeps only a weak reference to a task.
-        task = running.create_task(self._send_web_push_all(note))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        return
     loop = self.serving_loop
     if loop is None or loop.is_closed():
         logger.debug("Web push skipped: no event loop to schedule it on")
         return
-    asyncio.run_coroutine_threadsafe(self._send_web_push_all(note), loop)
+    if self._running_loop() is loop:
+        _queue_web_push(self, note)
+    else:
+        loop.call_soon_threadsafe(_queue_web_push, self, note)
 
 
-async def _send_web_push_all(self: DashboardState, note: dict[str, Any]) -> None:
-    """Encrypt-and-POST a note to every stored subscription; prune dead ones."""
+def _queue_web_push(state: DashboardState, note: dict[str, Any]) -> None:
+    """Add a note to the push queue and start the drain when none is running.
+
+    One drain sends every queued note, so a burst keeps one note's sends in
+    flight at a time, however many notes arrive. A full queue drops its oldest.
+    """
+    queue = state._web_push_queue
+    if len(queue) == queue.maxlen:
+        state._web_push_dropped += 1
+    queue.append(note)
+    drain = state._web_push_drain
+    if drain is None or drain.done():
+        # Held in a field until done: the loop keeps only a weak reference to a task.
+        state._web_push_drain = asyncio.get_running_loop().create_task(state._send_web_push_all())
+
+
+async def _send_web_push_all(self: DashboardState) -> None:
+    """Encrypt-and-POST each queued note to every stored subscription; prune dead ones.
+
+    The drain :func:`_queue_web_push` starts; at most one runs at a time. Notes
+    go out one at a time, in arrival order, through one session (a note queued
+    while it closes gets a second one). The session's connector reuses a cached
+    answer for a push host, and a send to a host whose lookup is still running
+    joins that lookup, so within a session each push host holds one thread of
+    the shared default executor, not one per note. The VAPID keys are read once
+    per session. A slow push host delays the notes behind it, up to the
+    session's 15 s timeout per note.
+    """
+    queue = self._web_push_queue
     # Imported here, not at module top: web_push pulls in `cryptography`, and
     # the dashboard state sits on the tool-approval import chain
     # (slack.gateway -> dashboard.server -> … -> state). A top-level import
@@ -861,32 +889,58 @@ async def _send_web_push_all(self: DashboardState, note: dict[str, Any]) -> None
     # a host whose cryptography wheel does not load
     # (test_approval_chain_no_cryptography). The fan-out is the only user.
     try:
-        from kiro_crew.notifications.web_push import (
-            PushResult,
-            public_push_session,
-            send_web_push,
-        )
+        from kiro_crew.notifications.web_push import load_vapid_keys, public_push_session
 
-        # Offloaded: the first read loads the subscriptions file.
-        subscriptions = await asyncio.to_thread(self.push_subscription_store.all)
-        if not subscriptions:
-            return
+        # Checked again once the session has closed: a note queued while it
+        # closed found this drain still running, so it is this drain's to send.
+        while queue:
+            # Offloaded: the first read loads the subscriptions file.
+            if not await asyncio.to_thread(self.push_subscription_store.all):
+                queue.clear()
+                break
+            vapid = await asyncio.to_thread(load_vapid_keys)
+            async with public_push_session() as session:
+                while queue:
+                    await _push_note(self, session, vapid, queue.popleft())
+    except Exception:
+        # The queued notes cannot be sent, so they go the way of any failed
+        # push rather than out late with the next note. The task is fire and
+        # forget, so the error is logged rather than left unretrieved; the
+        # in-app notes already landed.
+        queue.clear()
+        logger.warning("Web push fan-out failed", exc_info=True)
+    finally:
+        dropped, self._web_push_dropped = self._web_push_dropped, 0
+        if dropped:
+            logger.warning("Web push dropped %d older notes during a burst", dropped)
+
+
+async def _push_note(
+    state: DashboardState, session: Any, vapid: tuple[Any, str], note: dict[str, Any]
+) -> None:
+    """POST one note to every stored subscription and prune the dead ones.
+
+    A failure is logged and ends only this note, so the drain goes on to the
+    next one.
+    """
+    # Imported here for the reason given in _send_web_push_all.
+    from kiro_crew.notifications.web_push import PushResult, send_web_push
+
+    try:
+        subscriptions = await asyncio.to_thread(state.push_subscription_store.all)
         payload = _web_push_payload(note)
-        async with public_push_session() as session:
-            results = await asyncio.gather(
-                *(send_web_push(session, sub, payload) for sub in subscriptions),
-                return_exceptions=True,
-            )
+        results = await asyncio.gather(
+            *(send_web_push(session, sub, payload, vapid) for sub in subscriptions),
+            return_exceptions=True,
+        )
         for sub, result in zip(subscriptions, results):
             # A 404/410 is the push service's authoritative "this subscription
             # is dead" (RFC 8030); drop it so the store does not accumulate
             # tombstones and re-POST to it every notification. remove() does an
             # atomic file write, so offload it rather than blocking the loop.
             if isinstance(result, PushResult) and result.gone:
-                await asyncio.to_thread(self.push_subscription_store.remove, sub["endpoint"])
+                await asyncio.to_thread(state.push_subscription_store.remove, sub["endpoint"])
     except Exception:
-        # The task is fire and forget, so an error here is logged rather than
-        # left as an unretrieved task exception; the in-app note already landed.
         logger.warning("Web push fan-out failed", exc_info=True)
 
 

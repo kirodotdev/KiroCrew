@@ -605,10 +605,19 @@ else the approval, job or task id, else the note timestamp, hashed when its
 JSON-serialized form is over 128 bytes), runs local delivery, then calls the
 `web_push_fanout` hook (`DashboardState._fan_out_web_push`) for every note that
 is not silenced, passive, a quiet replacement or owner-only (`owner_only_note`, a `system.relay` note); a keyed note reaches it only
-after its write commits (see "Keyed notes"). The fan-out schedules
-`_send_web_push_all` on the running loop; it is
-best effort and logs any failure, so a failed push never affects the note that
-already landed.
+after its write commits (see "Keyed notes"). The fan-out queues the note on
+the serving loop, and a drain (`_send_web_push_all`, at most one at a time)
+sends the queue in arrival order, one note at a time, through one HTTP session
+with one read of the VAPID keys (a note queued while that session closes gets a
+second one). The session's connector looks a push host up at most once at a
+time and reuses the answer while it is cached, so within a session each push
+host holds one default-executor thread, not one per note. A slow push
+host delays the notes behind it, up to the 15 s request timeout per note. The
+queue holds 20 notes; a longer burst drops the oldest and logs one warning with
+the count. It is best effort and logs any failure, so a failed push never
+affects the note that already landed. A failure inside one note's push ends
+only that note; a failure outside it drops the queued pushes rather than sending
+them late.
 
 - **Payload.** `_web_push_payload` builds one declarative payload
   (`web_push: 8030` plus `notification`) that iOS and Safari 18.4+ render with no

@@ -327,6 +327,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "permission_row: 'dict') -> 'None'",
     ),
     "release_pending_chunks": ("function", False, False, "(self) -> 'int'"),
+    "release_saved_head": ("function", False, False, "(self, keep: 'int') -> 'int'"),
     "running": ("property", False, False, "(self) -> 'bool'"),
     "set_rejection_reason": (
         "function",
