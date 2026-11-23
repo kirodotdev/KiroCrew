@@ -610,6 +610,16 @@ use it, both with a floor of 100 requests and a 30-minute budget:
   request it cannot do without. A wrong value would file the results under
   another configuration, so `test/test_gh_rate_limit_wait.py` holds it to the
   file's path and the job's id.
+  `init` makes the same two requests for a different reason: it lints the
+  workflow file it runs from, and a finding is only a warning in the log. The
+  job sets `CODEQL_ACTION_SKIP_WORKFLOW_VALIDATION` to `true`, which `init`
+  reads before it asks, so each job makes two requests fewer (six per run). The
+  action's source describes the variable as for internal use, so
+  `test/test_ci_codeql_workflow_lint.py` fails when the pinned action commit
+  moves until the variable is read again in the new source, and applies the
+  lint's four checks (one action version across the file, a `push` trigger
+  beside `pull_request`, no `git checkout HEAD^2`, no language scanned by two
+  matrix entries) to the file itself.
   The second is the results upload, at the end of a scan that can run past 20
   minutes, so a wait before the scan would not help. `analyze` runs with
   `upload: failure-only` and the upload is a separate `upload-sarif` step,
