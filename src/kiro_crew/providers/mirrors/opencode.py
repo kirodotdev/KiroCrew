@@ -624,12 +624,15 @@ class OpenCodeMirror(AgentConfigMirror):
                 _D.NO_CHANNEL,
                 "kiro-cli's per-tool settings (shell denyByDefault and allowedCommands, the "
                 "write allowlist, deniedPaths, web_fetch.blocked) have no field on the ACP "
-                "session/new element set or the seeded permission config, and Crew feeds this "
-                "session's permission requests no spec allowlist, so the field is applied "
-                "nowhere. Its subagent.availableAgents is the exception: Crew's spawn gate reads "
-                "it from the parent's spec on every backend (subagent_parts/agent_policy.py), so "
-                "no notice names it. Crew fires this backend's spec hooks, and that "
-                "session-start notice already names what of toolsSettings goes unapplied "
+                "session/new element set or the seeded permission config. Two are applied on "
+                "this channel anyway: the shell denyByDefault and write fallbackAction deny "
+                "allowlists are stamped on this session's own permission requests "
+                "(acp/spec_tools_allowlists.py), which the seeded permission ask raises for "
+                "every bash and file-write call. The rest (deniedPaths, web_fetch.blocked and "
+                "the other entries) is applied nowhere. Its subagent.availableAgents is also "
+                "applied: Crew's spawn gate reads it from the parent's spec on every backend "
+                "(subagent_parts/agent_policy.py). Crew fires this backend's spec hooks, and "
+                "that session-start notice already names what of toolsSettings goes unapplied "
                 "(acp.kas_agents.spec_keys_without_carrier)",
                 channel=TOOLS_SETTINGS_GATE_CHANNEL,
             ),
