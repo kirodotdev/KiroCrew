@@ -22,6 +22,7 @@ from kiro_crew.dashboard.change_cards import (
     INFLIGHT_STALE_SECONDS,
     STATUS_APPLIED,
     STATUS_APPLYING,
+    STATUS_EXPIRED,
     STATUS_FAILED,
     STATUS_PARTIAL,
     STATUS_PENDING,
@@ -179,6 +180,32 @@ def test_a_waiting_card_whose_write_went_stale_is_not_open_before_its_expiry_eit
     assert rec == before
     store._refresh(rec)
     assert rec["status"] == STATUS_PARTIAL
+
+
+@pytest.mark.parametrize(
+    ("outcome", "status_after", "open_before"),
+    [
+        pytest.param("keep", STATUS_PENDING, True, id="keep"),
+        pytest.param("expire", STATUS_EXPIRED, False, id="expire"),
+        pytest.param("review", STATUS_PARTIAL, False, id="review"),
+    ],
+)
+def test_the_open_check_and_refresh_follow_the_same_verdict(
+    store: CardStore, monkeypatch: pytest.MonkeyPatch, outcome, status_after, open_before
+) -> None:
+    """Change the one rule and both readers change with it: there is no second copy.
+
+    The card is fresh, so only the patched verdict can expire it or send it to review.
+    """
+    rec = _card(store)
+    verdict = (False, outcome)
+    monkeypatch.setattr(
+        CardStore, "_refresh_verdict", classmethod(lambda cls, r, now: verdict), raising=False
+    )
+
+    assert store.holds_open_card(SLOT) is open_before
+    store._refresh(rec)
+    assert rec["status"] == status_after
 
 
 def test_a_cold_store_answers_false_without_loading(tmp_path) -> None:
