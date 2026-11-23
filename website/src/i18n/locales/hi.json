@@ -14531,6 +14531,8 @@
         "assistant": "{{productName}}",
         "quoting_author": "{{author}} को उद्धृत कर रहे हो",
         "remove_quote": "उद्धरण हटाओ",
+        "show_more": "और दिखाओ",
+        "show_less": "कम दिखाओ",
         "jump_to_quoted_message": "उद्धृत संदेश पर जाओ",
         "message_unavailable": "वहाँ नहीं जा सकते — मूल संदेश अब इस बातचीत में नहीं है।",
         "message_not_loaded": "वहाँ नहीं जा सकते — उद्धृत संदेश यहाँ लोड किए गए संदेशों में नहीं है।"

@@ -14878,6 +14878,8 @@
         "assistant": "{{productName}}",
         "quoting_author": "Citation de {{author}}",
         "remove_quote": "Retirer la citation",
+        "show_more": "Afficher plus",
+        "show_less": "Afficher moins",
         "jump_to_quoted_message": "Aller au message cité",
         "message_unavailable": "Impossible d’y aller : le message d’origine n’est plus dans cette conversation.",
         "message_not_loaded": "Impossible d’y aller : le message cité ne fait pas partie des messages chargés ici."

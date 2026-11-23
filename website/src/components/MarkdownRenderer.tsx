@@ -80,6 +80,7 @@ import {
   ChatProjectDirCtx,
   PathActionCtx,
   PathProbeCtx,
+  QuotedContentCtx,
   ReadOnlyCodeCtx,
   SessionActionCtx,
   type InsideLink,
@@ -1196,6 +1197,7 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
 
 function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slotKey, glow, smooth, softBreaks, live, typing, unfurl, collapseDiffs, mdCardToggle, runYourselfCards, readOnlyCode, markers }: { block: ContentBlock; prevBlock?: ContentBlock; onFileOpen?: (path: string) => void; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; live?: boolean; typing?: boolean; unfurl?: boolean; collapseDiffs?: boolean; mdCardToggle?: boolean; runYourselfCards?: boolean; readOnlyCode?: boolean; markers?: RedactionMarkers }) {
   const readOnlyCodeCtx = useContext(ReadOnlyCodeCtx)
+  const quoted = useContext(QuotedContentCtx)
   // A fence holding lock tags renders them in place whatever its language:
   // the diagram, diff and formatted-markdown renderers would show the
   // placeholder without its tag and card (see RedactedCodeBlock).
@@ -1291,6 +1293,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       return smooth ? <SmoothResize enabled={!block.complete}>{shown}</SmoothResize> : shown
     }
     case 'widget':
+      if (quoted) return null
       if (!block.complete) return <WidgetPlaceholder title={block.language} />
       // A widget whose body holds no HTML element is markdown an agent wrapped in
       // the widget tag (a "Task board" table, say). Drawn in the frame it reads as
