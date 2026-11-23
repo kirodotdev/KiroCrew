@@ -163,8 +163,20 @@ function simplify(pts: Pt[]): Pt[] {
   return out
 }
 
-/** A polyline with each corner rounded off, never by more than half a leg. */
-function roundedPath(pts: Pt[]): string {
+/** A point of the quadratic bend from *s* round *p* to *e*, at *t*. */
+const onBend = (s: Pt, p: Pt, e: Pt, t: number): Pt => {
+  const u = 1 - t
+  return { x: u * u * s.x + 2 * u * t * p.x + t * t * e.x, y: u * u * s.y + 2 * u * t * p.y + t * t * e.y }
+}
+
+/**
+ * A polyline with each corner rounded off, never by more than half a leg. A
+ * corner whose bend would cut into one of the *avoid* boxes (a leg that runs
+ * along a shape's edge) is eased, down to a square corner if need be. A corner
+ * already inside a box (shapes that overlap) keeps its rounding: easing it
+ * would not take the line out of the shape.
+ */
+function roundedPath(pts: Pt[], avoid: Box[]): string {
   let d = `M${pts[0].x},${pts[0].y}`
   for (let i = 1; i < pts.length - 1; i++) {
     const p = pts[i]
@@ -172,9 +184,21 @@ function roundedPath(pts: Pt[]): string {
     const next = pts[i + 1]
     const lin = Math.hypot(p.x - prev.x, p.y - prev.y)
     const lout = Math.hypot(next.x - p.x, next.y - p.y)
-    const r = Math.min(RADIUS, lin / 2, lout / 2)
-    const s = add(p, { x: (prev.x - p.x) / lin, y: (prev.y - p.y) / lin }, r)
-    const e = add(p, { x: (next.x - p.x) / lout, y: (next.y - p.y) / lout }, r)
+    const bend = (r: number): [Pt, Pt] => [
+      add(p, { x: (prev.x - p.x) / lin, y: (prev.y - p.y) / lin }, r),
+      add(p, { x: (next.x - p.x) / lout, y: (next.y - p.y) / lout }, r),
+    ]
+    const outside = avoid.filter(box => !crosses(box, p, p))
+    const cuts = (r: number) => {
+      const [s, e] = bend(r)
+      return [0.25, 0.5, 0.75].some(t => {
+        const m = onBend(s, p, e, t)
+        return outside.some(box => crosses(box, m, m))
+      })
+    }
+    let r = Math.min(RADIUS, lin / 2, lout / 2)
+    while (r > 0 && cuts(r)) r = r > 1 ? r / 2 : 0
+    const [s, e] = bend(r)
     d += ` L${s.x},${s.y} Q${p.x},${p.y} ${e.x},${e.y}`
   }
   const last = pts[pts.length - 1]
@@ -289,7 +313,7 @@ function routeOn(from: Box, to: Box, sa: Side, sb: Side, c: Pick<Connector, 'lin
     return { d: `M${s.x},${s.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${e.x},${e.y}`, a, b, points: [a, c1, c2, b] }
   }
   const points = c.route?.length ? shapedPoints(a, sa, b, sb, c.route) : elbowPoints(a, sa, b, sb, from, to)
-  return { d: roundedPath(trimmed(points, startGap, endGap)), a, b, points }
+  return { d: roundedPath(trimmed(points, startGap, endGap), [from, to]), a, b, points }
 }
 
 /** A bare point as a box, for a connector end that follows the pointer. */
