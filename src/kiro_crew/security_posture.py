@@ -98,6 +98,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # finished body; it returns that body and emits nothing. The widget routes
         # that serve the snapshot are the egress.
         "dashboard/widget_snapshot.py",
+        "dashboard_verify.py",  # redacts before cutting; the sink is member_dashboard_fields.py
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.

@@ -1596,6 +1596,11 @@ does there. When the filter changed the page, a note in `verification.notes` say
 places and on which line of `view.html` the first is (`dashboard_verify.rewrite_note`),
 and never what was replaced. What the check returns crosses `member_dashboard._page_safe`,
 the redaction the tab's values cross, because a page chooses the text of its own errors.
+Each error message and the browser's last line when it exits (read from the last 2,000
+bytes of its stderr; `MAX_MESSAGE_CHARS`, 300), and each refused URL a note or a picture's
+reason lists (120), is redacted whole before it is cut, since a cut first can keep part of
+a secret. A refused URL is stored with its query cut and redacted, so requests that differ
+only in their query are listed once.
 
 It runs in a Chrome or Chromium an administrator installed on the gateway host, started
 by a system Python (each root-owned, not a link, not writable by the gateway's account: a
