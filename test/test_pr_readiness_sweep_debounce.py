@@ -114,6 +114,8 @@ def test_dispatch_keeps_the_rate_limit_reserve(
     assert len(dispatched) == expected
     if expected == 0:
         assert "1 deferred by the rate-limit reserve" in runner.last_stdout
+        assert "PR #2064: PR Readiness" in runner.last_stdout
+        assert "-> deferred by the rate-limit reserve." in runner.last_stdout
 
 
 def test_a_stale_green_rescue_is_not_deferred_by_the_reserve(runner: Runner) -> None:

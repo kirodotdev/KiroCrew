@@ -954,6 +954,8 @@ def test_max_dispatch_caps_the_sweep(runner: Runner) -> None:
         )
         == []
     )
+    assert "PR #2064: PR Readiness" in runner.last_stdout
+    assert "-> deferred by MAX_DISPATCH=0." in runner.last_stdout
 
 
 # ── Fairness: oldest-stale-first, never PR-list order ────────────────────────
