@@ -1212,7 +1212,7 @@ The gateway runs a single asyncio loop, so any blocking call on the loop thread 
 
 ### Cyclic GC
 
-A full (generation 2) collection stops every thread, the loop included, for as long as it takes to walk every long-lived tracked object. `kirocrew gateway` imports with GC off (`kiro_crew._bootstrap.main`); once the dashboard or API socket is bound, `run()` calls `gc.freeze()` on the boot heap and turns GC back on.
+A full (generation 2) collection stops every thread, the loop included, for as long as it takes to walk every long-lived tracked object. `kirocrew gateway` imports with GC off (`kiro_crew._bootstrap.main`), and so does `python -m kiro_crew gateway` (`kiro_crew/__main__.py`), the entry the desktop app's launcher and the Windows `kirocrew.cmd` use; once the dashboard or API socket is bound, `run()` calls `gc.freeze()` on the boot heap and turns GC back on.
 
 `KIROCREW_GC_WARM_FREEZE` (off by default; `1`, `true`, `yes` or `on` turns it on; read by `kiro_crew/gc_tuning.py`) adds two changes after that:
 

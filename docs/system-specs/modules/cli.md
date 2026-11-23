@@ -2457,7 +2457,20 @@ sole listener on `PORT`, looks like a Kiro Crew gateway and is the live holder
 of this home's `gateway.lock`, re-checks the listener, then sends SIGTERM
 through the pidfd. Any failed check, and any host without both
 `os.pidfd_open` and `signal.pidfd_send_signal` (macOS, Windows), refuses with
-no signal and exit 1. Without `--expect-pid` the command is unchanged:
+no signal and exit 1.
+
+A plain `kirocrew stop` is a stop the user chose, so it ends the YOLO and chat
+Trust grants kept across other exits ([security](security.md), "Grants kept
+across an exit the user did not choose"): `kept_grants.run_user_stop` writes the
+user-stop mark before anything is signalled, and the next boot restores nothing.
+A stop that exits non-zero stopped nothing, so it takes back a mark it wrote. The
+mark lands in this data home; with `--port` naming a gateway this home cannot
+prove is its own (`kept_grants.port_in_this_home`), the command prints a note that
+such a gateway's kept grants stay on. `--expect-pid` and the hidden
+`--keeps-grants` (the desktop app's "Stop and restart" of an older gateway) are
+not stops the user chose and write no mark.
+
+Without `--expect-pid` the command is unchanged:
 
 1. If a systemd/launchd service is active **and** the caller did not pass
    `--port` explicitly (see Service Management), stop it via the service
