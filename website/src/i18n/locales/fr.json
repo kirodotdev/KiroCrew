@@ -4072,11 +4072,13 @@
         "dismiss": "Ignorer",
         "edit_resend": "Modifier et renvoyer",
         "open_image": "Ouvrir l'image",
+        "open_image_named": "Ouvrir l'image {{name}}",
         "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
         "open_in_finder": "Ouvrir dans le Finder",
         "pinned_files": "Fichiers épinglés",
         "pins": "Épinglés",
         "preview": "Aperçu",
+        "remove_named": "Supprimer {{name}}",
         "remove_screenshot": "Retirer la capture",
         "screenshot": "Capture d'écran",
         "show_in_file_manager": "Afficher dans le gestionnaire de fichiers",
@@ -4318,7 +4320,8 @@
       },
       "pinned": {
         "empty_hint": "Demandez à {{name}} d'épingler les fichiers que vous voulez suivre",
-        "unpin": "Désépingler"
+        "unpin": "Désépingler",
+        "unpin_named": "Désépingler {{name}}"
       },
       "preset": {
         "black": "Noir",

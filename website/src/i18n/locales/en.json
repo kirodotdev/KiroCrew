@@ -2470,9 +2470,11 @@
         "dismiss": "Dismiss",
         "edit_resend": "Edit & resend",
         "open_image": "Open image",
+        "open_image_named": "Open image: {{name}}",
         "pinned_files": "Pinned Files",
         "pins": "Pins",
         "preview": "Preview",
+        "remove_named": "Remove: {{name}}",
         "remove_screenshot": "Remove screenshot",
         "screenshot": "Screenshot",
         "watchlist": "Watchlist"
@@ -2713,7 +2715,8 @@
       },
       "pinned": {
         "empty_hint": "Ask {{name}} to pin files you want to track",
-        "unpin": "Unpin"
+        "unpin": "Unpin",
+        "unpin_named": "Unpin {{name}}"
       },
       "preset": {
         "black": "Black",

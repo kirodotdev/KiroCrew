@@ -3822,11 +3822,13 @@
         "dismiss": "閉じる",
         "edit_resend": "編集して再送信",
         "open_image": "画像を開く",
+        "open_image_named": "画像「{{name}}」を開く",
         "open_in_file_explorer": "エクスプローラーで開く",
         "open_in_finder": "Finder で開く",
         "pinned_files": "ピン留めファイル",
         "pins": "ピン留め",
         "preview": "プレビュー",
+        "remove_named": "「{{name}}」を削除",
         "remove_screenshot": "スクリーンショットを削除",
         "screenshot": "スクリーンショット",
         "show_in_file_manager": "ファイルマネージャーに表示",
@@ -4068,7 +4070,8 @@
       },
       "pinned": {
         "empty_hint": "{{name}}にファイルをピン留めするよう依頼して、追跡したいファイルを指定してください",
-        "unpin": "ピン留め解除"
+        "unpin": "ピン留め解除",
+        "unpin_named": "「{{name}}」のピン留め解除"
       },
       "preset": {
         "black": "黒",

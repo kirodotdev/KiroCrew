@@ -3988,11 +3988,13 @@
         "dismiss": "Ignora",
         "edit_resend": "Modifica e reinvia",
         "open_image": "Apri immagine",
+        "open_image_named": "Apri immagine {{name}}",
         "open_in_file_explorer": "Apri in Esplora file",
         "open_in_finder": "Apri nel Finder",
         "pinned_files": "File fissati",
         "pins": "Fissati",
         "preview": "Anteprima",
+        "remove_named": "Rimuovi {{name}}",
         "remove_screenshot": "Rimuovi screenshot",
         "screenshot": "Screenshot",
         "show_in_file_manager": "Mostra nel gestore file",
@@ -4234,7 +4236,8 @@
       },
       "pinned": {
         "empty_hint": "Chiedi a {{name}} di aggiungere i file che vuoi tenere d'occhio",
-        "unpin": "Rimuovi"
+        "unpin": "Rimuovi",
+        "unpin_named": "Rimuovi {{name}}"
       },
       "preset": {
         "black": "Nero",

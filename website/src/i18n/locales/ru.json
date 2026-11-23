@@ -4112,11 +4112,13 @@
         "dismiss": "Убрать",
         "edit_resend": "Изменить и отправить снова",
         "open_image": "Открыть изображение",
+        "open_image_named": "Открыть изображение {{name}}",
         "open_in_file_explorer": "Открыть в проводнике",
         "open_in_finder": "Открыть в Finder",
         "pinned_files": "Закреплённые файлы",
         "pins": "Закреплённые",
         "preview": "Предпросмотр",
+        "remove_named": "Удалить {{name}}",
         "remove_screenshot": "Убрать снимок",
         "screenshot": "Снимок экрана",
         "show_in_file_manager": "Показать в файловом менеджере",
@@ -4358,7 +4360,8 @@
       },
       "pinned": {
         "empty_hint": "Попросите {{name}} закрепить файлы, за которыми вы хотите следить",
-        "unpin": "Открепить"
+        "unpin": "Открепить",
+        "unpin_named": "Открепить {{name}}"
       },
       "preset": {
         "black": "Чёрный",
