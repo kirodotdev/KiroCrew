@@ -2729,7 +2729,11 @@ one coalescing worker. No store is added: the board's pointers (`board_ts`,
   own turns the channel's status follows the workers (`WorkspaceService._worker_status`):
   `suspended` while a row waits on you, or the conductor's last turn ended waiting
   (`status.after_turn`); `processing` while a worker runs; otherwise back to what the
-  conductor's turn end showed. No reaction ladder in a code channel either
+  conductor's turn end showed. With nothing running and that turn end `active`, a busy
+  status the driver still owes a clear (`status.owes_clear`) goes back to `active` too,
+  even when the watch no longer holds its own record of it (a conductor task that fired
+  no turn hooks, or a turn-end `active` Slack did not take), within `_STATUS_RETRIES`
+  tries per conductor turn. No reaction ladder in a code channel either
   (`binding.no_reactions`, read by the native turn, the transport renderer and the
   queued-message mark); every other channel, DM and thread keeps it.
 - **Refresh triggers.** The watcher (`WorkspaceService.watch_tick`, every 15 s, started
