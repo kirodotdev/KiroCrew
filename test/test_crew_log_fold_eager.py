@@ -826,7 +826,7 @@ def test_an_entry_after_the_closer_leaves_its_fold_warm(monkeypatch):
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # The drop left the cell cold, so the advance handed its fold to one background
     # prime rather than folding every unit on the eager worker; wait for that prime.
     from kiro_crew.crew_log import slot_prime
@@ -871,7 +871,7 @@ def test_a_later_entry_of_another_type_does_not_hide_a_slot_folds_advance(monkey
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # The cell was cold, so its fold went to one background prime.
     from kiro_crew.crew_log import slot_prime
 
@@ -906,7 +906,7 @@ def test_a_closer_in_the_same_batch_as_an_earlier_entry_still_drops_the_slot(mon
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # A cold cell's fold goes to one background prime; wait for it.
     from kiro_crew.crew_log import slot_prime
 
@@ -971,7 +971,7 @@ def test_a_workers_last_report_still_reaches_the_conductors_board_when_the_worke
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # The board's cell was cold, so its fold went to one background prime.
     from kiro_crew.crew_log import slot_prime
 
@@ -1330,7 +1330,7 @@ def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed, monkey
     queued = eager._queue
     assert queued is not None, "the wakes were never queued"
     batch, closers, _taken = eager._coalesce(queued.get_nowait())
-    eager._fold_batch(batch, closers)
+    eager._fold_coalesced(batch, closers)
     # A cold cell's fold goes to one background prime; wait for it.
     from kiro_crew.crew_log import slot_prime
 

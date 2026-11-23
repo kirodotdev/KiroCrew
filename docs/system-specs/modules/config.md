@@ -521,7 +521,9 @@ returns, `config_dir()`, `data_home()` and `peek_data_home()` answer *home* on t
 thread without reading `KIROCREW_HOME`. Other threads are unaffected, the pin never
 enters `config_dir()`'s process-wide memo, and `_valid_override_home()` (the "is an
 override in force" predicate) does not see it. The dispatcher resolves the home while
-its own override is in force (the metrics consent re-check, `metrics/provider.py`), so
+its own override is in force (the metrics consent re-check, `metrics/provider.py`; the
+node compile-cache prewarm, `acp/node_compile_cache.py`; the crew-log eager fold worker,
+per home of each wake, `crew_log/eager.py`; its cold-cell prime, `crew_log/slot_prime.py`), so
 a test that clears the variable before the worker reads (`patch.dict`'s exit, an
 empty pin) cannot send that worker to the default home.
 
