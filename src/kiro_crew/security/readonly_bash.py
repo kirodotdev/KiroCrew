@@ -109,6 +109,12 @@ _READ_ONLY_PIPE_RE = re.compile(
 # newline (arithmetic and quoting carry both). A later `=` costs only a prompt.
 # That check is a substring test in `_classify_bash`: as a regex it backtracks
 # quadratically on a long command, on the event loop.
+#
+# Some `${` expansion forms re-evaluate their result rather than substitute it
+# literally — indirection, a subscript, a substring offset, the `@`
+# transformations, and the bash 5.3 command forms — so they are treated as not
+# read-only. See `_runs_through_expansion`; it is coarse in the same direction as
+# the `=` test.
 _UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)|\$\[")
 
 
@@ -1430,6 +1436,34 @@ def _side_effect_reason(segment: str) -> str:
     return ""
 
 
+def _runs_through_expansion(scrubbed: str) -> bool:
+    """Whether a ``${`` expansion in *scrubbed* re-evaluates its result.
+
+    Linear string scans only, for the same event-loop reason as the ``=`` test.
+    From the first ``${`` to the end of the command, refuse a subscript ``[``, a
+    transformation ``@``, and a ``:`` that is not the ``:-`` / ``:+`` / ``:?``
+    default operator (an offset is arithmetic). Refuse indirection ``${!`` and a
+    bash 5.3 command form ``${ `` / ``${|`` wherever they occur.
+    """
+    start = scrubbed.find("${")
+    if start < 0:
+        return False
+    tail = scrubbed[start:]
+    if "[" in tail or "@" in tail or "${!" in tail or "${|" in tail:
+        return True
+    at = tail.find("${")
+    while at >= 0:
+        if tail[at + 2 : at + 3] in (" ", "\t", "\n"):
+            return True
+        at = tail.find("${", at + 2)
+    at = tail.find(":")
+    while at >= 0:
+        if tail[at + 1 : at + 2] not in ("-", "+", "?"):
+            return True
+        at = tail.find(":", at + 1)
+    return False
+
+
 def _classify_bash(cmd: str) -> str:
     """Single source of truth for read-only bash classification.
 
@@ -1450,6 +1484,8 @@ def _classify_bash(cmd: str) -> str:
             "unsafe shell pattern (redirect, command/process substitution, "
             "backgrounding, or a variable-assigning expansion)"
         )
+    if _runs_through_expansion(scrubbed):
+        return "unsafe shell pattern (an expansion whose result is re-evaluated)"
     parts = re.split(r"\s*(?:&&|\|\||;|\n)\s*", cmd.strip())
     for part in parts:
         if not part.strip():

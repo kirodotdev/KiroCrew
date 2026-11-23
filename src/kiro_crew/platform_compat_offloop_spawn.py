@@ -1,11 +1,13 @@
-"""Process creation off the event loop, for the Windows Proactor loop.
+"""Process creation off the event loop, for the gateway's Proactor and Unix loops.
 
 CPython's Proactor loop builds a child inside the subprocess transport's
 constructor: ``_WindowsSubprocessTransport._start`` calls ``windows_utils.Popen``,
 which reaches ``subprocess.Popen._execute_child`` and ``CreateProcess`` on the
 calling thread, before the transport's first await. On a host whose endpoint
 protection holds ``CreateProcess`` for seconds, that is the gateway loop held for
-seconds, and the loop-stall watchdog kills the gateway at 25.
+seconds, and the loop-stall watchdog kills the gateway at 25. The Unix loop does
+the same with ``fork``, whose cost grows with the size of the gateway, so
+:class:`OffLoopSpawnUnixSelectorEventLoop` takes the same path there.
 
 The transport's work splits into two steps, and only the first is slow:
 
@@ -32,14 +34,20 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import importlib
+import logging
+import subprocess
 import threading
 import types
+import warnings
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from kiro_crew.platform_compat_native import IS_WINDOWS
+
+logger = logging.getLogger(__name__)
 
 #: Workers that may sit inside a slow ``CreateProcess`` at once. A started
 #: ``run_in_executor`` call cannot be cancelled, so a spawn held by a filter driver
@@ -261,13 +269,125 @@ if IS_WINDOWS:  # pragma: no cover - exercised on the Windows CI lane
             )
 
 
+def _posix_popen(args: Any, **kwargs: Any) -> Any:
+    """The stock Unix ``_start``'s ``Popen`` call, made on the spawn worker.
+
+    ``subprocess.Popen`` is looked up per call, as the stock ``_start`` looks it up.
+    """
+    return subprocess.Popen(args, universal_newlines=False, **kwargs)
+
+
+def _posix_child_watcher(loop: asyncio.AbstractEventLoop) -> Any:
+    """The watcher that reaps *loop*'s children, as a context manager, or ``None``.
+
+    ``None`` sends the spawn down the stock path, which raises the stock error for
+    a watcher that is not active. CPython 3.14 keeps the watcher on the loop;
+    3.12 and 3.13 keep it on the policy. ``FastChildWatcher`` is refused: it reaps
+    every child with ``waitpid(-1)`` and drops the exit of a pid nobody registered
+    yet, and a child built on a worker is registered only after it exists.
+    """
+    watcher = getattr(loop, "_watcher", None)
+    if watcher is not None:
+        return contextlib.nullcontext(watcher)
+    get_child_watcher = getattr(asyncio, "get_child_watcher", None)
+    if get_child_watcher is None:
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        watcher = get_child_watcher()
+    fast_watcher = getattr(asyncio, "FastChildWatcher", None)
+    if fast_watcher is not None and isinstance(watcher, fast_watcher):
+        return None
+    if not watcher.is_active():
+        return None
+    return watcher
+
+
+_stock_spawn_fallback_logged = False
+
+
+def _log_stock_spawn_fallback_once() -> None:
+    """Say once per process that children are built on the loop thread again."""
+    global _stock_spawn_fallback_logged
+    if _stock_spawn_fallback_logged:
+        return
+    _stock_spawn_fallback_logged = True
+    logger.warning(
+        "off-loop spawn unavailable (no usable child watcher on this interpreter); "
+        "child processes start on the event loop thread, and a slow fork can stall it"
+    )
+
+
+if not IS_WINDOWS:
+
+    class OffLoopSpawnUnixSelectorEventLoop(asyncio.SelectorEventLoop):
+        """A Unix selector loop whose subprocess transports build their child off-loop.
+
+        ``fork`` copies the parent's memory map before ``Popen`` returns, so its
+        cost grows with the gateway: a gateway with a large heap and many threads
+        held the loop long enough in one ``fork`` for the loop-stall watchdog to
+        restart it, and the App Store refresh, which starts a ``git clone`` per
+        catalog row, did it several times a day.
+        """
+
+        async def _make_subprocess_transport(  # type: ignore[override]
+            self,
+            protocol: Any,
+            args: Any,
+            shell: bool,
+            stdin: Any,
+            stdout: Any,
+            stderr: Any,
+            bufsize: int,
+            extra: Any = None,
+            **kwargs: Any,
+        ) -> Any:
+            watcher = _posix_child_watcher(self)
+            if watcher is None:
+                _log_stock_spawn_fallback_once()
+                return await super()._make_subprocess_transport(  # type: ignore[misc]
+                    protocol, args, shell, stdin, stdout, stderr, bufsize, extra, **kwargs
+                )
+            unix_events: Any = importlib.import_module("asyncio.unix_events")
+            with watcher as active:
+
+                def watch(transport: Any) -> None:
+                    callback = self._child_watcher_callback  # type: ignore[attr-defined]
+                    pid = transport.get_pid()  # pid-owner-ok: the transport this spawn built
+                    active.add_child_handler(pid, callback, transport)
+
+                return await make_subprocess_transport_off_loop(
+                    self,
+                    protocol,
+                    args,
+                    shell,
+                    stdin,
+                    stdout,
+                    stderr,
+                    bufsize,
+                    extra,
+                    popen_factory=_posix_popen,
+                    transport_cls=unix_events._UnixSubprocessTransport,
+                    popen_global="subprocess",
+                    after_init=watch,
+                    **kwargs,
+                )
+
+    def _new_posix_gateway_loop() -> asyncio.AbstractEventLoop:
+        loop = OffLoopSpawnUnixSelectorEventLoop()
+        # ``asyncio.run`` makes a loop it built itself the current loop, which on
+        # 3.12 and 3.13 is what attaches a SIGCHLD child watcher to it. It does not
+        # do that for a loop from a factory, so the factory does.
+        asyncio.set_event_loop(loop)
+        return loop
+
+
 def gateway_loop_factory() -> Callable[[], asyncio.AbstractEventLoop] | None:
     """The ``loop_factory`` the gateway's ``asyncio.run`` uses.
 
-    Windows: :class:`OffLoopSpawnProactorEventLoop`. Elsewhere ``None``, the
-    interpreter's default loop, whose spawn is a ``fork``/``posix_spawn`` that
-    returns at once.
+    Windows: :class:`OffLoopSpawnProactorEventLoop`. Elsewhere a factory for
+    :class:`OffLoopSpawnUnixSelectorEventLoop`.
     """
     if IS_WINDOWS:  # pragma: no cover - exercised on the Windows CI lane
         return OffLoopSpawnProactorEventLoop
-    return None
+    return _new_posix_gateway_loop

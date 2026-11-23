@@ -189,6 +189,7 @@ _BASELINE: dict[str, tuple[int, int]] = {
     "knowledge/llm_pool.py": (3, 0),
     "mcp_core_parts/identity.py": (4, 0),
     "messaging/identity.py": (1, 0),
+    "platform_compat_offloop_spawn.py": (0, 1),
     "process_identity.py": (1, 0),
     "providers/acp.py": (5, 0),
     "providers/base.py": (3, 0),

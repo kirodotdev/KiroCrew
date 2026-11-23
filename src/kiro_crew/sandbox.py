@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio  # noqa: F401
 import contextlib  # noqa: F401
+import contextvars  # noqa: F401
 import ctypes
 import ctypes.util  # noqa: F401
 import errno  # noqa: F401
@@ -498,6 +499,8 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _EXTRACTOR_MAX_CPU_SECS,
         _EXTRACTOR_MAX_NOFILE,
         _EXTRACTOR_PREEXEC,
+        _FORK_FREE_SPAWN,
+        _FORK_ONLY_SPAWN_KWARGS,
         _INTERPRETER_ENOENT_DELAYS,
         _PROFILE_OOM_BIAS,
         _RESOURCE_PREEXEC,
@@ -506,7 +509,10 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _SHIM_ARGV_CACHE,
         _SHIM_ARGV_SEPARATOR,
         _SHIM_CHDIR_FD_FLAG,
+        _SHIM_CHDIR_FLAG,
+        _SHIM_CLOSE_FDS_FLAG,
         _SHIM_CTTY_FD_FLAG,
+        _SHIM_SETSID_FLAG,
         _SHIM_UNAVAILABLE_LOGGED,
         _SPAWN_SHIM_CODE,
         _SPAWN_SHIM_SOURCE,
@@ -517,6 +523,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         RLIMIT_PROFILE_SESSION_HOST,
         RLIMIT_PROFILE_TOOL,
         RLIMIT_PROFILE_UNBOUNDED_SESSION_HOST,
+        _fork_free_spawn_plan,
         _is_transient_interpreter_enoent,
         _needs_path_search,
         _pass_fds_including,
@@ -530,6 +537,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         build_resource_limit_preexec,
         create_subprocess_limited,
         extractor_resource_limit_preexec,
+        fork_free_spawns,
         popen_limited,
         resource_limit_preexec,
         resource_limit_supervisor_argv,

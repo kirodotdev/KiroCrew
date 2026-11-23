@@ -540,7 +540,10 @@ itself:
   in Crew first, else kiro-cli's own "Trust this workspace?" record for the
   folder (`kiro_cli_workspace_trust.py`, read only, never written), else off.
   A Crew Turn off beats kiro-cli's trust, and a missing, unreadable or unknown
-  kiro-cli record reads as off. The choice lives in `project_hooks_consent.json`
+  kiro-cli record reads as off. A Crew Turn on covers the hooks the folder's
+  agent files declared when it was given: once any of them changes (a pull, or
+  another repository cloned at the same path) they stop and the notice asks
+  again, and kiro-cli's trust does not start them. The choice lives in `project_hooks_consent.json`
   on the keystone floor, so no agent can write it. Crew fires the hooks on the
   chat, sub-agent, task-runner and channel turns (a cron turn fires only the
   user-level spec's hooks, never a folder agent's own), the
