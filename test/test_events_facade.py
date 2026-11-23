@@ -140,6 +140,7 @@ _LOGGER_NAME = FACADE
 _BASE_SLASH_REGISTRATIONS = (
     ("dashboard", "_handle_dashboard"),
     ("agent", "_handle_agent"),
+    ("bot", "_handle_bot"),
     ("voice", "_handle_voice"),
     ("yolo", "_handle_yolo"),
     ("config", "_handle_config"),
