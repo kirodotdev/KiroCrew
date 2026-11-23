@@ -12677,6 +12677,7 @@
       "backend_refused_notice": "Il backend di {{name}} non è stato avviato: {{reason}}",
       "action_warnings_disabled": "{{name}} è disattivata, ma non tutti i passaggi sono stati completati. Dettagli: {{warnings}}",
       "action_warnings_enabled": "{{name}} è attiva, ma non tutti i passaggi sono stati completati. Dettagli: {{warnings}}",
+      "action_warnings_uninstalled": "{{name}} è disinstallata, ma non tutti i passaggi sono stati completati. Dettagli: {{warnings}}",
       "built_in_kirocrew": "Integrata · kirocrew",
       "cancel": "Annulla",
       "category": "Categoria",
