@@ -1,4 +1,4 @@
-"""Three built-in skills fire on their own topic and stay quiet on ordinary prose.
+"""Five built-in skills fire on their own topic and stay quiet on the prose pinned below.
 
 A trigger phrase fires when 70% of its words appear anywhere in the message, so a
 phrase made only of common words fires on prose that merely uses them: "record" on
@@ -38,6 +38,10 @@ def _score(skill: str, text: str) -> tuple[float, bool]:
         ("frontend-design-workflow", "show me mockups before you build it"),
         ("frontend-design-workflow", "redesign the settings panel"),
         ("frontend-design-workflow", "add a new component to the sidebar"),
+        ("widgets", "make a chart of CI duration"),
+        ("widgets", "render the results as a styled table widget"),
+        ("artifacts", "iterate on the CR queue widget"),
+        ("artifacts", "revert the widget to the previous version"),
     ],
 )
 def test_topic_phrases_fire(skill: str, text: str) -> None:
@@ -60,6 +64,8 @@ def test_topic_phrases_fire(skill: str, text: str) -> None:
         ),
         ("frontend-design-workflow", "The UI test failed after the last change."),
         ("frontend-design-workflow", "No visual diff; the change only touches the parser."),
+        ("widgets", "Record a table of the results and the fault for each test."),
+        ("artifacts", "Which Python version does the gateway run?"),
     ],
 )
 def test_ordinary_prose_does_not_fire(skill: str, text: str) -> None:
