@@ -212,8 +212,11 @@ that a running gateway picks it up at restart, while a `config.json` Apply reach
 watcher like a `kirocrew config set`, so only a restart-marked key waits for the restart. A
 heartbeat sync raises one bell note per pending version, on the unmutable `system.approval`
 channel, and acknowledges it once resolved; the scan and the note writes together are bounded
-so a stalled disk never holds the heartbeat. Every Kiro Crew writer of these four files goes
-through the leaf's endorsing writer, so its own saves take effect at once and are never
+so a stalled disk never holds the heartbeat. A leaf not yet announced counts only once two
+scans in a row list it (`config_pending._settled`; a heartbeat sync and the snapshot an Apply
+or Discard publishes are both scans): a save endorses its copy before the rename, so a scan
+between the two lists a file the next scan does not. Every Kiro Crew writer of these four
+files goes through the leaf's endorsing writer, so its own saves take effect at once and are never
 pending: the CLI (`config set`, `--local`, `--file`, `config defaults`, setup, workspace and
 telemetry commands), the dashboard savers (including the Weixin sign-in and settings save),
 and restore and import (`endorse_installed`). `kirocrew config edit` endorses too: it stages a
