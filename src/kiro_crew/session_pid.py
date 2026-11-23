@@ -1331,6 +1331,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sel_orphan_mcp_subtree_kill,
     )
     from kiro_crew.session_pid_orphan_scan import (  # noqa: F401
+        _CLAUDE_RUNTIME_FLAGS,
         _GATEWAY_MARKERS,
         _GATEWAYD_MODULE,
         _MARKED_MCP_LAUNCHER_MARKERS,
@@ -1342,6 +1343,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SANDBOX_CREDENTIAL_HELPER_ARGV0_SUFFIX,
         _SANDBOX_LAUNCHER_MARKER,
         _XDIST_BOOTSTRAP,
+        _claude_argv_is_a_runtime,
         _env_is_sandbox_tool,
         _env_spawn_home,
         _env_spawn_instance,
