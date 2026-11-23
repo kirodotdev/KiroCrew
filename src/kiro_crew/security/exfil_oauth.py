@@ -14,7 +14,6 @@ character-class shape, never as the bytes it matched.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import string
@@ -408,6 +407,7 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
     moment the loader hoists its own.
     """
     from kiro_crew.config import loader as config_loader
+    from kiro_crew.user_json import loads_user_json, wide_bom_reason
 
     try:
         path = config_loader.oauth_endpoints_path()
@@ -424,12 +424,29 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
             _OAUTH_EXTENSION_MEMO.clear()
             _OAUTH_EXTENSION_MEMO[memo_key] = frozenset()
             return frozenset()
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logger.debug("oauth_endpoints.json unreadable; ignoring extension file", exc_info=True)
+        data = path.read_bytes()
+    except Exception as exc:
+        # Not memoized: a file held open for a moment reads fine on the next check.
+        logger.warning("Ignoring oauth_endpoints.json: cannot read it: %s", exc)
         return frozenset()
 
-    approved = _validate_operator_oauth_entries(raw)
+    # A Windows editor saves UTF-8 with a BOM, or UTF-16 (PowerShell 5.1's ``>``).
+    # One leading UTF-8 mark is dropped; a wide encoding is named and skipped. Every
+    # failure still yields the empty set, and is memoized per file version so the
+    # WARNING is logged once, not on every URL check.
+    reason = wide_bom_reason(data)
+    if reason is not None:
+        logger.warning("Ignoring %s: %s", path, reason)
+        approved: frozenset[tuple[str, str]] = frozenset()
+    else:
+        try:
+            raw = loads_user_json(data.decode("utf-8"))
+        except (ValueError, RecursionError) as exc:
+            # RecursionError: a document nested past the parser's depth limit.
+            logger.warning("Ignoring invalid %s: %s", path, exc)
+            approved = frozenset()
+        else:
+            approved = _validate_operator_oauth_entries(raw)
     # One live entry per file: the memo never outgrows a handful of keys, but a
     # test suite that rewrites the file hundreds of times should not accrete.
     _OAUTH_EXTENSION_MEMO.clear()
