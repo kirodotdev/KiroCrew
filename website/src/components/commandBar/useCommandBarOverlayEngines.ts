@@ -10,6 +10,7 @@ import type { ArtifactsResponse } from '../../components/commandPalette/provider
 import { createFoldersProvider, FOLDERS_STALE_MS } from './foldersProvider'
 import { createMatesProvider, mateRoute } from './matesProvider'
 import { busySlotKeys } from '../../lib/crewMode'
+import { isChatPageSurface } from '../../utils/channelOrigin'
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import { useFolderSortRead, type FolderSortConfigBody } from '../../hooks/useFolderSortMode'
 import { useRecentsProvider } from '../../components/commandPalette/providers/recentsProvider'
@@ -27,12 +28,15 @@ import { MATES_STALE_MS, type Scope } from './commandBarOverlayModel'
 export function useCommandBarOverlayEngines({
   scope,
   liveSlots,
+  personSlots,
   subagentQueued,
   dispatch,
   navigate,
 }: {
   scope: Scope
   liveSlots: RootState['dashboard']['slots']
+  /** The person's own sessions (`selectPersonSlots`). */
+  personSlots: RootState['dashboard']['slots']
   /** Accepted-but-unstarted sub-agents per slot key (`chat.subagentQueued`). */
   subagentQueued?: Record<string, number>
   dispatch: AppDispatch
@@ -135,6 +139,13 @@ export function useCommandBarOverlayEngines({
     [navigate, queryClient],
   )
 
+  // The sessions the Sessions list shows: the person's own on the chat page, the
+  // rows its `slots` prop carries (`chatPageSlots`).
+  const listedSlots = useMemo(
+    () => personSlots.filter(slot => isChatPageSurface(slot.surface ?? slot.mode)),
+    [personSlots],
+  )
+
   /**
    * The folders view's engine — this app's own folders corpus
    * (`./foldersProvider`), wired to THIS surface's seams.
@@ -180,8 +191,17 @@ export function useCommandBarOverlayEngines({
         // folders view's query keys on the mode too (`useCommandBarOverlaySlots`), so
         // the switch is never served from a 15-second-stale list in the old order.
         mode: folderSortMode,
+        // So the view offers only the folders the Sessions list draws.
+        listedSlots,
       }),
-    [dispatch, navigate, queryClient, folderSortMode],
+    [dispatch, navigate, queryClient, folderSortMode, listedSlots],
+  )
+  // The folders those sessions sit in, as a stable string the folders view keys on
+  // (`useCommandBarOverlaySlots`): a session entering or leaving the list re-derives
+  // the rows, where a frame that moves no session between folders changes nothing.
+  const listedFoldersKey = useMemo(
+    () => [...new Set(listedSlots.map(slot => slot.folder_id || ''))].sort().join('\u0000'),
+    [listedSlots],
   )
 
   /**
@@ -271,6 +291,7 @@ export function useCommandBarOverlayEngines({
     folderSortError,
     artifacts,
     folders,
+    listedFoldersKey,
     runningMates,
     mates,
   }
