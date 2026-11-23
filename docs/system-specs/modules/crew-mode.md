@@ -2888,7 +2888,13 @@ ledger line and the server's group (`MateSessionsList`, `liveMateWorkers`). Whil
 the Bot's thread is live, the same sessions leave the person's own lists (sidebar,
 Recents, grid, unread counts and a person's `GET /api/chat/slots`; `crewModeView`,
 `crew_mode.list_view`). There is no switch to keep them listed; a stored
-`show_sessions_in_list` value is ignored. The tab keeps its name (a recorded decision), but its empty
+`show_sessions_in_list` value is ignored. A session's wait still reaches the
+person as a wait: while it waits on a tool approval or a question, the Bots
+roster marks the Bot as needing you (`mateNeedsYouByKey`), the side panel's
+Sessions tab counts it, and All Dashboards shows a card on the Bot thread that
+opens the Bot's Profile on Sessions (`mateWaitingThreads`, `MateChatNotice`). The
+session's own alerts are unchanged, and its unread stays on its own key, out of
+the counts; the Bot thread's unread mark is the Bot's own messages. The tab keeps its name (a recorded decision), but its empty
 box speaks the reader's words, not the mechanism's: a first-time user has no
 model for why a Bot would "drive sessions", so the box says session, chat or
 driving nowhere. The
