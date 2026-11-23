@@ -1,7 +1,7 @@
 """The Instances routes that read a connected peer, and the proxy to it.
 
-The proxy path policy, the peer's capabilities, approval state and versions, its live
-session list, the redaction of a peer's replies, and ``api_instances_proxy``.
+The proxy path policy, the peer's capabilities, approval state, versions and bots, its
+live session list, the redaction of a peer's replies, and ``api_instances_proxy``.
 
 Owner of :mod:`kiro_crew.dashboard.handlers_instances`, which is its only import path:
 callers and tests reach every name here as ``handlers_instances.<name>``.
@@ -566,6 +566,64 @@ async def api_instances_versions(request: web.Request) -> web.Response:
         )
     _audit("versions", "success")
     return web.json_response({"local_version": local, "instances": rows})
+
+
+async def api_instances_bots(request: web.Request) -> web.Response:
+    """GET /api/instances/bots — the bots on every CONNECTED crew, for the Bots page.
+
+    The page lists them in a section of their own, one group per crew, so a user
+    who remembers a bot but not which crew hosts it finds it in one place. One
+    ``/api/agents`` read per connected crew through
+    :meth:`SshTunnelManager.peer_capability`, the closed-path carrier the crew
+    window's header already reads that roster through, run concurrently: no
+    carrier path and no proxy prefix is added. A crew whose read fails carries the
+    carrier's code in ``error`` and no bots, so the page can say so rather than
+    leave the crew out. The rows are the crew's roster up to the row cap, not the
+    subset its own Bots page lists by default (they carry none of the fields that
+    page filters on); the rows past the cap are counted in ``omitted``.
+
+    Owner-only through ``_guard``: the reads run on each peer with the owner's
+    manager-held credential.
+    """
+    denied = _guard(request, "bots")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("bots", "success", request_id="no-manager")
+        return web.json_response({"crews": []})
+    connected = [
+        iid
+        for iid, st in mgr.status_all().items()
+        if getattr(st, "state", None) is TunnelState.CONNECTED
+    ]
+    results = await asyncio.gather(
+        *(mgr.peer_capability(iid, "/api/agents") for iid in connected),
+        return_exceptions=True,
+    )
+    crews: list[dict[str, object]] = []
+    for iid, outcome in zip(connected, results):
+        bots: list[dict[str, object]] = []
+        read_error = ""
+        omitted = 0
+        if isinstance(outcome, BaseException):
+            logger.info("Peer bots read on %s raised (%s)", iid, type(outcome).__name__)
+            read_error = "capability_unreachable"
+        else:
+            ok, payload = outcome
+            if ok:
+                rows = _cap_list(payload, "agents")
+                bots = _cap_rows(rows, {"name": 128, "display_name": 128})
+                if isinstance(rows, list):
+                    omitted = max(0, len(rows) - _CAP_MAX_ROWS)
+            else:
+                read_error = (
+                    _cap_str(payload.get("code"), 64) if isinstance(payload, dict) else ""
+                ) or "capability_error"
+        crews.append({"id": iid, "bots": bots, "error": read_error, "omitted": omitted})
+    _audit("bots", "success")
+    return web.json_response({"crews": crews})
 
 
 #: Every field ``useInstanceSessions.ts`` reads off a peer slot, with the clamp
