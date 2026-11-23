@@ -14,7 +14,8 @@ Tiers, first match wins
     A  always run: the guard tier, a changed test file, or any `select` fall-back
        (which puts every test file in A and makes the verdict `full`)
     B  the map links it to a changed file reached by at most `narrow_reach_max`
-       test files
+       test files (for a file with a `functions` table, the test files that
+       ran the functions the diff touches: `ci_test_map.py`, "Function level")
     C  the map links it to a changed file reached by more
     D  it names a changed module (`git grep`: the dotted name, or
        `from <package> import <leaf>` with any spacing, a wrapped import
@@ -26,11 +27,13 @@ Tiers, first match wins
     G  no signal
 
 The bundle is a schema-1 test map (`ci_test_map.py`), plain or gzip, as `build`
-or `bundle` writes it; `tests`, `files` and `cochange` are the tables read. A missing table never makes a file skippable:
-the files that would be G are held in F instead. An optional `guard` table
-(`[test file]`, `leaf_test_scope.corpus_gates` run when the bundle was built)
-spares the live guard scan, which costs seconds; without it the scan runs. A
-test the diff adds or edits is tier A or a fall-back either way.
+or `bundle` writes it; `tests`, `files`, `functions` and `cochange` are the
+tables read. A missing table never makes a file skippable: the files that would
+be G are held in F instead, and without `functions` (or with `--name-status`)
+every link is file-level. An optional `guard` table (`[test file]`,
+`leaf_test_scope.corpus_gates` run when the bundle was built) spares the live
+guard scan, which costs seconds; without it the scan runs. A test the diff adds
+or edits is tier A or a fall-back either way.
 
 `scripts/ci_test_selection_rates.json` gives each tier an upper-95% bound on its
 diff-caused failure rate; a tier is skippable when that bound is below `y`.
@@ -113,6 +116,21 @@ def check_tables(bundle: Mapping[str, Any]) -> None:
         for links in cochange.values()
     ):
         raise ValueError("bundle table `cochange` is not {file: [test file]}")
+    functions = bundle.get("functions", {})
+    if not isinstance(functions, dict) or not all(
+        isinstance(table, dict)
+        and all(
+            isinstance(row, list)
+            and len(row) == 3
+            and isinstance(row[2], list)
+            and all(is_int(i) and 0 <= i < len(tests) for i in row[2])
+            for row in table.values()
+        )
+        for table in functions.values()
+    ):
+        raise ValueError(
+            "bundle table `functions` is not {file: {qualname: [first, last, [index]]}}"
+        )
     guard = bundle.get("guard", [])
     if not isinstance(guard, list) or not all(isinstance(t, str) for t in guard):
         raise ValueError("bundle table `guard` is not [test file]")
@@ -279,13 +297,21 @@ def score(
     skippable: set[str],
     narrow_reach_max: int,
     grep: Callable[[list[str]], set[str]],
+    functions: Mapping[str, set[str] | None] | None = None,
 ) -> dict[str, Any]:
-    """Tier every test file of `universe` for one diff; the verdict without base/head."""
+    """Tier every test file of `universe` for one diff; the verdict without base/head.
+
+    `functions` is `ci_test_map.changed_functions` of the diff, when it has a base
+    and a head."""
     tables = {t: bundle[t] for t in TABLES if isinstance(bundle.get(t), dict)}
     missing = [t for t in TABLES if t not in tables]
     counts: Mapping[str, int] = tables.get("tests", {})
     tests = sorted(set(universe) | set(guard))
-    test_map = {"tests": counts, "files": tables.get("files", {})}
+    test_map = {
+        "tests": counts,
+        "files": tables.get("files", {}),
+        "functions": bundle.get("functions", {}),
+    }
     fallback = ctm.select(changes, test_map, guard)
     if fallback.full:
         return _verdict(
@@ -300,7 +326,7 @@ def score(
     narrow: set[str] = set()
     broad: set[str] = set()
     for path in paths:
-        linked = {indexed[i] for i in tables.get("files", {}).get(path, ())}
+        linked = {indexed[i] for i in ctm.linked_tests(test_map, path, (functions or {}).get(path))}
         (narrow if len(linked) <= narrow_reach_max else broad).update(linked)
     named = grep(sorted({m for p in paths if (m := module_name(p))}))
     changed_tests = {p for p in paths if ctm.is_test_file(p)}
@@ -397,18 +423,21 @@ def _score_args(args: argparse.Namespace, grep: Grep) -> tuple[dict[str, Any], d
     skippable, narrow_reach_max = load_rates(Path(args.rates))
     if meta["head"]:
         check_checkout(meta["head"], root)
+    functions = None
     if args.name_status:
-        text = Path(args.name_status).read_text(encoding="utf-8")
+        changes = ctm.parse_name_status(Path(args.name_status).read_text(encoding="utf-8"))
     else:
-        text = ctm.git_name_status(meta["base"], meta["head"], root)
+        changes = ctm.parse_name_status(ctm.git_name_status(meta["base"], meta["head"], root))
+        functions = ctm.changed_functions(meta["base"], meta["head"], changes, bundle, root)
     body = score(
-        ctm.parse_name_status(text),
+        changes,
         bundle,
         git_test_files(root),
         bundle["guard"] if "guard" in bundle else ctm.guard_tier(root),
         skippable=skippable,
         narrow_reach_max=narrow_reach_max,
         grep=lambda modules: grep(modules, root),
+        functions=functions,
     )
     return {**meta, "bundle_commit": bundle.get("commit") or None}, body
 
