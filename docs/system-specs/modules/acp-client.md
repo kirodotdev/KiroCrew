@@ -3179,8 +3179,9 @@ managed names and those app servers only. User-declared servers stay in the
 agent block on load too: KAS launches block servers on `session/load`, a server
 first declared at load included (probed on the 0.66.33 bundle with a stdio
 probe server, and on 0.66.91 from a cold process), and only a block entry
-carries `timeout`. KAS's session-level element has no `timeout` slot, so a
-user server hoisted there would get KAS's 60 s instead of the default
+carries a user server's `timeout`. A session-level element gets KAS's 60 s
+unless its `_meta.kiro` names a `timeout` on an engine that reads it (below),
+and only Crew's own elements carry one, so a user server hoisted there would lose the default
 `kas_settings_mcp.finish_settings_mcp` gives the block (120 s, 300 s for a remote one). On both paths: a name
 the caller's array already carries is skipped (a broker stub or member dispatch
 entry stays authoritative and a name appears once), and only a stdio entry whose
@@ -3205,8 +3206,15 @@ client`.
 
 Every managed stdio element in the returned array, caller entries included,
 carries `_meta.kiro.versionNegotiation: "legacy"`, so KAS starts each of Crew's
-own servers once instead of twice. A non-managed or command-less entry keeps the
-host default, and the agent-block path carries no pin.
+own servers once instead of twice, and `_meta.kiro.timeout: 120000`
+(`kas_settings_mcp.KIRO_CLI_MCP_TIMEOUT_MS`, kiro-cli's default), so KAS gives
+each of them 120 s to connect instead of 60 s. A server waiting in the gateway's
+spawn queue after a restart can take longer than 60 s. The engine
+copies every `_meta.kiro` key of a session-level entry into the server's config
+from 0.66.111 on; 0.66.102 and older read only `disabledTools`, `waitForReady`
+and `versionNegotiation` there and ignore the timeout. A non-managed or
+command-less entry keeps the host defaults, and the agent-block path carries no
+pin.
 
 **v2 parity of the projected entry.** The projection answers the same
 spec the same way kiro-cli v2 does where the wire allows it:
@@ -3433,8 +3441,8 @@ deadline (see "KAS managed MCP start re-attempt" below).
 A server still `connecting` may be queued rather than stuck. KAS connects one
 process's MCP servers through a single FIFO queue of four slots
 (`MAX_CONCURRENT_CONNECTIONS` in the engine's `connection-lifecycle.ts`), shows a
-queued server as `connecting`, and starts its 60 s connect timeout only once it
-holds a slot. It queues the running agent's servers ahead of the session-level
+queued server as `connecting`, and starts its connect timeout (60 s unless the
+entry names one the engine reads) only once it holds a slot. It queues the running agent's servers ahead of the session-level
 `mcpServers` tier, so in a session that started in its own agent Crew's
 managed servers wait behind every server that agent declares. A new session whose
 agent declares servers therefore starts in the server-less start agent
@@ -3589,7 +3597,7 @@ The session MCP report carries `restart_to_load`: failed servers whose reason re
 
 ### KAS managed MCP start re-attempt
 
-Right after a restart every session cold-starts its private managed backends at once, behind the gateway's spawn gate, so on a small or busy host `kirocrew-core` or `kirocrew-cron` can miss a start deadline: the gateway's first-`initialize` deadline (the 30 s cold-start floor; the stub reports `backend init failed: initialize did not complete within 30s`) or KAS's own per-server connect timeout (60 s by default, `connection timed out after 60000ms`). Either one leaves a `failed` status entry, and the readiness barrier would end the start on it. Before it does, `session_handle_mcp._reattempt_timed_out_start` re-attempts that server once with the same `_kiro/mcp/resetServer` and `{startOAuth: false}` request (`AcpRuntime.begin_mcp_reattempt`), and the barrier keeps waiting on the same deadline. It qualifies only when the entry is `failed` without `failedAuthorization` and its `errorMessage` reads as a start timeout (`acp/mcp_reattempt.is_start_timeout_failure`: the gateway's reason, spelled from `backend_handshake.INITIALIZE_DEADLINE_REASON` so the two cannot drift, or a word-bounded `timed out`). A bad command, a crash or a protocol error is not re-attempted. Each required server gets at most one such re-attempt per barrier, and each of several servers that timed out in one snapshot gets its own. This spends nothing from the turn-start credential budget above.
+Right after a restart every session cold-starts its private managed backends at once, behind the gateway's spawn gate, so on a small or busy host `kirocrew-core` or `kirocrew-cron` can miss a start deadline: the gateway's first-`initialize` deadline (the 30 s cold-start floor; the stub reports `backend init failed: initialize did not complete within 30s`) or KAS's own per-server connect timeout: 60 s on an engine that ignores the timeout Crew sends (`connection timed out after 60000ms`), otherwise 120 s, which ends a start inside the barrier only once the barrier has been extended or when `agent.session_start_timeout_secs` is above 120 (the engine's timer can start a few seconds before the barrier's). Either one leaves a `failed` status entry, and the readiness barrier would end the start on it. Before it does, `session_handle_mcp._reattempt_timed_out_start` re-attempts that server once with the same `_kiro/mcp/resetServer` and `{startOAuth: false}` request (`AcpRuntime.begin_mcp_reattempt`), and the barrier keeps waiting on the same deadline. It qualifies only when the entry is `failed` without `failedAuthorization` and its `errorMessage` reads as a start timeout (`acp/mcp_reattempt.is_start_timeout_failure`: the gateway's reason, spelled from `backend_handshake.INITIALIZE_DEADLINE_REASON` so the two cannot drift, or a word-bounded `timed out`). A bad command, a crash or a protocol error is not re-attempted. Each required server gets at most one such re-attempt per barrier, and each of several servers that timed out in one snapshot gets its own. This spends nothing from the turn-start credential budget above.
 
 The reset goes out in the background, so a snapshot the host sent before processing it still lists the old failure. Until a snapshot shows the server in another state (`connecting`, as the reset starts it), a `failed` entry for it, or a snapshot that does not list it, keeps it pending as `re-attempting`; from then on a `failed` entry is the re-attempt's own result and ends the start with `AcpRuntimeError`. A host that never acts on the reset leaves the server `re-attempting` until `AcpRequestTimeout`, which names it so. With no reset request on the host (`reattempts_mcp_servers` false), a refused re-attempt (a sign-in holds the slot, the session is not registered), or a second failure, the start fails exactly as it does without the re-attempt.
 

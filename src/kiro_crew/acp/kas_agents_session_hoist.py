@@ -26,8 +26,8 @@ logger = logging.getLogger("kiro_crew.acp.kas_agents")
 
 #: The keys a projected stdio declaration may carry and still be reproduced
 #: exactly by :func:`kiro_crew.acp.session_mcp.acp_server_element`. Anything
-#: else on a managed entry is a user customization with no session-level
-#: carrier -- ``timeout``, for one -- so an entry carrying one stays in the
+#: else on a managed entry is a user customization the hoisted element does not
+#: reproduce -- ``timeout``, for one -- so an entry carrying one stays in the
 #: block. ``disabledTools`` never reaches here: the projection carries it in the
 #: agent's ``excludedTools`` and drops it from the entry. ``disabled`` is absent from that list of
 #: examples for a reason worth stating: a disabled entry never reaches this
@@ -75,8 +75,8 @@ def hoist_servers_for_session(
 
     Only managed declarations move; user-declared ones stay in the block on
     ``session/new`` and ``session/load`` alike, where KAS launches them and reads
-    their ``timeout`` (a session-level element has no ``timeout`` slot, so it
-    would get KAS's 60 s).
+    their ``timeout`` (a session-level element gets KAS's 60 s unless its
+    ``_meta.kiro`` names one the engine reads; only Crew's own elements carry one).
 
     Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
     entry over a same-named global or workspace ``mcp.json`` server on
@@ -153,9 +153,10 @@ def hoist_servers_for_session(
     property ``member_dispatch`` already relies on for ``@kirocrew-dashboard``.
 
     Every managed element in the returned array, caller entries included, is
-    pinned to legacy version negotiation (:func:`_pin_legacy_negotiation`) and
-    placed ahead of every other entry (:func:`_managed_first`), because KAS
-    starts servers in array order and session start waits for Crew's own.
+    pinned to legacy version negotiation and kiro-cli's 120 s connect timeout
+    (:func:`_pin_legacy_negotiation`) and placed ahead of every other entry
+    (:func:`_managed_first`), because KAS starts servers in array order and
+    session start waits for Crew's own.
     """
     if not custom_agents:
         # The kiro path (no wire payload) returns here without importing the

@@ -1355,7 +1355,7 @@ class TestHoistManagedServers:
         return to_client_custom_agent("kirocrew", spec, "p", session_key="subagent:k")
 
     #: What every managed element in the returned array carries.
-    _LEGACY = {"_meta": {"kiro": {"versionNegotiation": "legacy"}}}
+    _LEGACY = {"_meta": {"kiro": {"versionNegotiation": "legacy", "timeout": 120_000}}}
 
     def test_active_managed_stdio_entry_moves_into_the_array_as_an_acp_element(self):
         projected = self._projected()
@@ -1674,7 +1674,7 @@ class TestHoistManagedServers:
         for element in by_name.values():
             assert element["_meta"]["kiro"]["versionNegotiation"] == "legacy"
         assert by_name["kirocrew-dashboard"]["_meta"] == {
-            "kiro": {"waitForReady": True, "versionNegotiation": "legacy"},
+            "kiro": {"waitForReady": True, "versionNegotiation": "legacy", "timeout": 120_000},
             "other": 1,
         }, "existing _meta keys survive the pin"
         assert member == before, "the caller's entry is copied, never mutated"
@@ -1700,9 +1700,9 @@ class TestHoistManagedServers:
 class TestUserServersStayInTheBlock:
     """A user-declared server is never hoisted, on session/new or session/load.
 
-    KAS launches agent-block servers on a cold session/load too, and only the
-    block carries ``timeout``: a session-level element has no slot for it, so a
-    hoisted server got KAS's 60 s instead of the 120 s the block is given.
+    KAS launches agent-block servers on a cold session/load too, and the block
+    carries a user server's ``timeout``: hoisted, it would get KAS's 60 s instead
+    of the 120 s the block is given.
     """
 
     def test_user_server_stays_and_managed_server_moves_with_its_token(self, monkeypatch):

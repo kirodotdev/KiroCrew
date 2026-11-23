@@ -21,6 +21,7 @@
           {
             "_meta": {
               "kiro": {
+                "timeout": 120000,
                 "versionNegotiation": "legacy"
               }
             },
@@ -30,6 +31,7 @@
           {
             "_meta": {
               "kiro": {
+                "timeout": 120000,
                 "versionNegotiation": "legacy"
               }
             },
@@ -72,6 +74,7 @@
           {
             "_meta": {
               "kiro": {
+                "timeout": 120000,
                 "versionNegotiation": "legacy"
               }
             },
@@ -87,6 +90,7 @@
           {
             "_meta": {
               "kiro": {
+                "timeout": 120000,
                 "versionNegotiation": "legacy"
               }
             },
