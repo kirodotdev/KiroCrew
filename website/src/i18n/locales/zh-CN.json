@@ -20268,7 +20268,8 @@
         "task_runner_save_failed": "无法保存 Task Runner 设置。请重试。",
         "channels": "显示频道",
         "channels_hint": "关闭后，频道会从左侧导航栏和“全局搜索”中移除。不会删除或停止任何内容：你的频道以及其中正在工作的智能体都会保留。",
-        "channels_save_failed": "无法保存频道设置。请重试。"
+        "channels_save_failed": "无法保存频道设置。请重试。",
+        "content_text_size_tip": "View 菜单中的 Content Text Size 会缩放页面、面板和设置中的文字。菜单和工具栏不受影响。消息文字遵循聊天设置中的“消息字号”，终端遵循其自身设置。"
       },
       "importPanel": {
         "agent_data": "代理数据",

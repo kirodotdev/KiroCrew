@@ -21370,7 +21370,8 @@
         "task_runner_save_failed": "No se pudo guardar el ajuste de Task Runner. Inténtalo de nuevo.",
         "channels": "Mostrar Canales",
         "channels_hint": "Desactivado, Canales sale de la barra lateral izquierda y de Buscar en todo. No se borra ni se detiene nada: tus canales y los agentes que trabajan en ellos se conservan.",
-        "channels_save_failed": "No se pudo guardar el ajuste de Canales. Inténtalo de nuevo."
+        "channels_save_failed": "No se pudo guardar el ajuste de Canales. Inténtalo de nuevo.",
+        "content_text_size_tip": "Content Text Size, en el menú View, escala el texto de las páginas, los paneles y la Configuración. Los menús y las barras de herramientas no se ven afectados. El texto de los mensajes sigue Tamaño de fuente de los mensajes en la configuración de Chat, y el terminal sigue su propio ajuste."
       },
       "importPanel": {
         "agent_data": "Datos del agente",

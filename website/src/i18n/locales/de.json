@@ -20819,7 +20819,8 @@
         "task_runner_save_failed": "Die Einstellung für Task Runner konnte nicht gespeichert werden. Versuch es noch einmal.",
         "channels": "Kanäle anzeigen",
         "channels_hint": "Ausgeschaltet verschwinden Kanäle aus der linken Leiste und aus „Überall suchen“. Nichts wird gelöscht oder gestoppt: Deine Kanäle und die Agenten, die darin arbeiten, bleiben erhalten.",
-        "channels_save_failed": "Die Einstellung für Kanäle konnte nicht gespeichert werden. Versuch es noch einmal."
+        "channels_save_failed": "Die Einstellung für Kanäle konnte nicht gespeichert werden. Versuch es noch einmal.",
+        "content_text_size_tip": "Content Text Size im Menü View skaliert den Text auf Seiten, in Panels und in den Einstellungen. Menüs und Symbolleisten bleiben unverändert. Nachrichtentext folgt der Schriftgröße der Nachrichten in den Chat-Einstellungen, das Terminal folgt seiner eigenen Einstellung."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

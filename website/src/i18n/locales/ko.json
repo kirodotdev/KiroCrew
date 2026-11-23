@@ -20268,7 +20268,8 @@
         "task_runner_save_failed": "Task Runner 설정을 저장하지 못했습니다. 다시 시도하세요.",
         "channels": "채널 표시",
         "channels_hint": "끄면 채널이 왼쪽 레일과 전체 검색에서 사라집니다. 삭제되거나 중지되는 것은 없습니다. 채널과 그 안에서 일하는 에이전트는 그대로 유지됩니다.",
-        "channels_save_failed": "채널 설정을 저장하지 못했습니다. 다시 시도하세요."
+        "channels_save_failed": "채널 설정을 저장하지 못했습니다. 다시 시도하세요.",
+        "content_text_size_tip": "View 메뉴의 Content Text Size는 페이지, 패널, 설정의 텍스트 크기를 조정합니다. 메뉴와 툴바는 영향을 받지 않습니다. 메시지 텍스트는 채팅 설정의 메시지 글꼴 크기를 따르며, 터미널은 자체 설정을 따릅니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",
