@@ -211,6 +211,26 @@ describe('a refused launch', () => {
     await waitFor(() => expect(shown()).toBe(false), { timeout: 5000 })
   })
 
+  it('asks to turn sharing on after a Review approval while sharing is off, as the table does', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(
+      status({ enabled: false, launch_refused: { 'alpha-mcp': changed } }) as never,
+    )
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
+    vi.spyOn(api, 'mcpGatewayLaunchPreview').mockResolvedValue({
+      name: 'alpha-mcp', commands: [['npx', '-y', 'alpha-mcp@2']], envs: [['MODE=fast']], complete: true, expected_launch: 'a:b',
+    } as never)
+    const setStub = vi.spyOn(api, 'mcpGatewaySetStub').mockResolvedValue({ ok: true, name: 'alpha-mcp', stub: true } as never)
+
+    mount()
+    fireEvent.click(await screen.findByRole('button', { name: M('review_approve') }, { timeout: 5000 }))
+    const review = await screen.findByRole('dialog', undefined, { timeout: 5000 })
+    fireEvent.click(within(review).getByRole('button', { name: M('approve_button') }))
+    await waitFor(() => expect(setStub).toHaveBeenCalledWith('alpha-mcp', true, 'a:b'), { timeout: 5000 })
+    // Approving only clears the refusal; sharing itself is still off, so the
+    // same turn-on confirm the table's share action opens must follow.
+    expect(await screen.findByRole('button', { name: M('confirm_turn_on') }, { timeout: 5000 })).toBeTruthy()
+  })
+
   it('keeps the error path for a moved-past refusal that brings no launch to show', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status({ launch_refused: { 'alpha-mcp': changed } }) as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server] } as never)
