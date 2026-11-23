@@ -210,6 +210,20 @@ def test_a_full_linux_verdict_is_a_full_windows_verdict(diff: str) -> None:
     assert _block(diff) == win.full(f"linux_full: {linux['reason']}")
 
 
+def test_a_docs_only_diff_is_full_and_a_plain_src_diff_runs_guard_and_targeting_tests() -> None:
+    docs = _block("M\tdocs/guide.md\nM\tREADME.md\n")
+    assert docs["verdict"] == "full" and docs["reason"].startswith("linux_full: ")
+    assert docs["run"] == [] and docs["would_run_share"] == 1.0
+    # A `src/` file the table does not name, with an added line no pattern hits.
+    path = "src/kiro_crew/plain.py"
+    assert path not in BUNDLE["os_sensitive"] and cts.ost.tier_of("x = 1\n") is None
+    plain = _block(f"M\t{path}\n", added={path: "x = 1\n"})
+    assert plain["verdict"] == "select" and plain["reason"] is None
+    assert plain["run"] and set(plain["run"]) <= set(GUARD) | set(BUNDLE["windows_targeting"])
+    # The tests the map links to the file run on Linux; Windows leaves the others out.
+    assert "test/test_plain.py" in _ad(f"M\t{path}\n") - set(plain["run"])
+
+
 def _ci_bucket() -> list[str]:
     steps = load_workflow("ci.yml")["jobs"]["changes"]["steps"]
     filters = next(step["with"]["filters"] for step in steps if step.get("id") == "filter")
