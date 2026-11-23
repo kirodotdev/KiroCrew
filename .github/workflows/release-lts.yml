@@ -56,14 +56,14 @@ jobs:
   # The exact tagged commit passes the backend suite before anything is
   # PUBLISHED. An LTS release has no prerelease lane to soak on.
   #
-  # It gates every publish job and every sign-and-notarize call, and no build.
+  # It gates every publish job, and no build and no macOS `prepare` call.
   # The builds only make artifacts on this run, so running them beside the
   # suite instead of after it changes nothing a user can fetch; it takes the
   # suite off the front of the macOS chain. Measured on lts-v0.1.0 (run
   # 42712315572): the suite ended 43 minutes in and the universal macOS build
-  # only started then, so signing started at 77 minutes. Built in parallel,
-  # signing waits for the later of the suite and build + smoke (~25 minutes),
-  # about 25-35 minutes sooner. test_release_lts_workflow.py pins both halves.
+  # only started then, so signing started at 77 minutes. Now signing and
+  # notarization start once build + smoke is done (~25 minutes) and only the
+  # macOS publish waits for the suite. test_release_lts_workflow.py pins it.
   release-candidate-tests:
     name: Test Release Candidate SHA
     needs: version
@@ -318,9 +318,15 @@ jobs:
     secrets:
       AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
 
+  # macOS: two calls of sign-and-notarize.yml per DMG, as nightly.yml makes.
+  # The `prepare` calls sign and notarize, which write only the private
+  # signing bucket and this run's artifacts, so they wait for the builds and
+  # not for release-candidate-tests. The `publish-macos*` calls write the
+  # distribution bucket and the lts feed, so they wait for the suite and for
+  # their own prepare call. See "Split calls" in sign-and-notarize.yml.
   sign-and-notarize:
     name: Sign + Notarize macOS
-    needs: [version, release-candidate-tests, build-wheel, build-desktop]
+    needs: [version, build-wheel, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -335,10 +341,11 @@ jobs:
       channel: lts
       version: ${{ needs.version.outputs.version }}
       write_feed: true
+      stage: prepare
 
   sign-and-notarize-arm64:
     name: Sign + Notarize macOS (arm64 only)
-    needs: [version, release-candidate-tests, build-desktop]
+    needs: [version, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -353,12 +360,13 @@ jobs:
       channel: lts
       version: ${{ needs.version.outputs.version }}
       write_feed: true
+      stage: prepare
       mac_variant: arm64
       mac_artifact: unsigned-build-darwin-arm64
 
   sign-and-notarize-x64:
     name: Sign + Notarize macOS (x64 only)
-    needs: [version, release-candidate-tests, build-desktop]
+    needs: [version, build-desktop]
     permissions:
       contents: read
       id-token: write
@@ -373,5 +381,68 @@ jobs:
       channel: lts
       version: ${{ needs.version.outputs.version }}
       write_feed: true
+      stage: prepare
       mac_variant: x64
       mac_artifact: unsigned-build-darwin-x64
+
+  publish-macos:
+    name: Publish macOS (lts channel)
+    needs: [version, release-candidate-tests, sign-and-notarize]
+    # Skips cleanly when the prepare call notarized nothing (signing not
+    # configured), as the single call's publish job does. No status function
+    # here, so GitHub's implicit success() still holds it behind every need.
+    if: needs.sign-and-notarize.outputs.notarized == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      write_feed: true
+      stage: publish
+
+  publish-macos-arm64:
+    name: Publish macOS (lts channel · arm64 only)
+    needs: [version, release-candidate-tests, sign-and-notarize-arm64]
+    # Skips cleanly when the prepare call notarized nothing (signing not
+    # configured), as the single call's publish job does. No status function
+    # here, so GitHub's implicit success() still holds it behind every need.
+    if: needs.sign-and-notarize-arm64.outputs.notarized == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      write_feed: true
+      stage: publish
+      mac_variant: arm64
+
+  publish-macos-x64:
+    name: Publish macOS (lts channel · x64 only)
+    needs: [version, release-candidate-tests, sign-and-notarize-x64]
+    # Skips cleanly when the prepare call notarized nothing (signing not
+    # configured), as the single call's publish job does. No status function
+    # here, so GitHub's implicit success() still holds it behind every need.
+    if: needs.sign-and-notarize-x64.outputs.notarized == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      write_feed: true
+      stage: publish
+      mac_variant: x64

@@ -686,14 +686,16 @@ the same name the fresh path wrote into its own gated artifact. On `release.yml`
 the two single-arch callers are required lanes beside the universal one:
 `record-promotion`, `github-release` and `record-stable-promotion` all wait on
 all three, and the release page carries `KiroCrew-<v>-{universal,arm64,x64}.dmg`
-with the matching `*-mac.zip`. `nightly.yml` splits each of its three calls in
-two with the `stage` input: `sign-and-notarize*` (`stage: prepare`: `sign` and
-`notarize`, nothing public) starts as soon as `build-desktop` is done, and
-`publish-macos*` (`stage: publish`: `blockmap` and `publish`, reading the same
-run's gated artifact) waits for it and for the nightly's publish gates. That
-takes signing and Apple notarization off the back of the macOS test suite.
-`release.yml` and `release-lts.yml` leave `stage` empty and run the four jobs
-as one call.
+with the matching `*-mac.zip`. `nightly.yml` and `release-lts.yml` each split
+their three calls in two with the `stage` input: `sign-and-notarize*`
+(`stage: prepare`: `sign` and `notarize`, nothing public) starts as soon as
+`build-desktop` is done, and `publish-macos*` (`stage: publish`: `blockmap` and
+`publish`, reading the same run's gated artifact) waits for it and for the
+caller's publish gate: the nightly's publish gates on `nightly.yml`,
+`release-candidate-tests` on `release-lts.yml`. That takes signing and Apple
+notarization off the back of the macOS test suite and of the LTS candidate
+suite. Only `release.yml` leaves `stage` empty and runs the four jobs as one
+call.
 
 1. **sign** (ubuntu). Flattens the build artifacts, attests SLSA provenance for
    the wheel, sdist, and AppImages (not the mac zip or DMG, whose bytes are not
@@ -1710,7 +1712,7 @@ The LTS edition (RFC crew-lts-edition, D11) ships from its own tag, `lts-vX.Y.Z`
 | Version | `lts-vX.Y.Z` maps to `X.Y.Z`; any other tag shape fails |
 | Gate | The backend suite on the tagged commit, and the dependency vulnerability gate |
 | Build | `build-wheel.yml`, `build-desktop.yml`, `build-windows.yml` with `edition: lts` |
-| Sign + publish | `sign-and-notarize.yml` (3 legs), `publish-linux.yml` (6), `publish-windows.yml`, `publish-cli.yml`, all with `channel: lts` |
+| Sign + publish | `sign-and-notarize.yml` (3 legs, each split in two: `stage: prepare` beside the suite, `stage: publish` behind `release-candidate-tests`), `publish-linux.yml` (6), `publish-windows.yml`, `publish-cli.yml`, all with `channel: lts` |
 
 It writes only lts paths: `feed/lts/`, `cli/lts/`, `desktop/lts/` and the signing bucket's `lts/` keys. Every published file uses the LTS stem: `KiroCrew-LTS.dmg`, `KiroCrew-LTS-arm64.dmg`, `KiroCrew-LTS-x86_64.AppImage`, `KiroCrew-LTS-Setup.exe`, and the wheel `kirocrew_lts-X.Y.Z-py3-none-any.whl` of the distribution `kirocrew-lts`. The desktop app is a side-by-side `KiroCrew LTS` app, built like nightly (`packaging/build-desktop.sh`): its own product name, Linux package and executable names, npm name, `nsis.guid` and Windows app ID, with the shared macOS bundle id, so no new signing identifier. There is no Docker image and no GitHub release. `cli.sh --channel lts` installs the LTS wheel.
 
