@@ -865,6 +865,12 @@ class TestRmFloorReadsNestedShellPayloads:
             "bash -c $'echo\\n'\"RM -fr '$HOME'\"",  # with the ``$'...'`` newline view
             "cat <<EOF\ntext\nEOF\nbash -c \"RM -fr '$HOME'\"",  # after a heredoc
             "bash -c \"RM -fr '$HO\\\nME'\"",  # a line continuation bash folds first
+            # A ``#`` or ``<<`` inside ``${…}`` / ``$[…]`` is data: the line runs on.
+            "echo ${x:- #}; bash -c 'RM -fr ~'",
+            "echo ${x:- <<EOF}; bash -c 'RM -fr ~'",
+            "echo $[ 1 << 2 ]\nbash -c 'RM -fr ~'",
+            "echo ${a[1]:- #}; bash -c 'RM -fr ~'",
+            "echo ${x:- #} && bash -c 'RM -fr /'",
         ],
     )
     def test_a_nested_wipe_is_refused_by_the_floor(self, command):
@@ -906,6 +912,11 @@ class TestRmFloorReadsNestedShellPayloads:
             "bash -c \"RM -fr '~'\"",
             # A quoted ``;`` in printed text is data.
             "bash -c \"printf '%s\\n' 'Example:; RM -fr /'\"",
+            # The same ``${…}`` / ``$[…]`` lines with no wipe after them.
+            "echo ${x:- #}; bash -c 'RM -fr /tmp/x'",
+            "echo $[ 1 << 2 ]\nbash -c 'ls'",
+            "echo ${x:- #}; git log --oneline | head -3",
+            "echo ok # ${x; bash -c 'RM -fr ~'",  # a real comment: bash runs none of it
         ],
     )
     def test_a_nested_harmless_command_keeps_its_verdict(self, command):
@@ -1117,10 +1128,10 @@ class TestRmFloorReadsNestedShellPayloads:
         assert reason is None or "component=argv-floor" not in reason
 
     def test_many_heredoc_markers_on_one_line_read_in_linear_time(self):
-        """The line reader ends at the first heredoc; the rest of its line is one read."""
+        """The shared reader takes each ``<<`` as one redirection of the one command."""
         from kiro_crew.security import rm_floor
 
-        assert len(rm_floor._command_lines("r" + "m x " + "<<a " * 5000)) == 1
+        assert rm_floor._command_tokens("r" + "m x " + "<<a " * 5000) == [["r" + "m", "x"]]
 
     def test_a_view_reads_only_its_own_frame(self):
         from kiro_crew.security import shell_commands
