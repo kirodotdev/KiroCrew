@@ -1874,6 +1874,35 @@ no longer destroy older turns.
   not a drift, and its delete is still witnessed on the target. The rule is gated
   on a recorded `_disk_meta_key`, so slots hydrated before the field existed keep
   the prior target-only behavior.
+- **A drifted cron chat's copy is folded back at startup.** A cron chat reopened
+  from History could drift to the `dashboard:cron_<id>` fallback, and its save
+  wrote the rows its window held from `cron_<id>.jsonl` (A) into
+  `dashboard_cron_<id>.jsonl` (B), followed by the turns typed after them, so
+  History listed the conversation twice. The startup channel transcript migration
+  (`channel_transcript_migration.migrate_channel_transcripts`) merges such a B
+  into A the way it merges a channel orphan: in time order, each copied row kept
+  once, A's metadata kept with B's title, folder and pin carried where A has
+  none, then B retired through `delete_session`. A name is no proof, so the
+  session-map claim on `cron_<id>` does not stop it; the files and rows decide
+  instead, read under both locks (`_cron_copy_may_merge`, then
+  `_leads_with_cron_row`). A's line must name its own `cron:` key, the key a
+  History reopen binds. A run file still tagged `cron_run: "ephemeral"` carries
+  no link, so it is never A: the cron prune deletes such a file with whatever was
+  merged into it. A run that opens its own tab is re-tagged `tab` before it is
+  linked, and the prune keeps that file. B's tab must be `closed`: every reopen
+  clears that marker under B's lock before it publishes a tab, so no reopened
+  slot is saving into the file being deleted. A restore that adopts a closed tab
+  (`adopt_closed`: an AutoNudge fire, an app's restore) is the exception, so a
+  loop or app still pointed at B's tab loses its target with the file. B's rows
+  are in A, but a turn that restore runs while the later removal pass deletes B
+  is lost: its save then finds B deleted and writes nothing.
+  B must not be private (History does not list it, and A would), must own no
+  attachments directory or reply-threads sidecar (the delete would take them),
+  and its first row must be one of A's own rows (role, content and `ts`). Anything
+  else leaves both files as they are. A missing A leaves B alone, so a cron
+  transcript the user deleted is never recreated. The rows cannot tell a copied
+  row the user later rewound or edited away in A from a turn typed in B, so such a
+  row comes back with the merge.
 - **Turn persistence is offloaded through ONE choke point**
   (`save_conversation_turn_off_loop`, `llm_helpers_parts/turn_results.py`): `save_conversation_turn`
   makes TWO `append` calls, so an on-loop caller pays ~24 ms of loop time per turn
