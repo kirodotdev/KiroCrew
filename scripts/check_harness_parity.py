@@ -542,6 +542,11 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
         "client's permission parser is proven to tell apart; a missing member only "
         "loses the deny-rule override"
     ),
+    "ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD": (
+        "Crew-side: fail-closed list of backends where the dashboard's native-crew "
+        "auto-approve rung may read a request as a sub-agent's; a missing member "
+        "only shows the approval card"
+    ),
     "ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED": (
         "Crew-side: fail-closed list of backends whose sub-agent calls the shared "
         "runtime's permission parser is proven to tell apart; a missing member only "

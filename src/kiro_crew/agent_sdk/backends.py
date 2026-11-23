@@ -329,6 +329,12 @@ with no row here.
      - driver-internal (whether that transport's permission events say
        ``child_calls_marked``, which a deny-rule override card and a session
        waiver require; read per frame by each transport's permission builder)
+   * - ``ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD``
+     - semantic question (``SessionCapabilities.permission_requests_name_child``:
+       whether the dashboard's native-crew auto-approve rung may treat a request
+       raised while a native sub-agent card is open as that sub-agent's. Not the
+       two ``..._CHILD_CALLS_MARKED`` sets above: those let a transport mark one
+       request for a deny-rule override, and claude is in them but not here)
    * - ``ACP_BACKENDS_HOOKS_LIST``
      - driver-internal (whether this harness's agent asks its client for the hooks
        matching a trigger and to run one, read by the session dispatch loop that
@@ -1542,6 +1548,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_NATIVE_CHILD_CANCEL,
     ACP_BACKENDS_NATIVE_TODOS,
+    ACP_BACKENDS_PERMISSION_REQUESTS_NAME_CHILD,
     ACP_BACKENDS_PLAN_CHECKLIST,
     ACP_BACKENDS_RAW_SDK_TASKS,
     ACP_BACKENDS_READ_PATH_ARG,
