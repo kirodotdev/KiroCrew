@@ -435,7 +435,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
         {/* `ui.loading` describes the app's routed page. A side-panel tab mounts
             its own bundle (`entry` override) in a narrow panel, so it keeps the
             default shape rather than borrowing the page's rail or split. */}
-        <Suspense fallback={onFailure ? null : <AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
+        <Suspense fallback={onFailure ? null : <AppLoadingFallback appName={appDisplayName(app)} appId={app.name} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
           {/* A replaced bundle is never imported again. The notice shows while the
               window reloads, and stays with a way to retry when a page's
               unsaved-changes prompt cancels that reload. */}

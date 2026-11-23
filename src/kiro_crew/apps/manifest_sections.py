@@ -377,6 +377,7 @@ class UIConfig:
     # supplies markup or styles. Empty means undeclared, which the dashboard
     # renders as "page", the skeleton every app had before the field existed.
     loading_layout: str = ""
+    loading_logo: str = ""  # ``loading.logo``: an image path in ``ui/`` drawn above the label
     # Exact ``https://host`` origins the app's pages may frame, from
     # ``"frameSources"``. The gateway adds them to the dashboard ``frame-src`` while
     # the app is enabled and trusted (``apps/frame_sources.py``).
@@ -410,10 +411,11 @@ class UIConfig:
         d: dict[str, Any] = {}
         if self.entry:
             d["entry"] = self.entry
-        if self.loading_layout:
+        declared = {"layout": self.loading_layout, "logo": self.loading_logo}
+        if loading := {k: v for k, v in declared.items() if v}:
             # Emitted only when declared, so a manifest without it keeps producing
             # the identical dict (and the identical signed payload).
-            d["loading"] = {"layout": self.loading_layout}
+            d["loading"] = loading
         if self.pages:
             d["pages"] = [p.to_dict() for p in self.pages]
         if self.overlays:
@@ -454,6 +456,7 @@ class UIConfig:
             overlays=overlays,
             sidebar=sidebar,
             loading_layout=cls._parse_loading_layout(data.get("loading")),
+            loading_logo=cls._parse_loading_logo(data.get("loading")),
             frameSources=list(raw_frames) if frames_ok else [],
             bad_frame_sources=not frames_ok,
         )
@@ -476,6 +479,14 @@ class UIConfig:
         if type(layout) is str and layout in cls.LOADING_LAYOUTS:
             return layout
         return ""
+
+    @staticmethod
+    def _parse_loading_logo(raw: Any) -> str:
+        """The declared logo, or ``""`` for a path ``handle_app_ui_file`` answers 400 for."""
+        logo = raw.get("logo") if isinstance(raw, dict) else None
+        if type(logo) is not str or logo.startswith("/") or ".." in logo:
+            return ""
+        return "" if "\\" in logo or ":" in logo else logo
 
 
 @dataclass

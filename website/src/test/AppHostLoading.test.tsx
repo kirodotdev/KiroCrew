@@ -138,6 +138,19 @@ describe('AppHost — delayed loading fallback', () => {
     expect(screen.getByTestId('app-loading-fallback').dataset.layout).toBe('page')
   })
 
+  it('the routed page draws the declared logo from the app name, not its display name', () => {
+    renderWithProviders(<AppHost app={app({ layout: 'rail', logo: 'img/logo.png' })} />)
+    act(() => { vi.advanceTimersByTime(APP_LOADING_DELAY_MS) })
+    expect(screen.getByTestId('app-loading-logo').getAttribute('src')).toBe('/apps/ledger-lens/ui/img/logo.png')
+  })
+
+  it('a side-panel tab (entry override) shows no logo even when the manifest declares one', () => {
+    renderWithProviders(<AppHost app={app({ logo: 'img/logo.png' })} entry="panel.mjs" />)
+    act(() => { vi.advanceTimersByTime(APP_LOADING_DELAY_MS) })
+    expect(screen.getByTestId('app-loading-fallback')).toBeTruthy()
+    expect(screen.queryByTestId('app-loading-logo')).toBeNull()
+  })
+
   it('leaving the page mid-load clears the pending timer', () => {
     const t = trackDelayTimers()
     const { unmount } = renderWithProviders(<AppHost app={app({ layout: 'rail' })} />)

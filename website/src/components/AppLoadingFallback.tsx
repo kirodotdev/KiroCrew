@@ -20,11 +20,17 @@
  * which is the skeleton every app had before. The backend parser
  * (`UIConfig.from_dict` in `apps/manifest_sections.py`) applies the same rule, so
  * this check only matters for a manifest that reached the page another way.
+ *
+ * An app may also name an image to draw above the label, `ui.loading.logo`: a
+ * path into its own `ui/` directory, resolved like a page icon
+ * (`installedUiArt`), so it is still a value, never markup, and never another
+ * host. A side-panel tab gets no `loading` at all, so it shows no logo either.
  */
 import { useEffect, useState, type ReactElement } from 'react'
 import { ContentSkeleton, Skeleton } from './ui'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { i18nT } from '../i18n/t'
+import { installedUiArt } from '../appNav'
 
 export const APP_LOADING_LAYOUTS = ['page', 'rail', 'centered', 'split'] as const
 export type AppLoadingLayout = (typeof APP_LOADING_LAYOUTS)[number]
@@ -48,6 +54,18 @@ export function resolveAppLoadingLayout(loading: unknown): AppLoadingLayout {
     : 'page'
 }
 
+/**
+ * The URL of the image a manifest's `ui.loading.logo` names, or `''`. The value
+ * is a path relative to the app's `ui/` directory and goes through the same
+ * manifest-art classifier as a page icon, so a URL, a traversal or anything
+ * that is not a string yields no image.
+ */
+export function resolveAppLoadingLogo(loading: unknown, appId: string): string {
+  if (!loading || typeof loading !== 'object' || Array.isArray(loading)) return ''
+  if (!Object.prototype.hasOwnProperty.call(loading, 'logo')) return ''
+  return installedUiArt((loading as { logo?: unknown }).logo, appId)
+}
+
 /** False until `delayMs` has passed since mount, then true. The timer is cleared
  *  on unmount, so a fallback torn down early never sets state afterwards. */
 export function useDelayElapsed(delayMs: number): boolean {
@@ -60,18 +78,37 @@ export function useDelayElapsed(delayMs: number): boolean {
   return elapsed
 }
 
-function LoadingLabel({ appName, className = '' }: { appName: string; className?: string }) {
-  return <p className={`text-[12px] text-muted ${className}`}>{i18nT('components.appHost.loading')} {appName}…</p>
+interface ShapeProps { appName: string; logo: string }
+
+/** The label, with the app's logo above it when the manifest declares one. The
+ *  logo's box is fixed, so an image that is slow or fails never moves the label;
+ *  a failed one is hidden in place. `alt=""`: the label already names the app. */
+function LoadingLabel({ appName, logo, className = '' }: ShapeProps & { className?: string }) {
+  const label = <p className={`text-[12px] text-muted ${logo ? '' : className}`.trim()}>{i18nT('components.appHost.loading')} {appName}…</p>
+  if (!logo) return label
+  return (
+    <div className={className}>
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is the image's own load-failure hook (hide a missing logo in place), not a user interaction */}
+      <img
+        src={logo}
+        alt=""
+        className="inline-block align-top h-12 w-12 object-contain mb-2"
+        data-testid="app-loading-logo"
+        onError={e => { e.currentTarget.style.visibility = 'hidden' }}
+      />
+      {label}
+    </div>
+  )
 }
 
 /** Today's skeleton, unchanged: title bar, subtitle bar, six content rows. */
-function PageShape({ appName }: { appName: string }) {
+function PageShape({ appName, logo }: ShapeProps) {
   return (
     <div className="px-6 pt-6 pb-8" data-testid="app-loading-shape-page">
       <div className="skeleton h-7 w-48 rounded mb-2" aria-hidden="true" />
       <div className="skeleton h-4 w-72 rounded mb-6" aria-hidden="true" />
       <div aria-hidden="true"><ContentSkeleton rows={6} /></div>
-      <LoadingLabel appName={appName} className="mt-4" />
+      <LoadingLabel appName={appName} logo={logo} className="mt-4" />
     </div>
   )
 }
@@ -79,7 +116,7 @@ function PageShape({ appName }: { appName: string }) {
 /** A 232px left column of list rows beside the main content. Narrow-first: below
  *  `md` the rail is not drawn (an app's own rail collapses there too, and the
  *  column would leave the content a sliver), so the shape is the content alone. */
-function RailShape({ appName }: { appName: string }) {
+function RailShape({ appName, logo }: ShapeProps) {
   return (
     <div className="flex-1 min-h-0 flex" data-testid="app-loading-shape-rail">
       <div className="hidden md:block w-[232px] shrink-0 border-r border-border p-3 space-y-2" aria-hidden="true" data-testid="app-loading-rail">
@@ -93,14 +130,14 @@ function RailShape({ appName }: { appName: string }) {
       </div>
       <div className="flex-1 min-w-0 px-6 pt-6 pb-8">
         <div aria-hidden="true" className="overflow-hidden"><ContentSkeleton rows={6} /></div>
-        <LoadingLabel appName={appName} className="mt-4" />
+        <LoadingLabel appName={appName} logo={logo} className="mt-4" />
       </div>
     </div>
   )
 }
 
 /** A narrow card in the middle of the page (a composer, a sign-in, a wizard). */
-function CenteredShape({ appName }: { appName: string }) {
+function CenteredShape({ appName, logo }: ShapeProps) {
   return (
     <div className="flex-1 min-h-0 flex flex-col items-center justify-center p-8" data-testid="app-loading-shape-centered">
       <div className="w-full max-w-md rounded-lg border border-border p-6 space-y-3" aria-hidden="true" data-testid="app-loading-card">
@@ -111,19 +148,19 @@ function CenteredShape({ appName }: { appName: string }) {
           <Skeleton className="h-8 w-20" />
         </div>
       </div>
-      <LoadingLabel appName={appName} className="mt-4 text-center" />
+      <LoadingLabel appName={appName} logo={logo} className="mt-4 text-center" />
     </div>
   )
 }
 
 /** Two panes side by side: a list and a detail view. Narrow-first: stacked below
  *  `md`, side by side from there. */
-function SplitShape({ appName }: { appName: string }) {
+function SplitShape({ appName, logo }: ShapeProps) {
   return (
     <div className="flex-1 min-h-0 flex flex-col md:flex-row" data-testid="app-loading-shape-split">
       <div className="flex-1 min-w-0 border-b md:border-b-0 md:border-r border-border px-6 pt-6 pb-8" data-testid="app-loading-pane">
         <div aria-hidden="true" className="overflow-hidden"><ContentSkeleton rows={6} /></div>
-        <LoadingLabel appName={appName} className="mt-4" />
+        <LoadingLabel appName={appName} logo={logo} className="mt-4" />
       </div>
       <div className="flex-1 min-w-0 px-6 pt-6 pb-8 space-y-3" aria-hidden="true" data-testid="app-loading-pane">
         <Skeleton className="h-5 w-56 max-w-full" />
@@ -134,7 +171,7 @@ function SplitShape({ appName }: { appName: string }) {
   )
 }
 
-const SHAPES: Record<AppLoadingLayout, (p: { appName: string }) => ReactElement> = {
+const SHAPES: Record<AppLoadingLayout, (p: ShapeProps) => ReactElement> = {
   page: PageShape,
   rail: RailShape,
   centered: CenteredShape,
@@ -143,10 +180,13 @@ const SHAPES: Record<AppLoadingLayout, (p: { appName: string }) => ReactElement>
 
 export default function AppLoadingFallback({
   appName,
+  appId = '',
   loading,
   delayMs = APP_LOADING_DELAY_MS,
 }: {
   appName: string
+  /** The app's `/api/apps` name: the `/apps/<appId>/ui/` route a logo is served from. */
+  appId?: string
   /** Raw `manifest.ui.loading` value; validated here. */
   loading?: unknown
   delayMs?: number
@@ -168,7 +208,7 @@ export default function AppLoadingFallback({
       // entrance the user asked not to see should not run even briefly.
       style={reduced ? undefined : { animation: 'ft-fade 200ms ease-out both' }}
     >
-      <Shape appName={appName} />
+      <Shape appName={appName} logo={appId ? resolveAppLoadingLogo(loading, appId) : ''} />
     </div>
   )
 }

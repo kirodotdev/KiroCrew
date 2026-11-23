@@ -433,6 +433,7 @@ each replaced field with its old and new value (a WARNING line ending in
 | `ui.overlays[].id` | string | | Overlay id; must match a bundled overlay component (see below) |
 | `ui.overlays[].replaces` | string | | Host overlay slot this app takes over while enabled |
 | `ui.loading.layout` | string | `"page"` | Placeholder shape shown while the bundle loads: `"page"`, `"rail"`, `"centered"` or `"split"` (see below) |
+| `ui.loading.logo` | string | | Optional image drawn above the placeholder's label, a path relative to ui/ (see below) |
 | `ui.frameSources` | string[] | `[]` | Sites your pages may show in an `<iframe>`, at most 8. Each is an exact origin, `https://` plus one hostname: no path (not even `/`), port, query, user info or wildcard, and no IP address, `localhost` or public suffix such as `co.uk` or `github.io`. Install refuses anything else, and a repeated entry. The dashboard allows these origins in its `frame-src` only while your app is enabled and trusted, and only the ones the owner approved: install approves what it declares, and an origin a later update or edit adds waits for the owner on the app's page. The origins are allowed for the whole dashboard, not only your pages |
 | `contributes.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
 | `contributes.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
@@ -468,6 +469,30 @@ name; you can't supply markup or styles. The match is exact: a missing or `null`
 `loading`, a non-object, a non-string `layout`, or an unknown name (including a
 different case, like `"Rail"`) all fall back to `"page"`. An invalid value is
 not an install error; it is dropped.
+
+You can also name an image, such as your app's logo, to show above the "Loading
+<app>…" label in every layout:
+
+```json
+{
+  "ui": {
+    "entry": "dist/index.mjs",
+    "loading": { "layout": "centered", "logo": "img/logo.svg" }
+  }
+}
+```
+
+The path is relative to your `ui/` directory and is served by the same route as
+your bundle, so use an image type that route serves (`.svg`, `.png`, `.jpg`,
+`.jpeg`, `.gif` or `.webp`). One image is shown in both themes, so pick one that
+reads on light and dark backgrounds. It is drawn in a fixed 48 px square with
+`alt=""`, since the label already names the app. The placeholder adds no
+animation to it, so use a still image. A path with `..`, a leading `/`, a `\` or
+a `:` (which rules out any URL) is dropped, like an invalid layout, and the
+placeholder shows no image. A file that does not load (missing, or a type the
+route does not serve) leaves its square empty, so the label does not move.
+Without `logo` the placeholder has no image, as before. A side-panel tab
+(`contributes.panelTabs[].entry`) shows the default shape and no logo.
 
 ### `ui.overlays` — Replacing a Host Overlay Surface
 
