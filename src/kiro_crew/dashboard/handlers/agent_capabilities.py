@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from types import SimpleNamespace
 from typing import cast
 
@@ -14,9 +15,10 @@ from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_age
 from kiro_crew.dashboard.chat_utils import drained_to_thread
 from kiro_crew.dashboard.handlers._bounded_read import TIMED_OUT, bounded_read
 from kiro_crew.dashboard.handlers._shared import (
-    enumerate_skill_catalog,
+    SkillCatalogSnapshot,
     require_owner_dashboard_request,
     skill_uri_for_key,
+    walk_skill_catalog,
 )
 from kiro_crew.dashboard.state import DashboardState
 
@@ -24,14 +26,56 @@ logger = logging.getLogger(__name__)
 
 _SERVICE = web.AppKey("member_capability_service", CapabilityService)
 
+_CATALOG_LOCK = threading.Lock()
+_CATALOG_CACHE: dict[str, tuple[SkillCatalogSnapshot, dict[str, str]]] = {}
+_CATALOG_READ = threading.local()
+
 
 def _catalog(project: str) -> dict[str, str]:
     # The catalog's project is the member's cwd, not an unrelated open chat.
     view = cast(
         DashboardState, SimpleNamespace(_slots={"member": SimpleNamespace(project=project)})
     )
-    catalog = enumerate_skill_catalog(view, "member")
-    return {key: uri for key in catalog if (uri := skill_uri_for_key(key, view, catalog))}
+    # Catalog validation and walking can outlive a request. Hold the lock only
+    # while reading or publishing cache state so filesystem I/O cannot poison later reads.
+    while True:
+        with _CATALOG_LOCK:
+            cached = _CATALOG_CACHE.get(project)
+        if cached is None:
+            break
+        changed = cached[0].changed()
+        with _CATALOG_LOCK:
+            if _CATALOG_CACHE.get(project) is not cached:
+                continue
+            if not changed:
+                _CATALOG_READ.reused = True
+                return dict(cached[1])
+            break
+
+    snapshot = walk_skill_catalog(view, "member")
+    catalog = snapshot.entries
+    rendered = {key: uri for key in catalog if (uri := skill_uri_for_key(key, view, catalog))}
+    while True:
+        with _CATALOG_LOCK:
+            current = _CATALOG_CACHE.get(project)
+        current_changed = current[0].changed() if current is not None else None
+        with _CATALOG_LOCK:
+            if _CATALOG_CACHE.get(project) is not current:
+                continue
+            if current is not None and current_changed is False:
+                _CATALOG_READ.reused = True
+                return dict(current[1])
+            _CATALOG_CACHE[project] = (snapshot, rendered)
+            _CATALOG_READ.reused = False
+            return dict(rendered)
+
+
+def _get_with_cache_evidence(service: CapabilityService, name: str) -> dict:
+    """Return one view plus explicit evidence from the catalog read's worker."""
+    _CATALOG_READ.reused = None
+    result = service.get(name)
+    result["cache"] = {"skill_catalog_reused": _CATALOG_READ.reused is True}
+    return result
 
 
 def _connections() -> dict[str, dict]:
@@ -73,7 +117,11 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
             # Not ``drained_to_thread``: a GET mutates nothing, so a read still
             # blocked at the deadline is left to its thread instead of holding
             # the request open until the mount answers.
-            result = await bounded_read(service.get, name, what="Capabilities")
+            result = await bounded_read(
+                lambda member: _get_with_cache_evidence(service, member),
+                name,
+                what="Capabilities",
+            )
         else:
             try:
                 body = await request.json()
