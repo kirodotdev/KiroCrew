@@ -379,6 +379,19 @@ one, add its English to `EDITORIAL_COPY_KEY`, the keys to `en.manual.json` with 
 same English, and the eleven translations. The decision is
 `docs/decisions/2026-11-23-a-discover-cards-curator-copy-reads-in-the-dashboard-language-when-known.md`.
 
+A curated feature tip follows it too. `src/kiro_crew/data/tips_curated.json` keeps its
+English, and `src/utils/curatedTips.ts` maps each tip id to keys under
+`components.tipCard.curated` (`<id>_title`, `<id>_body`, `<id>_action`) in
+`en.manual.json`, which `TipCard` and the Settings tip list resolve through
+`localizedTip`. A tip shows the catalog copy only while the server sends, in every
+field, the English that copy holds, so an edition's tip pool or a generated tip that
+reuses a curated id keeps its own text. To add or edit a curated tip: edit the JSON,
+give `en.manual.json` the same English (`{{productName}}` for the product name), add the
+id to the title and body maps (and to the action map when the tip has a button), and
+translate into the eleven catalogs. `src/test/TipCard.test.tsx` fails while a curated
+tip has no copy, its two English copies differ, or the catalog keeps copy for a tip the
+JSON no longer has.
+
 ## Formatting follows the app language, not the browser
 
 `d.toLocaleDateString()`, `d.toLocaleDateString([])` and
