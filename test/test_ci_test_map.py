@@ -757,6 +757,11 @@ def _option(argv: list[str], name: str) -> str:
     return argv[argv.index(name) + 1]
 
 
+def _tables_reported_missing(printed: str) -> set[str]:
+    """The bundle tables `check` printed an error for."""
+    return {t for t in ctm.BUNDLE_TABLES if f"::error::the bundle has no {t} table" in printed}
+
+
 def test_map_job_publishes_the_checked_bundle_as_its_one_artifact() -> None:
     steps = _workflow()["jobs"]["map"]["steps"]
     calls = _map_job_calls()
@@ -818,7 +823,7 @@ def test_map_job_commands_pass_only_on_a_clone_that_holds_the_window(
     for depth in range(1, 5):
         status, printed, _ = run(_shallow_clone(repo, depth), TIER)
         assert status == (0 if depth > window else 1), depth
-        assert ("::error::the bundle has no cochange table" in printed) == (depth <= window)
+        assert _tables_reported_missing(printed) == ({"cochange"} if depth <= window else set())
     status, printed, written = run(repo, TIER)
     assert status == 0 and "::error::" not in printed
     # The summary line: the commit, the file's size and the rows in each table.
@@ -829,13 +834,13 @@ def test_map_job_commands_pass_only_on_a_clone_that_holds_the_window(
     assert set(rows) > set(ctm.BUNDLE_TABLES) and all(rows.values())
     # A dead guard scan fails the job as a short history does.
     status, printed, _ = run(repo, [])
-    assert status == 1 and "::error::the bundle has no guard table" in printed
+    assert status == 1 and _tables_reported_missing(printed) == {"guard"}
 
 
 def test_check_fails_on_every_bundle_that_lacks_a_table(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    whole = {**MAP, "cochange": {"src/kiro_crew/a.py": ["test/test_a.py"]}, "guard": TIER}
+    whole = {**MAP, **{table: ["row"] for table in ctm.BUNDLE_TABLES}}
     path = tmp_path / "bundle.json.gz"
     for count in range(len(ctm.BUNDLE_TABLES) + 1):
         for gone in itertools.combinations(ctm.BUNDLE_TABLES, count):
@@ -847,8 +852,7 @@ def test_check_fails_on_every_bundle_that_lacks_a_table(
                 path.write_bytes(gzip.compress(json.dumps(doc).encode("utf-8")))
                 assert ctm.main(["check", "--bundle", str(path)]) == (1 if gone else 0)
                 printed = capsys.readouterr().out
-                named = {t for t in ctm.BUNDLE_TABLES if f"no {t} table" in printed}
-                assert named == set(gone)
+                assert _tables_reported_missing(printed) == set(gone)
     # A file that is not a readable schema-1 map is a usage error, never a pass.
     data = path.read_bytes()
     for damaged in (data[: len(data) // 2], b"{}", gzip.compress(b"[]")):

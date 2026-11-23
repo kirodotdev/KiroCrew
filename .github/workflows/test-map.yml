@@ -9,8 +9,8 @@ name: Test Map
 # that would save and whether it would have missed a failing test. Only that
 # evidence can move it out of shadow.
 #
-# The `map` job publishes one artifact, `test-selection`: the map with the
-# co-change and guard tables beside it (`scripts/ci_test_map.py bundle`). A
+# The `map` job publishes one artifact, `test-selection`: the map with every
+# table `scripts/ci_test_map.py bundle` builds beside it, or nothing. A
 # reader may take it only from a successful `schedule` or `workflow_dispatch`
 # run of this workflow on `main` of this repository: a run on any other branch,
 # event or repository can carry an artifact of the same name.
@@ -152,9 +152,8 @@ jobs:
           python scripts/ci_test_map.py bundle --map test-map.json --out test-selection.json.gz | tee -a "$GITHUB_STEP_SUMMARY"
           python scripts/ci_test_map.py check --bundle test-selection.json.gz | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # The one file a reader fetches: the map with the co-change and guard
-      # tables. A bundle that failed `check` is never uploaded, so a successful
-      # run always holds a whole one.
+      # The one file a reader fetches. A bundle that failed `check` is never
+      # uploaded, so a successful run always holds every table.
       - name: Upload the selection bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
