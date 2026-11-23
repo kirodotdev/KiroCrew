@@ -604,7 +604,7 @@ is re-pinned only to a verified peer and otherwise stays unbound, so it keeps
 roaming after a gateway restart empties the in-memory bindings
 (`test_local_session_cookie_first_use_stays_unbound`).
 
-An owner-only Public route (`/v1/models`) registers through
+An owner-only Public route (`/v1/models`, `/v1/responses`) registers through
 `crew_api_owner.owner_route`, the gate the Owner tier uses. `crew_api_auth.OWNER_ONLY_PUBLIC_ROUTES`
 maps each owner-only Public path to its audit operation; the route passes that
 operation to `owner_route`, and the app-scope refusal reads the same map. Any other caller, an app token included, gets

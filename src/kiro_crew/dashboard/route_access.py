@@ -71,4 +71,7 @@ ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
     # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
     # Contract test: test_crew_api_models.py.
     ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
+    # Owner gate, then the machine owner alone (crew_api_responses).
+    # Contract test: test_crew_api_responses.py.
+    ("POST", "/v1/responses"): RouteAccess("crew_api.responses.create", PREVIEW),
 }
