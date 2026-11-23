@@ -42,7 +42,7 @@ The state carries the message (truncated to 2000 chars), the candidate menu, and
 
 ## 5. Operational log
 
-The basic JSONL log records call metadata: timestamp, point, hashed session, latency, scrubbed boolean, bounded answer data and an error category. Raw messages, conversation history, candidate descriptions, API keys and provider exception text do not belong in rows.
+The basic JSONL log records call metadata: timestamp, point, hashed session, latency, scrubbed boolean, bounded answer data and an error category. Raw messages, conversation history, candidate descriptions, API keys and provider exception text do not belong in rows. A call that ends on error `provider` logs the exception class, never its message, as `decisions: <point> provider call failed (<Class>)`: at WARNING the first time a point fails with that class in a gateway process, so the cause reaches the gateway log on the shipped `agent.log_level` (WARNING), and at INFO after that, so a failing provider is not one warning per decision.
 
 A point may add its own fields through `log.build_row(extra=...)`, merged FLAT beside those seven and bounded exactly as an answer value is (`_MAX_EXTRA_KEYS`, `_MAX_EXTRA_ITEMS`, `_MAX_VALUE_CHARS`); a key naming one of the seven is dropped, so an extra can only ever add a field and never rewrite `session`, `scrubbed` or `ts`. `decide(extra=...)` writes it onto whichever row that call produces, including a timeout, scrub or provider-error row, and it is never sent -- it takes no part in `_scan_text` because it never reaches the provider. The three cheap refusals still write nothing, extra included.
 

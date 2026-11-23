@@ -147,6 +147,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GIT_SSH_SCHEME_ALIASES,
         _GIT_SSHCOMMAND_CONFIG_PREFIX,
         _GIT_TAR_WORD_CAP,
+        _GLUE_SPLIT,
         _PARALLEL_REPLACE_LONG,
         _PARALLEL_REPLACE_UNSAFE,
         _PLACEHOLDER_RE,

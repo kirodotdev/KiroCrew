@@ -74,7 +74,10 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
     if (!control) return
     prevAutoFocusKeyRef.current = autoFocusKey
     if (activeElementIsEditable()) return
-    control.focus()
+    // The composer sits in its dock on screen, so there is nothing to scroll
+    // to; without `preventScroll` the browser lays out the whole page to find
+    // out, inside the commit that opens a session.
+    control.focus({ preventScroll: true })
   }, [autoFocusKey, disabled, isMobile, composerControl, lexicalControlRevision])
 
   // Global "/" shortcut to focus chat input (like GitHub, YouTube, Slack).

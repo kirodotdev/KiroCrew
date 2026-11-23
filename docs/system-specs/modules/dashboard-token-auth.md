@@ -493,6 +493,73 @@ On a Crew API path (every `/v1/` path except the frozen `POST /v1/chat/completio
    is how the dashboard's own page calls `/v1/crew/owner/bots`. A header of another
    scheme (`Basic`, which a proxy in front of the dashboard may add) is no
    credential here and is not read.
+4. A bearer that is not a session is then asked whether it is an **app credential**:
+   the access token local authorization issued for a grant the owner approved
+   (`crew_api_auth.refuse_app_credential`, which calls `LocalAuthorization.verify`:
+   signature, expiry, and a grant that is still active and names the same
+   `client_id`). The order of the checks is the credential's kind, its validity, where
+   the request came from, then the tier:
+   - One that does not verify is not an app credential and gets the 401 of step 2.
+   - A verified one that did not come straight from this machine (a forwarding header,
+     a peer that is not loopback, or a request the relay delivered) gets that same
+     401, byte for byte: only the audit row says why. Local authorization issues the
+     credential to a program on this machine, and its four routes answer only such a
+     request.
+   - A verified one from this machine is a known caller, and the answer comes from
+     the row of the route it matched in `crew_api_scopes.ROUTES`. The table has one
+     row per operation of the Crew API spec, keyed by method and path pattern: the
+     API tier (`api_tier`, Public or Owner), the scopes of which any one is enough,
+     and the entitlements the operation names. `test_crew_api_scopes.py` holds the
+     whole table equal to `x-crew-tier`, `x-crew-scope` and `x-crew-entitlement` in
+     `crew-public.yaml` and `crew-owner.yaml`. `crew_api_scopes.refusal_for` reads it in
+     this order, and the first that applies is the answer:
+
+     | Case | Answer | Audit `error` |
+     |---|---|---|
+     | The pattern is in `OWNER_ONLY_PUBLIC_ROUTES`: read before the table, whatever the row says | `403 owner_only` | `owner_only` |
+     | No row: a path with no route, or a route the spec does not have | `403 owner_only` | `owner_only:no-row` |
+     | The row's tier is Owner | `403 owner_only` | `owner_only` |
+     | The row names an entitlement (no app credential carries one yet) | `403 entitlement_required`; the body's `entitlement` is the first one the spec lists | `entitlement_required` |
+     | The row's scope is `embed` | `403 approval_requires_first_party` | `approval_requires_first_party` |
+     | The credential holds none of the row's scopes | `403 insufficient_scope`, the message names them | `insufficient_scope` |
+     | The row admits it: its scope is `any`, or the credential holds one | `403 owner_only` | `owner_only:no-app-route` |
+
+     Only an `owner_only` answer carries `X-Auth-Required: true`: signing in again
+     cures no missing scope or entitlement.
+
+     The last row is the default while no route serves an app: token auth has no
+     path that lets an app credential through, so the request never reaches a handler
+     on any Crew API path. The path that admits one arrives with the first route that
+     serves apps, at this point and nowhere else. `crew_api_scopes.require_scope` is
+     what such a route's handler calls first, with its own route's key, so a route
+     registered under the wrong row is refused. It decides from what token auth set
+     on the request and never from what is absent: a verified app credential
+     (`request["crew_api_credential"]`) is judged by the table; a first-party
+     session (`request["is_dashboard_user"] is True` with `request["app"] == ""`)
+     passes to the route's own gate; any other request, one with neither marker
+     included, is `403 owner_only`. Nothing calls it yet.
+
+     This table is not `route_access.ROUTES`, which labels every gateway route with
+     an action name and a stability tier and is read by no request.
+
+   Before the 403, token auth publishes the caller on the request: `request["user"]`
+   is `app:<grant id>`, `request["app"]` is `local-grant:<grant id>` and
+   `request["is_dashboard_user"]` is `False`. Both values are built from the grant id
+   the gateway made. An installed app's name holds no `:`, so neither can be one, and
+   any non-empty `request["app"]` fails every owner gate. The `client_id` is the calling
+   program's own choice: it is written to the audit row only, as printable ASCII of at
+   most 64 characters, and never becomes part of an identity. Each refusal writes one
+   `crew_api.app_credential` row (`denied`, with `not-direct-local` or the audit
+   `error` of the table above);
+   the credential itself is never logged. This is the only place an app credential is
+   recognised, and it sits inside the bearer branch, which only a Crew API path
+   enters: on `/api/*`, the WebSocket and the frozen `POST /v1/chat/completions`
+   the header is not read, so the credential opens nothing there.
+
+Every 401 on a Crew API path ends its message with one fixed sentence,
+`crew_api_errors.CREDENTIAL_HINT`: on this machine, `kirocrew token --bearer`
+prints a credential for the owner. It names no port and no value and is the same
+for every caller.
 
 A bearer request then runs the same checks as a cookie request: forwarded-peer
 resolution with its allowlist denials (`tailnet login not allowed` for a login outside

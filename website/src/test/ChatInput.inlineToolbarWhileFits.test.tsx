@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, onTestFinished } from 'vitest'
-import { fireEvent, screen } from '@testing-library/react'
+import { act, fireEvent, screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
@@ -238,6 +238,8 @@ describe('ChatInput inlineToolbarWhileFits: the width observer at the shape flip
 
     renderWithProviders(<ChatInput value="a draft that is about to wrap" onChange={vi.fn()} onSend={vi.fn()} inlineToolbarWhileFits />)
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    // The first measurement after mount runs on the next frame.
+    act(() => { for (const frame of frames.splice(0)) frame(0) })
     expect(ta.style.height).toBe('44px')
     const watchers = observers.filter(o => o.targets.includes(ta))
     expect(watchers.length).toBeGreaterThan(0)

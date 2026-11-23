@@ -675,7 +675,9 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     if (!jumpInTurn || !revealTs) return
     const t = setTimeout(() => {
       // The transcript's own row: not the measuring farm's copy, nor one authored in a message.
-      const rows = document.querySelectorAll<HTMLElement>('[data-jump-target]')
+      // Searched in this pane's own transcript: split panes can show the same
+      // transcript, so the same timestamp can mark a row in another pane.
+      const rows = (scrollerEl() ?? document).querySelectorAll<HTMLElement>('[data-jump-target]')
       const row = Array.from(rows).find(el => el.dataset.jumpTarget === revealTs && !el.closest('[data-farm-index]') && !el.closest(`[${MESSAGE_BODY_ATTR}]`))
       if (!row) return
       // The jump's settle poll centres the whole turn each frame; end it first.

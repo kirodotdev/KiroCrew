@@ -23,6 +23,7 @@ from kiro_crew.platform.update_capability import (
     MANAGED_BY_GIT,
     UNAVAILABLE_MANAGED_BY_APP,
     UNAVAILABLE_MANAGED_BY_IMAGE,
+    default_install_root,
     derive_capability,
 )
 
@@ -250,7 +251,7 @@ class InstallLayout(NamedTuple):
     """Describes how this Kiro Crew instance was installed."""
 
     kind: str  # "git", "wheel", "dmg", "appimage", "deb", "rpm", "nsis", "docker", or "source"
-    proj: str  # KIROCREW_PROJECT_DIR value (may be empty for non-git)
+    proj: str  # default_install_root(): the project dir or running checkout, "" for a wheel
     is_git: bool
     is_externally_managed: bool
     guidance: str  # Human message for externally managed installs
@@ -268,7 +269,7 @@ def detect_install_layout() -> InstallLayout:
     over a mounted checkout, and the capability contract is where that precedence
     is decided once.
     """
-    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    proj = default_install_root()
     capability = derive_capability(install_root=proj)
 
     if capability.managed_by == MANAGED_BY_GIT:

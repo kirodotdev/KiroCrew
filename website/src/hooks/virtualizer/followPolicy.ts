@@ -1251,9 +1251,30 @@ export function useFollowPlacementPins<T>(ctx: {
   // alone. Measured only while following -- released readers own their position
   // -- and reset on release so a stale value cannot fire on re-engagement.
   const leadingChromeRef = useRef(-1)
+  // The first value is only a baseline (nothing to compare it with), so it is
+  // read on the next frame instead of in this commit: in the commit that opens
+  // a session, reading it would force a layout of the whole page. A commit that
+  // lands before that frame has no baseline either, so it waits for the same
+  // frame.
+  // An unmount before that frame leaves the callback to find the scroller
+  // detached, and it does nothing.
+  const leadSeedFrameRef = useRef(0)
   useLayoutEffect(() => {
     const el = scrollerRef.current
-    if (!el || !stickRef.current) { leadingChromeRef.current = -1; return }
+    if (!el || !stickRef.current) {
+      cancelAnimationFrame(leadSeedFrameRef.current)
+      leadSeedFrameRef.current = 0
+      leadingChromeRef.current = -1
+      return
+    }
+    if (leadingChromeRef.current < 0) {
+      if (leadSeedFrameRef.current) return
+      leadSeedFrameRef.current = requestAnimationFrame(() => {
+        leadSeedFrameRef.current = 0
+        if (el.isConnected && stickRef.current && leadingChromeRef.current < 0) leadingChromeRef.current = leadingOffset(el)
+      })
+      return
+    }
     const lead = leadingOffset(el)
     const prev = leadingChromeRef.current
     leadingChromeRef.current = lead

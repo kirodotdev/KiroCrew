@@ -9,6 +9,7 @@ import KiroSignInNoticeFallback from '../components/KiroSignInNoticeFallback'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { api, type KasLoginStatus } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
 
 const navigate = vi.fn()
@@ -219,6 +220,22 @@ describe('KiroSignInNotice', () => {
     } finally {
       __resetGatewayConnectedForTests()
     }
+  })
+
+  it('shows nothing to a caller the status read refuses as not the owner, and does not ask again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    backend('kas')
+    const message = 'Only the dashboard owner can manage Kiro sign-in.'
+    kasLoginStatus.mockRejectedValue(new ApiError(403, message, JSON.stringify({ error: message, code: 'owner_only' })))
+    const { queryClient } = renderWithProviders(<KiroSignInNotice />)
+    // Settled as a refusal, not still in flight: absence below is the answer.
+    await waitFor(() => expect(queryClient.getQueryState(['kas-login'])?.status).toBe('error'), chain())
+    await settle()
+    expect(failure()).not.toBeInTheDocument()
+    expect(notice()).not.toBeInTheDocument()
+    // The same caller gets the same refusal: the poll does not ask again.
+    await vi.advanceTimersByTimeAsync(KIRO_SIGN_IN_NOTICE_POLL_MS * 2)
+    expect(kasLoginStatus).toHaveBeenCalledTimes(1)
   })
 
   it('says a backend-setting read that failed before any good read could not be read, with no sign-in claim', async () => {

@@ -440,6 +440,18 @@ class GuideStore:
         live = [g for g in mine if g.status in LIVE_STATUSES]
         return (live or mine)[-1].to_public()
 
+    def holds_live_guide(self, slot_key: str) -> bool:
+        """Whether *slot_key* has a guide offer still live, without running the sweep.
+
+        Live is a status in :data:`LIVE_STATUSES` before the guide's expiry, the
+        same test :meth:`_refresh` applies; this read changes nothing.
+        """
+        now = self._clock()
+        return any(
+            g.slot_key == slot_key and g.status in LIVE_STATUSES and now < g.expires_at
+            for g in self._guides.values()
+        )
+
     def owner_tab_for_slot(self, slot_key: str) -> tuple[str, str] | None:
         """``(guide_id, owner_tab)`` of *slot_key*'s running guide, or ``None``.
 

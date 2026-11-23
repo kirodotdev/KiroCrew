@@ -146,6 +146,11 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // later: the flash at the top of the chat. The reader has not moved, so
     // the card holds and is worked out once, when the place has settled.
     if (slideSettling(el)) { afterSlideSettles(el, () => updatePinnedPromptRef.current()); return }
+    // No rows, nothing to pin: the walk below would end in the same
+    // `setPinned(null)`. Answered without reading layout, because the commit
+    // that opens a session (its transcript still empty) runs this, and the
+    // first read there forces a layout of the whole page.
+    if (displayItemsRef.current.length === 0) { setPinned(null); return }
     // Measure with getBoundingClientRect (viewport-relative) so the origin
     // matches the scroller regardless of which ancestor is the items'
     // offsetParent — consistent with useScrollManager, which also deliberately

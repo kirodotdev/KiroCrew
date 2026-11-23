@@ -1298,31 +1298,15 @@ def test_a_persons_batch_is_not_marked_for_a_user_level_targets_hooks(layout):
     assert _lead_mark(person) == (["lead"], False, False)
 
 
-def test_a_persons_turn_on_a_scheduled_batch_ignores_a_folder_targets_hooks(layout):
-    """Pinned as it is today; follow-up: https://github.com/kirodotdev/KiroCrew/issues/38974."""
-    import asyncio
-
-    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_reprojects
-
-    _home, user, checkout = layout
-    consent.set_choice(checkout, True)
-    _lead_with_target(user)
-    scheduled = _batch(checkout, "cron:job-1", person=False, agent="lead")
-
-    async def _idle():
-        return False
-
-    assert asyncio.run(person_turn_reprojects(scheduled, "lead", _idle)) is False
-
-
 class _ClaimState:
     """A dashboard state whose claims project the real batch for a ``cron:`` key."""
 
-    def __init__(self, checkout: Path, live, *, pending=False) -> None:
+    def __init__(self, checkout: Path, live, *, pending=False, agent: str = "proj") -> None:
         import asyncio
         from types import SimpleNamespace
 
         self.checkout = checkout
+        self.agent = agent
         self.sessions = _OneSession(live)
         self.sessions.get_or_create = self._claim
 
@@ -1336,11 +1320,11 @@ class _ClaimState:
 
     async def _claim(self, key, **_kw):
         if self.sessions.resets:
-            self.sessions.provider = await _project(self.checkout, key)
+            self.sessions.provider = await _project(self.checkout, key, self.agent)
         return self.sessions.provider, bool(self.sessions.resets), False
 
 
-def _person_claim(checkout: Path, live, *, pending=False, person=True):
+def _person_claim(checkout: Path, live, *, pending=False, person=True, agent: str = "proj"):
     """The dashboard's claim path for a turn on *live*: the marked claim, then the
     person's re-projection and the ordinary stale check, as ``_turn_admit`` runs them."""
     import asyncio
@@ -1349,7 +1333,7 @@ def _person_claim(checkout: Path, live, *, pending=False, person=True):
     from kiro_crew.agent_sdk.spec_hooks_reproject import reproject_person_turn
     from kiro_crew.dashboard.chat_turn.turn_admission import _subagents_pending
 
-    state = _ClaimState(checkout, live, pending=pending)
+    state = _ClaimState(checkout, live, pending=pending, agent=agent)
 
     async def claim():
         with person_turn_claim(person):
@@ -1361,13 +1345,13 @@ def _person_claim(checkout: Path, live, *, pending=False, person=True):
             claimed = await reproject_person_turn(
                 state.sessions,
                 "cron:job-1",
-                "proj",
+                agent,
                 claimed,
                 claim,
                 lambda: _subagents_pending(state, "cron:job-1"),
             )
         return await spec_hooks.reproject_claimed_session(
-            state.sessions, "cron:job-1", "proj", claimed, claim
+            state.sessions, "cron:job-1", agent, claimed, claim
         )
 
     got = asyncio.run(run())
@@ -1390,6 +1374,38 @@ def test_a_persons_turn_keeps_a_scheduled_batch_with_sub_agent_work(layout, pend
     scheduled = _batch(checkout, "cron:job-1", person=False)
     provider, resets = _person_claim(checkout, scheduled, pending=pending)
     assert (provider, resets, _folder_fired(provider)) == (scheduled, 0, [])
+
+
+def test_a_persons_turn_reprojects_a_scheduled_batch_for_a_folder_targets_hooks(layout):
+    _home, user, checkout = layout
+    consent.set_choice(checkout, True)
+    _lead_with_target(user)
+    scheduled = _batch(checkout, "cron:job-1", person=False, agent="lead")
+    provider, resets = _person_claim(checkout, scheduled, agent="lead")
+    assert (resets, _lead_mark(provider)) == (1, (["lead"], True, True))
+
+
+def test_a_persons_turn_reads_a_targets_hooks_from_the_runtimes_folder(layout, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+
+    from kiro_crew.agent_sdk.kas_project_hooks import person_turn_reprojects
+
+    _home, user, checkout = layout
+    consent.set_choice(checkout, True)
+    _lead_with_target(user)
+    scheduled = _batch(checkout, "cron:job-1", person=False, agent="lead")
+    # A shared runtime started in the checkout, carrying a session bound elsewhere,
+    # reached as an ``AcpProvider`` reaches it.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    scheduled.cwd = str(elsewhere)
+    scheduled._client = SimpleNamespace(_work_dir=checkout)
+
+    async def _idle():
+        return False
+
+    assert asyncio.run(person_turn_reprojects(scheduled, "lead", _idle)) is True
 
 
 def test_a_persons_turn_never_resets_for_a_user_level_agent_of_that_name(layout):

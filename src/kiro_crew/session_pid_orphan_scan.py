@@ -818,7 +818,8 @@ def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: s
     Positive identity is the conjunction of: reparenting to init/``systemd
     --user`` — guaranteed by the caller, which only iterates
     :func:`_our_orphan_pids`, so ownership is not re-derived here — an argv0
-    basename naming a managed runtime (:data:`_MANAGED_AGENT_MARKERS`), the
+    basename naming a managed runtime (:data:`_MANAGED_AGENT_MARKERS`) -- for
+    ``claude`` also a runtime flag in its argv (:func:`_claude_argv_is_a_runtime`), the
     ``KIROCREW_SPAWNED`` environ marker (:func:`_env_has_kirocrew_marker`,
     Linux-only and fail-closed elsewhere), and absence from BOTH PID files
     (:func:`_tracked_agent_pids`). Peer gateways and CLIs
@@ -853,9 +854,37 @@ def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: s
     basename = _work_orphan_basename(cmdline)
     if not _basename_names_a_harness(basename):
         return False
+    if basename == b"claude" and not _claude_argv_is_a_runtime(cmdline):
+        return False  # a helper the Claude CLI starts for itself, not a runtime
     if pid in tracked_pids:
         return False  # a reaper can already reach it
     return _env_has_kirocrew_marker(pid)
+
+
+#: The flags every Claude CLI runtime Kiro Crew launches carries: the agent SDK the
+#: ACP adapter drives passes ``--output-format``/``--input-format stream-json``, and
+#: Crew's own one-shot calls pass ``-p``. The same binary also starts helpers of its
+#: own as ``claude <subcommand>`` (``claude __otel-server``: init-parented, its own
+#: session leader, and holding any spawn markers it inherited), which carry none of them.
+_CLAUDE_RUNTIME_FLAGS: tuple[bytes, ...] = (
+    b"-p",
+    b"--print",
+    b"--output-format",
+    b"--input-format",
+)
+
+
+def _claude_argv_is_a_runtime(cmdline: bytes) -> bool:
+    """True when a ``claude`` command line has the shape of an agent runtime.
+
+    Any argv slot, not argv1: a wrapper re-exec puts ``--settings`` first. A flag may
+    be spelled ``--output-format=stream-json``.
+    """
+    for token in _argv_tokens(cmdline)[1:]:
+        flag = token.split(b"=", 1)[0]
+        if flag in _CLAUDE_RUNTIME_FLAGS:
+            return True
+    return False
 
 
 def reported_untracked_agent_pids() -> set[int]:

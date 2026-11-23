@@ -2,7 +2,7 @@
 
 A :class:`RouteAccess` says what a route does (for example ``widgets.reset``) and how long its
 request and response shape is promised. :data:`ROUTES` records the labels, keyed by
-method and path pattern. It is empty: no route is labelled yet.
+method and path pattern.
 
 The table is separate from route registration on purpose. One handler can serve two
 routes, so a label on the handler would be ambiguous, and registration runs on the
@@ -53,4 +53,18 @@ class RouteAccess:
 # Keyed by (METHOD, path pattern). The pattern is the route's canonical path: the path
 # as registered, with any regex dropped from a ``{name:regex}`` segment. A HEAD route
 # registered beside a GET route of the same path takes the GET route's entry.
-ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {}
+# Who may call a route is decided by its handler; the comment beside an entry only
+# records it.
+ROUTES: Final[dict[tuple[str, str], RouteAccess]] = {
+    # App token, owner dashboard or internal caller may read (apps/browser_sites_routes.py).
+    ("GET", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.read", UNSTABLE),
+    # Owner dashboard only: 403 for an app token and an internal caller.
+    ("POST", "/api/apps/{name}/browser-sites"): RouteAccess("apps.browser_sites.change", UNSTABLE),
+    # Owner dashboard only (chat_api/slot_effort.py); restarts the slot's idle session.
+    ("POST", "/api/chat/slots/{slot}/approve-for-me"): RouteAccess(
+        "chat.approve_for_me.change", UNSTABLE
+    ),
+    # Owner gate (crew_api_owner.owner_route); Crew API phase 1a, no preview marking.
+    # Contract test: test_crew_api_models.py.
+    ("GET", "/v1/models"): RouteAccess("crew_api.models.list", STABLE),
+}

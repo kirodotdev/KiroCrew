@@ -1014,11 +1014,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # it replaced the inline fetch spawns in _check_git_checkout and
         # _auto_apply_update.
         "platform/update_fetch.py::fetch_and_pin_upstream",
-        "instances/diagnostics.py::_run_ok",
-        "instances/diagnostics.py::_run_stdout",
         "instances/ssh_tunnel_manager_child.py::start",
-        "instances/token_mint.py::mint_remote_token",
-        "instances/token_mint.py::run_remote_kirocrew",
+        # The one ssh spawn behind the token mint, the remote run, the two
+        # diagnosis probes and the ssh tunnel: an argv built by token_mint's
+        # _build_ssh_argv or the tunnel's _build_argv, in a process group of its
+        # own so a ProxyCommand it leaves behind can be ended.
+        "instances/token_mint.py::spawn_one_shot_ssh",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` in the
         # desktop tunnel keeper's CLI entry point. The only child it creates is the
         # forward ``_SshTunnel.start`` spawns, listed just above.

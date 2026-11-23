@@ -447,6 +447,12 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
             ui.info("Aborted — nothing was deleted.")
             return 0
 
+    ui.detail(
+        "Deleting usually takes a few minutes. AWS keeps going even if you close this terminal."
+    )
+    ui.detail(
+        "Wait here anyway: this command's own cleanup runs only after AWS confirms the delete."
+    )
     try:
         with ui.Spinner("Deleting the CloudFormation stack…"):
             res = ec2.destroy(tag, profile, region)

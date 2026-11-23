@@ -28,8 +28,10 @@ export function usePinnedScrollOrigin(
       if (el.scrollTop !== 0) el.scrollTop = 0
       if (el.scrollLeft !== 0) el.scrollLeft = 0
     }
-    reset()
+    // The first check waits for the next frame: reading the offset here forces
+    // a layout of the page inside the commit that mounted the box.
+    const first = requestAnimationFrame(reset)
     el.addEventListener('scroll', reset, { passive: true })
-    return () => el.removeEventListener('scroll', reset)
+    return () => { cancelAnimationFrame(first); el.removeEventListener('scroll', reset) }
   }, [target, enabled])
 }

@@ -240,6 +240,30 @@ class TestDestroyFailures:
         assert "all AWS resources deleted" not in out
 
 
+def test_destroy_says_how_long_and_what_closing_the_terminal_does_before_it_waits(
+    monkeypatch, capsys
+):
+    before_the_wait: list[str] = []
+
+    def _destroy(*_a: Any, **_k: Any) -> dict[str, Any]:
+        before_the_wait.append(capsys.readouterr().out)
+        return {"destroyed": True}
+
+    monkeypatch.setattr(ec2, "destroy", _destroy)
+    monkeypatch.setattr(connect_mod, "unregister_instance", mock.Mock())
+    monkeypatch.setattr(source, "delete_source", mock.Mock(return_value={"removed": True}))
+    monkeypatch.setattr(LaunchState, "clear_tag", mock.Mock())
+    assert cli_cloud._cloud_destroy(_args(yes=True)) == 0
+    assert (
+        "Deleting usually takes a few minutes. AWS keeps going even if you close this terminal."
+        in before_the_wait[0]
+    )
+    assert (
+        "Wait here anyway: this command's own cleanup runs only after AWS confirms the delete."
+        in before_the_wait[0]
+    )
+
+
 class TestBoundaryUpgradeFailures:
     def test_a_denied_upgrade_names_the_grant_and_tries_the_kms_boundary(self, monkeypatch, capsys):
         grant = "iam:CreatePolicyVersion"

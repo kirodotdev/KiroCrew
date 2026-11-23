@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Info, Loader2 } from 'lucide-react'
 import { api, type KasLoginSourceAccount, type KasLoginSources } from '../../api/client'
+import { isPermissionRefusal } from '../../api/apiError'
 import { accountProviderLabel } from '../../components/kasProviderLabel'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../../components/KiroAccountModal'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
@@ -31,7 +32,9 @@ export function useKiroSignInSources() {
   return useQuery({
     queryKey: SOURCES_QUERY_KEY,
     queryFn: api.kasLoginSources,
-    refetchInterval: query => (query.state.data?.name_pending ? NAME_POLL_MS : SOURCES_REREAD_MS),
+    // Never poll a refusal (not the owner) again: each ask writes another denial row.
+    refetchInterval: query => (isPermissionRefusal(query.state.error) ? false
+      : query.state.data?.name_pending ? NAME_POLL_MS : SOURCES_REREAD_MS),
   })
 }
 

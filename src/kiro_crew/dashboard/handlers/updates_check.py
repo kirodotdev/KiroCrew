@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 
@@ -68,6 +67,7 @@ from kiro_crew.platform.update_capability import (
     MODE_NOTIFY,
     UpdateCapability,
     bundled_by_desktop_app,
+    default_install_root,
     derive_capability,
 )
 from kiro_crew.platform.update_fetch import fetch_and_pin_upstream
@@ -378,6 +378,12 @@ def _release_update_check_task(task: asyncio.Task[None]) -> None:
         _check_task_generation = None
 
 
+def _judge_install() -> tuple[str, UpdateCapability]:
+    """The install root and the capability derived for it, so the git check reads the judged tree."""
+    root = default_install_root()
+    return root, derive_capability(install_root=root)
+
+
 async def _do_update_check() -> None:
     """Run one shared update check and wait for a current-channel verdict."""
     global _check_task, _check_task_generation
@@ -463,7 +469,6 @@ async def _run_update_check() -> None:
         can_apply=False,
         requires_restart=True,
     )
-    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     # Seeded beside the capability above and for the same reason: the except
     # path reads it, and the resolution itself can be what failed.
     provider: object | None = None
@@ -482,7 +487,9 @@ async def _run_update_check() -> None:
             # Offloaded inside the worker's try: derivation shells out to git, so
             # it must not run on the event loop, and every failure must still reach
             # the cache/error cleanup below.
-            capability = await asyncio.get_running_loop().run_in_executor(None, derive_capability)
+            proj, capability = await asyncio.get_running_loop().run_in_executor(
+                None, _judge_install
+            )
             if capability.defers:
                 reason = capability.unavailable_reason or ""
                 image: dict[str, str] = {}

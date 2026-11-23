@@ -59,7 +59,7 @@ public `http(s)` URLs only, plus loopback origins the user listed under
 | `click {ref \| x,y}` / `type {ref?, text, submit?}` | Act on an element from a snapshot; `type` refuses a password field. `type {ref?, steps: [{text} \| {key, modifiers?}]}` runs ordered text and key steps in one call |
 | `paste {ref?, text, html?}` | Put rich content (a table, headings, lists) into the field as a clipboard paste would, without touching the user's clipboard; refused where `type` is |
 | `upload {ref \| x,y, path, via?}` | Give the page local files: `path` is one absolute path or a list of up to 10, each a file, a folder or a glob (at most 100 files, 25 MiB in all). `via`: `input` (default) for a file field the snapshot marks `[file]`, `chooser` for the file picker a button opens, `drop` for a drop zone; a folder goes only onto a drop zone. It asks on a card unless the user trusted acting on that site |
-| `screenshot` | Write a PNG, return its absolute path; show it with `![..](../path)` |
+| `screenshot` | Write a PNG, return its absolute path; show it with `![..](path)` |
 | `tabs {action: list\|switch\|new}` | The tabs the agent opened, and only those |
 
 **Browsing workflow:** load the `web-browse`, `web-verify`, or `browser-auth`

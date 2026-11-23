@@ -91,6 +91,10 @@ export interface HostSession {
   readonly waitingForInput: boolean
   /** The tool approval the session waits on, or null. */
   readonly pendingApproval: HostSessionApproval | null
+  /** True while the session waits on something only the full chat can show or
+   *  answer: a change card, a guide offer, or a browser sign-in or other `ask`.
+   *  `ChatEmbed` draws none of these, so send the person to the session. */
+  readonly needsFullChat: boolean
   /** When the session last moved, in epoch milliseconds; the list is newest first by it. */
   readonly lastActive: number
 }
@@ -214,6 +218,7 @@ export function useHostSessions(): HostSessions {
           lastMessage: sl.last_message || '',
           waitingForInput: !!sl.waiting_for_input,
           pendingApproval,
+          needsFullChat: sl.needs_full_chat === true,
           lastActive: recencyEpoch(sl),
         })
       })

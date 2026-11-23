@@ -521,7 +521,9 @@ async def handle_message_transport(
         )
         await slack.post_message(channel, SHARED_OWNER_ONLY_TEXT, reply_ts)
         return
-    if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
+    if await maybe_route_linked_thread(
+        text, session_key, user_id, channel, slack, reply_ts, had_voice_input=had_voice_input
+    ):
         return
 
     # ── Hook: auto-reply before touching the LLM (mirrors native) ──

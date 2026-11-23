@@ -75,7 +75,9 @@ class FakeResizeObserver {
     FakeResizeObserver.instance = this
   }
 
-  observe() {}
+  // A browser delivers once for each new target after its next layout, and the
+  // width observers take their first width from that delivery.
+  observe() { this.fire() }
   disconnect() {}
 
   fire() {

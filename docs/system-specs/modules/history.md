@@ -597,6 +597,10 @@ returned tail and its `running`, `stopping`, `turn`, and `turn_gen` status field
 come from the same newest edge. When the cap is spent, or the held rows carry no
 `meta.mid` to anchor on, the replacing reducer keeps no head: the rows above the
 walked window leave the tab and are one page-back away.
+In a dev build `refreshSlot` and `warmSlotCache` count, per slot, each read and
+each walk that fetched older pages (with the pages and the reason), readable in
+devtools as `window.__kcSlotReads()` (`website/src/dev/slotReadCounts.ts`); a
+production build records nothing.
 
 `loadOlderMessages` stays in the facade. The chat host answers the hook's
 older-page request with it; it reads the page before `slotOldestIndex` and lands
@@ -1509,9 +1513,31 @@ no longer destroy older turns.
   what is on disk, so it archives nothing and skips the O(file) diff read.
 - **`slot._disk_window_len`**: count of window messages the last save wrote to
   disk. Memory trimming (`_MAX_SLOT_MESSAGES`) may fold a leading window message
-  into the frozen prefix (`_disk_older_count += …`) only for messages actually
-  persisted (`min(excess, _disk_window_len)`); an unpersisted overflow is logged
-  rather than silently counted as on-disk.
+  into the frozen prefix only for messages actually persisted
+  (`min(excess, _disk_window_len)`); an unpersisted overflow is logged rather
+  than silently counted as on-disk. `_disk_older_count` advances by the DURABLE
+  rows of that persisted part only: it counts transcript lines, and a transient
+  row is never written as one, so counting it would pull the first window row
+  into the prefix and the next rewrite would write that row twice. A fold that
+  lands while a save writes (`slot_transcript._fold_head`) is subtracted when
+  the save commits (`write_guards.saved_rows_still_held`, rows matched by
+  identity), so the folded rows are not counted as the window's on-disk part.
+- **Idle window release** (`dashboard/slot_window_release.py`): the flush loop,
+  at most once a minute and after its flush, folds every saved row older than
+  the newest `_WINDOW_ROWS` of a slot idle for ten minutes into the frozen
+  prefix (`_ChatSlot.release_saved_head`), so a long-lived slot holds what a
+  restart would load for it. Nothing is written. It runs only when the whole
+  window is on disk (`_disk_window_len == len(messages)`, not dirty), alone in
+  its region of the file (the last save left an `_append_basis` for this
+  window and this prefix, which a save that kept another writer's rows never
+  does, so the line count from the front is the real boundary), and no
+  Regenerate swap, owed truncating rewrite or guarded metadata write is in
+  flight, and skips a slot that is closing, under construction, pending or
+  running a turn. Like a restore, it re-bases the title refresh mark against
+  the user turns the window still holds (`_rebase_rehydrated_refresh_mark`);
+  the cap trim does not, because its window length stays at the cap. Older
+  pages are read from disk as for any restored slot; the
+  freed heap goes back to the OS through the heartbeat's heap trim.
 - **`slot._disk_older_durable_count`**: the durable-only position base — how
   many non-transient rows (`state._TRANSIENT_ROLES`) have left the window off
   the front. Maintained at every site that sets or advances
@@ -1998,7 +2024,12 @@ no longer destroy older turns.
   when the turn produced a reply, through one rewrite pinned to the transcript
   and slot the Regenerate was authorized against that names the rows it removes
   (`retired_rows`). The variants stashed at the press keep the endpoint's
-  existing cap (`_MAX_VARIANTS`, the newest kept). They stay stashed while
+  existing cap (`_MAX_VARIANTS`, the newest kept). Each keeps the `mid` of the
+  row it was written as (`variant_from_row`), so that id names the same version
+  after the swap moves it into the new reply's list; the discussion card keys
+  its sends on it (`grillKey`). A stash of a row that already has versions
+  takes no id: that row's `mid` names its newest version, not always the one it
+  shows. They stay stashed while
   the turn runs: the segment flush attaches none to a reply of a turn that owns
   the target, and the reply gets them only from the committed rewrite, so a
   declined swap (refused or failed write, a reply trimmed into the frozen
@@ -2831,7 +2862,13 @@ writer:
   `read_session_execution` names the two refusals apart: a CORRUPT line answers
   "session record is unreadable (its first line is damaged); start a new chat
   (memory is intact) or archive this one", because no retry reads it, and a
-  TRANSIENT one keeps the plain "session record is unreadable".
+  TRANSIENT one keeps the plain "session record is unreadable". History resume's
+  last metadata read before it builds the slot runs on the event loop, where the
+  bounded retries cannot pause: a TRANSIENT answer there refuses the resume with a
+  retryable `resume_conflict` (409; an app gets its uniform 404) instead of
+  building the slot from an empty line, and a CORRUPT line resumes as an empty
+  one, because no retry would ever open it and the resumed slot's next save
+  rewrites it.
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and
