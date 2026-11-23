@@ -2806,7 +2806,13 @@ against sweep completeness, and are torn down at `close_all`.
   `dashboard/state.wire_session_recycle_callback()` from both `server.py`
   start paths to post a user-visible "session recycled" notice into
   `dashboard:` slots, tagged `meta={"kind": "compaction"}` so the [OPTIONS:]
-  backward scan skips it). Idle/orphan sweeps fire the recycle callback only
+  backward scan skips it). The same callback queues
+  `injected_turns.session_restarted_notice(reason)` on the slot's
+  `_pending_subagent_failures`, so the agent's next prompt is told that the
+  harness's background work ended with the process: a session resumed through
+  `session/load` replays only the harness's own transcript, where that work
+  still reads as started. One such note waits at a time; a `/clear`
+  discard drops it with the other queued notices. Idle/orphan sweeps fire the recycle callback only
   for a session whose harness launched background work past the hold (see
   "Harness background work" below). Linux sums the `/proc` tree; Windows uses
   `platform_compat.proc_rss_tree_mb_for_pid`; macOS sums each process's

@@ -733,6 +733,13 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             _current_replay_message=_current_replay_message,
             reset_out=_conversation_reset,
         )
+        # Save the person's message for the linked-channel mirror before anything
+        # below prepends to it: the cancelled-turn preamble, queued gateway notices
+        # (sub-agent failures, a session restart), the sender line and pending
+        # context are the model's, and a long one would push the person's words
+        # past the mirror's length cut.
+        _user_msg_for_mirror = message
+        turn._user_msg_for_mirror = _user_msg_for_mirror
         # After a soft-cancel, kiro-cli drops the cancelled turn from its
         # conversation log — but everything BEFORE the cancel is preserved.
         # Re-inject just the cancelled turn (user prompt + partial assistant)
@@ -803,10 +810,6 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             if fresh:
                 message = "\n\n".join(fresh) + "\n\n" + message
                 turn.message = message
-        # Save raw user message before context/persona prepend for Slack
-        # mirror — avoids leaking injected context to the linked thread.
-        _user_msg_for_mirror = message
-        turn._user_msg_for_mirror = _user_msg_for_mirror
         # Shared Crew: tell the agent who sent this message (prompt only).
         from kiro_crew.shared_crew.attribution import sender_line
 
