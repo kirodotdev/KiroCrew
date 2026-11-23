@@ -437,6 +437,8 @@ class SubagentInfo:
     # consumed credits before failing. Providers that do not bill in credits
     # report zero through the shared TurnUsage contract.
     credits: float = 0.0
+    # The run's summed dollar cost, from the same attempts; zero on a credit-billed harness.
+    cost_usd: float = 0.0
     # Shared with terminal reporters so a reap need not wait for a cancelled
     # consumer's state-write drain before settling the active attempt.
     _credit_accounting: _RunCreditAccounting | None = field(default=None, repr=False, compare=False)
