@@ -17,7 +17,8 @@ import urllib.parse
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestServer
+from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 from kas_agents_helpers import _spec
 
 from kiro_crew.acp import kas_agents
@@ -1049,6 +1050,69 @@ def test_a_marked_slack_row_names_the_missing_app_when_chat_cannot_sign_in(tmp_p
 
     assert needs_app(False) == [True, None, None]
     assert needs_app(True) == [True, True, None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved", [False, True], ids=["no-oauth-app", "oauth-app-saved"])
+@pytest.mark.parametrize("route", ["GET /api/mcp", "POST /api/mcp/probe", "GET /api/mcp/probe"])
+async def test_each_mcp_endpoint_marks_the_row_only_while_no_oauth_app_is_saved(
+    tmp_path, monkeypatch, route, saved
+):
+    """Each endpoint the MCP table reads serves the mark the helper decides."""
+    from kiro_crew import mcp_discovery
+    from kiro_crew.dashboard.handlers import mcp as mcp_handlers
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    if saved:
+        (tmp_path / "config.json").write_text(
+            json.dumps({"connections": {"oauth_clients": {SLUG: {"client_id": "123.456"}}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("KIROCREW_CONNECTIONS_SLACK_CLIENT_SECRET", "sec")
+    server = mcp_discovery.McpServerInfo(name=SLUG, url=SLACK_URL)
+    cached = route == "GET /api/mcp/probe"
+    monkeypatch.setattr(mcp_handlers, "_mcp_probe_cache", [server.to_dict()] if cached else [])
+    monkeypatch.setattr(mcp_handlers, "_mcp_probe_ts", time.time())
+    monkeypatch.setattr(mcp_handlers, "_mcp_probe_in_progress", True)  # arms no re-probe
+    monkeypatch.setattr(mcp_handlers, "_mcp_reprobe_armed_for", {})
+    monkeypatch.setattr(mcp_handlers, "_GLOBAL_MCP_JSON", tmp_path / "absent" / "mcp.json")
+    monkeypatch.setattr(mcp_discovery, "list_servers", lambda: [] if cached else [server])
+
+    async def _probe_all():
+        return [server]
+
+    async def _nothing(*_args):
+        return None
+
+    monkeypatch.setattr(mcp_discovery, "probe_all", _probe_all)
+    monkeypatch.setattr(mcp_handlers, "_evaluate_shareability", _nothing)
+    monkeypatch.setattr(mcp_handlers, "_annotate_kas_chat_sign_in", _nothing)
+    for name in (
+        "_record_probe_verdicts",
+        "_annotate_quarantine",
+        "_annotate_owner_sign_in",
+        "_annotate_agent_drops",
+    ):
+        monkeypatch.setattr(mcp_handlers, name, lambda *_args: None)
+    handlers = {
+        "GET /api/mcp": mcp_handlers.api_mcp_servers,
+        "POST /api/mcp/probe": mcp_handlers.api_mcp_probe,
+        "GET /api/mcp/probe": mcp_handlers.api_mcp_probe_cached,
+    }
+    method, path = route.split()
+    app = web.Application()
+    app["state"] = types.SimpleNamespace(owner_id="", sessions=None)
+    app.router.add_route(method, path, handlers[route])
+    client = TestClient(TestServer(as_owner(app)))
+    await client.start_server()
+    try:
+        resp = await client.request(method, path)
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 200, body
+    assert [row.get("connectionUnconfigured") for row in body] == [None if saved else True]
 
 
 # --- an entry Crew's sign-in does not own: no Connect, and no steps to turn it on ---
