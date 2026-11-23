@@ -151,6 +151,7 @@ def test_a_schema_2_bundle_loads_as_its_map_cochange_and_guard(tmp_path: Path) -
         "schema": ctm.BUNDLE_SCHEMA,
         "map": flat,
         "co_change": {"src/kiro_crew/acp/mod.py": {"test/test_cochanged.py": 3}},
+        "co_change_window": WHOLE,
         "guard": GUARD,
     }
     path = tmp_path / "bundle.json.gz"
@@ -163,6 +164,8 @@ def test_a_schema_2_bundle_loads_as_its_map_cochange_and_guard(tmp_path: Path) -
 
 
 NO_DATA = pytest.mark.parametrize("without", ["left out", None, {}, []])
+WHOLE = {"asked": 2000, "read": 2000, "shallow": False}
+PART = {"asked": 2000, "read": 50, "shallow": True}
 
 
 def _packed(tmp_path: Path, table: str, without: object, flat: dict) -> Path:
@@ -171,6 +174,7 @@ def _packed(tmp_path: Path, table: str, without: object, flat: dict) -> Path:
         "schema": ctm.BUNDLE_SCHEMA,
         "map": {k: v for k, v in flat.items() if k != "cochange"},
         "co_change": {"src/kiro_crew/acp/mod.py": {"test/test_cochanged.py": 3}},
+        "co_change_window": WHOLE,
         "guard": GUARD,
     }
     del packed[table]
@@ -181,17 +185,24 @@ def _packed(tmp_path: Path, table: str, without: object, flat: dict) -> Path:
     return path
 
 
-@NO_DATA
-def test_a_schema_2_bundle_with_no_co_change_data_skips_nothing(
-    tmp_path: Path, without: object
+@pytest.mark.parametrize(
+    ("table", "without"),
+    [
+        *[("co_change", form) for form in ("left out", None, {}, [])],
+        # The table is there, and its window does not say it covers what was asked.
+        *[("co_change_window", form) for form in ("left out", None, {}, [], PART)],
+    ],
+)
+def test_a_schema_2_bundle_with_no_or_part_of_the_co_change_data_skips_nothing(
+    tmp_path: Path, table: str, without: object
 ) -> None:
     whole = _score(bundle=BUNDLE)
     assert whole["would_skip"] == whole["tiers"]["G"] != []
     try:
-        bundle = cts.load_bundle(_packed(tmp_path, "co_change", without, BUNDLE))
+        bundle = cts.load_bundle(_packed(tmp_path, table, without, BUNDLE))
     except ValueError:
         # A table of another shape is corrupt: the CLI answers `full` for it.
-        assert without == []
+        assert (table, without) == ("co_change", [])
         return
     assert "cochange" not in bundle
     verdict = _score(bundle=bundle)

@@ -28,8 +28,9 @@ Tiers, first match wins
 The bundle is a schema-1 test map, or the schema-2 gzip file `ci_test_map.py
 bundle` writes, read as its map plus `co_change` (as `cochange`) and `guard`;
 `tests`, `files` and `cochange` are the tables read. A missing table never makes
-a file skippable: the files that would be G are held in F instead, and a table
-the schema-2 file holds empty counts as missing. An optional `guard` table
+a file skippable: the files that would be G are held in F instead. A table the
+schema-2 file holds empty counts as missing, and so does a `co_change` whose
+`co_change_window` does not cover every commit asked for. An optional `guard` table
 (`[test file]`, `leaf_test_scope.corpus_gates` run when the bundle was built)
 spares the live guard scan, which costs seconds; without it the scan runs. A
 test the diff adds or edits is tier A or a fall-back either way.
@@ -102,6 +103,7 @@ def _flatten_bundle(packed: Mapping[str, Any]) -> Any:
 
     The writer leaves out a table it could not build, so one that is missing,
     null or empty is no data: it is not carried over as a table with no links.
+    Nor is a `co_change` whose `co_change_window` does not say it is whole.
     """
     doc = packed.get("map")
     if not isinstance(doc, dict):
@@ -113,7 +115,8 @@ def _flatten_bundle(packed: Mapping[str, Any]) -> Any:
             isinstance(r, dict) for r in co_change.values()
         ):
             raise ValueError("bundle table `co_change` is not {file: {test file: count}}")
-        doc["cochange"] = {src: sorted(row) for src, row in co_change.items()}
+        if ctm.window_is_whole(packed.get("co_change_window")):
+            doc["cochange"] = {src: sorted(row) for src, row in co_change.items()}
     if packed.get("guard") not in (None, []):
         doc["guard"] = packed["guard"]
     return doc

@@ -39,12 +39,15 @@ The bundle (gzip JSON)
     {"schema": 2, "commit": SHA, "built_at": ISO,
      "map": <the schema-1 map, unchanged>,
      "co_change": {src file: {test file: count}},  # last N first-parent commits
+     "co_change_window": {"asked": N, "read": commits read, "shallow": bool},
      "guard": [test file, ...]}                    # leaf_test_scope.corpus_gates
 
 A table that cannot be built, or that comes out empty, is left out of the file,
 never written empty, so a reader can tell "no data" from "no links". A shallow
 clone cannot build `co_change` unless it holds `--commits` commits and the one
-before them: a part of the window would read as the whole of it.
+before them: a part of the window would read as the whole of it. The window is
+written beside the table, and a reader takes the table as data only when
+`window_is_whole` says so.
 
 What the selector falls back on (prints nothing, exit 3)
 --------------------------------------------------------
@@ -74,7 +77,7 @@ import json
 import subprocess
 import sys
 import zlib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -87,6 +90,7 @@ CO_CHANGE_COMMITS = 2000
 GIT_LOG_TIMEOUT_SECS = 600.0
 BUNDLE_TABLES = ("co_change", "guard")
 NO_GUARD = "corpus_gates found no guard test"
+NO_PAIR = "no commit in the window changed a src file and a test file together"
 
 # Where pytest collects (setup.cfg `testpaths`). A changed test file outside
 # these is not a test pytest would run, so it falls back like any other file.
@@ -326,16 +330,33 @@ def is_shallow(root: Path, timeout: float | None = None) -> bool:
 
 def co_change_window(
     root: Path, ref: str, commits: int, timeout: float | None = None
-) -> dict[str, dict[str, int]]:
-    """`co_change` over the last `commits` first-parent commits of `ref`.
+) -> tuple[dict[str, dict[str, int]], dict[str, Any]]:
+    """`co_change` over the last `commits` first-parent commits of `ref`, and its window.
 
     Raises when a shallow clone does not also hold the commit before the window:
     the window's oldest commit would then have no parent to be compared with.
     """
     held = git_first_parent_files(root, ref, commits + 1, timeout)
-    if len(held) <= commits and is_shallow(root, timeout):
+    shallow = is_shallow(root, timeout)
+    if shallow and len(held) <= commits:
         raise ValueError(f"shallow clone holds {len(held)} of the {commits + 1} commits needed")
-    return co_change(held[:commits])
+    window = {"asked": commits, "read": min(len(held), commits), "shallow": shallow}
+    return co_change(held[:commits]), window
+
+
+def window_is_whole(window: object) -> bool:
+    """Whether a bundle's `co_change_window` says its table covers what was asked.
+
+    Whole is every commit asked for, or fewer from a clone that holds the whole
+    history. Anything else, and a window that is missing or of another shape,
+    is a part of the answer at best.
+    """
+    if not isinstance(window, dict):
+        return False
+    asked, read, shallow = (window.get(k) for k in ("asked", "read", "shallow"))
+    if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in (asked, read)):
+        return False
+    return read == asked or (read < asked and shallow is False)
 
 
 def bundle(
@@ -353,25 +374,25 @@ def bundle(
         "map": test_map,
     }
     absent: dict[str, str] = {}
-    tables: tuple[tuple[str, Callable[[], Any], str, str], ...] = (
-        (
-            "co_change",
-            lambda: co_change_window(root, ref, commits, timeout),
-            "history read failed",
-            "no commit in the window changed a src file and a test file together",
-        ),
-        ("guard", lambda: guard_tier(root), "corpus_gates failed", NO_GUARD),
-    )
-    for name, build, failed, empty in tables:
-        try:
-            table = build()
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            absent[name] = f"{failed}: {exc}"
-            continue
-        if table:
-            doc[name] = table
+    failures = (OSError, ValueError, subprocess.SubprocessError)
+    try:
+        pairs, window = co_change_window(root, ref, commits, timeout)
+    except failures as exc:
+        absent["co_change"] = f"history read failed: {exc}"
+    else:
+        if pairs:
+            doc["co_change"], doc["co_change_window"] = pairs, window
         else:
-            absent[name] = empty
+            absent["co_change"] = NO_PAIR
+    try:
+        gates = guard_tier(root)
+    except failures as exc:
+        absent["guard"] = f"corpus_gates failed: {exc}"
+    else:
+        if gates:
+            doc["guard"] = gates
+        else:
+            absent["guard"] = NO_GUARD
     return doc, absent
 
 
