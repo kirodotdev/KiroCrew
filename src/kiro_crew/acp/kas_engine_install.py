@@ -122,12 +122,12 @@ def install_pinned_engine(
     if present is not None:
         return present
     selected = kas_bundle_mod.pinned_version()
-    if selected != kas_bundle_mod.KAS_PIN_VERSION:
+    if selected != kas_bundle_mod.host_pin_version():
         # Only the release's pin is installed unattended: a version chosen with
         # the override is laid down by hand, never swapped for the pin.
         raise kas_bundle_mod.KasBundleError(
             f"KAS {selected} is selected but not installed, and only this release's "
-            f"pin ({kas_bundle_mod.KAS_PIN_VERSION}) is installed automatically. Run "
+            f"pin ({kas_bundle_mod.host_pin_version()}) is installed automatically. Run "
             f"`{KAS_ENGINE_RETRY_COMMAND} --version {selected} --unpinned`, or unset "
             "the version override."
         )

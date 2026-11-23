@@ -1132,7 +1132,7 @@ def _kas_engine_version() -> str:
         if not kas_bundle.kas_bundle_route():
             return "not selected"
         engine = kas_bundle.installed_engine_label()
-        pin = kas_bundle.KAS_PIN_VERSION
+        pin = kas_bundle.host_pin_version()
         if engine is None:
             return f"not installed (release pins KAS {pin}; kirocrew kas install)"
         return f"{engine} (release pins KAS {pin})"

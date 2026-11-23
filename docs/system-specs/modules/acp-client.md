@@ -5666,22 +5666,34 @@ folder, never a half-engine at the version's name. Removing every version still
 deletes in place. On a Linux
 host whose glibc is below the release's floor for its architecture the install
 refuses up front, before any download, naming the found glibc, the minimum, the
-Node key and why; nothing is published. The floor (`kas_bundle._glibc_floor`) is
-`kas_pin.KAS_PIN_LINUX_GLIBC_FLOOR[<node key>]` for the pinned version and the
+Node key and why; nothing is published. There are two pins, one engine release:
+`KAS_PIN_VERSION` (nodejs.org Node and the npm onnxruntime, floor 2.28) and
+`KAS_PIN_AL2_VERSION` (`KAS_PIN_VERSION` plus `-al2`: the same engine and Node
+release republished with the Amazon Linux 2 builds from `packaging/kas-al2/` on
+linux-x64, floor 2.26). `kas_pin.host_pin_version()` picks the AL2 pin only on a
+linux-x64 host whose glibc reads below 2.28; every other host (arm64, macOS,
+Windows, linux-x64 at 2.28+ or with an unreadable glibc) gets `KAS_PIN_VERSION`.
+It is read on every call, so a host that moves to glibc 2.28+ installs the normal
+pin on its next install check, and one that stays at 2.28+ never picks the AL2 pin.
+`pinned_version()` is `KIROCREW_KAS_VERSION` when set, else that host pin, and every
+"is this the pin?" check (`install_pinned`, `kirocrew kas install`/`status`, the
+startup and spawn installs, doctor, the dashboard card, diagnostics) compares
+against `host_pin_version()`. The floor (`kas_bundle._glibc_floor`) is
+`kas_pin.KAS_PIN_GLIBC_FLOORS[<version>][<node key>]` for either pin and the
 official nodejs.org floor (`constants._OFFICIAL_NODE_GLIBC_FLOOR`, 2.28, the one
-doctor's Node remedy also uses) for any other version or key. A release on the
-nodejs.org Node needs 2.28 (and the engine's npm onnxruntime library 2.27). The pin
-is a release republished from Amazon Linux 2 builds (`packaging/kas-al2/`, a `-al2`
-version), so `linux-x64` pins 2.26 and Amazon Linux 2 installs it; `linux-arm64`
-has no such build and pins 2.28. The floor moves only in the commit that moves the
-pin.
+doctor's Node remedy also uses) for any other version or key, so `--unpinned`,
+`--from` and the override are held to 2.28. A pin's floor moves only in the
+commit that moves that pin.
 The glibc reader is `constants._host_glibc_version`. The gateway's install (`install_pinned`) runs the same local host checks
 (the glibc floor and the OS and architecture keys) before it fetches the manifest, so
 the refusal names its cause on an offline host too and a spawn that asks again makes
 no network round trip. Which
-version runs is the release's pin, not a file on disk: `acp/kas_pin.py` holds
+version runs is the host's pin, not a file on disk: `acp/kas_pin.py` holds
 `KAS_PIN_VERSION` and `KAS_PIN_MANIFEST_SHA256` (the sha256 of that version's
-published `manifest.json`, which in turn pins every artifact). The version is
+published `manifest.json`, which in turn pins every artifact), and
+`KAS_PIN_AL2_MANIFEST_SHA256` for the AL2 pin (`KAS_PIN_MANIFESTS` maps each pin to
+its digest). The desktop, Docker and platform-wheel builds stage `KAS_PIN_VERSION`:
+they target glibc 2.28+. The version is
 an engine release, optionally followed by `-node<N>` when the same engine build
 is republished with a different bundled Node runtime (a Node security fix is
 never an overwrite of a published `kas/<version>/` key); `KAS_PIN_ENGINE_RELEASE`
