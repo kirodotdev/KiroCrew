@@ -10,9 +10,10 @@ import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, us
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
-import { useTerminalTouchSelection, type TouchSelectStatus } from '../hooks/useTerminalTouchSelection'
+import { useTerminalTouchSelection } from '../hooks/useTerminalTouchSelection'
 import TerminalCompletion from './TerminalCompletion'
 import TerminalKeyBar from './TerminalKeyBar'
+import TerminalTouchHandles from './TerminalTouchHandles'
 import TerminalFindBar from './TerminalFindBar'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
@@ -359,21 +360,12 @@ function cellKey(term: Terminal): string {
 }
 
 /* ── Terminal view for one session ── */
-/** Literal-key lookup for the touch range-selection hint (#6834) — one compact
- *  string per gesture stage, serving both the visible hint chip and the sr-only
- *  live region. Literal keys (no runtime-assembled catalog keys) keep the
- *  dead-key scan meaningful, same discipline as the key bar's label lookups. */
-function touchSelectHint(status: TouchSelectStatus): string {
-  switch (status) {
-    case 'range_anchor': return i18nT('components.cliPanel.touch_select_anchor')
-    case 'range_selected': return i18nT('components.cliPanel.touch_select_done')
-    default: return ''
-  }
-}
-
 function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToChat, deferOpen, onToggleFullscreen }: { sessionId: string; cwd?: string; remoteSlot?: string; chatSlot?: string; visible: boolean; onSendToChat?: (text: string) => void; deferOpen?: boolean; onToggleFullscreen?: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
+  // The terminal plus its overlays: the touch listeners and the selection
+  // handles' positioning context.
+  const gridRef = useRef<HTMLDivElement>(null)
   const entryRef = useRef<{ term: Terminal; fit: FitAddon; search: SearchAddon } | null>(null)
   // Floating selection toolbar: anchored to where the drag ended (wrapper-
   // relative px), carrying the captured text so the actions stay valid even
@@ -427,13 +419,10 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
     return () => { if (searchOpeners.get(sessionId) === openSearchFn) searchOpeners.delete(sessionId) }
   }, [sessionId, openSearchFn])
 
-  // Touch range-selection (#6834): long-press a line to set the first endpoint,
-  // then tap/long-press another to select the inclusive span. xterm's own
-  // drag-selection is mouse-only and never fires on touch, so on a phone this
-  // is the only way to grab an ARBITRARY range out of the middle of scrollback
-  // (the staged Select key only reaches the last line or the whole buffer).
+  // Touch scrolling with momentum, and long-press selection with drag handles.
+  // xterm's own selection is mouse-only and its touch scroll stops on lift.
   // Inert on mouse devices, where xterm's drag-selection already works.
-  const touchSelect = useTerminalTouchSelection(term, touchDevice)
+  const touchSelect = useTerminalTouchSelection(term, touchDevice, gridRef)
 
   // Re-measure + refit, gated on pane visibility (see remeasureAndFit). Stable
   // per cached term/fit, so the effects below don't re-subscribe.
@@ -697,20 +686,11 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
           and drop over the soft keys — covering Tab on exactly the devices the
           bar exists for.
 
-          The touch handlers (#6834) live on THIS div, not the outer wrapper, so
-          a touch maps to a terminal row using the terminal's own geometry. They
-          no-op on mouse devices (the hook's `enabled` gate), where xterm's own
-          drag-selection handles selection. Passive: they never preventDefault,
-          so ordinary scroll/tap still reach xterm — a long-press is recognised
-          by a still-finger timer, not by swallowing the gesture. */}
-      <div
-        className="relative w-full flex-1 min-h-0 overflow-hidden"
-        onTouchStart={touchSelect.onTouchStart}
-        onTouchMove={touchSelect.onTouchMove}
-        onTouchEnd={touchSelect.onTouchEnd}
-        onTouchCancel={touchSelect.onTouchEnd}
-      >
+          The touch hook binds its listeners on THIS div (gridRef), so the
+          selection handles share the terminal's coordinate space. */}
+      <div ref={gridRef} className="relative w-full flex-1 min-h-0 overflow-hidden">
         <div ref={containerRef} className="w-full h-full overflow-hidden" />
+        {touchDevice && <TerminalTouchHandles handles={touchSelect.handles} />}
         {holding && (
           // 16px so iOS does not zoom on focus; on screen and non-zero so
           // Safari has a field to reveal above the keyboard.
@@ -744,31 +724,6 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
         {/* Scrollback find bar (#10176): over the grid, top-right, only while
             open. Focus-scoped — the chord opens it only from a focused shell. */}
         <TerminalFindBar search={termSearch} bannerShowing={showBanner} onToggleFullscreen={onToggleFullscreen} />
-        {/* Touch range-selection discoverability (#6834). The gesture is
-            invisible on a canvas — nothing tells the user an endpoint is set —
-            so surface it two ways: a small transient hint chip anchored top-left
-            (visual), and an sr-only live region (screen reader), the same
-            announce-through-a-status-region pattern the key bar's Copy/Select
-            use. Only rendered on touch, and only while a gesture is mid-flight
-            or just completed. */}
-        {touchDevice && touchSelect.status && (
-          <div
-            // Sits top-left over the grid. When the disconnect banner is up it
-            // occupies the top strip (z-30) and would fully cover a top-2 chip —
-            // and copying the last output of a dead session is exactly when this
-            // gesture is used — so drop the chip below the banner then (UX
-            // review #8070).
-            className={`pointer-events-none absolute left-2 z-20 rounded-md border border-border bg-bg-elevated/95 px-2 py-0.5 text-[11px] text-text shadow-sm backdrop-blur ${showBanner ? 'top-10' : 'top-2'}`}
-            aria-hidden="true"
-          >
-            {touchSelectHint(touchSelect.status)}
-          </div>
-        )}
-        {touchDevice && (
-          <span role="status" aria-live="polite" className="sr-only">
-            {touchSelect.status ? touchSelectHint(touchSelect.status) : ''}
-          </span>
-        )}
         {showBanner && (
           <div
             className={`absolute inset-x-0 top-0 z-30 flex max-h-full gap-2 border-b border-border bg-bg-elevated/95 px-3 py-1.5 text-[12px] text-text shadow-sm backdrop-blur ${invalidCwd ? 'flex-col items-start overflow-hidden' : 'flex-wrap items-center overflow-y-auto'}`}
