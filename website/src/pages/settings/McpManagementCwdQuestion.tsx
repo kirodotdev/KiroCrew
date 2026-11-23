@@ -12,7 +12,8 @@ import { i18nT } from '../../i18n/t'
 
 /**
  * The one question MCP Management asks before it shares a server that is not
- * Kiro Crew's own: does it work on the files of the project a chat is in? A
+ * Kiro Crew's own: does it need to start in the chat's project folder? It asks
+ * about the folder the server starts in, not about what it may read or change. A
  * shared server runs in one fixed folder outside the project, so only "No"
  * shares it. "Not sure" is answered as "Yes", the safe choice: the server keeps
  * running inside each chat. The answer is stored per server
