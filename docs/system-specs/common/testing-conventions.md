@@ -147,6 +147,10 @@ promise-sleep, `waitForTimeout`); a deliberate one says why with
   left changed, and names the test), and a new process-global ships its floor entry
   (`test/test_process_cache_floor_ratchet.py` fails a new module-level cache in
   `src/kiro_crew` that no floor resets).
+  Never fake a spawn or kill by patching an attribute of a module other code shares
+  (a module's `subprocess` alias's `Popen` is `subprocess.Popen` for the whole worker, the
+  subprocess pool's helper child included): rebind the name in the module under test
+  alone, as `test_acp_deepseek_backend.py`'s `_module_with` does for `subprocess_mod`.
   [Class 4](#4-order-dependence-and-shared-state).
 - **D12. Prove it.** Each new or changed test passes 20 times at `-n0`, 10 times at
   `-n 4` beside its neighbours, and in a shuffled order. A FIX to a flaky test also
