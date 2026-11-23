@@ -3621,9 +3621,11 @@ sidecar whose bytes are not a thread map raises `ThreadStoreUnreadable` and is
 NEVER overwritten (the three routes answer 503 `threads_unavailable`; a turn
 publishes a plain failure frame); rows of the wrong shape drop one by one, and
 a retained row is reduced to the reply schema (`id`, `role`, `content`, `ts`,
-strings) -- the file sits beside the transcript under the data home, so a field
-an agent put there never reaches the dashboard through the detail response,
-whose `_redacted_reply` likewise emits only those four fields. One
+strings, and on a Bot's row the `redactions` credential records that
+`credential_sources.bounded_credential_records` accepts) -- the file sits beside
+the transcript under the data home, so a field an agent put there never reaches
+the dashboard through the detail response, whose `_redacted_reply` likewise
+emits only those fields, the records bounded again. One
 thread holds at most 500 replies (`thread_full`), one chat's sidecar at most
 5 000 across every thread (`threads_full` -- the whole-file bound, since the
 panel reads the file whole), and the Bot's stored reply is clipped at
@@ -3686,7 +3688,8 @@ slot that is not a Bot's chat.
   `GET /api/chat/slots/{slot}`: the transcript read path stays unchanged and the
   payload is small enough to fetch beside it.
 - `GET /api/chat/threads/{mid}?slot=<key>` -- `{"parent": {mid, role, content,
-  ts}, "replies": [...], "in_flight": bool}`. 404 `parent_not_found` when the
+  ts}, "replies": [...], "in_flight": bool}`; the Bot's text, parent or reply,
+  also carries its `link_blocks` and `redactions` records when it has any. 404 `parent_not_found` when the
   mid is no longer in the chat (the frozen disk prefix plus the memory window,
   after `chat_handlers._reconcile_slot_window` -- the same reconciliation the
   detail and resume handlers run, not a copy of it). Reading finds a parent the
@@ -3756,7 +3759,32 @@ served by a session bound to the old ones. The parent lookup reads the
 transcript by `api_chat_slot_detail`'s rule -- `_reconcile_slot_window` first,
 then disk prefix plus window -- so a parent only disk holds is found. The Bot's memory is not injected into a thread turn (not done;
 the Bot's agent spec is). The answer is redacted, clipped, appended to the sidecar as
-an `assistant` reply and broadcast; an empty answer becomes the same visible
+an `assistant` reply and broadcast; it goes through the main chat's credential
+pass (`segment_flush._redact_segment_text`, as a Side Chat answer does), so its
+text stays `redact(raw)` byte for byte and the row keeps the `redactions` records
+its placeholders need, and the removed values are kept for the owner's reveal
+(`_commit_reveals`, in the chat's slot) only once the sidecar holds the row; the
+interrupted partial answer below is stored the same way. The thread read
+(`GET .../threads/{mid}`) carries each Bot reply's records, and the parent's from
+its main chat row's `meta`, bounded, beside `link_blocks`, and the final frame's
+`reply` carries the stored row's. `ThreadPanel` hands them to `MarkdownRenderer`
+with the thread's slot as `redactionSlot` (a thread is always this gateway's own
+slot, as the Bot's main chat passes `revealSlot`), so a removed credential draws as
+its lock tag with the owner's reveal and the Blocked link card offers Allow; an
+Allow or Undo on that slot (`mc:redaction-hosts-changed`) reads the thread again.
+Records whose text holds no placeholder (a clip cut it off, or the "not answered"
+line) are dropped by the main chat's rule (`drop_records_without_placeholders`)
+before the row is stored, so no value is kept for them. The commit marks a value
+the reveal store refuses on a copy of the records, so the final frame names the
+same handle the sidecar holds and both answer 410 for it. The panel passes no
+`messageTs`, so a card's allow hold in a thread is its own bubble's and is not
+shared with the main chat row; it does not keep the card open once the re-read
+drops that host's `link_blocks`, so its Undo is reached from Settings -> Security ->
+Redaction (no test pins this). Pinned by
+`test/test_thread_redaction_records.py`,
+`website/src/pages/members/ThreadPanel.redactionRecords.test.tsx` and
+`website/src/pages/members/ThreadPanel.blockedLink.test.tsx`.
+An empty answer becomes the same visible
 read-only boundary line the side chat shows. A refused read-only spec is audited as a
 denied SEL API access (`operation=thread_reply`, `source=read_only_spec`),
 like the app-isolation refusal. A turn cancelled mid-stream (a gateway
