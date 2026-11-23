@@ -29,12 +29,18 @@ logger = logging.getLogger("kiro_crew.acp.liveness")
 
 @dataclass(frozen=True)
 class _CleanupLineage:
-    """Stable process identities that bind one shell root to its harness."""
+    """Stable process identities that bind one shell root to its harness.
 
-    runtime_pid: int
-    runtime_start_id: str
-    parent_pid: int
-    parent_start_id: str
+    ``hops`` runs from the runtime pid down to the shell's expected parent, each
+    entry a ``(pid, start_id)`` pair; every hop after the first is the sole direct
+    child of the hop above it.
+    """
+
+    hops: tuple[tuple[int, str], ...]
+
+    @property
+    def runtime_pid(self) -> int:
+        return self.hops[0][0]
 
 
 class _ShellCleanupMixin:
@@ -47,6 +53,7 @@ class _ShellCleanupMixin:
     _tracked_tool: ToolCallState | None
     _cleanup_tenancy: Callable[[], int | None] | None
     _sandbox_wrapped_by_crew: Callable[[], bool] | None
+    _engine_is_child: Callable[[], bool] | None
     _cleanup_lineage: _CleanupLineage | None
 
     def _cleanup_has_exclusive_tenancy(self) -> bool:
@@ -76,6 +83,21 @@ class _ShellCleanupMixin:
             return None
         return wrapped if type(wrapped) is bool else None
 
+    def _engine_child_status(self) -> bool | None:
+        """Trusted harness fact that the tools run under its sole engine child.
+
+        No probe means no extra hop; a raising or non-boolean probe means the
+        caller cannot attest the shape, so cleanup has no authority.
+        """
+        if self._engine_is_child is None:
+            return False
+        try:
+            engine = self._engine_is_child()
+        except Exception:
+            logger.debug("liveness: engine child probe failed", exc_info=True)
+            return None
+        return engine if type(engine) is bool else None
+
     def _direct_children_for_cleanup(self, pid: int) -> list[int] | None:
         """A complete direct-child set, never best-effort partial evidence."""
         if self._darwin is not None:
@@ -97,45 +119,46 @@ class _ShellCleanupMixin:
         wrapped = self._crew_sandbox_wrap_status()
         if wrapped is None:
             return None
+        engine = self._engine_child_status()
+        if engine is None:
+            return None
+        # Kiro Crew's Linux namespace launcher sits at runtime_pid with the harness as
+        # its one child; a relay harness's engine is in turn its one child and the
+        # tools' parent. Each such level is one sole-child hop.
+        extra_hops = int(wrapped and self._darwin is None) + int(engine)
         runtime_start = platform_compat.get_process_start_id(runtime_pid)
         if not self._valid_start_id(runtime_start):
             return None
-        runtime_children = self._direct_children_for_cleanup(runtime_pid)
-        if runtime_children is None:
-            return None
-        if wrapped and self._darwin is None:
-            # Kiro Crew's Linux namespace launcher sits at runtime_pid; its one child is the harness.
-            if len(runtime_children) != 1:
+        hops: list[tuple[int, str]] = [(runtime_pid, runtime_start)]
+        children = self._direct_children_for_cleanup(runtime_pid)
+        for _ in range(extra_hops):
+            if children is None or len(children) != 1:
                 return None
-            parent_pid = runtime_children[0]
-            parent_start = platform_compat.get_process_start_id(parent_pid)
-            if not self._valid_start_id(parent_start):
+            pid = children[0]
+            start = platform_compat.get_process_start_id(pid)
+            if not self._valid_start_id(start):
                 return None
-            parent_children = self._direct_children_for_cleanup(parent_pid)
-        else:
-            parent_pid = runtime_pid
-            parent_start = runtime_start
-            parent_children = runtime_children
-        if parent_children is None or root_pid not in parent_children:
+            hops.append((pid, start))
+            children = self._direct_children_for_cleanup(pid)
+        if children is None or root_pid not in children:
             return None
-        return _CleanupLineage(runtime_pid, runtime_start, parent_pid, parent_start)
+        return _CleanupLineage(tuple(hops))
 
     def _cleanup_lineage_is_current(self, lineage: _CleanupLineage, root_pid: int) -> bool:
         """Recheck every trusted identity and direct edge in *lineage*."""
-        if platform_compat.get_process_start_id(lineage.runtime_pid) != lineage.runtime_start_id:
-            return False
-        runtime_children = self._direct_children_for_cleanup(lineage.runtime_pid)
-        if runtime_children is None:
-            return False
-        if lineage.parent_pid != lineage.runtime_pid:
-            if runtime_children != [lineage.parent_pid]:
+        hops = lineage.hops
+        for index, (pid, start_id) in enumerate(hops):
+            if platform_compat.get_process_start_id(pid) != start_id:
                 return False
-            if platform_compat.get_process_start_id(lineage.parent_pid) != lineage.parent_start_id:
+            children = self._direct_children_for_cleanup(pid)
+            if children is None:
                 return False
-            parent_children = self._direct_children_for_cleanup(lineage.parent_pid)
-        else:
-            parent_children = runtime_children
-        return parent_children is not None and root_pid in parent_children
+            if index + 1 < len(hops):
+                if children != [hops[index + 1][0]]:
+                    return False
+            elif root_pid not in children:
+                return False
+        return True
 
     def stalled_shell_tree(self, runtime_pid: int | None) -> list[tuple[int, str]]:
         """Return the tracked shell subtree as ``(pid, start_id)``, leaf-first.
@@ -144,7 +167,8 @@ class _ShellCleanupMixin:
         uncertainty fails closed. The tool must have retained exact-command
         attribution on an exclusively single-session runtime. Its root must be
         the direct child of the identity-pinned harness: normally the runtime
-        itself, or the sole child of Kiro Crew's Linux namespace launcher. The
+        itself, or the sole child of Kiro Crew's Linux namespace launcher; on
+        the KAS relay route, the relay's sole engine child below that. The
         root's subtree is enumerated twice with strict readers; an unreadable
         branch, changed edge, recycled root, or a changed membership refuses
         every target rather than authorizing a partial kill. Each target's

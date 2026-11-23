@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.kas_model_catalog import session_lists_auto
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.dashboard.chat_utils import (
     _REFUSAL_FALLBACK_RESUME_MSG,
@@ -23,9 +24,11 @@ from kiro_crew.llm_helpers import (
     pick_epoch_host,
     provider_active_model,
     provider_advertised_ids,
+    provider_model_pin_refused,
     provider_raw_model,
     resolve_substitute_set_model,
 )
+from kiro_crew.platform import redact_log_via_context
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -743,6 +746,62 @@ async def _restore_refusal_fallback(slot: Any, client: Any) -> None:
         )
 
 
+async def _reassert_explicit_auto(slot: _ChatSlot, client: Any) -> None:
+    """Put a fresh or reloaded KAS session a person set to Auto back on ``auto``.
+
+    The start path sends nothing for ``auto`` (``acp_effective_model`` reads it as
+    "nothing pinned"), so a reloaded session comes back on the model it ran before
+    the pick, and a KAS start inherits kiro-cli's ``chat.defaultModel``. ``""`` is
+    a chat that never picked, which keeps both. Sent only where a live Auto pick
+    would be (``_wire_model_id``). A pick made since the session last ran a turn
+    (``_model_pick_gen`` past ``_turn_pick_gen``) is judged where a live pick is,
+    in the handle's ``set_model``. An older value, which the session has run
+    under, moves it only when the ids that judge it are known and list ``auto``
+    (``session_lists_auto``): unjudged, a reopened chat on an account served no
+    ``auto`` would fail every later turn. A refusal (``model_pin_refused``) or a
+    switch that sent nothing leaves the session on its model. Best effort, as a
+    failed switch leaves the turn on the model it has.
+    """
+    # circular import: chat_handlers imports chat_turn, and binds slot_model's names.
+    from kiro_crew.dashboard.chat_handlers import _wire_model_id
+
+    if getattr(client, "is_kas_backend", False) is not True:
+        return
+    running = provider_raw_model(client.client)
+    if not running or running == "auto" or _wire_model_id(client, "auto") != "auto":
+        return
+    picked = getattr(slot, "_model_pick_gen", 0) != getattr(slot, "_turn_pick_gen", 0)
+    if not picked and not session_lists_auto(client.client):
+        logger.info(
+            "Slot %s is set to auto from before its session last ran and no known model "
+            "list judges it; the session stays on %s",
+            slot.key,
+            running,
+        )
+        return
+    try:
+        await client.set_model("auto")
+    except Exception as exc:
+        logger.warning(
+            "Slot %s is set to auto but its session runs %s; switching it failed: %s",
+            slot.key,
+            running,
+            redact_log_via_context(str(exc)),
+        )
+        return
+    if provider_model_pin_refused(client):
+        logger.info(
+            "Slot %s is set to auto but its session's account lists no auto; it stays on %s",
+            slot.key,
+            running,
+        )
+        return
+    if provider_raw_model(client.client) == running:
+        logger.info("Slot %s is set to auto; its session stays on %s", slot.key, running)
+        return
+    logger.info("Slot %s is set to auto; moved its session off %s", slot.key, running)
+
+
 async def _settle_session_model(
     slot: _ChatSlot,
     client: Any,
@@ -812,6 +871,16 @@ async def _settle_session_model(
         # that, and the frontend fails open on it.
         verdict = _pinned_model_verdict(client, slot.model, provider_name)
         slot.record_model_withheld(verdict)
+    if (
+        slot.model == "auto"
+        and (is_new or resumed)
+        and not slot._active_fallback_model
+        and not slot._refusal_fallback_primary
+    ):
+        await _reassert_explicit_auto(slot, client)
+    # Every turn passes here, so a generation past this stamp is a pick made since
+    # the session last ran a turn (``_reassert_explicit_auto``).
+    slot._turn_pick_gen = getattr(slot, "_model_pick_gen", 0)
     if is_new or resumed:
         # Record what this fresh/reloaded session actually RUNS on, pinned or
         # not: the inheriting slot (no pick, so `slot.model` stays empty on

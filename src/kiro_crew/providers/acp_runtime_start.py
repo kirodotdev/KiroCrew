@@ -10,8 +10,8 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_client``, ``_cloud_governance_scope``,
-``_defer_replay_sid_promotion``, ``_history_replay_needed``, ``_shared_scratch``,
-``kas_memory_mode``, ``kas_memory_new_mode``, ``startup_notice``.
+``_defer_replay_sid_promotion``, ``_history_replay_needed``, ``_resume_refused_sid``,
+``_shared_scratch``, ``kas_memory_mode``, ``kas_memory_new_mode``, ``startup_notice``.
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``background_qos``,
@@ -52,6 +52,7 @@ from kiro_crew.acp.mcp_session_report import (
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
+from kiro_crew.acp.session_handle_runtime_contract import AcpResumeNotRestored
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed, delegate_launch_failed
@@ -548,7 +549,9 @@ async def _load_session_with_retry(
     * lock never clears        → return ``None`` (caller falls back to a
                                    fresh session + history replay).
     * any OTHER load error     → return ``None`` immediately (retrying a
-                                   genuine failure only wastes time).
+                                   genuine failure only wastes time); an
+                                   ``AcpResumeNotRestored`` also records
+                                   ``resume_sid`` in ``_resume_refused_sid``.
     * runtime dies mid-retry   → return ``None`` (caller's respawn handles it).
     """
 
@@ -599,6 +602,8 @@ async def _load_session_with_retry(
                     resume_sid,
                     exc_info=True,
                 )
+                if isinstance(exc, AcpResumeNotRestored):
+                    self._resume_refused_sid = resume_sid
                 return None
             if not runtime.is_alive():
                 logger.warning(

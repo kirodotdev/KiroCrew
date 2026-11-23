@@ -24,9 +24,11 @@ import logging
 import os
 import re
 import shutil
+from typing import NamedTuple
 
+from kiro_crew.cloud import ssm as cloud_ssm
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
-from kiro_crew.deploy.engine import _refresh_aws_bin_dir_trust, tool_spawn_env
+from kiro_crew.deploy.engine import refresh_aws_tool_trust, refused_aws_tool, tool_spawn_env
 from kiro_crew.instances.constants import (
     DEFAULT_MINT_TIMEOUT_SECS,
     DEFAULT_SSM_MINT_TIMEOUT_SECS,
@@ -529,11 +531,14 @@ def ssh_spawn_argv_env(argv: list[str]) -> tuple[list[str], dict[str, str]]:
     ``aws`` child gets: one widening rule for both transports.
 
     Every ssh spawn site (tunnel, token mint, remote restart, diagnostics probes)
-    goes through this, so none of them can be the one that still fails. Runs a
-    PATH scan; call it via ``asyncio.to_thread`` from async code.
+    goes through this, so none of them can be the one that still fails. Each call
+    re-checks ``session-manager-plugin`` and ``aws``, which a ProxyCommand runs by
+    name, so the PATH leaves out a dir whose copy is refused and takes it back once
+    that copy passes. Scans the filesystem; call it via ``asyncio.to_thread`` from
+    async code.
     """
     head = resolve_ssh_bin() if argv[0] == "ssh" else argv[0]
-    _refresh_aws_bin_dir_trust()
+    refresh_aws_tool_trust()
     return [head, *argv[1:]], tool_spawn_env(head)
 
 
@@ -568,6 +573,149 @@ def proxy_tool_missing_message(child_path: str) -> str:
         f"the gateway gave ssh ({shown}); install it or make it reachable from that "
         "PATH (e.g. start the gateway from a terminal), then reconnect"
     )
+
+
+# How a ProxyCommand's stderr names the plugin: its own "is not installed", the AWS
+# CLI's "SessionManagerPlugin is not found", or a shell's "not found" for it.
+_PLUGIN_NAMES = ("session-manager-plugin", "sessionmanagerplugin")
+
+
+def refused_plugin_message() -> str:
+    """The refused ``session-manager-plugin``'s file, reason and fix, or "" if none is refused.
+
+    Walks the install dirs: call it off the event loop.
+    """
+    if cloud_ssm.session_manager_plugin_refusal() is None:
+        return ""
+    return cloud_ssm.session_manager_plugin_unavailable_message("connect again")
+
+
+class RefusedAws(NamedTuple):
+    """A refused ``aws``: the dir it keeps off the ssh child's PATH, and the message.
+
+    ``programs`` names the executables in that dir, read when the refusal is, so
+    the error path on the event loop does not touch the filesystem.
+    """
+
+    directory: str
+    message: str
+    programs: frozenset[str] = frozenset()
+
+
+_NO_REFUSED_AWS = RefusedAws("", "")
+
+
+def _executables_in(directory: str) -> frozenset[str]:
+    """The names ``shutil.which(name, path=directory)`` finds in *directory*, lowercased
+    to match the lowercased stderr they are compared with."""
+    try:
+        with os.scandir(directory) as entries:
+            found = [
+                entry.name.lower()
+                for entry in entries
+                if shutil.which(entry.name, path=directory) is not None
+            ]
+    except OSError:
+        return frozenset()
+    if os.name == "nt":
+        # A shell names ``foo`` for ``foo.exe``: keep the stem too.
+        found += [os.path.splitext(name)[0] for name in found]
+    return frozenset(found)
+
+
+# The program a shell names when a ProxyCommand's first word is not on its PATH:
+# dash/bash ``exec: foo: not found``, bash ``foo: command not found``, zsh
+# ``command not found: foo``.
+_MISSING_PROGRAM_RES = (
+    re.compile(r"([\w.+-]+): (?:command )?not found"),
+    re.compile(r"command not found: ([\w.+-]+)"),
+)
+
+
+def refused_aws_message() -> RefusedAws:
+    """The refused ``aws``'s dir, and its file, reason and fix; empty if none is refused.
+
+    A refused ``aws`` keeps its whole install dir off the ssh child's PATH, so a
+    ProxyCommand program in that dir is not found either. Reads what the last
+    ``ssh_spawn_argv_env`` sweep recorded and scans nothing, but waits for the
+    trust lock a sweep holds: call it off the event loop.
+    """
+    refusal = refused_aws_tool("aws")
+    if refusal is None:
+        return _NO_REFUSED_AWS
+    directory = os.path.dirname(refusal.path)
+    return RefusedAws(
+        directory,
+        f"aws is installed at {refusal.path} but was refused: {refusal.reason}. "
+        "The gateway leaves that folder off ssh's PATH, so a program the ProxyCommand "
+        f"runs from it is not found. {cloud_ssm.refusal_next_step(refusal.reason)}",
+        _executables_in(directory),
+    )
+
+
+def _missing_program_names(stderr: str) -> set[str]:
+    """The programs *stderr* says were not found."""
+    names = {m.group(1) for pattern in _MISSING_PROGRAM_RES for m in pattern.finditer(stderr)}
+    if any(name in stderr for name in _PLUGIN_NAMES):
+        names.add("session-manager-plugin")
+    return names
+
+
+def refused_plugin_folder(refused_plugin: str) -> RefusedAws:
+    """The refused plugin's dir, for a program beside it; empty if none is refused.
+
+    *refused_plugin* is :func:`refused_plugin_message`. A refused plugin keeps its
+    whole dir off the ssh child's PATH, so another ProxyCommand program in that dir
+    is not found either. Waits for the trust lock: call it off the event loop.
+    """
+    if not refused_plugin:
+        return _NO_REFUSED_AWS
+    refusal = refused_aws_tool("session-manager-plugin")
+    if refusal is None:
+        return _NO_REFUSED_AWS
+    directory = os.path.dirname(refusal.path)
+    return RefusedAws(
+        directory,
+        f"the gateway leaves {directory} off ssh's PATH because the "
+        "session-manager-plugin in it was refused, so a program the ProxyCommand "
+        f"runs from it is not found. {refused_plugin}",
+        _executables_in(directory),
+    )
+
+
+def _refusal_hides(stderr: str, child_path: str, refused: RefusedAws) -> bool:
+    """True when the refused tool's dir is off *child_path* and holds a program
+    *stderr* says was not found: only then is that refusal the cause."""
+    if not refused.message:
+        return False
+    on_path = {os.path.normcase(p) for p in child_path.split(os.pathsep) if p}
+    if os.path.normcase(refused.directory) in on_path:
+        return False
+    return not refused.programs.isdisjoint(_missing_program_names(stderr))
+
+
+def proxy_tool_missing_cause(
+    stderr: str,
+    child_path: str,
+    refused_plugin: str,
+    refused_aws: RefusedAws = _NO_REFUSED_AWS,
+    refused_plugin_dir: RefusedAws = _NO_REFUSED_AWS,
+) -> str:
+    """The cause to report when a ProxyCommand could not find a program it runs.
+
+    That is *refused_plugin* (:func:`refused_plugin_message`) when it is set and *stderr*
+    names the plugin. Else it is the message of *refused_plugin_dir*
+    (:func:`refused_plugin_folder`) or *refused_aws* (:func:`refused_aws_message`)
+    whose dir is off *child_path* and holds the missing program. Else it is the PATH
+    the child searched (:func:`proxy_tool_missing_message`).
+    """
+    low = stderr.lower()
+    if refused_plugin and any(name in low for name in _PLUGIN_NAMES):
+        return refused_plugin
+    for refused in (refused_plugin_dir, refused_aws):
+        if _refusal_hides(low, child_path, refused):
+            return refused.message
+    return proxy_tool_missing_message(child_path)
 
 
 def _redacted_output_tail(stdout: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
@@ -708,7 +856,14 @@ async def mint_remote_token(
         # shell, which is not a ProxyCommand problem and must not be named one.
         low = stderr.lower()
         if proc.returncode == 255 and any(sig in low for sig in PROXY_TOOL_MISSING_SIGNALS):
-            detail = f"{proxy_tool_missing_message(env.get('PATH', ''))}: {detail}"
+            refused = await asyncio.to_thread(refused_plugin_message)
+            # Off the loop too: it waits for the trust lock a sweep may hold.
+            refused_aws = await asyncio.to_thread(refused_aws_message)
+            plugin_dir = await asyncio.to_thread(refused_plugin_folder, refused)
+            cause = proxy_tool_missing_cause(
+                low, env.get("PATH", ""), refused, refused_aws, plugin_dir
+            )
+            detail = f"{cause}: {detail}"
         raise TokenMintError(f"remote token mint on {ssh_host} exited {proc.returncode}: {detail}")
 
     token = parse_token_from_stdout(stdout)

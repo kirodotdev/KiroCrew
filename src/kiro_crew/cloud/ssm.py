@@ -508,6 +508,12 @@ def session_manager_plugin_unavailable_message(retry: str = _CLI_CONNECT_RETRY) 
     return f"{message} {REFUSAL_NEXT_STEP.get(refusal.code, REFUSAL_NEXT_STEP[''])}"
 
 
+def refusal_next_step(reason: str) -> str:
+    """The step that clears a provenance refusal, worded for its *reason*."""
+    code, _owner_uid = _classify_refusal(reason)
+    return REFUSAL_NEXT_STEP.get(code, REFUSAL_NEXT_STEP[""])
+
+
 def reinstall_cannot_clear_refusal() -> bool:
     """True when the refused plugin sits in AWS's own install tree with a known fix.
 

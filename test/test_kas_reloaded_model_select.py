@@ -84,6 +84,74 @@ def test_a_reopened_chat_switches_to_a_model_its_load_select_omits() -> None:
     assert handle.served_model == "claude-opus-5.5"
 
 
+@pytest.mark.parametrize(
+    "responses,sent",
+    [
+        # A new session's select lists auto.
+        ([_session(_SERVED, "claude-opus-5.5")], True),
+        # A reopened chat's select names only its current model: not judged.
+        ([_RELOADED], True),
+        # Already on auto, or on a model not yet known: nothing to move.
+        ([_session(_SERVED, "auto")], None),
+        ([], None),
+        # The session's own full select leaves auto out, before or after a reload.
+        ([_session(_SERVED[1:], "claude-opus-5.5")], False),
+        ([_session(_SERVED[1:], "claude-opus-5.5"), _RELOADED], False),
+    ],
+)
+def test_auto_is_sent_unless_the_sessions_select_leaves_it_out(
+    responses: list[dict], sent: bool | None
+) -> None:
+    # KAS advertises no list for ``resolve_usable_model`` to find ``auto`` in,
+    # so that rule alone drops it unsent.
+    handle, runtime = _handle()
+    for response in responses:
+        handle.store_session_config(response)
+    asyncio.run(handle.set_model("auto"))
+    if sent:
+        assert _sent(runtime) == [
+            (
+                METHOD_SET_CONFIG_OPTION,
+                {"sessionId": "sess-kas", "configId": MODEL_CONFIG_ID, "value": "auto"},
+            )
+        ]
+        assert handle.served_model == "auto"
+        assert handle.model_pin_refused == ""
+    else:
+        assert _sent(runtime) == []
+        assert handle.model_pin_refused == ("" if sent is None else "auto")
+
+
+@pytest.mark.parametrize(
+    "recorded,identity,refused",
+    [
+        # The account's catalog names concrete models and no auto: refused.
+        (_SERVED[1:], _ID, True),
+        # The catalog lists auto, or belongs to another account: not judged.
+        (_SERVED, _ID, False),
+        (_SERVED[1:], "fingerprint-of-account-b", False),
+    ],
+)
+def test_auto_on_a_reopened_chat_is_judged_by_the_accounts_recorded_catalog(
+    recorded: list[str], identity: str, refused: bool
+) -> None:
+    # A region that serves no auto: KAS takes ``auto`` and fails every prompt.
+    # The reloaded handle's one-entry select leaves ``_kas_served_ids`` empty.
+    assert catalog.record_catalog(_session(recorded, recorded[0]), ACP_BACKEND_KAS, identity=_ID)
+    handle, runtime = _handle()
+    handle.request_vault_identity = identity
+    handle.store_session_config(_RELOADED)
+    assert handle._kas_served_ids == []
+    asyncio.run(handle.set_model("auto"))
+    if refused:
+        assert _sent(runtime) == []
+        assert handle.model_pin_refused == "auto"
+        assert handle.served_model == "claude-sonnet-5.5"
+    else:
+        assert [c[1]["value"] for c in _sent(runtime)] == ["auto"]
+        assert handle.model_pin_refused == ""
+
+
 def test_an_engine_error_on_the_switch_reaches_the_caller_as_itself() -> None:
     handle, runtime = _handle()
     handle.store_session_config(_RELOADED)

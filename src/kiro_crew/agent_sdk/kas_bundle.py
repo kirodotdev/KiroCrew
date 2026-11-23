@@ -104,6 +104,7 @@ __all__ = [
     "bundle_spawn_argv",
     "engine_install_snapshot",
     "engine_spec_permissions_supported",
+    "host_unsupported_reason",
     "install_pinned_engine",
     "installed_engine_label",
     "kas_bundle_route",
@@ -182,6 +183,22 @@ def require_loadable_host() -> None:
     owner._require_loadable_glibc(None, None)
     owner.host_platform_key()
     owner.host_node_key()
+
+
+def host_unsupported_reason() -> str:
+    """Why the engine cannot run on this host, as the install would refuse; ``''`` when it can.
+
+    The same text a refused install reports, so the dashboard can say it before
+    anyone presses Install, and offer no Install or Retry on a host where every
+    attempt is refused.
+    """
+    from kiro_crew.acp.kas_engine_install import host_unsupported_message
+
+    try:
+        require_loadable_host()
+    except _owner("KasHostUnsupported").KasHostUnsupported as exc:
+        return host_unsupported_message(str(exc))
+    return ""
 
 
 def sha256_bytes(data: bytes) -> str:

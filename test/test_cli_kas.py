@@ -587,6 +587,7 @@ class TestRemove:
 
 #: The real probe, kept before the class fixture stubs it.
 _REAL_AUTOMATIC_BUNDLE_ROUTE = cli_kas._automatic_bundle_route
+_REAL_HOST_UNSUPPORTED_REASON = getattr(cli_kas, "_host_unsupported_reason", None)
 
 
 class TestInstallIfInUse:
@@ -603,6 +604,9 @@ class TestInstallIfInUse:
         """A KAS spawn here runs kiro-cli's relay unless a test says otherwise, so the
         answer never depends on whether the CI host has a kiro-cli."""
         _floor_monkeypatch.setattr(cli_kas, "_automatic_bundle_route", lambda: False)
+        # Every host can run the engine unless a test says otherwise, so the
+        # answer never depends on the CI host's glibc or architecture.
+        _floor_monkeypatch.setattr(cli_kas, "_host_unsupported_reason", lambda: "", raising=False)
 
     def _args(self, **over) -> argparse.Namespace:
         base = dict(
@@ -621,22 +625,61 @@ class TestInstallIfInUse:
         assert _parse("install", "--if-in-use").if_in_use is True
         assert _parse("install").if_in_use is False
 
-    def test_the_relay_route_with_no_engine_on_disk_installs_nothing(
+    def test_the_relay_route_with_no_engine_on_disk_still_updates_when_the_download_fails(
+        self, cfg, host, tmp_path, monkeypatch, capsys
+    ):
+        """The default config: KAS selected, the bundle off, nothing installed. The
+        update tries to install the pin, and a refused download only prints the retry."""
+        from kiro_crew.platform.release_apply import ENGINE_OPTIONAL_FAILED_EXIT
+
+        monkeypatch.setattr(cli_kas, "_bundle_switch_on", lambda: False)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [])
+        monkeypatch.setattr(kas_bundle, "kas_engines_root", lambda: tmp_path / "engines")
+        self._failing_download(monkeypatch)
+        assert cli_kas.kas_cmd(self._args()) == ENGINE_OPTIONAL_FAILED_EXIT
+        assert "Retry with: kirocrew kas install" in capsys.readouterr().err
+
+    def test_a_host_that_cannot_run_the_engine_tries_nothing_and_offers_no_retry(
         self, cfg, monkeypatch, capsys
     ):
-        """The default config: KAS selected, the bundle off, nothing installed."""
+        """Switch off on an unsupported host: no fetch, exit 0, no retry line."""
         monkeypatch.setattr(cli_kas, "_bundle_switch_on", lambda: False)
         monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [])
         monkeypatch.setattr(
-            kas_bundle, "fetch_manifest", lambda *a, **k: pytest.fail("fetched on the relay route")
+            cli_kas,
+            "_host_unsupported_reason",
+            lambda: "Kiro Crew cannot install its KAS engine: no build for linux-riscv64.",
+        )
+        monkeypatch.setattr(
+            kas_bundle, "fetch_manifest", lambda *a, **k: pytest.fail("fetched on that host")
         )
         assert cli_kas.kas_cmd(self._args()) == 0
-        assert "not in use" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "no build for linux-riscv64" in captured.out
+        assert "Retry with" not in captured.out + captured.err
+
+    def test_the_unsupported_host_probe_never_fails_the_install(self, monkeypatch):
+        def broken():
+            raise RuntimeError("probe failed")
+
+        monkeypatch.setattr(kas_bundle, "host_unsupported_reason", broken)
+        assert _REAL_HOST_UNSUPPORTED_REASON is not None
+        assert _REAL_HOST_UNSUPPORTED_REASON() == ""
+
+    def test_a_host_that_cannot_run_the_engine_still_fails_with_the_switch_on(
+        self, cfg, host, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(cli_kas, "_bundle_switch_on", lambda: True)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [])
+        monkeypatch.setattr(kas_bundle, "kas_engines_root", lambda: tmp_path / "engines")
+        monkeypatch.setattr(cli_kas, "_host_unsupported_reason", lambda: "unsupported")
+        self._failing_download(monkeypatch)
+        assert cli_kas.kas_cmd(self._args()) == 1
 
     @pytest.mark.parametrize(
         ("route", "on_disk"),
-        [(True, []), (False, ["0.66.33"])],
-        ids=["bundle-route", "engine-on-disk"],
+        [(True, []), (False, ["0.66.33"]), (False, [])],
+        ids=["bundle-route", "engine-on-disk", "relay-route-nothing-on-disk"],
     )
     def test_the_engine_in_use_installs_the_pin(
         self, cfg, host, tmp_path, monkeypatch, capsys, route, on_disk
@@ -663,9 +706,9 @@ class TestInstallIfInUse:
             (True, [], cli_kas.ENGINE_REQUIRED),
             (True, ["0.66.33"], cli_kas.ENGINE_REQUIRED),
             (False, ["0.66.33"], cli_kas.ENGINE_OPTIONAL),
-            (False, [], None),
+            (False, [], cli_kas.ENGINE_OPTIONAL),
         ],
-        ids=["route-on", "route-on-engine-on-disk", "engine-only-on-disk", "neither"],
+        ids=["route-on", "route-on-engine-on-disk", "engine-only-on-disk", "nothing-on-disk"],
     )
     def test_the_need_follows_the_route_first(self, monkeypatch, route, versions, need):
         monkeypatch.setattr(cli_kas, "_bundle_switch_on", lambda: route)
@@ -674,7 +717,7 @@ class TestInstallIfInUse:
 
     @pytest.mark.parametrize(
         ("versions", "need"),
-        [(["0.66.33"], cli_kas.ENGINE_REQUIRED), ([], None)],
+        [(["0.66.33"], cli_kas.ENGINE_REQUIRED), ([], cli_kas.ENGINE_OPTIONAL)],
         ids=["engine-on-disk", "nothing-on-disk"],
     )
     def test_the_automatic_bundle_route_needs_an_engine_it_already_runs(
@@ -682,7 +725,8 @@ class TestInstallIfInUse:
     ):
         """Switch off, no usable kiro-cli: KAS already runs on the engine on disk, so a
         failed refresh must not switch to a release that lacks its pin. With nothing
-        on disk the first spawn installs it, as before the update."""
+        on disk the update still tries, and a failure leaves the first spawn to
+        install it, as before the update."""
         monkeypatch.setattr(cli_kas, "_bundle_switch_on", lambda: False)
         monkeypatch.setattr(cli_kas, "_automatic_bundle_route", lambda: True)
         monkeypatch.setattr(kas_bundle, "installed_versions", lambda: versions)
@@ -711,7 +755,9 @@ class TestInstallIfInUse:
         monkeypatch.setattr(kas_bundle, "kas_route", broken)
         assert _REAL_AUTOMATIC_BUNDLE_ROUTE() is False
 
-    @pytest.mark.parametrize(("route", "need"), [(True, cli_kas.ENGINE_REQUIRED), (False, None)])
+    @pytest.mark.parametrize(
+        ("route", "need"), [(True, cli_kas.ENGINE_REQUIRED), (False, cli_kas.ENGINE_OPTIONAL)]
+    )
     def test_an_unlistable_engines_directory_leaves_the_route_to_decide(
         self, monkeypatch, route, need
     ):
@@ -730,7 +776,7 @@ class TestInstallIfInUse:
 
         monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(broken))
         monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [])
-        assert cli_kas._engine_need() is None
+        assert cli_kas._engine_need() == cli_kas.ENGINE_OPTIONAL
 
     def _failing_download(self, monkeypatch):
         def refused(*_a, **_k):
