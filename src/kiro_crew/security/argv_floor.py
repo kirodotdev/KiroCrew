@@ -462,6 +462,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _dequote_token,
         _ends_argv,
         _glob_could_expand_to,
+        _is_directory_only_glob,
         _is_mint_verb,
         _is_self_program,
         _iter_shell_chars,

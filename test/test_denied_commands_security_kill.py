@@ -685,8 +685,75 @@ class TestSelfProtectionKillTargetScoping:
     def test_expanded_or_executing_spelling_blocked(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is not None
 
+    @pytest.mark.parametrize(
+        ("program", "args", "rule"),
+        [
+            ("/usr/bin/p*ll", f"-f {_NAME}", _RULE_KILL),
+            ("kiro*rew", _TOK, _RULE_MINT),
+        ],
+    )
+    @pytest.mark.parametrize("directory", [False, True])
+    @pytest.mark.parametrize(
+        "redirect",
+        ["<<<x/", "</tmp/", ">/tmp/", ">>/tmp/", "<<<'x/'", "<input", ">output"],
+    )
+    def test_glob_redirect_target_does_not_decide_program_kind(
+        self, program, args, rule, directory, redirect
+    ):
+        command = f"{program}{'/' if directory else ''}{redirect} {args}"
+        assert _denied_by(command) == (None if directory else rule)
+
     def test_brace_expansion_that_cannot_name_the_cli_allowed(self):
         assert _denied_by("kiro{x,y}few " + _TOK) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"for w in /opt/x/*/; do ln -sfn /opt/{_NAME}/y $w/z; done",
+            f"for w in */; do echo {_NAME}; done",
+            f"for w in '/opt/x/*/'; do echo {_NAME}; done",
+            f'for w in "/opt/x/*/"; do echo {_NAME}; done',
+            f"ls -d /opt/*/ && echo {_NAME}",
+        ],
+    )
+    def test_directory_only_glob_is_not_a_kill_verb(self, cmd):
+        # A glob ending in `/` expands only to directories, so it can never run
+        # pkill/killall; the later product-named path is not its target.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"/usr/bin/p*ll -f {_NAME}",
+            f"for w in /a/*; do echo {_NAME}; done",
+        ],
+    )
+    def test_glob_that_can_name_a_file_still_reads_as_a_kill_verb(self, cmd):
+        assert _denied_by(cmd) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"for w in /opt/x/*/; do echo {_TOK}; done",
+            f"for w in */; do echo {_TOK}; done",
+            f"for w in '/opt/x/*/'; do echo {_TOK}; done",
+            f'for w in "/opt/x/*/"; do echo {_TOK}; done',
+        ],
+    )
+    def test_directory_only_glob_is_not_the_cli(self, cmd):
+        # Same reading for the mint rule: a glob ending in `/` cannot run the CLI.
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            f"* {_TOK}",
+            f"/usr/local/bin/kiro*rew {_TOK}",
+            f"for w in /a/*; do echo {_TOK}; done",
+        ],
+    )
+    def test_glob_that_can_name_the_cli_still_mints(self, cmd):
+        assert _denied_by(cmd) == _RULE_MINT
 
     @pytest.mark.parametrize(
         "cmd",
