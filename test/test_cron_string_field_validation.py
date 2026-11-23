@@ -356,6 +356,10 @@ class TestAntiDrift:
             "acked_item_ids_digest",
             # add_job copies the already-validated session_key; no caller sets it.
             "person_owner_key",
+            # add_job copies the creator Bot's grant (owner_grant.creator_grant),
+            # read from the verified caller session; no caller sets either.
+            "owner_member_id",
+            "owner_approval_mode",
         }
     )
 

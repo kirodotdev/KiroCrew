@@ -842,19 +842,22 @@ def effective_job_approval_mode(approval_mode: str) -> str:
     return approval_mode
 
 
-def auto_job_approver(fallback: Any) -> Any:
+def auto_job_approver(fallback: Any, holds: Any = None) -> Any:
     """The approver an ``auto`` job's turn runs with: approve while ``auto`` holds.
 
     The turn's ``AUTO_APPROVE`` policy is fixed when it starts, so a deny that lands
     mid-turn is honoured here, per request: the call goes to *fallback* (the cron's
-    interactive approval) instead.
+    interactive approval) instead. *holds* answers whether ``auto`` still holds; by
+    default the policy check, and for a Bot's grant also the Bot's live Profile
+    (``owner_grant.fire_approval_mode``).
     """
+    still = holds if holds is not None else cron_job_auto_permitted
 
     async def _approve(event: Any) -> bool:
         from kiro_crew.mate_held_rules import call_is_held
 
         # A call under a Bot limit held for a person always reaches the card.
-        if cron_job_auto_permitted() and not call_is_held():
+        if still() and not call_is_held():
             return True
         return bool(await fallback(event))
 
