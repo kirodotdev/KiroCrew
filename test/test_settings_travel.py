@@ -583,7 +583,15 @@ class TestCliRestoreAcceptsAByteOrderMarkTheReaderAccepts:
         monkeypatch.setenv("KIROCREW_HOME", str(dst))
 
         ret = restore_main(
-            [str(tarball), "--mode", "replace", "--components", "config", "--force"]
+            [
+                str(tarball),
+                "--mode",
+                "replace",
+                "--include-config",
+                "--components",
+                "config",
+                "--force",
+            ]
             + unpinnable_argv()
         )
 
