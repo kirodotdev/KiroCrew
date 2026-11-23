@@ -2,7 +2,8 @@
 
 The runtime grant lives in memory only, so a restarted process has an empty thread
 roster. A thread is re-admitted only when Discord says this bot opened it under a
-currently allowed channel.
+currently allowed channel. The same check adopts the thread a thread create whose
+response was lost left behind.
 """
 
 from __future__ import annotations
@@ -298,6 +299,80 @@ class TestReceiveAfterRestart:
         assert registered == []
         assert t.may_send_to("t9") is False
         assert "thread_reauthorized" not in [e["outcome"] for e in events]
+
+
+def _in_channel(message: str = "m7") -> DiscordInbound:
+    return DiscordInbound(
+        channel_id="c1", user_id="u1", text="hello", guild_id="g1", message_id=message
+    )
+
+
+def _thread_already_created(client: FakeClient, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Answer every thread create the way a retry after a lost response is."""
+    creates: list[str] = []
+
+    async def _create(channel_id: str, message_id: str, name: str) -> str:
+        creates.append(message_id)
+        return ""
+
+    monkeypatch.setattr(client, "create_thread_from_message", _create)
+    return creates
+
+
+class TestLostThreadCreate:
+    """A thread create Discord already applied is adopted at the message's id."""
+
+    @pytest.mark.asyncio
+    async def test_bot_opened_thread_is_adopted_and_answered_once(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, Any]]
+    ) -> None:
+        t, dispatched, client, registered = _restarted()
+        _thread_already_created(client, monkeypatch)
+        client.thread_channels.add("m7")
+        client.thread_origins["m7"] = ThreadOrigin(11, "c1", "bot")
+
+        await t.receive(_in_channel())
+
+        assert [(m.thread_id, m.conversation_id) for m in dispatched] == [("m7", "m7")]
+        assert [e["outcome"] for e in events] == ["thread_reauthorized"]
+        assert registered == ["m7"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["foreign opener", "revoked", "lookup failed"])
+    async def test_a_thread_the_checks_refuse_is_not_adopted(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, Any]], case: str
+    ) -> None:
+        t, dispatched, client, registered = _restarted()
+        _thread_already_created(client, monkeypatch)
+        client.thread_channels.add("m7")
+        if case == "foreign opener":
+            client.thread_origins["m7"] = ThreadOrigin(11, "c1", "someone-else")
+        elif case == "revoked":
+            client.thread_origins["m7"] = ThreadOrigin(11, "c1", "bot")
+            t._revoked_threads.add("m7")
+
+        await t.receive(_in_channel())
+
+        assert dispatched == []
+        assert registered == []
+        assert [e["outcome"] for e in events] == ["thread_create_failed"]
+
+    @pytest.mark.asyncio
+    async def test_an_already_admitted_message_is_not_dispatched_again(
+        self, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, Any]]
+    ) -> None:
+        t, dispatched, client, registered = _restarted()
+        creates = _thread_already_created(client, monkeypatch)
+        client.thread_channels.add("m7")
+        client.thread_origins["m7"] = ThreadOrigin(11, "c1", "bot")
+        t._allowed_threads.add("m7")
+
+        await t.receive(_in_channel())
+
+        assert creates == ["m7"]
+        assert dispatched == []
+        assert client.origin_lookups == []
+        assert [e["outcome"] for e in events] == ["thread_create_failed"]
 
 
 class TestInteractionAfterRestart:
