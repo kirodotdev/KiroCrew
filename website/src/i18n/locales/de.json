@@ -18673,6 +18673,8 @@
     },
     "overviewPage": {
       "all_systems_running": "Alle Systeme laufen",
+      "kiro_sign_in_needed": "Kiro-Anmeldung erforderlich: Agenten können nicht antworten",
+      "open_kiro_sign_in": "Anmeldeeinstellungen öffnen",
       "back_to_overview": "Zurück zur Übersicht",
       "connecting": "Verbinden…",
       "memory_summary_kept_one": "Fasst Chats nach {{hours}} Std. Inaktivität in der Erinnerung zusammen · behält {{days}} Tag Verlauf",

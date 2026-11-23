@@ -19663,6 +19663,8 @@
     },
     "overviewPage": {
       "all_systems_running": "Все системы работают",
+      "kiro_sign_in_needed": "Нужен вход в Kiro: агенты не могут ответить",
+      "open_kiro_sign_in": "Открыть настройки входа",
       "back_to_overview": "Назад к обзору",
       "connecting": "Подключение…",
       "memory_summary_kept_one": "Сохраняет сводку чатов в память через {{hours}} ч простоя · хранит {{days}} день истории",

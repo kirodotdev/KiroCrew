@@ -18673,6 +18673,8 @@
     },
     "overviewPage": {
       "all_systems_running": "सभी सिस्टम चल रहे हैं",
+      "kiro_sign_in_needed": "Kiro में साइन इन ज़रूरी है: एजेंट जवाब नहीं दे सकते",
+      "open_kiro_sign_in": "साइन-इन सेटिंग्स खोलो",
       "back_to_overview": "अवलोकन पर वापस",
       "connecting": "कनेक्ट हो रहा है…",
       "memory_summary_kept_one": "{{hours}}h निष्क्रियता के बाद चैट को मेमोरी में सारांशित करता है · {{days}} दिन का इतिहास रखता है",

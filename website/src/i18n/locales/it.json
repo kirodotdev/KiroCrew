@@ -19168,6 +19168,8 @@
     },
     "overviewPage": {
       "all_systems_running": "Tutti i sistemi in funzione",
+      "kiro_sign_in_needed": "Serve l’accesso a Kiro: gli agenti non possono rispondere",
+      "open_kiro_sign_in": "Apri le impostazioni di accesso",
       "back_to_overview": "Torna alla panoramica",
       "connecting": "Connessione…",
       "memory_summary_kept_one": "Riepiloga le chat nella memoria dopo {{hours}} h di inattività · mantiene {{days}} giorno di cronologia",
