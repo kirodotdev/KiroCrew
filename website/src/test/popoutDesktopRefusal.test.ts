@@ -122,6 +122,34 @@ describe('pop-out refusal message names the real cause', () => {
     expect(navigate).toHaveBeenCalledWith('/chat')
   })
 
+  it('says the desktop app cannot pop out in a relay crew window, not the pop-up advice', () => {
+    // The relay window's page has no preload (isElectron false); only the
+    // user-agent token says where it runs.
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 Electron kiroCrewRelayWindow')
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    openPopout('chat-1')
+    expect(open).not.toHaveBeenCalled()
+    expect(alert).toHaveBeenCalledWith(i18nT(PANE))
+    expect(getSnapshot().has('chat-1')).toBe(false)
+  })
+
+  it('says the same in a relay crew pane of the main window', () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 Electron kiroCrewRelayWindow kiroCrewRelayPane')
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    openPopout('chat-1')
+    expect(open).not.toHaveBeenCalled()
+    expect(alert).toHaveBeenCalledWith(i18nT(PANE))
+  })
+
+  it('still opens in a browser whose user agent only contains the token as part of a word', () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 notkiroCrewRelayWindow')
+    const fakeWin = { closed: false, focus: vi.fn() } as unknown as Window
+    const open = vi.spyOn(window, 'open').mockReturnValue(fakeWin)
+    openPopout('chat-1')
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(alert).not.toHaveBeenCalled()
+  })
+
   it('still opens from a crew pane whose hub is a browser', () => {
     vi.mocked(isEmbeddedPane).mockReturnValue(true)
     setHostElectronReader(() => false)

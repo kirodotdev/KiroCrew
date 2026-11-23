@@ -29,6 +29,7 @@ import { withBase } from '../lib/basePath'
 import { isElectron } from '../lib/electron'
 import { crewPopoutUrl } from '../lib/crewPopout'
 import { getCrewPopoutHub, HOST_CLOSE_POPOUT, isDesktopAppPane, postToHost } from '../lib/hostRelay'
+import { isRelayCrewWindow } from './offlineReason'
 
 /** Heartbeat cadence (ms) for the main window's liveness ping. */
 export const HEARTBEAT_MS = 5_000
@@ -415,6 +416,14 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     // advertised that page (an older release, or no host model yet) has nowhere
     // to open it.
     let url = buildUrl(id, title)
+    // A crew opened through the relay, in the desktop app's relay window or
+    // pane: its window-open handler denies every pop-out (relay-crew-window.js),
+    // and the page has no preload, so it would otherwise give the browser advice.
+    if (isRelayCrewWindow()) {
+      logWarn(`popout ${id} not opened — the desktop app's relay crew view has no pop-out windows`)
+      tellUser(i18nT('utils.popoutController.crew_pane_cannot_pop_out_in_desktop_app'))
+      return
+    }
     if (isDesktopAppPane()) {
       const hub = getCrewPopoutHub()
       if (hub === null) {
