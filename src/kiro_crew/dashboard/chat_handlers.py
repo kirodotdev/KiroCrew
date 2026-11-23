@@ -699,6 +699,7 @@ from kiro_crew.dashboard.turn_dispatch import (  # noqa: F401
 )
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
+    METADATA_LINE_CORRUPT,
     ConversationLog,
     TranscriptBusy,
     TranscriptWithheld,

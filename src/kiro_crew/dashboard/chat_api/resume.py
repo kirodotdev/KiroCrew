@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         _STRUCTURED_CONTENT_MAX_CHARS,
         _STRUCTURED_CONTENT_PLACEHOLDER,
         MERGED_FROM_MAX_CREATED_AT_CHARS,
+        METADATA_LINE_CORRUPT,
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
@@ -1319,7 +1320,7 @@ async def _resume_slot_from_history_noted(
                     "member thread agent is pinned", "member_thread_agent_pinned", 409
                 )
             )
-    post_read_meta = state.conversation_log.get_metadata(history_key)
+    post_read_meta, post_read_readable = state.conversation_log.get_metadata_status(history_key)
     if _member_binding is not None and post_read_meta != meta:
         # Identity barrier for the window the binding await opened: the
         # transcript was read at `meta`-time (with `all_messages`), and this
@@ -1339,6 +1340,21 @@ async def _resume_slot_from_history_noted(
         return ResumeOutcome(
             refusal=ResumeRefusal(
                 "this thread changed while resuming; open it again", "member_resume_conflict", 409
+            )
+        )
+    # On the loop the read's retries cannot pause, so a brief Windows hold on the
+    # file can fail them all; an empty line read that way would build the slot
+    # without its app, links and effort. A damaged line no retry will read
+    # resumes as empty, so the next save can rewrite it.
+    if (
+        not post_read_readable
+        and state.conversation_log.metadata_line_state(history_key) != METADATA_LINE_CORRUPT
+    ):
+        if request_app:
+            return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this session changed while resuming; open it again", "resume_conflict", 409
             )
         )
 

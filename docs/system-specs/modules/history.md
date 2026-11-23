@@ -2793,7 +2793,13 @@ writer:
   `read_session_execution` names the two refusals apart: a CORRUPT line answers
   "session record is unreadable (its first line is damaged); start a new chat
   (memory is intact) or archive this one", because no retry reads it, and a
-  TRANSIENT one keeps the plain "session record is unreadable".
+  TRANSIENT one keeps the plain "session record is unreadable". History resume's
+  last metadata read before it builds the slot runs on the event loop, where the
+  bounded retries cannot pause: a TRANSIENT answer there refuses the resume with a
+  retryable `resume_conflict` (409; an app gets its uniform 404) instead of
+  building the slot from an empty line, and a CORRUPT line resumes as an empty
+  one, because no retry would ever open it and the resumed slot's next save
+  rewrites it.
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and

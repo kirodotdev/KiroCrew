@@ -369,7 +369,8 @@ class TestUntaggedOriginIsNotUser:
         that scope. Resume creates its slot by calling
         ``_materialise_slot_from_history`` (which owns the ``get_or_create_slot``
         and takes the persisted origin through ``metadata_codec.slot_args``), so
-        the invariant is that resume reads ``get_metadata`` before that call.
+        the invariant is that resume reads the metadata line it builds the slot
+        from (``get_metadata_status``) before that call.
         Anchoring on the call site rather than the origin spelling keeps this
         correct while the creation lives in the shared helper: the persisted
         origin itself is pinned by ``test_every_restore_path_keeps_the_persisted_origin``.
@@ -378,7 +379,11 @@ class TestUntaggedOriginIsNotUser:
         # Search from the resume handler's definition so the helper (defined
         # earlier in the file) is not what the indices land on.
         resume_def = src.index("async def api_chat_slot_resume(")
-        meta_read = src.index("meta = state.conversation_log.get_metadata(history_key)", resume_def)
+        meta_read = src.index(
+            "post_read_meta, post_read_readable = "
+            "state.conversation_log.get_metadata_status(history_key)",
+            resume_def,
+        )
         resume_create = src.index("_materialise_slot_from_history(", resume_def)
         assert meta_read < resume_create, (
             "the resume path must read the persisted metadata before it calls "
