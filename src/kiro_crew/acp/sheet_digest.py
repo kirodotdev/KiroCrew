@@ -126,7 +126,11 @@ def _kind(value: str) -> str:
 def _column_type(kinds: set[str]) -> str:
     if len(kinds) == 1:
         return next(iter(kinds))
-    return "empty" if not kinds else "number" if kinds == {"integer", "number"} else "text"
+    if not kinds:
+        return "empty"
+    if kinds == {"integer", "number"}:
+        return "number"
+    return "text"
 
 
 def _redacted(text: str) -> str:
