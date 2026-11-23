@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 from git_maintenance_helpers import git_maintenance_off_entries
+from skill_script_helpers import skill_text
 
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
@@ -260,7 +261,7 @@ class TestScreenshotEvidence:
         assert cost in template and "the blob stays" in template
         wf = _read(POLICY_WORKFLOW)
         assert cost in wf and 'echo "blob stays."' in wf
-        prepare = (skills / "kirocrew-prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
+        prepare = skill_text((skills / "kirocrew-prepare-pr" / "SKILL.md"))
         contract = (
             skills / "kirocrew-prepare-pr" / "references" / "pr-description-contract.md"
         ).read_text(encoding="utf-8")
@@ -277,7 +278,7 @@ class TestScreenshotEvidence:
         assert "**UI evidence is attached, never committed.**" not in stt
         assert "never committed by anyone who can attach" in stt
         assert "references/rationale.md" in stt
-        worktree = (skills / "kirocrew-worktree-dev" / "SKILL.md").read_text(encoding="utf-8")
+        worktree = skill_text((skills / "kirocrew-worktree-dev" / "SKILL.md"))
         assert "never committed — with write access, which\nthis agent has" in worktree
         assert "see kirocrew-prepare-pr's *Screenshots*" in worktree
 
@@ -322,7 +323,7 @@ class TestScreenshotEvidence:
         skills = root / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
         template = (root / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
         wf = _read(POLICY_WORKFLOW)
-        prepare = (skills / "kirocrew-prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
+        prepare = skill_text((skills / "kirocrew-prepare-pr" / "SKILL.md"))
         # The attachment limits stay where they are, and the committed ceiling
         # is stated in the same block as the `git add -f` it applies to, after
         # the attachment limits and before the merge-time cost. Whitespace is
@@ -371,15 +372,17 @@ class TestScreenshotEvidence:
         script = (root / ".github" / "scripts" / "pr-committed-evidence.sh").read_text(
             encoding="utf-8"
         )
-        prepare = (
-            root
-            / "src"
-            / "kiro_crew"
-            / "builtin_skills"
-            / "kirocrew-dev"
-            / "kirocrew-prepare-pr"
-            / "SKILL.md"
-        ).read_text(encoding="utf-8")
+        prepare = skill_text(
+            (
+                root
+                / "src"
+                / "kiro_crew"
+                / "builtin_skills"
+                / "kirocrew-dev"
+                / "kirocrew-prepare-pr"
+                / "SKILL.md"
+            )
+        )
         media = "*.png|*.jpg|*.jpeg|*.webp|*.gif|*.webm|*.mp4|*.mov) ;;"
         quiet = ".*|*.txt|*.md|*.json|*.yaml|*.yml|*.csv|*.log|*.html) continue ;;"
         svg = '*.svg) refuse="SVG is opened as markup, not pixels; export the image as PNG" ;;'

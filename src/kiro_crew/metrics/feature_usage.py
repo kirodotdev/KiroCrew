@@ -233,6 +233,7 @@ BUILTIN_SKILL_IDS: tuple[str, ...] = (
     "kirocrew-dev/kirocrew-worktree-dev",
     "kirocrew-dev/writing-tests",
     "living-ui",
+    "living-ui-blocks",
     "llm-council",
     "meetings",
     "ops-mission-control",

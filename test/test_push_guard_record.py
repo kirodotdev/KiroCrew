@@ -34,6 +34,7 @@ from push_guard_helpers import (
     _run_push_guard,
     _write_message,
 )
+from skill_script_helpers import skill_text
 
 from kiro_crew import platform_compat
 from kiro_crew.platform.update_governance import _GIT_LOCATION_VARS
@@ -534,10 +535,10 @@ class TestPushGuardContracts:
         assert _PG.ssh_batch_env(lambda args: (1, "", "")) == {}
 
     def test_the_docs_name_the_message_file_the_script_reads(self):
-        skill = (PUSH_GUARD_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
-        brief = (
-            REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor" / "SKILL.md"
-        ).read_text(encoding="utf-8")
+        skill = skill_text((PUSH_GUARD_DIR.parent / "SKILL.md"))
+        brief = skill_text(
+            (REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor" / "SKILL.md")
+        )
         for text in (skill, brief):
             assert _PG._MESSAGE_PREFIX in text and "push_guard.py --base" in text
 
@@ -557,7 +558,7 @@ class TestPushGuardContracts:
             signal.signal(number, before)
 
     def test_the_skill_states_every_exit_code_the_script_defines(self):
-        skill = (PUSH_GUARD_DIR.parent / "SKILL.md").read_text(encoding="utf-8")
+        skill = skill_text((PUSH_GUARD_DIR.parent / "SKILL.md"))
         row = next(line for line in skill.splitlines() if line.startswith("| `push_guard.py"))
         for code, _ in _PG.EXIT_CODES:
             assert re.search(rf"\b{code}\b", row.rsplit("|", 2)[-2]), code

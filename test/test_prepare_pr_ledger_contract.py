@@ -23,6 +23,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL = (
     REPO_ROOT
@@ -50,7 +52,7 @@ def test_ledger_keeps_only_marker_quote_and_title_lines():
 
     cap = re.search(r"\| \.\[0:(\d+)\] \| join", text)
     assert cap, "the ledger's per-record line cap is gone"
-    skill = SKILL.read_text(encoding="utf-8")
+    skill = skill_text(SKILL)
     words = {"12": "twelve"}
     assert (
         words.get(cap.group(1), cap.group(1)) in skill
@@ -67,7 +69,7 @@ def test_convergence_rules_the_skill_leans_on_are_present():
 
 
 def test_skill_states_the_dependency_and_the_three_line_shapes():
-    skill = SKILL.read_text(encoding="utf-8")
+    skill = skill_text(SKILL)
     assert "ADJUDICATION LEDGER" in skill
     assert "lines beginning `> `" in skill
     assert "- **title**" in skill
@@ -116,7 +118,7 @@ DESIGN_LANE_ITEM_HEADINGS = {
 
 def test_each_whole_design_lane_still_emits_the_anchors_the_extractor_reads():
     for lane, (path, verdict_key) in DESIGN_LANE_TEMPLATES.items():
-        text = path.read_text(encoding="utf-8")
+        text = skill_text(path)
         assert verdict_key in text, f"{lane}: the machine-parsed verdict line moved"
         heading = DESIGN_LANE_ITEM_HEADINGS[lane]
         assert heading in text, f"{lane}: the {heading} section heading moved"
@@ -125,7 +127,7 @@ def test_each_whole_design_lane_still_emits_the_anchors_the_extractor_reads():
     # No lane grows the restating or soft sections back: they are what buried
     # findings under copies of the same item, and the soft tier is gone.
     for lane, (path, _key) in DESIGN_LANE_TEMPLATES.items():
-        text = path.read_text(encoding="utf-8")
+        text = skill_text(path)
         assert "### Watch" not in text, lane
         assert "### Subtractions" not in text, lane
         assert "### Suggestions" not in text, lane
@@ -152,7 +154,7 @@ def test_the_skill_says_a_block_is_answered_and_a_note_needs_no_reply():
     """A BLOCK blocks readiness and is fixed, rebutted or overridden; a PASS and a
     `Notes:` bullet need no reply. SKILL.md has to say so, or a reader will expect a
     soft tier, and there is none."""
-    skill = SKILL.read_text(encoding="utf-8")
+    skill = skill_text(SKILL)
     assert "It never stays unanswered." in skill
     assert "A PASS, and every `Notes:` bullet, needs no reply." in skill
     assert "CONCERNS" not in skill

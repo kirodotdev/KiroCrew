@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from skill_script_helpers import skill_text
+
 from kiro_crew import agent
 
 SKILL = (
@@ -26,7 +28,7 @@ def _verbs(grants: tuple[str, ...]) -> list[str]:
 
 
 def test_every_granted_dashboard_and_work_verb_is_named() -> None:
-    text = SKILL.read_text(encoding="utf-8")
+    text = skill_text(SKILL)
     granted = _verbs(agent._CONDUCTOR_DASHBOARD_GRANTS) + _verbs(
         agent._LEDGER_CONDUCTOR_WORK_GRANTS
     )
@@ -35,6 +37,6 @@ def test_every_granted_dashboard_and_work_verb_is_named() -> None:
 
 
 def test_ledger_rebuild_is_named_as_the_cache_dirty_recovery() -> None:
-    text = SKILL.read_text(encoding="utf-8")
+    text = skill_text(SKILL)
     assert "`cache_dirty`" in text
     assert "kirocrew-work::work_ledger_rebuild" in text
