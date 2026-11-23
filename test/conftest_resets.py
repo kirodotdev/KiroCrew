@@ -1324,6 +1324,28 @@ def _reset_subagent_not_due_memo():
 
 
 @per_test_guard
+def _reset_waiting_sends():
+    """Start each test with no dashboard send recorded as waiting in fair admission.
+
+    Each entry holds an admission bound to that test's own admission service, so an
+    entry one test left would let a later test's Stop on the same slot key cancel
+    work in the earlier test's service.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.shared_crew.admission_entry")
+        # hasattr: prove.py runs the tests on a tree with this map reverted away.
+        if module is not None and hasattr(module, "_WAITING_SENDS"):
+            module._WAITING_SENDS.clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_persisted_truncation_reports():
     """Start each test with no truncated spawn listing already reported.
 
