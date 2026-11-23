@@ -948,7 +948,8 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   and only when every field has exactly the expected type
   (`parseNativeNotifyEnvelope`), with title, body and tag bounded.
   `mc-pane-active-slot` is accepted only from a resolved warm tunnel origin, and
-  its key is shape-checked (`isPaneSlotKey`, `[A-Za-z0-9._:-]{1,128}`) before it
+  its key is shape-checked (`isPaneSlotKey`, `[A-Za-z0-9._:-]{1,259}`: the gateway's 249-character
+  slot-key cap plus the `dashboard:` prefix) before it
   is stored under the instance id that origin resolved to. The parent's outbound
   `postMessage` is addressed to the pane's exact origin, never `*`. Inbound, the
   pane accepts the host model, the ready ack and `mc-open-slot` only from
@@ -969,7 +970,7 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
   on a remote crew (`website/src/lib/crewDeepLink.ts`; the desktop grammar is
   `website/electron/deep-link.js`). `crew` is the registry id, never the display
   name (names are not unique); the key follows the slot-key rule capped at 128
-  characters, the hint store's limit. The resolver rebuilds it as
+  characters, within the hint store's limit. The resolver rebuilds it as
   `/chat?crew=<id>&crewSid=<key>`, with no `sid`, so an older hub never opens a
   same-named local session; a `crew` that is not an id becomes the value-free
   `/chat?crewError=1`. The hub reads the route only from the native navigate

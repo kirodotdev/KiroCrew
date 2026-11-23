@@ -24,9 +24,13 @@ export const PANE_ACTIVE_SLOT_TYPE = 'mc-pane-active-slot'
 export const PANE_SLOT_HINT_PARAM = 'lastSid'
 const STORE_KEY = 'mc-pane-last-slot'
 
-/** A chat key is a short id: letters, digits and `._:-` only. */
+/**
+ * A chat key is an id of letters, digits and `._:-` only. Its length cap is the
+ * longest slot key the gateway stores (`MAX_SLOT_KEY_CHARS`, 249, in
+ * dashboard/slot_buffers.py) plus the 10-character `dashboard:` prefix.
+ */
 export function isPaneSlotKey(v: unknown): v is string {
-  return typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v)
+  return typeof v === 'string' && /^[A-Za-z0-9._:-]{1,259}$/.test(v)
 }
 
 function readAll(): Record<string, string> {

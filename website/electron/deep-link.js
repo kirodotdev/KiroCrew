@@ -207,9 +207,9 @@ function isSlotKey(s) {
   return typeof s === "string" && SLOT_KEY_RE.test(s);
 }
 
-// A crew link's key is also stored as that crew's last-chat hint, whose store
-// takes at most 128 characters (`isPaneSlotKey`, website/src/lib/paneLastSlot.ts),
-// so the slot-key rule above is capped there. A test pins both.
+// A crew link's key is also stored as that crew's last-chat hint, so it must
+// fit that store (`isPaneSlotKey`, website/src/lib/paneLastSlot.ts, 259
+// characters); the slot-key rule above is capped at 128, within it. A test pins both.
 const CREW_SLOT_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 // A crew id as the instances registry mints it (`_ID_RE`,
 // src/kiro_crew/instances/registry.py; a test pins the two).

@@ -266,7 +266,7 @@ describe("resolveDeepLink: a session on a remote crew", () => {
     }
   });
 
-  it("caps the key at the hint store's 128 characters and keeps the leading-character rule", () => {
+  it("caps the key at 128 characters and keeps the leading-character rule", () => {
     assert.equal(resolveDeepLink(`kirocrew://chat?crew=c&sid=${"a".repeat(128)}`).ok, true);
     for (const sid of ["a".repeat(129), "..", ".", "-x", "a%20b"]) {
       assert.deepEqual(resolveDeepLink(`kirocrew://chat?crew=c&sid=${sid}`), { ok: false, reason: "invalid sid" }, sid);
@@ -285,11 +285,12 @@ describe("resolveDeepLink: a session on a remote crew", () => {
     }
   });
 
-  it("the crew key rule is the slot-key rule capped at the hint store's limit", () => {
+  it("the crew key rule is the slot-key rule capped within the hint store's limit", () => {
     const source = fs.readFileSync(path.join(__dirname, "..", "deep-link.js"), "utf8");
     const pane = fs.readFileSync(path.join(__dirname, "..", "..", "src", "lib", "paneLastSlot.ts"), "utf8");
     assert.match(source, /const SLOT_KEY_RE = \/\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,199\}\$\/;/);
-    assert.match(pane, /\/\^\[A-Za-z0-9\._:-\]\{1,128\}\$\//);
+    // The hint store holds every key a crew link can carry (128 <= 259).
+    assert.match(pane, /\/\^\[A-Za-z0-9\._:-\]\{1,259\}\$\//);
     assert.match(source, /const CREW_SLOT_KEY_RE = \/\^\[A-Za-z0-9\]\[A-Za-z0-9\._:-\]\{0,127\}\$\/;/);
     // The pane's check on the posted key must accept exactly what the resolver let through.
     const crewLink = fs.readFileSync(path.join(__dirname, "..", "..", "src", "lib", "crewDeepLink.ts"), "utf8");
