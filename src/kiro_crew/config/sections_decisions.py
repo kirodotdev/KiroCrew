@@ -19,6 +19,9 @@ DECISION_BUCKET_MAX = 100
 
 DECISION_PROVIDER_ENDPOINT_DEFAULT = "https://api.typesafe.ai/v1/systemone"
 DECISION_PROVIDER_MODEL_DEFAULT = "jev-latest"
+#: The ``aws-https://`` scheme prefix (``decisions.impl_signed_https.SCHEME``). An
+#: endpoint spelled with it gets no default model.
+SIGNED_HTTPS_ENDPOINT_PREFIX = "aws-https://"
 
 # How much PRIOR CONVERSATION one decision may carry, as a char budget rather than
 # a message count, because what it bounds is the size of the request that leaves
@@ -217,7 +220,9 @@ class DecisionProviderConfig:
         default=DECISION_PROVIDER_MODEL_DEFAULT,
         metadata=_meta(
             "Model",
-            "Provider model id. 'jev-latest' is TypeSafe's flagship System One model. "
+            "Provider model id. 'jev-latest' is TypeSafe's flagship System One model, "
+            "and the default for every endpoint but an 'aws-https://' one, which has "
+            "no default: name the model that endpoint serves, or nothing is sent. "
             "Letters, digits, dots, dashes and underscores, up to 64 characters; "
             "anything else is refused before a request is sent, because this field "
             "travels in the request and config.json is agent-writable.",
@@ -379,10 +384,21 @@ class DecisionsConfig:
             raw = raw_provider.get(key)
             return raw.strip() if isinstance(raw, str) and raw.strip() else default
 
+        endpoint = _text("endpoint", DecisionProviderConfig.endpoint)
+        # An AWS-signed HTTPS endpoint names a host of the owner's choosing, which
+        # serves its own models, so a blank model stays blank: the hosted default id
+        # would only be refused there. The gate then sends nothing and logs
+        # ``scrubbed:provider-model``. The prefix is ``impl_signed_https.SCHEME``,
+        # spelled here because this module does not import the decisions package.
+        model_default = (
+            ""
+            if endpoint.lower().startswith(SIGNED_HTTPS_ENDPOINT_PREFIX)
+            else DecisionProviderConfig.model
+        )
         provider = DecisionProviderConfig(
-            endpoint=_text("endpoint", DecisionProviderConfig.endpoint),
+            endpoint=endpoint,
             api_key=_text("api_key", DecisionProviderConfig.api_key),
-            model=_text("model", DecisionProviderConfig.model),
+            model=_text("model", model_default),
             timeout_ms=_safe_int(
                 raw_provider.get("timeout_ms", DecisionProviderConfig.timeout_ms),
                 DecisionProviderConfig.timeout_ms,

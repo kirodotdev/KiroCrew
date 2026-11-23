@@ -160,7 +160,7 @@ On the Decisions card, under **Decision model**, choose **Your AWS-signed HTTPS 
 - **Signing service name**: the service name the endpoint's documentation gives for its signature, such as `execute-api`.
 - **AWS region**: the region the signature is made for, such as `us-west-2`.
 - **AWS profile**, optional, as for SageMaker above.
-- **Model**, optional: the model id the endpoint expects in each request. Empty keeps the one already configured, or the default.
+- **Model**: the model id the endpoint expects in each request, as its documentation gives it. It is required: an endpoint of your own serves its own models, so there is no default, and the card does not save or test without one.
 
 **Test connection** sends one short fixed question, and **Use Your AWS-signed HTTPS endpoint** saves it. Kiro Crew builds an `aws-https://` address from the fields itself. Only the dashboard owner can do either, and both are written to the audit log. Choosing the endpoint, or changing any field, stops sending until you turn the Decisions switch off and on again.
 
@@ -179,6 +179,7 @@ By hand in `config.json`:
 ```
 
 - `endpoint` is `aws-https://<host>[:<port>]/<path>?service=<signing-service>&region=<aws-region>`, with an optional `&profile=<aws-profile>`. The request goes to `https://<host>[:<port>]/<path>`. Nothing else may appear in the address.
+- `model` is required for this endpoint and has no default. Without it nothing is sent, and the decision log records `scrubbed:provider-model`.
 - Each request is signed with your AWS credentials for that service and region. No API key is read and `api_key` is ignored. The credentials need whatever permission the endpoint asks for.
 - An organisation's endpoint allow or deny list is checked against the `https://` host. The `providers` list names this option `aws_https`; in the LTS edition it is off until that list names it.
 - Text questions only: no screenshots or Box questions are sent to this endpoint.

@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
 /**
  * The Decision model picker's AWS-signed HTTPS option: it is offered only by a gateway
- * that reports it, writes the endpoint's parts (never an address), refuses to save
- * until the required parts are filled in, and names the field the gateway refused.
+ * that reports it, writes the endpoint's parts (never an address), refuses to save or
+ * test until the required parts, the model included, are filled in, and names the field
+ * the gateway refused.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
@@ -71,12 +72,48 @@ describe('DecisionsProviderPicker AWS-signed HTTPS option', () => {
     fireEvent.change(screen.getByLabelText('Signing service name'), { target: { value: 'execute-api' } })
     expect(use).toBeDisabled()
     fireEvent.change(screen.getByLabelText('AWS region'), { target: { value: 'us-west-2' } })
-    fireEvent.change(screen.getByLabelText('Model (optional)'), { target: { value: 'decider-model-v2' } })
+    // No model yet: neither Use nor Test connection is offered, so no request can carry a default id.
+    expect(use).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'decider-model-v2' } })
+    expect(screen.getByRole('button', { name: 'Test connection' })).toBeEnabled()
     fireEvent.click(use)
     await waitFor(() => expect(save).toHaveBeenCalledWith(SAVED))
   })
 
-  it('sends the body the gateway checks, leaving empty optional parts out', async () => {
+  it('shows the saved model, and saves a change to the model alone', async () => {
+    const save = vi
+      .spyOn(api, 'saveDecisionsSignedHttps')
+      .mockResolvedValue(provider('aws_https', { aws_https: { ...SAVED, model: 'decider-model-v3' } }))
+    await renderPicker(provider('aws_https', { aws_https: SAVED }))
+    const model = await screen.findByLabelText('Model')
+    expect(model).toHaveValue('decider-model-v2')
+    expect(screen.queryByRole('button', { name: /^Use / })).toBeNull()
+    fireEvent.change(model, { target: { value: 'decider-model-v3' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Use / }))
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ ...SAVED, model: 'decider-model-v3' }))
+  })
+
+  it('says the model is required when the gateway refuses a body without one', async () => {
+    const { ApiError } = await import('../../api/apiError')
+    vi.spyOn(api, 'saveDecisionsSignedHttps').mockRejectedValue(
+      new ApiError(
+        'bad',
+        400,
+        JSON.stringify({ code: 'decisions_provider_aws_https_invalid', field: 'model', error: 'the model is required' }),
+      ),
+    )
+    await renderPicker(provider('jev'))
+    fireEvent.click(await screen.findByRole('radio', { name: OPTION }))
+    fireEvent.change(screen.getByLabelText('Endpoint URL'), { target: { value: SAVED.url } })
+    fireEvent.change(screen.getByLabelText('Signing service name'), { target: { value: 'execute-api' } })
+    fireEvent.change(screen.getByLabelText('AWS region'), { target: { value: 'us-west-2' } })
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'decider-model-v2' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Use / }))
+    expect(await screen.findByText('Enter the model id the endpoint expects.')).toBeInTheDocument()
+  })
+
+  it('sends the body the gateway checks, the model always, an empty profile left out', async () => {
     const put = vi.fn().mockImplementation(async () => new Response('{}'))
     const { createDecisionsEndpoints } = await import('../../api/client/decisions')
     const endpoints = createDecisionsEndpoints({
@@ -86,11 +123,11 @@ describe('DecisionsProviderPicker AWS-signed HTTPS option', () => {
       del: vi.fn(),
       j: (r: Response) => r.json(),
     } as never)
-    await endpoints.scopesAndFeedback.saveDecisionsSignedHttps({ ...SAVED, model: '' })
+    await endpoints.scopesAndFeedback.saveDecisionsSignedHttps(SAVED)
     await endpoints.scopesAndFeedback.testDecisionsSignedHttps({ ...SAVED, profile: 'research' })
     expect(put.mock.calls[0]).toEqual([
       '/api/decisions/provider',
-      { preset: 'aws_https', url: SAVED.url, service: 'execute-api', region: 'us-west-2' },
+      { preset: 'aws_https', url: SAVED.url, service: 'execute-api', region: 'us-west-2', model: 'decider-model-v2' },
     ])
     expect(put.mock.calls[1]).toEqual([
       '/api/decisions/provider/aws-https-test',
@@ -116,6 +153,7 @@ describe('DecisionsProviderPicker AWS-signed HTTPS option', () => {
     fireEvent.change(screen.getByLabelText('Endpoint URL'), { target: { value: 'http://decider.example.com/v1' } })
     fireEvent.change(screen.getByLabelText('Signing service name'), { target: { value: 'execute-api' } })
     fireEvent.change(screen.getByLabelText('AWS region'), { target: { value: 'us-west-2' } })
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'decider-model-v2' } })
     fireEvent.click(screen.getByRole('button', { name: /^Use / }))
     expect(await screen.findByText(/Use an https:\/\/ address with a host name and a path/)).toBeInTheDocument()
   })

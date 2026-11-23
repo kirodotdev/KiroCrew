@@ -23,6 +23,11 @@ about the ``https://`` URL the request reaches (:func:`policy_endpoint`).
 Text questions only: this provider declares no image support, so the gate never
 hands it an image or a Box question.
 
+The model id is the configured one and nothing else: unlike the hosted client there
+is no default to fall back on, because an endpoint of the owner's choosing serves its
+own models. An empty ``model`` raises :class:`SignedHttpsConfigError` before anything
+is signed or sent.
+
 ``botocore`` is imported only when such an endpoint is configured, and it is an
 optional dependency: without it a request fails with :class:`SignedHttpsUnavailable`.
 Nothing here logs a request, a response or a credential.
@@ -38,7 +43,6 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT
 from kiro_crew.constants import AWS_PROFILE_NAME_RE
 from kiro_crew.decisions.types import Answers, Question
 
@@ -58,8 +62,6 @@ _MAX_PATH_CHARS = 512
 
 #: The response header carrying the service's request id.
 REQUEST_ID_HEADER = "x-amzn-requestid"
-
-_DEFAULT_MODEL = DECISION_PROVIDER_MODEL_DEFAULT
 
 
 class SignedHttpsError(RuntimeError):
@@ -312,7 +314,8 @@ class SignedHttpsProvider:
 
     def __init__(self, provider: Any) -> None:
         self._endpoint = str(getattr(provider, "endpoint", "") or "")
-        self._model = str(getattr(provider, "model", "") or _DEFAULT_MODEL)
+        # No default model: see the module docstring.
+        self._model = str(getattr(provider, "model", "") or "").strip()
         self._timeout_ms = getattr(provider, "timeout_ms", 1000)
         self.last_response_meta: dict[str, Any] | None = None
 
@@ -328,6 +331,8 @@ class SignedHttpsProvider:
         if not questions:
             raise s1.ProviderProtocolError("no questions to ask")
         target = parse_endpoint(self._endpoint)
+        if not self._model:
+            raise SignedHttpsConfigError("no model is configured for this endpoint")
         body = s1._to_wire(state, self._model, questions)
         payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
         credentials = await asyncio.to_thread(_frozen_credentials, target.profile)

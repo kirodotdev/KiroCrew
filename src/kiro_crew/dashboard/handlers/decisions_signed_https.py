@@ -1,9 +1,13 @@
 """An HTTPS endpoint signed with AWS SigV4 as the decision model, from the Decisions card.
 
 The owner-only ``PUT /api/decisions/provider`` (``handlers/decisions.py``) takes
-``{"preset": "aws_https", "url", "service", "region"[, "profile"]}`` and writes the
-``aws-https://`` address :func:`signed_https_target` builds from those parts; the GET
-names a configured address by them (:func:`configured_signed_https`).
+``{"preset": "aws_https", "url", "service", "region", "model"[, "profile"]}`` and writes
+the ``aws-https://`` address :func:`signed_https_target` builds from those parts, with
+the model; the GET names a configured address by them (:func:`configured_signed_https`).
+
+The model is required. An endpoint of the owner's choosing serves the models it
+names, not the hosted provider's, so a request carrying the hosted default id would
+only fail there; a body without a model is refused rather than given that id.
 ``POST /api/decisions/provider/aws-https-test`` sends that endpoint one fixed
 question and writes nothing.
 
@@ -33,8 +37,12 @@ from kiro_crew.dashboard.handlers.decisions_sagemaker import ProviderRefused
 
 #: The picker's id for "an HTTPS endpoint signed with SigV4"; also its allow-list id.
 PRESET_SIGNED_HTTPS = "aws_https"
-_REQUIRED = frozenset({"preset", "url", "service", "region"})
-_OPTIONAL = frozenset({"profile", "model"})
+_REQUIRED = frozenset({"preset", "url", "service", "region", "model"})
+_OPTIONAL = frozenset({"profile"})
+_BODY_SHAPE = (
+    'an AWS-signed HTTPS body is {"preset": "aws_https", "url", "service", "region", "model"'
+    '[, "profile"]}'
+)
 #: ``timeout_ms`` written for such an endpoint the config did not already name: a
 #: remote GPU model answers in about a second, a cold one slower.
 SIGNED_HTTPS_TIMEOUT_MS = 5000
@@ -69,13 +77,8 @@ def _address(body: dict) -> str:
     from kiro_crew.decisions import impl_sagemaker, impl_signed_https
 
     keys = set(body)
-    if not _REQUIRED <= keys or keys - _REQUIRED - _OPTIONAL:
-        raise ProviderRefused(
-            400,
-            _CODE_PROVIDER_INVALID_BODY,
-            'an AWS-signed HTTPS body is {"preset": "aws_https", "url", "service", "region"'
-            '[, "profile"][, "model"]}',
-        )
+    if keys - _REQUIRED - _OPTIONAL or not _REQUIRED - {"model"} <= keys:
+        raise ProviderRefused(400, _CODE_PROVIDER_INVALID_BODY, _BODY_SHAPE)
     profile = body.get("profile", "")
     try:
         address = impl_signed_https.build_endpoint(
@@ -100,37 +103,43 @@ def _address(body: dict) -> str:
     return address
 
 
+def _model(body: dict) -> str:
+    """The model id a body names. Raises :class:`ProviderRefused` naming the field.
+
+    Missing, empty and malformed are one refusal: each would otherwise reach the
+    endpoint as an id it does not serve.
+    """
+    from kiro_crew.decisions.types import is_model_id
+
+    raw = body.get("model")
+    model = raw.strip() if isinstance(raw, str) else ""
+    if not is_model_id(model):
+        message = "the model is required" if not model else "the model is not valid"
+        raise ProviderRefused(400, _CODE_INVALID, message, field="model")
+    return model
+
+
 def signed_https_target(body: dict) -> tuple[str, str, int]:
     """``(endpoint, model, timeout_ms)`` for an AWS-signed HTTPS *body*. Raises :class:`ProviderRefused`.
 
-    A config that already names such an endpoint keeps its model and timeout, which
-    the owner may have set by hand for it; otherwise the shipped model id and
-    :data:`SIGNED_HTTPS_TIMEOUT_MS`. Filesystem IO.
+    The model is the body's own, never a default. A config that already names such
+    an endpoint keeps its timeout, which the owner may have set by hand for it;
+    otherwise :data:`SIGNED_HTTPS_TIMEOUT_MS`. Filesystem IO.
     """
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT
     from kiro_crew.decisions import gate as _gate
-    from kiro_crew.decisions.types import is_model_id
 
     address = _address(body)
+    model = _model(body)
     cfg = live.snapshot() or KiroCrewConfig.load()
     provider = getattr(getattr(cfg, "decisions", None), "provider", None)
-    model, timeout_ms = DECISION_PROVIDER_MODEL_DEFAULT, SIGNED_HTTPS_TIMEOUT_MS
+    timeout_ms = SIGNED_HTTPS_TIMEOUT_MS
     if configured_signed_https(_gate.configured_endpoint(cfg)) is not None:
-        current_model = getattr(provider, "model", "")
         current_timeout = getattr(provider, "timeout_ms", None)
-        if is_model_id(current_model):
-            model = current_model
         if isinstance(current_timeout, int) and not isinstance(current_timeout, bool):
             if current_timeout > 0:
                 timeout_ms = current_timeout
-    # A model id typed on the card wins over both; it is checked like any model id.
-    raw_model = body.get("model")
-    if raw_model is not None:
-        if not isinstance(raw_model, str) or not is_model_id(raw_model.strip()):
-            raise ProviderRefused(400, _CODE_INVALID, "the model is not valid", field="model")
-        model = raw_model.strip()
     return address, model, timeout_ms
 
 
@@ -171,7 +180,8 @@ def _test_target(body: object) -> tuple[str, str]:
         raise ProviderRefused(
             400,
             _CODE_PROVIDER_INVALID_BODY,
-            'body must be {"preset": "aws_https", "url", "service", "region"[, "profile"]}',
+            'body must be {"preset": "aws_https", "url", "service", "region", "model"'
+            '[, "profile"]}',
         )
     address, model, _ = signed_https_target(body)
     if is_decisions_denied(local=False, provider=PROVIDER_SIGNED_HTTPS) or targets_denied(

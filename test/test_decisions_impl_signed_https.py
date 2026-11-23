@@ -334,6 +334,18 @@ class TestRequest:
             _ask(cfg=_cfg(endpoint="aws-https://decider.example.com/v1?region=us-west-2"))
         assert seen == []
 
+    @pytest.mark.parametrize("model", ["", "   ", None])
+    def test_no_model_sends_nothing_and_never_the_hosted_default(self, wire, monkeypatch, model):
+        """An endpoint of the owner's choosing has no default model to fall back on."""
+        seen, _ = wire
+        signed: list = []
+        monkeypatch.setattr(
+            impl_signed_https, "_frozen_credentials", lambda _p: signed.append(1) or _Creds()
+        )
+        with pytest.raises(SignedHttpsConfigError):
+            _ask(cfg=_cfg(model=model))
+        assert seen == [] and signed == []
+
     def test_missing_credentials_send_nothing(self, wire, monkeypatch):
         seen, _ = wire
 

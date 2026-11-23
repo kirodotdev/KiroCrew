@@ -112,8 +112,8 @@ def _policy(monkeypatch, decisions: dict | None) -> None:
     monkeypatch.setattr(pc, "current_context", lambda: SimpleNamespace(governance=ceiling))
 
 
-def _config(endpoint: str = ADDRESS):
-    provider = DecisionProviderConfig(endpoint=endpoint, model="decider-model-v2", timeout_ms=5000)
+def _config(endpoint: str = ADDRESS, model: str = "decider-model-v2"):
+    provider = DecisionProviderConfig(endpoint=endpoint, model=model, timeout_ms=5000)
     return SimpleNamespace(decisions=DecisionsConfig(bucket=100, provider=provider))
 
 
@@ -166,7 +166,10 @@ def test_the_providers_list_leaving_it_out_sends_nothing(monkeypatch, consent, w
 def test_the_endpoints_list_leaving_its_host_out_sends_nothing(monkeypatch, consent, wire):
     _policy(
         monkeypatch,
-        {"enabled": True, "scopes": {"endpoints": {"mode": "allow", "allow": ["other.example.com"]}}},
+        {
+            "enabled": True,
+            "scopes": {"endpoints": {"mode": "allow", "allow": ["other.example.com"]}},
+        },
     )
     consent()
     assert _decide() is None
@@ -194,4 +197,28 @@ def test_an_address_that_does_not_parse_sends_nothing(monkeypatch, consent, wire
     _policy(monkeypatch, None)
     consent(bad)
     assert _decide(_config(bad)) is None
+    assert wire == []
+
+
+def test_a_blank_model_sends_nothing_and_is_logged_as_scrubbed(monkeypatch, consent, wire):
+    """No hosted default id reaches the wire: the scrub refuses the empty model first."""
+    _policy(monkeypatch, None)
+    consent()
+    assert gate_mod.lane_model(_config(model=""), lane=gate_mod.LANE_ENDPOINT) == ""
+    assert gate_mod.scrub_reason("hi", QUESTIONS, model="") == gate_mod.ERROR_SCRUBBED_MODEL
+    assert _decide(_config(model="")) is None
+    assert wire == []
+
+
+def test_a_blank_model_read_from_config_json_stays_blank(monkeypatch, consent, wire):
+    """The loader does not fill a blank model with the hosted default for this scheme."""
+    from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT
+
+    parsed = DecisionsConfig.from_raw({"provider": {"endpoint": ADDRESS, "model": ""}})
+    assert parsed.provider.model == ""
+    hosted = DecisionsConfig.from_raw({"provider": {"endpoint": URL, "model": ""}})
+    assert hosted.provider.model == DECISION_PROVIDER_MODEL_DEFAULT
+    _policy(monkeypatch, None)
+    consent()
+    assert _decide(SimpleNamespace(decisions=parsed)) is None
     assert wire == []

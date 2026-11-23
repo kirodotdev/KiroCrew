@@ -14,6 +14,8 @@ export const PRESET_AWS_HTTPS = 'aws_https'
 /** What the option asks to install when the gateway has no botocore. */
 const BOTO3_INSTALL = 'pip install "boto3>=1.34,<2"'
 export const EMPTY_AWS_HTTPS: DecisionsSignedHttpsTarget = { url: '', service: '', region: '', profile: '', model: '' }
+/** The gateway's fixed text for a body with no model (`decisions_signed_https._model`). */
+const MODEL_REQUIRED = 'the model is required'
 
 export const sameSignedHttps = (a: DecisionsSignedHttpsTarget, b: DecisionsSignedHttpsTarget | null | undefined) =>
   !!b &&
@@ -23,17 +25,24 @@ export const sameSignedHttps = (a: DecisionsSignedHttpsTarget, b: DecisionsSigne
   a.profile === b.profile &&
   a.model === b.model
 
-/** Whether the parts the gateway needs are filled in. */
+/** Whether the parts the gateway needs are filled in, the model included: there is no default for it. */
 export const signedHttpsComplete = (v: DecisionsSignedHttpsTarget) =>
-  v.url.trim() !== '' && v.service.trim() !== '' && v.region.trim() !== ''
+  v.url.trim() !== '' && v.service.trim() !== '' && v.region.trim() !== '' && v.model.trim() !== ''
 
 function refusedField(e: unknown): string {
-  if (!(e instanceof ApiError)) return ''
+  return refusedBody(e).field
+}
+
+function refusedBody(e: unknown): { field: string; error: string } {
+  if (!(e instanceof ApiError)) return { field: '', error: '' }
   try {
-    const field = (JSON.parse(e.body) as { field?: unknown }).field
-    return typeof field === 'string' ? field : ''
+    const body = JSON.parse(e.body) as { field?: unknown; error?: unknown }
+    return {
+      field: typeof body.field === 'string' ? body.field : '',
+      error: typeof body.error === 'string' ? body.error : '',
+    }
   } catch {
-    return ''
+    return { field: '', error: '' }
   }
 }
 
@@ -58,7 +67,9 @@ export function signedHttpsRefusal(e: unknown): string | null {
     case 'profile':
       return i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_invalid_profile')
     case 'model':
-      return i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_invalid_model')
+      return refusedBody(e).error === MODEL_REQUIRED
+        ? i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_model_required')
+        : i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_invalid_model')
     default:
       return i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_invalid_url')
   }
@@ -156,7 +167,10 @@ export function DecisionsSignedHttpsFields({
       <p className="text-[12px] text-muted m-0">
         {i18nT('pages.developer.featurePreviewsTab.decisions_provider_sagemaker_profile_hint')}
       </p>
-      {field('model', i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_model'), '')}
+      {field('model', i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_model'), 'decider-model-v2')}
+      <p className="text-[12px] text-muted m-0">
+        {i18nT('pages.developer.featurePreviewsTab.decisions_provider_aws_https_model_hint')}
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <Btn
           disabled={disabled || !available || !signedHttpsComplete(value) || testMut.isPending}

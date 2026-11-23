@@ -24,7 +24,13 @@ from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT as DEFAULT
 from kiro_crew.decisions import consent, impl_signed_https
 
 URL = "https://decider.example.com/v1/decisions"
-GOOD = {"preset": "aws_https", "url": URL, "service": "execute-api", "region": "us-west-2"}
+GOOD = {
+    "preset": "aws_https",
+    "url": URL,
+    "service": "execute-api",
+    "region": "us-west-2",
+    "model": "decider-model-v2",
+}
 GOOD_ADDRESS = "aws-https://decider.example.com/v1/decisions?service=execute-api&region=us-west-2"
 
 
@@ -178,8 +184,8 @@ class TestPut:
         "body",
         [
             {**GOOD, "endpoint": "https://elsewhere.example.com"},
-            {"preset": "aws_https", "url": URL, "region": "us-west-2"},
-            {"preset": "aws_https", "url": URL, "service": "execute-api"},
+            {"preset": "aws_https", "url": URL, "region": "us-west-2", "model": "m"},
+            {"preset": "aws_https", "url": URL, "service": "execute-api", "model": "m"},
             {"preset": "aws_https"},
         ],
         ids=["an-endpoint", "no-service", "no-region", "bare"],
@@ -234,20 +240,47 @@ class TestPut:
         assert f"endpoint={address}" in row["resources"]
 
     @pytest.mark.asyncio
-    async def test_without_a_model_the_default_or_hand_set_one_is_kept(
+    @pytest.mark.parametrize("model", [None, "", "   "], ids=["absent", "empty", "blank"])
+    async def test_without_a_model_nothing_is_written(
+        self, model, audit, provider_config, keystone, not_denied, runtime
+    ):
+        """There is no default model for this endpoint: the hosted id would be refused there."""
+        body = {k: v for k, v in GOOD.items() if k != "model"}
+        if model is not None:
+            body["model"] = model
+        status, payload = await _put(body)
+        assert status == 400
+        assert (payload["code"], payload["field"]) == (
+            "decisions_provider_aws_https_invalid",
+            "model",
+        )
+        assert payload["error"] == "the model is required"
+        assert provider_config() == {}
+        assert runtime == []
+
+    @pytest.mark.asyncio
+    async def test_a_hand_set_model_is_not_kept_over_a_blank_one(
         self, audit, provider_config, keystone, not_denied
     ):
-        status, _ = await _put(GOOD)
-        assert status == 200
-        assert provider_config()["model"] == DEFAULT_MODEL
         _seed_endpoint(GOOD_ADDRESS, model="my-model", timeout_ms=8000)
-        status, _ = await _put({**GOOD, "url": "https://other.example.com/v1"})
+        status, _ = await _put({**GOOD, "model": ""})
+        assert status == 400
+        assert provider_config()["model"] == "my-model"
+
+    @pytest.mark.asyncio
+    async def test_changing_only_the_model_saves_it_and_keeps_the_timeout(
+        self, audit, provider_config, keystone, not_denied
+    ):
+        _seed_endpoint(GOOD_ADDRESS, model="decider-model-v2", timeout_ms=8000)
+        status, payload = await _put({**GOOD, "model": "decider-model-v3"})
         assert status == 200
         assert provider_config() == {
-            "endpoint": "aws-https://other.example.com/v1?service=execute-api&region=us-west-2",
-            "model": "my-model",
+            "endpoint": GOOD_ADDRESS,
+            "model": "decider-model-v3",
             "timeout_ms": 8000,
         }
+        assert payload["aws_https"]["model"] == "decider-model-v3"
+        assert DEFAULT_MODEL not in json.dumps(provider_config())
 
     @pytest.mark.asyncio
     async def test_a_standing_consent_is_not_carried_to_the_endpoint(
@@ -414,7 +447,9 @@ class TestConsent:
 
     @pytest.mark.asyncio
     async def test_a_refused_host_records_no_consent(self, audit, keystone, monkeypatch):
-        _ceiling_policy(monkeypatch, {"endpoints": {"mode": "allow", "allow": ["other.example.com"]}})
+        _ceiling_policy(
+            monkeypatch, {"endpoints": {"mode": "allow", "allow": ["other.example.com"]}}
+        )
         _seed_endpoint(GOOD_ADDRESS)
         status, body = await self._enable()
         assert status == 403
@@ -477,6 +512,42 @@ class TestConnectionTest:
         resp = await api_decisions_provider_signed_https_test(_request(body=GOOD))
         result = json.loads(resp.text)
         assert (result["ok"], result["error"]) == (False, "credentials")
+
+    @pytest.mark.asyncio
+    async def test_without_a_model_nothing_is_sent(self, audit, not_denied, monkeypatch):
+        from kiro_crew.dashboard.handlers.decisions_signed_https import (
+            api_decisions_provider_signed_https_test,
+        )
+
+        sent: list = []
+
+        async def _ask(self, state, questions):
+            sent.append(self._model)
+
+        monkeypatch.setattr(impl_signed_https.SignedHttpsProvider, "ask", _ask)
+        body = {k: v for k, v in GOOD.items() if k != "model"}
+        resp = await api_decisions_provider_signed_https_test(_request(body=body))
+        assert resp.status == 400
+        assert json.loads(resp.text)["field"] == "model"
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_the_typed_model_is_the_one_tested(self, audit, not_denied, monkeypatch):
+        from kiro_crew.dashboard.handlers.decisions_signed_https import (
+            api_decisions_provider_signed_https_test,
+        )
+        from kiro_crew.decisions.types import Answer
+
+        sent: list = []
+
+        async def _ask(self, state, questions):
+            sent.append(self._model)
+            return {"connection_test": Answer(id="connection_test", value=0.9, p=0.9)}
+
+        monkeypatch.setattr(impl_signed_https.SignedHttpsProvider, "ask", _ask)
+        resp = await api_decisions_provider_signed_https_test(_request(body=GOOD))
+        assert json.loads(resp.text)["ok"] is True
+        assert sent == ["decider-model-v2"]
 
     @pytest.mark.asyncio
     async def test_a_sagemaker_body_is_not_this_test(self, audit):

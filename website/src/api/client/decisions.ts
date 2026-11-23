@@ -201,22 +201,22 @@ export interface DecisionsSignedHttpsTarget {
   region: string
   /** An AWS profile name from the local AWS config, or `""` for the default credentials. */
   profile: string
-  /** The model id sent in each request, or `""` to keep the gateway's choice. */
+  /** The model id sent in each request. Required: the endpoint serves its own models, and there is no default. */
   model: string
 }
 
 /** A configured AWS-signed HTTPS endpoint as the gateway reports it. */
 export type DecisionsSignedHttpsSaved = DecisionsSignedHttpsTarget
 
-/** The provider body for an AWS-signed HTTPS endpoint: its parts, never an address. Empty optional parts are left out. */
+/** The provider body for an AWS-signed HTTPS endpoint: its parts, never an address. An empty profile is left out. */
 function signedHttpsBody({ url, service, region, profile, model }: DecisionsSignedHttpsTarget) {
   return {
     preset: 'aws_https',
     url,
     service,
     region,
+    model,
     ...(profile ? { profile } : {}),
-    ...(model ? { model } : {}),
   }
 }
 
