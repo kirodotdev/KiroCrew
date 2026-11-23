@@ -707,6 +707,8 @@ class DashboardState:
         # refuses every one of them. Bounded at three entries by construction, so
         # it needs no size cap and no eviction pass.
         self._voice_sandbox_notified: dict[str, float] = {}
+        # MCP servers a person's chat already named as waiting for a sign-in this run.
+        self._mcp_sign_in_notice_servers: set[str] = set()
         # Slot keys that EXIST but are deliberately absent from ``_slots`` while
         # they are being built (see ``session_transfer``'s import path, which
         # retracts a slot so it is unreachable until its transcript and context
