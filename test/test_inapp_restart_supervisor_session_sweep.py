@@ -40,8 +40,10 @@ posix_exec = pytest.mark.skipif(
 )
 
 # A child pid the sweep reads as dead: its row is handled only once the sweep
-# stops skipping it on its OWNER's reading.
-_DEAD_CHILD = 5002
+# stops skipping it on its OWNER's reading. No process can hold it (Linux keeps
+# pids below 2**22, macOS below 100000): a real pid could be the old gateway's
+# own, and the owner would then read as dead too.
+_DEAD_CHILD = 4_194_305
 
 _NEW_GATEWAY = textwrap.dedent("""
     import os, sys
