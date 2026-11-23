@@ -79,6 +79,46 @@ def test_a_segment_longer_than_the_hold_bound_is_released_unchanged():
     assert _filtered(events) == events
 
 
+_ACK = "[STEERING steer-06db2ca3-d651: I recorded the answer.]"
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        pytest.param([QUIET_END_TOKEN, "\n\n", _ACK], id="whole"),
+        pytest.param(
+            [QUIET_END_TOKEN[:4], QUIET_END_TOKEN[4:] + "\n\n[STEER", _ACK[6:]], id="split"
+        ),
+        pytest.param([QUIET_END_TOKEN, "\n", _ACK, " ", _ACK, "\n"], id="two-acks"),
+    ],
+)
+def test_a_token_followed_only_by_steer_acks_keeps_only_the_acks(chunks):
+    """A quiet turn that also folded a mid-turn steer ends on the token and then
+    kiro-cli's ``[STEERING steer-…]`` ack in one text run. The token is dropped;
+    the ack text goes out unchanged, so the steer is still recorded."""
+    complete = AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+    out = _filtered([*(_text(c) for c in chunks), complete])
+    assert out[-1] == complete
+    texts = out[:-1]
+    assert all(e.kind == EVENT_TEXT_CHUNK and e.message_id == "m1" for e in texts)
+    joined = "".join(e.text for e in texts)
+    assert QUIET_END_TOKEN not in joined
+    assert joined.strip() == "".join(chunks)[len(QUIET_END_TOKEN) :].strip()
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param("\n\n" + _ACK + " and one more line", id="prose-after-ack"),
+        pytest.param(" mode is on", id="prose"),
+        pytest.param("\n\n[STEERING nonsense]", id="not-an-ack"),
+    ],
+)
+def test_a_token_followed_by_anything_but_acks_is_released_unchanged(tail):
+    events = [_text(QUIET_END_TOKEN), _text(tail), AcpEvent(kind=EVENT_COMPLETE)]
+    assert _filtered(events) == events
+
+
 def test_each_segment_between_other_events_is_judged_on_its_own():
     """A token before a tool call is dropped and the call passes; a segment that
     stopped matching does not keep the next one from matching; a token prefix
