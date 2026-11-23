@@ -13982,7 +13982,11 @@
         "host_sandbox_teammate_unnamed": "Компьютер этой Crew сейчас не может запускать чаты. Попроси владельца Crew проверить.",
         "copy_details": "Скопировать детали",
         "copy_details_hint": "Копирует только код ошибки и время",
-        "host_sandbox_teammate_named": "Компьютер этой Crew сейчас не может запускать чаты. Попроси {{owner}} (владельца Crew) проверить."
+        "host_sandbox_teammate_named": "Компьютер этой Crew сейчас не может запускать чаты. Попроси {{owner}} (владельца Crew) проверить.",
+        "repeated_in_a_row_few": "Произошло {{count}} раза подряд, последний раз {{time}}",
+        "repeated_in_a_row_many": "Произошло {{count}} раз подряд, последний раз {{time}}",
+        "repeated_in_a_row_one": "Произошло {{count}} раз подряд, последний раз {{time}}",
+        "repeated_in_a_row_other": "Произошло {{count}} раза подряд, последний раз {{time}}"
       },
       "folderPanel": {
         "back": "Назад",

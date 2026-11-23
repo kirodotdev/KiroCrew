@@ -13683,7 +13683,10 @@
         "host_sandbox_teammate_unnamed": "Il computer di questa Crew non può avviare chat in questo momento. Chiedi al proprietario della Crew di controllare.",
         "copy_details": "Copia dettagli",
         "copy_details_hint": "Copia solo il codice di errore e l’ora",
-        "host_sandbox_teammate_named": "Il computer di questa Crew non può avviare chat in questo momento. Chiedi a {{owner}} (proprietario della Crew) di controllare."
+        "host_sandbox_teammate_named": "Il computer di questa Crew non può avviare chat in questo momento. Chiedi a {{owner}} (proprietario della Crew) di controllare.",
+        "repeated_in_a_row_many": "È successo {{count}} volte di seguito, l'ultima il {{time}}",
+        "repeated_in_a_row_one": "È successo {{count}} volta di seguito, l'ultima il {{time}}",
+        "repeated_in_a_row_other": "È successo {{count}} volte di seguito, l'ultima il {{time}}"
       },
       "folderPanel": {
         "back": "Indietro",

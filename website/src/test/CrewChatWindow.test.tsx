@@ -1190,6 +1190,18 @@ describe('CrewChatWindow', () => {
     expect(await screen.findByTestId('crew-window-approval-hint', undefined, PEER_ROW_WAIT)).toHaveTextContent('Approve runs this one command.')
   })
 
+  it("draws a peer's run of identical failures as one card, its Resume note folded in (#38910)", () => {
+    const failed = (ts: string) => ({ role: 'error', content: 'tools not ready', cls: '', ts, meta: { notice: 'tools_not_ready' } }) as ChatMessage
+    const pressed = { role: 'inject', content: '[Continue — requested by the user]\ncarry on', cls: '', meta: { injectKind: 'recovery' } } as ChatMessage
+    const rows = [failed('2026-11-18T20:50:00Z'), pressed, failed('2026-11-18T20:51:00Z')]
+    const crew = mergeRenderers(createCrewWindowRenderers({ instanceId: 'cd-1', key: 'k1', name: 'devbox', canRewind: () => false, onRewind: () => {}, rewindDisabled: false }))
+    const drawn = rows.map((m, i) => resolveRenderer(m, crew)!.render(m, {
+      index: i, messages: rows, running: false, key: `k${i}`, hideCardOwnedOAuth: false, autoDeniedIds: new Set<string>(),
+      wrapper: (children) => children, row: (children) => children,
+    }))
+    expect(drawn.map(o => o !== null)).toEqual([true, false, false])
+  })
+
   it("draws a peer's project-hooks notice read-only, with no link that writes this hub's choice", () => {
     const row = {
       role: 'notice',

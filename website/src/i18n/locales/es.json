@@ -13683,7 +13683,10 @@
         "host_sandbox_teammate_unnamed": "El equipo de esta Crew no puede iniciar chats ahora mismo. Pide al propietario de la Crew que lo revise.",
         "copy_details": "Copiar detalles",
         "copy_details_hint": "Copia solo el código de error y la hora",
-        "host_sandbox_teammate_named": "El equipo de esta Crew no puede iniciar chats ahora mismo. Pide a {{owner}} (propietario de la Crew) que lo revise."
+        "host_sandbox_teammate_named": "El equipo de esta Crew no puede iniciar chats ahora mismo. Pide a {{owner}} (propietario de la Crew) que lo revise.",
+        "repeated_in_a_row_many": "Ocurrió {{count}} veces seguidas, la última el {{time}}",
+        "repeated_in_a_row_one": "Ocurrió {{count}} vez seguida, la última el {{time}}",
+        "repeated_in_a_row_other": "Ocurrió {{count}} veces seguidas, la última el {{time}}"
       },
       "folderPanel": {
         "back": "Atrás",

@@ -13085,7 +13085,8 @@
         "host_sandbox_teammate_unnamed": "この Crew のコンピューターは今チャットを開始できません。Crew のオーナーに確認を頼んでください。",
         "copy_details": "詳細をコピー",
         "copy_details_hint": "エラーコードと時刻だけをコピーします",
-        "host_sandbox_teammate_named": "この Crew のコンピューターは今チャットを開始できません。{{owner}}（Crew のオーナー）に確認を頼んでください。"
+        "host_sandbox_teammate_named": "この Crew のコンピューターは今チャットを開始できません。{{owner}}（Crew のオーナー）に確認を頼んでください。",
+        "repeated_in_a_row_other": "{{count}} 回連続で発生しました。最後は {{time}}"
       },
       "folderPanel": {
         "back": "戻る",

@@ -13085,7 +13085,8 @@
         "host_sandbox_teammate_unnamed": "이 Crew의 컴퓨터가 지금 채팅을 시작할 수 없어요. Crew 소유자에게 확인을 요청하세요.",
         "copy_details": "세부 정보 복사",
         "copy_details_hint": "오류 코드와 시간만 복사합니다",
-        "host_sandbox_teammate_named": "이 Crew의 컴퓨터가 지금 채팅을 시작할 수 없어요. {{owner}}(Crew 소유자)에게 확인을 요청하세요."
+        "host_sandbox_teammate_named": "이 Crew의 컴퓨터가 지금 채팅을 시작할 수 없어요. {{owner}}(Crew 소유자)에게 확인을 요청하세요.",
+        "repeated_in_a_row_other": "연속 {{count}}번 발생했습니다. 마지막: {{time}}"
       },
       "folderPanel": {
         "back": "뒤로",

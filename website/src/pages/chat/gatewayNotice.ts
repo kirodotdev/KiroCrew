@@ -851,6 +851,20 @@ export function isKasSignedOut(m: ChatMessage): boolean {
 }
 
 /**
+ * What makes two red notice rows the SAME failure, so a run of them draws as
+ * one card (`errorRuns.ts`): the token and the values its copy reads. `null`
+ * for any other row, and for one whose `kind` or `code` gives it a card of its
+ * own (a sign-in, a usage limit, a turn limit), whose actions belong to it.
+ */
+export function errorNoticeRunKey(m: ChatMessage): string | null {
+  const meta = m.meta as { kind?: unknown; code?: unknown } | undefined
+  if (m.role !== 'error' || m.kind || meta?.kind || meta?.code) return null
+  const shape = shapeOf(m)
+  if (!shape || NOTICE_FAMILIES[shape.token].card !== 'error') return null
+  return `${shape.token} ${JSON.stringify(shape.args)}`
+}
+
+/**
  * Resolve a gateway status row into localized copy, or null when the row is not
  * one (any other row keeps its verbatim prose).
  *
