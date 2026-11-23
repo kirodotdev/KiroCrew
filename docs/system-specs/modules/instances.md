@@ -387,6 +387,22 @@ strip.
    for every probe aimed at a path it does not serve. Only a timeout or
    connection error (no response) fails a probe; after `probe_failure_threshold`
    (3) *consecutive* failures the child is terminated so recovery fires. A
+   probe that misses its budget is not dropped: its request stays open for the
+   longest it can wait and still count: (`probe_failure_threshold` - 1) x
+   (interval + budget) + budget, 32s at the defaults, so at most
+   `probe_failure_threshold` are open at once, and each later
+   probe waits on every open request, so a late answer on any of them counts as
+   a success. That late answer is the one signal that tells a far end that is
+   alive but slow (a crew short of memory answering in 5 to 30s) from a forward
+   that relays nothing, on every transport: ssh, ssh through a `ProxyCommand`,
+   SSM and the fargate lane all show both as a connect accepted with no bytes
+   back until the far end answers. A refusal relayed back (far end down) ends
+   its request at once and is never an answer, so with no older request open
+   it is a miss without waiting out the budget. A far end silent for the whole
+   window cannot be told from a dead forward and is torn down at the same time
+   as one. A success, a teardown, `stop()` or a crash cancels every open
+   request, so an answer older than the last success never counts for a later
+   probe. A
    successful probe also clears the self-heal attempt counter (§4). A bare TCP
    connect (`_port_reachable`, used only by the readiness wait) is deliberately
    **not** enough here: for an SSM forward the process accepting the connect is
