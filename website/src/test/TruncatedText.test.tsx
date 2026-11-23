@@ -11,12 +11,19 @@ describe('TruncatedText', () => {
   it('shows the full text in the bubble on hover, with no native title', () => {
     render(<TruncatedText full="telemetry.startup.cold_ms" />)
     const line = screen.getByText('telemetry.startup.cold_ms')
-    expect(line).not.toHaveAttribute('title')
+    expect(line).toHaveAttribute('title', '')
     fireEvent.mouseEnter(line)
     act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
     expect(screen.getByRole('tooltip')).toHaveTextContent('telemetry.startup.cold_ms')
     fireEvent.mouseLeave(line)
     expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('keeps a titled row around it from showing its own native tooltip beside the bubble', () => {
+    // A browser shows the nearest title at or above the hovered element; an
+    // empty one on the line stops the row's from applying there.
+    render(<div title="/repo/src/release.sh"><TruncatedText full="now executable" /></div>)
+    expect(screen.getByText('now executable')).toHaveAttribute('title', '')
   })
 
   it('is a tab stop whose focus opens the bubble at once, and Escape closes it', () => {

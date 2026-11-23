@@ -550,7 +550,7 @@ describe('RemoteGitPanel', () => {
     // after two chained query answers: bound that chain explicitly.
     const CHAINED_READS_MS = 5000
     const line = await screen.findByText(subject, {}, { timeout: CHAINED_READS_MS })
-    expect(line).not.toHaveAttribute('title')
+    expect(line).toHaveAttribute('title', '')
     expect(line).toHaveAttribute('tabindex', '0')
     fireEvent.focus(line)
     expect(screen.getByRole('tooltip')).toHaveTextContent(subject)
