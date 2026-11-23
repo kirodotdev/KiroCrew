@@ -12,6 +12,8 @@ so the three classes share this module.
 from __future__ import annotations
 
 import asyncio
+import errno
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -30,6 +32,38 @@ from kiro_crew import stt, transcribe
 from kiro_crew.config.loader import SttConfig
 from kiro_crew.testing.wait import await_until
 from kiro_crew.transcribe import _ProfileCredentialResolver, transcribe_audio
+
+
+def _hold_against_removal(monkeypatch, held: Path) -> None:
+    """Make ``os.unlink`` refuse *held* the way Windows refuses a file another
+    process opened without delete sharing; every other path is removed as usual."""
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.fspath(path) == str(held):
+            raise PermissionError(errno.EACCES, "held by another process", str(held))
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+
+
+async def _kept_result(call):
+    """Await *call*, failing the test if a removal error replaced its result.
+
+    The error escaping is the defect these tests pin, so it is reported as a
+    failed expectation rather than left to look like a broken call."""
+    try:
+        return await call
+    except OSError as exc:
+        pytest.fail(f"a temp file that could not be removed replaced the result: {exc!r}")
+
+
+def _removal_warnings(caplog, held: Path) -> int:
+    """Count the warnings that name *held*."""
+    return sum(
+        1 for r in caplog.records if r.levelno == logging.WARNING and str(held) in r.getMessage()
+    )
+
 
 # ---------------------------------------------------------------------------
 # transcribe_audio
@@ -512,6 +546,43 @@ class TestTranscribeAudio:
         assert not owned.exists()
 
     @pytest.mark.asyncio
+    async def test_a_temp_wav_the_os_will_not_remove_keeps_the_transcript(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """On Windows a scanner or indexer can hold the freshly written temp WAV,
+        so removing it fails after the decode already succeeded. The transcript
+        still comes back, and one warning names the file left behind."""
+        audio = tmp_path / "voice.ogg"
+        audio.write_bytes(b"OggS fake")
+        cfg = SttConfig(enabled=True, provider="local")
+        self._recogniser(monkeypatch, transcript="Salut")
+        owned = tmp_path / "owned.wav"
+        monkeypatch.setattr(transcribe, "_make_temp_wav", lambda: str(owned))
+        _hold_against_removal(monkeypatch, owned)
+
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+
+        async def fake_exec(*args, **kwargs):
+            _write_wav(owned, _ramp_int16(800))
+            return proc
+
+        with (
+            caplog.at_level(logging.WARNING, logger="kiro_crew.transcribe"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
+            patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
+        ):
+            result = await _kept_result(transcribe_audio(str(audio), cfg))
+
+        assert result == "Salut"
+        assert owned.exists()
+        assert _removal_warnings(caplog, owned) == 1
+
+    @pytest.mark.asyncio
     async def test_missing_ffmpeg_for_a_compressed_memo_returns_none(self, tmp_path, monkeypatch):
         """ffmpeg is a prerequisite, not a fallback: without it a compressed memo
         cannot be decoded at all, and that is a None rather than a crash."""
@@ -929,6 +1000,64 @@ class TestTranscribeAwsTempOwnership:
         assert result is None
         assert not owned.exists()
         assert src.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("remux_exit", "expected"), [(0, "hello from the stream"), (1, None)])
+    async def test_a_temp_ogg_the_os_will_not_remove_keeps_the_result(
+        self, tmp_path, monkeypatch, caplog, remux_exit, expected
+    ):
+        """A held temp ogg must not turn a finished stream's transcript, or a
+        failed remux's None, into a ``PermissionError``: the result comes back
+        and one warning names the file left behind."""
+        from kiro_crew import transcribe as tr
+
+        cfg = SttConfig(enabled=True, provider="transcribe")
+        self._grant_consent(tmp_path, monkeypatch, cfg)
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        _hold_against_removal(monkeypatch, owned)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+
+        remux_proc = AsyncMock()
+        remux_proc.communicate = AsyncMock(return_value=(b"", b""))
+        remux_proc.returncode = remux_exit
+        stream = SimpleNamespace(
+            input_stream=SimpleNamespace(send_audio_event=AsyncMock(), end_stream=AsyncMock()),
+            output_stream=object(),
+        )
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            async def start_stream_transcription(self, **kwargs):
+                return stream
+
+        class FinalHandler:
+            def __init__(self, output_stream, transcript_parts):
+                self._parts = transcript_parts
+
+            async def handle_events(self):
+                self._parts.append("hello from the stream")
+
+        monkeypatch.setattr(tr, "boto3", object())
+        monkeypatch.setattr(tr, "_read_audio_bytes", lambda path: b"fake audio")
+        monkeypatch.setattr(
+            tr, "_load_aws_transcribe_components", lambda: (FakeClient, FinalHandler)
+        )
+        with (
+            caplog.at_level(logging.WARNING, logger="kiro_crew.transcribe"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
+            patch("asyncio.create_subprocess_exec", return_value=remux_proc),
+        ):
+            result = await _kept_result(tr._transcribe_aws(str(src), cfg))
+
+        assert result == expected
+        assert owned.exists()
+        assert _removal_warnings(caplog, owned) == 1
 
     @pytest.mark.asyncio
     async def test_repeat_cancellation_in_stream_cleanup_still_unlinks(self, tmp_path, monkeypatch):

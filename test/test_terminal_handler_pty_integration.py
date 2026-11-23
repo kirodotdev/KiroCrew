@@ -9,12 +9,16 @@ those tests share this module so the patch reaches the reader.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import pathlib
 import shlex
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,6 +36,7 @@ from terminal_handler_helpers import (  # noqa: F401 -- the autouse fixture regi
 )
 
 from kiro_crew.dashboard.handlers import terminal
+from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
 from kiro_crew.testing.wait import async_wait_until, default_timeout, finished
 
@@ -445,6 +450,70 @@ class TestTerminalWsIntegration:
             assert sess.last_ws_disconnect is not None
 
             await terminal._kill_session(sess)
+
+    @pytest.mark.skipif(
+        not terminal.platform_compat.IS_POSIX, reason="the silent shell is a POSIX script"
+    )
+    @pytest.mark.asyncio
+    async def test_idle_shells_leave_the_default_executor_free(self, monkeypatch, tmp_path):
+        """As many idle shells as the default executor has workers still leave it free.
+
+        An idle shell parks its PTY read for as long as it lives, so readers on the
+        default executor would hold every worker and stop each ``to_thread`` caller
+        in the gateway. The shell prints nothing, so no output can wake a
+        parked read and free a worker while the no-op waits.
+        """
+        loop = asyncio.get_running_loop()
+        workers = 2
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=workers))
+        silent = tmp_path / "silent-shell"
+        silent.write_text("#!/bin/sh\nexec cat\n")
+        silent.chmod(0o755)
+        monkeypatch.setattr(
+            terminal, "_resolve_shell_with_fence_shells", lambda cfg: (str(silent), None, {})
+        )
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+
+        registry: dict = {}
+        app = _make_app(registry=registry)
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        try:
+            async with TestClient(TestServer(app)) as client:
+                for n in range(workers):
+                    async with client.ws_connect(f"/api/ws/terminal/idle-{n}") as ws:
+                        await _recv_control(ws, "ready")
+                        await ws.close()
+                ran = await finished(
+                    loop.run_in_executor(None, lambda: "ran"), "a no-op on the default executor"
+                )
+                assert ran == "ran"
+                # The heartbeat's own probe of that executor runs too, so it never outwaits
+                # EXECUTOR_STALL_SECS and withholds a beat.
+                watchdog = LoopStallWatchdog(
+                    stall_after=30.0,
+                    exit_after=None,
+                    dump=lambda: None,
+                    arm_later=lambda _t: None,
+                    cancel_later=lambda: None,
+                    log=logging.getLogger(__name__),
+                )
+                probes: list[asyncio.Future[None]] = []
+
+                def _submit(executor, fn):
+                    probes.append(loop.run_in_executor(executor, fn))
+                    return probes[-1]
+
+                assert watchdog.default_executor_live(SimpleNamespace(run_in_executor=_submit))
+                await finished(probes[0], "the heartbeat's probe of the default executor")
+        finally:
+            for sess in list(registry.values()):
+                if sess is not None:
+                    await terminal._kill_session(sess)
 
     @pytest.mark.asyncio
     async def test_the_shell_socket_tolerates_a_loop_stall(self, monkeypatch, tmp_path):

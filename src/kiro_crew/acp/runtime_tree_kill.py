@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.acp import runtime_process_tree
@@ -41,12 +41,15 @@ from kiro_crew.session_pid import (
     _untrack_pid_if_dead,
     _untrack_root_by_identity,
     _untrack_session_pid,
+    end_session_leftovers,
+    find_session_leftovers,
     group_vouching_available,
     unregister_protected_pid,
 )
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
+    from kiro_crew.session_pid_rss import SessionLeftovers
 
 #: The runtime's logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.runtime")
@@ -70,6 +73,71 @@ def _escapee_is_still_ours(pid: int, record: ChildRecord) -> bool:
     if recorded is None:
         return False
     return platform_compat.get_process_start_id(pid) == recorded
+
+
+async def _read_root_leftovers(pid: int, start_id: str) -> SessionLeftovers | None:
+    """Root *pid*'s session leftovers, or None unless the reading names *start_id*'s process."""
+    try:
+        leftovers = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), find_session_leftovers, pid
+        )
+    except Exception:
+        logger.debug("session leftovers of root PID %d unreadable", pid, exc_info=True)
+        return None
+    if leftovers is None or leftovers.root_start != start_id or not leftovers.items:
+        return None
+    return leftovers
+
+
+async def _end_root_leftovers(pid: int, leftovers: SessionLeftovers) -> None:
+    """End the *leftovers* still in root *pid*'s session, once the root is gone."""
+    try:
+        ended = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            functools.partial(end_session_leftovers, pid, leftovers, only_if_root_gone=True),
+        )
+    except Exception:
+        logger.warning("Could not end the leftover processes of root PID %d", pid, exc_info=True)
+        return
+    if ended:
+        logger.warning(
+            "Runtime teardown: ended %d leftover process(es) of root PID %d's session "
+            "outside its tree: %s",
+            ended,
+            pid,
+            ", ".join(f"pid {item.pid} {item.name}" for item in leftovers.items),
+        )
+
+
+async def kill_ending_session_leftovers(
+    pid: int | None, start_id: str | None, kill: Callable[[], Awaitable[None]]
+) -> None:
+    """Run *kill*, then end what root *pid* left in its session outside its tree.
+
+    A job the agent's shell left running (started under ``set -m``, or by a shell
+    that ran in its own group) is reparented to init when its shell exits. No walk
+    from the root finds it and no signal to the root's group reaches it, but it
+    keeps the root's session id. So the session is read first, while the root is
+    alive and still *start_id*'s process, and what was read is ended through
+    ``end_session_leftovers`` once *kill* has returned or raised, which signals
+    nothing while the root is still that process. A cancel that lands in the read
+    still lets *kill* run, and then propagates unless *kill* raises. Linux only,
+    as the pinned terminator is; a *pid* of None (no live root) reads nothing.
+    """
+    leftovers: SessionLeftovers | None = None
+    cancel: asyncio.CancelledError | None = None
+    if platform_compat.IS_LINUX and pid is not None and start_id is not None:
+        try:
+            leftovers = await _read_root_leftovers(pid, start_id)
+        except asyncio.CancelledError as exc:
+            cancel = exc
+    try:
+        await kill()
+    finally:
+        if pid is not None and leftovers is not None:
+            await _end_root_leftovers(pid, leftovers)
+    if cancel is not None:
+        raise cancel
 
 
 def _release_stdin(process: asyncio.subprocess.Process) -> None:
@@ -123,6 +191,40 @@ def _prune_dead_descendants(saved: dict[int, ChildRecord]) -> list[int]:
                 "AcpRuntime: untracking descendant PIDs %s failed", list(dead), exc_info=True
             )
     return [pid for pid in saved if pid not in dead]
+
+
+#: How often a kill re-reads whether the group a root left behind has emptied.
+_GROUP_EXIT_POLL_SECS = 0.05
+
+
+async def _wait_for_group_exit(pgid: int, deadline: float) -> None:
+    """Wait until process group *pgid* has no member left, or until *deadline* (loop time).
+
+    The group of a root whose identity held at the SIGTERM and that exited inside
+    the kill's grace. The SIGTERM went to every member through the live root, so a
+    member still there is still stopping, or has exited and is not yet reaped by
+    the init it was reparented to. ``pgroup_exists`` counts both, which is the
+    reading the checks after the kill take, so the wait ends only once they would
+    agree that the group is gone. A root that exits between the identity read and
+    the signal leaves a group no SIGTERM reached; that costs the rest of the grace.
+
+    The root's number cannot be reissued while its group has a member. A number
+    the kernel reissues to a new group leader after the group emptied reads as
+    still there, which costs the rest of the grace and never a signal. Nothing is
+    signalled here either: a member still standing at *deadline* is left to the
+    survivor tracking that follows.
+
+    The probe runs on the loop, not on the subprocess executor: it is a signal-0
+    probe of the group (on macOS also the kernel's group listing) that cannot
+    block, and a hung tree walk holding that executor would otherwise hold the
+    probe, and the kill, past *deadline*.
+    """
+    loop = asyncio.get_running_loop()
+    while platform_compat.pgroup_exists(pgid):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(_GROUP_EXIT_POLL_SECS, remaining))
 
 
 def _untrack_killed_root(pid: int, start_token: str | None) -> None:
@@ -571,12 +673,25 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
     *process*, not to this handle: releasing them under a runtime another
     lease is still using would strand a live agent on a deleted workspace,
     which is worse than the leak the kill was meant to prevent.
+
+    An admitted kill also ends what the root left in its session outside its tree
+    (:func:`kill_ending_session_leftovers`): a job the agent's shell left outside
+    the process group would otherwise outlive the chat that started it.
     """
     if not authorize_runtime_kill(self, reason=reason or "runtime kill", caller="AcpRuntime.kill"):
         return
     self._process_tree_confirmed_dead = False
     try:
-        await self._kill_inner(expected=expected, reason=reason)
+        # Marked dead before the leftover read's await, as `_kill_inner` would at
+        # once: a turn that claims this runtime while its session is read is refused
+        # before it sends, not killed mid-turn. `_kill_inner`'s own call then returns.
+        self._mark_dead(f"killed ({reason})" if reason else "killed", expected=expected)
+        process = self._process
+        await kill_ending_session_leftovers(
+            process.pid if process is not None and process.returncode is None else None,
+            getattr(self, "_start_time", None),
+            functools.partial(self._kill_inner, expected=expected, reason=reason),
+        )
         # The skill views the process ran on are its resources too: released
         # once it is gone, like the direct client's, so this home's unused
         # views are pruned now rather than at a next boot that a stopped and
@@ -755,6 +870,11 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
         # Read before the kill clears it: the group fallback needs the
         # incarnation this process was spawned as, not the empty successor.
         instance = self._process_instance
+        # Read before the signal too: while the root's identity holds, the
+        # SIGTERM goes through it to its whole group, and only that group is
+        # waited out below.
+        root_held = self._root_identity() == "holds"
+        grace_ends = asyncio.get_running_loop().time() + self._KILL_TERM_TIMEOUT
         orphaned_group = await self._signal_tree(pid, platform_compat.SIGTERM, instance=instance)
         escalated = False
         try:
@@ -798,6 +918,14 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
                 await asyncio.shield(escalate())
                 raise
             await escalate()
+        elif root_held and not escalated:
+            # The root went down inside the grace, but its group need not have:
+            # the sandbox launcher dies on the SIGTERM at once, and the agent it
+            # forked into the same group closes the root's pipes as it exits, so
+            # wait() returns while that agent is still exiting or not yet
+            # reaped. Pruning now would retain it as a survivor, and a reset's
+            # survivor check would force-kill a process the SIGTERM already ended.
+            await _wait_for_group_exit(pid, grace_ends)
         # Before the handle is dropped, whatever the ladder reached: see
         # _release_stdin for the tree this is the whole teardown of.
         _release_stdin(self._process)
