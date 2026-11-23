@@ -49,6 +49,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH,
     ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_FAST_MODE_CONFIG_OPTION,
@@ -57,6 +58,7 @@ from kiro_crew.agent_sdk.backends import (
     ULTRACODE_CONFIG_OPTION_ID,
     effort_refused_by_model,
     launch_effort_supported,
+    long_context_pick,
 )
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
 from kiro_crew.providers.acp_cli_overlay import _clear_cli_overlay_effort
@@ -68,6 +70,20 @@ if TYPE_CHECKING:
 
 #: The provider's own logger, so these records carry the provider's name.
 logger = logging.getLogger("kiro_crew.providers.acp")
+
+
+def changes_context_tier(self: AcpProvider, model_id: str) -> bool:
+    """Whether this pick needs a tier relaunch; snapshot before attempting it.
+
+    A failed replacement can leave its launched tier recorded while the prior
+    pick is restored, so reading this after the switch loses its rollback rule.
+    """
+    client = self._client
+    return (
+        isinstance(client, AcpClient)
+        and client.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH
+        and long_context_pick(client.backend, model_id)[1] != client._launched_long_context
+    )
 
 
 async def maybe_refresh_available_models(

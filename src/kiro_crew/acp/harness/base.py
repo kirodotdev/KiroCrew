@@ -200,6 +200,7 @@ class ProcessSession(Protocol):
     _pi_steer_channel: Any
     _unasked_shell_tripwire: bool
     _copilot_mcp_config_path: str
+    _launched_long_context: bool
     _launch_mcp_servers: list[Any] | None
     _mcp_relaunch_pending: bool
 

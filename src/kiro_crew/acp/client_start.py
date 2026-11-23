@@ -70,6 +70,7 @@ from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, AcpSpawnBlock
 from kiro_crew.acp.transport_errors import (
     AcpAuthRequired,
     AcpError,
+    AcpModelUnavailable,
     AcpProcessDied,
     AcpTimeoutError,
     AcpToolGateUnroutable,
@@ -1349,6 +1350,13 @@ async def ensure_ready(self: AcpClient) -> None:
                 # Non-retryable for the same reason: a respawn reads the same
                 # missing provider. Before the generic handler, which would retry.
                 _startup_outcome = "auth_required"
+                await self._cleanup_failed_live_spawn()
+                self._reset_state()
+                raise
+            except AcpModelUnavailable:
+                # A strict model refusal survives a respawn; preserve it for the
+                # caller instead of spending another process and session on it.
+                _startup_outcome = "model_unavailable"
                 await self._cleanup_failed_live_spawn()
                 self._reset_state()
                 raise

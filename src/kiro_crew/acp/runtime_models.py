@@ -15,7 +15,11 @@ import re
 from typing import Sequence
 
 from kiro_crew import model_registry
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    long_context_pick,
+)
 
 DEFAULT_MODEL = "auto"
 
@@ -205,7 +209,7 @@ def _pair_id_bare_spelling(model_id: str, ids: Sequence[str]) -> str:
 def resolve_pin_spelling_on(
     model_id: str, advertised: Sequence[str] | None, *, backend: str = ""
 ) -> str:
-    """:func:`resolve_pin_spelling`, plus the second vocabulary of a pair-id harness.
+    """Resolve a spelling under the harness's effort and context-tier contracts.
 
     ONE home for that question rather than a copy per wire site: the startup
     application of a persisted pin, the shared-runtime substitute path, the
@@ -216,10 +220,18 @@ def resolve_pin_spelling_on(
     *backend* is the harness the answer will be SENT to. An empty one -- a caller
     that is not choosing a wire spelling for a live session, such as the picker
     filter -- keeps :func:`resolve_pin_spelling` verbatim,
-    ADVERTISED-spelling contract and all. Only a member of
-    ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` widens it, and only where the fold has
-    already answered ``""``, so no resolution that succeeds today changes.
+    ADVERTISED-spelling contract and all. A member of
+    ``ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH`` matches only its requested tier.
+    A member of ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` widens the vocabulary
+    only where the fold has already answered ``""``.
     """
+    if backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH:
+        # Synthetic window siblings are separate paid tiers, not preferred
+        # spellings. A fallback must keep the tier its caller actually chose.
+        _, long_context = long_context_pick(backend, model_id)
+        advertised = [
+            mid for mid in (advertised or []) if long_context_pick(backend, mid)[1] == long_context
+        ]
     resolved = resolve_pin_spelling(model_id, advertised)
     if resolved or backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
         return resolved
