@@ -300,6 +300,12 @@ def test_without_verify_an_add_is_kept_on_the_list_alone(env: dict) -> None:
     }
 
 
+def test_turning_it_on_stores_the_default_so_a_load_does_not_migrate_it(env: dict) -> None:
+    status, _ = _call(env, "PUT", "/api/slack/shared-access", {"enabled": True, "confirm": True})
+    assert status == 200
+    assert _stored(env)["verify_with_slack"] is False
+
+
 def test_a_write_keeps_verify_with_slack_as_the_owner_set_it(env: dict) -> None:
     _verify_with_slack(env)
     status, _ = _call(env, "DELETE", f"/api/slack/shared-access/users/{FRIEND}")

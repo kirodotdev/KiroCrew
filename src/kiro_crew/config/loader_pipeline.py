@@ -1472,6 +1472,14 @@ def persist_write_back(cfg: KiroCrewConfig, doc: ConfigDocument) -> None:
                 cfg.agent.default_agent = dispatch_kiro_agent(carried)
                 pending.add(MIGRATE_STAR_DEFAULT_TEMPLATE)
 
+        # Shared Slack access that predates ``verify_with_slack`` keeps its Slack
+        # check (see MIGRATE_SHARED_ACCESS_VERIFY). Decided on the BASE document;
+        # skipped where the overlay names the key, which then wins. In memory at
+        # once: the move only keeps the stricter check this load already ran with.
+        if _migration.shared_access_verify_due(data, overlay=local_data) is not None:
+            cfg.slack.shared_access.verify_with_slack = True
+            pending.add(_migration.MIGRATE_SHARED_ACCESS_VERIFY)
+
         # One-shot launch migration for ``connections_ui`` (see the marker
         # constant's docstring). Decided on the BASE document, not the
         # merged view: the overlay is user-owned prose we never rewrite,

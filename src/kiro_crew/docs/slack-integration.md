@@ -277,6 +277,10 @@ confirmed by Slack: remove them, or fix what their row says, first.
 
 - **Who counts.** By default (`slack.shared_access.verify_with_slack` is
   `false`) every well-formed member ID on the list counts, except the owner's own.
+  A config that already shared access before the key existed (`enabled: true`, no
+  `verify_with_slack`) has `true` written on its first load, so an upgrade keeps
+  Slack's check; to go list-only, set the key to `false`. Turning sharing on in the
+  dashboard stores `false`.
   Slack is not asked, so the bot needs no `users:read` scope, and a bot, a
   deactivated account or someone in another workspace (Slack Connect included) on
   the list can act as the owner too: keep the list right yourself. The page marks

@@ -139,7 +139,7 @@ async def _commit(mutate_shared: Any) -> dict[str, Any]:
             "enabled": current.get("enabled") is True,
             "user_ids": shared_user_ids(current.get("user_ids")),
         }
-        # Kept as the owner wrote it (no route sets it): an edit here never drops it.
+        # Kept as the owner wrote it: an edit here never drops it.
         if "verify_with_slack" in current:
             section["verify_with_slack"] = current.get("verify_with_slack") is True
         mutate_shared(section)
@@ -220,6 +220,10 @@ async def api_shared_access_put(request: web.Request) -> web.Response:
         return _deny(caller, op, "turning shared access on needs confirm", code="confirm_required")
 
     def _set(section: dict) -> None:
+        # Turned on with the key unnamed: store the default, so the next load does
+        # not take this for an install that predates the key (it would write true).
+        if enabled and not section["enabled"] and "verify_with_slack" not in section:
+            section["verify_with_slack"] = False
         section["enabled"] = enabled
 
     stored = await _commit(_set)
