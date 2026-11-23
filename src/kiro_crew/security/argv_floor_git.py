@@ -14,6 +14,7 @@ and one sentinel the rule catalog owns, and imports no other part of the argv fl
 
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 
@@ -150,7 +151,13 @@ def _is_git_program_word(word: str) -> bool:
     widens detection (fail-closed); a program named ``GIT`` or ``git.cmd`` on POSIX is
     read as git too, and the push target still decides the verdict.
     """
-    name = re.split(r"[\\/]", word)[-1].lower()
+    from kiro_crew import platform_compat
+
+    # ``ntpath`` also drops a drive prefix: Windows runs ``C:git`` as git from that drive.
+    if platform_compat.IS_WINDOWS:
+        name = ntpath.basename(word).lower()
+    else:
+        name = re.split(r"[\\/]", word)[-1].lower()
     return name == "git" or (name[:3] == "git" and name[3:] in (".exe", ".cmd", ".bat"))
 
 
@@ -176,19 +183,30 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     # The view above reads ``\`` as a POSIX escape, so an unquoted Windows path
     # (``c:\git\cmd\git.exe``, ``.\git.exe``) reaches it with its separators gone.
     # PowerShell and cmd keep ``\`` as a separator, so on Windows the same walk also
-    # runs over the separator-preserving split. It only adds detection.
+    # runs over the separator-preserving split. It only adds detection, and only a
+    # segment's command word is read as the program there: a path ARGUMENT ending in
+    # ``\git`` (``Get-ChildItem C:\src\git push``) is data, not git.
     from kiro_crew import platform_compat
 
     if not platform_compat.IS_WINDOWS:
         return False
     try:
-        return _has_git_push_word_pair(_split_shell_words(text_lower))
+        for segment in _split_push_command_segments(text_lower):
+            words = _split_shell_words(segment)
+            while words and _cut_at_operator(words[0]) in ("", "{"):
+                words = words[1:]  # PowerShell's ``&`` call operator, ``(``, ``{``
+            if _has_git_push_word_pair(words, first_word_only=True):
+                return True
     except Exception:
         return False
+    return False
 
 
-def _has_git_push_word_pair(tokens: list[str]) -> bool:
-    """True when *tokens* hold a git program word whose subcommand is ``push``."""
+def _has_git_push_word_pair(tokens: list[str], *, first_word_only: bool = False) -> bool:
+    """True when *tokens* hold a git program word whose subcommand is ``push``.
+
+    With *first_word_only*, only ``tokens[0]`` may be that program word.
+    """
     if not tokens:
         return False
 
@@ -216,6 +234,8 @@ def _has_git_push_word_pair(tokens: list[str]) -> bool:
 
     i = 0
     while i < len(tokens):
+        if first_word_only and i:
+            return False
         token = tokens[i]
         # Check if this token resolves to "git"
         if _resolves_to(token, "git"):

@@ -272,6 +272,8 @@ class TestPublishFloorNestedPayloads:
             "C:\\Git\\cmd\\git.exe push origin feature",
             "C:\\Git\\cmd\\git.exe status",
             "C:\\Tools\\legit.exe push origin main",
+            # A path ARGUMENT ending in ``\git`` is data; only the command word is git.
+            "Get-ChildItem C:\\src\\git push",
         )
 
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
@@ -280,6 +282,8 @@ class TestPublishFloorNestedPayloads:
             assert (is_denied(cmd) or "").splitlines()[:1] == [expected], cmd
         for cmd in allowed:
             assert is_denied(cmd) is None, cmd
+        # Windows runs ``C:git`` as git from that drive, so the target reader anchors there.
+        assert fg._git_push_args("c:git push origin feature") == ["origin", "feature"]
 
         # A POSIX shell runs ``C:Gitcmdgit.exe``, which is not git: unchanged there.
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
