@@ -1375,6 +1375,11 @@ class TestWindowsRespellings:
         r"ri -Recurse -Force C:\* ",
         r"Remove-Item -Recurse -Force D:\work,C:\ ",
         r"Remove-Item -Recurse -Force ~",
+        r'Remove-Item -Recurse -Force "~"',
+        r"Remove-Item -Recurse '~/'",
+        r"Remove-Item -LiteralPath C:\ -Recurse",
+        r"Remove-Item -Recurse -Exclude *.log C:\ ",
+        r"Remove-Item -Recurse C:\ -WhatIf:$false",
         r"rmdir /s /q C:\ ",
         r"rd /S/Q C:\ ",
         r"del /s /q C:\* ",
@@ -1391,6 +1396,14 @@ class TestWindowsRespellings:
         r"del /s /q C:\temp\*.log",
         r"rm -rf C:/Users/me/work/build",
         r"echo rd /s /q C:\ ",
+        r"Remove-Item -Recurse -Force C:\ -WhatIf",
+        r"Remove-Item -Recurse -Force .\build -Exclude ~",
+        r"Remove-Item -Recurse -Force ./build -Include C:\ ",
+        r"Remove-Item -Recurse:$false C:\ ",
+        r"rm -r ~",  # PowerShell's rm alias is left to the rm reading: partial flags pass
+        r"rm -r C:\ ",
+        "bash -c 'rm -fr \\\n/tmp/x'",  # a line continuation is not a path separator
+        "cat <<EOF\n\\$(x=$((1<<2))\nrm -r -f ~\n)\nEOF",  # an escape in heredoc body data
     )
 
     def test_windows_drive_root_and_home_wipes_are_refused_only_on_windows(
@@ -1398,7 +1411,9 @@ class TestWindowsRespellings:
     ):
         """PowerShell and cmd deletes, and rm against a drive root, reach the rm floor."""
         from kiro_crew import platform_compat
+        from kiro_crew.security import rm_floor
 
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         posix = {cmd: is_denied(cmd.rstrip()) for cmd in self._WINDOWS_ORDINARY_DELETES}
         assert all(verdict is None for verdict in posix.values()), posix
         assert is_denied("rd /s /q C:\\") is None  # not a root on Linux or macOS
@@ -1407,6 +1422,8 @@ class TestWindowsRespellings:
             assert is_denied(cmd.rstrip()) is not None, cmd
         for cmd in self._WINDOWS_ORDINARY_DELETES:
             assert is_denied(cmd.rstrip()) is None, cmd
+        # the floor keeps reading a quoted ``~`` as a literal name for rm (the row is separate)
+        assert rm_floor._rm_wipe_targets('rm -rf "~"') == set()
 
     def test_suffixed_download_matches_the_plain_verdict(self):
         # The s3 download reader is POSIX-only, so compare with ``aws`` on this host.

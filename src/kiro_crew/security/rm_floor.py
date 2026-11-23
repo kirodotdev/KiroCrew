@@ -98,7 +98,22 @@ _PLAIN_SEPARATORS = frozenset({"", ";", "&", "&&", "|", "||", "\n"})
 _TITLE_PREFIX = "Running:"
 _RM_WORDS = frozenset({"rm", "rm.exe", "rm.cmd", "rm.bat"})  # Windows spellings of rm
 #: Windows only. PowerShell's Remove-Item and its built-in aliases, read for ``-Recurse``.
-_PS_REMOVE_WORDS = frozenset({"remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"})
+#: Its ``rm`` alias is left to the rm reading, so a partial ``rm -r ~`` stays allowed.
+_PS_REMOVE_WORDS = frozenset({"remove-item", "ri", "del", "erase", "rd", "rmdir"})
+#: Windows only. Remove-Item's parameters and the common ones, by how their word binds: a
+#: ``path`` value is a delete target, a ``value`` one (``-Exclude ~``) is not, a switch
+#: takes none. All are listed so a prefix binds only where PowerShell's would.
+_PS_PARAMS = {
+    **dict.fromkeys(("path", "literalpath"), "path"),
+    **dict.fromkeys(
+        "filter include exclude credential stream erroraction warningaction informationaction"
+        " progressaction errorvariable warningvariable informationvariable outvariable"
+        " outbuffer pipelinevariable".split(),
+        "value",
+    ),
+    **dict.fromkeys("recurse whatif force confirm verbose debug".split(), "switch"),
+}
+_PS_ALIASES = {"pspath": "literalpath", "lp": "literalpath", "wi": "whatif", "cf": "confirm"}
 #: Windows only. cmd deletes whose ``/s`` recurses: rd/rmdir the tree, del/erase its files.
 _CMD_REMOVE_WORDS = frozenset({"rd", "rmdir", "del", "erase"})
 _WINDOWS_CAN_FIRE_RE = re.compile(r"(?i)remove-item|\b(?:ri|rd|del|erase)\b")
@@ -107,6 +122,8 @@ _CMD_SWITCH_RE = re.compile(r"(?:/[A-Za-z?][-:A-Za-z]*)+")
 #: Windows only. A drive root: ``C:``, ``C:/``, ``C:\``, ``C:\*``, any letter. The POSIX
 #: reading drops an unquoted ``\``, so ``C:\*`` also arrives as ``C:*``.
 _DRIVE_ROOT_RE = re.compile(r"[A-Za-z]:[\\/]*\*?")
+#: Windows only. The ``\`` right after a drive letter, read as ``/`` for the drive-root view.
+_DRIVE_BACKSLASH_RE = re.compile(r"(?<![\w\\])([A-Za-z]:)\\")
 
 
 def _is_scratch_entry(word: str) -> bool:
@@ -180,12 +197,13 @@ def _target_kind(word: str) -> "str | None":
     return "home" if base in _HOME_WORDS else None
 
 
-def _segments(command: str, track: bool = True) -> "list[str]":
+def _segments(command: str, track: bool = True, quoted_tilde: bool = False) -> "list[str]":
     """*command* as the shared reader's commands, each rendered as one segment string.
 
     A live redirection starts its own word with its fd prefix and operator kept
     together, and an escaped or single-quoted ``$`` or any quoted ``~`` is a literal
-    ``\\0`` so it can never read as ``$HOME`` or ``~``.
+    ``\\0`` so it can never read as ``$HOME`` or ``~``. With *quoted_tilde* a quoted
+    ``~`` stays ``~``: PowerShell resolves ``"~"`` in a path to home.
     """
     out = []
     # ``&>`` is one redirect in bash but a background ``&`` then ``>`` in dash
@@ -196,7 +214,8 @@ def _segments(command: str, track: bool = True) -> "list[str]":
                 if step.redirect:
                     seg.append(" " + _pull_trailing_fd_prefix(seg) + step.text)
                 elif step.char in "$~" and (
-                    len(step.text) == 2 or step.state == 1 or (step.char == "~" and step.state)
+                    len(step.text) == 2
+                    or (step.state == 1 if step.char == "$" else step.state and not quoted_tilde)
                 ):
                     seg.append("\0")
                 else:
@@ -210,11 +229,15 @@ def _rm_wipe_targets(command: str) -> "set[str]":
     kinds: set[str] = set()
     # read with and without ``${…}`` tracking: the untracked reading is the
     # base one, so tracking can only add refusals
-    segments = [*_segments(command), *_segments(command, track=False)]
-    if platform_compat.IS_WINDOWS and "\\" in command:
-        # PowerShell and cmd read ``\`` as a path separator, not an escape: ``C:\ -Recurse``
-        segments += _segments(command.replace("\\", "/"))
-    for segment in segments:
+    # each segment with whether the rm reading reads it too (the Windows reader reads all)
+    segments = [(s, True) for s in (*_segments(command), *_segments(command, track=False))]
+    if platform_compat.IS_WINDOWS:
+        # PowerShell and cmd read the ``\`` after a drive letter as a separator: ``C:\ -Recurse``
+        view = _DRIVE_BACKSLASH_RE.sub(r"\1/", command)
+        segments += [(s, True) for s in _segments(view)] if view != command else []
+        if "~" in command:  # PowerShell resolves a quoted ``~``; rm does not
+            segments += [(s, False) for s in _segments(view, quoted_tilde=True)]
+    for segment, rm_reads in segments:
         words = _shell._shell_tokens(segment)
         while words:
             if ENV_ASSIGNMENT_RE.match(words[0]) or words[0] in _shell._KEEPS_COMMAND_POSITION:
@@ -244,6 +267,8 @@ def _rm_wipe_targets(command: str) -> "set[str]":
         name = _shell._program_basename(words[0]) if words else ""
         if platform_compat.IS_WINDOWS:
             kinds |= _windows_wipe_targets(name.lower(), words[1:])
+        if not rm_reads:
+            continue
         if name not in _RM_WORDS and name.lower() not in _RM_WORDS - {"rm"}:  # Windows: any case
             continue
         recursive = force = done = False
@@ -269,21 +294,41 @@ def _windows_wipe_targets(name: str, args: "list[str]") -> "set[str]":
     ``rd``/``rmdir``/``del``/``erase /s`` wipes. Both readings are tried; each only adds."""
     kinds: set[str] = set()
     if name in _PS_REMOVE_WORDS:
-        recursive, operands = False, []
+        flags = {"recurse": False, "whatif": False}
+        operands: list[str] = []
+        waiting = ""  # the role of a parameter whose value is the next word
         for arg in args:
-            if arg[:1] != "-":
-                operands.extend(arg.split(","))  # ``C:\,D:\`` is a list of two paths
+            if waiting or arg[:1] != "-" or arg == "-":
+                if waiting in ("", "path"):
+                    operands.extend(arg.split(","))  # ``C:\,D:\`` is a list of two paths
+                waiting = ""
                 continue
-            param, _, value = arg[1:].partition(":")  # ``-Path:C:\`` glues its value
-            recursive = recursive or bool(param) and "recurse".startswith(param.lower())
-            operands.extend(value.split(",") if value else ())
-        if recursive:
+            param, glued, value = arg[1:].partition(":")  # ``-Path:C:\``
+            param = _ps_param(param.lower())
+            role = _PS_PARAMS.get(param, "switch")
+            if role == "switch" and param in flags:
+                flags[param] = not glued or value.lower() not in ("$false", "0")
+            elif role == "path" and glued:
+                operands.extend(value.split(","))
+            elif role != "switch" and not glued:
+                waiting = role
+        if flags["recurse"] and not flags["whatif"]:  # ``-WhatIf`` only previews
             kinds |= {kind for arg in operands if (kind := _target_kind(arg))}
     if name in _CMD_REMOVE_WORDS:
         switches = [arg for arg in args if _CMD_SWITCH_RE.fullmatch(arg)]
         if any(re.search(r"(?i)/s(?![a-z])", arg) for arg in switches):
             kinds |= {kind for arg in args if arg not in switches and (kind := _target_kind(arg))}
     return kinds
+
+
+def _ps_param(word: str) -> str:
+    """The Remove-Item parameter *word* (lower case) binds to: its name, an alias, or the
+    one name it is a prefix of; ``""`` when it binds none or is ambiguous (``-f``)."""
+    word = _PS_ALIASES.get(word, word)
+    if word in _PS_PARAMS:
+        return word
+    names = [name for name in _PS_PARAMS if name.startswith(word)] if word else []
+    return names[0] if len(names) == 1 else ""
 
 
 def _after_shell_verb(tokens: "list[str]", programs: "list[str]", index: int) -> bool:
