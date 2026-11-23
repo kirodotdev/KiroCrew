@@ -383,6 +383,14 @@ COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
     }
 )
 
+#: Those files whose stores read them through a helper that drops one leading UTF-8
+#: byte-order mark (`read_config_text`, `loads_user_json`, the hook store's `json.loads` of
+#: the raw bytes), so a restore accepts the mark there too. `crons.json` and `ui-prefs.json`
+#: keep it refused: their file readers read such a file as empty.
+_BOM_TOLERANT_JSON_OBJECTS: frozenset[str] = frozenset(
+    {"config.json", "config.local.json", "hooks.json", "notification_settings.json"}
+)
+
 
 # Keys inside those files whose value must be a LIST OF OBJECTS, because a reader iterates
 # the list and reads fields off each entry. An object at the top level is necessary and not
