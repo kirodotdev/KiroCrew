@@ -740,6 +740,11 @@ def get_or_create_slot(
         self._restricted_keys.add(f"dashboard:{name}")
     if ephemeral:
         self._ephemeral_keys.add(f"dashboard:{name}")
+    # A new slot starts with approve-for-me off: a person turns it on for this
+    # slot, not for an earlier one that held the same name.
+    from kiro_crew.dashboard.approve_for_me import approve_for_me_keys
+
+    approve_for_me_keys(self).discard(f"dashboard:{name}")
     # Hydrate only a complete, genuine Slack link. Other transports still
     # write their namespaced origin id through the legacy channel field;
     # those are projected separately via ``links`` and must never make the
