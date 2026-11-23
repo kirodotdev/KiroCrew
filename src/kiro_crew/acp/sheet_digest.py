@@ -169,6 +169,26 @@ def digest_text(name: str, text: str, delimiter: str, *, partial: bool) -> str |
         return None
 
 
+def _csv_delimiter(text: str) -> str:
+    """``;`` when the ``.csv`` *text* is plainly semicolon-separated, else ``,``.
+
+    The first record, read with the comma rules ``digest_text`` uses, decides first: two or
+    more fields keep ``,``. Only a one-field record lets ``;`` apply, and then the typing
+    sample (the first :data:`MAX_TYPED_ROWS` data records, blank lines apart) must read as
+    the same two or more cells in every record with ``;``, so a quoted ``;`` never counts.
+    """
+    try:
+        first = next((r for r in csv.reader(io.StringIO(text, newline="")) if r), [])
+        if len(first) > 1:
+            return ","
+        reader = csv.reader(io.StringIO(text, newline=""), delimiter=";")
+        rows = [row for row in itertools.islice(reader, MAX_TYPED_ROWS + 1) if row]
+    except csv.Error:
+        return ","
+    width = len(rows[0]) if rows else 0
+    return ";" if width > 1 and all(len(row) == width for row in rows) else ","
+
+
 def _counts_only(name: str, count: int, width: int, *, partial: bool, read: str) -> str:
     """A block with the row count (a floor when *partial*), the column count and a note."""
     floor = f"+ data rows ({read})" if partial else " data rows"
@@ -237,6 +257,8 @@ def digest_file(path: Path) -> str | None:
         # digest_text redacts what it shows, in the attachment path's order, so a secret in a
         # cell never reaches the prompt.
         text = data.decode("utf-8-sig", errors="replace")
+        if path.suffix.lower() == ".csv":
+            delimiter = _csv_delimiter(text)
         return digest_text(path.name, text, delimiter, partial=partial)
     except Exception:
         logger.debug("sheet digest: could not digest %s", path.name, exc_info=True)
