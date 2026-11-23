@@ -185,7 +185,11 @@ def test_the_write_table_reads_its_bounds_from_the_loader_constants() -> None:
     re-hardcodes a literal in either place.
     """
     from kiro_crew.config import loader
-    from kiro_crew.config.sections import TITLE_REFRESH_EVERY_TURNS_MAX
+    from kiro_crew.config.sections import (
+        TITLE_REFRESH_EVERY_TURNS_MAX,
+        WARM_TASK_BRIEF_AWAY_MINUTES_MAX,
+        WARM_TASK_BRIEF_AWAY_MINUTES_MIN,
+    )
 
     expected = {
         "agent.soft_stop_budget_secs": (loader.SOFT_STOP_BUDGET_MIN, loader.SOFT_STOP_BUDGET_MAX),
@@ -202,6 +206,10 @@ def test_the_write_table_reads_its_bounds_from_the_loader_constants() -> None:
         "dashboard.recent_tint_count": (
             loader.RECENT_TINT_COUNT_MIN,
             loader.RECENT_TINT_COUNT_MAX,
+        ),
+        "dashboard.warm_task_brief_away_minutes": (
+            WARM_TASK_BRIEF_AWAY_MINUTES_MIN,
+            WARM_TASK_BRIEF_AWAY_MINUTES_MAX,
         ),
         # The loader's floor is 0, the built-in schedule (`_title_refresh_every_turns`
         # clamps at 0 and raises 1-3 to TITLE_REFRESH_EVERY_TURNS_MIN itself), so the

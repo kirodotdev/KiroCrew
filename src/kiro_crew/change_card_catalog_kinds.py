@@ -320,10 +320,9 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # its own allowlist before it runs anything.
         "dashboard.sso_login_flags",
         "dashboard.terminal.completion.enabled",
-        # An allowlist id, not a command: it names which allowlisted terminal
-        # app the Files tab's "Open in <app>" row starts, and only the owner's
-        # own click in the desktop app, approved by the gateway's launch grant,
-        # ever starts it. No value lets an agent launch anything.
+        # An allowlist id, not a command: it names which allowlisted terminal app the Files tab's
+        # "Open in <app>" row starts, and only the owner's own click in the desktop app, approved
+        # by the gateway's launch grant, ever starts it. No value lets an agent launch anything.
         "dashboard.terminal.external_app",
         "dashboard.terminal.reuse_current",
         "dashboard.title_refresh_every_turns",
@@ -333,6 +332,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.user_role_other",
         "dashboard.user_technical_level",
         "dashboard.warm_task_brief",
+        "dashboard.warm_task_brief_away_minutes",
         "decisions.bucket",
         "decisions.model_route.complex",
         "decisions.model_route.medium",

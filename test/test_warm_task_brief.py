@@ -315,9 +315,8 @@ async def test_message_typed_ten_minutes_ago_gives_no_brief_and_caches(monkeypat
     assert _brief_kinds(slot) == []
     typed_at = warm_task_brief._row_epoch(log.rows[0]["ts"])
     assert typed_at is not None
-    assert state._warm_task_brief_not_before[slot.key] == (
-        typed_at + warm_task_brief.WARM_TASK_BRIEF_AWAY_SECS
-    )
+    # The cache keeps the away anchor, so a changed away time still applies.
+    assert state._warm_task_brief_not_before[slot.key] == typed_at
     reads = log.reads
     await _focus(state, 2, slot.key)
     assert log.reads == reads

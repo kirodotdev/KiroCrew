@@ -181,11 +181,15 @@ builds as local time. With no on-screen record (after a restart) only the
 durable times count. The frame a socket sends on connect carries `announce:
 true`; an announce for a thread with no on-screen record marks it seen now and
 never qualifies, so the reconnect wave after a restart cannot fire a burst. A
-return qualifies after at least 30 minutes away; a thread with no time at all
-never does. Null frames, socket cleanup and elapsed time alone never start
-work. The open-task check reads the small session and work ledgers before the
-history, and a too-recent result is cached in memory until it can expire, so
-repeated focus frames stay cheap. A return while the thread runs a turn
+return qualifies after at least `dashboard.warm_task_brief_away_minutes` away
+(default 30, bounds 30-1440; the floor is the RFC's accepted 30-minute
+minimum), read on each return from the live config watcher's in-memory
+snapshot (no snapshot reads as 30), so a change applies from the next return;
+a thread with no time at all never does. Null frames, socket cleanup and
+elapsed time alone never start work. The open-task check reads the small
+session and work ledgers before the history, and a too-recent result's away
+anchor is cached in memory, compared against the away time in force on each
+frame, so repeated focus frames stay cheap. A return while the thread runs a turn
 waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
 `dashboard.warm_task_brief` (default on) turns the brief off: off, a return that

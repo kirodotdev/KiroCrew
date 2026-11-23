@@ -11061,6 +11061,7 @@
         "instance_label": "",
         "language": "",
         "recent_tint_count": 0,
+        "warm_task_brief_away_minutes": 30,
         "show_unread_dot": true,
         "expand_linked_items": false,
         "command_bar_enabled": true,
@@ -12835,6 +12836,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "dashboard.warm_task_brief_away_minutes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Since You Left Away Time (minutes)",
+      "help": "Minutes a crewmate thread or Crew Mode chat must be off screen before coming back to it posts a \"Since you left\" brief (30-1440). Takes effect on the next return; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 30
     },
     {
       "path": "dashboard.show_unread_dot",
