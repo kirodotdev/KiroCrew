@@ -357,6 +357,14 @@ A run broadcasts its frames only while its sidecar is still the slot's
 the conversation, and a reopen makes a new sidecar, so a later frame of the old
 run would land in a conversation it does not belong to.
 
+Admission can hold a turn after `_dispatch_side_turn` hands it off, and
+`_run_side_turn` reads `slot._side` when its body starts. So the dispatcher
+checks, once admitted, that the slot still holds the sidecar it dispatched for.
+A turn whose sidecar was closed in that window is dropped: it does not take a
+reopened sidecar's session, binding or transcript, and sends no frame. A turn
+refused at admission after such a close sends no error frame either
+(`test_side_close_broadcast.py`).
+
 `chat.side_closed` (`{kind, slot, origin_client?, dropped?}`) says the slot's
 side conversation was closed. `dropped` is present only when the close dropped
 queue entries. It names each one by queue id, plus the steer id for a requeued
