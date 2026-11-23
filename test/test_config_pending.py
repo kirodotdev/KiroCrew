@@ -600,6 +600,136 @@ async def test_editing_a_pending_file_again_tells_the_dashboard() -> None:
     assert len(state.ws) == 2
 
 
+# ── a held Slack edit says what is held and where to review it ──
+
+_SHARED_ON = {"shared_access": {"enabled": True, "user_ids": ["UFRIEND001"]}}
+
+
+def _held_log(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == lp.logger.name]
+
+
+@pytest.mark.parametrize(
+    "edited, row",
+    [
+        pytest.param(
+            {"enabled": True, "user_ids": ["UFRIEND001", "UNEW000001"]},
+            '"slack.shared_access.user_ids"',
+            id="add-an-id",
+        ),
+        pytest.param(
+            {"enabled": True, "user_ids": []}, '"slack.shared_access.user_ids"', id="remove-an-id"
+        ),
+        pytest.param(
+            {"enabled": False, "user_ids": ["UFRIEND001"]},
+            'changed "slack.shared_access.enabled": true -> false',
+            id="switch-off",
+        ),
+    ],
+)
+async def test_a_held_slack_edit_lists_its_keys_and_points_to_the_review(
+    edited: dict, row: str, caplog: pytest.LogCaptureFixture, _floor_monkeypatch
+) -> None:
+    _floor_monkeypatch.setattr(lp, "_reported", set())
+    path = _seal("config.json", _doc(slack=_SHARED_ON), _doc(slack={"shared_access": edited}))
+    [entry] = lp.pending_changes()
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        assert lp.reconciled_bytes("config.json", path) == _doc(slack=_SHARED_ON)
+        lp.reconciled_bytes("config.json", path)
+    lines = [m for m in _held_log(caplog) if "Slack settings" in m]
+    assert len(lines) == 1, "logged once"
+    assert row in lines[0] and "NOT in effect" in lines[0]
+    assert "`kirocrew config pending`" in lines[0]
+
+    state = _State()
+    await config_pending.sync_pending_notes(state, 0.0)
+    await config_pending.sync_pending_notes(state, 100.0)
+    [note] = _live_notes(state)
+    assert note["title"] == "A Slack settings edit is held for review"
+    assert row in note["body"] and "`kirocrew config pending`" in note["body"]
+    assert note["channel"] == config_pending.CHANNEL
+    # Review and Apply stay in the CLI or Settings: no paste-ready command anywhere.
+    for text in (lines[0], note["body"]):
+        assert "pending apply" not in text and entry["signature"] not in text
+
+
+async def test_a_held_edit_mixing_slack_and_other_keys_lists_every_key(
+    caplog: pytest.LogCaptureFixture, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Slack row must not hide a sandbox change riding in the same file."""
+    _floor_monkeypatch.setattr(lp, "_reported", set())
+    edited = {"enabled": True, "user_ids": ["UFRIEND001", "UNEW000001"]}
+    path = _seal(
+        "config.json",
+        _doc(slack=_SHARED_ON, agent={"sandbox": "auto"}),
+        _doc(slack={"shared_access": edited}, agent={"sandbox": "off"}),
+    )
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        lp.reconciled_bytes("config.json", path)
+    [line] = [m for m in _held_log(caplog) if "Slack settings" in m]
+    assert '"agent.sandbox"' in line and '"slack.shared_access.user_ids"' in line
+
+    state = _State()
+    await config_pending.sync_pending_notes(state, 0.0)
+    [note] = _live_notes(state)
+    assert '"agent.sandbox"' in note["body"] and "pending apply" not in note["body"]
+
+
+async def test_a_held_edit_that_is_not_json_lists_nothing(
+    caplog: pytest.LogCaptureFixture, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _floor_monkeypatch.setattr(lp, "_reported", set())
+    path = _seal("config.json", _doc(slack=_SHARED_ON), b'{"slack": ')
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        lp.reconciled_bytes("config.json", path)
+    messages = _held_log(caplog)
+    assert any("held for review" in m and "kirocrew config pending" in m for m in messages)
+    assert not any("Slack settings" in m for m in messages)
+
+
+async def test_a_held_edit_of_other_keys_keeps_the_plain_note(
+    caplog: pytest.LogCaptureFixture, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _floor_monkeypatch.setattr(lp, "_reported", set())
+    path = _seal(
+        "config.json",
+        _doc(slack=_SHARED_ON, agent={"model": "a"}),
+        _doc(slack=_SHARED_ON, agent={"model": "b"}),
+    )
+    with caplog.at_level("WARNING", logger=lp.logger.name):
+        lp.reconciled_bytes("config.json", path)
+    assert not any("Slack settings" in m for m in _held_log(caplog))
+    state = _State()
+    await config_pending.sync_pending_notes(state, 0.0)
+    [note] = _live_notes(state)
+    assert note["title"] == "Your config was changed outside Kiro Crew"
+    assert "Changed keys" not in note["body"]
+
+
+async def test_a_large_held_slack_edit_still_rings_a_bounded_note() -> None:
+    """A diff too long for the bell's body cap lists what fits and says the rest is not shown."""
+    edited = {"enabled": True, "user_ids": ["UFRIEND001", "UNEW000001"]}
+    paths = [f"/srv/{i:02d}/" + "p" * 190 for i in range(50)]
+    _seal(
+        "config.json",
+        _doc(slack=_SHARED_ON, agent={"sandbox_readonly_paths": []}),
+        _doc(slack={"shared_access": edited}, agent={"sandbox_readonly_paths": paths}),
+    )
+    state = _State()
+    await config_pending.sync_pending_notes(state, 0.0)
+    [note] = _live_notes(state)
+    assert note["title"] == "A Slack settings edit is held for review"
+    assert len(note["body"]) < 20_000
+    assert "more changes not shown" in note["body"]
+    assert '"slack.shared_access.user_ids"' in note["body"]
+
+
+def test_a_listed_value_cannot_close_the_code_block() -> None:
+    fenced = config_pending._fenced(['added "slack.x": "````[link](http://x)"'])
+    fence = fenced.splitlines()[0]
+    assert set(fence) == {"`"} and len(fence) == 5 and fenced.endswith(fence)
+
+
 # ── a file that is not valid JSON, or was deleted, can always be discarded ──
 
 
