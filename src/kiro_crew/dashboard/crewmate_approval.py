@@ -63,12 +63,16 @@ def seed_for_turn(state: Any, slot: Any, config: Any, execution: Any) -> bool:
     return True
 
 
-#: The state attribute mapping a worker's session key to a weak reference to the
-#: live provider whose start on the conducting kit was checked. A new start
-#: publishes a new provider and a claim of the running session keeps it, so each
-#: start is checked once. (``SessionManager.session_generation`` cannot say this:
-#: every claim advances it.) Kept on the state, not the slot: ``_ChatSlot``
-#: declares ``__slots__``.
+#: The state attribute mapping a worker's session key to the start on the conducting
+#: kit that was checked: a weak reference to the live provider and that provider's
+#: native session id (``LLMProvider.session_id``). A new start publishes a new
+#: provider, a conversation swapped in place on the same provider
+#: (``SessionLifecycleService.swap_conversation``, behind Edit & Resend) has a new
+#: native id, and a claim of the running session keeps both, so each start is checked
+#: once. (``SessionManager.session_generation`` cannot say this: every claim advances
+#: it.) An id the start does not report yet is recorded as ``""``, so the check runs
+#: again once one appears, and the check only ever lowers. Kept on the state, not the
+#: slot: ``_ChatSlot`` declares ``__slots__``.
 KIT_CHECKED_ATTR = "_crewmate_kit_checked"
 
 _PROFILE_CALLER = "dashboard:member_profile"
@@ -90,8 +94,9 @@ def tighten_for_conducting(state: Any, slot: Any, config: Any, execution: Any) -
     so its session starts on the lowered posture; that judgement only lowers and is
     not recorded. After the claim, the live provider says what its start mounted
     (``mate_worker_conducts.holds_conducting_kit``), and the outcome is recorded
-    against that provider (:data:`KIT_CHECKED_ATTR`): a mode a person sets while the
-    worker conducts stands until its next start on the kit. A pending policy verdict (a
+    against that provider and its native session id (:data:`KIT_CHECKED_ATTR`): a mode
+    a person sets while the worker conducts stands until its next start on the kit,
+    a conversation swapped in place included. A pending policy verdict (a
     ceiling install, while trust reads as denied) leaves it to the next turn.
     Sessions that inherit the worker's mode follow the lowering and keep following
     it. Returns whether a posture was lowered. Pure in-memory work, safe on the loop.
@@ -110,12 +115,14 @@ def tighten_for_conducting(state: Any, slot: Any, config: Any, execution: Any) -
         setattr(state, KIT_CHECKED_ATTR, checked)
     key = effective_session_key(slot)
     provider = state.sessions.get_provider(key)
+    native_sid = ""
     if provider is not None:
         if not holds_conducting_kit(state, slot):
             checked.pop(key, None)
             return False
+        native_sid = str(getattr(provider, "session_id", "") or "")
         judged = checked.get(key)
-        if judged is not None and judged() is provider:
+        if judged is not None and judged[0]() is provider and judged[1] == native_sid:
             return False
     elif not members.conducting_worker_session(slot_history_key(slot), config):
         return False
@@ -139,7 +146,7 @@ def tighten_for_conducting(state: Any, slot: Any, config: Any, execution: Any) -
                 sync_session_policy(state, followed)
     if provider is not None:
         try:
-            checked[key] = weakref.ref(provider)
+            checked[key] = (weakref.ref(provider), native_sid)
         except TypeError:
             # shortcut: a provider that takes no weak reference records nothing and is
             # checked at every turn (only ever lowering); record it another way if one

@@ -227,11 +227,11 @@ def sc_conducts(state, slot):
     return _conducts_for_a_worker(read_session_execution(slot_history_key(slot)), kit)
 
 
-def _start(state, slot) -> None:
+def _start(state, slot, *, session_id: str = "") -> _LiveSession:
     """(Re)start *slot*'s session: its live provider reports whether the composer
     mounted session control at that start (``member_dispatch_mounted``), decided by
     the predicate every composer reads, ``members.mounts_session_control``, at the
-    moment of the start. A reload is another call."""
+    moment of the start. A reload is another call. Returns that provider."""
     from kiro_crew import members
     from kiro_crew.dashboard.chat_utils import effective_session_key
 
@@ -240,15 +240,18 @@ def _start(state, slot) -> None:
         live = state.sessions.live_for_test = {}
         state.sessions.get_provider.side_effect = live.get
     mounted = members.mounts_session_control(slot_history_key(slot))
-    live[effective_session_key(slot)] = _LiveSession(mounted)
+    started = live[effective_session_key(slot)] = _LiveSession(mounted, session_id)
+    return started
 
 
 class _LiveSession:
     """A started session's provider, as far as these tests read it: whether its start
-    mounted session control. A new start is a new object, as a new provider is."""
+    mounted session control, and its native conversation id (``session_id``). A new
+    start is a new object, as a new provider is."""
 
-    def __init__(self, mounted: bool) -> None:
+    def __init__(self, mounted: bool, session_id: str = "") -> None:
         self.member_dispatch_mounted = mounted
+        self.session_id = session_id
 
 
 # ── a conducting worker's children are the crewmate's own workers (worker_conducts) ──
@@ -640,6 +643,26 @@ class TestTheFirstTurnOnTheKit:
         assert worker._trust
         _switch(tmp_path, on=True)
         _start(state, worker)  # the switch-on reload: the next start on the kit
+        assert self._admit(state, worker)
+        assert not worker._trust
+
+    def test_a_conversation_swapped_in_place_is_a_new_start_on_the_kit(self, crewmate, tmp_path):
+        """Edit & Resend while sub-agent runs share the process swaps the native
+        conversation on the provider it already runs (``swap_conversation``): the same
+        provider object, a new native session id. The new conversation is a new start
+        on the kit, so a mode a person set in the one it replaced is lowered again."""
+        state, caller, _execution = crewmate
+        _profile_mode(tmp_path, "normal")
+        _switch(tmp_path, on=True)
+        worker = state.get_slot(_create(state, caller)["target"])
+        live = _start(state, worker, session_id="s1")
+        _hold(worker, "trust")
+        assert self._admit(state, worker)  # its first turn on the kit lowers it
+        assert not worker._trust
+        worker._trust = True  # a person trusts the conducting worker
+        assert not self._admit(state, worker)  # the next turn claims the same conversation
+        assert worker._trust
+        live.session_id = "s2"  # the swap: the same provider, a new native conversation
         assert self._admit(state, worker)
         assert not worker._trust
 
