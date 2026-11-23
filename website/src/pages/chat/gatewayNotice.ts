@@ -262,8 +262,8 @@ const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
 
 /**
  * Settled copy for a pending token whose cause is not the connection: a
- * throttle is the provider's answer, so its card never reads "Connection
- * restored" or "Connection interrupted".
+ * throttle is an answer, not a dropped connection, so its card never reads
+ * "Connection restored" or "Connection interrupted".
  */
 const SETTLED_KEY = {
   transient_throttle_retrying: {
