@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
@@ -1517,10 +1518,11 @@ class TestGitTreesAreQuarantined:
             listed.append(os.fspath(target))
             return real_scandir(target)
 
+        # agent_scratch's own os binding: sc.os is the worker's stdlib os.
         with monkeypatch.context() as patch:
-            patch.setattr(sc.os, "scandir", _counting)
+            patch.setattr(sc, "os", SimpleNamespace(**{**vars(os), "scandir": _counting}))
             assert sc.holds_git_repository(path)
-        assert len(listed) <= dirs, (len(listed), dirs)
+        assert 0 < len(listed) <= dirs, (len(listed), dirs)
         assert len(listed) == len(set(listed))
         self._swept(path)
 
