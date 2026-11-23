@@ -1999,7 +1999,8 @@
       "sign_out_link_config_unreadable": "Could not load settings, so the sign-out link can’t be shown.",
       "switch_in_settings": "Switch account in Settings",
       "bots_sign_in_in_settings": "Kiro sign-in for bots in Settings",
-      "kiro_account_in_settings": "Kiro account in Settings"
+      "kiro_account_in_settings": "Kiro account in Settings",
+      "credit_usage_not_ready": "Your balance isn’t ready yet."
     },
     "agentImportFlow": {
       "choose_sources": "Choose sources",
@@ -3039,7 +3040,8 @@
       "pending_cancel_unsettled": "You’re signed in, but the sign-in you started here couldn’t be cancelled. It stays open until it times out.",
       "card_intro": "Kiro Agent and other Kiro features run as this Kiro account, whichever agent harness you use. Kiro CLI keeps its own kiro-cli login, so signing in here does not change it.",
       "previous_sign_in_not_removed": "Signed in, but the previous sign-in could not be removed",
-      "previous_sign_in_not_removed_body": "The new account is stored, but the one you were switching away from is still there and takes precedence. Sign out of it, then check the sign-in shown here."
+      "previous_sign_in_not_removed_body": "The new account is stored, but the one you were switching away from is still there and takes precedence. Sign out of it, then check the sign-in shown here.",
+      "use_another_way": "Use another way"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Agent specs missing",
@@ -11500,19 +11502,15 @@
         "engine_sign_in_reason": "Sign in to {{productName}} to switch to the built-in engine."
       },
       "kiroSignInCard": {
-        "title": "Kiro sign-in",
         "checking": "Checking sign-in…",
         "signed_in_with": "Signed in with {{provider}}",
-        "signed_in_body": "Agents run as this Kiro account. The access token is renewed automatically.",
         "access_token_expires": "Access token expires {{when}} ({{at}}).",
-        "expired_renews_on_next_use": "The access token has expired and will be renewed the next time an agent needs it.",
         "sign_in_expired": "Sign-in expired.",
         "sign_in_expired_body": "Sign in again to resume sessions and agent work.",
         "sign_in_expired_body_account": "Sign in again to use features that need your Kiro account.",
         "sign_in_again": "Sign in again",
         "switch_account": "Switch account",
         "sign_out": "Sign out",
-        "takes_effect_next_process": "Applies to agent processes started from now on; running sessions pick it up at their next turn.",
         "could_not_sign_out": "Could not sign out",
         "signed_in_body_no_refresh": "Agents run as this Kiro account. This sign-in has no refresh token, so it cannot renew itself — sign in again before it expires.",
         "search_label": "Sign out or switch Kiro account",
@@ -11536,7 +11534,10 @@
         "use_kiro_cli_account": "Use the Kiro CLI account",
         "use_kiro_cli_explain": "This removes the sign-in stored here. Kiro Agent then runs as the Kiro CLI account. To undo it, sign in here again.",
         "remove_this_sign_in": "Remove this sign-in",
-        "keep_it": "Keep it"
+        "keep_it": "Keep it",
+        "signed_out_hint": "Your agents run on your Kiro account.",
+        "code_step_hint": "Open the page, then check it shows this code.",
+        "loading_account": "Loading account"
       },
       "kiroAccountUnlocks": {
         "list_heading": "With a Kiro account",

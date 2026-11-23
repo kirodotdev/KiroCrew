@@ -6153,7 +6153,8 @@
       "sign_out_link_config_unreadable": "无法加载设置，因此无法显示登出链接。",
       "switch_in_settings": "在设置中切换账号",
       "bots_sign_in_in_settings": "在设置中为 Bot 登录 Kiro",
-      "kiro_account_in_settings": "设置中的 Kiro 账户"
+      "kiro_account_in_settings": "设置中的 Kiro 账户",
+      "credit_usage_not_ready": "你的余额还没准备好。"
     },
     "agentDropdownList": {
       "active_in_this_session": "在此会话中使用",
@@ -7973,7 +7974,8 @@
       "pending_cancel_unsettled": "已登录，但无法取消你在此处发起的登录。该登录会保持开启，直到超时。",
       "card_intro": "Kiro Agent 和其他 Kiro 功能都以这个 Kiro 账号运行，无论你使用哪个代理运行框架。Kiro CLI 仍沿用自己的 kiro-cli 登录，在此登录不会改变它。",
       "previous_sign_in_not_removed": "已登录，但无法移除之前的登录",
-      "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。"
+      "previous_sign_in_not_removed_body": "新账号已保存，但你切换前的那个账号仍然存在且优先生效。请先将其登出，再确认此处显示的登录。",
+      "use_another_way": "使用其他方式"
     },
     "kiroCliSignInInTerminal": {
       "copy_sign_in": "复制登录命令",
@@ -16259,19 +16261,15 @@
         "engine_sign_in_reason": "登录 {{productName}} 即可切换到内置引擎。"
       },
       "kiroSignInCard": {
-        "title": "Kiro 登录",
         "checking": "正在检查登录状态…",
         "signed_in_with": "已通过 {{provider}} 登录",
-        "signed_in_body": "Agent 以这个 Kiro 账号运行。访问令牌会自动续期。",
         "access_token_expires": "访问令牌 {{when}} 到期（{{at}}）。",
-        "expired_renews_on_next_use": "访问令牌已到期，下次有 agent 需要时会自动续期。",
         "sign_in_expired": "登录已失效。",
         "sign_in_expired_body": "重新登录即可恢复会话和 agent 工作。",
         "sign_in_expired_body_account": "重新登录即可使用需要 Kiro 账户的功能。",
         "sign_in_again": "重新登录",
         "switch_account": "切换账号",
         "sign_out": "登出",
-        "takes_effect_next_process": "对此后启动的 agent 进程生效；正在运行的会话会在下一轮对话时切换。",
         "could_not_sign_out": "无法登出",
         "signed_in_body_no_refresh": "Agent 以这个 Kiro 账号运行。此登录没有刷新令牌，无法自动续期——请在到期前重新登录。",
         "search_label": "登出或切换 Kiro 账号",
@@ -16295,7 +16293,10 @@
         "use_kiro_cli_account": "使用 Kiro CLI 的账号",
         "use_kiro_cli_explain": "这会移除保存在这里的登录。之后 Kiro Agent 以 Kiro CLI 的账号运行。要撤销，请在这里重新登录。",
         "remove_this_sign_in": "移除这个登录",
-        "keep_it": "保留"
+        "keep_it": "保留",
+        "signed_out_hint": "你的 agent 使用你的 Kiro 账号运行。",
+        "code_step_hint": "打开页面，然后确认它显示的是此代码。",
+        "loading_account": "正在加载账号"
       },
       "kiroAccountUnlocks": {
         "list_heading": "有 Kiro 账户后可用",
