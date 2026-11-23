@@ -6379,7 +6379,11 @@ record in `dashboard/directive_queue.py`, keyed by the digest of the raw call
 input. The runner applies it only when `directive_queue.claim` finds a record
 whose digest equals the one the turn's own `tool_call` frame carried, parked
 during that turn; on such a backend the marker in the result text is display
-only. Records are in memory, expire after `MAX_AGE_SECS` (300 s), and are capped
+only. The applier's outcome then replaces the tool's own text on the tool
+result the dashboard shows and stores, as on the marker path, and the runner
+logs the claim as applied only when `DirectiveOutcome.applied` is set; a
+refusal or an error is logged as not applied, with its text. Records are in
+memory, expire after `MAX_AGE_SECS` (300 s), and are capped
 per session (`MAX_PER_SESSION`) and in total (`MAX_SESSIONS`). The messaging
 `TurnDriver` applies directives from the verified marker alone.
 

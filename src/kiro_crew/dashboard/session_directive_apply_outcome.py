@@ -54,10 +54,14 @@ class DirectiveOutcome:
     ``TERMINAL_DIRECTIVES`` applied its effect, so the runner skips the
     empty-response recovery for this turn. A refusal, an error and a delivery
     failure all leave it False — the model must then fall back to a plain reply.
+    ``applied`` mirrors the SEL audit: True only when the applier ran the
+    directive and audited it a success, so a refusal or an ``Error:`` result
+    leaves it False.
     """
 
     text: str
     ends_turn: bool = False
+    applied: bool = False
 
 
 # Card directives require a connected dashboard surface. ``set_project`` is
