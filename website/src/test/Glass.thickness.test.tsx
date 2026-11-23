@@ -146,7 +146,7 @@ describe('Glass thickness ladder', () => {
     }
   })
 
-  it('is worn thick by the progress panes above the composer, and by nothing else yet', () => {
+  it('is worn thick by the progress panes above the composer', () => {
     // Maintainer direction on #16299: the composer keeps the default; the
     // panes that show progress above it (sub-agent tray, task bar, workflow
     // bar) go `thick` so their dense rows stay readable
@@ -155,7 +155,8 @@ describe('Glass thickness ladder', () => {
     for (const rel of ['../pages/chat/SubagentProgressBar.tsx', '../pages/chat/WorkflowProgressBar.tsx', '../pages/chat/TaskProgressBar.tsx']) {
       expect(read(rel), rel).toMatch(/<Glass\s+variant="chip"\s+thickness="thick"/)
     }
-    // The composer itself keeps the default step.
-    expect(read('../components/ChatInput.tsx')).not.toMatch(/thickness=/)
+    // The composer's own pane keeps the default step: ChatInput.liquidGlass.test.tsx
+    // pins it on the rendered dock, since ChatInput.tsx also draws the terminal
+    // failure notices above the composer on thick panes of their own.
   })
 })
