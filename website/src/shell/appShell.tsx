@@ -78,7 +78,7 @@ import { useRequestFeature } from './topbar/requestFeature'
 import { useShellKeyboard } from './shortcuts/shellKeyboard'
 import { formatShortcut, shortcutDefFromChord, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
 import { shortcutEntry } from '../lib/shortcutRegistry'
-import { ariaKeyshortcutsFor, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
+import { ariaKeyshortcutsFor, useKeyboardLayout, useShortcutsEnabled } from '../hooks/useNavShortcutHint'
 import type { MobileRosterBarState } from '../components/MobileNavRailContext'
 import { i18nT } from '../i18n/t'
 import { useGuideRevealScope } from '../guide/GuideRevealScope'
@@ -278,6 +278,8 @@ export function useAppShell() {
   // must not be advertised.
   const shortcutBindings = useShortcutBindings()
   const shortcutsEnabled = useShortcutsEnabled()
+  // Re-render once the keyboard layout loads: both focus-mode sentences name the chord's key.
+  useKeyboardLayout()
   const focusModeChordDef = (() => {
     if (!shortcutsEnabled) return null
     const entry = shortcutEntry('toggle-focus-mode')
