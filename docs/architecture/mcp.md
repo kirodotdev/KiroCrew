@@ -2365,7 +2365,9 @@ folder has.
 A worker session finds its stubs by its own execution record, never by the shared
 name: KAS (`_pooled_session_servers_and_ref_spec`, on a positive `backend == kas`
 check) and the mirrored hosts (`AcpRuntime._mirrored_session_mcp`,
-`AcpClient._resolve_session_mcp_servers`) pass the session key, and
+`AcpClient._resolve_session_mcp_servers`) pass the session key, as pi
+(`AcpClient._pooled_broker_stubs`) does only when the session is a pi worker
+whose slot this process has noted (`members.is_crewmate_worker_session`), and
 `session_servers` answers `kirocrew-mate-worker` with that key only through
 `mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. A lookup with no
 key gets no stub for `kirocrew-mate-worker`: the stock worker spec is
@@ -2408,6 +2410,16 @@ That read also re-checks them as KAS does (`withdrawn_worker_stubs`): a stub who
 server it drops, mutes or marks registry-governed leaves the array, and its name
 stays withheld, so neither half mounts it. So a Codex worker reaches
 `kirocrew-work` through a stub bound to its own session token.
+On pi, `AcpClient._resolve_session_mcp_servers` withholds from the
+worker's spec mounts the names of the stubs that keyed lookup returned, so the
+gateway, not pi, starts a Bot-added server and resolves its `secret://` values;
+the worker base's own routed servers (`kirocrew-core` and the rest) are stubs in
+place of their spec entries too.
+The stubs that reach pi come from a second keyed lookup made after that spec read,
+so the merged-spec check above drops a stub whose server was removed, muted or
+marked registry-governed in between, and they pass the worker spec's `tools`
+allowlist (`_member_stub_allowlist`), which a worker records whether or not the
+session is marked a member.
 
 An app callback from a Bot's stub is governed as that worker's tool calls
 are. The spool record carries the stub identity `crewmate:<id>`, which no profile
