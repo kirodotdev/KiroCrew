@@ -5696,6 +5696,16 @@ From engine 3.4 that failure is `-32000` "Sign in to Kiro to send a prompt." wit
 `data.errorType` `SignInRequiredError` and no expiry wording; `_RE_SESSION_EXPIRED`
 matches that type name, so the row is tagged `auth_required` and its card offers
 Sign in rather than Resume.
+The one exception is machine mode (`agent_sdk/kas_machine.py`): with the
+`crew_client` preview on and `agent.kas_auth` `machine`, `with_engine_args`
+replaces `--auth=acp-callback` with `--auth=machine --token-path=<file>
+--endpoint=<url> --control-plane-endpoint=<url> --region=<region>`, the plan
+carries `host_auth=False` and `machine_auth`, and the engine reads the token file
+itself; Crew only checks the path with `access(2)` and `stat(2)`. The engine's
+environment loses Crew's API key and every name in `agent.kas_machine_env_drop`.
+A missing cell or token file refuses the spawn before any install
+(`machine_cell_missing`, `machine_token_missing`), and machine mode runs on
+`agent.kas_bundle` only (`machine_route_not_bundle`).
 The spawn is labelled `kas-bundle` (a Node program names no engine). Every seam
 after the spawn is unchanged — measured: `initialize`, the
 `_kiro/auth/getAccessToken` callback answered from the vault, and the

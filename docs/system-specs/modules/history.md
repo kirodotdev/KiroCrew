@@ -1466,7 +1466,16 @@ no longer destroy older turns.
   committed save `slot._frozen_prefix_cache` holds where the prefix sits in the
   file it wrote (`transcript_merge.prefix_range`: byte offset and size), not its
   text, and the fast path reads that range back (`read_prefix_range`); a range
-  that does not read back as whole UTF-8 lines takes the full read instead. The
+  that does not read back as whole UTF-8 lines takes the full read instead.
+  Where text writes add no `\r` (`streaming_supported`), a save that cannot
+  append copies the prefix bytes from the file into the staged replacement
+  (`PrefixSource`, `StreamedPayload`, `write_payload`) instead of holding them
+  as text, and builds only the rows after them. After another writer rewrote the
+  metadata line or appended rows, the prefix this slot wrote is found again by
+  the CRC-32 recorded with it, and only the rows after it are read and scanned.
+  The copy refuses a prefix whose CRC or file identity changed under it. A
+  prefix that changed, a file with a `\r`, Windows, and rewind, regenerate and
+  fork saves keep the whole-file path. The
   cache written before the write keeps the text, so a failed write retries on
   the same bytes. A row
   older than the chat's newest `session.file_changes_keep_turns` rows carrying
