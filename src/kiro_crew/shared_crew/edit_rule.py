@@ -36,7 +36,7 @@ from kiro_crew.shared_crew.attribution import message_author
 from kiro_crew.shared_crew.contracts import MESSAGE_AUTHOR_META_KEY, PrincipalKind
 from kiro_crew.shared_crew.identity import PROVIDER_KIRO, viewer_principal
 
-#: The refusal's machine-readable code; the dashboard shows it on the refused-press notice.
+#: The refusal's machine-readable code. The dashboard rolls a refused edit back.
 NOT_MESSAGE_AUTHOR = "not_message_author"
 
 _PERSON_KINDS = (PrincipalKind.HUMAN, PrincipalKind.MACHINE)
