@@ -496,7 +496,9 @@ def _k23_bound_to_raising_wait(module: _Module, node: ast.AST, name: str) -> boo
         if not isinstance(assign, ast.Assign) or not isinstance(assign.value, ast.Call):
             continue
         bound = [
-            n for t in assign.targets for n in ([t] if isinstance(t, ast.Name) else getattr(t, "elts", []))
+            n
+            for t in assign.targets
+            for n in ([t] if isinstance(t, ast.Name) else getattr(t, "elts", []))
         ]
         if not any(isinstance(n, ast.Name) and n.id == name for n in bound):
             continue
