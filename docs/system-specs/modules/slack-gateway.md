@@ -1879,8 +1879,10 @@ re-deriving every channel's state, so restarting Telegram cannot disturb Discord
 ### `restart_channel(channel_type, *, cfg=None)`
 
 The in-process equivalent of a gateway restart for ONE channel, in boot's order:
-bounded close of the old handle (`registry.shutdown_tasks`), drop the handle and
-its legacy `_<channel>_client` mirror, re-run that channel's hoist against `cfg`
+bounded close of the old handle (`registry.shutdown_tasks`), drop the handle, its
+legacy `_<channel>_client` mirror and the dashboard's `<channel>_connected` flag
+(the old client's start published it and most clients never report their own
+shutdown), re-run that channel's hoist against `cfg`
 plus a fresh credential read off the loop, re-evaluate the `channels` governance
 gate and the readiness badge, then `desc.start(orch)` and store the new handle. A
 channel whose new config disables it, leaves it uncredentialed, or is denied by

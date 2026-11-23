@@ -3341,6 +3341,12 @@ task is created and registered, since a request already past the entry guard is
 not yet in the cancel sweep's `_handler_tasks` and would otherwise start a turn
 on a just-closed channel.
 
+The same close clears the channel's `<channel>_connected` flag on `DashboardState`.
+The flag describes the client whose start published it, and most clients never
+report their own shutdown, so without the reset `GET /api/<channel>/config` and
+`DashboardState.channel_status` (System > Services) keep answering `connected` for
+a channel a reload turned off. A new start publishes its own value.
+
 ### The applier registry
 
 `live.subscribe(*prefixes, callback=..., name=...)` is the only sanctioned place
