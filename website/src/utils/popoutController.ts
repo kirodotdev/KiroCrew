@@ -27,7 +27,8 @@ import type { ChatLaunchOptions } from '../app-sdk'
 import { i18nT } from '../i18n/t'
 import { withBase } from '../lib/basePath'
 import { isElectron } from '../lib/electron'
-import { isDesktopAppPane } from '../lib/hostRelay'
+import { crewPopoutUrl } from '../lib/crewPopout'
+import { getCrewPopoutHub, HOST_CLOSE_POPOUT, isDesktopAppPane, postToHost } from '../lib/hostRelay'
 
 /** Heartbeat cadence (ms) for the main window's liveness ping. */
 export const HEARTBEAT_MS = 5_000
@@ -408,14 +409,22 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     const top = Math.round(availTop + Math.max(0, ((sc?.availHeight ?? 900) - h) / 2))
     const features = `popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
     // A crew's pane in the desktop app runs on the crew's tunnel port, so the
-    // window-open handler would hand this URL, without its token, to the
-    // system browser and return no window. Refuse before that happens.
+    // window-open handler would hand its own URL, without its token, to the
+    // system browser. Open the hub's page that frames it instead; it does not
+    // get the pane's clipboard-image or notification relays. A hub that has not
+    // advertised that page (an older release, or no host model yet) has nowhere
+    // to open it.
+    let url = buildUrl(id, title)
     if (isDesktopAppPane()) {
-      logWarn(`popout ${id} not opened — a crew pane in the desktop app cannot open its own window`)
-      tellUser(i18nT('utils.popoutController.crew_pane_cannot_pop_out_in_desktop_app'))
-      return
+      const hub = getCrewPopoutHub()
+      if (hub === null) {
+        logWarn(`popout ${id} not opened — this desktop app crew pane's hub has not advertised a pop-out framing page`)
+        tellUser(i18nT('utils.popoutController.crew_pane_cannot_pop_out_in_desktop_app'))
+        return
+      }
+      url = crewPopoutUrl(hub, url)
     }
-    const win = window.open(buildUrl(id, title), windowName(id), features)
+    const win = window.open(url, windowName(id), features)
     if (!win) {
       // The window was refused. Don't optimistically mark open — and don't fail
       // silently: tell the user why nothing happened and leave an
@@ -489,6 +498,8 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
   }
 
   function leaveSelf(keepEntity: boolean): void {
+    // Framed by a desktop hub's pop-out window: that window is the hub's to close.
+    if (isDesktopAppPane() && postToHost({ type: HOST_CLOSE_POPOUT, v: 1 })) return
     const id = selfId
     try { window.opener?.focus() } catch (e) { logDebug('opener focus vetoed', e) }
     try { window.close() } catch (e) { logDebug('self close vetoed', e) }

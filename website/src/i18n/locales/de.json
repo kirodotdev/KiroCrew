@@ -12139,6 +12139,10 @@
     "account_and_settings": "Konto & Einstellungen"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "Diese Crew ist nicht verbunden. Verbinde sie im Hauptfenster und öffne das Pop-out dann erneut.",
+      "this_pop_out_cannot_be_opened": "Dieses Pop-out kann hier nicht geöffnet werden."
+    },
     "mcpPage": {
       "bot_workers_note": "Ein hier hinzugefügter Server erreicht die Worker von Bots nicht. Die Worker eines Bots erhalten ihn nur, wenn er diesem Bot hinzugefügt wird.",
       "title": "MCP-Server",

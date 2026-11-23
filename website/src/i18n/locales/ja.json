@@ -11862,6 +11862,10 @@
     "account_and_settings": "アカウントと設定"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "このクルーは接続されていません。メインウィンドウで接続してから、もう一度ポップアウトしてください。",
+      "this_pop_out_cannot_be_opened": "このポップアウトはここでは開けません。"
+    },
     "mcpPage": {
       "bot_workers_note": "ここで追加したサーバーは Bot のワーカーには届きません。Bot のワーカーがサーバーを使えるのは、その Bot に追加したときだけです。",
       "title": "MCP サーバー",

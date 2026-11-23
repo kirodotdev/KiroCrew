@@ -12416,6 +12416,10 @@
     "account_and_settings": "Conta e configurações"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "Esta crew não está conectada. Conecte-a na janela principal e destaque novamente.",
+      "this_pop_out_cannot_be_opened": "Esta janela destacada não pode ser aberta aqui."
+    },
     "mcpPage": {
       "bot_workers_note": "Um servidor adicionado aqui não chega aos workers dos Bots. Os workers de um Bot só o recebem quando ele é adicionado a esse Bot.",
       "title": "Servidores MCP",

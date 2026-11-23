@@ -8659,6 +8659,10 @@
       "prompt_loading": "Loading the prompt…",
       "turn_start_latest": "Turn {{n}} · session start · latest"
     },
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "This crew isn't connected. Connect it in the main window, then pop out again.",
+      "this_pop_out_cannot_be_opened": "This pop-out can't be opened here."
+    },
     "devFleetPage": {
       "actions": "Actions",
       "backend_unavailable": "Backend unavailable",

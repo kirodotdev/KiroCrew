@@ -11862,6 +11862,10 @@
     "account_and_settings": "账号与设置"
   },
   "pages": {
+    "crewPopoutFrame": {
+      "this_crew_is_not_connected": "此 Crew 未连接。请在主窗口中连接它，然后重新弹出。",
+      "this_pop_out_cannot_be_opened": "无法在此打开这个弹出窗口。"
+    },
     "mcpPage": {
       "bot_workers_note": "在这里添加的服务器不会进入 Bot 的工作者。只有把服务器添加到某个 Bot，该 Bot 的工作者才能使用它。",
       "title": "MCP 服务器",
