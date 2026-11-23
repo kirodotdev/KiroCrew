@@ -6677,7 +6677,7 @@
       "trust_scope_tooltip": "Approuvé par une autorisation d'app pour ce chat ; elle expire d'elle-même. Choisis Normal dans ce menu pour y mettre fin maintenant ; l'app peut la redonner tant que tu ne la désactives pas dans cette app.",
       "yolo_desc": "Dans chaque chat, {{productName}} travaille sans vous demander d'abord",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
-      "yolo_expiration_until_shutdown": "Reste activé jusqu'au redémarrage de {{productName}} — pas d'expiration programmée.",
+      "yolo_expiration_until_shutdown": "Reste activé jusqu'à ce que tu arrêtes {{productName}} — pas d'expiration programmée. Un redémarrage le conserve.",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "Désactivé par la politique de sécurité de votre organisation",
       "yolo_mode_is_an_app_wide_setting": "Le mode YOLO est un paramètre global de l’application"
@@ -21618,7 +21618,7 @@
         "profile_2": "profil",
         "profiles_json": "profiles/*.json",
         "rail_active": "Actif",
-        "rail_until_restart": "Jusqu’au redémarrage",
+        "rail_until_restart": "Jusqu’à ce que tu arrêtes {{productName}}",
         "rail_until_time": "Jusqu'à {{time}}",
         "search_rules_placeholder": "Rechercher des règles, motifs, catégories…",
         "section_group_enforced": "Imposé",
@@ -21680,7 +21680,7 @@
         "yolo_duration_locked": "Désactivé par la politique de ton organisation",
         "yolo_duration_next_activation_note": "S’applique la prochaine fois que tu actives l’approbation automatique.",
         "yolo_duration_title": "Durée d’activation de l’approbation automatique",
-        "yolo_duration_until_shutdown": "Jusqu’au redémarrage de {{productName}}",
+        "yolo_duration_until_shutdown": "Jusqu’à ce que tu arrêtes {{productName}}",
         "your_custom_denies": "Vos refus personnalisés",
         "trustedApps": {
           "description": "Applications auxquelles tu as permis d'exécuter leur propre code sur cet ordinateur. La confiance porte sur une application à la fois ; toutes les autres applications tierces restent bloquées.",

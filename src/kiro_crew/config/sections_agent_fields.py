@@ -783,8 +783,8 @@ _YOLO_DURATION_SECS: dict[str, int] = {
     "24h": 86400,
 }
 
-# Not a timed value: an ad-hoc grant that stays on with no expiry until the
-# gateway process stops. In-memory only, so it cannot survive a restart.
+# Not a timed value: an ad-hoc grant that stays on with no expiry until the user
+# stops Kiro Crew. A restart, crash or reboot keeps it (``kept_yolo``).
 YOLO_UNTIL_SHUTDOWN = "until_shutdown"
 
 

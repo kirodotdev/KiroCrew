@@ -234,6 +234,8 @@ jobs:
               - 'website/electron/runtime/update/**'
               # Loaded by both update lanes: the pre-swap stop's refusal code.
               - 'website/electron/gateway-stop.js'
+              # Loaded by the feed lane: a Restart now is a relaunch, not a Quit.
+              - 'website/electron/relaunch-intent.js'
               # gateway-stop.js loads it to pick the shutdown secret.
               - 'website/electron/local-token.js'
               - 'website/electron/bundle-location.js'

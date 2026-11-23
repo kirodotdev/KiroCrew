@@ -849,8 +849,8 @@ class AgentConfig:
             "How long auto-approve (YOLO) lasts when it is enabled AD HOC — from "
             "the dashboard picker, Slack, or the API. Every one of those surfaces "
             "uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or "
-            "until_shutdown to keep it on with no timed expiry until Kiro Crew "
-            "restarts. Timed values are capped at 24h. Does NOT apply to a grant "
+            "until_shutdown to keep it on until you stop Kiro Crew (a restart keeps "
+            "any grant). Timed values are capped at 24h. Does NOT apply to a grant "
             "declared via 'dangerously_skip_permissions' above, which persists.",
             enum=["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
         ),

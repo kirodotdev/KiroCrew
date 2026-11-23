@@ -2046,7 +2046,7 @@
       "yolo_label": "YOLO",
       "yolo_desc": "In every chat, {{productName}} works without asking you first",
       "configure_duration": "Configure duration",
-      "yolo_expiration_until_shutdown": "Stays on until {{productName}} restarts — no timed expiry.",
+      "yolo_expiration_until_shutdown": "Stays on until you stop {{productName}} — no timed expiry. A restart keeps it.",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again."
     },
     "appstore": {
@@ -10341,7 +10341,7 @@
         "yolo_duration_6h": "6 hours",
         "yolo_duration_12h": "12 hours",
         "yolo_duration_24h": "24 hours",
-        "yolo_duration_until_shutdown": "Until {{productName}} restarts",
+        "yolo_duration_until_shutdown": "Until you stop {{productName}}",
         "yolo_duration_locked": "Disabled by your organization's policy",
         "yolo_duration_next_activation_note": "Applies the next time you turn auto-approve on.",
         "failed_to_save_yolo_duration": "Could not save the duration.",
@@ -10367,7 +10367,7 @@
         "state_blocked": "Blocked",
         "rail_active": "Active now",
         "rail_until_time": "Until {{time}}",
-        "rail_until_restart": "Until restart",
+        "rail_until_restart": "Until you stop {{productName}}",
         "tailnet_chip_allowlist": "Allow-list",
         "tailnet_chip_allowlist_absent": "Nothing added",
         "tailnet_chip_allowlist_added": "Name added",

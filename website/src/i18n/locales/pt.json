@@ -6677,7 +6677,7 @@
       "trust_scope_tooltip": "Confiável por uma permissão de app para este chat; ela expira sozinha. Escolha Normal neste menu para encerrá-la agora; o app pode concedê-la de novo até você desativá-la nesse app.",
       "yolo_desc": "Em todos os chats, o {{productName}} trabalha sem perguntar primeiro",
       "yolo_expiration_timed": "Desativa sozinho após {{duration}} e volta a perguntar.",
-      "yolo_expiration_until_shutdown": "Continua ativado até o {{productName}} reiniciar — sem expiração por tempo.",
+      "yolo_expiration_until_shutdown": "Continua ativado até você parar o {{productName}} — sem expiração por tempo. Um reinício o mantém.",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "Desativado pela política de segurança da sua organização",
       "yolo_mode_is_an_app_wide_setting": "O modo YOLO é uma configuração de todo o app"
@@ -21618,7 +21618,7 @@
         "profile_2": "perfil",
         "profiles_json": "profiles/*.json",
         "rail_active": "Ativo agora",
-        "rail_until_restart": "Até reiniciar",
+        "rail_until_restart": "Até você parar o {{productName}}",
         "rail_until_time": "Até {{time}}",
         "search_rules_placeholder": "Pesquisar regras, padrões, categorias…",
         "section_group_enforced": "Imposto",
@@ -21680,7 +21680,7 @@
         "yolo_duration_locked": "Desativado pela política da sua organização",
         "yolo_duration_next_activation_note": "Vale na próxima vez que você ativar a aprovação automática.",
         "yolo_duration_title": "Por quanto tempo a aprovação automática fica ativa",
-        "yolo_duration_until_shutdown": "Até o {{productName}} reiniciar",
+        "yolo_duration_until_shutdown": "Até você parar o {{productName}}",
         "your_custom_denies": "Suas negações personalizadas",
         "trustedApps": {
           "description": "Apps que você autorizou a executar o próprio código neste computador. A confiança vale para um app por vez; todos os outros apps de terceiros continuam bloqueados.",

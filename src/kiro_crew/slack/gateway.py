@@ -547,6 +547,7 @@ from kiro_crew.slack.gateway_runtime.cron_verdict import (
     _result_hash,
 )
 from kiro_crew.slack.gateway_runtime.exit_path import (
+    _CTRL_C_MARK_WAIT_SECS,
     _FORCE_EXIT_DEADLINE_SECS,
     _MARKER_WRITE_WAIT_SECS,
 )
@@ -815,6 +816,8 @@ class GatewayOrchestrator:
     _sign_in_refresher_task: "asyncio.Task[None] | None"
     _marker_clear_pending: threading.Event
     _force_exit_claimed: threading.Event
+    # Set only by the first Ctrl-C (exit_path); read with getattr(..., None).
+    _ctrl_c_marking: threading.Thread
     _dashboard_runner: web.AppRunner | None
     _handler_tasks: set[asyncio.Task]
     _session_tasks: dict[str, asyncio.Task]

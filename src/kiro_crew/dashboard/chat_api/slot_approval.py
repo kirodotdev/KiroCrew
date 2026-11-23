@@ -441,6 +441,10 @@ async def apply_approval_mode(
             mode=mode,
             resource=slot_key or "",
         )
+    # An explicit pick wins over a kept mode the boot restore has not applied yet.
+    from kiro_crew.dashboard.chat_trust_restart import note_mode_pick
+
+    note_mode_pick(state, slot)
     #: Channels this request turned trusted, so a late refusal can undo just those.
     _granted_channels: list[object] = []
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is

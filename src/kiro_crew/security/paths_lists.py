@@ -520,6 +520,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     "panel-dismissals",
     # Pending deletes of released engine records (``released_sessions``); also masked.
     "released-sessions",
+    # Kept-grant records and the user-stop mark (``kept_grants``); also masked.
+    "kept-grants",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

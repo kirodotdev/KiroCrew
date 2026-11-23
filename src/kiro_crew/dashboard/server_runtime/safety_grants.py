@@ -259,29 +259,47 @@ def _dispatch_override_expiry_notification(
 
 
 async def _notify_restart_dropped_grant(state: DashboardState) -> None:
-    """Tell the operator about a safety-override grant the previous process lost.
+    """Put back a grant this boot keeps, and tell the operator about one it lost.
 
-    A grant that was live when the process went down is GONE -- grants are
-    in-memory by design and this does not change that. What it changes is that
-    the operator now hears about it. Without this, someone who granted six
-    hours of auto-approval and restarted an hour later got no signal at all:
-    the next unattended run just stopped on a prompt nobody was waiting for.
+    An ad-hoc grant that was live when the process went down comes back when the
+    exit was not a stop the user chose (``kept_yolo.restore_at_boot``), and the
+    operator gets a note saying so. A grant that does not come back -- the user
+    stopped Kiro Crew, the policy now denies it, or the record could not be
+    verified -- is gone, and the operator hears about that instead when it still
+    had time left, except after a stop the user chose, which ended it on purpose.
 
-    Read OFF the loop and off the boot path: it is a file open on a filesystem
-    that may be slow, and nothing about boot should wait on it (found in
-    review). Safe to run after the startup grant because the record carries the
-    writing pid, so this process's own record is never read as a dropped one.
+    Read OFF the loop and off the boot path: both are file opens on a filesystem
+    that may be slow. Safe to run after the startup grant because the breadcrumb
+    carries the writing image's token, so this process's own record is never read
+    as a dropped one.
 
-    Notice only, never a restored grant, and withheld when auto-approve is live
-    RIGHT NOW: a declared grant that the enterprise ceiling clamps to a timed
-    one is re-established by ``_apply_startup_yolo`` first, and telling the operator
-    it is "OFF" while it is on would be worse than saying nothing. A lapsed
-    grant, a config-declared one and an ``until_shutdown`` one are all silent
-    too -- see ``take_dropped_grant``.
+    The dropped notice is withheld when auto-approve is live RIGHT NOW: a declared
+    grant the enterprise ceiling clamps to a timed one is re-established by
+    ``_apply_startup_yolo`` first, and a kept grant by the restore above. A lapsed
+    grant, a config-declared one and an ``until_shutdown`` one are silent too --
+    see ``take_dropped_grant``.
     """
+    # A grant kept across an exit the user did not choose comes back first, so the
+    # dropped-grant notice below is withheld for it (``kept_yolo``). Both read the
+    # previous process's records off the loop.
+    from kiro_crew import kept_grants, kept_yolo
+
+    try:
+        _kept = await asyncio.to_thread(kept_yolo.restore_at_boot)
+        if _kept is not None:
+            state.notify(
+                "safety",
+                "Auto-approve was kept after a restart",
+                kept_yolo.describe(_kept),
+                meta={"source": _kept.source, "remaining_secs": _kept.remaining_secs},
+            )
+    except Exception:
+        logger.warning("Could not restore a kept safety override", exc_info=True)
     try:
         _dropped_grant = await asyncio.to_thread(_take_prior_dropped_grant)
-        if _dropped_grant is not None and not safety_override().is_active():
+        # A stop the user chose ended the grant on purpose, so it is owed no notice.
+        _user_stopped = kept_grants.boot_verdict() == kept_grants.VERDICT_USER_STOP
+        if _dropped_grant is not None and not _user_stopped and not safety_override().is_active():
             state.notify(
                 "safety",
                 "Auto-approve was dropped by a restart",

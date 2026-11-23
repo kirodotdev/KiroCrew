@@ -724,22 +724,35 @@ workflow ceiling read it, so the sessions a card-trusted worker opens are born
 asking, on the same card. A revoke clears `_trust` and writes `""`, so a subagent
 spawned after it asks again, and one already running loses its `parent_policy=auto`
 grant on its next tool request ([subagent](subagent.md) § Revoked parent trust).
-Trust is in memory only and never persisted. A pending
+Trust is never written to the transcript or its metadata; an owner's mode is kept
+across an exit the user did not choose through a signed record only (below). A pending
 approval's slot row carries `trust_grantable` (the slot approve route's own proof
 that Trust may be offered) and, for a coordinator request such as a spawn,
 `request_instance` (names THIS record, since the id can recur), so a card that
 relays the decision can pin it.
 
-**A restart ends a chat's Trust or Read mode, and says so**
-(`dashboard/chat_trust_restart.py`). Without a notice, a loop or task left in a
-trusted chat waits on approvals after any restart (the in-place re-exec, `kirocrew
-restart`, an update, a crash relaunch) and nobody is told why. The periodic flush and
-the shutdown save every restart runs (`save_all_slots_to_history`) write the open
-persistent chats holding a mode to `chat_trust_held.json` in the data home, but only
-once this process's boot has taken the previous record. `_restore_dashboard_sessions`
-takes it (reads it once and deletes it) before the open-tab restore and, after it,
-posts one `agent` bell note (`meta.slot`, `meta.approval_mode`) and one system row in
-each recorded chat that came back without its mode. A chat whose tools still run
+**A chat's Trust or Read mode is kept across an exit the user did not choose, and
+the chat says so** (`dashboard/chat_trust_restart.py`; the store and the user-stop
+mark are [security](security.md), "Grants kept across an exit the user did not
+choose"). The periodic flush, the shutdown save every restart runs
+(`save_all_slots_to_history`) and a write the gateway loop schedules right after any
+slot's mode changes write the open persistent chats holding a mode to the signed
+chats record (`kept_grants.CHATS_RECORD`), each with its session key and whether it is kept: an owner's
+own mode is, a worker's inherited posture (`_posture_inherited`), a Profile-seeded
+crewmate chat (`_member_approval_seeded`) and a card-scoped crew-member trust
+(`_trust_card_scoped`) are not. Nothing is written before this process's boot has
+taken the previous record. `_restore_dashboard_sessions` takes it before the open-tab
+restore and, after it, gives each kept chat its mode back with the picker's own
+writes (every slot sharing the session, the stored `approval_policy`, the
+inherited-posture walk for its workers), audited as `mode_change:<mode>`, with one
+`agent` bell note ("... was kept after a restart") and one system row. A kept chat is
+refused, and gets the turned-off notice instead, when it now addresses another
+session or the ceiling denies the mode. After a stop the user chose, nothing is kept
+and nothing is posted.
+Every other recorded chat that came back without its mode gets one `agent` bell note
+(`meta.slot`, `meta.approval_mode`) and one system row saying it was turned off; an
+unsigned `chat_trust_held.json` an earlier release left at the data-home root is read
+once for that notice and deleted. A chat whose tools still run
 unasked with nobody acting is owed no notice. An app-owned chat (`_app`) is never
 recorded, because its mode is the app's to set and the app sets it again. A chat a live
 auto-approve grant reaches (`is_yolo_active` and `yolo_reaches`, the tool gate's own
@@ -751,9 +764,8 @@ crewmate's conductor chat or worker is skipped when its Profile
 (`agents.<name>.approval_mode`, unset read as `trust`, clamped by policy) seeds the
 recorded mode back at its next turn (`crewmate_approval.seed_for_turn`); a Profile that
 seeds less still gets the notice.
-The record grants nothing: no reader turns it back into a mode, and the notice names
-the live chat's own title, so a forged record can at most notify a chat that is open.
-The system row carries `meta.kind = "trust_reset_notice"` and `meta.approval_mode`;
+Both notices name the live chat's own title, never text from the record.
+The turned-off system row carries `meta.kind = "trust_reset_notice"` and `meta.approval_mode`;
 the dashboard draws it as a localized card (`pages/chat/TrustResetNoticeCard.tsx`)
 with one **Turn Trust back on** (or **Turn Reads back on**) button, gone once the chat holds
 the mode again. The button is the person's pick: it dispatches the composer picker's
@@ -762,7 +774,8 @@ every caller check, and the inherited-posture walk re-raises the chat's workers 
 creation edge the crew log records, exactly as a picker pick does. A conductor mode lead
 is an ordinary owner chat here, so it gets the card. A crew window's peer rows leave
 it out (`PEER_SAFE_ROWS`), because the pick would go to this gateway.
-`test_chat_trust_restart_notice.py` and `TrustResetNoticeCard.test.tsx` pin it.
+`test_chat_trust_restart_notice.py`, `test_kept_grants.py` and
+`TrustResetNoticeCard.test.tsx` pin it.
 
 **A person's steer is a ledger event.** The work ledger accepts a `steer` event
 (`work_vocab`: actor `person`, kind `steer`, the person's own text redacted and cut

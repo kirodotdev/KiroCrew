@@ -482,7 +482,11 @@ class TestHistorySaveOnClose:
         assert meta.get("mode") == "design-critique"
 
     def test_close_does_not_persist_trust(self, tmp_path, monkeypatch):
-        """Trust flags are ephemeral — not written to session metadata."""
+        """Trust flags are not written to session metadata, which the agent can write.
+
+        A kept mode lives only in the signed record under the masked ``kept-grants``
+        directory (``chat_trust_restart``).
+        """
         from kiro_crew.dashboard.chat import _save_slot_to_history
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
