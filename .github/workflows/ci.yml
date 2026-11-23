@@ -1959,13 +1959,27 @@ jobs:
               --file-shard-targets-sha256="$REDUCED_SHA256"
             exit 0
           fi
+          # The coverage core for this run's event (scripts/ci/coverage_core.py):
+          # a pull-request or merge-queue run measures with coverage.py's sysmon
+          # core and records lines only, which is all Coverage Gate reads; a push
+          # keeps the C tracer and branch arcs. The script prints the export line
+          # or nothing, so neither variable is ever set to an empty value, and
+          # the two other lanes that feed Coverage Combine make the same call:
+          # line data and branch data do not combine. The check after pytest
+          # fails the step when coverage.py fell back to another core, or when
+          # there is no log to read. `pipefail` keeps a failing pytest red
+          # through the tee.
+          CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports)"
+          eval "$CORE_EXPORTS"
+          COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage.log"
           python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n "$WORKERS" --timeout=120 -m "not ipv6_required and not real_venv" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             --file-shard-pins scripts/ci_file_shard_pins.txt \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
             --cov=src/kiro_crew/apps/builtins/code_review_sage/tests \
-            --cov-report=
+            --cov-report= 2>&1 | tee "$COVERAGE_LOG"
+          python scripts/ci/coverage_core.py check "$COVERAGE_LOG"
         # The shard union plus backend-test-ipv6 retains the full test population.
         # The eleven sandbox files -- the two sandbox suites, the two ops git/gh
         # suites, and the seven auto_improvement suites --
@@ -2435,7 +2449,12 @@ jobs:
             COVERAGE=(--cov=kiro_crew --cov=sage_lib
               --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging
               --cov=src/kiro_crew/apps/builtins/code_review_sage/tests)
+            # The same coverage core as the Linux shards, whose data this lane's
+            # is combined with (see "Run tests" in backend-test).
+            CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports)"
+            eval "$CORE_EXPORTS"
           fi
+          COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage.log"
           # The bounded IPv6 population always runs, even in reduced scope.
           # Leaf runs repeat it three times; ordinary corpus gates stay once.
           REPEAT=1
@@ -2443,7 +2462,11 @@ jobs:
           for pass in $(seq 1 "$REPEAT"); do
             python -m pytest -q -n0 --timeout=120 -m ipv6_required \
               ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/ipv6.xml" \
-              test/test_meetings_providers.py test/test_platform_compat.py test/test_platform_compat_listening_ports.py
+              test/test_meetings_providers.py test/test_platform_compat.py test/test_platform_compat_listening_ports.py \
+              2>&1 | tee "$COVERAGE_LOG"
+            if [ "${COVERAGE[0]}" != "--no-cov" ]; then
+              python scripts/ci/coverage_core.py check "$COVERAGE_LOG"
+            fi
             python - <<'PY'
           import os
           from pathlib import Path
@@ -2525,7 +2548,12 @@ jobs:
             COVERAGE=(--cov=kiro_crew --cov=sage_lib
               --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging
               --cov=src/kiro_crew/apps/builtins/code_review_sage/tests)
+            # The same coverage core as the Linux shards, whose data this lane's
+            # is combined with (see "Run tests" in backend-test).
+            CORE_EXPORTS="$(python scripts/ci/coverage_core.py exports)"
+            eval "$CORE_EXPORTS"
           fi
+          COVERAGE_LOG="$RUNNER_TEMP/pytest-coverage.log"
           # Both strict cases always run, even in reduced scope. Leaf runs
           # repeat them three times; ordinary corpus gates stay once.
           REPEAT=1
@@ -2534,7 +2562,11 @@ jobs:
             python -m pytest -q -n0 --timeout=120 \
               ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/kernel-lock-owner.xml" \
               "test/test_gateway_lock.py::TestLockHolder::test_live_holder_is_named_and_alive" \
-              "test/test_gateway_lock_diagnosis.py::test_flock_is_held_by_a_fork_orphan"
+              "test/test_gateway_lock_diagnosis.py::test_flock_is_held_by_a_fork_orphan" \
+              2>&1 | tee "$COVERAGE_LOG"
+            if [ "${COVERAGE[0]}" != "--no-cov" ]; then
+              python scripts/ci/coverage_core.py check "$COVERAGE_LOG"
+            fi
             python - <<'PY'
           import os
           from pathlib import Path
