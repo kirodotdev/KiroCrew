@@ -27,6 +27,8 @@ from urllib.parse import quote
 
 import aiohttp
 
+from kiro_crew.http_proxy import resolve_proxy
+
 logger = logging.getLogger(__name__)
 
 #: Default CDN host for c2c media. Overridable so a probe/test can point at a
@@ -132,10 +134,14 @@ async def fetch_cdn_bytes(
     """Stream a CDN object into memory, refusing anything over *max_bytes*.
 
     Enforced on bytes actually read rather than on ``Content-Length`` so a
-    missing or understated header cannot bypass the cap.
+    missing or understated header cannot bypass the cap. The request goes
+    through the configured forward proxy unless the bypass list (``NO_PROXY``)
+    names the CDN host.
     """
     timeout = aiohttp.ClientTimeout(total=CDN_TIMEOUT_SECONDS)
-    async with session.get(url, timeout=timeout) as resp:
+    # Off the event loop: the lookup reads OS proxy settings.
+    proxy = await asyncio.to_thread(resolve_proxy, url)
+    async with session.get(url, timeout=timeout, proxy=proxy) as resp:
         if resp.status != 200:
             body = (await resp.text())[:200]
             raise WeixinMediaError(f"CDN download HTTP {resp.status}: {body}")

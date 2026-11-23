@@ -17,6 +17,7 @@ import base64
 import os
 import pathlib
 import threading
+import urllib.request
 from typing import Any
 
 import pytest
@@ -48,6 +49,7 @@ from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES, WeixinTransport
 
 KEY = bytes(range(16))
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_PROXY = "http://proxy.invalid:3128"
 
 
 def _encrypt(plaintext: bytes, key: bytes = KEY) -> bytes:
@@ -91,9 +93,11 @@ class _FakeSession:
         self._body = body
         self._status = status
         self.urls: list[str] = []
+        self.proxies: list[str | None] = []
 
-    def get(self, url: str, timeout=None):
+    def get(self, url: str, timeout=None, proxy=None):
         self.urls.append(url)
+        self.proxies.append(proxy)
         return _FakeResponse(self._body, self._status)
 
 
@@ -246,6 +250,17 @@ class TestCdnDownload:
             asyncio.run(
                 download_media(session, encrypt_query_param="param", aes_key_b64="")
             )
+
+    @pytest.mark.parametrize(("bypassed", "expected"), [(False, _PROXY), (True, None)])
+    def test_download_goes_through_the_configured_proxy(
+        self, monkeypatch: pytest.MonkeyPatch, bypassed: bool, expected: str | None
+    ) -> None:
+        """On a proxy-only host the CDN is unreachable directly; a bypassed host stays direct."""
+        monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": _PROXY})
+        monkeypatch.setattr(urllib.request, "proxy_bypass", lambda _host: bypassed)
+        session = _FakeSession(PNG_MAGIC)
+        asyncio.run(download_media(session, encrypt_query_param="param", aes_key_b64=""))
+        assert session.proxies == [expected]
 
     def test_missing_query_param_is_refused_before_any_request(self) -> None:
         session = _FakeSession(b"never")
