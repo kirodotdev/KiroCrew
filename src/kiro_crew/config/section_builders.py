@@ -864,6 +864,12 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         agent_sessions=section.read("agent_sessions", _safe_bool),
         code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
+        # Default False for both: an unparseable value must never let a Slack thread
+        # dispatch work, nor admit a public channel's members to what it shows.
+        thread_conductor=section.read("thread_conductor", _safe_bool),
+        thread_conductor_public_channels=section.read(
+            "thread_conductor_public_channels", _safe_bool
+        ),
         # Default False: an unparseable value must never add user scopes or PKCE.
         slack_mcp=section.read("slack_mcp", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),

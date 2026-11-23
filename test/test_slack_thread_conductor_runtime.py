@@ -25,6 +25,7 @@ import kiro_crew.dashboard.chat_handlers as chat_handlers
 import kiro_crew.slack.handler as slack_handler
 from kiro_crew import safety_override as safety_override_mod
 from kiro_crew.config.loader import ACTIVATION_MENTION, ChannelConfig
+from kiro_crew.config.section_builders import _build_slack_config as build_slack_config
 from kiro_crew.slack.code_channels import (
     agent_picker,
     approval_picker,
@@ -483,3 +484,17 @@ def test_nothing_resumes_with_the_switch_off_or_the_thread_ended(interrupted: An
     e.store.end_thread_binding(PRIVATE, ANCHOR)
     assert asyncio.run(resume.resume_after_restart(e.state)) == []
     assert e.continued == [] and e.slack.blocks_posts == []
+
+
+# ── the config keys ───────────────────────────────────────────────────────
+
+
+def test_the_config_keys_default_off_and_read_only_a_literal_true() -> None:
+    assert build_slack_config({}).thread_conductor is False
+    assert build_slack_config({}).thread_conductor_public_channels is False
+    loose = build_slack_config({"thread_conductor": "true", "thread_conductor_public_channels": 1})
+    assert loose.thread_conductor is False and loose.thread_conductor_public_channels is False
+    strict = build_slack_config(
+        {"thread_conductor": True, "thread_conductor_public_channels": True}
+    )
+    assert strict.thread_conductor is True and strict.thread_conductor_public_channels is True

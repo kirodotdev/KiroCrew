@@ -48,7 +48,7 @@ conduct, bounded so neither protection is given up:
 channel or DM, kept in the store's ``thread_bindings``) is judged by the same
 clauses, with three differences: its switch is ``slack.thread_conductor``
 (:func:`~kiro_crew.slack.code_channels.binding.thread_conductor_on`, which needs no
-code-channel scope and cannot turn on before the thread runtime is built), not
+code-channel scope and reads off unless the thread runtime is built), not
 the code-channel pair; an ended thread refuses; and its ROOM must be admitted --
 the owner's DM with the app, a private channel Slack confirms is still private,
 or a public channel only while ``slack.thread_conductor_public_channels`` is on
