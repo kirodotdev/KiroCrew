@@ -197,8 +197,66 @@ class TestBootFloor:
         assert bootstrap.apply_kas_cli_floor(cfg) is None
         assert cfg.agent.acp_backend == KAS
         assert KAS in registry.selectable_backends()
-        # A Kiro CLI pick made later in this process runs on KAS too.
+        # The floor ran the start a stored pick needs, so a Kiro CLI pick made later
+        # in this process runs on KAS, and the panel's Kiro CLI row reads that proof.
         assert registry.kiro_cli_pick_backend() == KAS
+        assert not registry.kiro_cli_pick_verdict_open()
+
+    def test_a_refused_start_without_a_pick_leaves_a_later_pick_on_kiro_cli(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        _help(monkeypatch, _NEW_HELP)
+        monkeypatch.setattr(kiro_cli, "kas_relay_start_output", lambda binary, tail: _REFUSAL)
+        cfg = _cfg()
+        bootstrap.apply_kas_cli_floor(cfg)
+        assert registry.kiro_cli_pick_backend() == KIRO
+
+    def test_an_unknown_start_without_a_pick_leaves_the_verdict_open(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        _help(monkeypatch, _NEW_HELP)
+        monkeypatch.setattr(kiro_cli, "kas_relay_start_output", lambda binary, tail: None)
+        cfg = _cfg()
+        assert bootstrap.apply_kas_cli_floor(cfg) is None
+        assert cfg.agent.acp_backend == KAS
+        assert registry.kiro_cli_pick_backend() == KIRO
+        assert registry.kiro_cli_pick_verdict_open()
+
+    def test_a_start_on_record_moves_a_later_pick_onto_kas(
+        self, monkeypatch, pinned_cli, kas_selectable, _v3_engine_starts
+    ):
+        """The proof a boot pick needs, already on record, holds for a later pick."""
+        from kiro_crew.acp.kas_engine_refusal import remember_start_verdict
+
+        remember_start_verdict(str(pinned_cli), True)
+        _help(monkeypatch, _NEW_HELP)
+        cfg = _cfg()
+        assert bootstrap.apply_kas_cli_floor(cfg) is None
+        assert cfg.agent.acp_backend == KAS
+        assert registry.kiro_cli_pick_backend() == KAS
+        assert _v3_engine_starts == []
+
+    def test_a_bot_pinned_to_kiro_cli_gets_the_start_a_pick_gets(
+        self, monkeypatch, pinned_cli, kas_selectable, _v3_engine_starts
+    ):
+        _help(monkeypatch, _NEW_HELP)
+        cfg = _cfg()
+        cfg.agents = {"helper": SimpleNamespace(acp_backend="kiro")}
+        assert bootstrap.apply_kas_cli_floor(cfg) is None
+        assert cfg.agent.acp_backend == KAS
+        assert _v3_engine_starts == [str(pinned_cli)]
+        assert registry.kiro_cli_pick_backend() == KAS
+
+    def test_a_refused_start_for_a_bot_pin_alone_keeps_the_pin_on_kiro_cli(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        _help(monkeypatch, _NEW_HELP)
+        monkeypatch.setattr(kiro_cli, "kas_relay_start_output", lambda binary, tail: _REFUSAL)
+        cfg = _cfg(KIRO)
+        cfg.agents = {"helper": SimpleNamespace(acp_backend="kiro")}
+        assert bootstrap.apply_kas_cli_floor(cfg) is None
+        assert KAS in registry.selectable_backends()
+        assert registry.kiro_cli_pick_backend() == KIRO
 
     def test_unknown_verdict_keeps_kas(self, monkeypatch, pinned_cli, kas_selectable):
         _help(monkeypatch, None)
@@ -392,6 +450,188 @@ class TestGatewayBootDoesNotWaitForTheFloor:
         assert "KAS kiro-cli floor check failed" in caplog.text
 
 
+class TestSavedKiroCliPick:
+    """A Kiro CLI pick saved while the gateway runs gets the check a boot gives it."""
+
+    @staticmethod
+    def _saved_pick_subscription():
+        from kiro_crew.config import live
+
+        subs = [s for s in live.watch().subscriptions() if s.name == "kas-cli-floor.saved-pick"]
+        assert len(subs) == 1
+        return subs[0]
+
+    @staticmethod
+    def _boot_on_kas(monkeypatch, stored_as_kiro=True, retries=(), confirm_on=None):
+        from kiro_crew.agent_sdk import kas_floor_wait
+        from kiro_crew.slack import gateway
+
+        floors = []
+        reconciles = []
+
+        def _floor(cfg, **kwargs):
+            floors.append((cfg.agent.acp_backend, cfg.agent.member_acp_backend, kwargs))
+            if len(floors) == confirm_on:
+                registry.confirm_kiro_cli_offers_kas()
+
+        monkeypatch.setattr(kas_floor_wait, "KIRO_PICK_VERDICT_RETRY_SECS", retries)
+
+        async def _reconcile():
+            reconciles.append(True)
+
+        monkeypatch.setattr(gateway, "apply_kas_cli_floor", _floor)
+        monkeypatch.setattr(gateway, "_reconcile_live_config_with_kiro_verdict", _reconcile)
+        monkeypatch.setattr(gateway, "_main_stored_as_kiro", lambda: stored_as_kiro)
+        monkeypatch.setattr(gateway, "_kas_floor_gates_spawns", lambda cfg: (False, False))
+        monkeypatch.setattr(gateway, "_KAS_CLI_FLOOR_TASK", None)
+        monkeypatch.setattr(kas_floor_wait, "_armed", None)
+        monkeypatch.setattr(registry, "_kiro_cli_offers_kas", False)
+        return gateway, floors, reconciles
+
+    @staticmethod
+    async def _saved_pick_done():
+        for task in asyncio.all_tasks():
+            if task.get_name() == "kas-cli-floor-saved-pick":
+                await asyncio.wait_for(task, timeout=30)
+
+    def test_a_saved_pick_runs_the_pick_floor_and_reconciles(self, monkeypatch, kas_selectable):
+        from kiro_crew.config import live
+
+        gateway, floors, reconciles = self._boot_on_kas(monkeypatch)
+
+        async def _run():
+            await asyncio.wait_for(gateway._start_kas_cli_floor(_cfg(KAS)), timeout=30)
+            sub = self._saved_pick_subscription()
+            try:
+                # The watcher's own apply step, as a reload runs it on the loop.
+                change = live.ConfigChange(
+                    old=_cfg(KAS), new=_cfg(KIRO), changed=frozenset({"agent.acp_backend"})
+                )
+                await asyncio.wait_for(live.watch()._apply_one(sub, change), timeout=30)
+                await self._saved_pick_done()
+            finally:
+                sub.cancel()
+
+        asyncio.run(_run())
+        assert floors[-1] == (KIRO, "", {"kiro_selected": True})
+        assert len(floors) == 2
+        assert reconciles == [True, True]
+
+    def _save(self, gateway, new, old=None):
+        from kiro_crew.config import live
+
+        async def _run():
+            await asyncio.wait_for(gateway._start_kas_cli_floor(_cfg(KAS)), timeout=30)
+            sub = self._saved_pick_subscription()
+            try:
+                change = live.ConfigChange(
+                    old=old or _cfg(KAS), new=new, changed=frozenset({"agent.acp_backend"})
+                )
+                await asyncio.wait_for(live.watch()._apply_one(sub, change), timeout=30)
+                await self._saved_pick_done()
+            finally:
+                sub.cancel()
+
+        asyncio.run(_run())
+
+    def test_an_unknown_saved_pick_verdict_is_asked_again_until_it_lands(
+        self, monkeypatch, kas_selectable
+    ):
+        gateway, floors, reconciles = self._boot_on_kas(
+            monkeypatch, retries=(0.0, 0.0, 0.0), confirm_on=3  # flake-ok: zero waits
+        )
+        self._save(gateway, _cfg(KIRO))
+        # The boot floor, the save's ask, then one retry that lands the verdict.
+        assert len(floors) == 3
+        assert floors[-1] == (KIRO, "", {"kiro_selected": True})
+        assert len(reconciles) == 3
+
+    def test_a_saved_bot_pin_to_kiro_cli_is_asked_like_a_pick(self, monkeypatch, kas_selectable):
+        from kiro_crew.config import live
+
+        gateway, floors, reconciles = self._boot_on_kas(
+            monkeypatch, stored_as_kiro=False, retries=(0.0,)  # flake-ok: zero waits
+        )
+        pinned = _cfg(KAS)
+        pinned.agents = {"helper": SimpleNamespace(acp_backend="kiro")}
+        held = []
+
+        def _floor(cfg, **kwargs):
+            held.append(sorted(getattr(cfg, "agents", {})))
+            floors.append((cfg.agent.acp_backend, cfg.agent.member_acp_backend, kwargs))
+            if len(floors) == 2:
+                # The pin is cleared before the retry: nothing is asked for it.
+                monkeypatch.setattr(live.watch(), "_cfg", _cfg(KAS))
+
+        monkeypatch.setattr(gateway, "apply_kas_cli_floor", _floor)
+        monkeypatch.setattr(live.watch(), "_cfg", pinned)
+        self._save(gateway, pinned)
+        # The boot floor, then the save's ask for the pin alone; the retry stops
+        # once neither the pick nor a pin is stored.
+        assert floors[1:] == [("", "", {"kiro_selected": False})]
+        assert held[1:] == [["helper"]]
+        assert len(reconciles) == 2
+
+    def test_nothing_is_asked_off_a_kiro_cli_pick_or_a_settled_verdict(
+        self, monkeypatch, kas_selectable
+    ):
+        gateway, floors, _reconciles = self._boot_on_kas(monkeypatch)
+
+        async def _run():
+            await asyncio.wait_for(gateway._start_kas_cli_floor(_cfg(KAS)), timeout=30)
+            sub = self._saved_pick_subscription()
+            try:
+                sub.callback()(SimpleNamespace(new=_cfg(KAS)))
+                registry.confirm_kiro_cli_offers_kas()
+                sub.callback()(SimpleNamespace(new=_cfg(KIRO)))
+                await self._saved_pick_done()
+            finally:
+                sub.cancel()
+
+        asyncio.run(_run())
+        assert len(floors) == 1
+
+    def test_a_kiro_cli_value_that_is_not_stored_as_the_pick_asks_nothing(
+        self, monkeypatch, kas_selectable
+    ):
+        gateway, floors, _reconciles = self._boot_on_kas(monkeypatch, stored_as_kiro=False)
+
+        async def _run():
+            await asyncio.wait_for(gateway._start_kas_cli_floor(_cfg(KAS)), timeout=30)
+            sub = self._saved_pick_subscription()
+            try:
+                sub.callback()(SimpleNamespace(new=_cfg(KIRO)))
+                await self._saved_pick_done()
+            finally:
+                sub.cancel()
+
+        asyncio.run(_run())
+        assert len(floors) == 1
+
+    def test_a_replaced_floor_drops_its_subscription(self, monkeypatch, kas_selectable):
+        gateway, _floors, _reconciles = self._boot_on_kas(monkeypatch)
+
+        from kiro_crew.config import live
+
+        held = []
+
+        async def _run():
+            await asyncio.wait_for(gateway._start_kas_cli_floor(_cfg(KAS)), timeout=30)
+            held.append(self._saved_pick_subscription())
+            await asyncio.wait_for(gateway._start_kas_cli_floor(_cfg(KAS)), timeout=30)
+            held.append(self._saved_pick_subscription())
+
+        try:
+            asyncio.run(_run())
+            first, second = held
+            assert first is not second
+            assert first not in live.watch().subscriptions()
+            assert gateway._KAS_CLI_FLOOR_PICK_SUB is second
+        finally:
+            for sub in held:
+                sub.cancel()
+
+
 class TestDefaultNoticeWording:
     """A host that never chose KAS is not told it did."""
 
@@ -513,15 +753,15 @@ class TestDefaultNoticeWording:
         assert notice.startswith("Kiro CLI is selected, but Kiro Crew could not check ")
         assert f"`{pinned_cli} acp --agent-engine v3` did not finish" in notice
 
-    def test_without_a_pick_the_help_alone_decides(
+    def test_without_a_pick_one_start_proves_the_engine(
         self, monkeypatch, pinned_cli, kas_selectable, _v3_engine_starts
     ):
-        """No stored pick at stake: KAS stays on the help verdict and no engine starts."""
+        """No stored pick at stake: KAS stays, and the one start a pick needs runs."""
         _help(monkeypatch, _NEW_HELP)
         cfg = _cfg()
         assert bootstrap.apply_kas_cli_floor(cfg) is None
         assert cfg.agent.acp_backend == KAS
-        assert _v3_engine_starts == []
+        assert _v3_engine_starts == [str(pinned_cli)]
 
     def test_a_refusal_on_record_moves_a_chosen_kas_without_a_start(
         self, monkeypatch, pinned_cli, kas_selectable, _v3_engine_starts
@@ -1426,6 +1666,9 @@ class TestTheVerdictReachesTheLiveFactory:
                 # What the live watcher sees at this moment: the stored pick
                 # already loads as KAS, so its diff names agent.acp_backend.
                 events.append(f"refresh:{registry.kiro_cli_pick_backend()}")
+
+            def subscribe(self, *prefixes, callback, name=None):
+                return SimpleNamespace(cancel=lambda: None)
 
         monkeypatch.setattr(live, "watch", lambda: _Watch())
 
