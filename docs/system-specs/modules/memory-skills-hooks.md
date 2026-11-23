@@ -6369,7 +6369,8 @@ exclude). To keep it off the per-message filesystem/config hot path:
   (`skills.extra_paths[1]`), never its value. An entry that cannot be resolved at
   all (an unknown `~user`, an embedded NUL) is skipped, never raised, so one bad
   entry cannot stop the loader; one that is not a directory (a missing folder, or a
-  Windows network share that cannot be reached) is skipped the same way. A root on
+  Windows network share that cannot be reached) is skipped the same way, and so is
+  one whose stat fails (`EACCES`, `ESTALE`, `EIO`). A root on
   a slow or network mount blocks the resolve until the mount answers, so gateway
   start, `kirocrew run` and the eval runner build the loader in a worker thread (it
   holds no asyncio primitives): the event loop keeps running, and start, the
