@@ -16566,6 +16566,7 @@
         "files_and_folders": "ファイルとフォルダー",
         "folder_drop_needs_path": "上にこのフォルダーのフルパスを入力してください。ここではドロップから読み取れません。",
         "folder_picker_failed": "フォルダー選択を開けませんでした。代わりにフォルダーのパスを入力してください。",
+        "folder_already_a_source": "このフォルダーは「{{name}}」としてすでにソースに追加されています。",
         "failed_to_add_source": "ソース追加に失敗しました",
         "files_failed_count_other": "{{count}} 件失敗",
         "files_indexed": "{{done}}/{{total}} ファイルをインデックス済み",

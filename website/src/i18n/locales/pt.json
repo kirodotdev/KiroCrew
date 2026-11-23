@@ -17438,6 +17438,7 @@
         "files_and_folders": "Arquivos e pastas",
         "folder_drop_needs_path": "Digite acima o caminho completo desta pasta. Aqui não dá para lê-lo ao soltar a pasta.",
         "folder_picker_failed": "Não foi possível abrir o seletor de pastas. Digite o caminho da pasta.",
+        "folder_already_a_source": "Esta pasta já está nas suas fontes como “{{name}}”.",
         "failed_to_add_source": "Falha ao adicionar a fonte",
         "files_failed_count_many": "{{count}} com falha",
         "files_failed_count_one": "{{count}} com falha",

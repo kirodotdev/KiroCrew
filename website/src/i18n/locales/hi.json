@@ -17002,6 +17002,7 @@
         "files_and_folders": "फ़ाइलें और फ़ोल्डर",
         "folder_drop_needs_path": "ऊपर इस फ़ोल्डर का पूरा पथ लिखो। यहाँ छोड़े गए फ़ोल्डर से इसे पढ़ा नहीं जा सकता।",
         "folder_picker_failed": "फ़ोल्डर चुनने वाला नहीं खुल सका। इसके बजाय फ़ोल्डर का पथ लिखो।",
+        "folder_already_a_source": "यह फ़ोल्डर पहले से तुम्हारे स्रोतों में “{{name}}” नाम से है।",
         "failed_to_add_source": "स्रोत जोड़ने में विफल",
         "files_failed_count_one": "{{count}} विफल",
         "files_failed_count_other": "{{count}} विफल",

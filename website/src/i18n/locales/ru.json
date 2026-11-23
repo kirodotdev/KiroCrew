@@ -17874,6 +17874,7 @@
         "files_and_folders": "Файлы и папки",
         "folder_drop_needs_path": "Введи выше полный путь к этой папке. Здесь его нельзя узнать при перетаскивании.",
         "folder_picker_failed": "Не удалось открыть выбор папки. Введи путь к папке вручную.",
+        "folder_already_a_source": "Эта папка уже есть в твоих источниках под именем «{{name}}».",
         "failed_to_add_source": "Не удалось добавить источник",
         "files_failed_count_few": "{{count}} с ошибкой",
         "files_failed_count_many": "{{count}} с ошибкой",
