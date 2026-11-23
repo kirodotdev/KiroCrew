@@ -6146,6 +6146,23 @@ the same line at WARNING. The tail is the last five lines through
 `safe_stderr_tail`; a restricted session shows `<not retained>`. Pinned by
 `test/test_acp_runtime_initialize_death.py` with a real child that exits 3 after
 writing stderr.
+`AcpClient`, which starts one process per session for every adapter, ends the same
+death as a start that cannot run rather than a lost connection. When the child
+exits during the scope admission wait (`_admit_scope`'s `AcpProcessDied`, below),
+the `initialize` write meets a closed pipe, or the read of its answer reaches the
+end of stdout, and the child has exited on its own, `_initialize_session` settles the
+stderr drain and raises a non-transient `AcpError`: `the agent exited during
+initialize (code=<rc>) — <tail>`, the signal origin and the tail spelled as the EOF
+branch's `ACP process exited` detail. An `AcpProcessDied` whose child is not yet
+reaped (the write met the closed pipe first) waits up to `_INIT_EXIT_REAP_SECS` for
+the reap. The error it raises is not an `AcpProcessDied`, and
+`llm_helpers.acp_error_is_pipe_death` reads no non-transient error as a death, so
+the chat shows it once on an error card instead of re-queuing behind "Connection
+lost — retrying…"; `ensure_ready` still starts one fresh process first. An error
+frame with a JSON-RPC code, a kill this client sent (`_kill_sent`), a scope admission
+timeout and a pipe that broke with the child still running keep their error.
+Pinned by `test/test_acp_client_initialize_death.py` with real children, and for
+the admission exit by `test_acp_client_scope_admission.py`.
 
 <a id="scope-admission"></a>**Scope admission is a startup stage of its own.** On a
 host with cgroup delegation the runtime's argv starts with `systemd-run --user
@@ -6218,8 +6235,10 @@ the client's own:
   `AcpScopeAdmissionTimeout`. `ensure_ready` ends the
   start without its one retry, with startup outcome `scope_admission_timeout`.
 - An exit raises `AcpProcessDied` with the same text as the runtime's death.
-  `ensure_ready` handles it as it handles a death during `initialize`: it reads
-  the stderr for a known start failure, then retries once.
+  `_initialize_session` turns it into the same non-transient `the agent exited
+  during initialize (code=<rc>) — <tail>` error as a death during `initialize`
+  (the admission death is its cause), and `ensure_ready` handles it as it handles
+  that death: it reads the stderr for a known start failure, then retries once.
 
 The client's `scope_admission` record logs under `kiro_crew.acp.client`. A start
 that ends in the stage goes through `ensure_ready`'s failed-start cleanup, and

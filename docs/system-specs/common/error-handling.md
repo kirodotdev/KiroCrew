@@ -471,7 +471,11 @@ it is alive. The claude adapter answers a failed Claude Code start with
 `-32603` and "Claude Code process exited with code 1"; a fresh process repeats
 it, so the turn shows that error card instead of re-queuing behind
 "Connection lost — retrying…" until "Session stuck".
-`test_chat_runner_turn_error_arms.py` pins both.
+`test_chat_runner_turn_error_arms.py` pins both. Nor is an error its raise site
+ruled not transient (`transient=False`): an adapter that exits during
+`initialize` ends the start with its stderr on the message, which may say "not
+running" or "process exited" itself (see acp-client, the `initialize` death),
+and the card shows it once. `test/test_acp_client_initialize_death.py` pins it.
 
 ### Provider failures a harness writes as text
 
