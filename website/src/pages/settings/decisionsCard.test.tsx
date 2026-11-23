@@ -644,6 +644,29 @@ describe('Decisions preview card', () => {
     expect(save).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps a key typed while the save runs, in the open editor, once the save lands', async () => {
+    // The field stays editable while the write is outstanding (only Save waits), so
+    // a successful save may clear only the value it sent, never a newer draft.
+    stubGateway(consentOf(true), { decisions: { bucket: 100 } })
+    let land: (value: unknown) => void = () => {}
+    const save = vi.spyOn(api, 'secretsSave').mockImplementation(
+      () => new Promise(resolve => { land = resolve }) as never,
+    )
+    stubHostedProvider()
+    renderSection()
+    const field = await waitFor(() => screen.getByLabelText('Jev API key'), HOSTED_KEY_DRAWS)
+    fireEvent.change(field, { target: { value: 'sk-first-not-a-real-key' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }))
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1), HOSTED_KEY_DRAWS)
+    fireEvent.change(screen.getByLabelText('Jev API key'), { target: { value: 'sk-second-not-a-real-key' } })
+    vi.spyOn(api, 'secretsList').mockResolvedValue({ names: ['TYPESAFE_API_KEY'] } as never)
+    await act(async () => { land({}) })
+    await waitFor(() => {
+      expect(screen.getByLabelText('Jev API key')).toHaveValue('sk-second-not-a-real-key')
+      expect(screen.getByRole('button', { name: 'Save key' })).toBeEnabled()
+    }, HOSTED_KEY_DRAWS)
+  })
+
   it('points at a setting it deliberately does not offer, by its config path', async () => {
     // How many skills a turn may inject is not a Jev setting at all — it decides
     // whether `skills.select` is ever reached — so the panel names where it lives

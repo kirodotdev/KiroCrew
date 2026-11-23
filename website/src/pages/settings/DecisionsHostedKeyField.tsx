@@ -45,6 +45,9 @@ export function DecisionsHostedKeyField({
     queryFn: () => api.secretsList(),
   })
   const [draft, setDraft] = useState('')
+  // The draft as it stands when a save lands, which may be newer than the value sent.
+  const draftRef = useRef('')
+  draftRef.current = draft
   const [editing, setEditing] = useState(false)
   // Whether the trash has been pressed and the reader has not yet confirmed. Removing
   // a vault entry cannot be undone, so the question goes BEFORE the DELETE.
@@ -62,7 +65,12 @@ export function DecisionsHostedKeyField({
   }
   const saveMut = useMutation({
     mutationFn: (value: string) => api.secretsSave(DECISIONS_API_KEY_SECRET, value),
-    onSuccess: () => {
+    // Clears only the value it saved: a key typed while the write ran is a newer
+    // draft, still unsaved, and stays in the open editor with its own Save.
+    onSuccess: (_result, saved) => {
+      // Once a key is stored the field would otherwise flip to its masked view
+      // and hide that unsaved text.
+      if (draftRef.current !== saved) return setEditing(true)
       setDraft('')
       setEditing(false)
     },
