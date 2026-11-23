@@ -1341,7 +1341,9 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     payload lists every MCP tool that spec can call there
     (``kas_never_defer_ids``, expanding whole-server grants from
     :func:`_known_server_tool_names`) and ``enabled`` goes out as an explicit
-    false. A spec that grants the loader is sent the spawn agent's declared job
+    false. Tool Search turned off takes that same path whatever the spec grants:
+    ``enabled`` alone would leave every MCP tool behind KAS's loader. A spec that
+    grants the loader with Tool Search on is sent the spawn agent's declared job
     tools (``job_tool_ids``, a custom agent's own row), so the calls its prompt makes its
     procedure cost no load round trip, and nothing when it declares none. An
     operator who set their own never-defer list (``operator_mandatory_mcps``)
@@ -1404,7 +1406,9 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     self._spawn_spec = spec
     loader_granted = spec_grants_tool_search(spec)
     never_defer: list[str] = []
-    if not loader_granted:
+    # KAS defers on ``neverDefer`` alone, so Tool Search turned off must list what
+    # stays direct exactly as a spec without the loader does.
+    if not (loader_granted and self._tool_search.enabled):
         if added:
             never_defer = await asyncio.to_thread(
                 custom_agent_never_defer_ids, spec, _known_server_tool_names, added

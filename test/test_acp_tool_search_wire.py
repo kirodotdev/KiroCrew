@@ -135,6 +135,8 @@ class TestKasClientMetaSettings:
     def test_disabled_sends_false_regardless_of_grant(self):
         out = kas_client_meta_settings(ToolSearchSettings(False), loader_granted=True)
         assert out["toolSearch"]["enabled"] is False
+        # Off means nothing is deferred, so the list goes out even when empty.
+        assert out["toolSearch"]["neverDefer"] == []
 
     def test_from_config_clamps_like_the_overlay(self):
         s = ToolSearchSettings.from_config(True, 250, -3)
@@ -432,12 +434,26 @@ class TestHandshakeNeverDefer:
         assert wire["enabled"] is True
         assert wire["neverDefer"] == ["kirocrew-core::spawn_run"]
 
-    def test_tool_search_off_still_keeps_the_job_tools_direct(self, monkeypatch):
-        """KAS defers on ``neverDefer`` alone, so the toggle changes what
-        ``enabled`` says and nothing about which tools need a load."""
-        spec = {"tools": ["tool_search", "@kirocrew-core"]}
+    @pytest.mark.parametrize("operator_list", [None, ""], ids=["no-operator-list", "operator-list"])
+    def test_tool_search_off_keeps_every_granted_mcp_tool_direct(self, monkeypatch, operator_list):
+        """KAS defers on ``neverDefer`` alone, so turning Tool Search off with the
+        loader granted must list what the spec can call, as a loaderless spec does:
+        sending only ``enabled: false`` left every MCP tool behind ``tool_load``."""
+        if operator_list is not None:
+            monkeypatch.setenv(MANDATORY_MCPS_ENV, operator_list)
+        spec = {"tools": ["tool_search", "@kirocrew-core", "@srv/one"]}
         wire = self._caps(monkeypatch, spec, agent="kirocrew", enabled=False)
         assert wire["enabled"] is False
+        assert wire["neverDefer"] == [
+            "kirocrew-core::memory_recall",
+            "kirocrew-core::skill_search",
+            "srv::one",
+        ]
+
+    def test_tool_search_on_with_the_loader_still_sends_only_the_job_tools(self, monkeypatch):
+        spec = {"tools": ["tool_search", "@kirocrew-core", "@srv/one"]}
+        wire = self._caps(monkeypatch, spec, agent="kirocrew", enabled=True)
+        assert wire["enabled"] is True
         assert wire["neverDefer"] == sorted(JOB_TOOLS["kirocrew"])
 
     @pytest.mark.parametrize("value", ["", "kirocrew-core", "my-server"])
