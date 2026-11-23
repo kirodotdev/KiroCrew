@@ -1277,7 +1277,6 @@ class TestSentinelPathRepair:
         try:
             await svc.start()
             (current / "workspace" / ".stop-chat-27").write_text("stop", encoding="utf-8")
-            svc._boot_holds.pop("abc123", None)
             svc._arm_timer(svc._loops["abc123"], delay=0.0)
             await svc._timers["abc123"]
             assert svc._loops["abc123"].stopped_reason == _an.STOP_SENTINEL_REASON
