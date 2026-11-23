@@ -22,6 +22,17 @@ the same object: write one of those, exactly; there is nothing else to look up.
   review system; the check names are the edition's to document. With no
   edition providing the check it answers `error`, and a check that says a
   person must decide answers `refused`.
+- **`git_commit`**: `{"kind": "git_commit", "repo": "/absolute/repo",
+  "branch": "<name>", "base": "<hex sha>"}`, for work that ends in a local
+  commit with no pull request. Passes once `refs/heads/<branch>` holds a commit
+  `base` does not (`git rev-list --count <branch> --not <base>`), and the
+  evidence names the branch head. No such branch yet, or nothing past `base`,
+  reads `pending`; a `base` the repository does not hold, or a path that is not
+  a repository, reads `error`. Take `base` from `git rev-parse` before you
+  dispatch. `repo` must be absolute: a relative one is `refused`, and the
+  `accept_eval` tool screens the path as it screens a `file` path. Use this
+  instead of asking the worker for a hand-over file: it checks the commit, not
+  a report's existence. It does not look at the working tree.
 - **`file`**: a path existing.
 - **`human_approval`**: the user accepts it. Legitimate for design reviews and
   go/no-go gates, never machine-evaluated. How it is asked and settled:

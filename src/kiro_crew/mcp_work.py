@@ -66,6 +66,7 @@ import functools
 import importlib.util
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -803,7 +804,7 @@ _CHECK_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "accept_batch entries as items, after keeping only the entries whose "
             "status is done. Same "
             "kinds and refusals as the script: pr_checks, pr_merged, file, "
-            "human_approval, edition_check; a 'cmd' kind is refused. No argument "
+            "human_approval, edition_check, git_commit; a 'cmd' kind is refused. No argument "
             "names a command or a path to run. Read-only: settle a pass with "
             "work_ledger_record action=close state=accepted verdict=pass, and record "
             "any other answer with action=verdict, in a later step."
@@ -857,21 +858,36 @@ def _skill_script(name: str) -> ModuleType:
     return module
 
 
-def _screen_file_item(item: Any) -> tuple[Any, dict[str, str] | None]:
-    """A ``file`` item with its path screened, or the ``refused`` result in its place.
+#: The acceptance kinds whose spec names a local path, and that path's field.
+_SCREENED_PATH_FIELDS: dict[str, str] = {"file": "path", "git_commit": "repo"}
 
-    The evaluator stats a ``file`` path as given. Run as an auto-approved tool,
-    nobody reads that path first, so it goes through the same screen the
-    dashboard's file I/O uses before anything probes it: a sensitive path or an
-    untrusted UNC share (whose probe would open an SMB connection on Windows) is
-    refused, and the evaluator stats only the canonical path.
+
+def _screen_file_item(item: Any) -> tuple[Any, dict[str, str] | None]:
+    """An item with its local path screened, or the ``refused`` result in its place.
+
+    The evaluator stats a ``file`` path, and runs ``git -C`` on a ``git_commit``
+    repo, as given. Run as an auto-approved tool, nobody reads that path first,
+    so it goes through the same screen the dashboard's file I/O uses before
+    anything probes it: a sensitive path or an untrusted UNC share (whose probe
+    would open an SMB connection on Windows) is refused, and the evaluator reads
+    only the canonical path. A relative ``git_commit`` repo is left as given,
+    for the evaluator's own refusal.
     """
     accept = item.get("accept") if isinstance(item, dict) else None
-    if not isinstance(accept, dict) or accept.get("kind") != "file":
+    if not isinstance(accept, dict):
         return item, None
-    path = accept.get("path")
+    kind = accept.get("kind")
+    # A non-string kind (a list, say) is unhashable; it is the evaluator's own
+    # per-item error, and must not abort the batch here.
+    field = _SCREENED_PATH_FIELDS.get(kind) if isinstance(kind, str) else None
+    if field is None:
+        return item, None
+    path = accept.get(field)
     if not isinstance(path, str) or not path:
         return item, None  # the evaluator's own "needs a path" error
+    # The evaluator's own test, so every repo it would run on is screened here.
+    if field == "repo" and not os.path.isabs(path):
+        return item, None
     from kiro_crew import hooks
 
     canonical = hooks.validate_file_path(path)
@@ -883,7 +899,7 @@ def _screen_file_item(item: Any) -> tuple[Any, dict[str, str] | None]:
             "path or an untrusted network share); name a path in the workspace",
         }
         return None, refused
-    return {**item, "accept": {**accept, "path": canonical}}, None
+    return {**item, "accept": {**accept, field: canonical}}, None
 
 
 _ANSWERS_HINT = (
