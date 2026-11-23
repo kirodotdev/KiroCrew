@@ -39,6 +39,7 @@ from kiro_crew.acp._dispatch import (
     REFUSAL_FOREIGN_SERVER,
     REFUSAL_UNCLASSIFIED_CALL,
     _loggable_request_id,
+    asks_allow_always,
     build_permission_event,
     foreign_server_refused,
     gate_envelope,
@@ -46,6 +47,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp._dispatch import identified_mcp_call as _identified_mcp_call
 from kiro_crew.acp._dispatch import is_mcp_tool_approval as _is_mcp_tool_approval
 from kiro_crew.acp._dispatch import (
+    offered_allow_id,
     unclassified_call_refused,
 )
 from kiro_crew.acp.harness import pi as pi_mod
@@ -375,6 +377,19 @@ async def approve_tool(
         # whose later calls the gateway proxy then refuses for want of an
         # approval. Crew keeps its own approval memory; the harness is answered once.
         resolved_id = once_for_always(resolved_id, offered)
+    # A canonical literal no recorded id replaced is answered with the offered id of its kind.
+    wants_always = not once_only and asks_allow_always(option_id, gate_event, always=always)
+    offered_id = offered_allow_id(resolved_id, gate_event, always=wants_always)
+    if offered_id is None:
+        logger.warning(
+            "approve_tool: req=%s offers no allow of the kind asked for; refusing",
+            _loggable_request_id(request_id),
+        )
+        # Put back what was taken, so the reject answers with the offered reject id.
+        _restore_withdrawn(self, request_id, gate_event, recorded, pi_gate_tool)
+        await self.reject_tool(request_id)
+        return False
+    resolved_id = offered_id
     # The wait for the write lock is the last await before the answer goes
     # out, so the withdrawal is read again under that lock.
     # The approval mints the single-use mediated-secret capability for this call

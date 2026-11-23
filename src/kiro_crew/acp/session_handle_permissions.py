@@ -37,9 +37,11 @@ from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
+    asks_allow_always,
     build_permission_event,
     identified_mcp_call,
     is_mcp_tool_approval,
+    offered_allow_id,
     redact_text,
     scope_overflowed,
     scoped_tool_cache_key,
@@ -183,13 +185,16 @@ async def approve_tool(
         # human-wait segment of the park so an observer does not attribute the
         # person's thinking time to the consumer (see _end_human_wait).
         self._end_human_wait()
+    # By the kind the frame offered an explicit id as, before its spelling.
+    wants_always = asks_allow_always(option_id, gate_event, always=False)
     if recorded:
         if resolved_id is None:
             resolved_id = recorded.get("once") or recorded.get("always")
-        elif resolved_id == OPTION_ALLOW_ALWAYS:
-            resolved_id = recorded.get("always") or recorded.get("once") or resolved_id
-        elif resolved_id == OPTION_ALLOW_ONCE:
-            resolved_id = recorded.get("once") or resolved_id
+        elif resolved_id in (OPTION_ALLOW_ALWAYS, OPTION_ALLOW_ONCE):
+            once = recorded.get("once")
+            resolved_id = (
+                (recorded.get("always") or once) if wants_always else once
+            ) or resolved_id
     if resolved_id is None:
         resolved_id = OPTION_ALLOW_ONCE
     if capability.for_connection:
@@ -197,6 +202,20 @@ async def approve_tool(
         # tool, and the gateway proxy refuses every call no approval was minted
         # for. Crew keeps its own approval memory; the harness is answered once.
         resolved_id = once_for_always(resolved_id, recorded or {})
+    # A canonical literal no recorded id replaced is answered with the offered id of its kind.
+    offered_id = offered_allow_id(
+        resolved_id, gate_event, always=wants_always and not capability.for_connection
+    )
+    if offered_id is None:
+        logger.warning(
+            "approve_tool: req=%s offers no allow of the kind asked for; refusing",
+            _loggable_request_id(request_id),
+        )
+        # Put back what was taken, so the reject answers with the offered reject id.
+        self._restore_withdrawn(request_id, gate_event, recorded)
+        await self.reject_tool(request_id)
+        return False
+    resolved_id = offered_id
     # The wait for the write lock is the last await before the answer goes
     # out, so the runtime reads the withdrawal again under that lock, ahead
     # of its own liveness check, and the grant's deadline after it: a runtime
