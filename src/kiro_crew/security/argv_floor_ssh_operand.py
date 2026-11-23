@@ -19,10 +19,18 @@ from .shell_normalizer import _cut_at_operator, _resolve_param_defaults
 # TEXT inside a single argv token.  The substitution forms are substring
 # matches ("$(hostname -f)" still hits); the variable forms are exact or
 # dot-suffixed ("$hostname", "$hostname.example") so an unrelated variable
-# like "$hostname_backup" is NOT read as this host.
+# like "$hostname_backup" is NOT read as this host.  The variable forms
+# include the Windows spellings of the same name: PowerShell's
+# "$env:COMPUTERNAME" (bare and braced) and cmd's "%COMPUTERNAME%".
 _HOSTNAME_SUBSTITUTION_HINTS: tuple[str, ...] = ("$(hostname", "`hostname")
 
-_HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
+_HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = (
+    "$hostname",
+    "${hostname}",
+    "$env:computername",
+    "${env:computername}",
+    "%computername%",
+)
 
 _EXPANSION_DEFAULT_RE = re.compile(r"\$\{[^{}:]*:[-=+?]([^{}]+)\}")
 
@@ -189,9 +197,23 @@ def _operand_targets_self(
     for hint in _HOSTNAME_SUBSTITUTION_HINTS:
         if hint in t:
             return True
+    # The Windows spellings are read as a host where an operand can be one: whole
+    # (``$env:computername``), after userinfo (``user@%computername%``), before a
+    # path colon, or dotted in host position (``$env:computername.corp``). A dotted
+    # operand elsewhere is a local file (``%computername%.log``) and a ``@`` after a
+    # ``:`` or ``/`` is remote-path data (``backup:/logs/a@%computername%.log``).
+    user, at, rest = t.partition("@")
+    spellings = (t, rest) if at and not {":", "/"} & set(user) else (t,)
     for var in _HOSTNAME_VARIABLE_FORMS:
-        if t == var or t.startswith(var + ".") or t.startswith(var + ":"):
-            return True
+        bash_form = "hostname" in var
+        for spelling in spellings[:1] if bash_form else spellings:
+            tail = spelling[len(var) :] if spelling.startswith(var) else None
+            if tail is None:
+                continue
+            if tail == "" or tail.startswith(":"):
+                return True
+            if tail.startswith(".") and (bash_form or host_position or ":" in tail):
+                return True
     # An expansion's embedded default is the destination when the variable is
     # unset — check every ``${…:-word}``-style word (recursion terminates:
     # the word is strictly shorter than the operand).  Kept alongside the
