@@ -499,14 +499,14 @@ class TestServiceCmd:
         ],
     )
     def test_action_forwards_and_audits(self, monkeypatch, sel_rec, action, fn, operation) -> None:
-        monkeypatch.setattr(cli_server.service_controller, fn, lambda: 0)
+        monkeypatch.setattr(cli_server.service_controller, fn, lambda **_kw: 0)
         rc = cli_server._service_cmd(argparse.Namespace(service_action=action))
         assert rc == 0
         assert sel_rec.operations == [operation]
         assert sel_rec.calls[0]["outcome"] == "allowed"
 
     def test_nonzero_rc_is_audited_as_error(self, monkeypatch, sel_rec) -> None:
-        monkeypatch.setattr(cli_server.service_controller, "install_service", lambda: 3)
+        monkeypatch.setattr(cli_server.service_controller, "install_service", lambda **_kw: 3)
         assert cli_server._service_cmd(argparse.Namespace(service_action="install")) == 3
         assert sel_rec.calls[0]["outcome"] == "error"
         assert "rc=3" in sel_rec.calls[0]["resources"]

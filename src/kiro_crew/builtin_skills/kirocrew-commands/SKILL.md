@@ -86,6 +86,7 @@ transcripts.
 | Command | Description |
 |---------|-------------|
 | `kirocrew service install` | Install and start as system service (sudo on Linux) |
+| `kirocrew service install --headless` | Same, with no dashboard and loopback only; a later `service install` keeps it, `--no-headless` drops it |
 | `kirocrew service uninstall` | Stop and remove system service (Linux: both system and per-user unit, each scope reported) |
 | `kirocrew service status` | Show service status (systemctl/launchctl; Linux: system and per-user unit, each named) |
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
