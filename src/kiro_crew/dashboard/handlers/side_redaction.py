@@ -86,8 +86,9 @@ class _SegmentRedactor:
     stream redactor's own output is not drawn; the live view is the whole-text
     pass over the committed text, so a commit the pass rewrites (a key body
     committed under its header) never reaches the wire. The run still held when
-    a tool row lands is neither flushed nor drawn: the text after the call
-    decides it.
+    a tool row lands is neither flushed nor drawn, except what the main chat
+    releases at its own cut, a plain word ending a sentence and the detectors'
+    fixed tail (``_release``): the text after the call decides the rest.
 
     The pass runs over the reply as written, with one substitution. A value the
     stream redactor DROPS (a credential still open at its hold-back ceiling,
@@ -153,6 +154,33 @@ class _SegmentRedactor:
         """Feed a delta to the stream redactor and keep ``_view`` in step with
         it; return what the stream redactor emitted (``""`` while it holds).
 
+        A run left held that is one plain word ending a sentence goes out with
+        the delta (``release_sentence_end``), as it does on the main chat's
+        live stream (chat_turn/stream_chunks.py): nothing after it can make it
+        part of a credential, and holding it hid the row's last word until the
+        model wrote again.
+        """
+        self._committed_through.clear()
+        return self._absorb(self._wsred.feed(text) + self._wsred.release_sentence_end())
+
+    def _release(self) -> str:
+        """At a tool row, take what the stream redactor releases at a display
+        boundary; return what it emitted (``""`` when it holds everything).
+
+        The same two steps as the main chat's cut (chat_turn/turn_reply_seams.py
+        ``_cut_segment``, then its next chunk): what only the detectors' fixed
+        tail held goes out, and so does a plain word ending a sentence, so the
+        row above the tool call ends with its last word instead of handing it
+        to the row below. A credential-class run the passes hold stays held:
+        the text after the call decides it.
+        """
+        self._committed_through.clear()
+        return self._absorb(self._wsred.release_at_boundary() + self._wsred.release_sentence_end())
+
+    def _absorb(self, out: str) -> str:
+        """Keep ``_view`` in step with what the stream redactor just emitted
+        (*out*) and the commits it recorded through ``_batch`` on the way.
+
         ``_view`` holds the bytes the stream redactor has consumed from its
         buffer (the run it still holds is not in it yet), as written, except
         the bytes it DROPPED, which stand in the view as what it emitted for
@@ -168,8 +196,6 @@ class _SegmentRedactor:
         rule is on what the redactor did, not on which path did it, so a path
         this docstring does not list is covered too.
         """
-        self._committed_through.clear()
-        out = self._wsred.feed(text)
         take = ""
         pos = 0
         for committed, redacted in self._committed_through:
@@ -245,7 +271,13 @@ class _SegmentRedactor:
         it (``None`` otherwise, nothing to send). The client draws every plain
         delta as sent and replaces the row only on a settle or terminal frame
         (``store/chat/side.ts``), so the deltas drawn are exactly ``_streamed``.
+
+        The row ends with what the stream redactor releases at a boundary
+        (``_release``): a sentence's last word before the call ("file.") is
+        settled into this row, not drawn under the tool row glued to the text
+        after it.
         """
+        self._release()
         self._passed = self._len
         whole = redact(self._committed())
         row_text = self._share(whole)

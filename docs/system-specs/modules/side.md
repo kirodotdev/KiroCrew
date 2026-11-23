@@ -631,10 +631,16 @@ key body committed under its header) never reaches the wire, and a delta the
 pass would contradict is withheld until the frame that settles the row replaces
 it. Past 8k committed characters a live pass waits for a step of new text
 (`_PASS_EVERY_COMMIT_BELOW`, `_PASS_STEP_MAX`), so a long reply costs a bounded
-number of passes. The run still held when a tool row lands is neither flushed
-nor drawn (the frame that settles the row above cannot be taken back, and the
-text after the call may be what makes the run a credential); the text after the
-call decides it, and it is drawn under the tool row as that text commits it.
+number of passes. A tool row is a display boundary, released as the main chat's
+cut releases it (`StreamRedactor.release_at_boundary`, then
+`release_sentence_end`): what only the detectors' fixed tail held, and a plain
+word ending a sentence ("file."), go into the row above, which so ends with its
+last word; the same sentence-end release runs on every delta, as on the main
+chat's live stream. The credential-class run still held after that is neither
+flushed nor drawn (the frame that settles the row above cannot be taken back,
+and the text after the call may be what makes the run a credential); the text
+after the call decides it, and it is drawn under the tool row as that text
+commits it.
 Once a tool row has been drawn the terminal frame carries the last row's text
 this way instead of the whole reply; a turn that ran tools and wrote nothing
 keeps the read-only fallback sentence. The rows together are exactly the stored

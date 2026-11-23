@@ -383,6 +383,82 @@ async def test_side_turn_carries_the_withheld_tail_below_the_tool_row(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_side_turn_settles_a_sentences_last_word_above_the_tool_row(tmp_path, monkeypatch):
+    """The run the stream redactor holds before a tool call is most often the
+    last word of a sentence (``file.``), which no later text can make part of a
+    credential. The main chat releases such a word at its cut; the side turn
+    settles it into the row above the tool row, so the row reads ``Let me check
+    the config file.`` and the row below starts with the text written after the
+    call. The word also goes out live with its delta, as on the main chat."""
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent.agent = "kirocrew"
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("q")
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = False
+
+    async def _fake_get_or_create(key, **kwargs):
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+
+    async def _fake_stream(provider, message, *, on_chunk=None, on_tool_call=None, **kwargs):
+        on_chunk("Let me check the config file.")
+        on_tool_call(
+            _tool_event(title="Read config.yml", tool_input="config.yml", tool_kind="read"), True
+        )
+        on_chunk("The file has two hosts.")
+        return "Let me check the config file.The file has two hosts."
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    frames = [d for t, d in events if t == "chat.side_result"]
+    tool_at = next(i for i, d in enumerate(frames) if d["role"] == "tool")
+    # Live: the delta carries the whole sentence, its last word included.
+    assert [d["content"] for d in frames[:tool_at]] == ["Let me check the config file."]
+    assert not any(d.get("settle") for d in frames[:tool_at])
+    assert _client_rows(frames) == [
+        ("assistant", "Let me check the config file."),
+        ("tool", "🔧 Read config.yml\nconfig.yml"),
+        ("assistant", "The file has two hosts."),
+    ]
+    stored = [m for m in parent._side.messages if m["role"] == "assistant"]
+    assert stored[-1]["content"] == "Let me check the config file.The file has two hosts."
+
+
+def test_a_held_sentence_end_is_settled_into_the_row_when_the_tool_row_lands():
+    """The redactor driven directly: the word fed on its own is a
+    credential-class run the stream redactor holds, and the sentence-end
+    release lets it go with its delta. With that release held off (a stream
+    redactor that keeps the word), the tool row's own boundary release puts it
+    into the row it closes, and the settle frame carries the whole sentence."""
+    from unittest.mock import patch
+
+    from kiro_crew.dashboard.handlers.side_redaction import _SegmentRedactor
+    from kiro_crew.security import StreamRedactor
+
+    r = _SegmentRedactor()
+    assert r.feed("Let me check the config ") == "Let me check the config "
+    assert r.feed("file.") == "file."
+    assert r.close_row() is None
+
+    r = _SegmentRedactor()
+    with patch.object(StreamRedactor, "release_sentence_end", return_value=""):
+        assert r.feed("Let me check the config ") == "Let me check the config "
+        assert r.feed("file.") == ""  # held: a credential-class run
+    # The tool row lands: the boundary release settles the word into this row.
+    assert r.close_row() == "Let me check the config file."
+    assert r.feed("The file has two hosts.") == "The file has two hosts."
+    assert r.finish() == "The file has two hosts."
+    assert r.reply() == "Let me check the config file.The file has two hosts."
+
+
+@pytest.mark.asyncio
 async def test_side_turn_redacts_a_credential_the_model_split_around_a_tool_call(
     tmp_path, monkeypatch
 ):
@@ -1048,7 +1124,8 @@ async def test_side_turn_draws_a_carried_run_once_under_the_tool_row(tmp_path, m
     tool_at = next(i for i, d in enumerate(frames) if d["role"] == "tool")
     assert [d["content"] for d in frames[:tool_at]] == ["Header: "]
     deltas_after = [d["content"] for d in frames[tool_at + 1 :] if not d.get("final")]
-    assert deltas_after == ["Authorization: Bex is "]
+    # ``fine.`` is a sentence's last word: released with its delta, not held.
+    assert deltas_after == ["Authorization: Bex is fine."]
     assert _client_rows(frames) == [
         ("assistant", "Header: "),
         ("tool", "🔧 Running: cat /etc/hosts\ncat /etc/hosts"),

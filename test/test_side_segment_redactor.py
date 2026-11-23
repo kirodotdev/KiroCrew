@@ -798,6 +798,9 @@ def test_the_view_is_rebuilt_from_the_stream_redactors_own_commits():
             self._redactor(text)  # records a commit ...
             return "[REDACTED: credential]"  # ... that the output does not contain
 
+        def release_sentence_end(self):
+            return ""
+
     r = _SegmentRedactor()
     r._wsred = _OutOfOrder(r._batch)
     with pytest.raises(RuntimeError):
