@@ -11180,6 +11180,7 @@
       "undo_delete_secret": "シークレットを削除",
       "undo_unavailable": "この変更は元に戻せません。",
       "undo_unavailable_overwrites": "元に戻せません：既存のシークレットを上書きしました。",
+      "gateway_restart_required": "この Bot のワーカーがゲートウェイ経由でこの MCP サーバーを使えるのは、ゲートウェイを再起動した後です (設定 → バージョン情報 → ゲートウェイを再起動)。",
       "cron_every_day": "毎日",
       "cron_every_minute": "毎分",
       "cron_every_hour": "毎時",

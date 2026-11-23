@@ -11706,6 +11706,7 @@
       "undo_delete_secret": "Elimina segreto",
       "undo_unavailable": "Questa modifica non può essere annullata.",
       "undo_unavailable_overwrites": "Impossibile annullare: ha sostituito un segreto che esisteva già.",
+      "gateway_restart_required": "Il worker di questo Bot riceve questo server MCP tramite il gateway solo dopo che hai riavviato il gateway (Impostazioni → Informazioni → Riavvia il gateway).",
       "cron_every_day": "Ogni giorno",
       "cron_every_minute": "Ogni minuto",
       "cron_every_hour": "Ogni ora",

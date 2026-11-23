@@ -11180,6 +11180,7 @@
       "undo_delete_secret": "시크릿 삭제",
       "undo_unavailable": "이 변경은 되돌릴 수 없습니다.",
       "undo_unavailable_overwrites": "되돌릴 수 없습니다: 이미 있던 시크릿을 덮어썼습니다.",
+      "gateway_restart_required": "이 Bot의 워커는 게이트웨이를 다시 시작한 후에만 게이트웨이를 통해 이 MCP 서버를 받습니다(설정 → 정보 → 게이트웨이 다시 시작).",
       "cron_every_day": "매일",
       "cron_every_minute": "매분",
       "cron_every_hour": "매시간",

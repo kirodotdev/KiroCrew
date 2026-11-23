@@ -11706,6 +11706,7 @@
       "undo_delete_secret": "Excluir segredo",
       "undo_unavailable": "Esta alteração não pode ser desfeita.",
       "undo_unavailable_overwrites": "Não é possível desfazer: isso substituiu um segredo que já existia.",
+      "gateway_restart_required": "O worker deste Bot só recebe este servidor MCP pelo gateway depois que você reiniciar o gateway (Configurações → Sobre → Reiniciar o gateway).",
       "cron_every_day": "Todos os dias",
       "cron_every_minute": "A cada minuto",
       "cron_every_hour": "A cada hora",

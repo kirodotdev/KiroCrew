@@ -154,7 +154,9 @@ def extract_evidence(
     if kind == KIND_CREWMATE_CAPABILITIES and step_index == 0:
         return pick("preview_token")
     if kind == KIND_CREWMATE_CAPABILITIES:
-        return pick("revision")
+        # And whether the Bot's new gateway-routed server waits for a gateway
+        # restart, which the applied record shows (``complete_apply``).
+        return pick("revision", "gateway_restart_required")
     if kind == KIND_TEMPLATE_MCP_SERVER:
         # The card the addition was recorded under: its Undo removes only that one.
         return pick("card_id")

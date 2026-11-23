@@ -11706,6 +11706,7 @@
       "undo_delete_secret": "Supprimer le secret",
       "undo_unavailable": "Cette modification ne peut pas être annulée.",
       "undo_unavailable_overwrites": "Impossible d’annuler : ceci a remplacé un secret qui existait déjà.",
+      "gateway_restart_required": "Le worker de ce Bot ne reçoit ce serveur MCP via la passerelle qu’une fois que tu as redémarré la passerelle (Paramètres → À propos → Redémarrer la passerelle).",
       "cron_every_day": "Tous les jours",
       "cron_every_minute": "Toutes les minutes",
       "cron_every_hour": "Toutes les heures",

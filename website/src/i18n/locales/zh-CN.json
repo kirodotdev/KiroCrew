@@ -11180,6 +11180,7 @@
       "undo_delete_secret": "删除凭据",
       "undo_unavailable": "这个更改无法撤销。",
       "undo_unavailable_overwrites": "无法撤销：这次覆盖了一个已经存在的凭据。",
+      "gateway_restart_required": "这个 Bot 的工作者要等你重启网关（设置 → 关于 → 重启网关）后，才能通过网关获得这个 MCP 服务器。",
       "cron_every_day": "每天",
       "cron_every_minute": "每分钟",
       "cron_every_hour": "每小时",

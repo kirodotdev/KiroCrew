@@ -4922,6 +4922,7 @@
       "undo_delete_secret": "Delete secret",
       "undo_unavailable": "Undo isn't available for this change.",
       "undo_unavailable_overwrites": "Undo isn't available: this replaced a secret that already existed.",
+      "gateway_restart_required": "This Bot's worker gets this MCP server through the gateway only after you restart the gateway (Settings → About → Restart gateway).",
       "cron_every_day": "Every day",
       "cron_every_minute": "Every minute",
       "cron_every_hour": "Every hour",
