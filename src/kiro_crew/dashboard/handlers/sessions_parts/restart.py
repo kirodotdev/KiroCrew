@@ -170,8 +170,11 @@ async def api_sessions_restart(request: web.Request) -> web.Response:
 
 # Every ``api_session*`` handler is an owner surface, so a private member's
 # internal call is refused before it runs (audit label = handler name).
+# Restarting every session is the owner's call, so a non-owner dashboard session
+# is refused too; an app token and an internal caller stay under their own controls.
 guard_owner_surface_routes(
     globals(),
     prefix="api_session",
     member_scoped=frozenset(),
+    dashboard_owner_only=True,
 )
