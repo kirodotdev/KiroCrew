@@ -5,7 +5,10 @@
 `llama_cpp/` is the Python package from [abetlen/llama-cpp-python](https://github.com/abetlen/llama-cpp-python)
 v0.3.34, vendored so the in-process embedding runtime needs no runtime pip
 install, no `--extra-index-url`, and no external Ollama server. License:
-`llama_cpp/LICENSE.md` (MIT, includes bundled llama.cpp/ggml — also MIT).
+`llama_cpp/LICENSE.md` (MIT). The llama.cpp/ggml libraries below (MIT) and the
+Linux `libgomp` runtime (GPL-3.0 with the GCC Runtime Library Exception) have
+their notices under "Vendored Libraries" in the repository's
+`THIRD-PARTY-NOTICES`, which an upgrade updates too.
 
 What was changed relative to the upstream wheel:
 

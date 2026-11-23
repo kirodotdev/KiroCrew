@@ -37,6 +37,7 @@ MANIFEST.in, so a wheel-only build cannot observe an sdist regression at all.
 from __future__ import annotations
 
 import ast
+import configparser
 import io
 import os
 import re
@@ -220,6 +221,31 @@ def test_package_data_declares_the_libs_explicitly() -> None:
         assert (
             f"_vendor/{_LIBS_DIR_NAME}/{plat}/*" in cfg
         ), f"setup.cfg [options.package_data] does not explicitly ship {plat}"
+
+
+def test_package_ships_a_notice_for_every_vendored_component() -> None:
+    """Each vendored library has a THIRD-PARTY-NOTICES entry, and that file ships.
+
+    NOTICE points readers to THIRD-PARTY-NOTICES, which setuptools' default
+    license patterns do not match, so setup.cfg names it beside the two files
+    those defaults covered.
+    """
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.read(_REPO_ROOT / "setup.cfg", encoding="utf-8")
+    shipped = cfg.get("metadata", "license_files", fallback="").split()
+    assert {"LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"} <= set(shipped)
+    notices = (_REPO_ROOT / "THIRD-PARTY-NOTICES").read_text(encoding="utf-8")
+    assert "\n### llama-cpp-python " in notices, "no entry for the vendored llama_cpp package"
+    entries = {
+        "gomp": "\n### GNU OpenMP runtime (libgomp)\n",
+        "ggml": "\n### llama.cpp and ggml (native libraries)\n",
+        "llama": "\n### llama.cpp and ggml (native libraries)\n",
+    }
+    for plat, libs in _REQUIRED_VENDORED_LIBS.items():
+        for lib in libs:
+            family = next((name for name in entries if name in lib), None)
+            assert family, f"{plat}/{lib} has no THIRD-PARTY-NOTICES entry"
+            assert entries[family] in notices, f"THIRD-PARTY-NOTICES has no entry for {plat}/{lib}"
 
 
 def test_windows_bundle_prunes_every_foreign_platform_dir() -> None:
