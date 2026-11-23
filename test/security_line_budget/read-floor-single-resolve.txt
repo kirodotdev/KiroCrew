@@ -1,0 +1,6 @@
++40
+paths_targets.caller_canonicalised: the context the read floor sets around its own gate
+calls, so the realpath it already computed is matched without a second mc-pathres
+resolution while the anchors still resolve on the pool. Only an absolute spelling
+equal to the marked one, with no base_dir, skips the hop. Also the lines the facades
+and the frozen export manifest list for the new name.

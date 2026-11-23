@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _fd_real_path,
+        caller_canonicalised,
         is_sensitive_canonical_path,
         is_sensitive_path,
         pinned_fs,
@@ -102,7 +103,9 @@ def _opened_file_matches_validated_path(
         ) or _hardlink_alias_matches(fd, path, opened_path)
     if canonical_gate:
         return matches and not is_sensitive_canonical_path(opened_path)
-    return matches and not is_sensitive_path(opened_path)
+    # The kernel's path for the descriptor has no link left to follow.
+    with caller_canonicalised(opened_path):
+        return matches and not is_sensitive_path(opened_path)
 
 
 def _opened_path_within_root(
