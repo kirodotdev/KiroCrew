@@ -6,9 +6,10 @@ import { sendTurn, SEND_ABORT_MS, type SendReceipt } from '../../chat-core/trans
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { sideTurnWire } from './sideTurnWire'
 import { useAppSelector, useAppDispatch, useAppStore } from '../../store'
-import { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
+import { beginSideQueueEdit, finishSideQueueEdit, forgetSideSteerSubmittedText, noteSideQueueCancelWaiting, readSideSteerSubmittedText, recordSideSteerSubmittedText, setSideQueueEditDraft, sideClose, sideOptimisticAccepted, sideOptimisticAppend, sideOptimisticRollback, restoreSideConversation, resyncWaitingSideConversations, awaitSideRestore, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, stageToMainComposer, takeSideQueueDroppedByClose, takeSideQueueDroppedByResyncThenClose, takeSideSteerDroppedByClose, transcriptTsMs, type SideStandingNotice } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
+import { renderAssistantBubble, type MessageRenderer } from '../../app-sdk/messageRenderers'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
@@ -211,13 +212,39 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
     () => messages.map((m, i) => {
       const streaming = i === lastIdx && isStreamingLast
       const role = m.role === 'user' ? 'user' : m.is_error ? 'error' : streaming ? 'streaming' : 'assistant'
-      // A finished answer's blocked-link records ride in `meta`, where the shared
-      // bubble reads a main chat row's, so a flagged link there draws as its chip.
-      const meta = role === 'assistant' && m.link_blocks !== undefined ? { meta: { link_blocks: m.link_blocks } } : {}
-      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts, ...meta }
+      // A finished answer's records ride in `meta`, where the shared bubble reads
+      // a main chat row's, so a flagged link draws as its chip and a removed
+      // credential as its lock tag.
+      const records = role === 'assistant' && (m.link_blocks !== undefined || m.redactions !== undefined)
+        ? { meta: { link_blocks: m.link_blocks, redactions: m.redactions } }
+        : {}
+      return { role, content: m.content, cls: `msg msg-${role}`, ts: m.ts, ...records }
     }),
     [messages, lastIdx, isStreamingLast]
   )
+
+  /** The side routes always serve this gateway's own slot, so a reply draws its
+   *  lock tags and its Blocked link card's Allow on the chat page's local-slot
+   *  rule. A streaming row passes no `messageTs`: its `ts` moves with each delta
+   *  and would re-version its local image URLs. */
+  const renderers = useMemo<readonly MessageRenderer[]>(() => [{
+    id: 'assistant',
+    roles: ['assistant', 'streaming'],
+    render: (m, ctx) => {
+      const bubble = renderAssistantBubble(m, ctx, undefined, { redactionSlot: slot, messageTs: m.role === 'streaming' ? undefined : m.ts })
+      return bubble === null ? null : ctx.wrapper(bubble)
+    },
+  }], [slot])
+
+  // A Blocked link card's Allow or Undo on this slot changes how the gateway
+  // serves its answers, so read them again.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if ((e as CustomEvent).detail?.slot === slot) void dispatch(resyncWaitingSideConversations(slot))
+    }
+    window.addEventListener('mc:redaction-hosts-changed', handler)
+    return () => window.removeEventListener('mc:redaction-hosts-changed', handler)
+  }, [dispatch, slot])
 
   // Stage exactly what the transcript renders: hidden widget bodies and protocol
   // markers stay out of the composer, trailing whitespace is removed, and leading
@@ -1006,6 +1033,7 @@ export default function SideChat({ slot, onFileOpen, onFolderOpen, onArtifactOpe
       <ChatMessageList
         messages={transcript}
         running={isBusy}
+        renderers={renderers}
         // The host's own openers, so a path or artifact named in a side reply
         // opens where the main transcript opens it: a tab of this panel.
         onFileOpen={onFileOpen}

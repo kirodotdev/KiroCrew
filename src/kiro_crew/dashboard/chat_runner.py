@@ -238,7 +238,9 @@ from kiro_crew.dashboard.chat_turn.regenerate_swap import (  # noqa: F401
     release_regenerate_on_done,
 )
 from kiro_crew.dashboard.chat_turn.segment_flush import (
+    _commit_reveals,
     _flush_segment,
+    _redact_segment_text,
     _turn_settle_answer,
 )
 from kiro_crew.dashboard.chat_turn.session_events import (
