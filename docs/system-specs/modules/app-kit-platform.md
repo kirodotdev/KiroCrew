@@ -5950,8 +5950,9 @@ Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.
 `useIssues`, `IssueList` and `IssueCard` on `@kirocrew/app-sdk`
 (`website/src/app-sdk/issues/`) list the issues `POST /api/source/issues` returns, through
 one query shape (`IssueSearchRequest`) and one row shape (`IssueSummary`,
-`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira and Linear
-rows, all four of which the route serves. They are App Kit seam level 6.
+`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira, Linear and
+ServiceNow rows, all five of which the route serves. A ServiceNow list offers no label
+filter, since its records have none, and like Jira and Linear it shows no comment count. They are App Kit seam level 6.
 
 The transport is chosen the way §18g chooses the pull-request client, from the
 published identity: an **external** app posts through its scoped client once
