@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -94,33 +92,36 @@ async def _gateway(home: Path, monkeypatch, state) -> TestServer:
     return server
 
 
-async def _stub_report_line(proc: subprocess.Popen, seconds: float = 60) -> str:
-    """The stub's one report line, once it has printed it and exited, within *seconds*.
+async def _stub_report_line(proc: asyncio.subprocess.Process, seconds: float = 60) -> str:
+    """The stub's one report line, once it has exited, within *seconds*.
 
-    The read runs off the loop, because this loop serves the gateway the stub talks to. The
-    exit is polled, not waited on from a pool thread. A stub that outlasts the deadline is
+    One ``communicate`` waits on the process and drains both pipes without a pool thread, and
+    the loop that serves the stub's gateway stays free. A stub that outlasts the deadline is
     killed and the test FAILS with its stderr; a timeout never passes or skips.
     """
-    assert proc.stdout is not None and proc.stderr is not None
-    deadline = time.monotonic() + seconds
-    try:
-        line = await asyncio.wait_for(asyncio.to_thread(proc.stdout.readline), seconds)
-        while proc.poll() is None:
-            if time.monotonic() > deadline:
-                raise asyncio.TimeoutError
-            await asyncio.sleep(0.05)
-    except asyncio.TimeoutError:
+    reader = asyncio.ensure_future(proc.communicate())
+    done, _pending = await asyncio.wait({reader}, timeout=seconds)
+    if not done:
+        # Not cancelled: the reader finishes at EOF after the kill and still returns what it
+        # drained, which a cancelled ``communicate`` would lose.
         proc.kill()
-        proc.wait()
+        _out, err = await reader
+        await proc.wait()
         pytest.fail(
-            f"the stub backend did not finish within {seconds} s; stderr: {proc.stderr.read()}"
+            f"the stub backend did not finish within {seconds} s; "
+            f"stderr: {err.decode('utf-8', 'replace')}"
         )
-    return line
+    out, err = reader.result()
+    assert (
+        proc.returncode == 0
+    ), f"the stub backend exited with {proc.returncode}; stderr: {err.decode('utf-8', 'replace')}"
+    return out.decode("utf-8")
 
 
 async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
     import kiro_crew.apps.backend as bmod
     from kiro_crew.apps import dashboard_proxy
+    from kiro_crew.apps.backend_runtime.ports import spawned_backend_owner
 
     dashboard_proxy.set_gateway_secret(_REAL)
     # Warm the backend probe off the loop: on the loop a cold cache answers "none", so
@@ -141,22 +142,31 @@ async def _run_stub(home: Path, monkeypatch, state, *, grant: bool) -> dict:
         extra_hidden_dirs=hidden,
         extra_stand_ins=stand_ins,
     )
-    proc = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
         cwd=home,
     )
-    bmod._processes[_APP] = bmod.AppProcess(
+    registration = bmod.AppProcess(
         app_name=_APP,
         pid=proc.pid,
-        proc=proc,
+        # The registry asks its process for ``poll()``; an asyncio process has ``returncode``.
+        proc=SimpleNamespace(poll=lambda: proc.returncode),  # type: ignore[arg-type]
         pid_start_time=platform_compat.process_start_time(proc.pid),
     )
+    bmod._processes[_APP] = registration
     try:
+        # No await has run since the spawn, so the stub is still running and the registry names it.
+        assert spawned_backend_owner(proc.pid) == _APP
         line = await _stub_report_line(proc)
+        await proc.wait()
+        assert bmod._processes[_APP] is registration
+        # Proves the ``poll()`` gate flips after exit: the shim reads the live ``returncode``,
+        # where a constant ``poll`` would still name the app.
+        assert spawned_backend_owner(proc.pid) is None
+        # Proves the start-id leg: an exited pid is refused on its start id as well.
+        assert spawned_backend_owner(proc.pid, verify_start=True) is None
     finally:
         bmod._processes.pop(_APP, None)
         await server.close()
