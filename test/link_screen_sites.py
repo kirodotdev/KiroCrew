@@ -212,6 +212,7 @@ DECLARED_SITES = frozenset(
         ("session_storage_parts/crew_staging.py", "_unlisted_crew_staging"),
         ("session_storage_parts/file_moves.py", "_batch_dir"),
         ("session_storage_parts/file_moves.py", "_move_sidecar_pinned"),
+        ("session_storage_parts/file_moves.py", "_unlisted_files"),
         ("session_storage_parts/pinned_delete.py", "_delete_listed_files"),
         ("session_storage_parts/store_inventory.py", "_unit_paths"),
         ("session_storage_parts/store_inventory.py", "list_trash"),
