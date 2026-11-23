@@ -6006,7 +6006,7 @@
       "yolo_label": "[ÝØĹØ ······]",
       "yolo_desc": "[Ìñ èṽèŕý çĥàţ, {{productName}} ẁøŕķş ẁìţĥøùţ àşķìñğ ýøù ƒìŕşţ ·······················]",
       "configure_duration": "[Çøñƒìğùŕè ðùŕàţìøñ ················]",
-      "yolo_expiration_until_shutdown": "[Şţàýş øñ ùñţìĺ {{productName}} ŕèşţàŕţş — ñø ţìɱèð èẋþìŕý. ······················]",
+      "yolo_expiration_until_shutdown": "[Şţàýş øñ ùñţìĺ ýøù şţøþ {{productName}} — ñø ţìɱèð èẋþìŕý. À ŕèşţàŕţ ķèèþş ìţ. ······················]",
       "yolo_expiration_timed": "[Ţùŕñş ìţşèĺƒ øƒƒ àƒţèŕ {{duration}}, ţĥèñ àşķş àğàìñ. ·····················]"
     },
     "appstore": {
@@ -20663,7 +20663,7 @@
         "yolo_duration_6h": "[6 ĥøùŕş ···········]",
         "yolo_duration_12h": "[12 ĥøùŕş ············]",
         "yolo_duration_24h": "[24 ĥøùŕş ············]",
-        "yolo_duration_until_shutdown": "[Ùñţìĺ {{productName}} ŕèşţàŕţş ··············]",
+        "yolo_duration_until_shutdown": "[Ùñţìĺ ýøù şţøþ {{productName}} ··············]",
         "yolo_duration_locked": "[Ðìşàƀĺèð ƀý ýøùŕ øŕğàñìžàţìøñ'ş þøĺìçý ···················]",
         "yolo_duration_next_activation_note": "[Àþþĺìèş ţĥè ñèẋţ ţìɱè ýøù ţùŕñ àùţø-àþþŕøṽè øñ. ························]",
         "failed_to_save_yolo_duration": "[Çøùĺð ñøţ şàṽè ţĥè ðùŕàţìøñ. ····················]",
@@ -20689,7 +20689,7 @@
         "state_blocked": "[Ɓĺøçķèð ···········]",
         "rail_active": "[Àçţìṽè ñøẁ ···············]",
         "rail_until_time": "[Ùñţìĺ {{time}} ·········]",
-        "rail_until_restart": "[Ùñţìĺ ŕèşţàŕţ ············]",
+        "rail_until_restart": "[Ùñţìĺ ýøù şţøþ {{productName}} ··············]",
         "tailnet_chip_allowlist": "[Àĺĺøẁ-ĺìşţ ···············]",
         "tailnet_chip_allowlist_absent": "[Ñøţĥìñğ àððèð ············]",
         "tailnet_chip_allowlist_added": "[Ñàɱè àððèð ···············]",

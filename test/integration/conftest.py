@@ -870,6 +870,14 @@ def _reset_home_bound_globals() -> None:
     config_loader._MATERIALIZED_AGENTS_READY = False
     governance._CONFIRM_PATTERNS_MEMO = None
     recall_pool._settings_cache = None
+    # The kept-grant boot state (verdict, recorders, the chats prompt writer): a
+    # second boot reads its own home's records, as a fresh process would.
+    from kiro_crew import kept_grants, kept_yolo
+    from kiro_crew.dashboard import chat_trust_restart
+
+    kept_grants._reset_for_tests()
+    kept_yolo._reset_for_tests()
+    chat_trust_restart._reset_for_tests()
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None

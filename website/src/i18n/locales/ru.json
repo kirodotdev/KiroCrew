@@ -6875,7 +6875,7 @@
       "trust_scope_tooltip": "Доверие дано разрешением приложения для этого чата; оно истекает само. Выбери «Обычный» в этом меню, чтобы завершить его сейчас; приложение может выдать его снова, пока ты не отключишь его в самом приложении.",
       "yolo_desc": "В каждом чате {{productName}} работает, не спрашивая вас заранее",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
-      "yolo_expiration_until_shutdown": "Остаётся включённым, пока {{productName}} не перезапустится — без ограничения по времени.",
+      "yolo_expiration_until_shutdown": "Остаётся включённым, пока ты не остановишь {{productName}} — без ограничения по времени. Перезапуск его сохраняет.",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "Отключено политикой безопасности вашей организации",
       "yolo_mode_is_an_app_wide_setting": "Режим YOLO — настройка для всего приложения"
@@ -22213,7 +22213,7 @@
         "profile_2": "профиль",
         "profiles_json": "profiles/*.json",
         "rail_active": "Активно",
-        "rail_until_restart": "До перезапуска",
+        "rail_until_restart": "Пока ты не остановишь {{productName}}",
         "rail_until_time": "До {{time}}",
         "search_rules_placeholder": "Поиск правил, шаблонов, категорий…",
         "section_group_enforced": "Принудительно",
@@ -22275,7 +22275,7 @@
         "yolo_duration_locked": "Отключено политикой твоей организации",
         "yolo_duration_next_activation_note": "Применится при следующем включении автоодобрения.",
         "yolo_duration_title": "Как долго действует автоодобрение",
-        "yolo_duration_until_shutdown": "До перезапуска {{productName}}",
+        "yolo_duration_until_shutdown": "Пока ты не остановишь {{productName}}",
         "your_custom_denies": "Ваши собственные запреты",
         "trustedApps": {
           "description": "Приложения, которым ты разрешил запускать свой код на этом компьютере. Доверие выдаётся по одному приложению; все остальные сторонние приложения остаются заблокированными.",

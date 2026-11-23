@@ -6344,7 +6344,7 @@
       "trust_scope_tooltip": "此对话由应用授权信任；授权会自行过期。在此菜单中选择“常规”可立即结束；在该应用中关闭之前，应用可能会再次授权。",
       "yolo_desc": "在每个对话中，{{productName}} 无需先询问即可工作",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
-      "yolo_expiration_until_shutdown": "在 {{productName}} 重启前保持开启 — 不会按时间过期。",
+      "yolo_expiration_until_shutdown": "在你停止 {{productName}} 之前保持开启 — 不会按时间过期。重启后仍保持开启。",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "已被组织的安全策略禁用",
       "yolo_mode_is_an_app_wide_setting": "YOLO 模式是全应用级设置"
@@ -20563,7 +20563,7 @@
         "profile_2": "配置文件",
         "profiles_json": "profiles/*.json",
         "rail_active": "当前生效",
-        "rail_until_restart": "至重启",
+        "rail_until_restart": "直到你停止 {{productName}}",
         "rail_until_time": "至 {{time}}",
         "search_rules_placeholder": "搜索规则、模式或分类…",
         "section_group_enforced": "强制生效",
@@ -20625,7 +20625,7 @@
         "yolo_duration_locked": "已由组织策略禁用",
         "yolo_duration_next_activation_note": "下次开启自动批准时生效。",
         "yolo_duration_title": "自动批准保持开启的时长",
-        "yolo_duration_until_shutdown": "直到 {{productName}} 重启",
+        "yolo_duration_until_shutdown": "直到你停止 {{productName}}",
         "your_custom_denies": "你的自定义拒绝规则",
         "trustedApps": {
           "description": "你已允许在这台电脑上运行自身代码的应用。信任每次只覆盖一个应用，其他第三方应用仍然会被拦截。",

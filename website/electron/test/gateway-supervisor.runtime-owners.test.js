@@ -658,7 +658,7 @@ test("Stop and restart on a previous-version orphan runs the port stop, then sta
   const state = managedStaleHarness({ choose: "Stop and restart" });
   assert.equal(await state.supervisor.start(), true);
   assert.equal(state.stops.length, 1, "the CLI stop ran once");
-  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476"],
+  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476", "--keeps-grants"],
     "the command the dialog names; --expect-pid needs a pidfd macOS lacks");
   assert.equal(state.stops[0].options.env.KIROCREW_HOME, "/virtual/kirocrew-home");
   assert.equal(state.stops[0].options.env.KIROCREW_PORT, undefined);
@@ -719,7 +719,7 @@ test("an orphaned gateway of the other release family is offered a stop, not a q
   assert.match(state.dialogs[0].detail, /quitting Kiro Crew Nightly would not stop it/);
   assert.match(state.dialogs[0].detail, /kirocrew stop --port 5476/);
   assert.equal(state.stops.length, 1);
-  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476"]);
+  assert.deepStrictEqual(state.stops[0].args, ["stop", "--port", "5476", "--keeps-grants"]);
   assert.equal(state.spawnCalls.length, 1);
 });
 

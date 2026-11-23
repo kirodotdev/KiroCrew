@@ -4,6 +4,7 @@ const {
   stopGatewayGracefully: stopGatewayProcessGracefully,
   postShutdown,
   gatewayStillRunningError,
+  markUserStop,
 } = require("../../gateway-stop");
 const { windowsProcessCommand, windowsTaskkill } = require("../../windows-port");
 const { waitForServiceRebind, waitForProcessExit } = require("../../gateway-recovery");
@@ -78,9 +79,17 @@ function createShutdown({
    * fails, the recovery hook must know it is allowed to respawn the child that
    * the updater deliberately stopped.
    */
-  async function stopGatewayGracefully({ timeoutMs = 15000 } = {}) {
+  // `userStop` is true only for a Quit the user chose: the gateway then ends the
+  // YOLO and chat trust it keeps across every other exit (an update, a restart).
+  async function stopGatewayGracefully({ timeoutMs = 15000, userStop = false } = {}) {
     const gateway = getGatewayProcess();
     if (!gateway || gateway.exitCode !== null) {
+      // The gateway this app spawned is already gone (a crash not yet relaunched,
+      // its child cleared): a Quit is still a stop the user chose, so its next boot
+      // ends the grants. An adopted or remote gateway is not this Quit's to end.
+      if (userStop && getGatewayOwnership() === "spawned") {
+        markUserStop({ kirocrewHome: path.dirname(secretCandidates()[0]), fsMod: fs, pathMod: path });
+      }
       setGatewayProcess(null);
       setSpawnedExecutablePaths([]);
       return;
@@ -94,6 +103,7 @@ function createShutdown({
       backendUrl: BACKEND_URL,
       kirocrewHome: currentHome,
       timeoutMs,
+      userStop,
       // 3s PowerShell + 2s WMIC + 5s taskkill fits inside the 18s hard
       // shutdown deadline. The tree sweep is awaited because taskkill can emit
       // the parent's exit while descendants are still being reaped.

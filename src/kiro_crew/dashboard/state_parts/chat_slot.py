@@ -10,6 +10,7 @@ from kiro_crew._facade_bindings import own_methods
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.dashboard import deferred_steer
 from kiro_crew.dashboard import run_clock as _run_clock
+from kiro_crew.dashboard.chat_trust_restart import note_trust_changed
 from kiro_crew.dashboard.recovery_replays import RecoveryReplays
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -1054,9 +1055,14 @@ class _ChatSlot:
     def _trust(self) -> bool:
         return self._trust_held and session_mode_permitted("trust")
 
+    # A change is reported to ``chat_trust_restart``, which records the chats holding a
+    # mode right away, so a grant ended just before a crash is not kept by the next boot.
     @_trust.setter
     def _trust(self, value: bool) -> None:
+        was = getattr(self, "_trust_held", False)
         self._trust_held = bool(value) and session_mode_permitted("trust")
+        if self._trust_held != was:
+            note_trust_changed()
 
     @property
     def _trust_reads(self) -> bool:
@@ -1064,7 +1070,10 @@ class _ChatSlot:
 
     @_trust_reads.setter
     def _trust_reads(self, value: bool) -> None:
+        was = getattr(self, "_trust_reads_held", False)
         self._trust_reads_held = bool(value) and session_mode_permitted("trust_reads")
+        if self._trust_reads_held != was:
+            note_trust_changed()
 
     @property
     def _has_reader(self) -> bool:

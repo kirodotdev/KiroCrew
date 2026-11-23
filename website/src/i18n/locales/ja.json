@@ -6304,7 +6304,7 @@
       "trust_scope_tooltip": "このチャットはアプリの許可で信頼されています。許可は自動で期限切れになります。今すぐ終了するにはこのメニューで標準を選んでください。アプリ側でオフにするまで、アプリが再び許可することがあります。",
       "yolo_desc": "すべてのチャットで、{{productName}} は最初に確認せずに機能します",
       "yolo_expiration_timed": "{{duration}} 後に自動的にオフになり、その後再び確認します。",
-      "yolo_expiration_until_shutdown": "{{productName}} が再起動されるまでオンのままです—タイムアウト有効期限はありません。",
+      "yolo_expiration_until_shutdown": "{{productName}} を停止するまでオンのままです—タイムアウト有効期限はありません。再起動しても維持されます。",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "組織のセキュリティポリシーにより無効化されています",
       "yolo_mode_is_an_app_wide_setting": "YOLO モードはアプリ全体の設定です"
@@ -20622,11 +20622,11 @@
         "tailnet_title": "このマシンの tailnet 名を信頼する",
         "tailnet_unavailable": "tailnet の設定を読み取れなかったため、ここでは表示も変更もできません。すでにオンだった場合、tailnet 名は引き続き許可されます。ページを再読み込みしてやり直してください。",
         "tailnet_unresolved_note": "これはオンですが、{{productName}} の起動時に tailnet 名が解決されなかったため、許可オリジンには何も追加されていません。tailscale serve 経由で開いたダッシュボードは、引き続きオリジンチェックで拒否されます。名前が利用できるようになったら {{productName}} を再起動してください。",
-        "yolo_duration_until_shutdown": "{{productName}} が再起動されるまで",
+        "yolo_duration_until_shutdown": "{{productName}} を停止するまで",
         "your_custom_denies": "カスタム拒否",
         "rail_active": "現在有効",
         "rail_until_time": "{{time}} まで",
-        "rail_until_restart": "再起動まで",
+        "rail_until_restart": "{{productName}} を停止するまで",
         "trustedApps": {
           "description": "このコンピューターで独自のコードを実行することを許可したアプリです。信頼は一度に1つのアプリにのみ適用され、その他のサードパーティアプリはブロックされたままです。",
           "empty": "まだ信頼したアプリはありません。",

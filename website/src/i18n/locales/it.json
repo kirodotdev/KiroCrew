@@ -6698,7 +6698,7 @@
       "trust_scope_tooltip": "Attendibile grazie a un'autorizzazione dell'app per questa chat; scade da sola. Scegli Normale in questo menu per terminarla ora; l'app può concederla di nuovo finché non la disattivi nell'app.",
       "yolo_desc": "In ogni chat, {{productName}} lavora senza chiederti prima",
       "yolo_expiration_timed": "Turns itself off after {{duration}}, then asks again.",
-      "yolo_expiration_until_shutdown": "Resta attivo finché {{productName}} non si riavvia — nessuna scadenza a tempo.",
+      "yolo_expiration_until_shutdown": "Resta attivo finché non arresti {{productName}} — nessuna scadenza a tempo. Un riavvio lo mantiene.",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "Disattivato dalla policy di sicurezza della tua organizzazione",
       "yolo_mode_is_an_app_wide_setting": "La modalità YOLO è un'impostazione valida per tutta l'app"
@@ -21663,7 +21663,7 @@
         "profile_2": "profilo",
         "profiles_json": "profiles/*.json",
         "rail_active": "Attivo ora",
-        "rail_until_restart": "Fino al riavvio",
+        "rail_until_restart": "Finché non arresti {{productName}}",
         "rail_until_time": "Fino a {{time}}",
         "search_rules_placeholder": "Cerca regole, pattern, categorie…",
         "section_group_enforced": "Imposto",
@@ -21725,7 +21725,7 @@
         "yolo_duration_locked": "Disattivato dai criteri della tua organizzazione",
         "yolo_duration_next_activation_note": "Si applica la prossima volta che attivi l’approvazione automatica.",
         "yolo_duration_title": "Durata dell’approvazione automatica",
-        "yolo_duration_until_shutdown": "Fino al riavvio di {{productName}}",
+        "yolo_duration_until_shutdown": "Finché non arresti {{productName}}",
         "your_custom_denies": "I tuoi blocchi personalizzati",
         "trustedApps": {
           "description": "App a cui hai permesso di eseguire codice proprio su questo computer. L'autorizzazione vale per una app alla volta; tutte le altre app di terze parti restano bloccate.",

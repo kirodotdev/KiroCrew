@@ -51,12 +51,12 @@ class DroppedGrant:
 
 # ─── Restart-drop breadcrumb ─────────────────────────────────────────────────
 #
-# A grant lives in memory only, so a restart ends it. That is the DESIGNED
-# behaviour and this module does not change it -- it makes the ending VISIBLE.
-# Otherwise an operator who grants six hours of auto-approval and restarts the
-# gateway an hour later gets no reply telling them the remaining five hours are
-# gone, and the next unattended run simply stops and waits for an approval
-# nobody is watching for.
+# An ad-hoc grant comes back after any exit the user did not choose, from the
+# signed record ``kept_yolo`` keeps; this module does not restore anything. It
+# makes an ending VISIBLE when the grant does NOT come back (the user stopped Kiro
+# Crew, the policy now denies it, its record could not be verified). Otherwise an
+# operator who granted six hours of auto-approval gets no word that the remaining
+# time is gone, and the next unattended run waits for an approval nobody gives.
 #
 # So the file below records that a grant WAS live, never that it may resume. It
 # holds the wall-clock deadline (the in-memory deadlines are
@@ -66,9 +66,9 @@ class DroppedGrant:
 #
 # It is deliberately NOT signed, and that follows from what it can do: the file
 # confers no authority, so the worst a forged one achieves is a spurious "your
-# override was dropped" notice. A restored GRANT would need signing -- and a
-# planned-vs-crash discriminator this codebase does not have -- which is exactly
-# why restoring one is not what this does.
+# override was dropped" notice. The record a grant is restored from is signed,
+# lives in a sandbox-masked directory and is read only after the user-stop mark
+# was checked (``kept_grants``), which is why it is a separate file.
 #
 # One record per data home is correct, not a shared-state hazard: the file lives
 # in ``config_dir()``, which is the very directory ``gateway_lock`` holds an
@@ -138,8 +138,30 @@ def _breadcrumb_pump() -> None:
                     _breadcrumb_idle.set()
 
 
+#: Called after every grant transition's publish is queued, on the transition's own
+#: thread, so a second record of the grant (``kept_yolo``) follows the same
+#: transitions without a hook in each one. A listener must do no I/O: it queues work.
+_transition_listeners: list[Callable[[], None]] = []
+
+
+def add_transition_listener(listener: Callable[[], None]) -> None:
+    """Register *listener* for every grant transition. Idempotent."""
+    if listener not in _transition_listeners:
+        _transition_listeners.append(listener)
+
+
 def _enqueue_breadcrumb(job: Callable[[], None]) -> None:
-    """Hand a publish to the worker, starting it on first use."""
+    """Hand a transition's publish to the worker, then tell the transition listeners."""
+    _enqueue_job(job)
+    for listener in list(_transition_listeners):
+        try:
+            listener()
+        except Exception:
+            logger.debug("safety override: transition listener failed", exc_info=True)
+
+
+def _enqueue_job(job: Callable[[], None]) -> None:
+    """Hand *job* to the worker, starting it on first use."""
     global _breadcrumb_worker, _breadcrumb_pending
     with _breadcrumb_worker_lock:
         if _breadcrumb_worker is None or not _breadcrumb_worker.is_alive():
@@ -257,9 +279,9 @@ def _consume_breadcrumb() -> Optional[DroppedGrant]:
     * **No record.** No grant was live.
     * **The grant had no expiry** (``permanent``). A DECLARED grant is
       re-established from config on this very startup, so it was not lost at
-      all; an ``until_shutdown`` grant is already contracted to the operator as
-      "stays on until Kiro Crew restarts", so its ending is the documented
-      behaviour rather than news.
+      all; an ``until_shutdown`` grant comes back through ``kept_yolo`` unless
+      the user stopped Kiro Crew, and a stop the user chose ends it as the
+      contract says ("stays on until you stop Kiro Crew"), so neither is news.
     * **The deadline has passed.** The grant would have expired on its own by
       now, so the restart cost the operator nothing.
     """

@@ -618,6 +618,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # Released-session entries, for the same reason: created on the first release,
     # and an entry has the gateway delete the record it names.
     "released-sessions",
+    # The kept-grant records and the user-stop mark, for the same reason: created on
+    # the first grant or stop, and a record is what the next boot restores.
+    "kept-grants",
     # Append-only per-unit crew logs, and the hazard is the sharpest here: the
     # record is the AUTHORITY a reader trusts instead of re-deriving, and the
     # store creates this root on its first write. A sandbox spawned before that

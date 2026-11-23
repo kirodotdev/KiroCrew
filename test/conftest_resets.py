@@ -467,6 +467,7 @@ def _reset_safety_override_between_tests():
 
     _reset_safety_override()
     _reset_yolo_policy_state()
+    _reset_kept_grants()
     yield
     # Drained BEFORE the reset below, and (by pytest's fixture teardown order --
     # finalizers run in reverse of setup order, so a fixture set up AFTER this
@@ -482,6 +483,26 @@ def _reset_safety_override_between_tests():
     drain_breadcrumb_writes()
     _reset_safety_override()
     _reset_yolo_policy_state()
+    _reset_kept_grants()
+
+
+def _reset_kept_grants() -> None:
+    """Forget the boot verdict and stop recording kept grants, as a new process would.
+
+    The verdict is decided once per process image and the recorders arm once per
+    boot, so without this the first test that boots a dashboard decides both for
+    every later test in the worker. Imported lazily: only a test that loaded the
+    modules can have armed them.
+    """
+    kept_grants = sys.modules.get("kiro_crew.kept_grants")
+    if kept_grants is not None:
+        kept_grants._reset_for_tests()
+    kept_yolo = sys.modules.get("kiro_crew.kept_yolo")
+    if kept_yolo is not None:
+        kept_yolo._reset_for_tests()
+    chat_trust_restart = sys.modules.get("kiro_crew.dashboard.chat_trust_restart")
+    if chat_trust_restart is not None:
+        chat_trust_restart._reset_for_tests()
 
 
 @per_test_guard

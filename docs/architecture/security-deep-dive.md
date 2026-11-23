@@ -666,8 +666,11 @@ trust and auto-approve paths.
 
 Auto-approve is time-bounded by a **single** duration shared by every ad-hoc
 surface (`agent.yolo_duration`, default `6h`, hard ceiling 24 h, or
-`until_shutdown` for an in-memory grant with no timed expiry that a restart
-clears). There are deliberately no per-surface TTLs: giving the same grant a
+`until_shutdown` for a grant with no timed expiry that lasts until the user
+stops Kiro Crew). Any other exit keeps an ad-hoc grant with its original expiry,
+from a signed record in a sandbox-masked directory, bounded by the ceiling in
+force at the restore ([security](../system-specs/modules/security.md), "Grants
+kept across an exit the user did not choose"). There are deliberately no per-surface TTLs: giving the same grant a
 different lifetime depending on which surface enabled it is unpredictable for the
 operator without buying any security.
 

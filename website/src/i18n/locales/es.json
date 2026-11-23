@@ -6698,7 +6698,7 @@
       "trust_scope_tooltip": "De confianza por un permiso de app para este chat; caduca por sí solo. Elige Normal en este menú para terminarlo ahora; la app puede volver a darlo hasta que lo desactives en esa app.",
       "yolo_desc": "En cada chat, {{productName}} trabaja sin preguntarte primero",
       "yolo_expiration_timed": "Se desactiva solo tras {{duration}} y vuelve a preguntar.",
-      "yolo_expiration_until_shutdown": "Sigue activado hasta que {{productName}} se reinicie — no caduca por tiempo.",
+      "yolo_expiration_until_shutdown": "Sigue activado hasta que detengas {{productName}} — no caduca por tiempo. Un reinicio lo mantiene.",
       "yolo_label": "YOLO",
       "mode_disabled_by_policy": "Desactivado por la política de seguridad de tu organización",
       "yolo_mode_is_an_app_wide_setting": "El modo YOLO es un ajuste de toda la app"
@@ -21663,7 +21663,7 @@
         "profile_2": "perfil",
         "profiles_json": "profiles/*.json",
         "rail_active": "Activo ahora",
-        "rail_until_restart": "Hasta reiniciar",
+        "rail_until_restart": "Hasta que detengas {{productName}}",
         "rail_until_time": "Hasta {{time}}",
         "search_rules_placeholder": "Buscar reglas, patrones, categorías…",
         "section_group_enforced": "Impuesto",
@@ -21725,7 +21725,7 @@
         "yolo_duration_locked": "Desactivado por la política de tu organización",
         "yolo_duration_next_activation_note": "Se aplica la próxima vez que actives la aprobación automática.",
         "yolo_duration_title": "Duración de la aprobación automática",
-        "yolo_duration_until_shutdown": "Hasta que {{productName}} se reinicie",
+        "yolo_duration_until_shutdown": "Hasta que detengas {{productName}}",
         "your_custom_denies": "Tus denegaciones personalizadas",
         "trustedApps": {
           "description": "Aplicaciones a las que has permitido ejecutar su propio código en este ordenador. La confianza cubre una aplicación cada vez; todas las demás aplicaciones de terceros siguen bloqueadas.",
