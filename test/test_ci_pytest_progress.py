@@ -359,9 +359,9 @@ class TestCIProgress(unittest.TestCase):
         # and logs both the count and the host's peak memory.
         self.assertNotIn("-n auto", command)
         self.assertIn('echo "pytest workers: $WORKERS"', command)
-        # One worker per 2 GiB after 2 GiB for the host: 6 on the 16,111 MiB
+        # One worker per 1.5 GiB after 2 GiB for the host: 8 on the 16,111 MiB
         # fleet runner. Still capped by the core count and never below 1.
-        self.assertIn("by_mem=$(( (mem_mib - 2048) / 2048 ))", command)
+        self.assertIn("by_mem=$(( (mem_mib - 2048) / 1536 ))", command)
         self.assertIn("WORKERS=$(( $(nproc) < by_mem ? $(nproc) : by_mem ))", command)
         self.assertIn('[ "$WORKERS" -ge 1 ] || WORKERS=1', command)
         peak = next(s for s in job["steps"] if s.get("name") == "Report peak memory")
