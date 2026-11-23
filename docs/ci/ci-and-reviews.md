@@ -2545,7 +2545,12 @@ Details worth knowing:
     itself so its row reads `cancelled`, and `cancelled`/`skipped` rows and
     `queued` siblings (held by the concurrency group) are ignored -- otherwise
     kicks arriving less than an interval apart would stand down for each other
-    and no full tick would run between crons. A `workflow_run`
+    and no full tick would run between crons. Every stood-down kick is a row
+    ahead of the tick that ran, so that read asks for the API's largest page (100
+    rows, `KICK_DEBOUNCE_ROWS`): a shorter one ends before the tick, and the kick
+    then runs a full tick inside the interval. A full page that holds no tick and
+    does not reach back one interval (about 600 kicks an hour) cannot tell; the
+    tick runs and the log carries a `debounce blind` warning. A `workflow_run`
     run carries the triggering run's head, so the kick's step runs with
     `continue-on-error` and never reds an unrelated pull request's checks; its
     verdict is in the step log and summary, and the scheduled ticks stay loud.
