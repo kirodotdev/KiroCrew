@@ -2122,11 +2122,15 @@ Hardlink, regular-file, sensitive-path, byte-limit and staged-rename identity
 checks retain their existing contracts. The reader's one hardlink exception is
 opt-in per call (`admit_hardlinked`) and decided on content: a hardlinked inode
 still passes every other check, is never returned truncated, and is returned only
-when the caller's callback accepts the exact bytes read. Its single caller is the
+when the caller's callback accepts the exact bytes read. Its callers are the
 global skill-body reader, which accepts an installed package `SKILL.md` whose bytes
-match the distribution `RECORD` digest
-([memory-skills-hooks](memory-skills-hooks.md)); every other caller, and every
-agent-writable root, keeps the plain refusal. The agent-spec reader
+match the distribution `RECORD` digest; the packaged built-in skill fingerprint
+(`skills_builtin_provenance._skill_tree_fingerprint` on the packaged source), which
+accepts a file under `kiro_crew/builtin_skills/` whose bytes match the `RECORD`
+digest for that path; and the opt-out carry read
+(`skills_builtin_sync._carried_skill_md`), which accepts the packaged `SKILL.md` on
+the same terms ([memory-skills-hooks](memory-skills-hooks.md)). Every other caller,
+the installed skill copies, and every agent-writable root keep the plain refusal. The agent-spec reader
 (`agent_discovery._read_agent_spec`) carries the same opt-in, passed through to
 `pinned_fs.open_fenced_for_read(allow_hardlinked=True)`, which then skips only the
 link-count check: the bytes are read whole under the cap and returned only when the
@@ -4471,25 +4475,29 @@ mask; `test_agent_ipc.py` pins that for every enforced backend, beside `run/` an
 SEL-recorded as `agent_ipc`, and each granted internal-route request and session query
 as a `dashboard.token_auth` grant (`_log_auth`).
 
-Issuance and the client half: both array builders call `acp/ipc_pickup.py` -- the
-runtime's mirrored projection (`acp/runtime_session_setup._mirrored_session_mcp`, the
-create and resume path of the shared-runtime backends, codex included) and
+Issuance and the client half: both array builders call `acp/ipc_pickup.py`, once, on
+the array the session start sends -- the runtime's create and resume paths of the
+shared-runtime backends, codex included, on the mirrored projection after a member
+session's session-control and panel entries are appended
+(`acp/runtime_session_setup._with_runtime_ipc_pickups`), and
 `AcpClient._resolve_session_mcp_servers` (opencode, goose and the other client-driven
-backends). It puts a fresh pickup on the
-`kirocrew-core` element only when the session's backend is enforced
+backends) after its own member appends. A member entry replaces a same-name projected
+element, so issuing before the appends would leave the element the harness starts
+without one. It puts a fresh pickup on the
+`kirocrew-core` and `kirocrew-dashboard` elements only when the session's backend is enforced
 (`tool_gate.is_enforced`, the same predicate that applies the credential mask), the
 session holds a stub token, and this process serves an agent socket; every other
-harness's array is unchanged. A broker-stub element of that name gets none
+harness's array is unchanged. A broker-stub element of either name gets none
 (`ipc_pickup._launches_server_directly`: an argv running `-m` `mcp_gateway.STUB_MODULE`,
 or one it cannot read), because a stub never takes the pickup out of its environment,
 so a same-uid process in the session could read it from the stub's
 `/proc/<pid>/environ` and redeem it. The pickup is bound to that stub token and to the
 runtime's own root pid, and the element also carries the gateway's pid
 (`KIROCREW_IPC_GATEWAY_PID`). Both ride the element's `env` only, never the harness
-process environment. `agent_ipc_client.py` takes them out of `os.environ` at
-`kirocrew-core` startup, calls `prctl(PR_SET_DUMPABLE, 0)` on Linux, and redeems the
-pickup. Every connection it makes to the agent socket is checked before a byte is
-written: the listener's kernel peer pid must be that gateway pid, so a sandboxed
+process environment. `agent_ipc_client.py` takes them out of `os.environ` at each
+server's startup (`kirocrew-core` and `kirocrew-dashboard`), calls
+`prctl(PR_SET_DUMPABLE, 0)` on Linux, and redeems the pickup. Every connection it
+makes to the agent socket is checked before a byte is written: the listener's kernel peer pid must be that gateway pid, so a sandboxed
 process that renames the socket file and binds its own listener at the path (the
 data-home directory is writable inside the sandbox) receives neither the pickup nor a
 request. Under the mask the server cannot verify the signed token mapping, so

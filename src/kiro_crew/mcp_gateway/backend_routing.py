@@ -50,7 +50,7 @@ from kiro_crew.mcp_gateway.backend_leases import (
     _RESOURCES_UPDATED_NOTIFICATION,
     _is_success_response,
 )
-from kiro_crew.mcp_gateway.backend_liveness import _is_heartbeat_id
+from kiro_crew.mcp_gateway.backend_liveness import _LISTEN_METHOD, _is_heartbeat_id
 from kiro_crew.mcp_gateway.backend_mcp_apps import _APPS_STUB_SENTINEL
 from kiro_crew.mcp_gateway.backend_wire import (
     _JSONRPC_SERVER_ERROR,
@@ -138,6 +138,13 @@ _GLOBAL_BROADCAST_NOTIFICATIONS: frozenset[str] = frozenset(
         "notifications/resources/list_changed",
     }
 )
+
+# The newer MCP protocol answers ``subscriptions/listen`` with a stream: the
+# server tags every frame on it, the acknowledgement first, with the listen
+# request's JSON-RPC id under this ``_meta`` key. The server only saw the
+# gateway's forward id, so the tag names one stub's listen, and that stub's
+# client matches it against its own request id.
+_SUBSCRIPTION_ID_META_KEY = "io.modelcontextprotocol/subscriptionId"
 
 
 async def run_stdout_pump(self: Backend) -> None:
@@ -752,6 +759,8 @@ async def _route_backend_message(
         owner = self._notification_owner(msg)
         if owner is not None:
             await self._deliver_to_stub(owner, msg)
+        elif (listen_frame := _listen_stream_frame(self._pending_requests, msg)) is not None:
+            await self._deliver_to_stub(*listen_frame)
         elif method in _GLOBAL_BROADCAST_NOTIFICATIONS:
             # Genuinely backend-wide state (identical for every tenant,
             # e.g. tools/list_changed) — safe to fan out to all stubs.
@@ -908,6 +917,26 @@ def _notification_owner(self: Backend, msg: dict[str, Any]) -> Optional[str]:
             if pending is not None and pending.stub_uuid != "__init__":
                 return pending.stub_uuid
     return None
+
+
+def _listen_stream_frame(
+    pending_requests: dict[str, _PendingRequest], msg: dict[str, Any]
+) -> Optional[tuple[str, dict[str, Any]]]:
+    """The stub a ``subscriptions/listen`` stream frame belongs to, and the frame
+    tagged with that stub's own listen id. None when the tag names no pending
+    listen, so the caller's deny-by-default drop still applies."""
+    params = msg.get("params")
+    if not isinstance(params, dict):
+        return None
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    tag = meta.get(_SUBSCRIPTION_ID_META_KEY)
+    pending = pending_requests.get(str(tag)) if tag is not None else None
+    if pending is None or pending.method != _LISTEN_METHOD:
+        return None
+    retagged_meta = {**meta, _SUBSCRIPTION_ID_META_KEY: pending.original_id}
+    return pending.stub_uuid, {**msg, "params": {**params, "_meta": retagged_meta}}
 
 
 def _spawn_metric_task(self: Backend, record: dict[str, Any]) -> None:

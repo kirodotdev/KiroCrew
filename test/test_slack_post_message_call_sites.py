@@ -148,7 +148,7 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
     "slack/renderer.py": (
-        7,
+        4,
         "the channel renderer: placeholders, answer parts, fallback and notices",
     ),
     "slack/transport.py": (1, "the Slack transport adapter: forwards content the caller rendered"),
