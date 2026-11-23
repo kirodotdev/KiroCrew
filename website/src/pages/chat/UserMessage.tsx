@@ -1,4 +1,4 @@
-import { memo, useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
+import { memo, useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from 'react'
 import { parseSessionSeed } from '../../lib/crewSeed'
 import { MessageByline, OtherSenderBubble, SpeakerHeading, useSeedSender } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
@@ -28,6 +28,7 @@ import { Btn } from '../../components/ui'
 import SteerDecisionLine from './SteerDecisionLine'
 import EditSkillPicker, { type EditFieldBinding, type EditSkillPickerTarget } from './EditSkillPicker'
 import QuoteCard from './QuoteCard'
+import { QuoteJumpCtx } from '../../components/markdown/contexts'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { NO_ACTIONS, useMessageActionsFor } from '../../messageActions/MessageActionMenuItems'
 import { prependQuote, quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../../chat-core/composer/messageQuote'
@@ -174,6 +175,10 @@ interface UserMessageProps {
   /** Scroll to the message this row quotes (`meta.quote`). Absent, the card is
    *  drawn but is not a control. */
   onJumpToQuote?: (quote: MessageQuote) => void
+  /** The jump from a `>` quote in this message back to the reply it was
+   *  selected from (sent at `fromTs`), or null when no reply holds its words.
+   *  Absent, the quotes draw no jump control. */
+  onJumpToQuotedText?: (quoted: string, fromTs: string) => (() => void) | null
   /** Take this steer back before the running turn reads it, by its row `mid`.
    *  The controls are drawn only on a pending steer whose row says it can be taken
    *  back (`meta.steerRetract`), which the gateway stamps where the harness can. */
@@ -186,7 +191,7 @@ interface UserMessageProps {
   steerActionRequestFailed?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp: timestampProp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, continuesRun, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp: timestampProp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, editSkillPicker, sessions, onSessionOpen, mode, pinned, onTogglePin, onReplyInThread, slotRunning, showQueuedSend, continuesRun, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote, onJumpToQuotedText, onSteerAction, steerActionPending, steerActionRefusal, steerActionRequestFailed }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Settings -> Chat -> Show Timestamps, read here so every surface that draws
   // this bubble follows it, as AssistantMessage does.
@@ -547,6 +552,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
 
   // Read before any early return: a hook.
   const userRoleActions = useMessageActionsFor('user')
+  const quoteJumpFor = useMemo(
+    () => (onJumpToQuotedText && messageTs ? (quoted: string) => onJumpToQuotedText(quoted, messageTs) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a new messageIndex means earlier rows loaded, so the memo'd quotes must look for their reply again
+    [onJumpToQuotedText, messageTs, messageIndex],
+  )
   // Every branch's row sits under the same `OtherSenderBubble`, so a steer
   // settling into its note or a bubble opening its editor keeps the one row
   // element. `other` decides the row's side (see the last return).
@@ -843,7 +853,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp: timest
   // menu's reason to exist) on a pointer device; otherwise `MessageContextMenu`
   // renders the bubble bare.
   const bubbleWithMenu = (other: boolean) => (
-    <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(other)}</MessageContextMenu>
+    <QuoteJumpCtx.Provider value={quoteJumpFor}>
+      <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble(other)}</MessageContextMenu>
+    </QuoteJumpCtx.Provider>
   )
 
   // The row's side follows its sender (`OtherSenderBubble`, the byline's own

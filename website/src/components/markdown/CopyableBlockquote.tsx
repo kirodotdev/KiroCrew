@@ -9,17 +9,18 @@ import type {
   Root as MdastRoot,
   Text as MdastText,
 } from 'mdast'
-import { Check, Copy } from 'lucide-react'
+import { Check, Copy, CornerLeftUp } from 'lucide-react'
 import remarkMath from 'remark-math'
 import remarkParse from 'remark-parse'
 import remarkStringify from 'remark-stringify'
 import { unified, type PluggableList } from 'unified'
 import ErrorNotice from '../ErrorNotice'
+import { Btn } from '../ui'
 import { copyRichToClipboard } from '../../utils/clipboard'
 import { HOVER_NONE_ACTION_BTN_CLS } from '../../utils/touchActions'
 import { i18nT } from '../../i18n/t'
 import { markdownToCleanHtml } from './richTextClipboard'
-import { MdSourceCtx } from './contexts'
+import { MdSourceCtx, QuoteJumpCtx } from './contexts'
 import { REMARK_BASE_PLUGINS } from './remarkBase'
 import { ALLOWED_TAGS, VERBATIM_CONTENT_TAGS } from './sanitize'
 import { remarkLatexDelimiters } from '../../utils/remarkLatexDelimiters'
@@ -140,7 +141,9 @@ function quoteInnerMarkdown(
 }
 
 /** A blockquote with a hover Copy button that copies its contents as rich
- *  text, so a drafted message pastes into Slack or a ticket with live links. */
+ *  text, so a drafted message pastes into Slack or a ticket with live links.
+ *  Where a host offers the jump back to the quoted reply (`QuoteJumpCtx`), a
+ *  Jump button sits beside it. */
 export function CopyableBlockquote({ node, children }: { node?: HastElement; children?: React.ReactNode }) {
   const nested = useContext(InsideBlockquote)
   const source = useContext(MdSourceCtx)
@@ -149,6 +152,9 @@ export function CopyableBlockquote({ node, children }: { node?: HastElement; chi
   // A raw-HTML `<blockquote>` has no `>` markdown source to copy, so it gets no button.
   const startOffset = node?.position?.start?.offset
   const copyable = !nested && source != null && startOffset != null && source.charAt(startOffset) === '>'
+  const quoteJumpFor = useContext(QuoteJumpCtx)
+  const endOffset = node?.position?.end?.offset
+  const jump = copyable && quoteJumpFor && endOffset != null ? quoteJumpFor(source.slice(startOffset, endOffset)) : null
 
   const copy = async () => {
     const quoted = quoteInnerMarkdown(source, node)
@@ -171,7 +177,7 @@ export function CopyableBlockquote({ node, children }: { node?: HastElement; chi
   const label = copied ? i18nT('components.blockquote.copied') : i18nT('components.blockquote.copy')
   return (
     <InsideBlockquote.Provider value={nested || copyable}>
-      <blockquote data-sourcepos={typeof sourcepos === 'string' ? sourcepos : undefined} className={`border-l-[3px] border-accent pl-3 my-2 text-muted italic${copyable ? ' group/quote relative pr-7' : ''}`}>
+      <blockquote data-sourcepos={typeof sourcepos === 'string' ? sourcepos : undefined} className={`border-l-[3px] border-accent pl-3 my-2 text-muted italic${copyable ? ` group/quote relative ${jump ? 'pr-12 [@media(hover:none)]:pr-[5.5rem]' : 'pr-7'}` : ''}`}>
         {children}
         {copyable && copyFailed && (
           <>
@@ -183,6 +189,20 @@ export function CopyableBlockquote({ node, children }: { node?: HastElement; chi
               onDismiss={() => setCopyFailed(false)}
             />
           </>
+        )}
+        {jump && (
+          // Its double click stays here: in a sent bubble it would also open Edit.
+          <Btn
+            type="button"
+            data-testid="blockquote-jump"
+            className={`absolute top-0 right-6 [@media(hover:none)]:right-11 p-1 border-none rounded not-italic text-muted hover:text-text hover:bg-bg-hover opacity-0 group-hover/quote:opacity-100 focus-visible:opacity-100 transition-opacity ${HOVER_NONE_ACTION_BTN_CLS}`}
+            onClick={jump}
+            onDoubleClick={e => e.stopPropagation()}
+            title={i18nT('pages.chat.quoteCard.jump_to_quoted_message')}
+            aria-label={i18nT('pages.chat.quoteCard.jump_to_quoted_message')}
+          >
+            <CornerLeftUp size={13} />
+          </Btn>
         )}
         {copyable && (
           <button

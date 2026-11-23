@@ -14,6 +14,7 @@ import type { ChatMessage } from '../../../types'
 import { i18nT } from '../../../i18n/t'
 import { buildMessageToDisplayIdx, supersededSuccessorIdx } from '../groupDisplayItems'
 import { userResendText } from '../userMessageText'
+import { findQuotedReply } from '../quotedReply'
 
 /**
  * The row a jump to `messages[idx]` should land on. A superseded steer is not
@@ -154,6 +155,8 @@ export function useTranscriptPins({
     unpinById,
   } = useChatPins(activeSlot ?? undefined)
   const [pinNotice, setPinNotice] = useState<string | null>(null)
+  // The words a jump from a sent `>` quote marks in the reply it landed on.
+  const [quoteMark, setQuoteMark] = useState<{ ts: string; mid: string | null; quoted: string } | null>(null)
   // A pinned-message page load that was REFUSED — kept apart from `pinNotice`
   // (which carries the not-found / unavailable answers) so it renders as an
   // error rather than as status text.
@@ -188,6 +191,8 @@ export function useTranscriptPins({
     if (!navToMessage(messages[msgIdx], { behavior: 'smooth', align: 'center' })) return false
     setPinNotice(null)
     setPinLoadError(null)
+    // Any jump drops a quote's words; a quote's own jump sets them again after.
+    setQuoteMark(null)
     // A reader sent here from elsewhere gets the landing highlight; a jump they
     // made inside this chat (a pin, a quote) gets the flash.
     const markedMid = (messages[msgIdx].meta as Record<string, unknown> | undefined)?.mid
@@ -241,6 +246,25 @@ export function useTranscriptPins({
     if (!q.ts) return
     handleJumpToPinnedMessage(q.ts, q.mid, { origin: 'quote' })
   }, [handleJumpToPinnedMessage])
+  // A `>` quote in a sent message jumps to the reply it was selected from, found
+  // by its words (`findQuotedReply`). The words are marked there while that
+  // jump's flash lasts (the row draws the mark only while it is the flash target).
+  const quoteJumpFor = useCallback((quoted: string, fromTs: string): (() => void) | null => {
+    const msgs = messagesRef.current
+    const reply = findQuotedReply(msgs, quoted, msgs.findLastIndex(m => m.ts === fromTs))
+    if (!reply?.ts) return null
+    const { ts } = reply
+    const mid = typeof reply.meta?.mid === 'string' ? reply.meta.mid : undefined
+    return () => {
+      if (!jumpToLoadedPinnedMessage(ts, mid)) {
+        setPinNotice(jumpUnavailableNotice('quote'))
+        return
+      }
+      // As in handleJumpToPinnedMessage: landing at once replaces a pending jump.
+      setPendingPinnedJump(null)
+      setQuoteMark({ ts, mid: mid ?? null, quoted })
+    }
+  }, [messagesRef, jumpToLoadedPinnedMessage])
   // The pins list's own entry point, so pin copy is claimed HERE by a caller that
   // means it rather than inherited by one that passed nothing.
   const handleJumpToPin = useCallback((messageTs: string, mid?: string) => {
@@ -404,6 +428,6 @@ export function useTranscriptPins({
 
   return {
     messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
-    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus,
+    handleJumpToPin, handlePutPinInComposer, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, quoteJumpFor, quoteMark,
   }
 }
