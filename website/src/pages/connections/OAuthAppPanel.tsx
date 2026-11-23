@@ -26,9 +26,9 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
 import { CONNECTION_PROVIDERS } from './registry'
-import { isGoogleSlug } from './connectionsLinks'
+import { OAUTH_CLIENTS_QUERY_KEY, isGoogleSlug } from './connectionsLinks'
 
-export const OAUTH_CLIENTS_QUERY_KEY = ['connections', 'oauth-clients'] as const
+export { OAUTH_CLIENTS_QUERY_KEY }
 
 /** Repository docs are the runbook's home; the link resolves against main. */
 const RUNBOOK_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/'
