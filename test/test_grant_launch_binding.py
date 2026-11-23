@@ -178,6 +178,27 @@ def test_the_grant_and_its_binding_are_written_together(agents, tmp_path):
     assert "auto_approve_tool_identity_launches" not in hooks
 
 
+def test_a_bound_case_variant_is_stored_with_its_own_binding(agents, tmp_path):
+    always_allow_tool.write_grant(REF, add=True, launches=("a" * 64,))
+    always_allow_tool.write_grant("@OPS/list", add=True, launches=("b" * 64,))
+    hooks = _hooks(tmp_path)
+    assert hooks["auto_approve_tool_identities"] == [REF, "@OPS/list"]
+    assert hooks["auto_approve_tool_identity_launches"] == {
+        REF: ["a" * 64],
+        "@OPS/list": ["b" * 64],
+    }
+
+
+def test_a_new_grant_never_inherits_a_left_over_binding(agents, tmp_path):
+    config = tmp_path / "crew" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        json.dumps({"hooks": {"auto_approve_tool_identity_launches": {REF: ["c" * 64]}}})
+    )
+    always_allow_tool.write_grant(REF, add=True, launches=("a" * 64,))
+    assert _hooks(tmp_path)["auto_approve_tool_identity_launches"] == {REF: ["a" * 64]}
+
+
 def test_a_grant_with_no_readable_launch_is_written_unbound(agents, tmp_path):
     always_allow_tool.write_grant(REF, add=True)
     assert "auto_approve_tool_identity_launches" not in _hooks(tmp_path)

@@ -271,19 +271,30 @@ def write_grant(ref: str, *, add: bool, launches: tuple[str, ...] = ()) -> None:
         bindings = _launch_map(data)
         folded = ref.lower()
         if add:
-            exact = ref in entries
-            if not exact and any(isinstance(e, str) and e.lower() == folded for e in entries):
-                return None
+            if ref not in entries:
+                # A bound grant matches only its exact spelling, so a case
+                # variant already stored covers this one only when unbound.
+                if not launches and any(
+                    isinstance(e, str) and e.lower() == folded for e in entries
+                ):
+                    return None
+                entries.append(ref)
+                # A new grant binds only what was seen now, never a binding
+                # left in the map for a ref the list does not hold.
+                bindings.pop(ref, None)
+                if launches:
+                    bindings[ref] = sorted(set(launches))
+                    _hooks(data)[LAUNCHES_KEY] = bindings
+                elif not bindings:
+                    _hooks(data).pop(LAUNCHES_KEY, None)
+                return data
             old = bindings.get(ref)
             old_ids = [i for i in old if isinstance(i, str)] if isinstance(old, list) else []
             merged = sorted(set(old_ids) | set(launches))
-            if exact and (not launches or merged == old):
+            if not launches or merged == old:
                 return None
-            if not exact:
-                entries.append(ref)
-            if launches:
-                bindings[ref] = merged
-                _hooks(data)[LAUNCHES_KEY] = bindings
+            bindings[ref] = merged
+            _hooks(data)[LAUNCHES_KEY] = bindings
         else:
             kept = [e for e in entries if not (isinstance(e, str) and e.lower() == folded)]
             stale = [k for k in bindings if isinstance(k, str) and k.lower() == folded]
