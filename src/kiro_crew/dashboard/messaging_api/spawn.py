@@ -243,6 +243,25 @@ def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
     return _backend_name(picked) if picked is not None else ""
 
 
+def _kiro_cli_pick(backend: str | None, available: list[str]) -> str | None:
+    """*backend*, or the KAS id when it is the Kiro CLI id and a Kiro CLI pick loads as KAS.
+
+    A requested ``"kiro"`` follows the rule a stored Kiro CLI pick follows
+    (:func:`~kiro_crew.agent_sdk.backends.kiro_cli_pick_backend`): it runs kiro-cli's
+    v3 engine through KAS once this host confirmed kiro-cli offers it and KAS is
+    selectable, and it keeps the v2 launch otherwise. KAS must also be able to start
+    here (*available*), so a KAS this machine cannot run never replaces a Kiro CLI
+    that can.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO, kiro_cli_pick_backend
+
+    if backend == ACP_BACKEND_KIRO:
+        picked = kiro_cli_pick_backend()
+        if picked in available:
+            return picked
+    return backend
+
+
 async def _requested_backend(
     raw: object,
 ) -> tuple[str | None, str | None, web.Response | None]:
@@ -279,6 +298,7 @@ async def _requested_backend(
     ]
     names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
     backend = by_name.get(raw) if isinstance(raw, str) else None
+    backend = _kiro_cli_pick(backend, available)
     if backend is not None and backend in available:
         return backend, None, None
 

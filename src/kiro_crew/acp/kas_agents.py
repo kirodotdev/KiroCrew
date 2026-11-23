@@ -598,6 +598,29 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
     return []
 
 
+#: What a kiro-cli ``excludedTools`` entry of ``@*`` (every MCP server) is on KAS.
+#: KAS matches an exclusion against each tool's tags too, and its built-ins carry
+#: ``@builtin``, so ``@*`` there withholds every tool, the built-ins the spec's
+#: ``tools`` grants included. ``@mcp`` and ``@powers`` are the tags of MCP-served
+#: and Powers tools, which is what ``@*`` names on kiro-cli and in Crew's own reads
+#: (``default_crew_servers.opted_out``, ``mcp_refs.entry_reaches``).
+_KAS_MCP_WILDCARD_EXCLUSIONS: tuple[str, ...] = ("@mcp", "@powers")
+
+
+def _kas_mcp_wildcard(entries: list[str]) -> list[str]:
+    """*entries* with each exact ``@*`` replaced by :data:`_KAS_MCP_WILDCARD_EXCLUSIONS`.
+
+    Only an exclusion list is rewritten, so the built-ins the agent keeps are still
+    the ones its ``tools`` list names. Every other entry stays as written.
+    """
+    if "@*" not in entries:
+        return entries
+    out: list[str] = []
+    for entry in entries:
+        out.extend(_KAS_MCP_WILDCARD_EXCLUSIONS if entry == "@*" else (entry,))
+    return list(dict.fromkeys(out))
+
+
 def _authored_allow_gate(session_key: str, governance_app: str | None) -> Callable[[str], bool]:
     """The ceiling predicate for the spec's own allows (``allowedTools``, ``permissions``).
 
@@ -1060,7 +1083,7 @@ def to_client_custom_agent(
             # with the restricting direction's polarity: a spec that excludes
             # ``fs_read`` for kiro-cli must not leave ``read_file`` mounted here,
             # and one that excludes ``fs_write`` must not leave ``delete_file``.
-            out["excludedTools"] = expand_kiro_cli_tool_exclusions(entries)
+            out["excludedTools"] = _kas_mcp_wildcard(expand_kiro_cli_tool_exclusions(entries))
     switched_off, unusable = _disabled_tool_exclusions(spec)
     if unusable:
         raise KasAgentTranslationError(
