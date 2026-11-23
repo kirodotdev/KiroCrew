@@ -196,9 +196,21 @@ class TestLtsReleaseLegs:
         assert "github-release" not in _workflow("release-lts.yml")["jobs"]
 
     def test_nothing_publishes_before_the_tagged_commit_passes_the_tests(self) -> None:
+        """Every publisher and every signer waits for the suite, and no job
+        may relax that with an ``if:`` (``always()`` would run it after a red
+        suite). The builds do NOT wait: they only make this run's artifacts,
+        and holding them put the whole suite in front of the macOS chain."""
         jobs = _workflow("release-lts.yml")["jobs"]
+        shippers = [n for n in jobs if n.startswith(("publish-", "sign-and-notarize"))]
+        assert shippers
+        for name in shippers:
+            needs = jobs[name]["needs"]
+            needs = [needs] if isinstance(needs, str) else needs
+            assert "release-candidate-tests" in needs, name
+            assert "if" not in jobs[name], f"{name}: an `if:` could run it past a red suite"
         for name in ("build-wheel", "build-desktop", "build-windows"):
-            assert "release-candidate-tests" in jobs[name]["needs"], name
+            assert "release-candidate-tests" not in jobs[name]["needs"], name
+            assert "dependency-vulnerability-gate" in jobs[name]["needs"], name
         assert "if" not in jobs["release-candidate-tests"]
 
     @needs_bash
