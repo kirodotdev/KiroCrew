@@ -5572,9 +5572,13 @@ those trees after session start, and a name with glob characters is never
 written as a `match` entry (it would deny in-scope skills too), so such a skill
 stays offered. Every projection that adds the rules records one
 `kas_skill_scope_denied` security event (source `kas_agent_projection`) naming
-the agent and what the rules keep or deny, at most 40 names per line. Any failure
-adds no rule and logs a warning, so the session starts with KAS's default trees
-rather than not at all. Pinned by `test/test_kas_skill_scope.py`, which models
+the agent and what the rules keep or deny, at most 40 names per line. When the
+scope or its rules cannot be worked out, the session still starts, but with one
+rule that denies every skill except the copies already made; the error is logged
+and, for the session's own agent, the chat shows one notice (a sub-agent target
+gets the same rule and the log line). A failure making the copies only drops the
+copies.
+Pinned by `test/test_kas_skill_scope.py`, which models
 KAS's filter over the payload the harness builds and compares it to the kiro-cli
 scope.
 
