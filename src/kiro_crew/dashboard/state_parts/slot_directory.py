@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import logging
 import re
@@ -29,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.sections_defaults import DEFAULT_MAX_PER_CREATOR
 from kiro_crew.config.sections_limits import MAX_PER_CREATOR_MAX, MAX_PER_CREATOR_MIN
+from kiro_crew.dashboard.full_chat_waits import needs_full_chat
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
 from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -689,6 +691,7 @@ def get_or_create_slot(
     slot._on_card_event = self.notify_dashboard_card
     slot._on_question_retired = self._broadcast_question_retired
     slot._coordinator_approvals = self.pending_coordinator_approvals
+    slot._full_chat_waits = functools.partial(needs_full_chat, self)
     slot._linked_session_busy = self.linked_session_busy
     slot._app = app
     # ``origin`` must be declared by the layer that actually knows it, and

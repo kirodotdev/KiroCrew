@@ -601,7 +601,7 @@ _PEER_SLOT_STR_FIELDS: dict[str, int] = {
 #: approval badge or a question it never claimed. The hook normalizes these too —
 #: doing it here as well is what makes the WIRE honest, so this route answers the
 #: same way for any reader, not only the one frontend that happens to re-check.
-_PEER_SLOT_BOOL_FIELDS = ("running", "pending_approval", "needs_input")
+_PEER_SLOT_BOOL_FIELDS = ("running", "pending_approval", "needs_input", "needs_full_chat")
 
 
 #: The two keys ALLOWLISTED from a peer row's ``parent`` citation (``{slot, key}``,

@@ -369,6 +369,67 @@ class CardStore:
             out.append(self.public(rec))
         return out
 
+    def holds_open_card(self, slot_key: str) -> bool:
+        """Whether *slot_key* has a card :meth:`_refresh` would leave open.
+
+        That is an undismissed ``pending`` / ``failed`` / ``applying`` record that
+        :meth:`_refresh` at this moment would leave in that same status.
+
+        Changes nothing and never reads disk: an unloaded store answers ``False``.
+        """
+        if not self._loaded:
+            return False
+        now = self._clock()
+        return any(
+            rec["slot_key"] == slot_key and self._is_open(rec, now) for rec in self._cards.values()
+        )
+
+    def slots_with_open_cards(self) -> frozenset[str]:
+        """Every slot :meth:`holds_open_card` answers ``True`` for, in one pass."""
+        if not self._loaded:
+            return frozenset()
+        now = self._clock()
+        return frozenset(rec["slot_key"] for rec in self._cards.values() if self._is_open(rec, now))
+
+    @classmethod
+    def _is_open(cls, rec: dict[str, Any], now: float) -> bool:
+        if rec.get("dismissed"):
+            # :meth:`pending` hides a dismissed card whether or not it has expired,
+            # so a cleared one leaves nothing for the person to act on here either.
+            return False
+        status = rec["status"]
+        if status == STATUS_APPLYING:
+            return cls._stays_applying(rec, now)
+        if status not in (STATUS_PENDING, STATUS_FAILED):
+            return False
+        kept, inflight = cls._inflight_at(rec, now)
+        return kept and (bool(inflight) or now < rec["expires_at"])
+
+    @classmethod
+    def _stays_applying(cls, rec: dict[str, Any], now: float) -> bool:
+        """Whether :meth:`_refresh` at *now* would leave this ``applying`` record ``applying``."""
+        kept, inflight = cls._inflight_at(rec, now)
+        if not kept:
+            return False
+        if inflight or now < rec["expires_at"]:
+            return True
+        if any(s.get("repeat") for s in rec["plan"]["apply"]):
+            return False
+        return bool(rec["evidence"])
+
+    @classmethod
+    def _inflight_at(cls, rec: dict[str, Any], now: float) -> tuple[bool, Any]:
+        """What :meth:`_refresh` at *now* would make of this record's ``inflight``.
+
+        ``(True, step)`` while the step is still running, ``(True, None)`` where a
+        stale poll is cleared and the record keeps its status, and ``(False, None)``
+        where a stale write sends it to review instead.
+        """
+        inflight = rec.get("inflight")
+        if inflight and now - float(inflight.get("started_at", 0)) > INFLIGHT_STALE_SECONDS:
+            return cls._idempotent_step(rec, inflight), None
+        return True, inflight
+
     def last_finished_at(self, slot_key: str, statuses: "frozenset[str]") -> float:
         """When a card of *slot_key* last finished in one of *statuses*, else ``0.0``.
 

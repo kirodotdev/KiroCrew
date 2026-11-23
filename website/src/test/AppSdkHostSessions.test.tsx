@@ -29,7 +29,7 @@ import { createTestStore } from './helpers'
 const DOCUMENTED = ['/api/chat/slots', '=/api/config/default-agent', '=/api/chat', '/api/approvals', '=/api/dashboard/config']
 
 const SLOTS = [
-  { key: 'chat-old', title: 'Older work', messages: 3, running: false, last_ts: '2026-11-01T10:00:00Z', agent: '', last_message: 'done' },
+  { key: 'chat-old', title: 'Older work', messages: 3, running: false, last_ts: '2026-11-01T10:00:00Z', agent: '', last_message: 'done', needs_full_chat: 'yes' },
   {
     key: 'chat-new', title: 'chat-new', messages: 7, running: true, last_ts: '2026-11-02T10:00:00Z', agent: 'reviewer', agent_kind: '',
     last_message: 'working on it', waiting_for_input: false,
@@ -37,6 +37,7 @@ const SLOTS = [
   },
   {
     key: 'chat-bg', title: 'Background', messages: 1, running: false, last_ts: '2026-10-30T10:00:00Z', agent: '',
+    needs_full_chat: true,
     pending_approval_info: { origin: 'coordinator', request_id: 'c-9', request_instance: 'i-4', tool: 'spawn', tool_input: '', tool_kind: 'other' },
   },
 ]
@@ -130,6 +131,14 @@ describe('an external app with the documented declaration', () => {
     expect(sessions[0].pendingApproval).toMatchObject({ sessionKey: 'chat-new', tool: 'shell' })
     expect(sessions[1]).toMatchObject({ title: 'Older work', pendingApproval: null })
     expect(result.current.can).toEqual({ sessions: true, send: true, decide: true, create: true })
+  })
+
+  it('marks only a session whose slot says needs_full_chat: true, never a truthy non-boolean', async () => {
+    const { result } = external(DOCUMENTED)
+    await waitFor(() => expect(result.current.sessions).not.toBeNull())
+    const byKey = Object.fromEntries(result.current.sessions!.map((s) => [s.key, s.needsFullChat]))
+    expect(SLOTS[0].needs_full_chat).toBe('yes')
+    expect(byKey).toEqual({ 'chat-new': false, 'chat-old': false, 'chat-bg': true })
   })
 
   it('sends a reply or a steer through the dashboard send', async () => {

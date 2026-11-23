@@ -79,6 +79,7 @@ _TO_DICT_KEYS = (
     "unread_failed",
     "waiting_for_input",
     "needs_input",
+    "needs_full_chat",
     "interrupted",
     "interrupted_stale",
     "interrupted_by_sign_in",

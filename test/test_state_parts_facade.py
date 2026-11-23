@@ -545,6 +545,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_lazy_window": ("value", "None"),
     "_lineage_minted": ("value", "False"),
     "_linked_session_busy": ("value", "None"),
+    "_full_chat_waits": ("value", "None"),
     "_reports_to_creator": ("value", "False"),
     "_work_aggregate": ("value", "None"),
     "_lock": ("type", "asyncio.locks.Lock"),
