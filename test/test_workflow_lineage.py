@@ -21,7 +21,9 @@ class _Subagents:
 
 
 def _state(**kw):
-    return SimpleNamespace(**{"subagents": None, "task_runner": None, "workflow_service": None, **kw})
+    return SimpleNamespace(
+        **{"subagents": None, "task_runner": None, "workflow_service": None, **kw}
+    )
 
 
 def test_a_subagent_maps_to_the_session_that_spawned_it():
