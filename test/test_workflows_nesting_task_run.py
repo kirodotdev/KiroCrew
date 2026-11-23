@@ -274,3 +274,27 @@ async def test_a_saved_task_plan_hands_the_reservation_to_its_shared_run(tmp_pat
     started = await runner.start_workflow_definition(definition, nesting_reservation="pending:def")
     assert started.get("run_id") == "wf_host", started
     assert seen and seen[0].get("nesting_reservation") == "pending:def"
+
+
+@pytest.mark.parametrize(
+    ("session_key", "expected"),
+    [
+        ("taskrunner:t1:task0", "wf_plain"),
+        ("taskrunner:phase:one_ab12:task0", "wf_colon"),
+        ("taskrunner:phase:one_ab12:runtime", "wf_colon"),
+        ("taskrunner:phase:task0", None),
+        ("taskrunner:t1", None),
+    ],
+)
+def test_a_step_session_finds_its_tasks_run_even_when_the_task_id_has_a_colon(
+    session_key, expected
+):
+    """A task id keeps a colon from its spec's file name; the lookup must not cut it."""
+    from kiro_crew.dashboard.workflow_lineage import workflow_run_of_session
+
+    runs = {
+        "t1": SimpleNamespace(workflow_run_id="wf_plain"),
+        "phase:one_ab12": SimpleNamespace(workflow_run_id="wf_colon"),
+    }
+    state = SimpleNamespace(task_runner=SimpleNamespace(_runs=runs), workflow_service=None)
+    assert workflow_run_of_session(state, session_key) == expected

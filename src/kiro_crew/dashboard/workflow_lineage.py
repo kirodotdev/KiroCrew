@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 _Lookup = Callable[[str], Optional[str]]
 
 _SUBAGENT_PREFIX = "subagent:"
+_TASKRUNNER_PREFIX = "taskrunner:"
 
 
 def subagent_parent_session(state: "DashboardState", session_key: str) -> str | None:
@@ -29,10 +30,12 @@ def subagent_parent_session(state: "DashboardState", session_key: str) -> str | 
 
 def workflow_run_of_session(state: "DashboardState", session_key: str) -> str | None:
     """The run a task step session or a run-opened dashboard session works for."""
-    parts = session_key.split(":")
-    if len(parts) >= 3 and parts[0] == "taskrunner":
+    # Step keys are ``taskrunner:{task_id}:{step}``. A task id keeps any colon
+    # in its spec's file name, so the step is split off from the right.
+    task_id, _, step = session_key.removeprefix(_TASKRUNNER_PREFIX).rpartition(":")
+    if session_key.startswith(_TASKRUNNER_PREFIX) and task_id and step:
         runner = getattr(state, "task_runner", None)
-        run = runner._runs.get(parts[1]) if runner is not None else None
+        run = runner._runs.get(task_id) if runner is not None else None
         return getattr(run, "workflow_run_id", "") or None
     workflows = getattr(state, "workflow_service", None)
     if workflows is None or not workflows.nesting.tracks_opened_sessions:
