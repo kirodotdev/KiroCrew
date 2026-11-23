@@ -1,6 +1,7 @@
-"""``browser.run.max_ops`` and ``browser.run.max_repeats`` (both default 0, off): the op
+"""``browser.run.max_ops``, ``max_repeats`` and ``max_minutes`` (all default 0, off): the op
 past a limit is refused with a report the model reads and never reaches the browser. The
-counts are per chat and restart on a takeover or when the chat's session ends."""
+counts and the run's clock are per chat and restart on a takeover or when the chat's session
+ends."""
 
 from __future__ import annotations
 
@@ -33,16 +34,33 @@ def _fresh_hub() -> Iterator[None]:
 
 
 def check(
-    count: Any, name: str, args: dict[str, Any], max_repeats: int = 0, max_ops: int = 0
+    count: Any,
+    name: str,
+    args: dict[str, Any],
+    max_repeats: int = 0,
+    max_ops: int = 0,
+    max_minutes: int = 0,
 ) -> Any:
     """``run_budget.check``, imported at call time so the route tests still collect on main."""
     budget = importlib.import_module("kiro_crew.browser_harness.run_budget")
-    return budget.check(count, name, args, max_ops=max_ops, max_repeats=max_repeats)
+    extra = {"max_minutes": max_minutes} if max_minutes else {}
+    return budget.check(count, name, args, max_ops=max_ops, max_repeats=max_repeats, **extra)
 
 
-def limits(monkeypatch: pytest.MonkeyPatch, max_ops: int = 0, max_repeats: int = 0) -> None:
-    """Answer the route's per-op read of the two settings."""
-    monkeypatch.setattr(mod, "_run_limits", lambda: (max_ops, max_repeats))
+def limits(
+    monkeypatch: pytest.MonkeyPatch, max_ops: int = 0, max_repeats: int = 0, max_minutes: int = 0
+) -> None:
+    """Answer the route's per-op read of the three settings."""
+    monkeypatch.setattr(mod, "_run_limits", lambda: (max_ops, max_repeats, max_minutes))
+
+
+@pytest.fixture
+def clock(_floor_monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The run clock in whole seconds; a test moves it by hand, so nothing sleeps."""
+    now = [1000]
+    budget = importlib.import_module("kiro_crew.browser_harness.run_budget")
+    _floor_monkeypatch.setattr(budget, "_now", lambda: now[0], raising=False)
+    return now
 
 
 def new_count() -> Any:
@@ -157,6 +175,64 @@ def test_the_op_cap_is_checked_before_the_repeat_run() -> None:
     assert "browser.run.max_ops" in stopped["error"]
 
 
+def test_with_no_time_cap_an_op_after_any_time_runs_as_it_always_did(
+    clock: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Passes on main: the clock is not read and the count is the same."""
+    reads: list[int] = []
+    budget = importlib.import_module("kiro_crew.browser_harness.run_budget")
+    monkeypatch.setattr(budget, "_now", lambda: reads.append(1) or clock[0], raising=False)
+    count = new_count()
+    assert check(count, "snapshot", {}, max_ops=5) is None
+    clock[0] += 10**6
+    assert check(count, "snapshot", {}, max_ops=5) is None
+    assert count.ops == 2
+    assert reads == [] and getattr(count, "started", None) is None
+
+
+def test_the_time_cap_refuses_the_first_op_past_the_limit(clock: list[int]) -> None:
+    count = new_count()
+    assert check(count, "snapshot", {}, max_minutes=2) is None, "the clock starts at the first op"
+    clock[0] += 119
+    assert check(count, "snapshot", {}, max_minutes=2) is None
+    clock[0] += 1
+    stopped = check(count, "click", {"ref": "e1"}, max_minutes=2)
+    assert stopped["ok"] is False and stopped["code"] == "run_budget"
+    assert "lasted 2 minutes" in stopped["error"] and "browser.run.max_minutes" in stopped["error"]
+    assert "was not run" in stopped["error"] and "start a new chat" in stopped["error"]
+    assert count.ops == 2, "the refused op is not counted"
+    clock[0] += 5
+    assert check(count, "snapshot", {}, max_minutes=2) is not None, "stays stopped"
+
+
+def test_a_new_run_starts_its_clock_again(clock: list[int]) -> None:
+    count = new_count()
+    assert check(count, "snapshot", {}, max_minutes=1) is None
+    clock[0] += 600
+    assert check(count, "snapshot", {}, max_minutes=1) is not None
+    fresh = new_count()
+    assert check(fresh, "snapshot", {}, max_minutes=1) is None
+    clock[0] += 59
+    assert check(fresh, "snapshot", {}, max_minutes=1) is None
+
+
+def test_the_op_cap_is_checked_before_the_time_cap(clock: list[int]) -> None:
+    count = new_count()
+    assert check(count, "snapshot", {}, max_ops=1, max_minutes=1) is None
+    clock[0] += 60
+    stopped = check(count, "snapshot", {}, max_ops=1, max_minutes=1)
+    assert "browser.run.max_ops" in stopped["error"]
+    assert "max_minutes" not in stopped["error"]
+
+
+def test_the_time_cap_is_checked_before_the_repeat_run(clock: list[int]) -> None:
+    count = new_count()
+    assert check(count, "click", {"ref": "e1"}, max_repeats=1, max_minutes=1) is None
+    clock[0] += 60
+    stopped = check(count, "click", {"ref": "e1"}, max_repeats=1, max_minutes=1)
+    assert "browser.run.max_minutes" in stopped["error"]
+
+
 # --- the gateway's op route ----------------------------------------------------------
 
 
@@ -194,6 +270,36 @@ async def test_the_op_cap_stops_the_chat_and_the_browser_is_not_touched(
     stopped = await op("snapshot")
     assert stopped["code"] == "run_budget" and "browser.run.max_ops" in stopped["error"]
     assert "js" not in sup.calls[seen:], "the refused op never reached the page"
+
+
+@pytest.mark.asyncio
+async def test_the_time_cap_stops_the_chat_and_the_browser_is_not_touched(
+    sup: Supervisor, monkeypatch: pytest.MonkeyPatch, clock: list[int]
+) -> None:
+    limits(monkeypatch, max_minutes=1)
+    assert (await op("snapshot"))["ok"] is True
+    clock[0] += 59
+    assert (await op("snapshot"))["ok"] is True
+    clock[0] += 1
+    seen = len(sup.calls)
+    stopped = await op("snapshot")
+    assert stopped["code"] == "run_budget" and "browser.run.max_minutes" in stopped["error"]
+    assert "js" not in sup.calls[seen:], "the refused op never reached the page"
+    assert (await op("snapshot", chat="chat-b"))["ok"] is True, "each chat has its own clock"
+
+
+@pytest.mark.asyncio
+async def test_a_takeover_starts_the_time_cap_clock_again(
+    sup: Supervisor, monkeypatch: pytest.MonkeyPatch, clock: list[int]
+) -> None:
+    limits(monkeypatch, max_minutes=1)
+    hub = hub_mod.get_live_hub()
+    assert (await op("snapshot"))["ok"] is True
+    clock[0] += 60
+    assert (await op("snapshot"))["code"] == "run_budget"
+    assert await hub.claim("chat-a")
+    await hub.release("chat-a")
+    assert (await op("snapshot"))["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -248,13 +354,16 @@ async def test_the_end_of_the_chats_session_starts_the_count_again(
 # --- the setting ---------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("stored, expected", [((40, 5), (40, 5)), (None, (0, 0))])
-def test_the_gateway_reads_both_settings_for_each_op(
-    monkeypatch: pytest.MonkeyPatch, stored: tuple[int, int] | None, expected: tuple[int, int]
+@pytest.mark.parametrize("stored, expected", [((40, 5, 30), (40, 5, 30)), (None, (0, 0, 0))])
+def test_the_gateway_reads_the_settings_for_each_op(
+    monkeypatch: pytest.MonkeyPatch,
+    stored: tuple[int, int, int] | None,
+    expected: tuple[int, int, int],
 ) -> None:
-    """Set values are read as they are; ones that cannot be read leave both limits off."""
+    """Set values are read as they are; ones that cannot be read leave every limit off."""
     cfg = KiroCrewConfig()
-    cfg.browser.run.max_ops, cfg.browser.run.max_repeats = stored or (0, 0)
+    run = cfg.browser.run
+    run.max_ops, run.max_repeats, run.max_minutes = stored or (0, 0, 0)
 
     def load(_cls: Any) -> Any:
         if stored is None:
@@ -267,11 +376,13 @@ def test_the_gateway_reads_both_settings_for_each_op(
 
 def test_the_settings_default_to_off_and_clamp_what_is_stored() -> None:
     browser = type(KiroCrewConfig().browser)
-    assert (browser().run.max_ops, browser().run.max_repeats) == (0, 0)
+    assert (browser().run.max_ops, browser().run.max_repeats, browser().run.max_minutes) == (0,) * 3
     for stored, kept in (("30", 30), (-4, 0), (10**9, 1_000_000), (True, 0)):
         assert browser.from_raw({"run": {"max_ops": stored}}).run.max_ops == kept
     for stored, kept in (("30", 30), (-4, 0), (10**9, 10_000), (True, 0)):
         assert browser.from_raw({"run": {"max_repeats": stored}}).run.max_repeats == kept
+    for stored, kept in (("30", 30), (-4, 0), (10**9, 1_440), (True, 0), ("junk", 0)):
+        assert browser.from_raw({"run": {"max_minutes": stored}}).run.max_minutes == kept
 
 
 def test_the_tool_hands_the_model_the_stop_report_as_its_result() -> None:
