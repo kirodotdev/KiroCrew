@@ -1089,7 +1089,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   } = useSessionsDrawer({
-    embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
+    embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, personSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
     hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef,
     sidebarAutoHidden, toggleAct,
   })
