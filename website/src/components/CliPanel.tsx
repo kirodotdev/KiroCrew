@@ -6,6 +6,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
+import { takeSkipFocusOnShow } from '../utils/terminalQuietShow'
 import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, useTerminalWrongMachine, useTerminalAtLimit, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars, toHexColor } from '../utils/terminalPalette'
@@ -482,9 +483,16 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
   // takes the focus over once the host lets go. A terminal opened before is
   // cheap to re-attach and never waits.
   const holding = !!deferOpen && !term.element
+  // A show a Run-in-terminal action asked for on a touch device leaves the
+  // focus alone, through any hold and its hand-off, until the next show.
+  const quietShow = useRef(false)
+  useLayoutEffect(() => {
+    if (!visible) { quietShow.current = false; return }
+    if (takeSkipFocusOnShow(sessionId)) quietShow.current = true
+  }, [visible, sessionId])
   const proxyRef = useRef<HTMLTextAreaElement>(null)
   useLayoutEffect(() => {
-    if (holding && visible) proxyRef.current?.focus({ preventScroll: true })
+    if (holding && visible && !quietShow.current) proxyRef.current?.focus({ preventScroll: true })
   }, [holding, visible])
   // Hand-off: whatever reached the stand-in goes to the shell as a paste, so
   // the shell's bracketed-paste guard holds and a newline in it does not run
@@ -542,7 +550,7 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
       input.style.left = '0px'
       input.style.top = '0px'
     }
-    if (!movedAway) term.focus()
+    if (!movedAway && !quietShow.current) term.focus()
     return () => cancelAnimationFrame(raf)
   }, [visible, term, doRefit, holding])
 

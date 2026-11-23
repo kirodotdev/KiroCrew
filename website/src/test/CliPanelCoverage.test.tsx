@@ -183,6 +183,7 @@ vi.mock('../components/TerminalKeyBar', () => ({ default: () => <div data-testid
 const touch = vi.hoisted(() => ({ value: false }))
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
 
+import { skipFocusOnNextShow } from '../utils/terminalQuietShow'
 import CliPanel, {
   prewarmTerminal,
   __resetTerminalThemeSyncForTests,
@@ -476,6 +477,30 @@ describe('CliPanel mount', () => {
     expect(document.activeElement).toBe(term.textarea)
     expect(term.pastes).toEqual(['ls\nrm'])
     expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+  })
+
+  it('shows a terminal a Run-in-terminal action asked to open quietly without focusing it, then focuses it on the next show', () => {
+    const sessionId = nextId()
+    skipFocusOnNextShow(sessionId)
+    const view = mount({ sessionId })
+    const { term } = view
+    expect(term.openCalls).toBe(1)
+    expect(term.focusCalls).toBe(0)
+    // Hidden and shown again (a tab switch): an ordinary show takes focus.
+    view.rerender(<CliPanel sessionId={sessionId} visible={false} />)
+    view.rerender(<CliPanel sessionId={sessionId} visible />)
+    expect(term.focusCalls).toBe(1)
+  })
+
+  it('keeps a quietly shown first-open terminal unfocused through the stand-in and the hand-off', () => {
+    const sessionId = nextId()
+    skipFocusOnNextShow(sessionId)
+    const view = mount({ sessionId, deferOpen: true })
+    const proxy = screen.getByTestId('terminal-focus-proxy') as HTMLTextAreaElement
+    expect(document.activeElement).not.toBe(proxy)
+    view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
+    expect(view.term.openCalls).toBe(1)
+    expect(view.term.focusCalls).toBe(0)
   })
 
   it('does not take the focus back when the user moved to another field during the hold', () => {
