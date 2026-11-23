@@ -1834,8 +1834,9 @@ The config section is `browser`: `choice`, `isolation`, `report_changes`,
 `live.enabled`, `live.quality`, `live.max_fps`, `live.mask_passwords`,
 `credentials.enabled`, `credentials.domains`, `recording.enabled`,
 `recording.max_session_mb`, `recording.max_total_mb`, and `run.max_ops` /
-`run.max_repeats` (0, the default, sets no limit; past a limit the chat's next op
-is refused `run_budget`, and a takeover or a new chat counts again from zero).
+`run.max_repeats` / `run.max_minutes` (0, the default, sets no limit; past a limit the
+chat's next op is refused `run_budget`, and a takeover or a new chat counts again from
+zero; the minutes run from the run's first op on a monotonic clock).
 `dashboard.browser_local_origins` stays where it is.
 
 #### Retired keys
