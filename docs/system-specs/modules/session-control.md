@@ -865,7 +865,9 @@ the spawn endpoint's own check (`messaging_api/spawn.py` `_requested_backend`),
 so a pick that is unknown, not selectable under governance, not installed, or
 installed after the gateway started is refused with that endpoint's codes
 (`unknown_backend`, `backend_not_installed`, `backend_restart_required`, each
-listing the backends that can start), and with no session made. An enabled
+listing the backends that can start), and with no session made. A `kiro`
+pick runs on KAS where a stored Kiro CLI pick would ([harness-parity](harness-parity.md)
+H1). An enabled
 `agent.acp_failover` chain may move it to a later member, and the reply says so
 (`failover_from`). With `crew` (or a hub-placed `work_item`) it is refused with
 `backend_with_crew`. `model` is judged against the pick (`model_rejected`), an

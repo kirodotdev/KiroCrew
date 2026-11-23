@@ -243,6 +243,14 @@ def _inherited_backend_name(parent_session: object, *, member: bool) -> str:
     return _backend_name(picked) if picked is not None else ""
 
 
+def _kiro_cli_pick(backend: str | None, available: list[str]) -> str | None:
+    """*backend*, moved onto KAS where a Kiro CLI pick runs there (one rule for every
+    requested backend: :func:`~kiro_crew.agent_sdk.backends.requested_kiro_pick`)."""
+    from kiro_crew.agent_sdk.backends import requested_kiro_pick
+
+    return requested_kiro_pick(backend, available)
+
+
 async def _requested_backend(
     raw: object,
 ) -> tuple[str | None, str | None, web.Response | None]:
@@ -279,6 +287,7 @@ async def _requested_backend(
     ]
     names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
     backend = by_name.get(raw) if isinstance(raw, str) else None
+    backend = _kiro_cli_pick(backend, available)
     if backend is not None and backend in available:
         return backend, None, None
 

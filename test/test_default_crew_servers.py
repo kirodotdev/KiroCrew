@@ -178,11 +178,56 @@ class TestHelper:
             {"managedToolPolicy": {"excludeServers": ["kirocrew-core", "kirocrew-cron"]}},
             {"excludedTools": ["@kirocrew-core", "@kirocrew-cron"]},
             {"excludedTools": ["@kirocrew-core/*", "@kirocrew-cron/*"]},
+            # Every MCP server, and every tool.
+            {"excludedTools": ["@*"]},
+            {"excludedTools": ["*"]},
+            # KAS's own name for every MCP tool, which a v3 agent file may use.
+            {"excludedTools": ["@mcp"]},
+            # A permissions deny of every MCP tool, or of each server whole.
+            {"permissions": {"rules": [{"capability": "mcp", "effect": "deny"}]}},
+            {"permissions": {"rules": [{"capability": "all", "effect": "deny", "match": []}]}},
+            {
+                "permissions": {
+                    "rules": [
+                        {
+                            "capability": "mcp",
+                            "effect": "deny",
+                            "match": ["kirocrew-core/*", "kirocrew-cron"],
+                        }
+                    ]
+                }
+            },
+            {"permissions": {"rules": [{"capability": "mcp", "effect": "deny", "match": ["*/*"]}]}},
+            # Read as written: a block KAS's projection refuses whole (unknown
+            # capability "read") still says the author withholds MCP.
+            {
+                "permissions": {
+                    "rules": [
+                        {"capability": "read", "effect": "allow"},
+                        {"capability": "mcp", "effect": "deny"},
+                    ]
+                }
+            },
         ],
     )
     def test_an_agent_that_excludes_the_servers_gets_neither(self, managed, opt_out):
         spec = {"tools": ["fs_read"], **opt_out}
         assert defaults.with_default_crew_servers("mine", spec) is spec
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            {"capability": "mcp", "effect": "deny", "match": ["kirocrew-core/spawn_run"]},
+            {"capability": "mcp", "effect": "deny", "match": ["kirocrew-core/?"]},
+            {"capability": "mcp", "effect": "deny", "exclude": ["kirocrew-core/*"]},
+            {"capability": "mcp", "effect": "ask"},
+            {"capability": "shell", "effect": "deny"},
+        ],
+    )
+    def test_a_narrower_permissions_rule_is_not_an_opt_out(self, managed, rule):
+        spec = {"tools": ["fs_read"], "permissions": {"rules": [rule]}}
+        out = defaults.with_default_crew_servers("mine", spec)
+        assert set(out["mcpServers"]) == {"kirocrew-core", "kirocrew-cron"}
 
     def test_opting_out_of_one_server_keeps_the_other(self, managed):
         spec = {"tools": ["fs_read"], "excludedTools": ["@kirocrew-cron"]}
@@ -293,6 +338,64 @@ async def test_kas_honours_the_opt_out(kas_layout):
 
     assert entry["tools"] == ["@kept"]
     assert "kirocrew-core" not in (entry.get("mcpServers") or {})
+
+
+#: The built-ins a ``tools: ["fs_read", "execute_bash"]`` spec mounts on KAS.
+_READ_AND_SHELL = [
+    "fs_read",
+    "read_file",
+    "list_directory",
+    "execute_bash",
+    "control_bash_process",
+    "control_pwsh_process",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "narrowing, excluded",
+    [
+        pytest.param({"excludedTools": ["@*"]}, ["@mcp", "@powers"], id="every-mcp-server"),
+        pytest.param(
+            {"excludedTools": ["@*"], "resources": ["skill://skills/*/SKILL.md"]},
+            ["@mcp", "@powers"],
+            id="every-mcp-server-with-skills",
+        ),
+        pytest.param(
+            {
+                "permissions": {
+                    "rules": [
+                        {"capability": "fs_read", "effect": "allow"},
+                        {"capability": "mcp", "effect": "deny"},
+                    ]
+                }
+            },
+            None,
+            id="permissions-deny-mcp",
+        ),
+        pytest.param(
+            {"allowedTools": ["fs_read"], "excludedTools": ["@*", "execute_bash"]},
+            ["@mcp", "@powers", "execute_bash", "control_bash_process", "control_pwsh_process"],
+            id="mixed-allowed-and-excluded",
+        ),
+    ],
+)
+async def test_kas_keeps_a_narrow_agent_narrow(kas_layout, narrowing, excluded):
+    """A hand-written read+shell agent that withholds MCP registers on KAS with
+    exactly the built-ins its ``tools`` names, none of Crew's servers, and its
+    ``@*`` as KAS's MCP tags rather than KAS's every-tool wildcard."""
+    user, checkout = kas_layout
+    spec = {"name": "narrow", "prompt": "p", "tools": ["fs_read", "execute_bash"], **narrowing}
+    _write(user, "narrow", spec)
+
+    entry = await _kas_entry("narrow", checkout, session_key="chat-abc")
+
+    assert entry["id"] == "narrow"
+    assert entry["tools"] == _READ_AND_SHELL
+    assert not entry.get("mcpServers")
+    assert entry.get("excludedTools") == excluded
+    if "permissions" in narrowing:
+        assert {"capability": "mcp", "effect": "deny"} in entry["permissions"]["rules"]
 
 
 @pytest.mark.asyncio
