@@ -730,13 +730,15 @@ def _channel_open(binding: Binding, orch: Any = None) -> bool:
     in progress) and the stored stamp (one already recorded, which lifts the
     fence). The store is read from its loaded snapshot, so nothing blocks here.
     """
+    cfg = live_config(orch)
+    if not thread_runtime.room_runtime_on(binding, cfg, channels_on=code_channels_on):
+        return False
     if thread_runtime.is_thread(binding):
-        # A Conductor thread: its own switch, the stored thread still this
-        # session's and not ended, and a room that still admits it.
-        return thread_runtime.thread_open(binding, live_config(orch))
+        # A Conductor thread: the stored thread still this session's and not
+        # ended, and a room that still admits it.
+        return thread_runtime.thread_open(binding, cfg)
     try:
-        on = code_channels_on(live_config(orch))
-        if not on or binding.channel_id in surface._archived_here:
+        if binding.channel_id in surface._archived_here:
             return False
         current = store().get_binding(binding.channel_id)
     except Exception:

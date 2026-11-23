@@ -3168,7 +3168,11 @@ the hooks never fire, and `kirocrew-core` lists none of the tools.
   **Conductor threads** (the thread-conductor RFC, part D). The same runtime serves a Conductor
   thread (a binding in the store's `thread_bindings`) with no code-channel scope: every site
   that holds a binding asks `thread_runtime.room_runtime_on` (the code-channel gate for a
-  channel binding, `slack.thread_conductor` for a thread binding) instead of `code_channels_on`.
+  channel binding, `slack.thread_conductor` for a thread binding) instead of `code_channels_on`;
+  a site that runs before its binding is known asks `thread_runtime.any_runtime_on`, then
+  `room_runtime_on` once it has one. A thread's room reading (private, not shared out) expires
+  after five minutes and the gates cannot await, so a card's relay and an owner's click first
+  read the room again, bounded (`thread_runtime.prime_room`); an unreadable room refuses.
   A worker's card is posted INTO the thread (`thread_ts` is the anchor) with "Trust this
   thread", only while the thread is open (`thread_runtime.thread_open`: switch on, stored row
   still this session's and not ended, room still private or opted in and not shared out); a

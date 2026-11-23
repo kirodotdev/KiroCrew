@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.slack.code_channels import surface, thread_runtime
-from kiro_crew.slack.code_channels.binding import code_channels_on, live_config, thread_conductor_on
+from kiro_crew.slack.code_channels.binding import live_config
 from kiro_crew.slack.code_channels.store import Binding, store
 
 logger = logging.getLogger(__name__)
@@ -257,7 +257,7 @@ async def channel_of_worker(state: Any, slot: Any, *, posting: bool = False) -> 
     already posted stays answerable through a mirror pause or a Slack Stop.
     """
     cfg = live_config()
-    if state is None or slot is None or not (code_channels_on(cfg) or thread_conductor_on(cfg)):
+    if state is None or slot is None or not thread_runtime.any_runtime_on(cfg):
         return None
     if getattr(slot, "_slack_linked", False):
         return None
@@ -429,6 +429,9 @@ async def relay(
         slack = surface.slack()
         if binding is None or slack is None or not await surface.outbound_permitted():
             return None
+        # A thread's room reading may have expired: read it now (bounded), so the
+        # synchronous gates below judge the room instead of refusing for want of one.
+        await thread_runtime.prime_room(binding)
         # The lineage again past those awaits (an adoption rewrites _created_by):
         # never post one session's call into another creator's channel.
         if str(getattr(slot, "_created_by", "") or "") != creator or not created_by(slot, creator):
@@ -569,7 +572,7 @@ async def finish(
 async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
     """Approve / Reject / Trust this channel (or thread) on a worker's card; False when the gate is shut."""
     cfg = live_config(orch)
-    if not (code_channels_on(cfg) or thread_conductor_on(cfg)):
+    if not thread_runtime.any_runtime_on(cfg):
         return False
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.slack.code_channels.approval_picker import (
@@ -621,7 +624,10 @@ async def handle_click(orch: Any, payload: dict[str, Any]) -> bool:
         _audit("denied", resources, "not a live worker approval card here")
         await _ephemeral(channel, user, not_live)
         return True
+    if not thread_runtime.room_runtime_on(binding, cfg):
+        return False  # this room's own switch is off: not ours to answer
     resources += f" worker={card.worker_key} request={card.request_id}"
+    await thread_runtime.prime_room(binding)
     from kiro_crew.slack.code_channels.approval_picker import _channel_open
     from kiro_crew.slack.code_channels.binding import channel_session
 

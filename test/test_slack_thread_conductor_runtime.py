@@ -322,6 +322,68 @@ def test_a_room_that_turned_shared_gets_no_card(thread: Any) -> None:
     assert card is None and thread.slack.blocks_posts == []
 
 
+def _refresh_with(monkeypatch: pytest.MonkeyPatch, *, private: bool | None) -> list[str]:
+    """Stand in for the bounded Slack read of a room: fill the reading (or leave it empty)."""
+    asked: list[str] = []
+
+    async def refresh(channel_id: str) -> None:
+        asked.append(channel_id)
+        if private is not None:
+            audience.note_channel_info(
+                ChannelInfo(
+                    channel_id=channel_id,
+                    is_code_channel=False,
+                    is_private=private,
+                    shared=False,
+                    archived=False,
+                )
+            )
+
+    monkeypatch.setattr(audience, "_refresh", refresh)
+    return asked
+
+
+def test_an_expired_room_reading_is_read_again_before_the_card_is_posted(
+    thread: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audience.clear()  # the five-minute reading has expired
+    asked = _refresh_with(monkeypatch, private=True)
+    card, _ = asyncio.run(_relay(thread))
+    assert asked == [PRIVATE] and card is not None
+    assert thread.slack.blocks_posts[-1][3] == ANCHOR
+
+
+def test_an_expired_reading_that_cannot_be_read_posts_no_card(
+    thread: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audience.clear()
+    _refresh_with(monkeypatch, private=None)  # Slack gave nothing back
+    card, fut = asyncio.run(_relay(thread))
+    assert card is None and not fut.done() and thread.slack.blocks_posts == []
+
+
+def test_a_room_that_turned_public_while_unread_gets_no_card(
+    thread: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audience.clear()
+    _refresh_with(monkeypatch, private=False)
+    card, _ = asyncio.run(_relay(thread))
+    assert card is None and thread.slack.blocks_posts == []
+
+
+def test_the_owners_click_after_the_reading_expired_is_still_answered(
+    thread: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def go() -> asyncio.Future:
+        card, fut = await _relay(thread)
+        audience.clear()
+        _refresh_with(monkeypatch, private=True)
+        assert await wa.handle_click(thread.orch, _click(OWNER, card, wa.APPROVE_ACTION_ID))
+        return fut
+
+    assert asyncio.run(go()).result() == "approved"
+
+
 # ── Stop ──────────────────────────────────────────────────────────────────
 
 

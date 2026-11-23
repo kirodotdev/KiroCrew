@@ -46,7 +46,6 @@ from kiro_crew.slack.code_channels.binding import (
     hold_anchor,
     live_config,
     resolve_session_spec,
-    thread_conductor_on,
 )
 from kiro_crew.slack.code_channels.classifier import MAX_CONTEXT_MESSAGES, classify
 from kiro_crew.slack.code_channels.client import CodeChannelsClient
@@ -535,7 +534,9 @@ async def _thread_stop_gate(
     if from_trusted_bot or strip_leading_mention(text).strip().lower() != "!stop":
         return PASS
     slot = bound_slot(_dashboard_state(), binding)
-    if not (thread_conductor_on(cfg) or getattr(slot, "running", False) is True):
+    if not (
+        thread_runtime.room_runtime_on(binding, cfg) or getattr(slot, "running", False) is True
+    ):
         return PASS
     channel = binding.channel_id
     resources = f"channel={channel} thread={binding.anchor_ts}"

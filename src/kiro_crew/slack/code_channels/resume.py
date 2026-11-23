@@ -589,21 +589,10 @@ async def _archive_refusal(binding: Binding) -> str:
 
 
 async def _prime_room(room: str) -> None:
-    """Read a Conductor thread's channel from Slack so the room check has a fresh reading.
-
-    The room rules (private, not shared out) read Slack's answer from a short
-    cache that is empty after a restart; the check itself never awaits, so it is
-    filled here first. A DM is no channel Slack can share or archive, so it reads
-    nothing. A failed read leaves the reading unknown, which the check refuses.
-    """
-    from kiro_crew.slack.code_channels import audience
-    from kiro_crew.slack.code_channels.store import ROOM_IM
-
+    """:func:`.thread_runtime.prime_room` for the thread *room* names (a no-op for a channel)."""
     binding = await asyncio.to_thread(binding_for_room, room)
-    if binding is None or binding.room == ROOM_IM:
-        return
-    if audience.channel_private(binding.channel_id) is None:
-        await audience._refresh(binding.channel_id)
+    if binding is not None:
+        await thread_runtime.prime_room(binding)
 
 
 async def _thread_archive_refusal(binding: Binding) -> str:
@@ -983,17 +972,19 @@ async def resume_after_restart(state: Any) -> list[ResumeReport]:
     """The start-up pass over every bound code channel and live Conductor thread
     (see the module docstring), each only while its own switch is on."""
     cfg = live_config()
-    channels_on, threads_on = code_channels_on(cfg), thread_conductor_on(cfg)
-    if not (channels_on or threads_on):
+    if not thread_runtime.any_runtime_on(cfg, channels_on=code_channels_on):
         return []
     try:
         await asyncio.to_thread(store().load)
-        bindings = list(await asyncio.to_thread(store().bindings)) if channels_on else []
-        if threads_on:
-            # An ended thread is not resumed.
-            bindings += [
-                b for b in await asyncio.to_thread(store().thread_bindings) if not b.ended_at
-            ]
+        bindings = list(await asyncio.to_thread(store().bindings))
+        # An ended thread is not resumed.
+        bindings += [b for b in await asyncio.to_thread(store().thread_bindings) if not b.ended_at]
+        # Each room only while its own switch is on.
+        bindings = [
+            b
+            for b in bindings
+            if thread_runtime.room_runtime_on(b, cfg, channels_on=code_channels_on)
+        ]
     except Exception:
         logger.warning("code channel resume: store unavailable", exc_info=True)
         return []
@@ -1460,7 +1451,7 @@ def _say_in(binding: Binding, channel: str, user: str) -> Callable[[str], Awaita
 async def handle_resume_click(orch: Any, payload: dict[str, Any]) -> bool:
     """A Resume click on a restart notice; False when it is not ours to answer."""
     cfg = live_config(orch)
-    if not (code_channels_on(cfg) or thread_conductor_on(cfg)):
+    if not thread_runtime.any_runtime_on(cfg, channels_on=code_channels_on):
         return False
     from kiro_crew.slack.code_channels.binding import bound_slot
     from kiro_crew.slack.handler import is_owner
@@ -1487,6 +1478,8 @@ async def handle_resume_click(orch: Any, payload: dict[str, Any]) -> bool:
         return True
     # From here the key of every record, lock and audit row is the room id: the
     # channel for a code channel, ``channel:anchor`` for a Conductor thread.
+    if not thread_runtime.room_runtime_on(binding, cfg, channels_on=code_channels_on):
+        return False  # this room's own switch is off: not ours to answer
     room = thread_runtime.room_id(binding)
     say = _say_in(binding, channel, user)
     if not is_owner(user):
@@ -1734,7 +1727,7 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
     (its own switch, not the code-channel one); a thread ended since still stops.
     """
     cfg = live_config(orch)
-    if not (code_channels_on(cfg) or thread_conductor_on(cfg)):
+    if not thread_runtime.any_runtime_on(cfg, channels_on=code_channels_on):
         return False
     from kiro_crew.slack.code_channels.binding import bound_slot
     from kiro_crew.slack.handler import is_owner
@@ -1761,6 +1754,8 @@ async def handle_stop_click(orch: Any, payload: dict[str, Any]) -> bool:
         return True
     # The key of the notice record, lock and audit rows: the channel for a code
     # channel, ``channel:anchor`` for a Conductor thread.
+    if not thread_runtime.room_runtime_on(binding, cfg, channels_on=code_channels_on):
+        return False  # this room's own switch is off: not ours to answer
     room = thread_runtime.room_id(binding)
     say = _say_in(binding, channel, user)
     if not is_owner(user):

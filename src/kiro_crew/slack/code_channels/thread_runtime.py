@@ -26,6 +26,7 @@ binding takes the code-channel branch of every function untouched.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from kiro_crew.slack.code_channels import binding as _binding
@@ -37,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 #: Joins a thread's channel and anchor in a room id.
 ROOM_SEP = ":"
+
+#: "No config passed": read the live one. An explicit ``None`` is an unreadable
+#: config, which reads as off.
+_LIVE: Any = object()
 
 
 def is_thread(binding: Any) -> bool:
@@ -73,10 +78,56 @@ def binding_for_room(room: str) -> Binding | None:
     return store().get_binding(room)
 
 
-def room_runtime_on(binding: Binding, cfg: Any | None = None) -> bool:
-    """The runtime gate for *binding*: code channels for a channel, the thread switch for a thread."""
-    cfg = _binding.live_config() if cfg is None else cfg
-    return thread_conductor_on(cfg) if is_thread(binding) else code_channels_on(cfg)
+def room_runtime_on(
+    binding: Binding, cfg: Any = _LIVE, *, channels_on: Callable[[Any], bool] = code_channels_on
+) -> bool:
+    """The runtime gate for *binding*: code channels for a channel, the thread switch for a thread.
+
+    *channels_on* is the code-channel gate to ask (a module that owns a patched
+    name for it passes its own).
+    """
+    cfg = _binding.live_config() if cfg is _LIVE else cfg
+    return thread_conductor_on(cfg) if is_thread(binding) else channels_on(cfg)
+
+
+def any_runtime_on(
+    cfg: Any = _LIVE, *, channels_on: Callable[[Any], bool] = code_channels_on
+) -> bool:
+    """Whether either runtime is on: the gate for a site that runs BEFORE its binding is known.
+
+    Once the binding is in hand the site asks :func:`room_runtime_on` instead.
+    """
+    cfg = _binding.live_config() if cfg is _LIVE else cfg
+    return channels_on(cfg) or thread_conductor_on(cfg)
+
+
+#: How long a posting or a click waits for Slack's answer about a thread's room.
+ROOM_READ_TIMEOUT_SECS = 5.0
+
+
+async def prime_room(binding: Binding) -> None:
+    """Make sure a Conductor thread's room has a fresh Slack reading before its synchronous gates run.
+
+    The room rules (private, not shared out) read a short-lived cache the gates
+    never fill (they cannot await), so a worker's card or an owner's click more
+    than a few minutes after the last reading would otherwise be refused for want
+    of one. A bounded read fills it; a failed or slow read leaves the reading
+    unknown and the gates refuse, as for any unreadable room. A channel binding
+    and a DM need no reading.
+    """
+    import asyncio
+
+    from kiro_crew.slack.code_channels import audience
+    from kiro_crew.slack.code_channels.store import ROOM_IM
+
+    if not is_thread(binding) or binding.room == ROOM_IM:
+        return
+    if audience.channel_private(binding.channel_id) is not None:
+        return
+    try:
+        await asyncio.wait_for(audience._refresh(binding.channel_id), ROOM_READ_TIMEOUT_SECS)
+    except Exception:
+        logger.debug("conductor thread: room reading not refreshed", exc_info=True)
 
 
 def live_thread_binding(binding: Binding) -> Binding | None:
@@ -116,13 +167,13 @@ def room_refusal(binding: Binding) -> str:
         return "the room could not be checked"
 
 
-def thread_open(binding: Binding, cfg: Any | None = None) -> bool:
+def thread_open(binding: Binding, cfg: Any = _LIVE) -> bool:
     """A thread's counterpart of "the feature is on and the channel is not archived".
 
     The switch is on, the stored thread is still this session's and not ended,
     and its room still admits it (public only with the opt-in, never shared out).
     """
-    cfg = _binding.live_config() if cfg is None else cfg
+    cfg = _binding.live_config() if cfg is _LIVE else cfg
     if not thread_conductor_on(cfg):
         return False
     current = live_thread_binding(binding)
@@ -152,9 +203,7 @@ def sync_gates(orch: Any, binding: Binding, user: str, team: str) -> bool:
     )
 
 
-async def conductor_binding_for_slot(
-    state: Any, slot_key: str, cfg: Any | None = None
-) -> Binding | None:
+async def conductor_binding_for_slot(state: Any, slot_key: str, cfg: Any = _LIVE) -> Binding | None:
     """The code channel OR Conductor thread bound to *slot_key*, when it still names it.
 
     The channel's own lookup first (:func:`.surface.binding_for_slot`); a thread
@@ -165,7 +214,7 @@ async def conductor_binding_for_slot(
 
     if not slot_key:
         return None
-    cfg = _binding.live_config() if cfg is None else cfg
+    cfg = _binding.live_config() if cfg is _LIVE else cfg
     if code_channels_on(cfg):
         found = await surface.binding_for_slot(state, slot_key)
         if found is not None:
