@@ -1,8 +1,8 @@
-"""The stitch's ``PATH`` fallback never answers with the working directory (#39118).
+"""The stitch's ``PATH`` fallback never answers with the working directory.
 
 On Windows ``shutil.which("ffmpeg")`` searches the working directory before
 ``PATH`` unless ``NoDefaultCurrentDirectoryInExePath`` is set, so an
-``ffmpeg.exe`` beside the gateway ran for the voice reply stitch, outside the
+``ffmpeg.exe`` beside the gateway would run for the voice reply stitch, outside the
 agent sandbox, with no ``PATH`` entry naming it. A relative ``PATH`` entry such
 as ``.`` names the same folder on every OS.
 """
@@ -78,7 +78,7 @@ async def test_stitch_never_runs_an_ffmpeg_from_the_working_directory(
 
 @pytest.mark.asyncio
 async def test_an_absolute_path_entry_still_wins_over_the_working_directory(tmp_path) -> None:
-    """The PATH fallback #34751 kept still works: the ffmpeg in an absolute
+    """The PATH fallback still works: the ffmpeg in an absolute
     PATH entry runs, by its absolute path, even with a decoy beside the gateway."""
     argv: list[str] = []
 

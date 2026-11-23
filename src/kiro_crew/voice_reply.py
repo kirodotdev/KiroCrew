@@ -1404,8 +1404,8 @@ def _stitch_ffmpeg() -> str | None:
     The ``PATH`` lookup walks the absolute entries one by one through
     ``soffice_discovery.which_within``, not ``shutil.which("ffmpeg")``. On
     Windows ``shutil.which`` searches the working directory before ``PATH``, so
-    an ``ffmpeg.exe`` (or ``ffmpeg.cmd``) beside the gateway answered for every
-    entry and ran outside the sandbox (#39118). A relative entry is skipped for
+    an ``ffmpeg.exe`` (or ``ffmpeg.cmd``) beside the gateway would answer for every
+    entry and run outside the sandbox. A relative entry is skipped for
     the same reason: it names the working directory too.
     """
     # Read through the facade at call time, which is the patch surface every
