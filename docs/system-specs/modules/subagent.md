@@ -4796,8 +4796,10 @@ has streamed so far, not with that chunk alone, so a refused first write leaves
 no hole at the head of the fragment a restart finds. That write grows with the
 answer, so it runs off the loop in a worker drained like a state write
 (`_start_result_file`), and the live partial takes the chunk before it, so a
-Stop landing in that wait still delivers the chunk. Later chunks append on the
-loop, and an append the disk refuses sends the next chunk back to that start
+Stop landing in that wait still delivers the chunk. Later chunks append in the
+same kind of worker (`_append_result_chunk`), each awaited before the next, so
+they land in order and the loop never resolves the run folder or opens the
+file. An append the disk refuses sends the next chunk back to that start
 write, so a lost chunk leaves no hole mid-file either. While the disk keeps
 refusing, each chunk retries the start write in that worker; a refusing disk
 fails at the open (a removed folder) or the first block (a full disk), so a

@@ -19,14 +19,14 @@ they read unqualified are that module's, imported here for typing only; this mod
 no other.
 
 The manager fields this module uses. Writes: ``_agents``, ``_conversations``. Reads:
-``_clear_tool_dispatch``, ``_completion_keep``, ``_completion_keep_chars``, ``_ctx_builder``,
-``_effective_turn_limit``, ``_fire_event``, ``_leave_startup``, ``_note_tool_dispatch``,
-``_note_tool_result``, ``_note_tool_update``, ``_provider_label_of``, ``_sessions``,
-``_sharing_plan``, ``_shutting_down``, ``_start_result_file``, ``_stop_error_text``,
-``_stop_recovery_wanted``, ``_touch_activity``, ``_write_finished_result_off_loop``,
-``_write_state_off_loop``, ``_write_tombstone``, ``_yield_for_dependency``,
-``_yield_for_infra_retry``, ``_yield_for_stop_recovery``, ``arm_report_in_flight``,
-``dependency_coordinator_async``, ``hook_store``.
+``_append_result_chunk``, ``_clear_tool_dispatch``, ``_completion_keep``,
+``_completion_keep_chars``, ``_ctx_builder``, ``_effective_turn_limit``, ``_fire_event``,
+``_leave_startup``, ``_note_tool_dispatch``, ``_note_tool_result``, ``_note_tool_update``,
+``_provider_label_of``, ``_sessions``, ``_sharing_plan``, ``_shutting_down``,
+``_start_result_file``, ``_stop_error_text``, ``_stop_recovery_wanted``, ``_touch_activity``,
+``_write_finished_result_off_loop``, ``_write_state_off_loop``, ``_write_tombstone``,
+``_yield_for_dependency``, ``_yield_for_infra_retry``, ``_yield_for_stop_recovery``,
+``arm_report_in_flight``, ``dependency_coordinator_async``, ``hook_store``.
 """
 
 from __future__ import annotations
@@ -741,7 +741,7 @@ async def _run_inner_impl(
             if _attempt_has_text:
                 info.streaming_text += "\n\n"
             if _result_file_started:
-                _result_file_started = write_result_chunk(info.id, "\n\n")
+                _result_file_started = await self._manager._append_result_chunk(info, "\n\n")
         return _next
 
     async def _stream_with_transient_retry():
@@ -1242,7 +1242,7 @@ async def _run_inner_impl(
             if _result_file_started:
                 # A refused append starts the file over on the next
                 # chunk, so a lost chunk leaves no hole mid-file either.
-                _result_file_started = write_result_chunk(info.id, event.text)
+                _result_file_started = await self._manager._append_result_chunk(info, event.text)
             else:
                 _result_file_started = await self._manager._start_result_file(info, result_text)
             await self._manager._fire_event("subagent_chunk", info, {"text": redacted})
@@ -1651,6 +1651,8 @@ async def _run_inner_impl(
         info.result = f"{_warn}\n\n{info.result}"
         info.partial = True
         # result.txt is what spawn_status / spawn_run read for a done run.
+        # Once per run and on the loop: an await here would let a cancel cut
+        # this tail before the ending below is recorded.
         write_result_chunk(info.id, f"\n\n{_warn}\n")
     # The whole answer a claimed completed ending rewrites result.txt from.
     _finished_text = result_text
