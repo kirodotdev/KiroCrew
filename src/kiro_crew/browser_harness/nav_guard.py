@@ -72,9 +72,13 @@ class NavigationGuard:
     async def __aexit__(self, *_exc: Any) -> None:
         # Answer whatever is still paused before the session goes, so no request is
         # left hanging and none is continued unjudged.
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        await self._release()
+        try:
+            if self._tasks:
+                await asyncio.gather(*self._tasks, return_exceptions=True)
+        finally:
+            # A takeover cancels the op while it waits above; the interception must
+            # still come off before control passes to the person.
+            await self._release()
 
     async def stop(self) -> None:
         """Stop the tab's pending navigation while the guard is still armed. Never raises.

@@ -301,6 +301,25 @@ def test_a_takeover_during_arming_releases_the_interception() -> None:
     assert relay.detached == ["S-T-agent"]
 
 
+def test_a_takeover_while_answers_drain_releases_the_interception() -> None:
+    relay = FakeRelay()
+
+    async def go() -> None:
+        guard = NavigationGuard(relay, "T-agent", _gate)
+        await guard.__aenter__()
+        stuck = asyncio.create_task(asyncio.Event().wait())
+        guard._tasks.add(stuck)
+        exiting = asyncio.create_task(guard.__aexit__(None, None, None))
+        await asyncio.sleep(0)
+        exiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await exiting
+
+    _run(go())
+    assert "Fetch.disable" in relay.methods()
+    assert relay.detached == ["S-T-agent"]
+
+
 def test_the_route_pins_later_helpers_to_the_guarded_relay() -> None:
     from kiro_crew.dashboard.handlers import browser_ops as route
 
