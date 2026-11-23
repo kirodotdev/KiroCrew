@@ -7075,6 +7075,7 @@
       "backend_refused_notice": "The backend of {{name}} did not start: {{reason}}",
       "action_warnings_disabled": "{{name}} is disabled, but not every step finished. Details: {{warnings}}",
       "action_warnings_enabled": "{{name}} is enabled, but not every step finished. Details: {{warnings}}",
+      "action_warnings_uninstalled": "{{name}} is uninstalled, but not every step finished. Details: {{warnings}}",
       "cancel": "Cancel",
       "category": "Category",
       "confirm_uninstall": "Confirm uninstall",

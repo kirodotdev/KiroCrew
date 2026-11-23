@@ -12957,6 +12957,7 @@
       "backend_refused_notice": "Бэкенд {{name}} не запустился: {{reason}}",
       "action_warnings_disabled": "{{name}} отключено, но не все шаги завершились. Подробности: {{warnings}}",
       "action_warnings_enabled": "{{name}} включено, но не все шаги завершились. Подробности: {{warnings}}",
+      "action_warnings_uninstalled": "{{name}} удалено, но не все шаги завершились. Подробности: {{warnings}}",
       "built_in_kirocrew": "Встроенное · kirocrew",
       "cancel": "Отмена",
       "category": "Категория",
