@@ -37,10 +37,12 @@ if TYPE_CHECKING:
         delivery_fingerprint,
         load_window_off_loop,
         logger,
+        note_marks_one_shot,
         redact,
         rehydrate_slot_from_history_async,
         resurface_stale_grant,
         run_command_sandboxed,
+        run_consumes_one_shot,
         run_in_cron_pool,
         run_script_sandboxed,
         runtime_death,
@@ -466,7 +468,11 @@ async def _deliver_script_result(
     """
     delivered = False
     # `result_ts` names the stored result the note carries (`message` is it).
-    note_meta = {"job_id": job.id, "result_ts": job.last_result_ts}
+    note_meta: dict[str, str | float | bool] = {"job_id": job.id, "result_ts": job.last_result_ts}
+    # A one-shot this run removes has no future run to acknowledge: the
+    # dashboard offers Done.
+    if run_consumes_one_shot(job) and await note_marks_one_shot(self.cron_svc, job):
+        note_meta["one_shot"] = True
     try:
         if message and not job.silent and self.dashboard_state and job.session_key:
             slot_key = job.session_key.removeprefix("dashboard:")

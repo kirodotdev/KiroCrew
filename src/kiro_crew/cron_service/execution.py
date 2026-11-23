@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget
 
 if TYPE_CHECKING:
+    from kiro_crew.cron import CronService
     from kiro_crew.cron_service.model import CronJob
 
 # Margin the per-wake budget must leave above a command/script subprocess
@@ -169,6 +170,48 @@ def run_parks_one_shot(job: CronJob) -> bool:
     if job.delete_after_run:
         return False
     return not job.run_never_started or job.refusal_cannot_clear
+
+
+def run_consumes_one_shot(job: CronJob) -> bool:
+    """Whether this run of ``job``, a ``delete_after_run`` one-shot, removes it.
+
+    A failed run is kept and auto-paused (:func:`auto_pause_failed_one_shot`),
+    and a fire-time denial or a run that never started keeps the job to retry,
+    so none of them consumes it.
+    """
+    return (
+        job.delete_after_run
+        and job.last_status != "error"
+        and not (job.fire_time_denied or job.run_never_started)
+    )
+
+
+def one_shot_consume_owed(job: CronJob, stored: CronJob | None) -> bool:
+    """Whether the merge of this run of ``job`` owes its one-shot consume.
+
+    *stored* is the store's row for ``job.id`` (``None`` when absent). A row
+    another writer gave a new schedule during the run is kept: the consume
+    was the fired schedule's.
+    """
+    return run_consumes_one_shot(job) and (stored is None or stored.schedule == job.schedule)
+
+
+async def note_marks_one_shot(cron_svc: CronService | None, job: CronJob) -> bool:
+    """Whether the note this run of ``job`` publishes is marked ``one_shot``.
+
+    Judged against a fresh read of the store's row, as the merge judges its
+    consume (:func:`one_shot_consume_owed`), so a one-shot another writer
+    re-scheduled during the run keeps Acknowledge. A failed read keeps it
+    too: Acknowledge on a consumed job still leaves Delete. Callers check
+    :func:`run_consumes_one_shot` first, so a recurring run reads no store.
+    """
+    if cron_svc is None:
+        return False
+    try:
+        stored = await cron_svc.get_job_async(job.id)
+    except Exception:
+        return False
+    return one_shot_consume_owed(job, stored)
 
 
 def auto_pause_failed_one_shot(job: CronJob, last_status: str | None) -> None:

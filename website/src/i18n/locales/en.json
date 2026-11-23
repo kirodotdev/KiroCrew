@@ -7554,6 +7554,7 @@
         "ack_failed": "Couldn't save this acknowledgement. Try again.",
         "ack_job_gone": "This job no longer exists, so there is nothing to acknowledge. You can delete this notification.",
         "delete": "Delete",
+        "done": "Done",
         "delete_failed": "Couldn't delete this notification. Try again."
       },
       "errorCard": {

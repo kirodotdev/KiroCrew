@@ -13583,6 +13583,7 @@
         "ack_failed": "Impossibile salvare la conferma. Riprova.",
         "ack_job_gone": "Questo job non esiste più, quindi non c'è nulla da confermare. Puoi eliminare questa notifica.",
         "delete": "Elimina",
+        "done": "Fatto",
         "delete_failed": "Impossibile eliminare questa notifica. Riprova."
       },
       "errorCard": {

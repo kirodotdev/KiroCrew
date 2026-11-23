@@ -27,7 +27,8 @@ from slack_gateway_cron_exec_coverage_helpers import (
     _mock_dashboard_state,
 )
 
-from kiro_crew.cron import CronStoreBusy
+from kiro_crew.cron import CronSchedule, CronStoreBusy
+from kiro_crew.cron_service.execution import note_marks_one_shot
 from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND
 from kiro_crew.slack import gateway as gw
@@ -978,6 +979,62 @@ class TestDeliverScriptResult:
             "job_id": job.id,
             "result_ts": job.last_result_ts,
         }
+
+    @pytest.mark.asyncio
+    async def test_one_shot_script_note_is_marked_one_shot(self):
+        """A one-shot script reminder's note says so, so the dashboard offers Done."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(
+            script="probes.py:check",
+            session_key="dashboard:chat-gone",
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        svc = _cron_service_double()
+        svc.get_job_async = AsyncMock(return_value=job)
+        result = {"status": "report", "message": "reminder"}
+        with patch.object(gw, "rehydrate_slot_from_history_async", AsyncMock(return_value=None)):
+            async with _cron_cb(orch, svc=svc, script_result=result) as cb:
+                assert await cb(job) == "reminder"
+        orch.dashboard_state.notify.assert_called_once()
+        assert orch.dashboard_state.notify.call_args.kwargs["meta"] == {
+            "job_id": job.id,
+            "result_ts": job.last_result_ts,
+            "one_shot": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_rescheduled_one_shot_script_note_keeps_acknowledge(self):
+        """A one-shot script job re-scheduled during its run is kept: no one-shot mark."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(
+            script="probes.py:check",
+            session_key="dashboard:chat-gone",
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        stored = _job(
+            script="probes.py:check", schedule=CronSchedule(kind="every", every_secs=3600)
+        )
+        svc = _cron_service_double()
+        svc.get_job_async = AsyncMock(return_value=stored)
+        result = {"status": "report", "message": "reminder"}
+        with patch.object(gw, "rehydrate_slot_from_history_async", AsyncMock(return_value=None)):
+            async with _cron_cb(orch, svc=svc, script_result=result) as cb:
+                assert await cb(job) == "reminder"
+        orch.dashboard_state.notify.assert_called_once()
+        assert "one_shot" not in orch.dashboard_state.notify.call_args.kwargs["meta"]
+
+    @pytest.mark.asyncio
+    async def test_an_unread_store_marks_no_one_shot(self):
+        """With no service, or a store read that fails, the note keeps Acknowledge."""
+        job = _job(schedule=CronSchedule(kind="at", at_ts=1.0), delete_after_run=True)
+        svc = MagicMock()
+        svc.get_job_async = AsyncMock(side_effect=OSError("store unreadable"))
+        assert await note_marks_one_shot(None, job) is False
+        assert await note_marks_one_shot(svc, job) is False
 
     @pytest.mark.asyncio
     async def test_rehydration_reads_the_transcript_off_the_loop(self):
