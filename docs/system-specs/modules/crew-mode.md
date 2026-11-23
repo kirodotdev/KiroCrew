@@ -5465,7 +5465,13 @@ ladder (`slack/handler_runtime/permission_ladder.py`), the channel transports'
 `messaging.driver.TurnDriver` (which asks its decider inside `held_call`), agent channels (`channel.py`), the shared ladder
 `tool_permission.settle` (sub-agents, the task runner) and the background approver
 (`slack/gateway_runtime/turn_approvals._interactive_approval`) skip every
-auto-approve rung for a held call and ask a person, or refuse with no one to ask. A
+auto-approve rung for a held call and ask a person, or refuse with no one to ask.
+A held `subagent` limit also makes Crew's own spawns ask, at spawn admission: every
+spawn admitted there whose parent is the Bot's session (`spawn_run`, `spawn_sub_agents`,
+`spawn_continue`, `/api/spawn`; the Bot found as the tool gates find it) skips YOLO,
+`approval_mode="auto"`, Trust and `hooks.auto_approve_subagent_spawn`, and its approval
+prompt is a held call, so only a person answers it (`mate_held_rules.held_spawn_limits`;
+[subagent](subagent.md), Spawn flow). A
 call is placed under a capability by the tool the harness stamped on it
 (`toolName`, KAS's `toolId`, claude's built-in; a qualified id such as
 `claude#WebFetch` is read under the kiro-cli names `agent_sdk.spec_hooks.spec_hook_tool_names`
@@ -5487,8 +5493,7 @@ call (`NO_CALL`) never makes the Bot ask, so the chat notice names it apart as o
 that no longer runs, and it alone owes no bell note (`mate_held_rules.held_sentence`,
 `asks_for`). Nothing clears a hold: a save of
 the Bot's approval mode does not, since an `auto` cron's approval does not depend
-on that mode (#37277 tracks Kiro Crew's own sub-agent tools; a control to review
-and release held rules is #37321). Every read-modify-write of
+on that mode (a control to review and release held rules is #37321). Every read-modify-write of
 `migrated.json` runs under `mate_ledger_lock.ledger_lock` (a thread lock plus a
 `migrated.json.lock` file lock, since two gateways with their own data homes can
 share one Kiro home), so one writer cannot erase a hold another records. A Bot whose repoint fails stays on its old agent, which still
