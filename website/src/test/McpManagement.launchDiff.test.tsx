@@ -9,12 +9,13 @@
 // - a hidden or redacted value is named by its key only, never by its value
 //
 // Every label is read from the catalog, so a wording change never breaks a test.
-import { cleanup, render } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { i18nT } from '../i18n/t'
 import { fmtList } from '../i18n/format'
-import { RefusalLaunch } from '../pages/settings/McpManagementLaunchReview'
+import { RefusalLaunch, ServerName, TrustChangesChoice } from '../pages/settings/McpManagementLaunchReview'
+import type { McpManagedServer } from '../api/client'
 import { distinctCommands, envValueChanges, launchChanges, mergedEnvRule } from '../pages/settings/mcpLaunchDiff'
 import { withCurrentLaunch, type LaunchRefusal } from '../pages/settings/mcpManagementModel'
 
@@ -685,5 +686,71 @@ describe('a replaced command with the same launch count and the same env', () =>
     }
     const single = { ...replaced, approved_commands: [b], approved_envs: [env], commands: [c], envs: [env] }
     expect(mergedEnvRule(single)).toBe('single')
+  })
+})
+
+describe('launches that differ only in a value', () => {
+  // Three agents each give the server their own PATH. Each launch draws as the
+  // command and the key name PATH, so the column draws that once, not once per agent.
+  const perAgent: LaunchRefusal = {
+    reason: 'changed_needs_reapproval',
+    complete: true,
+    expected_launch: 'shown',
+    commands: [CMD, CMD, CMD],
+    envs: [[OLD_PATH], [NEW_PATH], [OTHER_PATH]],
+    approved_commands: [CMD, CMD, CMD],
+    approved_envs: [[NEW_PATH], [OTHER_PATH], [OLD_PATH]],
+  }
+
+  it('draws each launch as drawn once on each side', () => {
+    const { container } = render(<RefusalLaunch refusal={perAgent} />)
+    expect(columnLaunches(container, M('details_approved'))).toEqual([['/opt/bin/docs-mcp', 'PATH']])
+    expect(columnLaunches(container, M('details_new'))).toEqual([['/opt/bin/docs-mcp', 'PATH']])
+  })
+})
+
+describe('the Sharing row\'s "Always trust changes" choice', () => {
+  const row = (trust: boolean) =>
+    ({ name: 'docs-mcp', stub: true, can_stub: true, in_allowlist: true, entry_poolable: false, agents: ['a'], transport: 'stdio', denylisted: false, trust_changes: trust }) as McpManagedServer
+  const mountRow = (trust: boolean, onTrustChange = vi.fn(), approved = true) => {
+    render(<TrustChangesChoice server={row(trust)} approved={approved} busy={false} onTrustChange={onTrustChange} />)
+    return onTrustChange
+  }
+
+  it('shows the choice checked, and unchecking it takes it off', () => {
+    const change = mountRow(true)
+    const box = screen.getByRole('checkbox', { name: M('trust_changes_label') }) as HTMLInputElement
+    expect(box.checked).toBe(true)
+    fireEvent.click(box)
+    expect(change).toHaveBeenCalledExactlyOnceWith(false)
+  })
+
+  it('draws the choice unchecked for an untrusted server, and ticking it grants trust', () => {
+    const change = mountRow(false)
+    const box = screen.getByRole('checkbox', { name: M('trust_changes_label') }) as HTMLInputElement
+    expect(box.checked).toBe(false)
+    fireEvent.click(box)
+    expect(change).toHaveBeenCalledExactlyOnceWith(true)
+  })
+
+  it('explains the choice in an info tip a keyboard can reach', () => {
+    mountRow(true)
+    const tip = screen.getByTitle(M('trust_changes_tip'))
+    expect(tip.tagName).toBe('BUTTON')
+  })
+
+  it('draws no choice while the launch waits for approval', () => {
+    mountRow(true, vi.fn(), false)
+    expect(screen.queryByRole('checkbox')).toBeNull()
+  })
+})
+
+describe('a server name in the Sharing table', () => {
+  it('wraps only between words, never anywhere inside one', () => {
+    render(<ServerName id="n" name="local-chorus-mcp" />)
+    const name = document.getElementById('n') as HTMLElement
+    expect(name.textContent).toBe('local-chorus-mcp')
+    expect(name.className).toContain('[overflow-wrap:break-word]')
+    expect(name.className).not.toContain('anywhere')
   })
 })

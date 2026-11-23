@@ -25,6 +25,7 @@ import {
 import { useIsNarrowViewport } from '../../hooks/useIsMobile'
 import { fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import InfoTip from '../../components/InfoTip'
 import {
   type CurrentLaunch,
   detailsWhyKey,
@@ -325,6 +326,8 @@ export function ApprovalCard({
         <AlertTriangle size={15} className="shrink-0 text-[var(--warn)]" aria-hidden="true" />
         {i18nT('pages.mcpManagement.approval_title', { count: waiting.length })}
       </h2>
+      {/* What waiting costs: the title asks, this says what happens meanwhile. */}
+      <p className="m-0 text-[12.5px] text-[var(--muted)]">{i18nT('pages.mcpManagement.approval_body')}</p>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <ul aria-labelledby="mcp-approval-title" className="m-0 flex min-w-0 list-none flex-wrap gap-1.5 p-0">
           {waiting.map(s => (
@@ -404,16 +407,21 @@ export function ReviewApprovalsDialog({
    * The table button's own write, given the launch pinned and the refusal's
    * own `expected_launch`; resolves with what the block then says, or null.
    */
-  onApprove: (name: string, expectedLaunch: string, refused?: string) => Promise<ReviewAnswer>
+  onApprove: (name: string, expectedLaunch: string, refused?: string, trustChanges?: boolean) => Promise<ReviewAnswer>
   onClose: () => void
 }) {
   const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
   const handoffHint = useMcpHandoffHint()
   const narrow = useIsNarrowViewport()
   const [states, setStates] = useState<Record<string, ReviewState>>({})
+  // Per server, "Always trust changes to this server"; unchecked each time the dialog opens.
+  const [trust, setTrust] = useState<Record<string, boolean>>({})
   // A fresh list each time the dialog opens.
   useEffect(() => {
-    if (open) setStates({})
+    if (open) {
+      setStates({})
+      setTrust({})
+    }
   }, [open, items])
   const stateOf = (name: string): ReviewState => states[name] ?? { kind: 'pending' }
   const allHandled =
@@ -447,7 +455,7 @@ export function ReviewApprovalsDialog({
     const name = item.server.name
     const shown = withCurrentLaunch(item.refusal, currentLaunches, name)
     setStates(s => ({ ...s, [name]: { kind: 'approving' } }))
-    const answer = await onApprove(name, shown.expected_launch as string, item.refusal.expected_launch)
+    const answer = await onApprove(name, shown.expected_launch as string, item.refusal.expected_launch, trust[name] === true)
     settle(name, answer ? { kind: 'pending', ...answer } : { kind: 'approved' })
   }
 
@@ -537,6 +545,22 @@ export function ReviewApprovalsDialog({
                     <ErrorNotice variant="inline" message={st.launchMoved ?? null} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
                     <RefusalLaunch refusal={refusal} />
                     <ErrorNotice variant="inline" message={st.error ?? null} askAgent={!handoffWouldLoseEdits} handoffHint={handoffHint} />
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <label className="flex min-w-0 items-center gap-2 text-[12.5px] text-[var(--text)]">
+                        <input
+                          type="checkbox"
+                          aria-label={i18nT('pages.mcpManagement.trust_changes_label')}
+                          className="h-4 w-4 shrink-0 accent-[var(--accent)]"
+                          checked={trust[server.name] === true}
+                          disabled={st.kind === 'approving'}
+                          onChange={e => setTrust(t => ({ ...t, [server.name]: e.target.checked }))}
+                        />
+                        {i18nT('pages.mcpManagement.trust_changes_label')}
+                      </label>
+                      {/* Above the checkbox: beside it, a tall tip runs down over
+                          the Don't share / Share buttons it is meant to explain. */}
+                      <InfoTip text={i18nT('pages.mcpManagement.trust_changes_tip')} placement="top" />
+                    </div>
                     <div className={['flex gap-2', narrow ? 'flex-col' : 'flex-wrap justify-end'].join(' ')}>
                       <Btn
                         type="button"
