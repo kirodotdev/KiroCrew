@@ -800,7 +800,7 @@ def _write_installed(
         # chokepoint runs on the boot re-registration of builtins, which reads back
         # ``installed.json`` -- a file a sandboxed shell can forge -- so minting from
         # ``enabled`` here would let a forged record plus a restart produce a real
-        # grant. The grant is written only from the owner-authenticated ``enable_app``.
+        # grant. Only an enable or an owner registration writes the grant.
         # No-op when no grant exists. See ``apps.host_exec_grants``.
         if not credential_free_meta.enabled:
             revoke_host_exec(name)

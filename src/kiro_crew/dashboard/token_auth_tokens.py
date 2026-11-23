@@ -1027,8 +1027,9 @@ def validate_app_secret(app_name: str, provided_secret: str) -> bool:
 
     The authority is the owner-enable marker ``<crew-home>/host-exec-grants/{app_name}``
     (``apps.host_exec_grants``): a sealed, top-level directory only the unsandboxed
-    gateway writes, on an owner-authenticated enable or first owner registration,
-    and every disable and uninstall revokes. Files under the agent-writable
+    gateway writes, on an owner-authenticated enable or owner registration
+    (dashboard-token-auth, "Who can mint one"), and every disable and uninstall
+    revokes. Files under the agent-writable
     ``apps/{app_name}/`` (``installed.json``, ``app.json``) are never enough. With the
     marker present, the secret is compared in constant time against the gateway's
     own record (:func:`read_app_secret`), which no sandbox can read.
