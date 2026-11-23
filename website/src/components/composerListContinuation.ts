@@ -256,7 +256,7 @@ export function indentShift(value: string, at: number, columns: number): ListLin
  * line short of `column` stay. The first line indented `floor` or less ends
  * the item.
  */
-function nestedShifts(value: string, lineEnd: number, floor: number, column: number, columns: number): ListLineBreakEdit[] {
+export function nestedShifts(value: string, lineEnd: number, floor: number, column: number, columns: number): ListLineBreakEdit[] {
   const writes: ListLineBreakEdit[] = []
   let pos = lineEnd
   while (pos < value.length) {

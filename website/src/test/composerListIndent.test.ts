@@ -215,6 +215,12 @@ describe('listIndentEdit: numbering an ordered item that changes level', () => {
       .toBe('1. a\n   1. b\n2. c|\n   1. d\n   2. e\n3. f')
   })
 
+  // `10. ` is a column wider than `9. `, so the items below move in to stay its children.
+  it('Shift+Tab keeps the items below nested when its number gains a digit', () => {
+    expect(press('9. a\n   1. b|\n   2. c', true)).toBe('9. a\n10. b|\n    1. c')
+    expect(press('99. a\n    1. b|\n    2. c\n       - d', true)).toBe('99. a\n100. b|\n     1. c\n        - d')
+  })
+
   it('Shift+Tab starts at 1 beside a bullet or another delimiter', () => {
     expect(press('- a\n  1. b\n  2. c|', true)).toBe('- a\n  1. b\n1. c|')
     expect(press('1) a\n   1. b\n   2. c|', true)).toBe('1) a\n   1. b\n1. c|')
@@ -293,6 +299,16 @@ describe('listIndentEdit: numbering a selection that changes level', () => {
     expect(pressRange(pressRange('9. x\n[10. a\n    1. c\n       - d]')!, true)).toBe('9. x\n[10. a\n    1. c\n       - d]')
     // A number that loses more columns than Tab adds takes the rest from the child's own indentation.
     expect(pressRange('- a\n[1000000. b\n         1. c]')).toBe('- a\n  [1. b\n     1. c]')
+  })
+
+  // A selected child took its own step: the old level moving in below a wider number leaves it there.
+  it('moves a selected child once when a plain line at the old level comes before it', () => {
+    expect(pressRange('9. a\n   [1. b\n   more\n      - y]', true)).toBe('9. a\n[10. b\n   more\n    - y]')
+  })
+
+  // `- q` cannot move, so it ends `b` there: the line under it is another item's.
+  it('moves no line below a selected line that cannot move', () => {
+    expect(pressRange('9. a\n   [1. b\n- q]\n   - r', true)).toBe('9. a\n[10. b\n- q]\n   - r')
   })
 })
 

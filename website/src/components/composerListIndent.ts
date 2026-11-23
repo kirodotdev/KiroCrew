@@ -15,6 +15,7 @@ import {
   indentShift,
   isListLine,
   listContentColumn,
+  nestedShifts,
   nextOrdinal,
   parseMarker,
   renumberFollowing,
@@ -52,8 +53,9 @@ interface Splice {
  *
  * - Tab: the old level's items below take the numbers the run gave up.
  * - Shift+Tab: the old level's items below sit under the run's last item, and
- *   restart at 1 when they reach its text column; the new level's items below
- *   count on after the run.
+ *   restart at 1 when they reach its text column. A number wider than the
+ *   parent-level one it counts on from (9 to 10) moves that column right, and
+ *   them with it. The new level's items below count on after the run.
  */
 interface Run {
   /** The number the first item had. */
@@ -217,6 +219,21 @@ function openRun(
   }
 }
 
+/**
+ * The end of the line above the first line below `lineEnd` indented `indent` or
+ * less, past blank lines and the deeper lines under the item that ends there.
+ */
+function levelResumes(value: string, lineEnd: number, indent: number): number {
+  let end = lineEnd
+  while (end < value.length) {
+    const newline = value.indexOf('\n', end + 1)
+    const line = value.slice(end + 1, newline === -1 ? value.length : newline)
+    if (line.trim() !== '' && leadingWidth(line) <= indent) break
+    end = newline === -1 ? value.length : newline
+  }
+  return end
+}
+
 /** Whether the item with `marker` counts on from `run`'s last item as typed. */
 function continues(run: Run, marker: ListMarker | null): marker is ListMarker {
   return !!marker?.digits && marker.delimiter === run.last.delimiter && marker.digits === nextOrdinal(run.last.digits!)
@@ -227,14 +244,25 @@ function continues(run: Run, marker: ListMarker | null): marker is ListMarker {
  * up to `limit`: the numbers of the items, and the indentation of the lines
  * nested under an item whose number changed width. The next selected line that
  * is not inside the run takes its own step, so nothing from there on follows
- * this run.
+ * this run. The old level moves only below `selected`, the end of the
+ * selection's last line: each selected line above it took its own step.
  */
-function followers(value: string, limit: number, run: Run, outdent: boolean): Splice[] {
+function followers(value: string, limit: number, run: Run, outdent: boolean, selected: number): Splice[] {
   const scope = value.slice(0, limit)
   const below = (marker: ListMarker, first: string) => renumberFollowing(scope, run.lastEnd, marker, [], first)
-  const nested = run.last.indent.length >= run.landing + run.lastNew.length + 1 + run.last.gap.length
+  const level = run.last.indent.length
+  // How far the old level falls short of the last item's new text column, and
+  // how much of that its number's extra digits account for.
+  const short = run.landing + run.lastNew.length + 1 + run.last.gap.length - level
+  const gained = run.upper ? run.lastNew.length - run.upper.digits!.length : 0
+  const nested = short <= Math.max(0, gained)
   const writes = outdent
     ? [
+        // Ahead of the number rewrites, so a line's pad stays in front of its number.
+        ...(nested && short > 0
+          ? nestedShifts(scope, levelResumes(scope, run.lastEnd, level), run.landing, level, short)
+            .filter(move => move.start > selected)
+          : []),
         ...(nested ? below(run.last, firstOrdinal(run.last.digits!)) : []),
         ...(run.upper ? below(run.upper, nextOrdinal(run.lastNew)) : []),
       ]
@@ -271,8 +299,9 @@ export function listIndentEdit(
   const splices: Splice[] = []
   const items: { indent: number; splice: Splice | null; grow: number }[] = []
   let run: Run | null = null
+  const selected = lineBounds(value, starts[starts.length - 1]).end
   const closeRun = (limit: number) => {
-    if (run) splices.push(...followers(value, limit, run, outdent))
+    if (run) splices.push(...followers(value, limit, run, outdent, selected))
     run = null
   }
   for (const lineStart of starts) {
