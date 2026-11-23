@@ -90,6 +90,40 @@ def test_a_column_type_follows_its_cells(cells, kind):
     assert f"c ({kind})" in str(sheet_digest.digest_text("t.csv", body, ",", partial=False))
 
 
+@pytest.mark.parametrize("cell", ["12_34", "1_000", "2024_01", "1_0.5", "1e1_0"])
+def test_a_cell_with_an_underscore_is_text_not_a_number(cell):
+    assert sheet_digest._kind(cell) == "text"
+
+
+@pytest.mark.parametrize(
+    ("cell", "kind"),
+    [
+        ("1000", "integer"),
+        ("-3", "integer"),
+        ("12.5", "number"),
+        ("1e5", "number"),
+        ("2026-01-02", "date"),
+        ("2026-01-02_10:30:00", "date"),
+        ("TRUE", "boolean"),
+        ("ab_12", "text"),
+    ],
+)
+def test_every_other_cell_keeps_its_kind(cell, kind):
+    assert sheet_digest._kind(cell) == kind
+
+
+def test_a_code_column_with_underscores_is_typed_text_in_the_prompt(uploads, digest_on):
+    path = _stage(uploads, "codes.csv", "code,qty\n12_34,1\n1_000,2\n2024_01,3\n")
+    lines = _text(f"[attached_file 1] {path}\nwhat is this?").split("\n")
+    assert "3 data rows; 2 columns: code (text), qty (integer)" in lines
+
+
+def test_an_underscore_timestamp_column_is_typed_date_in_the_prompt(uploads, digest_on):
+    path = _stage(uploads, "when.csv", "when,qty\n2026-01-02_10:30:00,1\n2026-01-03_11:00:00,2\n")
+    lines = _text(f"[attached_file 1] {path}\nwhat is this?").split("\n")
+    assert "2 data rows; 2 columns: when (date), qty (integer)" in lines
+
+
 def test_a_secret_in_a_cell_is_redacted_before_the_digest(uploads, digest_on):
     secret = github_classic()
     path = _stage(uploads, "ab12_keys.csv", f"name,token\nci,{secret}\n")
