@@ -353,13 +353,23 @@ function newerKeptText(edit: { content: string; rev?: number } | undefined, entr
   return edit.rev > entry.rev ? edit.content : undefined
 }
 
+/** The records a stored answer's bubble draws from, as the frame or read sent them. */
+function answerRecords(src: { link_blocks?: unknown; redactions?: unknown }): Pick<SideMessage, 'link_blocks' | 'redactions'> {
+  return {
+    ...(src.link_blocks !== undefined ? { link_blocks: src.link_blocks } : {}),
+    ...(src.redactions !== undefined ? { redactions: src.redactions } : {}),
+  }
+}
+
 /** The side state a panel restored from `GET .../side` shows, merged with what
  *  frames already drew in this tab (`local`).
  *
  *  The read and the frames travel separately, so either can be ahead of the
  *  other. A row the gateway stored arrives under one id on both, and is drawn
- *  once. A row it never stores (an error notice) or had not stored when it
- *  answered (a later turn) exists only in `local`, and is kept beside its run.
+ *  once; a settled answer takes the read's text and records, so a read after
+ *  an Allow or its Undo shows the link as the gateway now serves it. A row it
+ *  never stores (an error notice) or had not stored when it answered (a later
+ *  turn) exists only in `local`, and is kept beside its run.
  *  A question this tab has not sent yet (an optimistic row) cannot be in the
  *  read, since every send waits for it, so it is kept until its receipt or its
  *  user frame settles it.
@@ -373,12 +383,17 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
   const restoredIds = new Set<string>()
   const messages: SideMessage[] = (snapshot.messages ?? []).map(m => {
     restoredIds.add(m.id)
-    return localById.get(m.id) ?? {
+    const held = localById.get(m.id)
+    if (held?.role === 'assistant' && !held.is_error) {
+      const { link_blocks: _links, redactions: _redactions, ...rest } = held
+      return { ...rest, content: m.content, ...answerRecords(m) }
+    }
+    return held ?? {
       id: m.id, role: m.role, content: m.content, ts: m.ts,
       ...(m.run_id ? { run_id: m.run_id } : {}),
       ...(m.steer ? { steer: true } : {}),
       ...(m.is_error ? { is_error: true } : {}),
-      ...(m.link_blocks !== undefined ? { link_blocks: m.link_blocks } : {}),
+      ...answerRecords(m),
     }
   })
   const knownRuns = new Set(messages.map(m => m.run_id).filter((r): r is string => !!r))
@@ -457,10 +472,10 @@ function restoredSide(local: SideState | undefined, snapshot: SideSnapshot): Sid
 }
 
 export const sideReducers = {
-  sseSideResult(state: ChatState, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean; steer?: boolean; message_id?: string; link_blocks?: unknown }>) {
-    const { slot, run_id, role, content, ts, is_error, final, steer, message_id, link_blocks } = action.payload
+  sseSideResult(state: ChatState, action: PayloadAction<{ slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; is_error?: boolean; final?: boolean; steer?: boolean; message_id?: string; link_blocks?: unknown; redactions?: unknown }>) {
+    const { slot, run_id, role, content, ts, is_error, final, steer, message_id } = action.payload
     // The final frame's records describe its whole text, so they travel with it.
-    const records = final && link_blocks !== undefined ? { link_blocks } : {}
+    const records = final ? answerRecords(action.payload) : {}
     if (isUnsafeKey(slot)) return
     const tsIso = typeof ts === 'number' ? new Date(ts * 1000).toISOString() : new Date().toISOString()
     // A steer is an echo of the conversation being closed, never a request to re-open it,
@@ -581,8 +596,9 @@ export const sideReducers = {
     if (last?.role === 'assistant' && last.run_id === run_id && !last.is_error) {
       if (message_id) last.id = message_id
       if (final) {
-        if (link_blocks !== undefined) last.link_blocks = link_blocks
-        else delete last.link_blocks
+        delete last.link_blocks
+        delete last.redactions
+        Object.assign(last, records)
       }
       if (content === last.content) return
       last.content = final ? content : content.startsWith(last.content) ? content : last.content + content

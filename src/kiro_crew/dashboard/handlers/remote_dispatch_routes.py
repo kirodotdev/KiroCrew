@@ -30,9 +30,9 @@ Four rules hold for every call, in this order:
 only a peer slot that THIS caller created with ``session_create(crew=)`` on THAT
 crew, as recorded in gateway memory by :func:`_record_dispatch`. The record is not
 persisted: after a hub restart the conductor cannot drive the slot, and the person
-still can from the crew window. Wave 4 replaces this record with the work
-item's ``worker_session_key`` + ``worker_instance_id`` pair, which survives a
-restart.
+still can from the crew window. Wave 4 adds the work item's
+``worker_session_key`` + ``worker_instance_id`` pair as a second admission, which
+survives a restart.
 """
 
 from __future__ import annotations
@@ -565,7 +565,10 @@ def _fenced_target(state: "DashboardState", caller: str, instance_id: str, targe
         raise CrewCallError(
             403,
             "crew_target_not_dispatched",
-            "that crew session was not opened by this session with session_create(crew=)",
+            "this session holds no record of opening that crew session with "
+            "session_create(crew=) on that crew, and your work ledger shows no open item "
+            "bound to it there; a session_create(crew=) record lasts only until this "
+            "gateway restarts, so open a crew session you will keep driving with work_item=",
         )
     return slot
 

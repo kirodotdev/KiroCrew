@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import os
+import threading
 from collections.abc import Iterable
 
 import pytest
@@ -302,4 +303,67 @@ class TestSpinner:
         out = buf.getvalue()
         assert "→" not in out  # never falls back to the plain-text line
         # The last write clears the spinner line.
-        assert out.endswith("\r" + " " * (len("Waiting") + 6) + "\r")
+        assert out.endswith("\033[2K\r")
+
+    @pytest.mark.parametrize(
+        ("columns", "line"),
+        [("80", "Deleting the stack 1:15 elapsed"), ("37", "Deleting the stack")],
+        ids=["fits", "too-narrow"],
+    )
+    def test_on_a_tty_a_wait_past_thirty_seconds_shows_the_elapsed_time_when_it_fits(
+        self, monkeypatch, columns: str, line: str
+    ) -> None:
+        monkeypatch.setattr(ui, "_ENABLE_COLOR", True)
+        monkeypatch.setenv("COLUMNS", columns)
+        clock = iter([0.0])  # the spinner's start, then 75 s later for every redraw
+        monkeypatch.setattr(ui, "_now", lambda: next(clock, 75.0))
+        drawn = threading.Event()
+
+        class _Terminal(io.StringIO):
+            def write(self, s: str) -> int:
+                if "Deleting the stack" in s:
+                    drawn.set()
+                return super().write(s)
+
+        buf = _Terminal()
+        monkeypatch.setattr(ui.sys, "stdout", buf)
+        with ui.Spinner("Deleting the stack") as spinner:
+            assert drawn.wait(timeout=10)
+        assert spinner._thread is not None
+        spinner._thread.join(timeout=10)
+        assert not spinner._thread.is_alive()
+        out = buf.getvalue()
+        assert f"  ⠋ {line}" in out.split("\033[2K\r")
+        assert out.endswith("\033[2K\r")
+
+    def test_on_a_tty_a_redraw_that_drops_the_clock_erases_the_longer_line_it_replaces(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(ui, "_ENABLE_COLOR", True)
+        # At 38 columns the 9:59 line passes the fit check and the 10:00 line does not.
+        monkeypatch.setenv("COLUMNS", "38")
+        clock = iter([0.0, 599.0])  # the start, the first redraw, then 600 s for every later one
+        monkeypatch.setattr(ui, "_now", lambda: next(clock, 600.0))
+        shorter = threading.Event()
+        writes: list[str] = []
+
+        class _Terminal(io.StringIO):
+            def write(self, s: str) -> int:
+                writes.append(s)
+                if "Deleting the stack" in s and "elapsed" not in s:
+                    shorter.set()
+                return super().write(s)
+
+        monkeypatch.setattr(ui.sys, "stdout", _Terminal())
+        with ui.Spinner("Deleting the stack") as spinner:
+            assert shorter.wait(timeout=10)
+        assert spinner._thread is not None
+        spinner._thread.join(timeout=10)
+        assert not spinner._thread.is_alive()
+        # Each redraw first erases the whole row, so no "9:59 elapsed" tail survives it.
+        assert writes[:2] == [
+            "\033[2K\r  ⠋ Deleting the stack 9:59 elapsed",
+            "\033[2K\r  ⠙ Deleting the stack",
+        ]
+        # The final clear erases the whole row, not just the width of the last line.
+        assert writes[-1] == "\033[2K\r"

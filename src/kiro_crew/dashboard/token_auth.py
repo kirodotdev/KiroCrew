@@ -1017,6 +1017,13 @@ def token_auth_middleware(
         # Off the loop: the app-token check reads the app's install record.
         if bearer is not None:
             valid, user_id, reason, app_name = await crew_api_auth.verify_bearer(token)
+            if not valid:
+                # The only place an app credential from local authorization is
+                # recognised. ``bearer`` is read on a Crew API path alone, so no
+                # other path ever carries one.
+                app_refusal = await crew_api_auth.refuse_app_credential(request, token)
+                if app_refusal is not None:
+                    return app_refusal
         else:
             valid, user_id, reason, app_name = await validate_token_with_app_off_loop(
                 token, use_session_exp=from_cookie

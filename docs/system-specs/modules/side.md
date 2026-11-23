@@ -185,7 +185,7 @@ second time.
 
 | Endpoint | Method | Path | Effect |
 |----------|--------|------|--------|
-| state | GET | `/api/chat/slots/{slot}/side` | The side conversation the gateway holds in memory, `{open, created_at, last_run_id, running, messages, queue}`, which a reloaded panel restores from. Each row carries the `id` its frame announced and its `run_id`; every text is redacted as the frames redact it. Owner-only for every caller (`chat.side_state`), the audience the side frames reach, so an app is refused even on a slot it owns; an app on a slot it does not own gets the uniform 404 |
+| state | GET | `/api/chat/slots/{slot}/side` | The side conversation the gateway holds in memory, `{open, created_at, last_run_id, running, messages, queue}`, which a reloaded panel restores from. Each row carries the `id` its frame announced and its `run_id`; every text is redacted as the frames redact it, and an answer carries `link_blocks` and its bounded `redactions` as its final frame does (see Wire Protocol). Owner-only for every caller (`chat.side_state`), the audience the side frames reach, so an app is refused even on a slot it owns; an app on a slot it does not own gets the uniform 404 |
 | open | POST | `/api/chat/slots/{slot}/side/open` | Initialise sidecar (idempotent) |
 | turn | POST | `/api/chat/slots/{slot}/side/turn` | Submit question; starts a turn, steers the running one, or queues. A dashboard-user caller must be the owner (`chat.side_turn`); app tokens keep slot scoping |
 | queue cancel | DELETE | `/api/chat/slots/{slot}/side/queue/{queue_id}` | Drop a queued entry; echoes its text back for the composer |
@@ -311,6 +311,13 @@ unaccepted when it was sent, since the read is older than both. A read that land
 after its conversation was closed and replaced in this tab changes nothing
 (`sideResync` checks the conversation's `createdAt`).
 
+**After an Allow or its Undo.** A Blocked link card's Allow or Undo on this slot
+(`mc:redaction-hosts-changed` naming the slot) changes which links the gateway
+serves as blocked, so the panel reads `GET .../side` again for that slot alone,
+through the same read and newest-wins rule (`resyncWaitingSideConversations(slot)`).
+On every read, a settled answer the panel holds by id takes the read's text,
+`link_blocks` and `redactions`; its other fields stay the panel's.
+
 ## Wire Protocol
 
 Event name: `chat.side_result`  
@@ -335,10 +342,26 @@ under `link_blocks`:
     "is_error": true,
     "final": true,
     "steer": true,
-    "message_id": "<sidecar row id>"
+    "message_id": "<sidecar row id>",
+    "link_blocks": [ ... ],
+    "redactions": [ ... ]
   }
 }
 ```
+
+A final assistant frame carries `link_blocks`, the blocked-link records of its
+text under the hosts allowed in the slot's workspace, computed as it is sent
+(`shown_link_blocks`). A stored answer's final frame also carries `redactions`,
+the credential records of its `[REDACTED: credential]` placeholders, bounded as a
+chat row's are (`chat_utils.with_bounded_redaction_records`); a streamed delta, a
+notice and an answer the sidecar did not store carry none. The records come from
+the main chat's own credential pass (`_redact_segment_text`, through
+`chat_runner`): `_run_side_turn` stores that pass's text, which is `redact(raw)`
+(both splice one plan), the text it had without records, with the records beside
+it. The removed values are kept for the owner's
+reveal (`_commit_reveals`, scoped to the parent slot) only when the row is
+stored, before it is appended. The prompt-busy partial answer gets the same.
+Nothing is persisted.
 
 `message_id` names the `SideState.messages` row the frame announces: a question,
 a consumed steer, a final answer or the stop row. Streaming deltas, and the error
@@ -356,6 +379,14 @@ A run broadcasts its frames only while its sidecar is still the slot's
 (`_run_side_turn`'s `_broadcast`). A close drops the sidecar and every tab clears
 the conversation, and a reopen makes a new sidecar, so a later frame of the old
 run would land in a conversation it does not belong to.
+
+Admission can hold a turn after `_dispatch_side_turn` hands it off, and
+`_run_side_turn` reads `slot._side` when its body starts. So the dispatcher
+checks, once admitted, that the slot still holds the sidecar it dispatched for.
+A turn whose sidecar was closed in that window is dropped: it does not take a
+reopened sidecar's session, binding or transcript, and sends no frame. A turn
+refused at admission after such a close sends no error frame either
+(`test_side_close_broadcast.py`).
 
 `chat.side_closed` (`{kind, slot, origin_client?, dropped?}`) says the slot's
 side conversation was closed. `dropped` is present only when the close dropped
@@ -437,7 +468,8 @@ a parent-slot turn.
 under), `task` (the running side turn's asyncio task handle, so `/side/stop` can
 cancel it; `None` when idle) and `is_stopping` (the stop-in-progress busy flag).
 Helpers: `append_user` (with a `steer` marker), `append_assistant` (with an
-`is_error` marker, set on the stop row so a restored panel draws it as a notice),
+`is_error` marker, set on the stop row so a restored panel draws it as a notice,
+and the answer's credential records as `redactions`),
 `clear`, `queue_append` / `queue_insert_front` / `queue_pop` / `queue_remove` /
 `queue_edit`, `steer_can_accept`, and the ledger's `steer_register` /
 `steer_state` / `steer_mark` / `steer_pending` / `steer_settle`. Both append
@@ -1075,6 +1107,19 @@ link navigates away).
 `website/src/test/SideChat.fileOpen.test.tsx` pins both the wired and the
 unwired behaviour.
 
+An answer's `link_blocks` and `redactions` ride in the row's `meta`, where the
+shared bubble reads a main chat row's, and `SideChat` draws `assistant` and
+`streaming` rows through one host renderer, `renderAssistantBubble` with
+`redactionSlot: slot`: the side routes always serve this gateway's own slot, the
+local-slot rule the chat page uses (`pages/chat/transcriptRenderers.tsx`). So a
+flagged link draws as the Blocked link chip whose card offers Allow for this
+host, and a removed credential as the lock tag whose card offers the owner's
+reveal, as in the main chat. A settled row passes its `ts` as `messageTs`; a
+streaming row passes none, since its `ts` moves with each delta and would
+re-version its local image URLs. `website/src/test/SideChat.redactionRecords.test.tsx`
+pins the lock tag from a final frame and from a read, the card's Allow, the
+re-read after an Allow or Undo on this slot only, and the steady image URL.
+
 ### `store/chat/side.ts` — Side State
 
 `website/src/store/chat/side.ts` owns the side reducers; `chatSlice.ts` composes
@@ -1180,7 +1225,11 @@ reading before it asks and holding the question when the read fails),
 steer routing), and the `sseSideResult` block in `chatSlice.messages.test.ts`.
 The read route itself is pinned in `test/test_side_state_route.py` (rows under
 their frames' ids, the queue, `running`, an interrupted turn read back with its
-notice, redaction, owner-only).
+notice, redaction, owner-only), and an answer's credential records in
+`test/test_side_redaction_records.py` (the stored text is `redact(raw)`, its record
+on the row, the final frame and the read, none on a delta, the reveal kept only for
+a stored row, none on the frame of a turn admitted after a close and reopen, the
+prompt-busy partial).
 
 Nothing enforces invariant 2 (separate envelope) mechanically. It is a
 review-time rule, held by the backend and frontend suites above plus the

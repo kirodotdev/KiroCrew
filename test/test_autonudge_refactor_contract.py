@@ -1235,6 +1235,7 @@ _BOUND_AS = {"_serialize_loop": "LoopStore.serialize_loop"}
 
 #: The owner modules, in the order each may import the ones before it.
 _OWNER_ORDER = (
+    "boot_pacer",
     "model",
     "subject",
     "store",

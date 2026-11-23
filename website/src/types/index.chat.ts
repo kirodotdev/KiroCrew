@@ -613,7 +613,7 @@ export interface SideSnapshot {
   last_run_id?: string
   /** A side turn is in flight, so a submit would steer or queue. */
   running?: boolean
-  messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean; link_blocks?: unknown }>
+  messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean; link_blocks?: unknown; redactions?: unknown }>
   /** `rev` counts the entry's edits, as the edit frame reports it, so a reader
    *  can tell which of two copies of the entry is newer. */
   queue?: Array<{ id: string; content: string; ts: string; rev?: number }>

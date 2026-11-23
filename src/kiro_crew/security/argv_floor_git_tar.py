@@ -452,6 +452,13 @@ _REENTRY_CHAIN: "ContextVar[tuple[int, frozenset[str], frozenset[str]]]" = Conte
     "git_tar_floor_reentry_chain", default=(0, frozenset(), frozenset())
 )
 
+#: Whether THIS read splits a command operator glued into a word (``glue_split``).
+#: ``_is_git_tar_to_self`` runs the floor twice over one command: once with this
+#: False -- main's exact command boundaries, so no denial main reaches can be lost
+#: -- and once True, which can only ADD refusals.  A read nested in either (a
+#: carried command, a double-quoted substitution body) inherits the pass's value.
+_GLUE_SPLIT: "ContextVar[bool]" = ContextVar("git_tar_floor_glue_split", default=False)
+
 
 def _reenter_floors(command: str, *, alias: "str | None" = None, literal: bool = False) -> bool:
     """True if the argv-floor dispatcher refuses *command*, which this git/tar command runs.
@@ -1464,16 +1471,31 @@ def _is_git_tar_to_self(text_lower: str, *, raw_text: "str | None" = None) -> bo
     a floor refuses it or cannot read it.  The outermost read opens the memo every
     read nested in it shares (``_READ_MEMO``) and keeps *raw_text*, the command as
     submitted (*text_lower* when not given), for them all (``_RAW_COMMAND``).
+
+    The outermost read runs TWICE over one command, each pass with its own memo
+    and its own environment tracking, and refuses if EITHER refuses.  The first
+    pass takes main's exact command boundaries (``_GLUE_SPLIT`` False), so no
+    refusal main reaches can be lost however the glued-operator splitter behaves;
+    the second takes the glued-split boundaries (``_GLUE_SPLIT`` True), which only
+    ADD command boundaries, so it can only ADD refusals.  A newly over-refused
+    shape is therefore the splitter's worst case, never a newly allowed one.
     """
     if _READ_MEMO.get() is not None:
         return _git_tar_read(text_lower)
-    memo = _READ_MEMO.set({})
     raw = _RAW_COMMAND.set(text_lower if raw_text is None else raw_text)
     try:
-        return _git_tar_read(text_lower, typed=True)
+        for glue in (False, True):
+            memo = _READ_MEMO.set({})
+            split = _GLUE_SPLIT.set(glue)
+            try:
+                if _git_tar_read(text_lower, typed=True):
+                    return True
+            finally:
+                _GLUE_SPLIT.reset(split)
+                _READ_MEMO.reset(memo)
+        return False
     finally:
         _RAW_COMMAND.reset(raw)
-        _READ_MEMO.reset(memo)
 
 
 def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
@@ -1510,7 +1532,10 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
     # bound, as on main.  A literal self dial in a body is read like a plain command.
 
     def _payload_key(source: str) -> "tuple[tuple[str, ...], ...]":
-        return tuple(tuple(command) for command in _split_commands(_frame_commands(source)[0]))
+        return tuple(
+            tuple(command)
+            for command in _split_commands(_frame_commands(source)[0], glue_split=_GLUE_SPLIT.get())
+        )
 
     def _carries_self_dial_signal(expansions: bool = True) -> bool:
         """True if the whole input carries something that could dial THIS host.
@@ -1575,7 +1600,7 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
         unclosed: "list[str]" = []
         for view in (*redirect_free_sources, source):
             tokens, left_open = _frame_commands(view)
-            commands.extend(_split_commands(tokens))
+            commands.extend(_split_commands(tokens, glue_split=_GLUE_SPLIT.get()))
             if not left_open:
                 continue
             # The frame ended inside a quote, so every separator after that
@@ -1586,7 +1611,9 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
                 unclosed.append(view)
                 continue
             for shell_view in shell_views:
-                commands.extend(_split_commands(_frame_commands(shell_view)[0]))
+                commands.extend(
+                    _split_commands(_frame_commands(shell_view)[0], glue_split=_GLUE_SPLIT.get())
+                )
         return commands, unclosed
 
     def _words(raw_command: "list[str]") -> "list[str]":

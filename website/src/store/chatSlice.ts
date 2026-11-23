@@ -1360,12 +1360,13 @@ const latestSideResyncRead = new Map<string, object>()
  * the slot is gone, so nothing of it still runs. A conversation closed and
  * replaced while the read was out keeps to its own frames. Only the newest read
  * sent for a slot is applied: an older one can answer after it, and would undo
- * what the newer one learned.
+ * what the newer one learned. Given a slot, only that slot's panel reads again
+ * (a Blocked link card's Allow or Undo there changed how its answers are served).
  */
-export const resyncWaitingSideConversations = createAsyncThunk<void, void, { state: RootState }>(
+export const resyncWaitingSideConversations = createAsyncThunk<void, string | undefined, { state: RootState }>(
   'chat/resyncWaitingSideConversations',
-  async (_, { dispatch, getState }) => {
-    const slots = new Set([...Object.keys(getState().chat.slotSide), ...sideRestoreReads.keys()])
+  async (only, { dispatch, getState }) => {
+    const slots = only !== undefined ? [only] : new Set([...Object.keys(getState().chat.slotSide), ...sideRestoreReads.keys()])
     await Promise.all([...slots].map(async slot => {
       await sideRestoreReads.get(slot)?.catch(() => undefined)
       const { slotSide, slotSideRestored } = getState().chat
