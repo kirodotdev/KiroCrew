@@ -20367,6 +20367,8 @@
         "side_panel": "Panneau latéral",
         "side_panel_always_open": "Garder le panneau latéral ouvert",
         "side_panel_always_open_hint": "Ouvre le panneau latéral dans chaque discussion, y compris les nouvelles et après un rechargement. Si tu le fermes, il reste fermé jusqu'à ce que tu changes de discussion. Sur un téléphone, ce réglage ne s'applique pas.",
+        "side_panel_swipe": "Balayer pour ouvrir et fermer le panneau latéral",
+        "side_panel_swipe_hint": "Sur un ordinateur, un balayage latéral à deux doigts sur le trackpad au-dessus d'une discussion ou de la page Bots ouvre et ferme le panneau latéral. Désactive cette option pour l'empêcher ; le bouton du panneau et le raccourci clavier fonctionnent toujours. Sur un téléphone, ce réglage ne s'applique pas.",
         "side_panel_pin_summary": "Épingler le résumé dans le panneau latéral",
         "side_panel_pin_summary_hint": "Affiche le résumé comme premier onglet du panneau latéral. Quand le panneau s'ouvre, il affiche le résumé. Si tu ouvres un fichier ou un autre élément, c'est lui qui reste affiché. Nécessite les résumés de session activés.",
         "side_panel_pin_summary_needs_session_summaries": "Les résumés de session sont désactivés. Active-les dans Paramètres → Chat → Sessions pour épingler le résumé.",

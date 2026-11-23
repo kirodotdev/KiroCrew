@@ -636,7 +636,9 @@ which is why the chrome derived from the phase does not change timing.
 ### The desktop counterpart: a trackpad swipe on the Bots page
 
 Off the phone the Bots page plays a two-finger trackpad swipe as the same side-panel
-DRAG (`useMembersPageTrackpadSwipe` over `hooks/useTrackpadSwipe`): to the left the
+DRAG (`useMembersPageTrackpadSwipe` over `hooks/useTrackpadSwipe`), but only while
+Settings → Chat → Side panel → **Swipe to Open and Close Side Panel** is on
+(`useSidePanelSwipe`, chat config `sidePanelSwipe`, on by default): to the left the
 panel follows the fingers in and settles open on its Dashboard tab, to the right it
 follows them out. A trackpad sends `wheel` events, not touches, so the reader cuts the
 stream into runs and reports the fingers' summed `deltaX`; the page drives `sidePanelX`
@@ -714,7 +716,10 @@ only from `window.parent` at the origin it asked, for its own watch id.
 ### The same swipe on the chat page's side panel
 
 The chat page plays the same drag on its right side panel off the phone
-(`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), over
+(`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), behind the
+same switch (it listens only while the switch is on; with it off every run is left
+to the browser, as with a bottom-docked panel, so its own back/forward swipe may
+answer it), over
 the same reader and the same drag and release (`hooks/trackpadPanelDrag`, which
 the Bots page uses too). The panel lives in the shell's `actbar` column, an
 `auto` grid track, so the drag does not need a spacer in a page row: while it

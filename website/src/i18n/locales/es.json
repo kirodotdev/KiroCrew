@@ -20367,6 +20367,8 @@
         "side_panel": "Panel lateral",
         "side_panel_always_open": "Mantener abierto el panel lateral",
         "side_panel_always_open_hint": "Abre el panel lateral en cada chat, también en los chats nuevos y después de recargar. Si lo cierras, sigue cerrado hasta que cambies de chat. En el móvil, este ajuste no se aplica.",
+        "side_panel_swipe": "Deslizar para abrir y cerrar el panel lateral",
+        "side_panel_swipe_hint": "En el escritorio, deslizar dos dedos de lado en el trackpad sobre un chat o la página Bots abre y cierra el panel lateral. Desactívalo para evitarlo; el botón del panel y el atajo de teclado siguen funcionando. En el móvil, este ajuste no se aplica.",
         "side_panel_pin_summary": "Fijar el resumen en el panel lateral",
         "side_panel_pin_summary_hint": "Muestra el resumen como primera pestaña del panel lateral. Cuando el panel se abre, muestra el resumen. Si abres un archivo u otro elemento, se sigue mostrando ese elemento. Necesita tener activados los resúmenes de sesión.",
         "side_panel_pin_summary_needs_session_summaries": "Los resúmenes de sesión están desactivados. Actívalos en Ajustes → Chat → Sesiones para fijar el resumen.",

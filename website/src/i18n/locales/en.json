@@ -11013,6 +11013,8 @@
         "side_panel": "Side panel",
         "side_panel_always_open": "Keep Side Panel Open",
         "side_panel_always_open_hint": "Opens the side panel in every chat, including new chats and after a reload. Closing it hides it until you switch chats. This setting does not apply on a phone.",
+        "side_panel_swipe": "Swipe to Open and Close Side Panel",
+        "side_panel_swipe_hint": "On a desktop, a two-finger sideways trackpad swipe over a chat or the Bots page opens and closes the side panel. Turn this off to stop it; the panel button and keyboard shortcut still work. This setting does not apply on a phone.",
         "side_panel_pin_summary": "Pin Summary in Side Panel",
         "side_panel_pin_summary_hint": "Shows Summary as the first side panel tab. Whenever the panel opens, it shows Summary. Opening a file or another item still shows that item. Needs Session summaries on.",
         "side_panel_pin_summary_needs_session_summaries": "Session summaries are off. Turn them on in Settings → Chat → Sessions to pin Summary.",
