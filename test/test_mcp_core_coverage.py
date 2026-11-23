@@ -20,6 +20,7 @@ from __future__ import annotations
 import email.message
 import io
 import json
+import os
 import urllib.error
 from types import SimpleNamespace
 from typing import Any
@@ -1350,6 +1351,44 @@ class TestFileSend:
         """
         monkeypatch.setenv("KIROCREW_WORKSPACE", str(tmp_path / "ws"))
         monkeypatch.setattr(mcp_core, "_classify_slack_identity", lambda: ("dashboard", None))
+
+    def test_the_slack_leg_names_where_the_outbox_copy_came_from(self, tmp_path, monkeypatch):
+        # The Slack endpoint receives the outbox copy; a code channel admits it only
+        # when the ORIGINAL file is in the session's work dir, so the tool sends that
+        # path, absolute, on the Slack leg. The channel leg does not need it.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "shots").mkdir()
+        (tmp_path / "shots" / "page.txt").write_text("preview")
+        with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
+            _call_tool("file_send", {"path": "shots/page.txt"})
+        slack = [c[0][1] for c in m.call_args_list if c[0][0] == "/api/slack/upload-file"]
+        assert [b["source_path"] for b in slack] == [str(tmp_path / "shots" / "page.txt")]
+        assert slack[0]["file_path"] == str(mcp_core.outbox_dir() / "page.txt")
+        channel = [c[0][1] for c in m.call_args_list if c[0][0] == "/api/channel/upload-file"]
+        assert all("source_path" not in b for b in channel)
+
+    def test_a_dotdot_path_is_named_as_written_not_collapsed(self, tmp_path, monkeypatch):
+        # The endpoint resolves ``..`` the way the read did (after any link). A
+        # lexical collapse here would name a different file whenever a component
+        # before the ``..`` is a link, so the source keeps the spelling.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "page.txt").write_text("preview")
+        with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
+            _call_tool("file_send", {"path": os.path.join("sub", "..", "page.txt")})
+        slack = [c[0][1] for c in m.call_args_list if c[0][0] == "/api/slack/upload-file"]
+        assert [b["source_path"] for b in slack] == [str(tmp_path / "sub" / ".." / "page.txt")]
+
+    def test_a_home_relative_path_names_the_file_it_read(self, tmp_path, monkeypatch):
+        # The read expands ``~``; the named source must be that same file.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))  # what Windows expands ``~`` from
+        (tmp_path / "proj").mkdir()
+        (tmp_path / "proj" / "page.txt").write_text("preview")
+        with patch.object(mcp_core, "_post", return_value={"ok": True}) as m:
+            _call_tool("file_send", {"path": "~/proj/page.txt"})
+        slack = [c[0][1] for c in m.call_args_list if c[0][0] == "/api/slack/upload-file"]
+        assert [b["source_path"] for b in slack] == [str(tmp_path / "proj" / "page.txt")]
 
     def test_text_file_is_copied_to_the_outbox_and_notified(self, tmp_path):
         src = tmp_path / "report.txt"
