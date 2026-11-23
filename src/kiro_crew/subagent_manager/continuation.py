@@ -376,6 +376,23 @@ class ContinuationCoordinator(ManagerComponent):
                 return str(reason)
         return None
 
+    def _busy_key_for_requested_run(self, conv_id: str) -> str:
+        """Return the conversation key to check for an in-flight run when *conv_id* is named.
+
+        A running continuation executes on its owner's conversation, so naming
+        its own id checks that conversation. Any other id, including a finished
+        continuation, checks ``subagent:<conv_id>``, the key a chained
+        continuation runs under.
+        """
+        conv_key = f"subagent:{conv_id}"
+        requested = self._manager._agents.get(conv_id)
+        if requested is None or requested.done:
+            return conv_key
+        owner_id = self._persistence.subagent_id_from_conversation_key(
+            str(requested.conversation_key or "")
+        )
+        return f"subagent:{owner_id}" if owner_id is not None else conv_key
+
     def continue_conversation_impl(
         self,
         conv_id: str,
@@ -452,7 +469,8 @@ class ContinuationCoordinator(ManagerComponent):
         from kiro_crew.execution_context import stricter_memory_mode
 
         conv_key = f"subagent:{conv_id}"
-        if self._manager._conversation_busy(conv_key) is not None:
+        busy_key = self._busy_key_for_requested_run(conv_id)
+        if self._manager._conversation_busy(busy_key) is not None:
             busy_result = self._manager._continue_prelude(
                 conv_id,
                 task,
@@ -565,7 +583,8 @@ class ContinuationCoordinator(ManagerComponent):
         - ``conversation_gone`` — no resumable session files remain.
         """
         conv_key = f"subagent:{conv_id}"
-        busy = self._manager._conversation_busy(conv_key)
+        busy_key = self._busy_key_for_requested_run(conv_id)
+        busy = self._manager._conversation_busy(busy_key)
         if busy is not None:
             info = SubagentInfo(
                 id=self._manager._mint_agent_id(),
