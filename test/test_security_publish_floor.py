@@ -332,6 +332,33 @@ class TestPublishFloorNestedPayloads:
         ):
             assert is_denied(command) is None, command
 
+    def test_windows_judges_refspecs_as_bash_reads_them_too(self, monkeypatch) -> None:
+        """Bash also runs on Windows, and there ``\\`` escapes a quote.
+
+        The quote-only split reads ``x\\' main`` as one word, while bash reads
+        ``main`` as its own refspec, so both readings are judged.
+        """
+        from kiro_crew import platform_compat
+        from kiro_crew.security import is_denied
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        protected = (
+            "git push origin HEAD:x\\' main",
+            "git push origin feature\\' main",
+            'git push origin \\" main \\"',
+            "C:\\Git\\cmd\\git.exe push origin feature\\' main",
+            "C:\\Git\\cmd\\git.exe -C C:\\repo\\ push origin main",
+        )
+        allowed = (
+            "C:\\Git\\cmd\\git.exe -C C:\\repo\\ push origin feature",
+            "C:\\Git\\cmd\\git.exe push origin feature",
+            "C:\\Git\\cmd\\git.exe status",
+            "C:\\Tools\\legit.exe push origin main",
+            "Get-ChildItem C:\\src\\git push",
+        )
+        assert [c for c in protected if is_denied(c) is None] == []
+        assert [c for c in allowed if is_denied(c) is not None] == []
+
     def test_obfuscation_with_no_payload_still_fails_closed(self) -> None:
         """The deferral is NOT a general escape hatch.
 

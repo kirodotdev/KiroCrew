@@ -431,9 +431,29 @@ def _git_push_args(segment: str) -> list[str] | None:
     may take (e.g. ``-C <path>``) — but never swallows ``push`` itself. A
     skipped word carrying an unquoted expansion leads the returned tokens.
     """
+    return _git_push_view(_split_git_words(segment))[1]
+
+
+def _git_push_views(segment: str) -> list[tuple[bool, list[str] | None]]:
+    """``_git_push_view`` of every word reading a shell may give *segment*.
+
+    Windows runs PowerShell and cmd, which keep ``\\`` literal, and also bash
+    (Claude Code's Bash tool), which reads ``\\`` as an escape. One split cannot
+    serve both: ``origin feature\\' main`` is one word to the first and two to
+    bash. So both readings are judged there; on POSIX the two splits are one.
+    """
+    from kiro_crew import platform_compat
+
+    views = [_git_push_view(_split_git_words(segment))]
+    if platform_compat.IS_WINDOWS:
+        views.append(_git_push_view(_split_shell_words(segment)))
+    return views
+
+
+def _git_push_view(raw_tokens: list[str]) -> tuple[bool, list[str] | None]:
+    """``(push anchored, args)`` for one word split; args None when unreadable."""
     # Strip glued shell operators for the same reason as ``_dequote_token``:
     # ``(git`` IS the git program to bash, and ``main)&`` IS the ref ``main``.
-    raw_tokens = _split_git_words(segment)
     tokens = [_cut_at_operator(t) for t in raw_tokens]
     # Anchoring compares against a DEQUOTED view, because a quoted ``"git"`` is
     # still the git program to bash. Matching the raw token missed it and
@@ -470,7 +490,7 @@ def _git_push_args(segment: str) -> list[str] | None:
 
     start = next((k for k in range(len(anchors)) if _anchor_is_git(k)), None)
     if start is None:
-        return None
+        return False, None
     i = start + 1
     while i < len(anchors) and anchors[i].startswith("-"):
         i += 1  # skip the flag
@@ -555,7 +575,7 @@ def _git_push_args(segment: str) -> list[str] | None:
                 # )``) to be read as argv, where the ``#`` truncates the real
                 # refspecs. Whatever bash makes of
                 # the spelling, this gate cannot read it: fail CLOSED.
-                return None
+                return True, None
             k += 1
             if not consumes_next or k >= len(raw_args):
                 continue
@@ -609,7 +629,7 @@ def _git_push_args(segment: str) -> list[str] | None:
                 if _process_substitution_word_is_opaque(
                     raw_args[k], state, ansi, first=k == opener
                 ):
-                    return None
+                    return True, None
                 walk = _shell_quote_walk(raw_args[k], state=state, ansi=ansi)
                 depth += walk.paren_delta
                 state, ansi = walk.end_state, walk.end_ansi
@@ -618,9 +638,9 @@ def _git_push_args(segment: str) -> list[str] | None:
                     proven = True
                     break
             if not proven:
-                return None
-        return args
-    return None
+                return True, None
+        return True, args
+    return False, None
 
 
 #: bash reserved words. Any of them as an UNQUOTED word inside a
@@ -1149,8 +1169,9 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
         if _AMBIGUOUS_EXPANSION_RE.search(command):
             tags.add(_GIT_PUBLISH_UNGATED)
             continue
-        args = _git_push_args(command)
-        if args is None:
+        views = _git_push_views(command)
+        parsed = [args for _, args in views if args is not None]
+        if not parsed:
             # Detected as a push but not cleanly parseable. That normally means
             # OBFUSCATION (``git$(echo ' ')push``) -> ungated deny.
             #
@@ -1193,7 +1214,13 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
             if not defer_to_payload:
                 tags.add(_GIT_PUBLISH_UNGATED)
             continue
-        tags |= _push_segment_targets_protected(args)
+        # Every reading that anchors the push is judged, and one that anchors it
+        # but cannot read it fails closed. A reading with no push anchor runs no
+        # push in that shell, so it adds nothing (``-C C:\repo\ push`` to bash).
+        if len(parsed) < sum(anchored for anchored, _ in views):
+            tags.add(_GIT_PUBLISH_UNGATED)
+        for args in parsed:
+            tags |= _push_segment_targets_protected(args)
     if not saw_push:
         # A push was detected upstream (e.g. glue-evasion ``git_push``) but no
         # clean ``push`` segment survived splitting — deny to be safe.
