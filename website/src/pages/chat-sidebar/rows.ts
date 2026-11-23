@@ -28,7 +28,6 @@ import { crewOf } from '../../hooks/useInstanceSessions'
 import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
-import { isActiveIn } from './rowStatus'
 import type { MemorySourceRow } from '../../lib/agentMemorySource'
 import { sameCrewView, type CodeChannelCrewView } from './codeChannelCrew'
 import type { AgentInfo, FilterDimension, RevealBlockingFilter, SessionFilterKey, SidebarSourceLink, Slot } from './types'
@@ -169,7 +168,10 @@ export interface RowPlacement {
   scope: string
   navScope: string
   holdContainer: string
-  showDivider: boolean
+  /** The row drawn below this one when a divider may separate the two, else null.
+   *  The row hides the divider while it or this next row is the open row, which it
+   *  reads from the row-status store (./rowStatus). */
+  dividerNext: Slot | null
   /** Paint-order stamp, clamped by the facade. The row never reads it: it exists so a
    *  row whose position moved compares unequal and re-renders for the layout spring. */
   orderStamp: number
@@ -235,13 +237,11 @@ export interface RowShell {
 
 /** The values one render shows rows with. */
 export interface RowScene {
-  /** The LOCAL slot the chat pane shows. */
-  activeSlot: string | null
   /** The crew window open over the pane, naming a peer's own slot by (crew, key), or
-   *  null. While one is open it is the active row, and no local row is. */
+   *  null. Every row withholds "Reference in chat" while one is open. */
   crewWindow: { instanceId: string; key: string } | null
-  // The crew-parent mark, Split View and a failed open reach rows through the
-  // row-status store (./rowStatus), with the active slot and unread.
+  // The open session, the crew-parent mark, Split View, a failed open and unread
+  // reach rows through the row-status store (./rowStatus).
   shell: RowShell
   /** Local state that only some rows carry, every member keyed by LOCAL slot key. */
   local: {
@@ -277,7 +277,7 @@ export interface SessionRowView {
   scope: string
   navScope: string
   holdContainer: string
-  showDivider: boolean
+  dividerNext: Slot | null
   orderStamp: number
   rowAnimEnabled: boolean
   rowMotionHeld: boolean
@@ -336,9 +336,6 @@ export interface RowWindow {
 }
 
 export interface SidebarRowViews {
-  /** The active-row highlight: the peer row the open crew window names by its (crew,
-   *  key) pair, else the LOCAL row whose key is the active slot. */
-  isActive: (slot: Slot | null | undefined) => boolean
   view: (slot: Slot, placement: RowPlacement) => SessionRowView
   windowOf: (slot: Slot) => RowWindow
 }
@@ -856,20 +853,18 @@ interface ViewModel {
 
 function makeViews(model: ViewModel): SidebarRows['views'] {
   return scene => {
-    const isActive = (slot: Slot | null | undefined) => !!slot && isActiveIn(scene, slot)
     return {
-      isActive,
       view: (slot, placement) => rowView(slot, placement, scene, model),
       windowOf: slot => {
         const key = localKeyOf(slot)
         const { renaming, revealFlash, nativeDragKey } = scene.local
         return {
           title: sessionDisplayTitle(slot),
-          // The active, renaming, dragged and revealed rows never stub: each holds state
-          // a remount would drop. The dnd-kit clause compares the raw key, as the drag id
-          // is one; no peer row can be dragged.
-          keepMounted: isActive(slot)
-            || (key !== null && revealFlash?.kind === 'session' && revealFlash.key === key)
+          // The renaming, dragged and revealed rows never stub: each holds state a
+          // remount would drop (the open row too, which laneRows reads from the
+          // row-status store). The dnd-kit clause compares the raw key, as the drag
+          // id is one; no peer row can be dragged.
+          keepMounted: (key !== null && revealFlash?.kind === 'session' && revealFlash.key === key)
             || (key !== null && renaming.key === key)
             || (scene.drag?.type === 'session' && scene.drag.id === slot.key)
             || (key !== null && nativeDragKey === key),
@@ -1002,7 +997,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     scope: placement.scope,
     navScope: placement.navScope,
     holdContainer: placement.holdContainer,
-    showDivider: placement.showDivider,
+    dividerNext: placement.dividerNext,
     orderStamp: placement.orderStamp,
     rowAnimEnabled: placement.rowAnimEnabled,
     rowMotionHeld: placement.rowMotionHeld ?? false,
@@ -1051,7 +1046,7 @@ export function opensElsewhereOf(slot: Slot): string | null {
  *  without a line here is a type error rather than a field equality never compares. */
 const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
-  holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
+  holdContainer: true, dividerNext: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true, crew: true,
   crewWindowCovers: true, isOut: true, isPinned: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,

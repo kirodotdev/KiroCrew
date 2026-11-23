@@ -88,7 +88,7 @@ function status(over: Partial<RowStatus> = {}): RowStatus {
 
 function scene(over: Partial<Omit<RowScene, 'local'>> & { local?: Partial<RowScene['local']> } = {}): RowScene {
   return {
-    activeSlot: null, crewWindow: null, shell: SHELL, drag: null,
+    crewWindow: null, shell: SHELL, drag: null,
     ...over,
     local: {
       recentRank: new Map(), subagentCounts: {}, subagentApprovalCounts: {}, poppedOut: new Set(), digits: null,
@@ -98,7 +98,7 @@ function scene(over: Partial<Omit<RowScene, 'local'>> & { local?: Partial<RowSce
   }
 }
 
-const AT: RowPlacement = { scope: 'list', navScope: 'list', holdContainer: 'tree:root', showDivider: false, orderStamp: 0, rowAnimEnabled: true }
+const AT: RowPlacement = { scope: 'list', navScope: 'list', holdContainer: 'tree:root', dividerNext: null, orderStamp: 0, rowAnimEnabled: true }
 const keys = (rows: Slot[]) => rows.map(s => s.peer_id ? `${s.peer_id}:${s.key}` : s.key)
 
 // ── peer isolation ───────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ describe('a peer row never carries local state', () => {
   it('gets the same view and window whatever local state its key collides with', () => {
     const empty = buildSidebarRows(inputs([theLocal, thePeer])).views(scene())
     const full = buildSidebarRows(inputs([theLocal, thePeer], { local: FULL_LOCAL }))
-      .views(scene({ activeSlot: 'k', local: FULL_SCENE_LOCAL }))
+      .views(scene({ local: FULL_SCENE_LOCAL }))
     expect(full.view(thePeer, AT)).toEqual(empty.view(thePeer, AT))
     expect(full.windowOf(thePeer)).toEqual(empty.windowOf(thePeer))
     expect(full.view(thePeer, AT)).toMatchObject({
@@ -136,13 +136,13 @@ describe('a peer row never carries local state', () => {
     })
     expect(full.windowOf(thePeer).keepMounted).toBe(false)
     expect(rowStatusOf(status({ activeSlot: 'k', unread: new Set(['k']), crewParent: 'k' }), thePeer)).toEqual({
-      isActive: false, isSidebarActiveSlot: false, reclickPanel: false, isCrewParent: false, isUnread: false,
+      isActive: false, isSidebarActiveSlot: false, reclickPanel: false, isCrewParent: false, isUnread: false, nextIsActive: false,
     })
   })
 
   it('while the local row it collides with carries every piece of it', () => {
     const views = buildSidebarRows(inputs([theLocal, thePeer], { local: FULL_LOCAL }))
-      .views(scene({ activeSlot: 'k', local: FULL_SCENE_LOCAL }))
+      .views(scene({ local: FULL_SCENE_LOCAL }))
     expect(views.view(theLocal, AT)).toMatchObject({
       identity: 'k', localKey: 'k', peerId: undefined, peerName: undefined,
       isOut: true, isPinned: true, isRunning: true,
@@ -151,7 +151,7 @@ describe('a peer row never carries local state', () => {
     })
     expect(views.windowOf(theLocal).keepMounted).toBe(true)
     expect(rowStatusOf(status({ activeSlot: 'k', unread: new Set(['k']) }), theLocal)).toEqual({
-      isActive: true, isSidebarActiveSlot: true, reclickPanel: true, isCrewParent: false, isUnread: true,
+      isActive: true, isSidebarActiveSlot: true, reclickPanel: true, isCrewParent: false, isUnread: true, nextIsActive: false,
     })
   })
 
@@ -164,10 +164,9 @@ describe('a peer row never carries local state', () => {
 
   it('is never active, filed, pinned or counted through the local key', () => {
     const rows = buildSidebarRows(inputs([theLocal, thePeer], { local: FULL_LOCAL }))
-    const views = rows.views(scene({ activeSlot: 'k' }))
-    expect(views.isActive(theLocal)).toBe(true)
-    expect(views.isActive(thePeer)).toBe(false)
-    expect(views.isActive(null)).toBe(false)
+    const open = status({ activeSlot: 'k' })
+    expect(rowStatusOf(open, theLocal).isActive).toBe(true)
+    expect(rowStatusOf(open, thePeer).isActive).toBe(false)
     expect(rows.folderOf(theLocal)).toBe('F1')
     expect(rows.folderOf(thePeer)).toBeUndefined()
     expect(rows.isPinned(theLocal)).toBe(true)
@@ -192,26 +191,24 @@ describe('a peer row never carries local state', () => {
   describe('is active only for the crew window open on its own (crew, key) pair', () => {
     // The same raw key `k` on a local slot, on this crew and on another crew.
     const otherCrew = peer('k', { peer_id: 'inst-b', peer_name: 'beta', row_identity: 'inst-b:k' })
-    const rows = buildSidebarRows(inputs([theLocal, thePeer, otherCrew]))
-    const lit = (over: Pick<RowStatus, 'activeSlot'> & Partial<Pick<RowStatus, 'crewWindow'>>) => {
-      const views = rows.views(scene(over))
-      return [theLocal, thePeer, otherCrew].map(s => [views.isActive(s), rowStatusOf(status(over), s).isActive, views.windowOf(s).keepMounted])
-    }
+    // The open row's never-stub hold reads the same answer (laneRows' OpenRowWindow).
+    const lit = (over: Pick<RowStatus, 'activeSlot'> & Partial<Pick<RowStatus, 'crewWindow'>>) =>
+      [theLocal, thePeer, otherCrew].map(s => rowStatusOf(status(over), s).isActive)
 
     it('lights the peer row its window names, and neither the colliding local nor the other crew', () => {
       expect(lit({ activeSlot: 'k', crewWindow: { instanceId: 'inst-a', key: 'k' } }))
-        .toEqual([[false, false, false], [true, true, true], [false, false, false]])
+        .toEqual([false, true, false])
       expect(lit({ activeSlot: 'k', crewWindow: { instanceId: 'inst-b', key: 'k' } }))
-        .toEqual([[false, false, false], [false, false, false], [true, true, true]])
+        .toEqual([false, false, true])
     })
 
     it('lights no row for a window on a key no row carries', () => {
       expect(lit({ activeSlot: 'k', crewWindow: { instanceId: 'inst-a', key: 'other' } }))
-        .toEqual([[false, false, false], [false, false, false], [false, false, false]])
+        .toEqual([false, false, false])
     })
 
     it('lights the local row by the active slot only while no window is open', () => {
-      expect(lit({ activeSlot: 'k' })).toEqual([[true, true, true], [false, false, false], [false, false, false]])
+      expect(lit({ activeSlot: 'k' })).toEqual([true, false, false])
     })
   })
 
@@ -1010,8 +1007,8 @@ describe('the window a row stubs into', () => {
   })
 
   it('stubs a row only when nothing on it would be lost', () => {
+    // The open row never stubs either; laneRows reads that from the row-status store.
     expect(mounted({})).toBe(false)
-    expect(mounted({ activeSlot: 'a' })).toBe(true)
     expect(mounted({ local: { revealFlash: { kind: 'session', key: 'a', fading: true } } })).toBe(true)
     expect(mounted({ local: { revealFlash: { kind: 'folder', key: 'a', fading: false } } })).toBe(false)
     // Renaming in ANY placement keeps every copy of the row mounted.
@@ -1019,7 +1016,7 @@ describe('the window a row stubs into', () => {
     expect(mounted({ drag: { type: 'session', id: 'a' } })).toBe(true)
     expect(mounted({ drag: { type: 'folder', id: 'a' } })).toBe(false)
     expect(mounted({ local: { nativeDragKey: 'a' } })).toBe(true)
-    expect(mounted({ activeSlot: 'b', local: { nativeDragKey: 'b' } })).toBe(false)
+    expect(mounted({ local: { nativeDragKey: 'b' } })).toBe(false)
   })
 })
 

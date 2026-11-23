@@ -3,7 +3,7 @@
  *  Older Sessions hint that ends a lane, and the crew groups below the `Local`
  *  rows. Built once per shell render (`createLaneRows`), so the stamps belong to
  *  that render's pass. */
-import { Fragment } from 'react'
+import { Fragment, useCallback, type ComponentProps } from 'react'
 import { FolderBody } from '../../components/FolderBody'
 import { WindowedSessionRow } from '../chat/sessionRowWindow'
 import type { StaleSplit } from '../staleCollapse'
@@ -19,6 +19,7 @@ import { SessionRow } from './SessionRow'
 import { StaleExpander } from './StaleExpander'
 import type { SidebarScope } from './scope'
 import { KindSectionHeader, sectionHeaders, sectionRows } from './kindSections'
+import { isActiveIn, useRowStatusSelect, type RowStatus } from './rowStatus'
 
 /** Rows at or past this paint ordinal share ONE `orderStamp`, so an insertion
  *  or reorder above them does not re-render them: they snap into their new
@@ -44,7 +45,7 @@ export const SIDEBAR_DISPLACEMENT_WINDOW = 48
 
 /** The lane row renderers for one shell render. */
 export function createLaneRows(shell: SidebarScope) {
-  const { collapsedCrews, collapsedSpaces, connected, crewEnable, historyOpen, hoverPinRef, isActiveRow, isStaleExempt, kindSections,
+  const { collapsedCrews, collapsedSpaces, connected, crewEnable, historyOpen, hoverPinRef, isStaleExempt, kindSections,
     listNarrowed, openHistoryPane, rowActions, rowAnimEnabled, rowMotionHeld, rowViews, setStaleExpanded, shownCrewGroups,
     shownCrewRows, sidebarRows, staleCollapseMs, staleExpanded, staticRows, toggleCrewCollapsed,
     toggleSpaceCollapsed } = shell
@@ -111,7 +112,7 @@ export function createLaneRows(shell: SidebarScope) {
       return (
         <Fragment key={sessionRowIdentity(s)}>
           {kind && <KindSectionHeader key={`kind-section-stale-${kind}-${containerId}`} kind={kind} />}
-          {renderSessionRow(s, depth, false)}
+          {renderSessionRow(s, depth, null)}
         </Fragment>
       )
     })
@@ -161,7 +162,7 @@ export function createLaneRows(shell: SidebarScope) {
   // total across scopes, which is what the clamp counts.
   const sessionRowStamps = new Map<string, Map<string, number>>()
   let sessionRowStampCount = 0
-  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope, conductor?: ConductorRowView, folderConductor?: boolean, crew?: CodeChannelCrewView) => {
+  const renderSessionRow = (s: Slot, _indent: number, dividerNext: Slot | null, scope = 'list', navScope = scope, holdContainer = navScope, conductor?: ConductorRowView, folderConductor?: boolean, crew?: CodeChannelCrewView) => {
     // Clamped, not raw: rows past the window share a stamp and bail out of a
     // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
     let scopeStamps = sessionRowStamps.get(scope)
@@ -177,7 +178,7 @@ export function createLaneRows(shell: SidebarScope) {
       scopeStamps.set(stampKey, orderStamp)
     }
     const view = rowViews.view(s, {
-      scope, navScope, holdContainer, showDivider, orderStamp, conductor, folderConductor, crew,
+      scope, navScope, holdContainer, dividerNext, orderStamp, conductor, folderConductor, crew,
       // staticRows (the compositor drawer) folds into the one row-animation
       // gate: projection under a WAAPI-driven ancestor mis-attributes the
       // panel's motion to the rows, so the drawer disables row animation
@@ -193,10 +194,10 @@ export function createLaneRows(shell: SidebarScope) {
     // rows; the row model's `windowOf` names the rows that never stub.
     const { title, keepMounted } = rowViews.windowOf(s)
     return (
-      <WindowedSessionRow key={view.identity} rowId={view.identity} slotKey={s.key} navScope={navScope} holdContainer={holdContainer}
+      <OpenRowWindow key={view.identity} slot={s} rowId={view.identity} slotKey={s.key} navScope={navScope} holdContainer={holdContainer}
         title={title} keepMounted={keepMounted}>
         <SessionRow view={view} actions={rowActions} />
-      </WindowedSessionRow>
+      </OpenRowWindow>
     )
   }
 
@@ -215,10 +216,18 @@ export function createLaneRows(shell: SidebarScope) {
         body: (open, children) => <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={open}><div className={FOLDER_BODY_CLS}>{children}</div></FolderBody>,
       }}
       renderRows={(rows, scope) => rows.map((s, i) => renderSessionRow(
-        s, 0, i < rows.length - 1 && !isActiveRow(s) && !isActiveRow(rows[i + 1]), scope,
+        s, 0, rows[i + 1] ?? null, scope,
       ))} />
   ))]
   return { splitStale, renderStaleSection, renderOlderSessionsHint, renderSessionRow, localGroupHeader, renderCrewGroups }
+}
+
+/** A windowed row that also never stubs while it is the open row, which it reads
+ *  from the row-status store, so a chat switch re-renders this wrapper for the two
+ *  rows involved and not the lane above them. */
+function OpenRowWindow({ slot, keepMounted, ...props }: ComponentProps<typeof WindowedSessionRow> & { slot: Slot }) {
+  const isOpen = useRowStatusSelect(useCallback((st: RowStatus) => isActiveIn(st, slot), [slot]))
+  return <WindowedSessionRow {...props} keepMounted={keepMounted || isOpen} />
 }
 
 /** What `createLaneRows` hands the folder blocks and the lanes. */
