@@ -49,6 +49,7 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
         migrate_legacy_member_schedules,
         migrate_member_named_template_schedules,
     )
+    from kiro_crew.cron_service.owner_grant import migrate_owner_grants
     from kiro_crew.memory_backup import apply_pending_member_restores
     from kiro_crew.memory_stores import repair_legacy_member_stores
 
@@ -105,6 +106,12 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
                         "Moved %d schedule(s) naming a crew member onto that member",
                         len(moved),
                     )
+                # Then, once ever, the Bot grant of each job a Bot made before
+                # cron_add stored one (cron_service.owner_grant). Never raises.
+                with timed_step("migrate_owner_grants"):
+                    stamped = migrate_owner_grants(data_home())
+                if stamped:
+                    logger.info("Gave %d Bot job(s) their Bot's approval mode", len(stamped))
                 if startup.stopped:
                     return False
                 with timed_step("apply_pending_member_restores"):
