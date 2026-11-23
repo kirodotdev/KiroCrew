@@ -63,7 +63,8 @@ from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_endpoints import CLOUD_CONFIG_ENDPOINT_ENV
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
-from kiro_crew.acp.kas_native_batch import native_batch
+from kiro_crew.acp.kas_native_batch import name_left_out, native_batch
+from kiro_crew.acp.kas_parent_grants import founding_grants_spec, limit_to_founders
 from kiro_crew.acp.kas_parent_limits import (
     ParentLimitsUnreadable,
     hold_to_parents,
@@ -1311,6 +1312,7 @@ class KasHarness(MembershipHarness):
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
         governance_app: str | None = None,
+        remote_workspace: bool = False,
     ) -> SessionExtras:
         """Project the agent spec onto KAS, for both session start paths.
 
@@ -1425,6 +1427,10 @@ class KasHarness(MembershipHarness):
                     else:
                         reason = _missing_agent_reason(agent, session_key)
                     raise AcpAgentUnavailable(reason, agent=agent) from exc
+            # Preview on, a sub-agent run: approved as the chat that founded it is.
+            spec, founding = founding_grants_spec(
+                spec, agent, session_key, spec_notices, session_cwd or work_dir
+            )
             if agent == MATE_WORKER_AGENT:
                 # A crewmate's worker: its source base plus that crewmate's own
                 # additions, governed as one spec, with its prompt as literal
@@ -1626,7 +1632,8 @@ class KasHarness(MembershipHarness):
             # that enables that server keeps its own declaration of it.
             gated: set[str] = set()
             refused: set[str] = set()
-            targets, targets_notice = project_subagent_targets(
+            project_targets = partial(
+                project_subagent_targets,
                 agent,
                 spec,
                 custom_agents,
@@ -1641,11 +1648,33 @@ class KasHarness(MembershipHarness):
                 folder_gated_out=gated,
                 refused_out=refused,
             )
+            targets, targets_notice = project_targets()
             # A refused target the engine could still load from disk is denied, so
             # the refusal the notice names holds.
+            listed = frozenset(refused)
             custom_agents = native_batch(
-                deny_refused_targets(custom_agents, agent, refused), targets
+                deny_refused_targets(custom_agents, agent, listed),
+                targets,
+                agent=agent,
+                session_key=session_key,
+                member_dispatch=member_dispatch,
+                crew_panel=crew_panel,
+                agents_dir=agents_dir,
+                work_dir=work_dir,
+                stub_server_names=stubbed - withdrawn,
+                settings_dir=session_cwd or work_dir,
+                notices=spec_notices,
+                parent_spec=spec,
+                spec_dir=prompt_dir,
+                remote_workspace=remote_workspace,
+                mounted_out=helper_for,
+                # The same projection, for the person's own agents: called only
+                # once the default agent's engine mount is accepted.
+                own_agents=partial(project_targets, every_agent=True),
             )
+            # The own agents the mount left out, denied by name before its deny on
+            # every name: the engine's refusal quotes the first deny that matches.
+            custom_agents = name_left_out(custom_agents, agent, refused - listed)
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
@@ -1675,6 +1704,7 @@ class KasHarness(MembershipHarness):
             try:
                 # A sub-agent run is refused what the sessions above it are refused.
                 custom_agents = hold_to_parents(custom_agents, agent, session_key, folder)
+                custom_agents = limit_to_founders(custom_agents, agent, spec, founding)
             except ParentLimitsUnreadable as exc:
                 # Refused, never started without its parents' denies.
                 raise AcpAgentUnavailable(str(exc), agent=agent) from exc

@@ -131,7 +131,20 @@ The other spawn tools:
    (a denied command, path or URL in that agent's file), so a restricted agent
    cannot hand a restricted action to a helper. Where that agent's own call
    would ask you (a chained or redirected command its denied list cannot be
-   checked against), the helper's asks too
+   checked against), the helper's asks too. With the "KAS sub-agents"
+   Feature Preview on, a subagent on another agent also runs without asking only
+   what the chat that started it runs without asking: the pre-approvals in its
+   own agent file are not applied, and an `ask` or `deny` in either file still
+   holds. An MCP server the chat's agent pre-approves by name is pre-approved
+   for the helper's own server of that name too, so that server answers
+   without a card even when the helper's file sets it up differently. A `*` in
+   the chat agent's `allowedTools`, or an `mcp` allow rule with no `match`,
+   names no server and pre-approves none of the helper's MCP tools. To let a
+   helper run something unasked, pre-approve it in the chat's
+   agent or trust the chat; to keep a helper asking, give its file an `ask`
+   rule. An `ask` rule also holds for every helper started below its agent,
+   one on the chat's own agent included. A helper already running keeps what
+   it started with
 3. Results are automatically injected back as `[Subagent completion event]`
 4. Kiro Crew synthesizes the results into a final response
 
@@ -149,6 +162,89 @@ durably, so it stays dismissed after a restart. A dismissal that answers HTTP 50
 - **Nesting**: a subagent can spawn its own subagents. A nested spawn is tracked apart from the parent's wave, so its children are not counted against that wave's completion total
 - **macOS memory pressure**: on macOS the memory guard also reads the kernel's memory-pressure level (the one Activity Monitor graphs). While it is WARN or CRITICAL and one of this gateway's dedicated subagents is running, a new start waits even when the free-memory figure is above the floor; the chip says "macOS reports memory pressure". Temporary and incognito spawns wait the same way. A held start is re-checked every 15 seconds and whenever a subagent finishes; if it has been held for `agent.subagent_queue_max_wait_secs` (30 minutes by default) with no other top-level start from the same chat beginning in that time (the starts ahead of it in that chat's queue, from any `spawn_run` batch; scheduled and background jobs share one queue, so a start from any of them counts for all of them), it is ended without starting ("never started: waiting for memory"), and the wave's results count it among those that never started, to resubmit once memory eases; and while an episode lasts longer than that, new starts it would hold end at once. With no dedicated subagent of ours running, the start is judged on the figure alone, and a subagent's own nested subagents are never held. `agent.spawn_min_memory_gb = 0` turns this off with the rest of the guard
 - **Redaction**: task strings in SubagentInfo are redacted (credentials, inside URLs too) before surfacing to Slack/dashboard
+
+## KAS sub-agents (a feature preview)
+
+With the "KAS sub-agents" feature preview on (Settings > Developer > Feature
+previews, off by default), a KAS dashboard chat on the default agent hands short, independent tasks whose
+results it needs in the same reply to the KAS engine's own sub-agent tool
+(`invoke_sub_agent`), with the built-in `kirocrew-helper` agent. A KAS sub-agent
+runs inside the chat's turn and process: it starts no process and no MCP server of
+its own, so the memory guard, the queue and the sub-agent count settings above do
+not apply to it, and its cost is part of the chat's turn. It holds the chat agent's
+built-in tools and the MCP servers that agent uses, on the same running servers,
+but none of Kiro Crew's own tools (memory, skills, artifacts, spawn, cron,
+messages). The chat agent's rules decide its calls as they decide the agent's own:
+what the agent runs without asking, it runs without asking, and what the agent is
+asked about or denied, it is too. Each dispatch is one approval card unless the
+chat is trusted or YOLO is on.
+The same tool can run your own agents (the ones in your agents folder and the
+project's `.kiro/agents`; the first 8 in name order are tried). Run this way, your agent keeps
+its own tools, MCP servers and deny rules, runs on the model its own file names
+(the chat's model when it names none, or one that is not available to you) and holds no Kiro
+Crew tool (memory, skills). As in kiro-cli, the chat agent's rules decide its calls:
+what the chat's agent runs without asking, it runs without asking, what the chat's
+agent is asked about, it is asked about, and what its own file allows makes no
+difference; a tool its own file says to ask about is always asked for. A tool of an MCP server follows the chat agent's rule only when both
+agents' files set that server up the same way (the same command, arguments and
+every other setting); the two then use one running server. A tool of any other
+server is asked for, and so is a tool of a server that has its own `env` values
+or `headers`.
+This needs an engine that names which sub-agent is asking (kiro-cli 3.5.0 does);
+on one that does not, every call of your agent is asked for. One of your agents
+can start another (or the helper) when its own tools include the sub-agent tool;
+the one it starts follows the chat agent's rules too, is asked for every MCP tool
+call, and is asked about a tool whenever its own file, or the file of an agent
+that started it, says to ask about it. When Kiro Crew cannot tell which agent
+started it (a start you were not asked about), it is asked about a tool whenever
+any of your registered agents' files says to ask. An agent whose shell or file-write limits,
+blocked web addresses or `preToolUse` hooks Kiro Crew applies only in a chat of its own is not run this
+way; `spawn_run` starts it with those limits.
+The tool's own list of agents comes from the engine and names more than this
+chat runs: Kiro Crew's own agents, your agents past the eighth and an agent left
+out for the reasons above are listed and refused when named. The refusal of an
+agent past the eighth reads `deny subagent matching "*"`; it refuses that one
+agent, not every sub-agent. Why an agent was left out is written to the gateway
+log, not to the chat.
+`agent.subagent_max_turns`, `agent.subagent_timeout_secs` and a spawn's
+`max_turns` do not apply to a KAS sub-agent: the engine ends one after 300 model
+calls, or after an hour without progress (KAS engine 0.66.119).
+It ends with the turn and cannot be stopped on its own; Stop the turn instead
+(a chat whose only sub-agents run in the engine shows no Stop-all control; when
+Kiro Crew's own sub-agents run beside them, Stop all stops the turn as well, and
+with it the chat's answer). That
+chat's agent no longer lists `spawn_sub_agents`; `spawn_run` and everything in this
+page stay as they are, for that chat and every other.
+
+While they run, the bar above the message box lists one row per KAS sub-agent with
+its task, the tool it is running and how long it has run; click a row to open its
+card in the Subagents panel, which shows the task, each tool call and its answer.
+A KAS sub-agent has no Stop or Cancel of its own and no "Retry failed". Its card
+shows no credit or model figure, because the engine reports neither for one
+sub-agent: its credits are part of the answer's total.
+
+After the answer, the reply keeps a closed "Sub-agents in this turn" line, also after
+a reload or when you reopen the chat later. Open it to see each KAS sub-agent's task,
+how it ended and the names of its tool calls, as the engine reported them.
+
+Turn it on or off under Settings > Developer > Feature previews; the change applies from the next chat, not to one already
+running. Off, Kiro Crew starts its own sub-agents for that chat, as before. Either
+way an agent you wrote keeps what its file says, and every backend but KAS ignores
+the preview. One reading follows kiro-cli while it is on: a dashboard chat on your
+own agent whose `tools` is `["*"]` and whose `excludedTools` name `use_subagent`
+and `invoke_sub_agent` keeps its `subagent_<name>` tools, and one that excludes
+`subagent` keeps `invoke_sub_agent`, so the agent can still start a sub-agent. The
+chat says so when it starts. Off, such an agent starts no KAS sub-agent.
+An agent whose shell settings set `denyByDefault` and whose `allowedTools` also
+names the shell keeps its `allowedCommands` list while the preview is on: a
+command outside the list is refused, as on kiro-cli. Off, naming the shell in
+`allowedTools` lifts the list when every `deniedCommands` entry can be passed
+on as one rule.
+Three `deniedCommands` entries also follow kiro-cli while it is on, and refuse more
+than they name: `rm \| .*` refuses every shell command (the agent may then have
+no shell tool at all), `rm [|] .*` every command
+matching `rm * *`, and `rm .*|shred +x` every command matching `rm *` or `shred *x`.
+The chat's notice says what each refuses.
 
 ## Named Agents
 

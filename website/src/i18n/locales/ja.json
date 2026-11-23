@@ -6274,6 +6274,10 @@
       "trusted_channel_still_asks": "今回は承認済み — このホストのシェル設定のため、@{{role}} は毎回確認を求めます",
       "title_wants_to_run": "<title/> の実行を求めています"
     },
+    "approvalSubagent": {
+      "asked_by": "サブエージェント {{name}} からの要求",
+      "task_line": "タスク: {{task}}"
+    },
     "approvalModePicker": {
       "approve_for_me_failed": "「代わりに承認」をオンにできませんでした。もう一度お試しください。",
       "approve_for_me_busy": "いまの返答が終わるまで待ってから、もう一度 Approve for me を選んでください。",
@@ -12918,7 +12922,16 @@
         "artifacts_load_failed": "このセッションのアーティファクトを読み込めませんでした",
         "library_load_failed": "アーティファクトライブラリを読み込めませんでした",
         "artifact_save_failed": "アーティファクトを保存できませんでした",
-        "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした"
+        "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした",
+        "engine_usage_not_reported": "チャット内で動くサブエージェントのクレジット使用量とモデルは報告されません。クレジットは応答の合計に含まれます。",
+        "engine_no_output": "(出力なし)"
+      },
+      "engineSubagentRecord": {
+        "title": "このターンのサブエージェント: {{n}}",
+        "end_completed": "完了",
+        "end_failed": "失敗",
+        "end_not_reported": "エンジンは終了を報告していません",
+        "more_children": "一覧にないその他のサブエージェント: {{n}}"
       },
       "assistantMessage": {
         "share_load_failed": "共有ダイアログを読み込めませんでした",
@@ -13458,7 +13471,9 @@
         "parent_turn_stopped": "親のターンが停止しました",
         "parent_stopped_still_running": "親は停止、まだ実行中",
         "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性",
-        "more_running_normally_count_other": "ほか {{count}} 件は正常に実行中…"
+        "more_running_normally_count_other": "ほか {{count}} 件は正常に実行中…",
+        "engine_stops_with_answer": "チャット内で動くサブエージェントは、応答を停止すると一緒に停止します。",
+        "stop_all_and_answer": "すべてと応答を停止"
       },
       "subagentQueued": {
         "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",
@@ -16054,6 +16069,9 @@
         "chat_runtime_sharing_harness_save_failed": "スイッチを保存できませんでした。もう一度お試しください。",
         "chat_runtime_sharing_harness_load_failed": "これらのスイッチを読み込めませんでした。",
         "chat_runtime_sharing_desc_summary": "複数のチャットを 1 つのバックグラウンドプログラムで動かし、パソコンのメモリを節約します。共有するチャットの種類は下で選べます。チャットは同時に返信し、互いのメッセージは見られません。オフにすると、新しいチャットはまた専用のプログラムを使います。",
+        "kas_subagents": "KAS サブエージェント",
+        "kas_subagents_desc": "オン (KAS チャット): デフォルトのエージェントは、短いタスクを自分のターンの中で組み込みヘルパーまたはあなた自身のエージェント最大 8 個に渡し、それらはチャットのエージェントのルールに従い、ターンとともに止まります。spawn_run が別のエージェントで始めたサブエージェントは、それを始めたチャットが確認なしで実行するものだけを確認なしで実行します。denyByDefault のコマンド一覧は、エージェントがシェルを事前に承認していても有効です。サブエージェントツールを除外するエージェント、または deniedCommands の 3 つの書き方のいずれかを使うエージェントは kiro-cli と同じように読み取られ、チャットの開始時にその旨が表示されます。オフ: {{productName}} はデフォルトのエージェントのサブエージェントをそれぞれ専用のセッションとして始め、サブエージェントパネルで開いたり停止したりできます。",
+        "kas_subagents_desc_summary": "KAS では、デフォルトのエージェントが短いサブエージェントをエンジン内で動かし、エージェントの一部の権限が kiro-cli と同じように読み取られ、切り替え後に始めたチャットとサブエージェントに適用されます。",
         "visual_refresh": "ビジュアルリフレッシュ",
         "visual_refresh_desc": "開発中のダッシュボードの新しいデザインをオンにします。まだ何も変わっていません。完成した部分から順に表示され、未完成に見えたり、アップデートごとに変わったりすることがあります。オフにすると現在の見た目に戻ります。",
         "visual_refresh_desc_summary": "ダッシュボードの新しいデザイン。まだ何も変わりません。",

@@ -1541,6 +1541,7 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     ``allowedPaths`` past theirs (``kas_unread_commands.allowed_paths_notice``).
     A Bot's worker gets its own deny wording (``kas_tool_view.deny_sentences``).
     """
+    from kiro_crew.acp.kas_deny_cli_forms import split_sent_as_cli
     from kiro_crew.acp.kas_unread_commands import allowed_paths_notice, over_limit_notice
     from kiro_crew.agent_sdk.kas_tool_view import (
         allow_exclude_limit,
@@ -1552,6 +1553,8 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
     from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
 
+    # A deny entry sent as kiro-cli sends it says what it refuses, never "no effect".
+    sent_as_cli, keys = split_sent_as_cli(agent, keys, agent == MATE_WORKER_AGENT)
     judged, deny_rest, keys = split_deny_notices(keys)
     over_limit, keys = over_limit_notice(agent, keys)
     unread = [key for key in keys if MARK in key]
@@ -1566,7 +1569,9 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
         f"when denyByDefault is set{others}. Run kirocrew doctor to list them."
     )
     unread_paths, keys = allowed_paths_notice(agent, keys)
-    named = [text for text in (entries if unread else "", unread_paths, over_limit) if text]
+    named = [
+        text for text in (entries if unread else "", unread_paths, over_limit, *sent_as_cli) if text
+    ]
     if named and not keys and not judged and not deny_rest:
         return "ℹ️ " + " ".join(named)
     # Crew's own gate still refuses what a marked allowlist leaves out, so it is

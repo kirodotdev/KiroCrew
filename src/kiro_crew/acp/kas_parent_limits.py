@@ -185,20 +185,16 @@ def _allows_only(permissions: Any) -> bool:
     )
 
 
-def _parent_limits(
-    agent: str, parent_key: str, cwd: str
-) -> tuple[list[Any], list[Any], dict[str, Any]] | None:
-    """*agent*'s ``(deny rules, host asks, gate-only limits)``; ``None`` when no agent
-    file defines it or its spec sets no ``toolsSettings`` and no ``permissions`` deny."""
+def parent_spec(agent: str, parent_key: str, cwd: str) -> dict[str, Any] | None:
+    """The spec the session on *parent_key* runs *agent* from, read from *cwd*;
+    ``None`` when no agent file defines it."""
     from kiro_crew.acp.harness.kas import (
         MATE_WORKER_AGENT,
         mate_worker_projection,
         resolve_projected_spec,
     )
-    from kiro_crew.acp.kas_spec_denies import with_blocked_host_asks, with_unjudged_denies
     from kiro_crew.apps.agent_launch import read_bound_app_spec
     from kiro_crew.config import paths as paths_mod
-    from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
 
     # An app's own agent runs the file its session is bound to, read by its path.
     spec = read_bound_app_spec(parent_key, agent)
@@ -211,6 +207,21 @@ def _parent_limits(
             return None
         if agent == MATE_WORKER_AGENT:
             spec = mate_worker_projection(spec, prompt_dir, parent_key)
+    return spec
+
+
+def _parent_limits(
+    agent: str, parent_key: str, cwd: str
+) -> tuple[list[Any], list[Any], dict[str, Any]] | None:
+    """*agent*'s ``(deny rules, host asks, gate-only limits)``; ``None`` when no agent
+    file defines it or its spec sets no ``toolsSettings`` and no ``permissions`` deny."""
+    from kiro_crew.acp.harness.kas import MATE_WORKER_AGENT
+    from kiro_crew.acp.kas_spec_denies import with_blocked_host_asks, with_unjudged_denies
+    from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
+
+    spec = parent_spec(agent, parent_key, cwd)
+    if spec is None:
+        return None
     limits = {key: spec[key] for key in _LIMIT_SPEC_KEYS if key in spec}
     if not limits.get("toolsSettings") and _allows_only(limits.get("permissions")):
         return None
@@ -392,11 +403,14 @@ def run_is_held(run_key: str, agent: str, run_dir: str = "") -> bool:
     so a held run starts its own session instead. *run_dir* is the directory the
     session in question is bound to, the pool's. Blocking, like the hold itself.
     """
+    from kiro_crew.acp.kas_parent_grants import runs_on_founding_grants
+
     batch = [{"id": agent}]
     try:
-        return hold_to_parents(batch, agent, run_key, run_dir) is not batch
+        held = hold_to_parents(batch, agent, run_key, run_dir) is not batch
     except ParentLimitsUnreadable:
         return True
+    return held or runs_on_founding_grants(run_key, agent, run_dir)
 
 
 def projected_parent_limits(

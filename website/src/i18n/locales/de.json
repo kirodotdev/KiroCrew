@@ -6491,6 +6491,10 @@
       "trusted_channel_still_asks": "Diesmal genehmigt — wegen der Shell-Einrichtung dieses Hosts fragt @{{role}} trotzdem jedes Mal nach",
       "title_wants_to_run": "<title/> möchte ausgeführt werden"
     },
+    "approvalSubagent": {
+      "asked_by": "Angefragt von Sub-Agent {{name}}",
+      "task_line": "Aufgabe: {{task}}"
+    },
     "approvalModePicker": {
       "approve_for_me_failed": "„Für mich genehmigen“ konnte nicht eingeschaltet werden. Versuche es noch einmal.",
       "approve_for_me_busy": "Warte, bis die aktuelle Antwort fertig ist, und wähle dann Approve for me erneut.",
@@ -13214,7 +13218,16 @@
         "artifacts_load_failed": "Artefakte dieser Sitzung konnten nicht geladen werden",
         "library_load_failed": "Artefaktbibliothek konnte nicht geladen werden",
         "artifact_save_failed": "Artefakt konnte nicht gespeichert werden",
-        "workflow_runs_load_failed": "Workflow-Ausführungen konnten nicht geladen werden"
+        "workflow_runs_load_failed": "Workflow-Ausführungen konnten nicht geladen werden",
+        "engine_usage_not_reported": "Für einen Sub-Agent, der im Chat läuft, werden Credits und Modell nicht gemeldet. Seine Credits sind Teil der Gesamtsumme der Antwort.",
+        "engine_no_output": "(keine Ausgabe)"
+      },
+      "engineSubagentRecord": {
+        "title": "Sub-Agenten in diesem Durchgang: {{n}}",
+        "end_completed": "Abgeschlossen",
+        "end_failed": "Fehlgeschlagen",
+        "end_not_reported": "Ende von der Engine nicht gemeldet",
+        "more_children": "Weitere, nicht aufgeführte Sub-Agenten: {{n}}"
       },
       "assistantMessage": {
         "share_load_failed": "Teilen-Dialog konnte nicht geladen werden",
@@ -13779,7 +13792,9 @@
         "chip_stalled_one": "{{count}} Agent möglicherweise hängengeblieben",
         "chip_stalled_other": "{{count}} Agenten möglicherweise hängengeblieben",
         "more_running_normally_count_one": "{{count}} weiterer läuft normal…",
-        "more_running_normally_count_other": "{{count}} weitere laufen normal…"
+        "more_running_normally_count_other": "{{count}} weitere laufen normal…",
+        "engine_stops_with_answer": "Sub-Agents, die im Chat laufen, stoppen, wenn du die Antwort stoppst.",
+        "stop_all_and_answer": "Alle und die Antwort stoppen"
       },
       "subagentQueued": {
         "low_memory": "wartet auf den Start — benötigt {{required}} freien Speicher, aktuell {{available}} frei; gib Speicher frei, um fortzufahren",
@@ -16485,6 +16500,9 @@
         "chat_runtime_sharing_harness_save_failed": "Der Schalter konnte nicht gespeichert werden. Versuche es erneut.",
         "chat_runtime_sharing_harness_load_failed": "Diese Schalter konnten nicht geladen werden.",
         "chat_runtime_sharing_desc_summary": "Spart Arbeitsspeicher, indem mehrere Chats in einem Hintergrundprogramm laufen. Du wählst, welche Arten von Chats es teilen. Sie antworten gleichzeitig und sehen die Nachrichten der anderen nicht. Ausgeschaltet bekommt jeder neue Chat wieder sein eigenes Programm.",
+        "kas_subagents": "KAS-Sub-Agents",
+        "kas_subagents_desc": "An, in KAS-Chats: Der Standard-Agent gibt kurze Aufgaben in seinem Durchlauf an seinen eingebauten Helfer oder an bis zu 8 deiner eigenen Agents, die den Regeln des Chat-Agents unterliegen und mit dem Durchlauf stoppen; ein Sub-Agent, den spawn_run auf einem anderen Agent startet, führt ohne Rückfrage nur aus, was der Chat, der ihn gestartet hat, ohne Rückfrage ausführt; eine denyByDefault-Befehlsliste gilt auch dann, wenn der Agent die Shell vorab freigibt; und ein Agent, der das Sub-Agent-Tool ausschließt oder eine von drei deniedCommands-Formen nutzt, wird so gelesen, wie kiro-cli ihn liest, was der Chat beim Start anzeigt. Aus: {{productName}} startet die Sub-Agents des Standard-Agents als eigene Sitzungen, die du im Subagenten-Panel öffnen und stoppen kannst.",
+        "kas_subagents_desc_summary": "Auf KAS führt der Standard-Agent kurze Sub-Agents in der Engine aus, und einige Agent-Berechtigungen werden so gelesen, wie kiro-cli es tut; gilt für Chats und Sub-Agents, die du nach dem Umschalten startest.",
         "visual_refresh": "Visuelle Auffrischung",
         "visual_refresh_desc": "Schaltet die laufende Neugestaltung des Dashboards ein. Noch ist nichts neu gestaltet: Teile erscheinen, sobald sie fertig sind, und können unfertig aussehen oder sich zwischen Updates ändern. Schalte sie aus, um zum aktuellen Aussehen zurückzukehren.",
         "visual_refresh_desc_summary": "Ein neues Aussehen für das Dashboard. Noch ändert sich nichts.",

@@ -37,7 +37,10 @@ if TYPE_CHECKING:
         _forget_entries,
         _settle_failed_write,
     )
-    from kiro_crew.dashboard.chat_turn.native_cards import _append_native_output
+    from kiro_crew.dashboard.chat_turn.native_cards import (
+        _append_native_output,
+        _first_native_result,
+    )
     from kiro_crew.dashboard.chat_turn.recovery import _notice_compaction_after_turn
     from kiro_crew.dashboard.chat_turn.tool_rows import (
         _persist_tool_result_rows,
@@ -746,8 +749,11 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
     # keeps the full-text cost single.
     _redacted_out, _ = redact_exfiltration_urls(_out)
     _redacted_out, _ = redact_credentials(_redacted_out)
-    if _nat_card_r and event.tool_output and event.tool_call_id not in _native_result_seen:
-        _native_result_seen.add(event.tool_call_id)
+    if (
+        _nat_card_r
+        and event.tool_output
+        and _first_native_result(_native_result_seen, event.tool_call_id)
+    ):
         _native_card_output_len[_nat_card_r] = _append_native_output(
             _native_card_output.setdefault(_nat_card_r, []),
             f"{_redacted_out[:4000]}\n",

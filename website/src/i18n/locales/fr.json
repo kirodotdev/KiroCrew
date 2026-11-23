@@ -6668,6 +6668,10 @@
       "trusted_channel_still_asks": "Approuvé cette fois — à cause de la configuration du shell de cet hôte, @{{role}} demandera encore à chaque fois",
       "title_wants_to_run": "<title/> demande à s’exécuter"
     },
+    "approvalSubagent": {
+      "asked_by": "Demandé par le sous-agent {{name}}",
+      "task_line": "Tâche : {{task}}"
+    },
     "approvalModePicker": {
       "approve_for_me_failed": "Impossible d'activer « Approuver pour moi ». Réessaie.",
       "approve_for_me_busy": "Attends la fin de la réponse en cours, puis choisis de nouveau Approve for me.",
@@ -13510,7 +13514,16 @@
         "artifacts_load_failed": "Impossible de charger les artefacts de cette session",
         "library_load_failed": "Impossible de charger la bibliothèque d’artefacts",
         "artifact_save_failed": "Impossible d’enregistrer l’artefact",
-        "workflow_runs_load_failed": "Impossible de charger les exécutions de workflow"
+        "workflow_runs_load_failed": "Impossible de charger les exécutions de workflow",
+        "engine_usage_not_reported": "Les crédits et le modèle ne sont pas signalés pour un sous-agent qui tourne dans le chat. Ses crédits font partie du total de la réponse.",
+        "engine_no_output": "(aucune sortie)"
+      },
+      "engineSubagentRecord": {
+        "title": "Sous-agents de ce tour : {{n}}",
+        "end_completed": "Terminé",
+        "end_failed": "Échec",
+        "end_not_reported": "Fin non signalée par le moteur",
+        "more_children": "Autres sous-agents non listés : {{n}}"
       },
       "assistantMessage": {
         "share_load_failed": "Impossible de charger la fenêtre de partage",
@@ -14100,7 +14113,9 @@
         "chip_stalled_other": "{{count}} agents peut-être bloqués",
         "more_running_normally_count_one": "{{count}} autre en cours normalement…",
         "more_running_normally_count_many": "{{count}} autres en cours normalement…",
-        "more_running_normally_count_other": "{{count}} autres en cours normalement…"
+        "more_running_normally_count_other": "{{count}} autres en cours normalement…",
+        "engine_stops_with_answer": "Les sous-agents qui tournent dans le chat s'arrêtent quand tu arrêtes la réponse.",
+        "stop_all_and_answer": "Tout arrêter, réponse comprise"
       },
       "subagentQueued": {
         "low_memory": "en attente de démarrage — nécessite {{required}} de mémoire libre, {{available}} libres actuellement ; libère de la mémoire pour continuer",
@@ -16916,6 +16931,9 @@
         "chat_runtime_sharing_harness_save_failed": "Impossible d’enregistrer l’interrupteur. Réessaie.",
         "chat_runtime_sharing_harness_load_failed": "Impossible de charger ces interrupteurs.",
         "chat_runtime_sharing_desc_summary": "Économise la mémoire de l'ordinateur en exécutant plusieurs chats dans un même programme en arrière-plan. Tu choisis quels types de chat le partagent. Ils répondent en même temps et ne voient pas les messages des autres. Désactivé, chaque nouveau chat retrouve son propre programme.",
+        "kas_subagents": "Sous-agents KAS",
+        "kas_subagents_desc": "Activé, dans les chats KAS : l'agent par défaut confie de courtes tâches, dans son tour, à son assistant intégré ou à 8 de tes propres agents au plus, soumis aux règles de l'agent du chat et arrêtés avec le tour ; un sous-agent que spawn_run lance sur un autre agent n'exécute sans demander que ce que le chat qui l'a lancé exécute sans demander ; une liste de commandes denyByDefault reste valable même quand l'agent approuve d'avance le shell ; et un agent qui exclut l'outil de sous-agents, ou qui utilise l'une de trois formes de deniedCommands, est lu comme kiro-cli le lit, ce que le chat indique à son démarrage. Désactivé : {{productName}} lance les sous-agents de l'agent par défaut dans des sessions à part, que tu peux ouvrir et arrêter dans le panneau Sous-agents.",
+        "kas_subagents_desc_summary": "Sur KAS, l'agent par défaut fait tourner de courts sous-agents dans le moteur et certaines permissions des agents sont lues comme kiro-cli les lit, dans les chats et sous-agents lancés après le changement.",
         "visual_refresh": "Refonte visuelle",
         "visual_refresh_desc": "Active la refonte en cours du tableau de bord. Rien n'est encore refondu : les éléments apparaissent au fur et à mesure et peuvent sembler inachevés ou changer d'une mise à jour à l'autre. Désactive-la pour revenir à l'apparence actuelle.",
         "visual_refresh_desc_summary": "Un nouveau look pour le tableau de bord. Rien ne change encore.",

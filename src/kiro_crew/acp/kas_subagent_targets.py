@@ -64,6 +64,14 @@ from typing import Any
 from kiro_crew.acp import kas_agents as kas_agents_mod
 from kiro_crew.acp import kas_env_launch
 from kiro_crew.acp.kas_permissions import (
+    CREW_ANSWERED_BUILTINS_KEY,
+    CREW_ANSWERED_COMMANDS_KEY,
+    CREW_ANSWERED_HOOK_HELD_KEY,
+    CREW_ANSWERED_PATHS_KEY,
+    CREW_ANSWERED_READ_PATHS_KEY,
+    CREW_ANSWERED_WRITES_KEY,
+    CREW_ONLY_ENTRY_KEYS,
+    CREW_SETTINGS_MCP_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
     CREW_SPEC_DENIES_KEY,
     CREW_WRITE_ALLOWLIST_KEY,
@@ -119,6 +127,10 @@ _GATE_ONLY = (
     "Kiro Crew applies its shell or file-write limits, its blocked web addresses "
     "and its preToolUse hooks only to the agent a chat runs"
 )
+_GATE_LIMIT = (
+    "Kiro Crew applies a limit its file sets, such as a blocked web address, only "
+    "to the agent a chat runs"
+)
 _UNATTESTED = "it uses {servers}, which this chat's own agent does not load"
 _WIDER_TOOLS = "a built-in agent with more built-in tools than this agent has"
 
@@ -139,8 +151,46 @@ _SHARED = (
 #: The :data:`CREW_SPEC_DENIES_KEY` fields the gate refuses a call by
 #: (``spec_denied_gate.spec_denies_refusal``) that only the gate applies. Its
 #: ``webFetchBlocked`` list is read by :func:`_gate_only_limits` on its own: only
-#: the entries KAS cannot carry as a host deny count.
+#: the entries KAS cannot carry as a host deny count. The default agent's mount
+#: reads the record whole (:func:`_left_to_the_gate`).
 _DENY_RECORD_LIMITS = ("deniedCommands", "deniedPaths")
+
+#: What a projected entry keeps for Kiro Crew alone (``CREW_ONLY_ENTRY_KEYS``) that
+#: holds a sub-agent to nothing. Six are grants: Crew's gate answers the session
+#: agent's own request by them, and a native sub-agent's request carries none
+#: (``session_handle_permissions._denies_only``), so the call one would
+#: have answered asks. The settings stamp is finished into the entry's own servers
+#: and ``excludedTools`` before the wire (``kas_settings_mcp.finish_settings_mcp``).
+#: Every other such key keeps one of the person's own agents out of the default
+#: agent's mount (:func:`_left_to_the_gate`): the deny record by its fields, and
+#: any key not named here, so a key the projection gains keeps the agent out until
+#: it is judged.
+_BINDS_NO_CHILD: frozenset[str] = frozenset(
+    {
+        CREW_ANSWERED_BUILTINS_KEY,
+        CREW_ANSWERED_COMMANDS_KEY,
+        CREW_ANSWERED_HOOK_HELD_KEY,
+        CREW_ANSWERED_PATHS_KEY,
+        CREW_ANSWERED_READ_PATHS_KEY,
+        CREW_ANSWERED_WRITES_KEY,
+        CREW_SETTINGS_MCP_KEY,
+    }
+)
+
+#: The :data:`CREW_SPEC_DENIES_KEY` fields that only grant: what the gate answers
+#: once the record's denies are checked. It empties them for a sub-agent's request
+#: (``spec_denied_grant.denies_only``).
+_RECORD_GRANTS: frozenset[str] = frozenset({"builtins", "commands", "webFetchTrusted"})
+
+#: Every other field of that record refuses, with the one value under which it
+#: refuses nothing. A field named in neither, and a value of another type, count
+#: as a refusal.
+_RECORD_REFUSES_NOTHING: dict[str, Any] = {
+    "deniedCommands": [],
+    "deniedPaths": [],
+    "webFetchBlocked": [],
+    "webFetchBlockedComplete": True,
+}
 
 #: Server-entry keys that never change which process a server launches or which
 #: endpoint it reaches. ``disabledTools`` is carried in the target's own
@@ -238,6 +288,71 @@ def deny_own_agents(custom_agents: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
+#: The rule that takes every engine sub-agent away from an entry. The engine has two
+#: kinds of sub-agent tool, ``invoke_sub_agent`` and one ``subagent_<id>`` per agent
+#: its registry holds, and files both under the ``subagent`` capability: a capability
+#: denied whole leaves the agent's tool list, and a call that still names one is
+#: refused by the rule. The shape ``kas_subagent_rules._available_agents_rules``
+#: sends for ``availableAgents: []``.
+NO_ENGINE_SUBAGENTS_RULE: dict[str, Any] = {"capability": "subagent", "effect": "deny"}
+
+
+def deny_every_subagent(entry: dict[str, Any], operation: str, why: str) -> dict[str, Any]:
+    """*entry* refusing every engine sub-agent, recorded as security event *operation*.
+
+    A deny only narrows, so it needs no pass through the governance ceiling, and
+    KAS resolves the most restrictive matching rule, so it holds against an
+    ``availableAgents`` exclude and a ``trustedAgents`` allow on the same entry.
+    Only the rule is added: the entry's ``tools``, ``excludedTools`` and servers
+    stay, so a Kiro Crew MCP tool it mounts is untouched. An entry that already
+    carries the rule is returned as it is.
+    """
+    held = entry.get("permissions")
+    block = dict(held) if isinstance(held, dict) else {}
+    rules = block.get("rules")
+    kept = rules if isinstance(rules, list) else []
+    if NO_ENGINE_SUBAGENTS_RULE in kept:
+        return entry
+    block["rules"] = [*kept, dict(NO_ENGINE_SUBAGENTS_RULE)]
+    audit_subagent_policy(operation, str(entry.get("id") or ""), why)
+    return {**entry, "permissions": block}
+
+
+def excludes_subagent_tool(entry: Any) -> bool:
+    """Whether the projected *entry*'s ``excludedTools`` withhold the sub-agent tool.
+
+    Read as :func:`mounts_subagent_tool` reads an exclusion: an entry equal to the
+    tool's id (which the projection also writes for kiro-cli's ``use_subagent``),
+    or a tag or pattern that covers it.
+    """
+    excluded = entry.get("excludedTools") if isinstance(entry, dict) else None
+    return isinstance(excluded, list) and any(_selects_subagent_tool(t) for t in excluded)
+
+
+def deny_excluded_subagent_tool(custom_agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*custom_agents* with every engine sub-agent denied to an entry that excludes the tool.
+
+    The engine's tool filter applies an exclusion of ``invoke_sub_agent`` (or of
+    ``@builtin``) to that tool alone. Its per-agent ``subagent_<id>`` tools carry
+    neither that id nor that tag, so an agent whose file says "no sub-agent tool"
+    keeps them and starts a child through one. The file's author withheld the
+    tool, so the entry gets the rule that withholds both kinds
+    (:func:`deny_every_subagent`), recorded as ``kas_subagent_tool_excluded``.
+    """
+    return [
+        (
+            deny_every_subagent(
+                entry,
+                "kas_subagent_tool_excluded",
+                "every engine sub-agent denied (its excludedTools withhold the sub-agent tool)",
+            )
+            if excludes_subagent_tool(entry)
+            else entry
+        )
+        for entry in custom_agents
+    ]
+
+
 def audit_subagent_policy(operation: str, agent_id: str, what: str) -> None:
     """Record a ``subagent`` rule a projection adds in the security event log.
 
@@ -272,6 +387,7 @@ def project_subagent_targets(
     scope_muted: frozenset[str] | None = None,
     folder_gated_out: set[str] | None = None,
     refused_out: set[str] | None = None,
+    every_agent: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     """The entries to append to *parent*'s batch, and the notice for what is left out.
 
@@ -297,12 +413,20 @@ def project_subagent_targets(
     verdict the session's own entry was built with
     (``kas_agents._project_mcp_servers``). *folder_gated_out* gains each folder
     target left out for the folder hooks this session's batch projects.
+
+    *every_agent* is the default agent's engine mount
+    (``with_engine_subagents``), which reads neither the
+    parent's tool list nor an ``availableAgents`` list: the targets are the
+    person's own agents, as a ``*`` list names them less Kiro Crew's own, the
+    first :data:`MAX_SUBAGENT_TARGETS` in name order. The notice then counts the
+    rest without naming them, and an empty agents folder is no line.
     """
     from kiro_crew.mcp_gateway.rewriter_spec import _named_in_tools
     from kiro_crew.subagent import spawn_allowlist
 
     entry = next((a for a in custom_agents if a.get("id") == parent), None)
-    mounted = mounts_subagent_tool(entry)
+    # The default agent's mount adds the tool after this projection.
+    mounted = every_agent or mounts_subagent_tool(entry)
     if not mounted:
         # Its per-agent ``subagent_<id>`` tools can still run a listed target's
         # on-disk profile, so a refusal is still classified for the deny; nothing
@@ -310,22 +434,28 @@ def project_subagent_targets(
         if refused_out is None or not isinstance(entry, dict):
             return [], ""
         withheld_out, folder_gated_out = {}, set()
-    globs = spawn_allowlist(parent_spec)
-    if globs is None:
-        if not mounted:
+    if every_agent:
+        found, named, missed = _target_names(parent, ("*",), work_dir)
+        missed.pop("*", None)
+        # Kiro Crew's own agents are never registered, so they take no place.
+        found = [n for n in found if not (is_owned_agent_name(n) or is_mate_service_agent(n))]
+    else:
+        globs = spawn_allowlist(parent_spec)
+        if globs is None:
+            if not mounted:
+                return [], ""
+            # No list: the engine's own roster answers, and it skips a CLI-only profile.
+            skipped = _skipped_by_engine(parent, work_dir)
+            if entry is not None and _narrows_tools(entry):
+                wide = {name: _WIDER_TOOLS for name in ENGINE_WIDE_AGENTS}
+                if refused_out is not None:
+                    refused_out.update(wide)
+                skipped = {**skipped, **wide}
+            return [], _notice(parent, skipped, 0)
+        if not globs or _spawns_nothing(entry):
+            # ``()`` is "spawn nothing": no list to register.
             return [], ""
-        # No list: the engine's own roster answers, and it skips a CLI-only profile.
-        skipped = _skipped_by_engine(parent, work_dir)
-        if entry is not None and _narrows_tools(entry):
-            wide = {name: _WIDER_TOOLS for name in ENGINE_WIDE_AGENTS}
-            if refused_out is not None:
-                refused_out.update(wide)
-            skipped = {**skipped, **wide}
-        return [], _notice(parent, skipped, 0)
-    if not globs or _spawns_nothing(entry):
-        # ``()`` is "spawn nothing": no list to register.
-        return [], ""
-    found, named, missed = _target_names(parent, globs, work_dir)
+        found, named, missed = _target_names(parent, globs, work_dir)
     pattern_only = [n for n in found if n not in named]
     under_cap = set(pattern_only[:MAX_SUBAGENT_TARGETS])
     names = [n for n in found if n in named or n in under_cap]
@@ -364,6 +494,7 @@ def project_subagent_targets(
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 scope_muted=scope_muted,
                 folder_gated_out=folder_gated_out,
+                for_default_mount=every_agent,
             )
         except Exception:  # noqa: BLE001 - a target never costs the session
             logger.warning("sub-agent %r could not be registered", name, exc_info=True)
@@ -379,7 +510,9 @@ def project_subagent_targets(
         # snapshots, Connection bridges), as a refused projection does.
         kas_env_launch.discard_batch(entries)
         return [], ""
-    notice = _notice(parent, missed, overflow, pattern_only[MAX_SUBAGENT_TARGETS:], full)
+    # A person's whole agents folder is counted, not listed.
+    untried = () if every_agent else pattern_only[MAX_SUBAGENT_TARGETS:]
+    notice = _notice(parent, missed, overflow, untried, full, whole_folder=every_agent)
     return entries, "\n\n".join(n for n in (*notices, notice) if n)
 
 
@@ -582,6 +715,7 @@ def _project_target(
     forward_ssh_auth_sock: bool,
     scope_muted: frozenset[str] | None = None,
     folder_gated_out: set[str] | None = None,
+    for_default_mount: bool = False,
 ) -> dict[str, Any] | str:
     """*name*'s projected entry, or the reason it is not registered.
 
@@ -599,7 +733,12 @@ def _project_target(
     switches off is excluded whole (:func:`_excluding_switched_off`).
     *withheld_out* and *notices* gain this target's lines only once it registers;
     *folder_gated_out* gains *name* when its folder hooks, kept because the session
-    projects them, refuse it.
+    projects them, refuse it. *for_default_mount* is the default agent's engine
+    mount: the target holds none of Kiro Crew's own servers, which run under the
+    session's identity, so each one it declares is dropped instead of refusing it,
+    and every one is excluded whole, the session's copy included; it asks for
+    every MCP call (:func:`_asking_for_mcp`); and its entry carries its spec's
+    ``model`` (:func:`_on_its_own_model`).
     """
     from kiro_crew import agent as agent_mod
     from kiro_crew.acp.harness import kas as kas_harness
@@ -653,6 +792,8 @@ def _project_target(
         if folder_gated_out is not None and project_hooks and prompt_dir == folder:
             folder_gated_out.add(name)
         return _GATE_ONLY
+    if for_default_mount and _denies_by_default(spec):
+        return _GATE_ONLY
     from kiro_crew.mate_held_rules import HeldLimitsNotApplied, held_child_spec
 
     # A target of a Bot's session runs under the Bot's identity: its held limits ask.
@@ -688,12 +829,12 @@ def _project_target(
         forward_ssh_auth_sock=forward_ssh_auth_sock,
         scope_muted=scope_muted,
     )
-    if _gate_only_limits(entry):
+    if not for_default_mount and _gate_only_limits(entry):
         # The launch files this projection wrote belong to no registered entry.
         kas_env_launch.discard_batch([entry])
         return _GATE_ONLY
     crew = _crew_servers(entry)
-    unattested = [n for n in crew if n not in parent_servers]
+    unattested = [] if for_default_mount else [n for n in crew if n not in parent_servers]
     if unattested:
         kas_env_launch.discard_batch([entry])
         return _UNATTESTED.format(servers=", ".join(unattested))
@@ -715,6 +856,20 @@ def _project_target(
         opted_in=include_mcp_json(spec) is True,
     )
     entry = _withhold_session_hooks(entry, name, session_hooks)
+    if for_default_mount:
+        from kiro_crew.acp.session_mcp import builtin_app_identity_launches
+
+        entry = _excluding_switched_off(
+            entry,
+            frozenset(kas_agents_mod.MANAGED_MCP_SERVER_NAMES)
+            | frozenset(builtin_app_identity_launches()),
+        )
+        entry = _on_its_own_model(_asking_for_mcp(entry), spec)
+        # Read last, from the finished entry: no later step adds a key to it.
+        if _left_to_the_gate(entry, spec):
+            kas_env_launch.discard_batch([entry])
+            shell = _gate_only_limits(entry) or _spec_denies_uncarried(entry, spec)
+            return _GATE_ONLY if shell else _GATE_LIMIT
     withheld_out.update(withheld)
     notices.extend([*own_notices, prompt_unread_notice(name, unread)])
     return _without_servers(entry, crew)
@@ -739,6 +894,137 @@ def _gate_only_limits(entry: dict[str, Any]) -> bool:
     blocked = record.get("webFetchBlocked")
     return isinstance(blocked, list) and bool(
         gate_refused_blocked({"web_fetch": {"blocked": blocked}})
+    )
+
+
+def _left_to_the_gate(entry: dict[str, Any], spec: dict[str, Any] | None = None) -> bool:
+    """Whether finished *entry*, projected from *spec*, keeps a limit that only
+    Crew's gate would apply.
+
+    Asked of one of the person's own agents under the default agent's mount. The
+    gate hands a native sub-agent's request its parent's limits and none of its
+    own (``session_handle_permissions._denies_only``), so a limit the entry
+    keeps for the gate would bind no one. Each key that never reaches the engine
+    (``CREW_ONLY_ENTRY_KEYS``, and any other key that starts with ``_``) holds a
+    sub-agent to nothing (:data:`_BINDS_NO_CHILD`) or keeps the agent out, and the
+    deny record is read field by field (:func:`_record_refuses`). Wider than
+    :func:`_gate_only_limits`, which a custom parent's listed agent is read by.
+
+    One field of the record is no limit of the gate alone: its ``deniedCommands``
+    when the engine refuses every command they name for a sub-agent too
+    (:func:`_engine_holds_denied_commands`). The grant the record lifts for them
+    answers nothing for a sub-agent.
+
+    A shell ``deniedCommands`` entry of *spec* the engine does not carry whole keeps
+    the agent out too, record or not (:func:`_spec_denies_uncarried`): the gate may
+    not read it at all, and admitted, the agent's call would run on its parent's
+    grants.
+    """
+    if _spec_denies_uncarried(entry, spec):
+        return True
+    for key, value in entry.items():
+        if key == CREW_SPEC_DENIES_KEY:
+            held = _engine_holds_denied_commands(entry, spec)
+            if _record_refuses(value, frozenset({"deniedCommands"}) if held else frozenset()):
+                return True
+        elif key not in _BINDS_NO_CHILD and (key in CREW_ONLY_ENTRY_KEYS or key.startswith("_")):
+            return True
+    return False
+
+
+def _spec_denies_uncarried(entry: dict[str, Any], spec: dict[str, Any] | None) -> bool:
+    """Whether *spec* has a shell ``deniedCommands`` entry finished *entry* does not
+    carry whole as an engine deny rule.
+
+    Read as the Bot worker's hold reads it (``kas_spec_denies.denied_command_items``
+    with ``top_level_split_carries=False``): an entry that reaches KAS only as the
+    branches of a top-level ``|`` counts as not carried, since each branch glob is
+    narrower than the entry's own regex, which anchors only its outer ends.
+    """
+    from kiro_crew.acp.kas_spec_denies import denied_command_items
+    from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
+
+    if spec is None:
+        return False
+    tools_settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
+    return bool(
+        denied_command_items(
+            tools_settings, entry.get("permissions"), top_level_split_carries=False
+        )
+    )
+
+
+def _record_refuses(record: Any, engine_held: frozenset[str] = frozenset()) -> bool:
+    """Whether a :data:`CREW_SPEC_DENIES_KEY` *record* refuses a call the engine
+    would not, or cannot be read.
+
+    A grant field (:data:`_RECORD_GRANTS`) refuses nothing, and a field in
+    *engine_held* refuses nothing the engine does not. Any other field refuses
+    unless it holds its :data:`_RECORD_REFUSES_NOTHING` value, so a blocked URL, an
+    incomplete blocked list, a denied command or path, and a field this does not
+    know all answer yes.
+    """
+    if not isinstance(record, dict):
+        return True
+    for field, value in record.items():
+        if field in _RECORD_GRANTS or field in engine_held:
+            if not isinstance(value, list):
+                return True
+        elif field not in _RECORD_REFUSES_NOTHING:
+            return True
+        else:
+            nothing = _RECORD_REFUSES_NOTHING[field]
+            if type(value) is not type(nothing) or value != nothing:
+                return True
+    return False
+
+
+def _engine_holds_denied_commands(entry: dict[str, Any], spec: dict[str, Any] | None) -> bool:
+    """Whether the engine refuses, for a sub-agent too, every command *entry*'s
+    deny record names. False with no *spec* to read.
+
+    Read from the record: each of its ``deniedCommands`` reached *entry*'s
+    ``permissions`` as an engine deny rule (``kas_permissions.shell_deny_carried``).
+    And from *spec*, as the projection reads it: no ``deniedCommands`` entry of
+    its shell settings is left without a rule
+    (``kas_permissions.shell_denies_carried``), so one the record leaves out
+    keeps the agent out too.
+    """
+    from kiro_crew.acp.kas_permissions import (
+        shell_denies_carried,
+        shell_deny_carried,
+        shell_deny_globs,
+    )
+    from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
+
+    record = entry.get(CREW_SPEC_DENIES_KEY)
+    named = record.get("deniedCommands") if isinstance(record, dict) else None
+    if spec is None or not isinstance(named, list):
+        return False
+    permissions = entry.get("permissions")
+    globs = shell_deny_globs(permissions)
+    if not all(isinstance(raw, str) and shell_deny_carried(raw, globs) for raw in named):
+        return False
+    tools_settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
+    return shell_denies_carried(tools_settings, permissions)
+
+
+def _denies_by_default(spec: dict[str, Any]) -> bool:
+    """Whether *spec* sets the shell's ``denyByDefault``, whatever else it grants.
+
+    The projection keeps that allowlist for the gate (:func:`_gate_only_limits`
+    then refuses the target), except where the spec's own ``allowedTools`` names
+    the shell and every deny travels: there it records none
+    (``kas_permissions.spec_shell_allowlist``). Run as a sub-agent the agent's own
+    grant answers nothing, so with no record its ``denyByDefault`` would bind no
+    one. Read from the spec, with one key per kiro-cli alias group.
+    """
+    from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
+
+    tools_settings, _ = canonical_tools_settings(spec.get("toolsSettings"))
+    return isinstance(tools_settings, dict) and any(
+        isinstance(settings, dict) and settings.get("denyByDefault")
+        for settings in tools_settings.values()
     )
 
 
@@ -863,6 +1149,9 @@ def _pooled_elsewhere(
     endpoint) would reach the stub under its own server's name. So would one the
     session's own spec does not declare at all, a stub the global ``mcp.json``
     supplies: nothing here can show that stub launches the target's declaration.
+    The two declarations are compared like with like
+    (``kas_engine_child_grants.set_up_alike``): the rebuild rewrites the default
+    agent's command and no target's.
     A Kiro Crew server keeps the treatment :func:`_crew_servers` gives it. A name in
     *muted* (the target's spec switches that server off whole) is not compared: it
     never launches, and :func:`_excluding_switched_off` keeps the session's copy
@@ -876,11 +1165,13 @@ def _pooled_elsewhere(
         for n, e in declared.items()
         if isinstance(n, str) and n in stub_server_names and n not in muted and isinstance(e, dict)
     ]
+    from kiro_crew.acp.kas_engine_child_grants import set_up_alike
+
     crew = set(_crew_names(pooled))
     return sorted(
         n
         for n in pooled
-        if n not in crew and _launch(declared[n]) != _launch(parent_declared.get(n))
+        if n not in crew and not set_up_alike(declared[n], parent_declared.get(n), _launch)
     )
 
 
@@ -899,6 +1190,39 @@ def _launch(entry: Any) -> dict[str, Any] | None:
         and v not in (None, "", [], {})
         and not (k == "type" and v == _DEFAULT_TRANSPORT)
     }
+
+
+def _asking_for_mcp(entry: dict[str, Any]) -> dict[str, Any]:
+    """Target *entry* with an ``ask`` on every MCP call it makes.
+
+    The engine answers a sub-agent by its parent's decision unless the sub-agent's
+    own is a deny or an ask, and an ``mcp`` rule names a server, not what the
+    server launches. So without this the parent's allow on a server name would
+    answer for a target's own server of that name, whatever that one runs. An ask
+    only narrows, so it needs no pass through the governance ceiling.
+    """
+    held = entry.get("permissions")
+    block = dict(held) if isinstance(held, dict) else {}
+    block["rules"] = [*(block.get("rules") or []), {"capability": "mcp", "effect": "ask"}]
+    return {**entry, "permissions": block}
+
+
+def _on_its_own_model(entry: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """Target *entry* carrying its spec's ``model``, so the engine runs it on that model.
+
+    kiro-cli runs a sub-agent on the model its agent file names. The session's own
+    entry never carries one: its model has one owner, the protocol verb
+    (``kas_agents``). A sub-agent has no verb, so its entry is the only place to
+    say it. An id of another shape than a model the runtime accepts
+    (``validation.MODEL_ID_RE``) is left out, and for an id it does not serve the
+    engine itself runs the sub-agent on the session's model.
+    """
+    from kiro_crew.validation import MODEL_ID_RE
+
+    model = spec.get("model")
+    if not isinstance(model, str) or not MODEL_ID_RE.match(model):
+        return entry
+    return {**entry, "model": model}
 
 
 def _excluding_switched_off(entry: dict[str, Any], muted: frozenset[str]) -> dict[str, Any]:
@@ -950,10 +1274,21 @@ def _notice(
     overflow: int,
     untried: Iterable[str] = (),
     full: Sequence[str] = (),
+    *,
+    whole_folder: bool = False,
 ) -> str:
-    """The session-start line naming the targets the sub-agent tool cannot reach."""
+    """The session-start line naming the targets the sub-agent tool cannot reach.
+
+    *whole_folder* is the default agent's engine mount, which reads no pattern of
+    anyone's: its overflow is counted without the pattern wording.
+    """
     parts = [f"{name} ({reason})" for name, reason in missed.items()]
-    if overflow:
+    if overflow and whole_folder:
+        parts.append(
+            f"{overflow} more agents (only the first {MAX_SUBAGENT_TARGETS} own agents "
+            "in name order are tried)"
+        )
+    elif overflow:
         named = ", ".join(untried)
         parts.append(
             f"{overflow} more agents its patterns match{f' ({named})' if named else ''}"

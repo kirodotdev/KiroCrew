@@ -118,6 +118,7 @@ from kiro_crew.acp.kas_app_identity import (  # noqa: F401
     without_noop_restrictions,
 )
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
+from kiro_crew.acp.kas_deny_cli_forms import with_sent_as
 from kiro_crew.acp.kas_env_literals import (  # noqa: F401 - re-exported
     _loggable_key_names,
     _relayable_literal,
@@ -138,6 +139,7 @@ from kiro_crew.acp.kas_legacy_negotiation import _pin_legacy_negotiation  # noqa
 from kiro_crew.acp.kas_managed_entries import (  # noqa: F401 - re-exported for the KAS harness
     resolve_managed_entries,
 )
+from kiro_crew.acp.kas_permissions import spec_shell_allowlist  # noqa: F401 - re-exported
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
@@ -160,7 +162,6 @@ from kiro_crew.acp.kas_permissions import (
     projection_accepts,
     projection_dropped_rules,
     shell_denies_carried,
-    spec_shell_allowlist,
     spec_write_allowlist,
     tools_settings_to_permissions,
     trusted_agents_withheld,
@@ -181,6 +182,7 @@ from kiro_crew.acp.kas_prompt import (
 )
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
 from kiro_crew.acp.kas_settings_mcp import include_mcp_json
+from kiro_crew.acp.kas_shell_grant_lift import kas_shell_allowlist
 from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases, with_use_aws_denies
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
@@ -340,7 +342,12 @@ def spec_keys_without_carrier(
     # Only the final notice renderer formats the raw rule for a person.
     deny_notices = [
         json.dumps(
-            {"deniedCommand": {**item, "key": f"toolsSettings.{as_authored(raw, item['key'])}"}}
+            {
+                "deniedCommand": {
+                    **with_sent_as(item),
+                    "key": f"toolsSettings.{as_authored(raw, item['key'])}",
+                }
+            }
         )
         for item in deny_items
         if item["key"] in named
@@ -389,7 +396,7 @@ def spec_keys_without_carrier(
     # says it has no effect.
     gate_read = set()
     if isinstance(tools_settings, dict):
-        if spec_shell_allowlist(tools_settings, spec.get("allowedTools"), translated) is not None:
+        if kas_shell_allowlist(spec, tools_settings, translated) is not None:
             gate_read |= {
                 f"toolsSettings.{as_authored(raw, key)}.allowedCommands"
                 for key in ("execute_bash", "shell")
@@ -1041,10 +1048,9 @@ def to_client_custom_agent(
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.
     # A restriction, so recorded whatever the ceiling says; the gate refuses every
     # other shell call of this agent (`spec-shell-allowlist` tier), unless
-    # `allowedTools` names the shell and every deny rides *permissions*.
-    shell_allowlist = spec_shell_allowlist(
-        tools_settings, spec.get("allowedTools"), authored_policy
-    )
+    # `allowedTools` names the shell, every deny rides *permissions* and the
+    # `kas_subagents` preview is not on (`kas_shell_grant_lift`).
+    shell_allowlist = kas_shell_allowlist(spec, tools_settings, authored_policy)
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
         # `autoAllowReadonly`: a read-only command passes, unless a deny cannot travel

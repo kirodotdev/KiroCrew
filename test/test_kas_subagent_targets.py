@@ -191,6 +191,36 @@ async def test_a_target_whose_limits_only_the_gate_applies_is_not_registered(age
     assert "guarded (Kiro Crew applies its shell" in extras.withheld_credentials_notice
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "registered"),
+    [(True, False), (False, True), (None, True)],
+    ids=["on", "off", "never-set"],
+)
+async def test_a_deny_by_default_target_beside_a_shell_grant_follows_the_preview(
+    agents_dir, monkeypatch, stored, registered
+):
+    # With the `kas_subagents` preview on, the shell in `allowedTools` does not lift
+    # the allowlist, so only the gate holds it and the target cannot be registered.
+    # Off or never set, the grant lifts it and the target carries no limit of the gate's.
+    from test_kas_deny_by_default import _set_switch
+
+    _set_switch(monkeypatch, stored)
+    _write(agents_dir, _delegator("guarded"))
+    guarded = {
+        "tools": ["execute_bash"],
+        "allowedTools": ["execute_bash"],
+        "toolsSettings": {"shell": {"denyByDefault": True, "allowedCommands": ["ls"]}},
+    }
+    _write(agents_dir, {**_SLACK, "name": "guarded", **guarded})
+
+    extras = await _extras()
+
+    assert ("guarded" in _ids(extras)) is registered
+    notice = extras.withheld_credentials_notice or ""
+    assert ("guarded (Kiro Crew applies its shell" in notice) is not registered
+
+
 _REFUSED_DENY = {"capability": "subagent", "match": ["guarded"], "effect": "deny"}
 
 

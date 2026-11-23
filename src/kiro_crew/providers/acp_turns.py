@@ -136,6 +136,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # Dropping this would let a native KAS sub-agent's call inherit the
         # parent's in-session deny overrides on this surface.
         native_child_call=e.native_child_call,
+        # Display only: dropping this would leave an engine sub-agent's call card
+        # without the name of the sub-agent that asked.
+        requesting_subagent=e.requesting_subagent,
         # Dropping this would offer no deny override on this surface (fail closed).
         child_calls_marked=e.child_calls_marked,
         # Dropping this would put every approve-for-me verdict on a card (fail closed).

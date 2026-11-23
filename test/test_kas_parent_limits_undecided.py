@@ -10,6 +10,7 @@ call, and what its parent's denies can decide is judged as before.
 from __future__ import annotations
 
 import pytest
+from test_kas_engine_subagents_switch import setting  # noqa: F401 -- fixture
 from test_kas_parent_limits import (  # noqa: F401 -- the fixtures register by import
     _PLAIN,
     _batch,
@@ -116,6 +117,20 @@ async def test_a_parent_with_no_deny_on_the_tool_leaves_the_childs_grant_alone(
     _own, batch = await held("nowrite")
     for command in _UNDECIDABLE:
         assert _judge(_stamped(_shell(command), batch, "shell")).action == TOOL_AUTO_APPROVE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["on", "off"])
+async def test_the_answer_does_not_depend_on_the_sub_agent_setting(
+    held, setting, value  # noqa: F811
+):
+    """The ``kas_subagents`` preview on or off answers as the unset default does above."""
+    setting(value)
+    _own, batch = await held("boss")
+    assert _judge(_stamped(_shell(_UNDECIDABLE[0]), batch, "shell")).action == TOOL_ALLOW
+    assert _judge(_stamped(_shell("make build"), batch, "shell")).action == TOOL_AUTO_APPROVE
+    refused = _judge(_stamped(_shell("make clean now"), batch, "shell"))
+    assert (refused.action, refused.tier) == (TOOL_DENY, "spec-parent-limits")
 
 
 @pytest.mark.asyncio

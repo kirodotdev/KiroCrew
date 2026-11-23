@@ -6274,6 +6274,10 @@
       "trusted_channel_still_asks": "이번에는 승인됨 — 이 호스트의 셸 설정 때문에 @{{role}}이(가) 매번 다시 확인을 요청합니다",
       "title_wants_to_run": "<title/> 실행을 요청합니다"
     },
+    "approvalSubagent": {
+      "asked_by": "하위 에이전트 {{name}}의 요청",
+      "task_line": "작업: {{task}}"
+    },
     "approvalModePicker": {
       "approve_for_me_failed": "\"대신 승인\"을 켜지 못했습니다. 다시 시도하세요.",
       "approve_for_me_busy": "현재 답변이 끝날 때까지 기다린 뒤 Approve for me를 다시 선택하세요.",
@@ -12918,7 +12922,16 @@
         "artifacts_load_failed": "이 세션의 아티팩트를 불러올 수 없습니다",
         "library_load_failed": "아티팩트 라이브러리를 불러올 수 없습니다",
         "artifact_save_failed": "아티팩트를 저장할 수 없습니다",
-        "workflow_runs_load_failed": "워크플로 실행을 불러올 수 없습니다"
+        "workflow_runs_load_failed": "워크플로 실행을 불러올 수 없습니다",
+        "engine_usage_not_reported": "채팅 안에서 실행되는 하위 에이전트의 크레딧 사용량과 모델은 보고되지 않습니다. 크레딧은 응답의 합계에 포함됩니다.",
+        "engine_no_output": "(출력 없음)"
+      },
+      "engineSubagentRecord": {
+        "title": "이번 턴의 하위 에이전트: {{n}}",
+        "end_completed": "완료",
+        "end_failed": "실패",
+        "end_not_reported": "엔진이 종료를 보고하지 않음",
+        "more_children": "목록에 없는 다른 하위 에이전트: {{n}}"
       },
       "assistantMessage": {
         "share_load_failed": "공유 대화 상자를 불러오지 못했습니다",
@@ -13458,7 +13471,9 @@
         "parent_turn_stopped": "상위 턴이 중지됨",
         "parent_stopped_still_running": "상위 중지됨, 아직 실행 중",
         "chip_stalled_other": "에이전트 {{count}}개 멈춤 가능성",
-        "more_running_normally_count_other": "나머지 {{count}}개는 정상 실행 중…"
+        "more_running_normally_count_other": "나머지 {{count}}개는 정상 실행 중…",
+        "engine_stops_with_answer": "채팅 안에서 실행되는 하위 에이전트는 응답을 중지하면 함께 중지됩니다.",
+        "stop_all_and_answer": "모두와 응답 중지"
       },
       "subagentQueued": {
         "low_memory": "시작 대기 중 — 여유 메모리 {{required}} 필요, 현재 {{available}} 여유. 계속하려면 메모리를 확보하세요",
@@ -16054,6 +16069,9 @@
         "chat_runtime_sharing_harness_save_failed": "스위치를 저장하지 못했습니다. 다시 시도하세요.",
         "chat_runtime_sharing_harness_load_failed": "이 스위치들을 불러오지 못했습니다.",
         "chat_runtime_sharing_desc_summary": "여러 채팅을 백그라운드 프로그램 하나에서 실행해 컴퓨터 메모리를 아낍니다. 어떤 종류의 채팅이 함께 쓸지 고를 수 있습니다. 채팅은 동시에 답하고 서로의 메시지를 볼 수 없습니다. 끄면 새 채팅마다 다시 자기 프로그램을 사용합니다.",
+        "kas_subagents": "KAS 하위 에이전트",
+        "kas_subagents_desc": "켜기, KAS 채팅에서: 기본 에이전트가 짧은 작업을 자기 턴 안에서 기본 제공 도우미나 사용자 자신의 에이전트 최대 8개에 맡기며, 이들은 채팅 에이전트의 규칙을 따르고 턴과 함께 멈춥니다. spawn_run이 다른 에이전트로 시작한 하위 에이전트는 그것을 시작한 채팅이 묻지 않고 실행하는 것만 묻지 않고 실행합니다. 에이전트가 셸을 미리 승인해도 denyByDefault 명령 목록은 그대로 적용됩니다. 하위 에이전트 도구를 제외하는 에이전트나 deniedCommands의 세 가지 형식 중 하나를 쓰는 에이전트는 kiro-cli가 읽는 방식대로 읽으며, 채팅이 시작될 때 이를 알려 줍니다. 끄기: {{productName}}이(가) 기본 에이전트의 하위 에이전트를 별도의 세션으로 시작하며, 서브에이전트 패널에서 열거나 중지할 수 있습니다.",
+        "kas_subagents_desc_summary": "KAS에서는 기본 에이전트가 짧은 하위 에이전트를 엔진 안에서 실행하고 일부 에이전트 권한을 kiro-cli가 읽는 방식대로 읽으며, 전환한 뒤에 시작한 채팅과 하위 에이전트에 적용됩니다.",
         "visual_refresh": "비주얼 리프레시",
         "visual_refresh_desc": "진행 중인 대시보드 새 디자인을 켭니다. 아직 바뀐 것은 없습니다. 완성되는 대로 하나씩 나타나며, 미완성으로 보이거나 업데이트마다 바뀔 수 있습니다. 끄면 현재 모습으로 돌아갑니다.",
         "visual_refresh_desc_summary": "대시보드의 새 디자인입니다. 아직 바뀌는 것은 없습니다.",

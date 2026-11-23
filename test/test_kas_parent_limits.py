@@ -243,6 +243,15 @@ async def test_a_reopened_run_is_still_held_and_reads_its_parents_spec_again(age
     assert _judge(_stamped(_shell("touch marker"), reopened, "worker")).action != TOOL_DENY
 
 
+@pytest.mark.asyncio
+async def test_a_native_sub_agent_of_a_held_run_is_held_too(agents, sessions):
+    sessions["dashboard:p"] = "limited"
+    kas_parent_limits.note_parent("subagent:c1", "dashboard:p")
+    batch = await _batch("worker", "subagent:c1")
+    event = _stamped(_shell("touch marker"), batch, "worker", native_child=True)
+    assert _judge(event).tier == "spec-parent-limits"
+
+
 # ── denies only ──────────────────────────────────────────────────────────────
 
 _WRITE_ALLOWLIST = {"fs_write": {"fallbackAction": "deny", "allowedPaths": ["out/**"]}}

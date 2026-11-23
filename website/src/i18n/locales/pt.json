@@ -6668,6 +6668,10 @@
       "trusted_channel_still_asks": "Aprovado desta vez — por causa da configuração do shell deste host, @{{role}} continuará pedindo a cada vez",
       "title_wants_to_run": "<title/> quer ser executado"
     },
+    "approvalSubagent": {
+      "asked_by": "Pedido pelo subagente {{name}}",
+      "task_line": "Tarefa: {{task}}"
+    },
     "approvalModePicker": {
       "approve_for_me_failed": "Não foi possível ativar \"Aprovar por mim\". Tente de novo.",
       "approve_for_me_busy": "Espere a resposta atual terminar e escolha Approve for me de novo.",
@@ -13510,7 +13514,16 @@
         "artifacts_load_failed": "Não foi possível carregar os artefatos desta sessão",
         "library_load_failed": "Não foi possível carregar a biblioteca de artefatos",
         "artifact_save_failed": "Não foi possível salvar o artefato",
-        "workflow_runs_load_failed": "Não foi possível carregar as execuções de fluxo de trabalho"
+        "workflow_runs_load_failed": "Não foi possível carregar as execuções de fluxo de trabalho",
+        "engine_usage_not_reported": "Os créditos e o modelo não são informados para um subagente que roda dentro do chat. Os créditos dele fazem parte do total da resposta.",
+        "engine_no_output": "(sem saída)"
+      },
+      "engineSubagentRecord": {
+        "title": "Subagentes neste turno: {{n}}",
+        "end_completed": "Concluído",
+        "end_failed": "Falhou",
+        "end_not_reported": "Fim não informado pelo mecanismo",
+        "more_children": "Outros subagentes não listados: {{n}}"
       },
       "assistantMessage": {
         "share_load_failed": "Não foi possível carregar a janela de compartilhamento",
@@ -14100,7 +14113,9 @@
         "chip_stalled_other": "{{count}} agentes possivelmente travados",
         "more_running_normally_count_one": "mais {{count}} em execução normal…",
         "more_running_normally_count_many": "mais {{count}} em execução normal…",
-        "more_running_normally_count_other": "mais {{count}} em execução normal…"
+        "more_running_normally_count_other": "mais {{count}} em execução normal…",
+        "engine_stops_with_answer": "Os subagentes que rodam dentro do chat param quando você para a resposta.",
+        "stop_all_and_answer": "Parar todos e a resposta"
       },
       "subagentQueued": {
         "low_memory": "aguardando para iniciar — precisa de {{required}} de memória livre, {{available}} livres agora; libere memória para continuar",
@@ -16916,6 +16931,9 @@
         "chat_runtime_sharing_harness_save_failed": "Não foi possível salvar a opção. Tente novamente.",
         "chat_runtime_sharing_harness_load_failed": "Não foi possível carregar estas opções.",
         "chat_runtime_sharing_desc_summary": "Economiza memória do computador executando vários chats em um único programa em segundo plano. Você escolhe quais tipos de chat o compartilham. Eles respondem ao mesmo tempo e não veem as mensagens uns dos outros. Desative e cada chat novo volta a ter seu próprio programa.",
+        "kas_subagents": "Subagentes do KAS",
+        "kas_subagents_desc": "Ligado, nos chats do KAS: o agente padrão passa tarefas curtas, dentro do próprio turno, para o ajudante integrado ou para até 8 dos seus próprios agentes, que ficam presos às regras do agente do chat e param junto com o turno; um subagente que o spawn_run inicia em outro agente roda sem perguntar só o que o chat que o iniciou roda sem perguntar; uma lista de comandos denyByDefault continua valendo mesmo quando o agente aprova o shell de antemão; e um agente que exclui a ferramenta de subagentes, ou que usa uma de três formas de deniedCommands, é lido como o kiro-cli o lê, e o chat avisa isso ao começar. Desligado: o {{productName}} inicia os subagentes do agente padrão como sessões próprias, que você pode abrir e parar no painel de subagentes.",
+        "kas_subagents_desc_summary": "No KAS, o agente padrão roda subagentes curtos dentro do motor e algumas permissões dos agentes são lidas como o kiro-cli as lê, nos chats e subagentes iniciados depois que você mudar isso.",
         "visual_refresh": "Renovação visual",
         "visual_refresh_desc": "Ativa a reformulação em andamento do painel. Ainda nada foi reformulado: as partes aparecem conforme ficam prontas e podem parecer inacabadas ou mudar entre atualizações. Desative para voltar à aparência atual.",
         "visual_refresh_desc_summary": "Um novo visual para o painel. Ainda não muda nada.",

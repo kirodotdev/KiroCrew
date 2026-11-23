@@ -1312,7 +1312,12 @@ def _open_engine_subagents(slot: Any) -> int:
     """How many engine-run sub-agents the slot's running KAS turn holds open.
 
     They are the turn's open ``native:`` cards (``chat_turn/native_cards``) on a
-    KAS client; a background card carried from an earlier turn is not this turn's.
+    KAS client that the engine path marked ``engine``
+    (``dashboard.engine_subagent_cards``), the mark the page's chip counts for its
+    "Stop all and the answer" label; a background card carried from an earlier turn
+    is not this turn's. Any other native card on KAS (a custom agent's own
+    sub-agent, a chat registered with the preview off) is not counted, so Stop all
+    leaves that chat's turn running.
     """
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 
@@ -1322,5 +1327,8 @@ def _open_engine_subagents(slot: Any) -> int:
     return sum(
         1
         for record in (tracker.values() if on_kas and getattr(slot, "running", False) else ())
-        if isinstance(record, dict) and not record.get("done") and not record.get("background")
+        if isinstance(record, dict)
+        and record.get("engine") is True
+        and not record.get("done")
+        and not record.get("background")
     )

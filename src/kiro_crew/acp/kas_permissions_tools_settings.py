@@ -13,6 +13,7 @@ from typing import Any
 
 from kiro_crew.acp import kas_permissions
 from kiro_crew.acp.kas_deny_alternatives import deny_alternatives
+from kiro_crew.acp.kas_deny_cli_forms import take_cli_written
 from kiro_crew.acp.kas_permissions import (
     _GLOB_METACHARACTERS,
     _MAX_ALLOWED_COMMANDS,
@@ -176,8 +177,14 @@ def tools_settings_to_permissions(
             handled.add("deniedCommands")
             # An alternation is split into one glob per branch, as written, as kiro-cli does.
             entries = _patterns(settings.get("deniedCommands"))
+            # Three entries travel as kiro-cli writes them, which is not what their
+            # regex names, so the key is named as not carried too.
+            cli_written, entries = take_cli_written(entries)
             split = [alt for raw in entries for alt in deny_alternatives(raw)]
             denied = converted(f"{tool}.deniedCommands", split, _regex_to_glob, keep=True)
+            if cli_written:
+                denied = list(dict.fromkeys([*denied, *cli_written]))
+                lost.append(f"{tool}.deniedCommands")
             rules.extend(_chunked_rules("shell", "deny", denied))
             # kiro-cli matches the regex over the whole command line; KAS matches
             # the glob over the command's words, which do not include a redirect
