@@ -1,7 +1,7 @@
 """Behavioural tests for the measurement-only ``gh`` call counter.
 
-pr-readiness and the same-repo AI review lanes install a shim as their first
-step: every later ``gh`` resolves to it, it appends one ``<kind> <n>`` line to a
+pr-readiness, its sweep and the same-repo AI review lanes install a shim as
+their first step: every later ``gh`` resolves to it, it appends one ``<kind> <n>`` line to a
 counter file, then ``exec``s the real gh. Their last step folds that file into
 one ``rest-calls:`` log line. These tests run both steps for real against a
 stub ``gh`` and pin that the shim is invisible to the caller: same stdout,
@@ -37,6 +37,7 @@ INSTRUMENTED = {
     "codex-review.yml": ["codex-review"],
     "claude-review.yml": ["claude-review"],
     "security-scope-review.yml": ["generate", "publish"],
+    "pr-readiness-sweep.yml": ["sweep"],
 }
 
 pytestmark = pytest.mark.skipif(
@@ -136,6 +137,11 @@ def test_every_job_that_calls_gh_carries_identical_steps_first_and_last() -> Non
             if workflow == "pr-readiness.yml":
                 # The budget log keeps the last slot; the count sits just ahead.
                 assert names[-2:] == [REPORT, "Log the remaining REST budget"]
+                assert "if" not in first
+                assert report["if"] == "always()"
+            elif workflow == "pr-readiness-sweep.yml":
+                # Scheduled from the default branch: no pull request, no fork guard.
+                assert names[-1] == REPORT, (workflow, job_name)
                 assert "if" not in first
                 assert report["if"] == "always()"
             else:

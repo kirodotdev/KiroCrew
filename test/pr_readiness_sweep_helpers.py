@@ -76,9 +76,14 @@ if [ "$1" = "api" ]; then
       else
         printf '{"workflow_runs":[]}'
       fi; exit 0 ;;
-    *"/comments")
+    *"/comments?since="*)
+      # The listing honours `since` as GitHub does: comments updated at or
+      # after it, so a test sees what the sweep's own filter would be handed.
       printf '%s\n' "$*" >> "$FIXTURES/comments_read.txt"
-      cat "$FIXTURES/comments.json"; exit 0 ;;
+      since="${2#*\?since=}"
+      jq -c --arg since "${since%%&*}" \
+        'map(map(select((.updated_at // "") >= $since)))' "$FIXTURES/comments.json"
+      exit 0 ;;
     *"/status")
       printf '%s\n' "$*" >> "$FIXTURES/status_read.txt"
       if [ -f "$FIXTURES/status_read_fails" ]; then exit 1; fi
@@ -192,6 +197,35 @@ def _contexts(nodes, offset):
     }
 
 
+def _scan_reads():
+    """What the scan's two optional fields answer, or None to answer without them.
+
+    Absent: this server does not know the fields, which is the shape the plain
+    query gets and the one in which the sweep makes its REST reads.
+    """
+    return _read("scan_reads.json", None)
+
+
+def _descriptions():
+    payload = _read("status_payload.json", {})
+    return {entry.get("context"): entry.get("description") for entry in payload.get("statuses", [])}
+
+
+def _comments():
+    """The `comments(first: 1, orderBy: UPDATED_AT DESC)` connection."""
+    reads = _scan_reads()
+    if "newest_comment_at" in reads:
+        newest = reads["newest_comment_at"]
+        return None if newest == "__null__" else {"nodes": [{"updatedAt": newest}]}
+    stamps = [
+        comment.get("updated_at")
+        for page in _read("comments.json", [])
+        for comment in page
+        if comment.get("updated_at")
+    ]
+    return {"nodes": [{"updatedAt": max(stamps)}] if stamps else []}
+
+
 def _commit(pr):
     sha = str(pr.get("headRefOid", ""))
     contexts = [
@@ -202,6 +236,10 @@ def _commit(pr):
         }
         for entry in _statuses(sha)
     ]
+    if _scan_reads() is not None:
+        descriptions = _descriptions()
+        for context in contexts:
+            context["description"] = descriptions.get(context["context"])
     return {
         "status": {"contexts": contexts},
         "statusCheckRollup": {"contexts": _contexts(_check_nodes(), 0)},
@@ -226,6 +264,9 @@ def _pr_page(args):
         }
         for pr in window
     ]
+    if _scan_reads() is not None:
+        for node in nodes:
+            node["comments"] = _comments()
     return {
         "data": {
             "repository": {
@@ -348,6 +389,8 @@ class Runner:
         running_checks: int = 0,
         rate_remaining: int | None = None,
         rate_limit: int = 15000,
+        scan_reads: bool = False,
+        scan_newest_comment_at: str | None = None,
     ) -> list[str]:
         """Run the sweep over ONE pull request; return the dispatches recorded.
 
@@ -373,6 +416,13 @@ class Runner:
         `running_checks` adds that many check-runs that are still in progress,
         and `rate_remaining` / `rate_limit` are what `/rate_limit` reports for
         the core pool (``rate_remaining=None``: the read fails).
+
+        `scan_reads=True` makes the GraphQL stub answer the scan's two optional
+        fields from these same fixtures: each status's description, and the
+        newest `updated_at` across the issue comments. False answers without
+        them, as the plain query is answered, and the sweep then makes its
+        REST reads. `scan_newest_comment_at` replaces the comment timestamp the
+        stub would derive (``"__null__"`` nulls the whole connection).
 
         `active_wd_runs` is a list of dicts each with keys ``id`` (int),
         ``pr`` (str), ``sha`` (str) and ``status`` (``queued`` or
@@ -492,6 +542,14 @@ class Runner:
                 }
             )
         )
+        reads = self.fixtures / "scan_reads.json"
+        if scan_reads:
+            answer = {}
+            if scan_newest_comment_at is not None:
+                answer["newest_comment_at"] = scan_newest_comment_at
+            reads.write_text(json.dumps(answer))
+        else:
+            reads.unlink(missing_ok=True)
         fails = self.fixtures / "status_read_fails"
         if status_read_fails:
             fails.write_text("")
